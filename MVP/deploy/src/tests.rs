@@ -19,14 +19,15 @@ use crate::wire::{decode, encode};
 use crate::{
     BusDeployFactWriter, CapacityRequest, CleanupFailureKind, CleanupStatus,
     DeployDecisionCandidate, DeployDecisionFact, DeployError, DeployFactWriteStatus,
-    DeployFactWriter, DeployId, DeployManifest, DeployOutcome, DeployStateMachine, DeployTimeouts,
-    DnsCommitId, DrainInstanceRequest, GatewayCommitId, InstanceCapacityRequirement,
-    InstanceCommandReply, InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome,
-    PhaseId, PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId,
-    ServingCommitId, ServingCommitPlan, ServingFactWriter, StopInstanceRequest, WrittenDeployFact,
-    WrittenServingFact, decode_deploy_decision_fact, deploy_cleanup_done_fact_key,
-    deploy_decision_fact_key, deploy_decision_fact_payload, read_deploy_decision,
-    select_deploy_decision, write_serving_commit,
+    DeployFactWriter, DeployId, DeployManifest, DeployOutcome, DeployRecovery, DeployStateMachine,
+    DeployTimeouts, DnsCommitId, DrainInstanceRequest, GatewayCommitId,
+    InstanceCapacityRequirement, InstanceCommandReply, InstanceCommandRequest, InstanceId,
+    InstancePlan, InstanceStartOutcome, PhaseId, PhasePolicy, PhaseReversibility,
+    ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId, ServingCommitPlan,
+    ServingFactWriter, StopInstanceRequest, WrittenDeployFact, WrittenServingFact,
+    decode_deploy_decision_fact, deploy_cleanup_done_fact_key, deploy_decision_fact_key,
+    deploy_decision_fact_payload, read_deploy_decision, select_deploy_decision,
+    write_serving_commit,
 };
 
 fn serving_commit() -> ServingCommitPlan {
@@ -445,6 +446,208 @@ async fn cleanup_requests_include_explicit_cleanup_target() {
     );
 }
 
+#[tokio::test]
+async fn recovery_with_missing_decision_returns_structured_missing_fact() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let source = BusFactSource::new(raw_bus);
+    let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+
+    let error = coordinator
+        .recover_pending_cleanup(
+            &source,
+            operator.island(),
+            &operator,
+            &DeployId::new("deploy-missing"),
+        )
+        .expect_err("missing decision should fail");
+
+    assert!(matches!(error, DeployError::DeployFactMissing { .. }));
+}
+
+#[tokio::test]
+async fn recovery_with_decision_but_no_serving_commit_is_pre_commit_incomplete() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let manifest = coordinator_manifest();
+    BusDeployFactWriter::new(bus.clone(), operator.clone())
+        .write_decision(DeployDecisionFact::new(manifest.clone(), visible_nodes()))
+        .await
+        .expect("write decision");
+    let source = BusFactSource::new(raw_bus);
+    let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+
+    let recovery = coordinator
+        .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
+        .expect("recover pre-commit incomplete");
+
+    let DeployRecovery::PreCommitIncomplete(status) = recovery else {
+        panic!("expected pre-commit incomplete recovery");
+    };
+    assert_eq!(status.deploy_id, manifest.deploy_id);
+    assert_eq!(
+        status.serving_commit_id,
+        manifest.serving_commit.serving_commit_id
+    );
+}
+
+#[tokio::test]
+async fn recovery_after_serving_commit_resumes_cleanup_after_projection() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let drained = Arc::new(Mutex::new(Vec::new()));
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    register_capacity(&bus, &node).await;
+    register_instance_participants(&bus, &node, Arc::clone(&events)).await;
+    register_cleanup_participants(&bus, &node, Arc::clone(&drained), Arc::clone(&stopped)).await;
+    let manifest = coordinator_manifest();
+    let old_backend = manifest.serving_commit.old_backends_to_drain[0].clone();
+    crate::DeployCoordinator::new(bus.clone(), operator.clone(), test_timeouts())
+        .execute_until_serving_commit(manifest.clone())
+        .await
+        .expect("initial coordinator reaches serving commit");
+    let event_count_after_commit = events.lock().expect("events").len();
+    let source = BusFactSource::new(raw_bus);
+    let restarted = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+
+    let recovery = restarted
+        .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
+        .expect("recover pending cleanup");
+    let DeployRecovery::Pending(recovered) = recovery else {
+        panic!("expected pending cleanup recovery");
+    };
+    assert_eq!(recovered.manifest(), &manifest);
+    assert!(recovered.superseded_decisions().is_empty());
+    assert!(drained.lock().expect("drained targets").is_empty());
+    assert_eq!(
+        events.lock().expect("events").len(),
+        event_count_after_commit
+    );
+
+    let projected = (*recovered)
+        .after_projection(projection_for_manifest(&manifest))
+        .expect("projection proof accepted");
+    restarted
+        .finish_cleanup(projected)
+        .await
+        .expect("recovered cleanup finishes");
+
+    assert_eq!(
+        drained.lock().expect("drained targets").as_slice(),
+        std::slice::from_ref(&old_backend)
+    );
+    assert_eq!(
+        stopped.lock().expect("stopped targets").as_slice(),
+        std::slice::from_ref(&old_backend)
+    );
+}
+
+#[tokio::test]
+async fn recovery_with_cleanup_done_returns_complete_without_rpc() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    register_capacity(&bus, &node).await;
+    register_instance_participants(&bus, &node, Arc::clone(&events)).await;
+    let manifest = coordinator_manifest();
+    crate::DeployCoordinator::new(bus.clone(), operator.clone(), test_timeouts())
+        .execute_until_serving_commit(manifest.clone())
+        .await
+        .expect("initial coordinator reaches serving commit");
+    BusDeployFactWriter::new(bus.clone(), operator.clone())
+        .write_cleanup_done(crate::DeployCleanupDoneFact::new(&manifest))
+        .await
+        .expect("write cleanup done");
+    let source = BusFactSource::new(raw_bus);
+    let restarted = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+
+    let recovery = restarted
+        .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
+        .expect("recover cleanup done");
+
+    let DeployRecovery::CleanupDone(result) = recovery else {
+        panic!("expected cleanup done recovery");
+    };
+    assert_eq!(result.outcome, DeployOutcome::DeployDone);
+    assert_eq!(
+        result.visible_nodes,
+        VisibleNodes::new([NodeId::new("node-new")])
+    );
+}
+
+#[tokio::test]
+async fn recovered_cleanup_failure_returns_cleanup_pending_status() {
+    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let operator = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("operator"),
+        Grant::allow_all(),
+    );
+    let node = authority.grant_in(
+        IslandId::new("prod"),
+        PrincipalId::new("node"),
+        Grant::allow_all(),
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    register_capacity(&bus, &node).await;
+    register_instance_participants(&bus, &node, Arc::clone(&events)).await;
+    let manifest = coordinator_manifest();
+    crate::DeployCoordinator::new(bus.clone(), operator.clone(), test_timeouts())
+        .execute_until_serving_commit(manifest.clone())
+        .await
+        .expect("initial coordinator reaches serving commit");
+    let source = BusFactSource::new(raw_bus);
+    let restarted = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
+    let DeployRecovery::Pending(recovered) = restarted
+        .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
+        .expect("recover pending cleanup")
+    else {
+        panic!("expected pending cleanup");
+    };
+
+    let result = restarted
+        .finish_cleanup(
+            (*recovered)
+                .after_projection(projection_for_manifest(&manifest))
+                .expect("projection proof accepted"),
+        )
+        .await
+        .expect("cleanup pending is returned as result");
+
+    assert_eq!(result.outcome, DeployOutcome::CleanupPending);
+    assert_eq!(
+        result.serving_commit_id,
+        Some(manifest.serving_commit.serving_commit_id)
+    );
+}
+
 #[test]
 fn deploy_fact_keys_are_deploy_id_scoped() {
     let deploy_id = DeployId::new("deploy-1");
@@ -616,6 +819,18 @@ fn deploy_decision_reader_selects_conflict_candidate_without_operator_choice() {
 
     assert_eq!(selection.winner.fact.serving_epoch, 2);
     assert_eq!(selection.superseded.len(), 1);
+}
+
+fn projection_for_manifest(manifest: &DeployManifest) -> ProjectionCatchUp {
+    ProjectionCatchUp::from_report(
+        &manifest.serving_commit,
+        &projection_report_for_commit(
+            &manifest.serving_commit,
+            "gateway:gateway-commit-1:route-commit-1",
+            "dns:dns-commit-1",
+        ),
+    )
+    .expect("projection catch-up")
 }
 
 async fn register_capacity(bus: &BusActorHandle, session: &BusSession) {
