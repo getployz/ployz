@@ -28,6 +28,18 @@ the decision concrete.
   fact sources, and manual membership trust maps can be deleted, demoted to
   fixtures, or replaced by p2panda-auth/net/store primitives before more
   business code is added.
+- Slice 039 concludes that the next implementation slice should delete the
+  opaque p2panda-net transport path: `PandaFactWireEnvelope`/`PFO1`,
+  `PandaNetNode`, `PandaNetQuarantineLog`, `transport_wire_bodies`, and direct
+  `import_fact_body` helpers after replacing the remaining E2E callers with
+  canonical `PandaNetFactNode` or direct canonical-operation probes.
+- Slice 039 also picks durable p2panda-auth membership as the next substitution
+  target after transport deletion. Manual trusted author/replica maps should
+  become fallback fixtures only once signed, durable island membership
+  operations can replay into the fact-store authority snapshot.
+- Slice 039 explicitly does not use p2panda discovery/address-book as command
+  consistency or membership truth. It may improve transport reachability after
+  invite/bootstrap, but commands still report visible nodes at decision time.
 - Slice 037 adds an excluded nested `mvp-p2panda-06-spike` crate because the
   active MVP workspace cannot resolve `iroh 0.96` and p2panda-net's
   `iroh 0.98` line together: the two iroh-base versions pin different exact

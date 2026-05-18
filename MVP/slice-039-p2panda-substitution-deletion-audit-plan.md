@@ -1,6 +1,6 @@
 ---
 title: Slice 039 p2panda Substitution Deletion Audit Plan
-status: active
+status: completed
 created: 2026-05-19
 origin:
   - VISION.md
