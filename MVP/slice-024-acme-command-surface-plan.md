@@ -1,6 +1,6 @@
 ---
 title: Slice 024 ACME Command Surface Plan
-status: active
+status: completed
 created: 2026-05-18
 origin:
   - VISION.md

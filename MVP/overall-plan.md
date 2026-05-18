@@ -386,13 +386,18 @@ Slice 023 closed both immediate proof gaps:
    See
    [MVP/slice-023-owned-p2panda-net-transport.md](slice-023-owned-p2panda-net-transport.md).
 
-The next implementation/proof slice should be deletion-backed. The local LOC
-comparison shows deploy and ACME business logic are smaller on the MVP
-primitives, but total maintenance burden is still additive while the old paths
-coexist. The next honest proof is to choose one real vertical path, preferably
-ACME HTTP-01 first or deploy commit/drain second, wire the production-facing
-surface to the MVP primitive shape, and delete or retire the corresponding old
-coordination code instead of adding another parallel scaffold.
+Slice 024 paid down the ACME side of that deletion-backed direction inside the
+MVP boundary. `mvp-acme-command` now owns claim, present, clear, lease replay,
+preflight, visible-node evidence, and structured errors. The p2panda ACME E2E
+keeps transport/projection/serving proof but no longer owns the command state
+machine. See
+[MVP/slice-024-acme-command-surface.md](slice-024-acme-command-surface.md).
+
+The next implementation/proof slice should continue this deletion-backed
+posture. Total maintenance burden is still additive while old paths coexist.
+The next honest proof is either to keep moving ACME toward the production-facing
+surface or to do the deploy commit/drain equivalent, deleting or retiring
+corresponding old coordination code instead of adding another parallel scaffold.
 
 ACME is the canary because it forces the advisory lease primitive to be honest:
 TTL, renewal, epoch fencing, RAII release-on-drop for local holders, and
