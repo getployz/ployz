@@ -20,9 +20,26 @@ the decision concrete.
   `ServingFactWriter` instead of owning or bypassing serving-write semantics.
   The p2panda serving adapter lives in `mvp-routing-p2panda`; `mvp-deploy`
   remains p2panda-free.
-- p2panda machine-remove facts remain intentionally deferred. The next canary
-  must first decide how joined-node facts enter the p2panda projection input
-  and how `PandaFactError` maps into `MachineRemoveError`.
+- Slice 028 moves machine-remove facts onto p2panda. Joined-node inputs stay
+  mesh-owned: `JoinCommand` produces the fact key/payload, and the scoped join
+  writer stores it through `PandaMachineFactStore`. Removal-started and
+  tombstone writes use `PandaMachineFactWriter`; serving commits still use
+  routing's `PandaServingFactWriter` against the same store.
+- Slice 028 names raw tombstone semantics: a tombstone fact excludes a node from
+  scheduling/mesh projection, but it is not proof by itself that route cutover,
+  projection catch-up, and stop completed. Coordinator-resume after serving
+  commit remains a future slice, not an implied p2panda import behavior.
+- Slice 028 deliberately does not change machine-remove epoch semantics. Any
+  tighter pending-remove/resume epoch contract belongs with a future
+  coordinator-resume slice, where the durable request context is explicit.
+- Slice 028 maps p2panda authorization failures into branchable
+  `MachineRemoveError` variants instead of hiding expected denial behind a
+  generic store string. Backend and serialization failures still use the
+  fallback `FactStore` variant.
+- Slice 028 machine p2panda replay uses `import_replica_operation` through a
+  trusted replica principal. A read-only projection principal may read facts but
+  must not be the import authority for rebuilding a store from signed
+  operations.
 - `PandaServingFactSink` is deliberately narrow and adapter-local. There is
   only one production implementor today, so do not promote it into
   `mvp-p2panda-facts` or a broader store facade until a second command repeats

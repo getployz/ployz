@@ -484,6 +484,11 @@ fn cleanup_failure_kind(error: &MachineRemoveError) -> CleanupFailureKind {
         | MachineRemoveError::PrepareRemoveRejected { .. }
         | MachineRemoveError::ParticipantNodeMismatch { .. }
         | MachineRemoveError::FactConflict { .. }
+        | MachineRemoveError::UnauthorizedFactWrite { .. }
+        | MachineRemoveError::PrincipalMismatch { .. }
+        | MachineRemoveError::UntrustedAuthorKey { .. }
+        | MachineRemoveError::AuthorKeyMismatch { .. }
+        | MachineRemoveError::FactStore { .. }
         | MachineRemoveError::WirePayload { .. }
         | MachineRemoveError::Mesh(_)
         | MachineRemoveError::Routing(_)

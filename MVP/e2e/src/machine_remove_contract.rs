@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -6,12 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mvp_bus::{
-    BusError, BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant,
-    HandlerFailure, IslandId, PrincipalId, harness::InMemoryBus,
-};
+use mvp_bus::{BusError, BusSession, FactKey, Grant, HandlerFailure, IslandId, PrincipalId};
 use mvp_identity::{NodeId, VisibleNodes};
-use mvp_iroh::{IrohDocsFactSource, IrohFactAuthor, IrohFactDoc, IrohFactNode};
 use mvp_machine::{
     MachineFactWriter, MachineRemoveCoordinator, MachineRemoveOutcome, MachineRemoveRequest,
     MachineRemoveResult, MachineRemoveTimeouts, PrepareRemoveIntent, PrepareRemoveOutcome,
@@ -19,21 +15,22 @@ use mvp_machine::{
     StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest, WrittenMachineFact,
     prepare_remove_subject, stop_removed_workloads_subject,
 };
+use mvp_machine_p2panda::{PandaMachineFactStore, PandaMachineFactWriter};
 use mvp_mesh::{
-    InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite, MeshError,
+    InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite,
     WireGuardAppliedSnapshot, WireGuardPublicKey, WireGuardSnapshotPaths, plan_full_mesh,
-    removal_started_fact_key, removal_started_fact_payload, tombstone_fact_key,
     write_applied_snapshot,
 };
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore};
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsRecordFact, FactCandidate, FactKind, FactSource,
-    FactSourceResult, NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload,
-    ProjectionState, RouteId,
+    BackendEndpoint, DnsRecordFact, FactSource, NodeRemovalStartedFact, NodeTombstonedFact,
+    ProjectionIgnoreReason, ProjectionState, RouteId,
 };
 use mvp_routing::{
-    BusServingFactWriter, DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId,
-    ServingCommitId, ServingCommitPlan, write_serving_commit,
+    DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, ServingCommitId,
+    ServingCommitPlan, ServingFactWriter,
 };
+use mvp_routing_p2panda::PandaServingFactWriter;
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
@@ -47,7 +44,6 @@ use crate::process_role_harness::{
 use crate::projection_harness::projection_actor;
 
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
-const SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize)]
 struct MachineRemoveReport {
@@ -66,6 +62,10 @@ struct MachineRemoveReport {
     tombstone_after_stop: bool,
     removed_peer_rejected: bool,
     removal_started_before_route_cutover: bool,
+    fresh_rebuild_conflict_count: usize,
+    join_writer_tombstone_denied: bool,
+    machine_writer_join_denied: bool,
+    conflicting_tombstone_not_projected: bool,
     elapsed_ms: u128,
 }
 
@@ -110,63 +110,43 @@ impl ParticipantState {
 }
 
 #[derive(Clone)]
-struct DocsMachineFactWriter {
-    doc: IrohFactDoc,
-    author: IrohFactAuthor,
-    authorizer: InMemoryBus,
+struct RecordingMachineFactWriter<W> {
+    inner: W,
     events: Arc<ParticipantState>,
 }
 
-impl DocsMachineFactWriter {
-    fn new(
-        doc: IrohFactDoc,
-        author: IrohFactAuthor,
-        authorizer: InMemoryBus,
-        events: Arc<ParticipantState>,
-    ) -> Self {
-        Self {
-            doc,
-            author,
-            authorizer,
-            events,
-        }
+impl<W> RecordingMachineFactWriter<W> {
+    fn new(inner: W, events: Arc<ParticipantState>) -> Self {
+        Self { inner, events }
     }
+}
 
-    async fn write_payload(
-        &self,
-        key: FactKey,
-        payload: FactPayload,
-        event: RemoveEvent,
-    ) -> MachineRemoveResult<WrittenMachineFact> {
-        self.doc
-            .write_fact_payload(&self.author, key.clone(), payload, &self.authorizer)
-            .await
-            .map_err(|error| {
-                mvp_machine::MachineRemoveError::Mesh(MeshError::Backend {
-                    operation: "write machine remove fact to iroh-docs",
-                    message: error.to_string(),
-                })
-            })?;
+impl<W> RecordingMachineFactWriter<W>
+where
+    W: MachineFactWriter,
+{
+    fn record(&self, event: RemoveEvent) -> MachineRemoveResult<()> {
         self.events.record(event).map_err(|_| {
             mvp_machine::MachineRemoveError::Bus(BusError::HandlerFailed {
                 subject: "machine remove event log".to_string(),
                 failure: HandlerFailure::Application,
             })
-        })?;
-        Ok(WrittenMachineFact { key })
+        })
     }
 }
 
-impl MachineFactWriter for DocsMachineFactWriter {
+impl<W> MachineFactWriter for RecordingMachineFactWriter<W>
+where
+    W: MachineFactWriter,
+{
     fn write_removal_started<'a>(
         &'a self,
         fact: NodeRemovalStartedFact,
     ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = removal_started_fact_key(&fact.node_id, fact.epoch)?;
-            let payload = removal_started_fact_payload(&fact.node_id, fact.epoch, fact.reason)?;
-            self.write_payload(key, payload, RemoveEvent::RemovalStarted)
-                .await
+            let written = self.inner.write_removal_started(fact).await?;
+            self.record(RemoveEvent::RemovalStarted)?;
+            Ok(written)
         })
     }
 
@@ -175,78 +155,10 @@ impl MachineFactWriter for DocsMachineFactWriter {
         fact: NodeTombstonedFact,
     ) -> Pin<Box<dyn Future<Output = MachineRemoveResult<WrittenMachineFact>> + Send + 'a>> {
         Box::pin(async move {
-            let key = tombstone_fact_key(&fact.node_id, fact.epoch)?;
-            let payload = ProjectionFactPayload::NodeTombstoned(fact)
-                .to_fact_bytes()
-                .map_err(|source| mvp_machine::MachineRemoveError::WirePayload {
-                    context: "serialize tombstone fact",
-                    source,
-                })?
-                .into();
-            self.write_payload(key, payload, RemoveEvent::Tombstone)
-                .await
+            let written = self.inner.write_tombstone(fact).await?;
+            self.record(RemoveEvent::Tombstone)?;
+            Ok(written)
         })
-    }
-}
-
-struct CombinedFactSource {
-    docs: Arc<dyn FactSource>,
-    bus: Arc<dyn FactSource>,
-}
-
-impl CombinedFactSource {
-    fn new(docs: Arc<dyn FactSource>, bus: Arc<dyn FactSource>) -> Self {
-        Self { docs, bus }
-    }
-}
-
-impl FactSource for CombinedFactSource {
-    fn list_candidates(
-        &self,
-        island: &IslandId,
-        pattern: &FactKeyPattern,
-        session: &BusSession,
-    ) -> FactSourceResult<Vec<FactCandidate>> {
-        let mut candidates = Vec::new();
-        candidates.extend(self.docs.list_candidates(island, pattern, session)?);
-        candidates.extend(self.bus.list_candidates(island, pattern, session)?);
-        Ok(candidates)
-    }
-
-    fn read_payloads(
-        &self,
-        island: &IslandId,
-        candidates: &[FactCandidate],
-        session: &BusSession,
-    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        let mut payloads = BTreeMap::new();
-        let mut docs_candidates = Vec::new();
-        let mut bus_candidates = Vec::new();
-        for candidate in candidates {
-            match candidate.kind() {
-                FactKind::ServingCommit => bus_candidates.push(candidate.clone()),
-                FactKind::NodeJoined | FactKind::NodeRemovalStarted | FactKind::NodeTombstoned => {
-                    docs_candidates.push(candidate.clone());
-                }
-                FactKind::ServiceRegistered
-                | FactKind::RouteCommit
-                | FactKind::GatewayCommit
-                | FactKind::DnsCommit
-                | FactKind::LeaseClaimed
-                | FactKind::LeaseRenewed
-                | FactKind::LeaseReleased
-                | FactKind::AcmeHttp01Presented
-                | FactKind::AcmeHttp01Cleared
-                | FactKind::Unsupported => {}
-            }
-        }
-        if !docs_candidates.is_empty() {
-            payloads.extend(self.docs.read_payloads(island, &docs_candidates, session)?);
-        }
-        if !bus_candidates.is_empty() {
-            payloads.extend(self.bus.read_payloads(island, &bus_candidates, session)?);
-        }
-        Ok(payloads)
     }
 }
 
@@ -293,26 +205,33 @@ async fn run_async() -> Result<(), String> {
         PrincipalId::new("projection"),
         Grant::empty().with_fact_read(fact_pattern("/facts/>")?),
     );
-
-    let iroh = IrohFactNode::memory()
-        .await
-        .map_err(|error| format!("spawn iroh fact node: {error}"))?;
-    let doc = iroh
-        .create_fact_doc(island.clone())
-        .await
-        .map_err(|error| format!("create machine remove doc: {error}"))?;
-    let join_writer = iroh
-        .create_author(join_writer_session.principal().clone())
-        .await
-        .map_err(|error| format!("create join writer author: {error}"))?;
-    let operator_writer = iroh
-        .create_author(operator.principal().clone())
-        .await
-        .map_err(|error| format!("create operator writer author: {error}"))?;
-    doc.bind_author(&join_writer)
-        .map_err(|error| format!("bind join author: {error}"))?;
-    doc.bind_author(&operator_writer)
-        .map_err(|error| format!("bind operator author: {error}"))?;
+    let replica_session = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("machine-remove-replica"),
+        Grant::empty(),
+    );
+    let machine_writer_session = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("machine-remove-writer"),
+        Grant::empty()
+            .with_fact_write(fact_pattern("/facts/node/*/removal_started/>")?)
+            .with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?),
+    );
+    let routing_writer_session = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("routing-writer"),
+        Grant::empty().with_fact_write(fact_pattern("/facts/serving/>")?),
+    );
+    let join_author = Arc::new(PandaFactAuthor::new(
+        join_writer_session.principal().clone(),
+    ));
+    let machine_author = Arc::new(PandaFactAuthor::new(
+        machine_writer_session.principal().clone(),
+    ));
+    let routing_author = Arc::new(PandaFactAuthor::new(
+        routing_writer_session.principal().clone(),
+    ));
+    let facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
 
     let node_ids = [
         NodeId::new("node-target"),
@@ -328,29 +247,29 @@ async fn run_async() -> Result<(), String> {
             index as u64,
         ))
         .map_err(|error| format!("admit {}: {error}", node_id.as_str()))?;
-        doc.write_fact_payload(&join_writer, joined.fact_key, joined.fact_payload, &raw_bus)
+        facts
+            .write_fact_payload(
+                &join_writer_session,
+                join_author.as_ref(),
+                joined.fact_key,
+                joined.fact_payload,
+            )
             .await
             .map_err(|error| format!("write joined fact for {}: {error}", node_id.as_str()))?;
     }
 
-    let docs_source = Arc::new(IrohDocsFactSource::new(
-        iroh.local_view(),
-        Arc::new(raw_bus.clone()),
-    ));
-    let bus_source = Arc::new(BusFactSource::new(raw_bus.clone()));
-    let combined_source = Arc::new(CombinedFactSource::new(
-        docs_source.clone(),
-        bus_source.clone(),
-    ));
-
     let initial_commit = initial_serving_commit();
-    write_serving_commit(&bus, &operator, &initial_commit)
+    let serving_writer = PandaServingFactWriter::new(
+        facts.clone(),
+        routing_writer_session.clone(),
+        Arc::clone(&routing_author),
+    );
+    serving_writer
+        .write_serving_commit(&initial_commit)
         .await
         .map_err(|error| format!("write initial serving commit: {error}"))?;
-    doc.refresh_local_view()
-        .await
-        .map_err(|error| format!("refresh initial docs view: {error}"))?;
-    let projection = projection_actor(combined_source.clone(), projection_session.clone(), &root)?;
+    let fact_source: Arc<dyn FactSource> = Arc::new(facts.clone());
+    let projection = projection_actor(fact_source.clone(), projection_session.clone(), &root)?;
     let initial_projection = projection
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -362,13 +281,17 @@ async fn run_async() -> Result<(), String> {
     register_stop_handler(&bus, &participant, Arc::clone(&events)).await?;
 
     let remove_commit = remove_serving_commit();
-    let writer = DocsMachineFactWriter::new(
-        doc.clone(),
-        operator_writer,
-        raw_bus.clone(),
-        Arc::clone(&events),
+    let machine_writer = PandaMachineFactWriter::new(
+        facts.clone(),
+        machine_writer_session.clone(),
+        Arc::clone(&machine_author),
     );
-    let serving_writer = BusServingFactWriter::new(bus.clone(), operator.clone());
+    let writer = RecordingMachineFactWriter::new(machine_writer, Arc::clone(&events));
+    let serving_writer = PandaServingFactWriter::new(
+        facts.clone(),
+        routing_writer_session.clone(),
+        Arc::clone(&routing_author),
+    );
     let coordinator = MachineRemoveCoordinator::with_fact_writers(
         bus.clone(),
         operator.clone(),
@@ -400,9 +323,6 @@ async fn run_async() -> Result<(), String> {
         0,
     )?;
 
-    doc.refresh_local_view()
-        .await
-        .map_err(|error| format!("refresh removal-started docs view: {error}"))?;
     let route_projection_started = Instant::now();
     let projected_cutover = projection
         .project_once(PROJECT_TIMEOUT)
@@ -460,16 +380,35 @@ async fn run_async() -> Result<(), String> {
         tombstone_key.as_str(),
         "/facts/node/node-target/tombstoned/3",
     )?;
-    doc.wait_for_key(&tombstone_key, SYNC_TIMEOUT)
-        .await
-        .map_err(|error| format!("wait for tombstone fact: {error}"))?;
+    assert_fact_key_present(&facts, &projection_session, &tombstone_key)?;
     let tombstone_convergence_ms = tombstone_started.elapsed().as_millis();
 
     let rebuild_root = root.join("rebuild");
     reset_dir(&rebuild_root)?;
     let rebuild_started = Instant::now();
+    let exported = facts.export_operations().await;
+    let rebuilt_facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus.clone())));
+    rebuilt_facts
+        .trust_replica_peer(&island, replica_session.principal().clone())
+        .await;
+    trust_fresh_store_authors(
+        &rebuilt_facts,
+        &island,
+        [
+            (&join_writer_session, join_author.as_ref()),
+            (&machine_writer_session, machine_author.as_ref()),
+            (&routing_writer_session, routing_author.as_ref()),
+        ],
+    )
+    .await?;
+    for operation in &exported {
+        rebuilt_facts
+            .import_replica_operation(&replica_session, operation)
+            .await
+            .map_err(|error| format!("import p2panda operation for rebuild: {error}"))?;
+    }
     let rebuild_projection = projection_actor(
-        combined_source.clone(),
+        Arc::new(rebuilt_facts.clone()),
         projection_session.clone(),
         &rebuild_root,
     )?;
@@ -494,6 +433,18 @@ async fn run_async() -> Result<(), String> {
             .removing_nodes
             .contains_key(&NodeId::new("node-target"))
     );
+    let fresh_rebuild_conflict_count =
+        status_count(&rebuilt.state.statuses, ProjectionIgnoreReason::Conflict);
+    assert_eq_named(
+        "fresh rebuild conflict status count",
+        fresh_rebuild_conflict_count,
+        0,
+    )?;
+    assert_join_writer_cannot_tombstone(&facts, &join_writer_session, Arc::clone(&join_author))
+        .await?;
+    assert_machine_writer_cannot_join(&facts, &machine_writer_session, machine_author.as_ref())
+        .await?;
+    assert_conflicting_tombstone_not_projected(&root, &island).await?;
 
     let mesh_started = Instant::now();
     let (remaining_traffic_success_count, removed_peer_rejected) =
@@ -515,9 +466,6 @@ async fn run_async() -> Result<(), String> {
     let target_kept_in_old_backends_until_cleanup =
         target_kept_in_old_backends(&projected_cutover.state)?;
 
-    iroh.shutdown()
-        .await
-        .map_err(|error| format!("shutdown machine remove iroh node: {error}"))?;
     cleanup_process_children(&root)?;
 
     let report = MachineRemoveReport {
@@ -536,6 +484,10 @@ async fn run_async() -> Result<(), String> {
         tombstone_after_stop,
         removed_peer_rejected,
         removal_started_before_route_cutover,
+        fresh_rebuild_conflict_count,
+        join_writer_tombstone_denied: true,
+        machine_writer_join_denied: true,
+        conflicting_tombstone_not_projected: true,
         elapsed_ms: started.elapsed().as_millis(),
     };
 
@@ -551,6 +503,10 @@ async fn run_async() -> Result<(), String> {
     assert!(report.tombstone_after_stop);
     assert!(report.removed_peer_rejected);
     assert!(report.removal_started_before_route_cutover);
+    assert_eq!(report.fresh_rebuild_conflict_count, 0);
+    assert!(report.join_writer_tombstone_denied);
+    assert!(report.machine_writer_join_denied);
+    assert!(report.conflicting_tombstone_not_projected);
 
     let json = write_json(&root.join("machine-remove-contract-metrics.json"), &report)?;
     println!("{json}");
@@ -619,6 +575,171 @@ async fn register_stop_handler(
     .await
     .map(|_| ())
     .map_err(|error| format!("register stop_removed_workloads handler: {error}"))
+}
+
+async fn trust_fresh_store_authors<const N: usize>(
+    facts: &PandaMachineFactStore,
+    island: &IslandId,
+    authors: [(&BusSession, &PandaFactAuthor); N],
+) -> Result<(), String> {
+    for (session, author) in authors {
+        facts
+            .trust_author_key(island, session.principal().clone(), author.author_key())
+            .await
+            .map_err(|error| {
+                format!(
+                    "trust p2panda author key for {}: {error}",
+                    session.principal().as_str()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn assert_fact_key_present(
+    source: &impl FactSource,
+    session: &BusSession,
+    key: &FactKey,
+) -> Result<(), String> {
+    let pattern = fact_pattern(key.as_str())?;
+    let candidates = source
+        .list_candidates(session.island(), &pattern, session)
+        .map_err(|error| format!("list candidates for {key}: {error}"))?;
+    if candidates.iter().any(|candidate| candidate.key() == key) {
+        return Ok(());
+    }
+    Err(format!("fact key {key} was not present"))
+}
+
+fn status_count(
+    statuses: &[mvp_projection::ProjectionStatus],
+    reason: ProjectionIgnoreReason,
+) -> usize {
+    statuses
+        .iter()
+        .find(|status| status.reason == reason)
+        .map_or(0, |status| status.count)
+}
+
+async fn assert_join_writer_cannot_tombstone(
+    facts: &PandaMachineFactStore,
+    join_writer_session: &BusSession,
+    join_author: Arc<PandaFactAuthor>,
+) -> Result<(), String> {
+    let writer =
+        PandaMachineFactWriter::new(facts.clone(), join_writer_session.clone(), join_author);
+    let result = writer
+        .write_tombstone(NodeTombstonedFact {
+            node_id: NodeId::new("node-denied"),
+            epoch: 1,
+            reason: "forbidden".to_string(),
+        })
+        .await;
+    match result {
+        Err(mvp_machine::MachineRemoveError::UnauthorizedFactWrite { .. }) => Ok(()),
+        other => Err(format!(
+            "expected join-writer tombstone denial, got {other:?}"
+        )),
+    }
+}
+
+async fn assert_machine_writer_cannot_join(
+    facts: &PandaMachineFactStore,
+    machine_writer_session: &BusSession,
+    machine_author: &PandaFactAuthor,
+) -> Result<(), String> {
+    let joined = JoinCommand::admit(join_request(
+        invite(machine_writer_session.island().clone()),
+        NodeId::new("node-denied"),
+        1,
+        0,
+    ))
+    .map_err(|error| format!("build denied joined fact: {error}"))?;
+    let result = facts
+        .write_fact_payload(
+            machine_writer_session,
+            machine_author,
+            joined.fact_key,
+            joined.fact_payload,
+        )
+        .await;
+    match result {
+        Err(mvp_p2panda_facts::PandaFactError::UnauthorizedWrite { .. }) => Ok(()),
+        other => Err(format!(
+            "expected machine-writer join denial, got {other:?}"
+        )),
+    }
+}
+
+async fn assert_conflicting_tombstone_not_projected(
+    root: &std::path::Path,
+    island: &IslandId,
+) -> Result<(), String> {
+    let conflict_root = root.join("conflicting-tombstone");
+    reset_dir(&conflict_root)?;
+    let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let grant = Grant::empty().with_fact_write(fact_pattern("/facts/node/*/tombstoned/>")?);
+    let writer_a = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("machine-conflict-a"),
+        grant.clone(),
+    );
+    let writer_b = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("machine-conflict-b"),
+        grant,
+    );
+    let reader = authority.grant_in(
+        island.clone(),
+        PrincipalId::new("machine-conflict-reader"),
+        Grant::empty().with_fact_read(fact_pattern("/facts/>")?),
+    );
+    let author_a = Arc::new(PandaFactAuthor::new(writer_a.principal().clone()));
+    let author_b = Arc::new(PandaFactAuthor::new(writer_b.principal().clone()));
+    let facts = PandaMachineFactStore::new(PandaFactStore::new(Arc::new(raw_bus)));
+    let panda_writer_a =
+        PandaMachineFactWriter::new(facts.clone(), writer_a, Arc::clone(&author_a));
+    let panda_writer_b =
+        PandaMachineFactWriter::new(facts.clone(), writer_b, Arc::clone(&author_b));
+    panda_writer_a
+        .write_tombstone(NodeTombstonedFact {
+            node_id: NodeId::new("node-conflict"),
+            epoch: 1,
+            reason: "first".to_string(),
+        })
+        .await
+        .map_err(|error| format!("write first conflicting tombstone: {error}"))?;
+    let conflict = panda_writer_b
+        .write_tombstone(NodeTombstonedFact {
+            node_id: NodeId::new("node-conflict"),
+            epoch: 1,
+            reason: "second".to_string(),
+        })
+        .await;
+    if !matches!(
+        conflict,
+        Err(mvp_machine::MachineRemoveError::FactConflict { .. })
+    ) {
+        return Err(format!(
+            "expected conflicting tombstone write failure, got {conflict:?}"
+        ));
+    }
+    let projection = projection_actor(Arc::new(facts), reader, &conflict_root)?;
+    let projected = projection
+        .project_once(PROJECT_TIMEOUT)
+        .await
+        .map_err(|error| format!("project conflicting tombstone: {error}"))?;
+    if status_count(&projected.state.statuses, ProjectionIgnoreReason::Conflict) == 0 {
+        return Err("conflicting tombstone did not surface projection conflict status".to_string());
+    }
+    if projected
+        .state
+        .tombstoned_nodes
+        .contains_key(&NodeId::new("node-conflict"))
+    {
+        return Err("conflicting tombstone was projected as current truth".to_string());
+    }
+    Ok(())
 }
 
 async fn prove_remaining_mesh_traffic(

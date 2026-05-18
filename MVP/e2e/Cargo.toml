@@ -19,6 +19,7 @@ mvp-acme = { path = "../acme", features = ["harness"] }
 mvp-acme-command = { path = "../acme-command" }
 mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-machine = { path = "../machine" }
+mvp-machine-p2panda = { path = "../machine-p2panda" }
 mvp-mesh = { path = "../mesh" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-p2panda-transport = { path = "../p2panda-transport", features = ["harness"] }

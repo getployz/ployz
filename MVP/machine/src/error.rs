@@ -1,4 +1,4 @@
-use mvp_bus::{BusError, FactKey, FactKeyParseError, SubjectParseError};
+use mvp_bus::{BusError, FactKey, FactKeyParseError, IslandId, PrincipalId, SubjectParseError};
 use mvp_identity::NodeId;
 use mvp_mesh::MeshError;
 use mvp_routing::{RoutingError, ServingCommitId};
@@ -39,6 +39,32 @@ pub enum MachineRemoveError {
     },
     #[error("machine fact already has a conflicting candidate: {key}")]
     FactConflict { key: FactKey },
+    #[error("principal {principal} is not allowed to write machine fact {key} in island {island}")]
+    UnauthorizedFactWrite {
+        island: IslandId,
+        principal: PrincipalId,
+        key: FactKey,
+    },
+    #[error("machine fact author principal {author} does not match session principal {session}")]
+    PrincipalMismatch {
+        session: PrincipalId,
+        author: PrincipalId,
+    },
+    #[error("principal {principal} in island {island} has no trusted machine fact author key")]
+    UntrustedAuthorKey {
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error("principal {principal} in island {island} used the wrong machine fact author key")]
+    AuthorKeyMismatch {
+        island: IslandId,
+        principal: PrincipalId,
+    },
+    #[error("machine fact store {operation} failed: {message}")]
+    FactStore {
+        operation: &'static str,
+        message: String,
+    },
     #[error("invalid wire payload: {context}: {source}")]
     WirePayload {
         context: &'static str,
