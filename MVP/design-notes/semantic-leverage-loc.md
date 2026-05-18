@@ -72,7 +72,7 @@ authority or coordination substrate.
 Slice 043 continues the same substitution pattern for machine remove. It changes
 the machine-remove E2E from manual trusted-author and trusted-replica setup to
 the shared p2panda-auth membership snapshot. The slice diff is again a small
-E2E increase (`238` added, `67` deleted from the plan commit), but it removes
+E2E increase (`264` added, `68` deleted from the plan commit), but it removes
 feature-local authority setup from a multi-stage product command that exercises
 serving cutover, recovery replay, tombstone, projection rebuild, and WireGuard
 peer removal. That is the leverage target for the next product canaries:

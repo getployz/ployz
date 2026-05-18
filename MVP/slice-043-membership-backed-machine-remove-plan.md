@@ -305,6 +305,7 @@ cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- machine-remove-contract
 cargo test --manifest-path MVP/Cargo.toml -p mvp-machine-p2panda
 cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e --all-targets
 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- all
+git diff --check
 ```
 
 Targeted manual-trust containment:
@@ -327,8 +328,8 @@ recovery, p2panda-net fallback probes, and volume transfer.
 Slice diff from the Slice 043 plan commit:
 
 ```text
-MVP/e2e/src/machine_remove_contract.rs | 305 +++++++++++++++++++++++++--------
-1 file changed, 238 insertions(+), 67 deletions(-)
+MVP/e2e/src/machine_remove_contract.rs | 332 ++++++++++++++++++++++++++-------
+1 file changed, 264 insertions(+), 68 deletions(-)
 ```
 
 This is a small net E2E increase, not a raw LOC deletion. The win is removing
