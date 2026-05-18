@@ -391,20 +391,18 @@ async fn promote_writes_decision_before_serving_and_requires_projection_catchup(
     let plan = serving_plan("serving-promote-1", "node-branch", "fd00::2:8080", 2);
 
     let command = PromoteEnvironmentCommand::new(&source, &fixture.session, &writer, &serving);
-    let pending = command
-        .begin(PromoteEnvironmentRequest {
-            command_id: command_id("promote-1"),
-            environment: env,
-            expected_environment_epoch: epoch(1),
-            branch_environment: branch_env,
-            expected_branch_epoch: epoch(1),
-            serving_commit: plan.clone(),
-            visible_nodes: visible_nodes(),
-        })
-        .await
-        .expect("promote begin");
+    let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
+    let request = PromoteEnvironmentRequest {
+        command_id: command_id("promote-1"),
+        environment: env,
+        expected_environment_epoch: epoch(1),
+        branch_environment: branch_env,
+        expected_branch_epoch: epoch(1),
+        serving_commit: plan.clone(),
+        visible_nodes: visible_nodes(),
+    };
     let no_catchup = command
-        .finalize(pending.clone(), None)
+        .execute_phased(&cx, request.clone(), None)
         .await
         .expect("pending without catchup");
 
@@ -422,7 +420,7 @@ async fn promote_writes_decision_before_serving_and_requires_projection_catchup(
     assert_eq!(serving.writes(), vec![plan.serving_commit_id.clone()]);
 
     let complete = command
-        .finalize(pending, Some(catch_up(&fixture, &plan)))
+        .execute_phased(&cx, request, Some(catch_up(&fixture, &plan)))
         .await
         .expect("promote finalize");
 
@@ -551,15 +549,19 @@ async fn promote_rejects_second_read_head_change_before_any_mutation() {
     let serving = RecordingServingWriter::default();
 
     let error = PromoteEnvironmentCommand::new(&source, &fixture.session, &writer, &serving)
-        .begin(PromoteEnvironmentRequest {
-            command_id: command_id("promote-1"),
-            environment: env,
-            expected_environment_epoch: epoch(1),
-            branch_environment: branch_env,
-            expected_branch_epoch: epoch(1),
-            serving_commit: serving_plan("serving-promote-1", "node-branch", "fd00::2:8080", 2),
-            visible_nodes: visible_nodes(),
-        })
+        .execute_phased(
+            &CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty())),
+            PromoteEnvironmentRequest {
+                command_id: command_id("promote-1"),
+                environment: env,
+                expected_environment_epoch: epoch(1),
+                branch_environment: branch_env,
+                expected_branch_epoch: epoch(1),
+                serving_commit: serving_plan("serving-promote-1", "node-branch", "fd00::2:8080", 2),
+                visible_nodes: visible_nodes(),
+            },
+            None,
+        )
         .await
         .expect_err("stale second read rejected");
 
@@ -600,18 +602,19 @@ async fn rollback_writes_forward_head_using_previous_volume_refs() {
     let plan = serving_plan("serving-rollback-1", "node-prod", "fd00::1:8080", 3);
     let command = RollbackEnvironmentCommand::new(&source, &fixture.session, &writer, &serving);
 
-    let pending = command
-        .begin(RollbackEnvironmentRequest {
-            command_id: command_id("rollback-1"),
-            environment: env,
-            expected_environment_epoch: epoch(2),
-            serving_commit: plan.clone(),
-            visible_nodes: visible_nodes(),
-        })
-        .await
-        .expect("rollback begin");
+    let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
     let complete = command
-        .finalize(pending, Some(catch_up(&fixture, &plan)))
+        .execute_phased(
+            &cx,
+            RollbackEnvironmentRequest {
+                command_id: command_id("rollback-1"),
+                environment: env,
+                expected_environment_epoch: epoch(2),
+                serving_commit: plan.clone(),
+                visible_nodes: visible_nodes(),
+            },
+            Some(catch_up(&fixture, &plan)),
+        )
         .await
         .expect("rollback finalize");
 
@@ -722,13 +725,22 @@ async fn rollback_rejects_missing_target_and_second_read_change_before_any_mutat
 
     let missing_error =
         RollbackEnvironmentCommand::new(&source, &fixture.session, &writer, &serving)
-            .begin(RollbackEnvironmentRequest {
-                command_id: command_id("rollback-1"),
-                environment: env.clone(),
-                expected_environment_epoch: epoch(1),
-                serving_commit: serving_plan("serving-rollback-1", "node-prod", "fd00::1:8080", 2),
-                visible_nodes: visible_nodes(),
-            })
+            .execute_phased(
+                &CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty())),
+                RollbackEnvironmentRequest {
+                    command_id: command_id("rollback-1"),
+                    environment: env.clone(),
+                    expected_environment_epoch: epoch(1),
+                    serving_commit: serving_plan(
+                        "serving-rollback-1",
+                        "node-prod",
+                        "fd00::1:8080",
+                        2,
+                    ),
+                    visible_nodes: visible_nodes(),
+                },
+                None,
+            )
             .await
             .expect_err("missing rollback target rejected");
     assert!(matches!(
@@ -762,13 +774,17 @@ async fn rollback_rejects_missing_target_and_second_read_change_before_any_mutat
     ]);
 
     let stale_error = RollbackEnvironmentCommand::new(&source, &fixture.session, &writer, &serving)
-        .begin(RollbackEnvironmentRequest {
-            command_id: command_id("rollback-2"),
-            environment: env,
-            expected_environment_epoch: epoch(2),
-            serving_commit: serving_plan("serving-rollback-2", "node-prod", "fd00::1:8080", 3),
-            visible_nodes: visible_nodes(),
-        })
+        .execute_phased(
+            &CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty())),
+            RollbackEnvironmentRequest {
+                command_id: command_id("rollback-2"),
+                environment: env,
+                expected_environment_epoch: epoch(2),
+                serving_commit: serving_plan("serving-rollback-2", "node-prod", "fd00::1:8080", 3),
+                visible_nodes: visible_nodes(),
+            },
+            None,
+        )
         .await
         .expect_err("stale second read rejected");
     assert!(matches!(

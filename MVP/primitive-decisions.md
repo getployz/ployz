@@ -845,8 +845,8 @@ Revisit if:
 Why this:
 - Deploy, machine remove, environment promote/rollback, and volume transfer all
   repeated the same bookkeeping shape: read current phase/intent, perform one
-  side-effect step, write a durable phase fact, and resume from that fact after
-  coordinator restart.
+  side-effect step, write a command phase-store record, and resume from that
+  recorded phase after coordinator restart when the store is durable.
 - A full durable workflow engine would import hidden replay semantics and a
   server/runtime model Ployz does not want.
 
@@ -860,6 +860,11 @@ Decision:
 - A failing phase is not compensated by the runner because that phase was not
   committed. Cleanup for side effects inside a failing step remains the command
   author's responsibility.
+- If `step` returns `Continue(next)` and the phase write then fails, the runner
+  calls `compensate(next)` before walking already-committed phases. That is the
+  one case where the runner compensates a not-yet-recorded phase, because the
+  side effects for that transition may already have happened but the phase
+  record did not land.
 - Product-specific phase enums stay with their product crate. The command
   primitive does not define deploy, machine, environment, or volume states.
 - The first `CommandContext` exposes only phase read/write and intent write.
@@ -875,9 +880,9 @@ What it replaces:
 Costs:
 - The first lift adds a new crate and does not reduce environment command LOC
   yet. Phase enums and product matches are now more explicit, not shorter.
-- The in-memory command phase store is a semantic proof. A p2panda-backed phase
-  store is still needed before command phases replicate like other durable
-  facts.
+- The in-memory command phase store is a unit-test semantic proof. Slice 036's
+  E2E uses a local p2panda-backed adapter to prove restart/resume, but a
+  reusable adapter should wait until a second command path needs it.
 - Compensation is best effort and deliberately explicit; it is not automatic
   rollback.
 
