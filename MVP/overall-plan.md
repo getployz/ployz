@@ -483,6 +483,15 @@ not deleted yet; the slice names gates for retiring manual trust maps, replica
 importer sets, process JSON fact source, historical iroh-docs facts, the `PFO1`
 envelope, and the p2panda-net quarantine log wrapper.
 
+Slice 035 starts that adoption path:
+[MVP/slice-035-p2panda-authz-fact-authority-plan.md](slice-035-p2panda-authz-fact-authority-plan.md).
+`PandaFactStore` can now consume an `IslandAuthoritySnapshot` before local
+rebuild/import/write checks. The product path uses authz-backed active writers,
+replica importers, and authority-derived sync scopes; manual trust maps remain
+only as fallback/fixture seams for islands without a snapshot. Removed and
+demoted writer facts fail closed on import and rebuild until a fact-log frontier
+proof can distinguish pre-removal history from stale partition forgeries.
+
 The next implementation/proof slice should keep paying down product semantic
 leverage rather than adding another generic substrate layer. Plan it against
 the current map and prefer a product rule that reuses bus, p2panda facts,

@@ -10,7 +10,7 @@ use mvp_bus::{
     BusSession, FactAccess, FactAuthorizer, FactContentHash, FactKey, FactKeyPattern, FactPayload,
     IslandId, PrincipalId,
 };
-use mvp_p2panda_authz::{IslandAuthoritySnapshot, IslandMemberEpoch};
+use mvp_p2panda_authz::{IslandAuthoritySnapshot, IslandMemberAuthorKey, IslandMemberEpoch};
 use mvp_projection::{
     CandidateStatus, FactCandidate, FactSource, FactSourceError, FactSourceResult,
     classify_fact_key,
@@ -74,14 +74,6 @@ pub enum PandaFactError {
     AuthorKeyMismatch {
         island: IslandId,
         principal: PrincipalId,
-    },
-    #[error(
-        "p2panda operation for fact {key} by {principal} in island {island} has no authority epoch"
-    )]
-    MissingAuthorityEpoch {
-        island: IslandId,
-        principal: PrincipalId,
-        key: FactKey,
     },
     #[error(
         "p2panda operation for fact {key} by {principal} in island {island} is missing {missing_operations} predecessor operations"
@@ -289,8 +281,15 @@ impl PandaFactAuthorKey {
         self.0.to_hex()
     }
 
+    #[must_use]
     fn public_key(self) -> PublicKey {
         self.0
+    }
+}
+
+impl From<PandaFactAuthorKey> for IslandMemberAuthorKey {
+    fn from(value: PandaFactAuthorKey) -> Self {
+        Self::from_public_key(value.public_key())
     }
 }
 
@@ -587,6 +586,99 @@ pub struct PandaFactStore {
     trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
 }
 
+enum FactAuthority<'a> {
+    Snapshot(&'a IslandAuthoritySnapshot),
+    Manual {
+        island: &'a IslandId,
+        trusted_author_keys: &'a BTreeMap<(IslandId, PrincipalId), PublicKey>,
+        trusted_replica_peers: &'a BTreeSet<(IslandId, PrincipalId)>,
+    },
+}
+
+impl FactAuthority<'_> {
+    fn require_replica_importer(&self, principal: &PrincipalId) -> Result<()> {
+        match self {
+            Self::Snapshot(authority) => {
+                if authority.active_replica_importer(principal).is_some() {
+                    return Ok(());
+                }
+                Err(PandaFactError::UnauthorizedReplicaImport {
+                    island: authority.island().clone(),
+                    principal: principal.clone(),
+                })
+            }
+            Self::Manual {
+                island,
+                trusted_replica_peers,
+                ..
+            } => {
+                if trusted_replica_peers.contains(&((*island).clone(), principal.clone())) {
+                    return Ok(());
+                }
+                Err(PandaFactError::UnauthorizedReplicaImport {
+                    island: (*island).clone(),
+                    principal: principal.clone(),
+                })
+            }
+        }
+    }
+
+    fn require_active_writer(&self, principal: &PrincipalId, public_key: PublicKey) -> Result<()> {
+        self.active_writer_epoch(principal, public_key).map(|_| ())
+    }
+
+    fn active_writer_epoch(
+        &self,
+        principal: &PrincipalId,
+        public_key: PublicKey,
+    ) -> Result<Option<IslandMemberEpoch>> {
+        match self {
+            Self::Snapshot(authority) => {
+                let Some(member) = authority.active_writer(principal) else {
+                    return Err(PandaFactError::UntrustedAuthorKey {
+                        island: authority.island().clone(),
+                        principal: principal.clone(),
+                    });
+                };
+                if member.author_key().public_key() != public_key {
+                    return Err(PandaFactError::AuthorKeyMismatch {
+                        island: authority.island().clone(),
+                        principal: principal.clone(),
+                    });
+                }
+                Ok(Some(member.epoch()))
+            }
+            Self::Manual {
+                island,
+                trusted_author_keys,
+                ..
+            } => {
+                require_manual_author_key(trusted_author_keys, island, principal, public_key)?;
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn require_manual_author_key(
+    trusted_author_keys: &BTreeMap<(IslandId, PrincipalId), PublicKey>,
+    island: &IslandId,
+    principal: &PrincipalId,
+    public_key: PublicKey,
+) -> Result<()> {
+    match trusted_author_keys.get(&(island.clone(), principal.clone())) {
+        Some(existing) if *existing == public_key => Ok(()),
+        Some(_) => Err(PandaFactError::AuthorKeyMismatch {
+            island: island.clone(),
+            principal: principal.clone(),
+        }),
+        None => Err(PandaFactError::UntrustedAuthorKey {
+            island: island.clone(),
+            principal: principal.clone(),
+        }),
+    }
+}
+
 const WIRE_MAGIC: &[u8; 4] = b"PFO1";
 const HEADER_LEN_BYTES: usize = 4;
 
@@ -781,6 +873,17 @@ impl PandaFactStore {
             .insert((island.clone(), principal));
     }
 
+    fn fact_authority_for<'a>(&'a self, island: &'a IslandId) -> FactAuthority<'a> {
+        match self.authority_snapshots.get(island) {
+            Some(authority) => FactAuthority::Snapshot(authority),
+            None => FactAuthority::Manual {
+                island,
+                trusted_author_keys: &self.trusted_author_keys,
+                trusted_replica_peers: &self.trusted_replica_peers,
+            },
+        }
+    }
+
     #[must_use]
     pub fn can_write_fact(&self, session: &BusSession, key: &FactKey) -> bool {
         self.authorizer
@@ -973,7 +1076,8 @@ impl PandaFactStore {
                 operation: metadata.island.clone(),
             });
         }
-        self.require_author_key(metadata, public_key)?;
+        self.fact_authority_for(&metadata.island)
+            .require_active_writer(&metadata.author, public_key)?;
         if !self.authorizer.can_principal_access_fact(
             &metadata.island,
             &metadata.author,
@@ -990,28 +1094,8 @@ impl PandaFactStore {
     }
 
     fn require_trusted_replica_importer(&self, session: &BusSession) -> Result<()> {
-        if let Some(authority) = self.authority_for(session.island()) {
-            if authority
-                .active_replica_importer(session.principal())
-                .is_some()
-            {
-                return Ok(());
-            }
-            return Err(PandaFactError::UnauthorizedReplicaImport {
-                island: session.island().clone(),
-                principal: session.principal().clone(),
-            });
-        }
-        if self
-            .trusted_replica_peers
-            .contains(&(session.island().clone(), session.principal().clone()))
-        {
-            return Ok(());
-        }
-        Err(PandaFactError::UnauthorizedReplicaImport {
-            island: session.island().clone(),
-            principal: session.principal().clone(),
-        })
+        self.fact_authority_for(session.island())
+            .require_replica_importer(session.principal())
     }
 
     fn authorize_local_author(
@@ -1019,23 +1103,15 @@ impl PandaFactStore {
         session: &BusSession,
         author: &PandaFactAuthor,
     ) -> Result<Option<IslandMemberEpoch>> {
-        if let Some(authority) = self.authority_for(session.island()) {
-            let Some(member) = authority.active_writer(author.principal()) else {
-                return Err(PandaFactError::UntrustedAuthorKey {
-                    island: session.island().clone(),
-                    principal: author.principal().clone(),
-                });
-            };
-            if member.author_key().public_key() != author.public_key() {
-                return Err(PandaFactError::AuthorKeyMismatch {
-                    island: session.island().clone(),
-                    principal: author.principal().clone(),
-                });
+        match self.fact_authority_for(session.island()) {
+            authority @ FactAuthority::Snapshot(_) => {
+                authority.active_writer_epoch(author.principal(), author.public_key())
             }
-            return Ok(Some(member.epoch()));
+            FactAuthority::Manual { .. } => {
+                self.bind_author_key(session.island(), author.principal(), author.public_key())?;
+                Ok(None)
+            }
         }
-        self.bind_author_key(session.island(), author.principal(), author.public_key())?;
-        Ok(None)
     }
 
     fn bind_author_key(
@@ -1066,55 +1142,8 @@ impl PandaFactStore {
         metadata: &PandaFactMetadata,
         public_key: PublicKey,
     ) -> Result<()> {
-        if let Some(authority) = self.authority_for(&metadata.island) {
-            let Some(epoch) = metadata.authority_epoch else {
-                return Err(PandaFactError::MissingAuthorityEpoch {
-                    island: metadata.island.clone(),
-                    principal: metadata.author.clone(),
-                    key: metadata.key.clone(),
-                });
-            };
-            let Some(member) = authority.historical_writer(&metadata.author, epoch) else {
-                return Err(PandaFactError::UntrustedAuthorKey {
-                    island: metadata.island.clone(),
-                    principal: metadata.author.clone(),
-                });
-            };
-            if member.author_key().public_key() != public_key {
-                return Err(PandaFactError::AuthorKeyMismatch {
-                    island: metadata.island.clone(),
-                    principal: metadata.author.clone(),
-                });
-            }
-            return Ok(());
-        }
-        self.require_manual_author_key(&metadata.island, &metadata.author, public_key)
-    }
-
-    fn require_manual_author_key(
-        &self,
-        island: &IslandId,
-        principal: &PrincipalId,
-        public_key: PublicKey,
-    ) -> Result<()> {
-        match self
-            .trusted_author_keys
-            .get(&(island.clone(), principal.clone()))
-        {
-            Some(existing) if *existing == public_key => Ok(()),
-            Some(_) => Err(PandaFactError::AuthorKeyMismatch {
-                island: island.clone(),
-                principal: principal.clone(),
-            }),
-            None => Err(PandaFactError::UntrustedAuthorKey {
-                island: island.clone(),
-                principal: principal.clone(),
-            }),
-        }
-    }
-
-    fn authority_for(&self, island: &IslandId) -> Option<&IslandAuthoritySnapshot> {
-        self.authority_snapshots.get(island)
+        self.fact_authority_for(&metadata.island)
+            .require_active_writer(&metadata.author, public_key)
     }
 
     fn validate_sync_scope(
@@ -1130,17 +1159,10 @@ impl PandaFactStore {
                 scope: scope.island().clone(),
             });
         }
-        if !self
-            .authority_for(scope.island())
-            .map(|authority| {
-                authority
-                    .active_replica_importer(session.principal())
-                    .is_some()
-            })
-            .unwrap_or_else(|| {
-                self.trusted_replica_peers
-                    .contains(&(scope.island().clone(), session.principal().clone()))
-            })
+        if self
+            .fact_authority_for(scope.island())
+            .require_replica_importer(session.principal())
+            .is_err()
         {
             return Err(PandaFactSyncError::UnauthorizedReplica {
                 side,
@@ -1169,14 +1191,22 @@ impl PandaFactStore {
                             principal: principal.clone(),
                         }
                     }
-                    PandaFactError::MissingAuthorityEpoch { .. } => {
-                        PandaFactSyncError::ScopeAuthorKeyMissing {
-                            side,
-                            island: scope.island().clone(),
-                            principal: principal.clone(),
-                        }
+                    source @ (PandaFactError::Ingest(_)
+                    | PandaFactError::InvalidOperation
+                    | PandaFactError::Store { .. }
+                    | PandaFactError::InvalidStorePath { .. }
+                    | PandaFactError::MissingPayload { .. }
+                    | PandaFactError::InvalidAuthorKey { .. }
+                    | PandaFactError::InvalidAuthorPrivateKey { .. }
+                    | PandaFactError::InvalidExtensions { .. }
+                    | PandaFactError::ImportIslandMismatch { .. }
+                    | PandaFactError::UnauthorizedReplicaImport { .. }
+                    | PandaFactError::OutOfOrderOperation { .. }
+                    | PandaFactError::OutdatedOperation { .. }
+                    | PandaFactError::PrincipalMismatch { .. }
+                    | PandaFactError::UnauthorizedWrite { .. }) => {
+                        PandaFactSyncError::Import { side, source }
                     }
-                    source => PandaFactSyncError::Import { side, source },
                 });
             }
         }
@@ -1189,22 +1219,8 @@ impl PandaFactStore {
         principal: &PrincipalId,
         public_key: PublicKey,
     ) -> Result<()> {
-        if let Some(authority) = self.authority_for(island) {
-            let Some(member) = authority.active_writer(principal) else {
-                return Err(PandaFactError::UntrustedAuthorKey {
-                    island: island.clone(),
-                    principal: principal.clone(),
-                });
-            };
-            if member.author_key().public_key() != public_key {
-                return Err(PandaFactError::AuthorKeyMismatch {
-                    island: island.clone(),
-                    principal: principal.clone(),
-                });
-            }
-            return Ok(());
-        }
-        self.require_manual_author_key(island, principal, public_key)
+        self.fact_authority_for(island)
+            .require_active_writer(principal, public_key)
     }
 
     async fn next_log_position(
@@ -2048,7 +2064,7 @@ mod tests {
             island.clone(),
             author.principal().clone(),
             IslandMemberEpoch::new(NonZeroU64::new(epoch).expect("test epoch is non-zero")),
-            IslandMemberAuthorKey::from_public_key(author.author_key().public_key()),
+            author.author_key().into(),
         )
     }
 
@@ -2242,7 +2258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authority_snapshot_preserves_pre_remove_history_but_rejects_future_writes() {
+    async fn authority_snapshot_rejects_removed_writer_imports_and_future_writes() {
         let (mut source, source_authority) = store_with_authority();
         let writer_session = grant_prod(
             &source_authority,
@@ -2282,6 +2298,25 @@ mod tests {
             .expect("writer removal persists");
         let removed_snapshot = fixture.snapshot();
 
+        let forged_after_remove = source
+            .write_fact_payload(
+                &writer_session,
+                &writer,
+                key("/facts/authz/stale-post-remove"),
+                FactPayload::from_static(b"stale-after-remove"),
+            )
+            .await
+            .expect("stale local authority can still sign a partitioned operation");
+        assert!(matches!(
+            forged_after_remove,
+            PandaFactWriteOutcome::Inserted(_)
+        ));
+        let forged_operation = source
+            .export_operations()
+            .last()
+            .cloned()
+            .expect("forged write exports an operation");
+
         let (mut target, target_authority) = store_with_authority();
         let _writer_grant = grant_prod(
             &target_authority,
@@ -2290,13 +2325,35 @@ mod tests {
         );
         let replica_session = grant_prod(&target_authority, "replica", Grant::empty());
         target.install_authority_snapshot(removed_snapshot.clone());
-        let imported = target
+        let import_error = target
             .import_replica_operation(&replica_session, &operation)
             .await
-            .expect("pre-remove operation remains importable as history");
-        assert!(matches!(imported, PandaFactWriteOutcome::Inserted(_)));
+            .expect_err("removed writer imports are not accepted without fact-log frontier proof");
+        assert!(matches!(
+            import_error,
+            PandaFactError::UntrustedAuthorKey { .. }
+        ));
+        let forged_error = target
+            .import_replica_operation(&replica_session, &forged_operation)
+            .await
+            .expect_err("removed writer cannot forge a fresh operation with the old epoch");
+        assert!(matches!(
+            forged_error,
+            PandaFactError::UntrustedAuthorKey { .. }
+        ));
 
         source.install_authority_snapshot(removed_snapshot.clone());
+        assert_eq!(
+            source
+                .list_candidates(
+                    writer_session.island(),
+                    &pattern("/facts/authz/pre-remove"),
+                    &writer_session,
+                )
+                .expect("local pre-remove fact remains queryable")
+                .len(),
+            1
+        );
         let error = source
             .write_fact_payload(
                 &writer_session,
@@ -2320,7 +2377,9 @@ mod tests {
             "writer",
             Grant::empty().with_fact_write(pattern("/facts/>")),
         );
+        let root_session = grant_prod(&source_authority, "root", Grant::allow_all());
         let writer = PandaFactAuthor::from_private_key_bytes(principal("writer"), [1; 32]);
+        let root_author = PandaFactAuthor::from_private_key_bytes(principal("root"), [9; 32]);
         let replica = PandaFactAuthor::from_private_key_bytes(principal("replica"), [2; 32]);
         let mut fixture =
             authority_fixture_for_writer_and_replica(writer_session.island(), &writer, &replica)
@@ -2368,18 +2427,45 @@ mod tests {
             write_error,
             PandaFactError::UntrustedAuthorKey { .. }
         ));
+        source
+            .write_fact_payload(
+                &root_session,
+                &root_author,
+                key("/facts/authz/root-after-demote"),
+                FactPayload::from_static(b"root-after-demote"),
+            )
+            .await
+            .expect("root remains an active writer");
+        let root_operation = source
+            .export_operations()
+            .last()
+            .cloned()
+            .expect("root write exports one operation");
 
         let (mut target, target_authority) = store_with_authority();
+        let _target_root_grant = grant_prod(
+            &target_authority,
+            "root",
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
         let demoted_replica_session = grant_prod(
             &target_authority,
             "writer",
             Grant::empty().with_fact_write(pattern("/facts/>")),
         );
         target.install_authority_snapshot(demoted_snapshot.clone());
-        let imported = target
+        let old_writer_error = target
             .import_replica_operation(&demoted_replica_session, &operation)
             .await
-            .expect("demoted writer can import as replica");
+            .expect_err("demoted writer's own old operation needs fact-log frontier proof");
+        assert!(matches!(
+            old_writer_error,
+            PandaFactError::UntrustedAuthorKey { .. }
+        ));
+        let imported = target
+            .import_replica_operation(&demoted_replica_session, &root_operation)
+            .await
+            .expect("demoted writer can import active writers as replica");
         assert!(matches!(imported, PandaFactWriteOutcome::Inserted(_)));
 
         let scope = PandaFactSyncScope::from_authority(&demoted_snapshot);
@@ -2398,6 +2484,14 @@ mod tests {
                 author.author_key(),
             ),
         )
+    }
+
+    fn authority_sqlite_config(
+        path: impl Into<PathBuf>,
+        island: &IslandId,
+        authority: IslandAuthoritySnapshot,
+    ) -> PandaSqliteOpenConfig {
+        PandaSqliteOpenConfig::new(path, vec![island.clone()]).with_authority_snapshot(authority)
     }
 
     fn trust_author(store: &mut PandaFactStore, session: &BusSession, author: &PandaFactAuthor) {
@@ -3086,6 +3180,65 @@ mod tests {
         .await
         {
             Ok(_) => panic!("reopen without trusted author key fails"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            PandaFactError::UntrustedAuthorKey { principal, .. } if principal == PrincipalId::new("writer")
+        ));
+    }
+
+    #[tokio::test]
+    async fn sqlite_reopen_with_new_authority_fails_closed_for_removed_writer_history() {
+        let directory = tempdir().expect("create tempdir");
+        let path = directory.path().join("facts.sqlite");
+        let (bus, authority) = InMemoryBus::new_with_authority();
+        let writer_session = grant_prod(
+            &authority,
+            "writer",
+            Grant::empty().with_fact_write(pattern("/facts/>")),
+        );
+        let writer = PandaFactAuthor::from_private_key_bytes(principal("writer"), [1; 32]);
+        let replica = PandaFactAuthor::from_private_key_bytes(principal("replica"), [2; 32]);
+        let mut fixture =
+            authority_fixture_for_writer_and_replica(writer_session.island(), &writer, &replica)
+                .await;
+
+        let mut store = PandaFactStore::open_sqlite(
+            Arc::new(bus.clone()),
+            authority_sqlite_config(&path, writer_session.island(), fixture.snapshot()),
+        )
+        .await
+        .expect("open sqlite store with initial authority");
+        store
+            .write_fact_payload(
+                &writer_session,
+                &writer,
+                key("/facts/authz/stale-before-removal"),
+                FactPayload::from_static(b"stale-before-removal"),
+            )
+            .await
+            .expect("writer can write before removal");
+        drop(store);
+
+        fixture
+            .log
+            .remove_member(
+                &mut fixture.authz,
+                &fixture.root,
+                &fixture.root_private_key,
+                authz_binding(writer_session.island(), &writer, 1).member_id(),
+            )
+            .await
+            .expect("writer removal persists");
+
+        let error = match PandaFactStore::open_sqlite(
+            Arc::new(bus),
+            authority_sqlite_config(&path, writer_session.island(), fixture.snapshot()),
+        )
+        .await
+        {
+            Ok(_) => panic!("reopen with removed writer authority should fail closed"),
             Err(error) => error,
         };
         assert!(matches!(
