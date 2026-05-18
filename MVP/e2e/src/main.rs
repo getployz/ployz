@@ -51,6 +51,7 @@ mod p2panda_acme_http01_contract;
 mod p2panda_auth_membership_contract;
 mod p2panda_fact_source_contract;
 mod p2panda_net_fact_node_contract;
+mod p2panda_net_fact_node_reliability_contract;
 #[cfg(unix)]
 mod p2panda_net_process_serving_contract;
 #[cfg(not(unix))]
@@ -174,6 +175,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "p2panda-net-fact-node-contract",
         p2panda_net_fact_node_contract::run,
+    ),
+    Scenario::new(
+        "p2panda-net-fact-node-reliability-contract",
+        p2panda_net_fact_node_reliability_contract::run,
     ),
     Scenario::new("iroh-docs-contract", iroh_docs_contract::run),
     Scenario::new("lease-acme-contract", lease_acme_contract::run),
