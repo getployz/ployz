@@ -4,7 +4,6 @@ use std::num::NonZeroU64;
 
 use mvp_bus::{IslandId, PrincipalId};
 use p2panda_auth::group::resolver::StrongRemove;
-#[cfg(test)]
 use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_auth::group::{
     GroupControlMessage, GroupCrdt, GroupCrdtError, GroupCrdtState, Groups, GroupsError,
@@ -13,9 +12,10 @@ use p2panda_auth::traits::{
     Conditions, Groups as GroupsTrait, IdentityHandle, Operation, OperationId, Orderer,
 };
 use p2panda_auth::{Access, AccessLevel};
-use p2panda_core::PublicKey;
-#[cfg(test)]
-use p2panda_core::{PrivateKey, Signature};
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
+use p2panda_core::{Body, Header, Operation as PandaOperation, PrivateKey, PublicKey, RawOperation};
+use p2panda_core::{Signature, validate_operation};
+use p2panda_store::{LogStore, MemoryStore, OperationStore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -61,7 +61,6 @@ fn hash_bytes(hasher: &mut blake3::Hasher, value: &[u8]) {
     hasher.update(value);
 }
 
-#[cfg(test)]
 fn hash_str(hasher: &mut blake3::Hasher, value: &str) {
     hash_bytes(hasher, value.as_bytes());
 }
@@ -70,12 +69,10 @@ fn hash_u64(hasher: &mut blake3::Hasher, value: u64) {
     hasher.update(&value.to_be_bytes());
 }
 
-#[cfg(test)]
 fn hash_auth_id(hasher: &mut blake3::Hasher, value: AuthId) {
     hasher.update(&value.0);
 }
 
-#[cfg(test)]
 fn hash_operation_id(hasher: &mut blake3::Hasher, value: IslandOperationId) {
     hasher.update(&value.as_bytes());
 }
@@ -126,7 +123,6 @@ impl IslandOperationId {
         Self(AuthId::derive(tag, parts))
     }
 
-    #[cfg(test)]
     fn as_bytes(self) -> [u8; 32] {
         self.0.0
     }
@@ -237,6 +233,56 @@ impl IslandMemberKeyBinding {
     #[must_use]
     pub fn member_id(&self) -> IslandMemberId {
         self.member_id
+    }
+}
+
+impl Serialize for IslandMemberKeyBinding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            island: &'a str,
+            principal: &'a str,
+            epoch: u64,
+            author_key: [u8; 32],
+        }
+
+        Wire {
+            island: self.island.as_str(),
+            principal: self.principal.as_str(),
+            epoch: self.epoch.get(),
+            author_key: self.author_key.as_bytes(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for IslandMemberKeyBinding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            island: String,
+            principal: String,
+            epoch: u64,
+            author_key: [u8; 32],
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let epoch = NonZeroU64::new(wire.epoch)
+            .ok_or_else(|| serde::de::Error::custom("member epoch must be non-zero"))?;
+        let author_key = PublicKey::try_from(&wire.author_key)
+            .map_err(|error| serde::de::Error::custom(error.to_string()))?;
+        Ok(Self::new(
+            IslandId::new(wire.island),
+            PrincipalId::new(wire.principal),
+            IslandMemberEpoch::new(epoch),
+            IslandMemberAuthorKey::from_public_key(author_key),
+        ))
     }
 }
 
@@ -409,20 +455,17 @@ type AuthGroupsError =
 type AuthCrdtError =
     GroupCrdtError<AuthId, IslandOperationId, IslandMemberCondition, AuthResolver, IslandOrderer>;
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IslandMembershipPayload([u8; 32]);
 
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct IslandSignedOperation {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IslandSignedOperation {
     operation: IslandAuthOperation,
     signer: IslandMemberId,
     introduced_binding: Option<IslandMemberKeyBinding>,
     signature: Signature,
 }
 
-#[cfg(test)]
 impl IslandSignedOperation {
     fn sign(
         operation: IslandAuthOperation,
@@ -443,6 +486,345 @@ impl IslandSignedOperation {
     #[must_use]
     pub fn operation_id(&self) -> IslandOperationId {
         self.operation.id()
+    }
+
+    #[must_use]
+    pub fn signer(&self) -> IslandMemberId {
+        self.signer
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct IslandAuthzLogId(String);
+
+impl From<&IslandId> for IslandAuthzLogId {
+    fn from(value: &IslandId) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum IslandMembershipOperationKind {
+    CreateRoot,
+    Add,
+    Remove,
+    Promote,
+    Demote,
+}
+
+impl IslandMembershipOperationKind {
+    fn from_action(action: &GroupAction<AuthId, IslandMemberCondition>) -> Self {
+        match action {
+            GroupAction::Create { .. } => Self::CreateRoot,
+            GroupAction::Add { .. } => Self::Add,
+            GroupAction::Remove { .. } => Self::Remove,
+            GroupAction::Promote { .. } => Self::Promote,
+            GroupAction::Demote { .. } => Self::Demote,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct IslandMembershipExtensions {
+    island: String,
+    group: AuthId,
+    actor: AuthId,
+    kind: IslandMembershipOperationKind,
+}
+
+impl IslandMembershipExtensions {
+    fn new(island: &IslandId, signed: &IslandSignedOperation) -> Self {
+        let payload = signed.operation.payload();
+        Self {
+            island: island.as_str().to_owned(),
+            group: payload.group_id(),
+            actor: signed.signer.auth_id(),
+            kind: IslandMembershipOperationKind::from_action(&payload.action),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IslandRootAuthority {
+    binding: IslandMemberKeyBinding,
+}
+
+impl IslandRootAuthority {
+    #[must_use]
+    pub fn new(binding: IslandMemberKeyBinding) -> Self {
+        Self { binding }
+    }
+
+    #[must_use]
+    pub fn binding(&self) -> &IslandMemberKeyBinding {
+        &self.binding
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IslandAuthzMemoryLog {
+    island: IslandId,
+    store: MemoryStore<IslandAuthzLogId, IslandMembershipExtensions>,
+}
+
+impl IslandAuthzMemoryLog {
+    #[must_use]
+    pub fn new(island: IslandId) -> Self {
+        Self {
+            island,
+            store: MemoryStore::new(),
+        }
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    fn from_store(
+        island: IslandId,
+        store: MemoryStore<IslandAuthzLogId, IslandMembershipExtensions>,
+    ) -> Self {
+        Self { island, store }
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    fn store(&self) -> MemoryStore<IslandAuthzLogId, IslandMembershipExtensions> {
+        self.store.clone()
+    }
+
+    pub async fn create_root(
+        &mut self,
+        root: IslandMemberKeyBinding,
+        root_key: &PrivateKey,
+    ) -> Result<IslandAuthz, IslandAuthzError> {
+        if root.author_key().public_key() != root_key.public_key() {
+            return Err(IslandAuthzError::RootAuthorityMismatch(root.member_id()));
+        }
+        let mut authz = IslandAuthz::empty_with_root(self.island.clone(), root.clone())?;
+        let operation = authz.create_group_operation(root.member_id())?;
+        let signed = IslandSignedOperation::sign(operation, root.member_id(), root_key, None);
+        self.insert_signed(&signed, root_key).await?;
+        authz.remember_signed(signed)?;
+        Ok(authz)
+    }
+
+    pub async fn apply_signed(
+        &mut self,
+        authz: &mut IslandAuthz,
+        signed: IslandSignedOperation,
+        signer_private_key: &PrivateKey,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        authz.validate_signed(&signed)?;
+        let change = authz.apply_validated_signed(signed.clone())?;
+        self.insert_signed(&signed, signer_private_key).await?;
+        Ok(change)
+    }
+
+    pub async fn replay(
+        &self,
+        root_authority: &IslandRootAuthority,
+    ) -> Result<IslandAuthz, IslandAuthzError> {
+        if root_authority.binding().island() != &self.island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: self.island.clone(),
+                actual: root_authority.binding().island().clone(),
+            });
+        }
+        let mut signed_operations = self.signed_operations().await?;
+        signed_operations.sort_by_key(|(_, header, _)| (header.seq_num, header.hash()));
+
+        let mut authz: Option<IslandAuthz> = None;
+        for (_, _, signed) in signed_operations {
+            match authz.as_mut() {
+                Some(existing) => {
+                    existing.apply_signed(signed)?;
+                }
+                None => {
+                    Self::validate_root_signed(&self.island, root_authority.binding(), &signed)?;
+                    let mut created =
+                        IslandAuthz::empty_with_root(self.island.clone(), root_authority.binding().clone())?;
+                    created.apply_validated_root_signed(signed)?;
+                    authz = Some(created);
+                }
+            }
+        }
+        authz.ok_or(IslandAuthzError::EmptyMembershipLog {
+            island: self.island.clone(),
+        })
+    }
+
+    async fn signed_operations(
+        &self,
+    ) -> Result<Vec<(RawOperation, Header<IslandMembershipExtensions>, IslandSignedOperation)>, IslandAuthzError>
+    {
+        let log_id = IslandAuthzLogId::from(&self.island);
+        let heights = self
+            .store
+            .get_log_heights(&log_id)
+            .await
+            .map_err(store_error)?;
+        let mut operations = Vec::new();
+        for (public_key, _) in heights {
+            let Some(raw_log) = self
+                .store
+                .get_raw_log(&public_key, &log_id, None)
+                .await
+                .map_err(store_error)?
+            else {
+                continue;
+            };
+            for raw in raw_log {
+                let (header_bytes, body_bytes) = raw.clone();
+                let header: Header<IslandMembershipExtensions> =
+                    decode_cbor(&header_bytes[..]).map_err(decode_error)?;
+                let Some(body_bytes) = body_bytes else {
+                    return Err(IslandAuthzError::MissingMembershipPayload {
+                        operation: IslandOperationId::from_parts(
+                            b"ployz:p2panda-missing-body",
+                            &[header.hash().as_bytes()],
+                        ),
+                    });
+                };
+                let body = Body::from(body_bytes);
+                let operation = PandaOperation {
+                    hash: header.hash(),
+                    header: header.clone(),
+                    body: Some(body.clone()),
+                };
+                validate_operation(&operation).map_err(|error| {
+                    IslandAuthzError::InvalidPandaOperation {
+                        message: error.to_string(),
+                    }
+                })?;
+                let signed: IslandSignedOperation =
+                    decode_cbor(&body.to_bytes()[..]).map_err(decode_error)?;
+                operations.push((raw, header, signed));
+            }
+        }
+        Ok(operations)
+    }
+
+    async fn insert_signed(
+        &mut self,
+        signed: &IslandSignedOperation,
+        signer_private_key: &PrivateKey,
+    ) -> Result<(), IslandAuthzError> {
+        let log_id = IslandAuthzLogId::from(&self.island);
+        let public_key = signer_private_key.public_key();
+        if public_key != signed_public_key_hint(signed, signer_private_key)? {
+            return Err(IslandAuthzError::RootAuthorityMismatch(signed.signer()));
+        }
+        let latest = self
+            .store
+            .latest_operation(&public_key, &log_id)
+            .await
+            .map_err(store_error)?;
+        let (seq_num, backlink) = latest
+            .as_ref()
+            .map(|(header, _)| (header.seq_num + 1, Some(header.hash())))
+            .unwrap_or((0, None));
+        let body_bytes = encode_cbor(signed).map_err(encode_error)?;
+        let body = Body::new(&body_bytes);
+        let mut header = Header {
+            version: 1,
+            public_key,
+            signature: None,
+            payload_size: body.size(),
+            payload_hash: Some(body.hash()),
+            timestamp: seq_num,
+            seq_num,
+            backlink,
+            previous: Vec::new(),
+            extensions: IslandMembershipExtensions::new(&self.island, signed),
+        };
+        header.sign(signer_private_key);
+        let operation = PandaOperation {
+            hash: header.hash(),
+            header: header.clone(),
+            body: Some(body.clone()),
+        };
+        validate_operation(&operation).map_err(|error| IslandAuthzError::InvalidPandaOperation {
+            message: error.to_string(),
+        })?;
+        self.store
+            .insert_operation(header.hash(), &header, Some(&body), &header.to_bytes(), &log_id)
+            .await
+            .map_err(store_error)?;
+        Ok(())
+    }
+
+    fn validate_root_signed(
+        island: &IslandId,
+        root: &IslandMemberKeyBinding,
+        signed: &IslandSignedOperation,
+    ) -> Result<(), IslandAuthzError> {
+        if root.island() != island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: island.clone(),
+                actual: root.island().clone(),
+            });
+        }
+        if signed.signer != root.member_id() || signed.operation.author() != root.member_id().auth_id() {
+            return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
+        }
+        let payload = signed.operation.payload();
+        if payload.group_id() != IslandGroupId::from_island(island).auth_id() {
+            return Err(IslandAuthzError::WrongGroup {
+                expected: IslandGroupId::from_island(island),
+                actual: IslandGroupId(payload.group_id()),
+            });
+        }
+        if !matches!(payload.action, GroupAction::Create { .. }) {
+            return Err(IslandAuthzError::UnanchoredRootCreate(root.member_id()));
+        }
+        if signed.introduced_binding.is_some() {
+            return Err(IslandAuthzError::UnexpectedIntroducedBinding(
+                signed.operation_id(),
+            ));
+        }
+        let signature_payload = membership_operation_payload(&signed.operation, signed.signer, None);
+        if !root
+            .author_key()
+            .public_key()
+            .verify(&signature_payload.0, &signed.signature)
+        {
+            return Err(IslandAuthzError::InvalidSignature(signed.operation_id()));
+        }
+        Ok(())
+    }
+}
+
+fn signed_public_key_hint(
+    signed: &IslandSignedOperation,
+    signer_private_key: &PrivateKey,
+) -> Result<PublicKey, IslandAuthzError> {
+    let expected = signer_private_key.public_key();
+    let payload = membership_operation_payload(
+        &signed.operation,
+        signed.signer,
+        signed.introduced_binding.as_ref(),
+    );
+    if expected.verify(&payload.0, &signed.signature) {
+        Ok(expected)
+    } else {
+        Err(IslandAuthzError::InvalidSignature(signed.operation_id()))
+    }
+}
+
+fn store_error(error: impl Display) -> IslandAuthzError {
+    IslandAuthzError::Store {
+        message: error.to_string(),
+    }
+}
+
+fn encode_error(error: impl Display) -> IslandAuthzError {
+    IslandAuthzError::Encode {
+        message: error.to_string(),
+    }
+}
+
+fn decode_error(error: impl Display) -> IslandAuthzError {
+    IslandAuthzError::Decode {
+        message: error.to_string(),
     }
 }
 
@@ -469,7 +851,6 @@ pub struct IslandAuthz {
     group_id: IslandGroupId,
     state: Option<AuthState>,
     bindings: BTreeMap<IslandMemberId, IslandMemberKeyBinding>,
-    #[cfg(test)]
     operations: BTreeMap<IslandOperationId, IslandSignedOperation>,
 }
 
@@ -484,18 +865,31 @@ impl IslandAuthz {
                 actual: root.island().clone(),
             });
         }
+        let actor = root.member_id();
+        let mut authz = Self::empty_with_root(island, root)?;
+        let _operation = authz.create_group_operation(actor)?;
+        Ok(authz)
+    }
+
+    fn empty_with_root(
+        island: IslandId,
+        root: IslandMemberKeyBinding,
+    ) -> Result<Self, IslandAuthzError> {
+        if root.island() != &island {
+            return Err(IslandAuthzError::WrongIsland {
+                expected: island,
+                actual: root.island().clone(),
+            });
+        }
         let group_id = IslandGroupId::from_island(&island);
         let actor = root.member_id();
-        let mut authz = Self {
+        Ok(Self {
             island,
             group_id,
             state: Some(AuthCrdt::init(IslandOrdererState::new(actor.auth_id()))),
             bindings: BTreeMap::from([(actor, root)]),
-            #[cfg(test)]
             operations: BTreeMap::new(),
-        };
-        let _change = authz.create_group(actor)?;
-        Ok(authz)
+        })
     }
 
     #[must_use]
@@ -541,20 +935,40 @@ impl IslandAuthz {
         self.add_member(manager, member, IslandMemberRole::ReplicaImporter(access))
     }
 
-    #[cfg(test)]
-    fn apply_signed(
+    pub fn apply_signed(
         &mut self,
         signed: IslandSignedOperation,
     ) -> Result<IslandAuthChange, IslandAuthzError> {
         self.validate_signed(&signed)?;
+        self.apply_validated_signed(signed)
+    }
+
+    fn apply_validated_signed(
+        &mut self,
+        signed: IslandSignedOperation,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
         let introduced_binding = signed.introduced_binding.clone();
-        let operation_id = signed.operation_id();
         let change = self.process_imported(signed.operation.clone())?;
         if let Some(binding) = introduced_binding {
             self.bindings.insert(binding.member_id(), binding);
         }
-        self.operations.insert(operation_id, signed);
+        self.remember_signed(signed)?;
         Ok(change)
+    }
+
+    fn apply_validated_root_signed(
+        &mut self,
+        signed: IslandSignedOperation,
+    ) -> Result<IslandAuthChange, IslandAuthzError> {
+        let change = self.process_imported(signed.operation.clone())?;
+        self.remember_signed(signed)?;
+        Ok(change)
+    }
+
+    fn remember_signed(&mut self, signed: IslandSignedOperation) -> Result<(), IslandAuthzError> {
+        let operation_id = signed.operation_id();
+        self.operations.insert(operation_id, signed);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -608,12 +1022,12 @@ impl IslandAuthz {
         self.access(member).is_some()
     }
 
-    fn create_group(
+    fn create_group_operation(
         &mut self,
         actor: IslandMemberId,
-    ) -> Result<IslandAuthChange, IslandAuthzError> {
+    ) -> Result<IslandAuthOperation, IslandAuthzError> {
         let group_id = self.group_id.auth_id();
-        self.mutate(actor, |groups| groups.create(group_id, Vec::new()))
+        self.with_groups_operation(actor, |groups| groups.create(group_id, Vec::new()))
     }
 
     #[cfg(test)]
@@ -643,6 +1057,7 @@ impl IslandAuthz {
         Ok(change)
     }
 
+    #[cfg(test)]
     fn mutate<F>(
         &mut self,
         actor: IslandMemberId,
@@ -654,11 +1069,27 @@ impl IslandAuthz {
         self.with_groups(actor, operation)
     }
 
+    #[cfg(test)]
     fn with_groups<F>(
         &mut self,
         actor: IslandMemberId,
         operation: F,
     ) -> Result<IslandAuthChange, IslandAuthzError>
+    where
+        F: FnOnce(&mut AuthGroups) -> Result<IslandAuthOperation, AuthGroupsError>,
+    {
+        let operation = self.with_groups_operation(actor, operation)?;
+        Ok(IslandAuthChange {
+            operation_id: operation.id,
+            actor,
+        })
+    }
+
+    fn with_groups_operation<F>(
+        &mut self,
+        actor: IslandMemberId,
+        operation: F,
+    ) -> Result<IslandAuthOperation, IslandAuthzError>
     where
         F: FnOnce(&mut AuthGroups) -> Result<IslandAuthOperation, AuthGroupsError>,
     {
@@ -675,13 +1106,9 @@ impl IslandAuthz {
         self.state = Some(groups.take_state());
         let operation = result?;
         self.observe_operation(operation.id)?;
-        Ok(IslandAuthChange {
-            operation_id: operation.id,
-            actor,
-        })
+        Ok(operation)
     }
 
-    #[cfg(test)]
     fn process_imported(
         &mut self,
         operation: IslandAuthOperation,
@@ -691,11 +1118,15 @@ impl IslandAuthz {
         };
         let actor = IslandMemberId(operation.author());
         let operation_id = operation.id();
+        #[cfg(test)]
         let original_state = state.clone();
         let state = match AuthCrdt::process(state, &operation) {
             Ok(state) => state,
             Err(error) => {
-                self.state = Some(original_state);
+                #[cfg(test)]
+                {
+                    self.state = Some(original_state);
+                }
                 return Err(IslandAuthzError::from_crdt(error));
             }
         };
@@ -737,7 +1168,6 @@ impl IslandAuthz {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
     fn validate_signed(&self, signed: &IslandSignedOperation) -> Result<(), IslandAuthzError> {
         if signed.operation.author() != signed.signer.auth_id() {
             return Err(IslandAuthzError::SignerMismatch {
@@ -811,7 +1241,6 @@ impl IslandAuthz {
     }
 }
 
-#[cfg(test)]
 fn validate_supported_action_shape(
     action: &GroupAction<AuthId, IslandMemberCondition>,
 ) -> Result<(), IslandAuthzError> {
@@ -829,7 +1258,6 @@ fn validate_supported_action_shape(
     Ok(())
 }
 
-#[cfg(test)]
 fn reject_nested_group_member(member: GroupMember<AuthId>) -> Result<(), IslandAuthzError> {
     match member {
         GroupMember::Individual(_) => Ok(()),
@@ -839,7 +1267,6 @@ fn reject_nested_group_member(member: GroupMember<AuthId>) -> Result<(), IslandA
     }
 }
 
-#[cfg(test)]
 fn membership_operation_payload(
     operation: &IslandAuthOperation,
     signer: IslandMemberId,
@@ -873,7 +1300,6 @@ fn membership_operation_payload(
     IslandMembershipPayload(*hasher.finalize().as_bytes())
 }
 
-#[cfg(test)]
 fn hash_payload(
     hasher: &mut blake3::Hasher,
     payload: &GroupControlMessage<AuthId, IslandMemberCondition>,
@@ -910,7 +1336,6 @@ fn hash_payload(
     }
 }
 
-#[cfg(test)]
 fn hash_member(hasher: &mut blake3::Hasher, member: GroupMember<AuthId>) {
     match member {
         GroupMember::Individual(id) => {
@@ -924,7 +1349,6 @@ fn hash_member(hasher: &mut blake3::Hasher, member: GroupMember<AuthId>) {
     }
 }
 
-#[cfg(test)]
 fn hash_access(hasher: &mut blake3::Hasher, access: &Access<IslandMemberCondition>) {
     let level = match access.level {
         AccessLevel::Pull => 0,
@@ -1006,6 +1430,22 @@ pub enum IslandAuthzError {
     },
     #[error("membership operation {0} unexpectedly carried an introduced key binding")]
     UnexpectedIntroducedBinding(IslandOperationId),
+    #[error("p2panda membership store failed: {message}")]
+    Store { message: String },
+    #[error("p2panda membership operation failed validation: {message}")]
+    InvalidPandaOperation { message: String },
+    #[error("membership payload encoding failed: {message}")]
+    Encode { message: String },
+    #[error("membership payload decoding failed: {message}")]
+    Decode { message: String },
+    #[error("membership operation {operation} is missing payload bytes")]
+    MissingMembershipPayload { operation: IslandOperationId },
+    #[error("island {island} has no durable membership operations")]
+    EmptyMembershipLog { island: IslandId },
+    #[error("root create is not anchored by the configured root member {0}")]
+    UnanchoredRootCreate(IslandMemberId),
+    #[error("root authority does not match signer/member {0}")]
+    RootAuthorityMismatch(IslandMemberId),
 }
 
 impl From<AuthGroupsError> for IslandAuthzError {
@@ -1272,6 +1712,63 @@ mod tests {
             .apply_signed(signed)
             .expect("signed add should be accepted");
         assert!(authz.can_write_member(writer_id));
+    }
+
+    #[tokio::test]
+    async fn durable_membership_log_replays_root_and_writer_from_memory_store() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let root_authority = IslandRootAuthority::new(root.clone());
+        let mut log = IslandAuthzMemoryLog::new(island.clone());
+        let mut authz = log
+            .create_root(root.clone(), &root_key)
+            .await
+            .expect("root create should be stored");
+
+        let writer = member("writer", &island, 1);
+        let writer_id = writer.member_id();
+        let signed = signed_add_operation(
+            &authz,
+            &root,
+            &root_key,
+            100,
+            writer,
+            IslandMemberRole::Writer,
+        );
+        log.apply_signed(&mut authz, signed, &root_key)
+            .await
+            .expect("signed writer add should be stored");
+
+        let reopened_log = IslandAuthzMemoryLog::from_store(island, log.store());
+        let reopened = reopened_log
+            .replay(&root_authority)
+            .await
+            .expect("stored membership operations should replay");
+
+        assert!(reopened.can_write_member(root.member_id()));
+        assert!(reopened.can_write_member(writer_id));
+    }
+
+    #[tokio::test]
+    async fn durable_membership_log_rejects_wrong_root_authority_on_replay() {
+        let island = island();
+        let (root, root_key) = member_with_private_key("root", &island, 1);
+        let mut log = IslandAuthzMemoryLog::new(island.clone());
+        log.create_root(root, &root_key)
+            .await
+            .expect("root create should be stored");
+
+        let wrong_root = member("wrong-root", &island, 1);
+        let reopened_log = IslandAuthzMemoryLog::from_store(island, log.store());
+        let error = match reopened_log
+            .replay(&IslandRootAuthority::new(wrong_root))
+            .await
+        {
+            Ok(_) => panic!("wrong root authority should fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, IslandAuthzError::UnanchoredRootCreate(_)));
     }
 
     #[test]
