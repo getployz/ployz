@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 use std::time::{Duration, Instant};
 
 use mvp_bus::PrincipalId;
@@ -67,20 +67,13 @@ async fn run_async() -> Result<(), String> {
         author.principal().as_str(),
         author.author_key().as_hex()
     );
-    let receiver_args = [
-        "--p2panda-path".to_string(),
-        store_path.display().to_string(),
-        "--p2panda-network".to_string(),
-        network.clone(),
-        "--p2panda-topic".to_string(),
-        topic.clone(),
-        "--p2panda-seed".to_string(),
-        receiver_seed.clone(),
-        "--p2panda-replica".to_string(),
-        "p2panda-net-serving-replica".to_string(),
-        "--p2panda-trusted-author".to_string(),
-        trusted_author.clone(),
-    ];
+    let receiver_args = p2panda_net_receiver_args(
+        &store_path,
+        &network,
+        &topic,
+        &receiver_seed,
+        &trusted_author,
+    );
     let receiver_arg_refs = receiver_args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut serving = spawn_process_role(
         "p2panda-net-serving-projection",
@@ -106,14 +99,8 @@ async fn run_async() -> Result<(), String> {
             bootstrap: &receiver_ticket,
             author: author.principal().as_str(),
             author_seed: &author_seed,
-            first_commit_id: "serving-1",
-            first_backend: "fd00::1:8080",
-            first_dns: "fd00::1",
-            first_epoch: 1,
-            second_commit_id: "serving-2",
-            second_backend: "fd00::2:8080",
-            second_dns: "fd00::2",
-            second_epoch: 2,
+            first: ServingCommitInput::new("serving-1", "fd00::1:8080", "fd00::1", 1),
+            second: ServingCommitInput::new("serving-2", "fd00::2:8080", "fd00::2", 2),
             second_delay_ms: 3_000,
             publish_malformed: true,
         })?;
@@ -205,20 +192,13 @@ async fn run_async() -> Result<(), String> {
     serving.wait_for_exit().await?;
 
     let restarted_socket = root.join("serving-restarted.sock");
-    let receiver_args = [
-        "--p2panda-path".to_string(),
-        store_path.display().to_string(),
-        "--p2panda-network".to_string(),
-        network,
-        "--p2panda-topic".to_string(),
-        topic,
-        "--p2panda-seed".to_string(),
-        receiver_seed,
-        "--p2panda-replica".to_string(),
-        "p2panda-net-serving-replica".to_string(),
-        "--p2panda-trusted-author".to_string(),
-        trusted_author,
-    ];
+    let receiver_args = p2panda_net_receiver_args(
+        &store_path,
+        &network,
+        &topic,
+        &receiver_seed,
+        &trusted_author,
+    );
     let receiver_arg_refs = receiver_args.iter().map(String::as_str).collect::<Vec<_>>();
     let mut restarted = spawn_process_role(
         "p2panda-net-serving-projection-restarted",
@@ -306,4 +286,27 @@ fn p2panda_reloaded_revision(status: &RoleStatus, revision: &str) -> bool {
 
 fn repeated_hex(byte: &str) -> String {
     byte.repeat(32)
+}
+
+fn p2panda_net_receiver_args(
+    store_path: &Path,
+    network: &str,
+    topic: &str,
+    receiver_seed: &str,
+    trusted_author: &str,
+) -> Vec<String> {
+    vec![
+        "--p2panda-path".to_string(),
+        store_path.display().to_string(),
+        "--p2panda-network".to_string(),
+        network.to_string(),
+        "--p2panda-topic".to_string(),
+        topic.to_string(),
+        "--p2panda-seed".to_string(),
+        receiver_seed.to_string(),
+        "--p2panda-replica".to_string(),
+        "p2panda-net-serving-replica".to_string(),
+        "--p2panda-trusted-author".to_string(),
+        trusted_author.to_string(),
+    ]
 }
