@@ -372,9 +372,10 @@ canonical authority path on receipt.
 
 The next implementation/proof slices currently remain:
 
-1. The next product or process-role proof that closes remaining E2E-7 gaps:
-   pre-serving candidate adoption/cleanup ABI, p2panda-auth membership, or
-   production transport for sync/bus traffic.
+1. A deploy candidate cleanup ABI slice that closes the remaining pre-serving
+   partial-failure gap without introducing the future `PhasedCommand` primitive
+   early. Active plan:
+   [MVP/slice-023-deploy-candidate-cleanup-abi-plan.md](slice-023-deploy-candidate-cleanup-abi-plan.md).
 2. A production p2panda-net integration slice that replaces the
    `p2panda-net::test_utils` E2E harness with owned node lifecycle, discovery,
    shutdown, and error surfaces while preserving the canonical import path
