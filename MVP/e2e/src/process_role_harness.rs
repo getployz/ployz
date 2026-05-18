@@ -431,8 +431,23 @@ fn unregister_child_pid(path: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 fn child_exe_for_record(pid: u32) -> Result<PathBuf, String> {
-    fs::read_link(format!("/proc/{pid}/exe"))
-        .map_err(|error| format!("read /proc/{pid}/exe for child pid record: {error}"))
+    let path = format!("/proc/{pid}/exe");
+    let deadline = Instant::now() + Duration::from_millis(100);
+    loop {
+        match fs::read_link(&path) {
+            Ok(exe) => return Ok(exe),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "read /proc/{pid}/exe for child pid record: {error}"
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

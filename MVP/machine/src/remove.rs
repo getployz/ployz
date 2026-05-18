@@ -230,7 +230,7 @@ where
         request: &MachineRemoveRequest,
         intent: PrepareRemoveIntent,
     ) -> MachineRemoveResult<PrepareRemoveReply> {
-        let subject = participant_subject(&request.target_node_id, "prepare_remove")?;
+        let subject = prepare_remove_subject(&request.target_node_id)?;
         let response = self
             .bus
             .request(
@@ -262,7 +262,7 @@ where
         &self,
         pending: &PendingMachineRemove,
     ) -> MachineRemoveResult<()> {
-        let subject = participant_subject(&pending.target_node_id, "stop_removed_workloads")?;
+        let subject = stop_removed_workloads_subject(&pending.target_node_id)?;
         let response = self
             .bus
             .request(
@@ -291,11 +291,7 @@ where
             StopRemovedWorkloadsOutcome::Stopped => Ok(()),
             StopRemovedWorkloadsOutcome::Failed { .. } => {
                 Err(MachineRemoveError::Bus(mvp_bus::BusError::HandlerFailed {
-                    subject: participant_subject(
-                        &pending.target_node_id,
-                        "stop_removed_workloads",
-                    )?
-                    .to_string(),
+                    subject: stop_removed_workloads_subject(&pending.target_node_id)?.to_string(),
                     failure: mvp_bus::HandlerFailure::Application,
                 }))
             }
@@ -432,6 +428,14 @@ fn validate_preconditions(request: &MachineRemoveRequest) -> MachineRemoveResult
         });
     }
     Ok(())
+}
+
+pub fn prepare_remove_subject(node_id: &NodeId) -> MachineRemoveResult<Subject> {
+    participant_subject(node_id, "prepare_remove")
+}
+
+pub fn stop_removed_workloads_subject(node_id: &NodeId) -> MachineRemoveResult<Subject> {
+    participant_subject(node_id, "stop_removed_workloads")
 }
 
 fn participant_subject(node_id: &NodeId, suffix: &str) -> MachineRemoveResult<Subject> {
@@ -623,6 +627,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn target_still_active_in_serving_commit_fails_before_fact_write() {
+        let (bus, session) = test_bus();
+        let writer = RecordingFactWriter::default();
+        let coordinator = coordinator(bus, session, writer.clone());
+        let mut request = remove_request();
+        request
+            .serving_commit
+            .active_backends
+            .push(BackendEndpoint {
+                node_id: NodeId::new("node-old"),
+                address: "fd00::1:8080".to_string(),
+            });
+
+        let error = coordinator
+            .execute_until_serving_commit(request)
+            .await
+            .expect_err("target still active");
+
+        assert!(matches!(
+            error,
+            MachineRemoveError::InvalidServingCommit {
+                reason: MachineRemoveValidationError::TargetStillActive,
+                ..
+            }
+        ));
+        assert!(writer.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn target_missing_from_drain_set_fails_before_fact_write() {
+        let (bus, session) = test_bus();
+        let writer = RecordingFactWriter::default();
+        let coordinator = coordinator(bus, session, writer.clone());
+        let mut request = remove_request();
+        request.serving_commit.old_backends_to_drain.clear();
+
+        let error = coordinator
+            .execute_until_serving_commit(request)
+            .await
+            .expect_err("target missing from drain set");
+
+        assert!(matches!(
+            error,
+            MachineRemoveError::InvalidServingCommit {
+                reason: MachineRemoveValidationError::TargetMissingFromDrainSet,
+                ..
+            }
+        ));
+        assert!(writer.events().is_empty());
+    }
+
+    #[tokio::test]
     async fn no_prepare_responder_fails_before_fact_write() {
         let (bus, session) = test_bus();
         let writer = RecordingFactWriter::default();
@@ -791,6 +847,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_failure_reply_returns_cleanup_pending_without_tombstone() {
+        let (bus, session) = test_bus();
+        let writer = RecordingFactWriter::default();
+        register_prepare(
+            &bus,
+            &session,
+            writer.events.clone(),
+            PrepareRemoveOutcome::NoNewWorkAndDrained,
+        )
+        .await;
+        register_stop_with_outcome(
+            &bus,
+            &session,
+            writer.events.clone(),
+            StopRemovedWorkloadsOutcome::Failed {
+                reason: "still draining".to_string(),
+            },
+        )
+        .await;
+        let coordinator = coordinator(bus, session, writer.clone());
+        let request = remove_request();
+        let catch_up = ProjectionCatchUp::from_report(
+            &request.serving_commit,
+            &projection_report_for(&request.serving_commit),
+        )
+        .expect("catchup");
+        let pending = coordinator
+            .execute_until_serving_commit(request)
+            .await
+            .expect("pending remove");
+
+        let result = coordinator
+            .finish_cleanup(pending, catch_up)
+            .await
+            .expect("cleanup pending");
+
+        assert_eq!(result.outcome, MachineRemoveOutcome::CleanupPending);
+        assert!(matches!(
+            result.cleanup_status,
+            RemoveCleanupStatus::Pending {
+                reason: RemoveCleanupPendingReason::StopUnavailable {
+                    cause: CleanupFailureKind::HandlerFailed,
+                    ..
+                }
+            }
+        ));
+        assert!(result.tombstone_fact_key.is_none());
+        assert_eq!(
+            writer.events(),
+            vec![
+                RecordedEvent::Probe,
+                RecordedEvent::RemovalStarted(NodeId::new("node-old")),
+                RecordedEvent::PrepareDrain,
+                RecordedEvent::Stop,
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn successful_remove_writes_intent_serving_stop_tombstone_in_order() {
         let (bus, session) = test_bus();
         let bus_for_assert = bus.clone();
@@ -923,6 +1038,16 @@ mod tests {
         session: &BusSession,
         events: Arc<Mutex<Vec<RecordedEvent>>>,
     ) {
+        register_stop_with_outcome(bus, session, events, StopRemovedWorkloadsOutcome::Stopped)
+            .await;
+    }
+
+    async fn register_stop_with_outcome(
+        bus: &BusActorHandle,
+        session: &BusSession,
+        events: Arc<Mutex<Vec<RecordedEvent>>>,
+        outcome: StopRemovedWorkloadsOutcome,
+    ) {
         bus.subscribe(
             session,
             SubjectPattern::parse("node.node-old.rpc.stop_removed_workloads").expect("pattern"),
@@ -938,7 +1063,7 @@ mod tests {
                 ctx.reply(
                     serde_json::to_vec(&StopRemovedWorkloadsReply {
                         target_node_id: request.target_node_id,
-                        outcome: StopRemovedWorkloadsOutcome::Stopped,
+                        outcome: outcome.clone(),
                     })
                     .map_err(|_| mvp_bus::BusError::HandlerFailed {
                         subject: ctx.message.subject().to_string(),

@@ -150,6 +150,17 @@ the decision concrete.
   endpoints. `WireGuardOverlayCidr` is intentionally only a typed `/128` host
   route for now; `ipnet` was reviewed and deferred because arbitrary CIDRs are
   not a current MVP behavior.
+- Slice 017 adds graceful machine remove as a product command over existing
+  primitives. It writes docs-backed `NodeRemovalStarted`/`NodeTombstoned`
+  facts through a `MachineFactWriter`, uses the shared `ServingCommit` cutover
+  primitive for route removal, gates final stop on `ProjectionCatchUp`, and
+  leaves real runtime/container stop implementations behind the participant
+  ABI.
+- Slice 017 also adds a harness-local combined `FactSource` for the E2E proof
+  because membership/removal facts are docs-backed while serving commits still
+  come from the bus-backed routing primitive. This is a proof bridge, not a new
+  production substrate; Slice 018 is planned to move deploy recovery proof to
+  one docs-backed fact source/sink for command and serving facts.
 
 ## Documented Design Gaps
 
@@ -822,8 +833,11 @@ Costs:
 - The current proof uses loopback TCP gated by the WireGuard peer snapshot. It
   proves membership, applied-config, and process fate semantics, not encrypted
   kernel WireGuard packets.
-- There is no graceful remove yet. Tombstone/force-remove membership behavior
-  is proven; workload drain and route removal belong to deploy/runtime slices.
+- Graceful remove is proven through a fixture-backed participant contract:
+  target probe, no-new-work-and-drained acknowledgement, serving cutover,
+  projection catch-up, stop, tombstone, projection rebuild, and peer-plan
+  exclusion. Real runtime/container stop and transfer backends are still
+  deferred.
 - Reinvite is intentionally absent. The system rejects normal rejoin for a
   tombstoned node id until a later slice defines that primitive.
 

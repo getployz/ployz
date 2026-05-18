@@ -9,6 +9,18 @@ mod docs_backed_acme_http01_contract;
 mod iroh_docs_contract;
 mod lease_acme_contract;
 #[cfg(unix)]
+mod machine_remove_contract;
+#[cfg(not(unix))]
+mod machine_remove_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("machine-remove-contract uses process roles in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
+#[cfg(unix)]
 mod membership_wireguard_contract;
 #[cfg(not(unix))]
 mod membership_wireguard_contract {
@@ -62,65 +74,74 @@ use std::time::Duration;
 struct Scenario {
     name: &'static str,
     run: fn() -> Result<(), String>,
+    cleanup: Option<fn() -> Result<(), String>>,
+}
+
+impl Scenario {
+    #[must_use]
+    const fn new(name: &'static str, run: fn() -> Result<(), String>) -> Self {
+        Self {
+            name,
+            run,
+            cleanup: None,
+        }
+    }
+
+    #[must_use]
+    const fn with_cleanup(
+        name: &'static str,
+        run: fn() -> Result<(), String>,
+        cleanup: fn() -> Result<(), String>,
+    ) -> Self {
+        Self {
+            name,
+            run,
+            cleanup: Some(cleanup),
+        }
+    }
 }
 
 const SCENARIOS: &[Scenario] = &[
-    Scenario {
-        name: "bus-contract",
-        run: bus_contract::run,
-    },
-    Scenario {
-        name: "actor-contract",
-        run: actor_contract::run,
-    },
-    Scenario {
-        name: "authority-contract",
-        run: authority_contract::run,
-    },
-    Scenario {
-        name: "bridge-contract",
-        run: bridge_contract::run,
-    },
-    Scenario {
-        name: "projection-contract",
-        run: projection_contract::run,
-    },
-    Scenario {
-        name: "iroh-docs-contract",
-        run: iroh_docs_contract::run,
-    },
-    Scenario {
-        name: "lease-acme-contract",
-        run: lease_acme_contract::run,
-    },
-    Scenario {
-        name: "docs-backed-acme-http01-contract",
-        run: docs_backed_acme_http01_contract::run,
-    },
-    Scenario {
-        name: "deploy-commit-drain-contract",
-        run: deploy_commit_drain_contract::run,
-    },
-    Scenario {
-        name: "steady-state-serving-contract",
-        run: steady_state_serving_contract::run,
-    },
-    Scenario {
-        name: "process-role-serving-contract",
-        run: process_role_serving_contract::run,
-    },
-    Scenario {
-        name: "wire-serving-contract",
-        run: wire_serving_contract::run,
-    },
-    Scenario {
-        name: "membership-wireguard-contract",
-        run: membership_wireguard_contract::run,
-    },
-    Scenario {
-        name: "scale",
-        run: scale::run,
-    },
+    Scenario::new("bus-contract", bus_contract::run),
+    Scenario::new("actor-contract", actor_contract::run),
+    Scenario::new("authority-contract", authority_contract::run),
+    Scenario::new("bridge-contract", bridge_contract::run),
+    Scenario::new("projection-contract", projection_contract::run),
+    Scenario::new("iroh-docs-contract", iroh_docs_contract::run),
+    Scenario::new("lease-acme-contract", lease_acme_contract::run),
+    Scenario::new(
+        "docs-backed-acme-http01-contract",
+        docs_backed_acme_http01_contract::run,
+    ),
+    Scenario::new(
+        "deploy-commit-drain-contract",
+        deploy_commit_drain_contract::run,
+    ),
+    Scenario::new(
+        "steady-state-serving-contract",
+        steady_state_serving_contract::run,
+    ),
+    Scenario::with_cleanup(
+        "process-role-serving-contract",
+        process_role_serving_contract::run,
+        process_role_serving_contract::cleanup_orphaned_children,
+    ),
+    Scenario::with_cleanup(
+        "wire-serving-contract",
+        wire_serving_contract::run,
+        wire_serving_contract::cleanup_orphaned_children,
+    ),
+    Scenario::with_cleanup(
+        "membership-wireguard-contract",
+        membership_wireguard_contract::run,
+        membership_wireguard_contract::cleanup_orphaned_children,
+    ),
+    Scenario::with_cleanup(
+        "machine-remove-contract",
+        machine_remove_contract::run,
+        machine_remove_contract::cleanup_orphaned_children,
+    ),
+    Scenario::new("scale", scale::run),
 ];
 
 fn main() {
@@ -182,11 +203,9 @@ fn run_scenarios_with_budget(
     match receiver.recv_timeout(budget) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let process_cleanup = process_role_serving_contract::cleanup_orphaned_children();
-            let wire_cleanup = wire_serving_contract::cleanup_orphaned_children();
-            let mesh_cleanup = membership_wireguard_contract::cleanup_orphaned_children();
+            let cleanup = cleanup_timed_out_scenarios(scenarios);
             Err(format!(
-                "all scenario exceeded {budget:?} budget; process-role cleanup={process_cleanup:?}; wire cleanup={wire_cleanup:?}; mesh cleanup={mesh_cleanup:?}"
+                "all scenario exceeded {budget:?} budget; cleanup={cleanup}"
             ))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -200,6 +219,22 @@ fn run_scenarios(scenarios: &[Scenario]) -> Result<(), String> {
         (scenario.run)()?;
     }
     Ok(())
+}
+
+fn cleanup_timed_out_scenarios(scenarios: &[Scenario]) -> String {
+    let results = scenarios
+        .iter()
+        .filter_map(|scenario| {
+            scenario
+                .cleanup
+                .map(|cleanup| format!("{}={:?}", scenario.name, cleanup()))
+        })
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        "none".to_string()
+    } else {
+        results.join("; ")
+    }
 }
 
 fn e2e_all_budget() -> Result<Duration, String> {
@@ -248,8 +283,10 @@ mod tests {
         assert!(names.contains(&"process-role-serving-contract"));
         assert!(names.contains(&"wire-serving-contract"));
         assert!(names.contains(&"membership-wireguard-contract"));
+        assert!(names.contains(&"machine-remove-contract"));
         assert!(scenario_help().contains("lease-acme-contract"));
         assert!(scenario_help().contains("membership-wireguard-contract"));
+        assert!(scenario_help().contains("machine-remove-contract"));
     }
 
     #[test]
@@ -272,15 +309,20 @@ mod tests {
             Ok(())
         }
 
-        static BLOCKING: &[Scenario] = &[Scenario {
-            name: "blocking",
-            run: blocking_scenario,
-        }];
+        fn cleanup_blocking_scenario() -> Result<(), String> {
+            Err("cleaned".to_string())
+        }
+
+        static BLOCKING: &[Scenario] = &[Scenario::with_cleanup(
+            "blocking",
+            blocking_scenario,
+            cleanup_blocking_scenario,
+        )];
 
         let error = run_scenarios_with_budget(BLOCKING, Duration::from_millis(10))
             .expect_err("budget should expire before blocking scenario returns");
 
         assert!(error.contains("exceeded"));
-        assert!(error.contains("mesh cleanup="));
+        assert!(error.contains("cleanup=blocking=Err(\"cleaned\")"));
     }
 }
