@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::future::Future;
-use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -54,28 +53,6 @@ impl Display for IntentId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct PhaseName(String);
-
-impl PhaseName {
-    pub fn parse(value: impl Into<String>) -> CommandResult<Self> {
-        let value = value.into();
-        validate_identifier("phase name", &value)?;
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Display for PhaseName {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum CommandError {
     #[error("{label} is invalid: {value:?}")]
@@ -86,6 +63,8 @@ pub enum CommandError {
     SerializePhase { message: String },
     #[error("command phase deserialization failed for {key}: {message}")]
     DeserializePhase { key: FactKey, message: String },
+    #[error("command phase has conflicting candidates at {key}")]
+    PhaseConflict { key: FactKey },
     #[error("command store failed: {message}")]
     Store { message: String },
     #[error("command phase index overflow for {command}/{intent}")]
@@ -103,16 +82,12 @@ pub trait Command {
 
     fn name(&self) -> CommandName;
     fn intent_id(&self) -> IntentId;
-    fn intent_fact(&self) -> CommandFact;
 }
 
-pub trait Phase:
-    Serialize + DeserializeOwned + Clone + Debug + Eq + Hash + Send + Sync + 'static
-{
-}
+pub trait Phase: Serialize + DeserializeOwned + Clone + Debug + Eq + Send + Sync + 'static {}
 
 impl<T> Phase for T where
-    T: Serialize + DeserializeOwned + Clone + Debug + Eq + Hash + Send + Sync + 'static
+    T: Serialize + DeserializeOwned + Clone + Debug + Eq + Send + Sync + 'static
 {
 }
 
@@ -245,32 +220,7 @@ pub async fn run_phased<C>(cx: &CommandContext, command: &C) -> Result<C::Output
 where
     C: PhasedCommand,
 {
-    cx.write_intent(command.intent_fact())?;
-    let mut current = cx
-        .read_phase::<C::Phase>(command)?
-        .unwrap_or_else(|| command.initial_phase());
-    let mut committed = Vec::new();
-
-    loop {
-        match command.step(cx, current.clone()).await? {
-            PhaseTransition::Continue(next) => {
-                cx.write_phase(command, &next)?;
-                committed.push(next.clone());
-                current = next;
-            }
-            PhaseTransition::Done(output) => return Ok(output),
-        }
-    }
-}
-
-pub async fn run_phased_with_compensation<C>(
-    cx: &CommandContext,
-    command: &C,
-) -> Result<C::Output, C::Error>
-where
-    C: PhasedCommand,
-{
-    cx.write_intent(command.intent_fact())?;
+    cx.write_intent(CommandFact::new(command.name(), command.intent_id()))?;
     let mut current = cx
         .read_phase::<C::Phase>(command)?
         .unwrap_or_else(|| command.initial_phase());
@@ -294,15 +244,59 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct InMemoryCommandPhaseStore {
     inner: Arc<Mutex<InMemoryCommandPhaseStoreInner>>,
 }
 
-#[derive(Debug, Default)]
+impl InMemoryCommandPhaseStore {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(InMemoryCommandPhaseStoreInner::new())),
+        }
+    }
+
+    #[cfg(test)]
+    fn write_conflicting_phase_for_test(
+        &self,
+        command: &CommandName,
+        intent: &IntentId,
+        index: u64,
+        payload: FactPayload,
+    ) -> CommandResult<FactKey> {
+        let key = command_phase_fact_key(command, intent, index)?;
+        let mut inner = self.inner.lock().map_err(|_| CommandError::Store {
+            message: "command phase store lock poisoned".to_string(),
+        })?;
+        inner
+            .phases
+            .entry((command.clone(), intent.clone()))
+            .or_default()
+            .entry(index)
+            .or_default()
+            .push(StoredCommandPhase {
+                key: key.clone(),
+                index,
+                payload,
+            });
+        Ok(key)
+    }
+}
+
+#[derive(Debug)]
 struct InMemoryCommandPhaseStoreInner {
     intents: BTreeMap<(CommandName, IntentId), CommandFact>,
-    phases: BTreeMap<(CommandName, IntentId), BTreeMap<u64, StoredCommandPhase>>,
+    phases: BTreeMap<(CommandName, IntentId), BTreeMap<u64, Vec<StoredCommandPhase>>>,
+}
+
+impl InMemoryCommandPhaseStoreInner {
+    fn new() -> Self {
+        Self {
+            intents: BTreeMap::new(),
+            phases: BTreeMap::new(),
+        }
+    }
 }
 
 impl CommandPhaseStore for InMemoryCommandPhaseStore {
@@ -314,10 +308,19 @@ impl CommandPhaseStore for InMemoryCommandPhaseStore {
         let inner = self.inner.lock().map_err(|_| CommandError::Store {
             message: "command phase store lock poisoned".to_string(),
         })?;
-        Ok(inner
+        let Some((index, phases)) = inner
             .phases
             .get(&(command.clone(), intent.clone()))
-            .and_then(|phases| phases.last_key_value().map(|(_index, phase)| phase.clone())))
+            .and_then(|phases| phases.last_key_value())
+        else {
+            return Ok(None);
+        };
+        let [phase] = phases.as_slice() else {
+            return Err(CommandError::PhaseConflict {
+                key: command_phase_fact_key(command, intent, *index)?,
+            });
+        };
+        Ok(Some(phase.clone()))
     }
 
     fn write_intent(&self, fact: CommandFact) -> CommandResult<FactKey> {
@@ -343,16 +346,20 @@ impl CommandPhaseStore for InMemoryCommandPhaseStore {
         let mut inner = self.inner.lock().map_err(|_| CommandError::Store {
             message: "command phase store lock poisoned".to_string(),
         })?;
-        inner
+        let candidates = inner
             .phases
             .entry((command.clone(), intent.clone()))
             .or_default()
             .entry(index)
-            .or_insert_with(|| StoredCommandPhase {
-                key: key.clone(),
-                index,
-                payload,
-            });
+            .or_default();
+        if candidates.iter().any(|phase| phase.payload == payload) {
+            return Ok(key);
+        }
+        candidates.push(StoredCommandPhase {
+            key: key.clone(),
+            index,
+            payload,
+        });
         Ok(key)
     }
 }
@@ -383,7 +390,7 @@ fn validate_identifier(label: &'static str, value: &str) -> CommandResult<()> {
     if value.is_empty()
         || value
             .bytes()
-            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'.' | b'-' | b'_'))
     {
         return Err(CommandError::InvalidIdentifier {
             label,
@@ -395,16 +402,18 @@ fn validate_identifier(label: &'static str, value: &str) -> CommandResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
     use std::sync::{Arc, Mutex};
 
+    use mvp_bus::FactPayload;
     use serde::{Deserialize, Serialize};
 
     use crate::{
-        Command, CommandContext, CommandError, CommandFact, CommandName, InMemoryCommandPhaseStore,
-        IntentId, PhaseTransition, PhasedCommand, run_phased, run_phased_with_compensation,
+        Command, CommandContext, CommandError, CommandName, InMemoryCommandPhaseStore, IntentId,
+        PhaseTransition, PhasedCommand, run_phased,
     };
 
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     enum TestPhase {
         Start,
         Prepared,
@@ -425,6 +434,7 @@ mod tests {
 
     struct TestCommand {
         fail_at: Option<TestPhase>,
+        fail_compensation: bool,
         seen: Arc<Mutex<Vec<TestPhase>>>,
         compensated: Arc<Mutex<Vec<TestPhase>>>,
     }
@@ -437,9 +447,15 @@ mod tests {
         ) -> Self {
             Self {
                 fail_at,
+                fail_compensation: false,
                 seen,
                 compensated,
             }
+        }
+
+        fn with_failing_compensation(mut self) -> Self {
+            self.fail_compensation = true;
+            self
         }
     }
 
@@ -454,10 +470,6 @@ mod tests {
         fn intent_id(&self) -> IntentId {
             IntentId::parse("intent-1").expect("valid intent")
         }
-
-        fn intent_fact(&self) -> CommandFact {
-            CommandFact::new(self.name(), self.intent_id())
-        }
     }
 
     impl PhasedCommand for TestCommand {
@@ -471,11 +483,10 @@ mod tests {
             &'a self,
             _cx: &'a CommandContext,
             phase: Self::Phase,
-        ) -> std::pin::Pin<
+        ) -> Pin<
             Box<
-                dyn std::future::Future<
-                        Output = Result<PhaseTransition<Self::Phase, Self::Output>, Self::Error>,
-                    > + Send
+                dyn Future<Output = Result<PhaseTransition<Self::Phase, Self::Output>, Self::Error>>
+                    + Send
                     + 'a,
             >,
         > {
@@ -496,13 +507,15 @@ mod tests {
             &'a self,
             _cx: &'a CommandContext,
             phase: Self::Phase,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Self::Error>> + Send + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
             Box::pin(async move {
                 self.compensated
                     .lock()
                     .expect("compensated lock")
                     .push(phase);
+                if self.fail_compensation {
+                    return Err(TestError::Failed);
+                }
                 Ok(())
             })
         }
@@ -510,7 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_phased_persists_each_continued_phase() {
-        let store = Arc::new(InMemoryCommandPhaseStore::default());
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let compensated = Arc::new(Mutex::new(Vec::new()));
@@ -531,7 +544,7 @@ mod tests {
 
     #[tokio::test]
     async fn resumed_command_starts_at_latest_phase() {
-        let store = Arc::new(InMemoryCommandPhaseStore::default());
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let initial_seen = Arc::new(Mutex::new(Vec::new()));
         let compensated = Arc::new(Mutex::new(Vec::new()));
@@ -541,9 +554,7 @@ mod tests {
             Arc::clone(&compensated),
         );
 
-        let error = run_phased_with_compensation(&cx, &initial)
-            .await
-            .expect_err("prepared fails");
+        let error = run_phased(&cx, &initial).await.expect_err("prepared fails");
         assert!(matches!(error, TestError::Failed));
         assert_eq!(
             cx.read_phase::<TestPhase>(&initial).expect("phase"),
@@ -562,13 +573,13 @@ mod tests {
 
     #[tokio::test]
     async fn compensation_walks_committed_phases_in_reverse_without_failing_phase() {
-        let store = Arc::new(InMemoryCommandPhaseStore::default());
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let compensated = Arc::new(Mutex::new(Vec::new()));
         let command = TestCommand::new(Some(TestPhase::Committed), seen, Arc::clone(&compensated));
 
-        let error = run_phased_with_compensation(&cx, &command)
+        let error = run_phased(&cx, &command)
             .await
             .expect_err("committed fails");
 
@@ -577,5 +588,72 @@ mod tests {
             compensated.lock().expect("compensated lock").as_slice(),
             &[TestPhase::Committed, TestPhase::Prepared]
         );
+    }
+
+    #[tokio::test]
+    async fn compensation_failure_preserves_original_error() {
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
+        let cx = CommandContext::new(store);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let compensated = Arc::new(Mutex::new(Vec::new()));
+        let command = TestCommand::new(Some(TestPhase::Committed), seen, Arc::clone(&compensated))
+            .with_failing_compensation();
+
+        let error = run_phased(&cx, &command)
+            .await
+            .expect_err("original command error returned");
+
+        assert!(matches!(error, TestError::Failed));
+        assert_eq!(
+            compensated.lock().expect("compensated lock").as_slice(),
+            &[TestPhase::Committed, TestPhase::Prepared]
+        );
+    }
+
+    #[test]
+    fn conflicting_phase_candidates_are_structured_errors() {
+        let store = Arc::new(InMemoryCommandPhaseStore::empty());
+        let cx = CommandContext::new(store.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let compensated = Arc::new(Mutex::new(Vec::new()));
+        let command = TestCommand::new(None, seen, compensated);
+        let name = command.name();
+        let intent = command.intent_id();
+        store
+            .write_conflicting_phase_for_test(
+                &name,
+                &intent,
+                1,
+                FactPayload::from(br#""Prepared""#.to_vec()),
+            )
+            .expect("write first candidate");
+        let key = store
+            .write_conflicting_phase_for_test(
+                &name,
+                &intent,
+                1,
+                FactPayload::from(br#""Committed""#.to_vec()),
+            )
+            .expect("write second candidate");
+
+        let error = cx
+            .read_phase::<TestPhase>(&command)
+            .expect_err("conflict surfaces");
+
+        assert!(
+            matches!(error, CommandError::PhaseConflict { key: error_key } if error_key == key)
+        );
+    }
+
+    #[test]
+    fn invalid_command_identifiers_are_rejected() {
+        assert!(matches!(
+            CommandName::parse("deploy.submit"),
+            Ok(command) if command.as_str() == "deploy.submit"
+        ));
+        assert!(matches!(
+            IntentId::parse("bad/intent"),
+            Err(CommandError::InvalidIdentifier { .. })
+        ));
     }
 }

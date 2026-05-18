@@ -3,8 +3,8 @@ use std::pin::Pin;
 
 use mvp_bus::FactKey;
 use mvp_commands::{
-    Command, CommandContext, CommandFact, CommandName, IntentId, PhaseTransition, PhasedCommand,
-    run_phased,
+    Command, CommandCompensationFuture, CommandContext, CommandName, CommandStepFuture, IntentId,
+    PhaseTransition, PhasedCommand, run_phased,
 };
 use mvp_identity::VisibleNodes;
 use mvp_projection::FactSource;
@@ -335,24 +335,33 @@ where
         pending: PendingEnvironmentPromote,
         catch_up: Option<ProjectionCatchUp>,
     ) -> EnvironmentResult<EnvironmentCommandResult> {
+        self.finalize_promote_decision(pending.decision, catch_up)
+            .await
+    }
+
+    async fn finalize_promote_decision(
+        &self,
+        decision: EnvironmentPromoteDecisionFact,
+        catch_up: Option<ProjectionCatchUp>,
+    ) -> EnvironmentResult<EnvironmentCommandResult> {
         let Some(catch_up) = catch_up else {
             return Ok(EnvironmentCommandResult::Pending {
                 reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing,
             });
         };
-        if catch_up.serving_commit_id() != &pending.decision.target_serving_commit_id {
+        if catch_up.serving_commit_id() != &decision.target_serving_commit_id {
             return Ok(EnvironmentCommandResult::Pending {
                 reason: EnvironmentServingPendingReason::ProjectionCatchUpMismatch,
             });
         }
         let head = EnvironmentHeadFact {
-            environment: pending.decision.environment,
-            epoch: pending.decision.previous_head.epoch.next()?,
-            head_id: environment_head_id_for_command(&pending.decision.command_id),
-            source_command_id: pending.decision.command_id,
-            serving_commit_id: pending.decision.target_serving_commit_id,
-            previous_head: Some(pending.decision.previous_head),
-            volume_refs: pending.decision.target_volume_refs,
+            environment: decision.environment,
+            epoch: decision.previous_head.epoch.next()?,
+            head_id: environment_head_id_for_command(&decision.command_id),
+            source_command_id: decision.command_id,
+            serving_commit_id: decision.target_serving_commit_id,
+            previous_head: Some(decision.previous_head),
+            volume_refs: decision.target_volume_refs,
             source_branch_id: None,
         };
         self.fact_writer.write_head(head.clone()).await?;
@@ -362,7 +371,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum PromoteEnvironmentPhase {
     Start,
     DecisionWritten {
@@ -397,10 +406,6 @@ where
     fn intent_id(&self) -> IntentId {
         IntentId::parse(self.request.command_id.as_str()).expect("command ids validate as intents")
     }
-
-    fn intent_fact(&self) -> CommandFact {
-        CommandFact::new(self.name(), self.intent_id())
-    }
 }
 
 impl<W, S> PhasedCommand for PromoteEnvironmentPhasedCommand<'_, W, S>
@@ -418,17 +423,7 @@ where
         &'b self,
         _cx: &'b CommandContext,
         phase: Self::Phase,
-    ) -> Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        PhaseTransition<Self::Phase, Self::Output>,
-                        <Self as Command>::Error,
-                    >,
-                > + Send
-                + 'b,
-        >,
-    > {
+    ) -> CommandStepFuture<'b, Self::Phase, Self::Output, <Self as Command>::Error> {
         Box::pin(async move {
             match phase {
                 PromoteEnvironmentPhase::Start => {
@@ -452,32 +447,22 @@ where
                     ))
                 }
                 PromoteEnvironmentPhase::ServingCommitWritten { decision } => {
-                    let Some(catch_up) = &self.catch_up else {
-                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
-                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing,
-                        }));
-                    };
-                    if catch_up.serving_commit_id() != &decision.target_serving_commit_id {
-                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
-                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMismatch,
-                        }));
+                    match self
+                        .owner
+                        .finalize_promote_decision(decision, self.catch_up.clone())
+                        .await?
+                    {
+                        EnvironmentCommandResult::Pending { reason } => {
+                            Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
+                                reason,
+                            }))
+                        }
+                        EnvironmentCommandResult::Complete { head } => {
+                            Ok(PhaseTransition::Continue(
+                                PromoteEnvironmentPhase::HeadWritten { head },
+                            ))
+                        }
                     }
-                    let head = EnvironmentHeadFact {
-                        environment: decision.environment,
-                        epoch: decision.previous_head.epoch.next()?,
-                        head_id: environment_head_id_for_command(&decision.command_id),
-                        source_command_id: decision.command_id,
-                        serving_commit_id: decision.target_serving_commit_id,
-                        previous_head: Some(decision.previous_head),
-                        volume_refs: decision.target_volume_refs,
-                        source_branch_id: None,
-                    };
-                    self.owner.fact_writer.write_head(head.clone()).await?;
-                    Ok(PhaseTransition::Continue(
-                        PromoteEnvironmentPhase::HeadWritten {
-                            head: Box::new(head),
-                        },
-                    ))
                 }
                 PromoteEnvironmentPhase::HeadWritten { head } => {
                     Ok(PhaseTransition::Done(EnvironmentCommandResult::Complete {
@@ -492,7 +477,7 @@ where
         &'b self,
         _cx: &'b CommandContext,
         _phase: Self::Phase,
-    ) -> Pin<Box<dyn Future<Output = Result<(), <Self as Command>::Error>> + Send + 'b>> {
+    ) -> CommandCompensationFuture<'b, <Self as Command>::Error> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -549,6 +534,21 @@ where
         &self,
         request: RollbackEnvironmentRequest,
     ) -> EnvironmentResult<PendingEnvironmentRollback> {
+        let decision = self.prepare_rollback_decision(&request)?;
+        self.fact_writer
+            .write_rollback_decision(decision.clone())
+            .await?;
+        self.serving_writer
+            .write_serving_commit(&request.serving_commit)
+            .await
+            .map_err(map_serving_error)?;
+        Ok(PendingEnvironmentRollback { decision })
+    }
+
+    fn prepare_rollback_decision(
+        &self,
+        request: &RollbackEnvironmentRequest,
+    ) -> EnvironmentResult<EnvironmentRollbackDecisionFact> {
         let current = require_expected_environment_epoch(
             self.source,
             self.session,
@@ -564,12 +564,12 @@ where
         })?;
         let decision = EnvironmentRollbackDecisionFact {
             environment: request.environment.clone(),
-            command_id: request.command_id,
+            command_id: request.command_id.clone(),
             current_head: current.fact.reference(),
             target_serving_commit_id: request.serving_commit.serving_commit_id.clone(),
             target_volume_refs: rollback_target.volume_refs.clone(),
             rollback_target,
-            visible_nodes: request.visible_nodes,
+            visible_nodes: request.visible_nodes.clone(),
         };
         let current_before_write = require_expected_environment_epoch(
             self.source,
@@ -583,14 +583,24 @@ where
             &current,
             &current_before_write,
         )?;
-        self.fact_writer
-            .write_rollback_decision(decision.clone())
-            .await?;
-        self.serving_writer
-            .write_serving_commit(&request.serving_commit)
-            .await
-            .map_err(map_serving_error)?;
-        Ok(PendingEnvironmentRollback { decision })
+        Ok(decision)
+    }
+
+    pub async fn execute_phased(
+        &self,
+        cx: &CommandContext,
+        request: RollbackEnvironmentRequest,
+        catch_up: Option<ProjectionCatchUp>,
+    ) -> EnvironmentResult<EnvironmentCommandResult> {
+        run_phased(
+            cx,
+            &RollbackEnvironmentPhasedCommand {
+                owner: self,
+                request,
+                catch_up,
+            },
+        )
+        .await
     }
 
     pub async fn finalize(
@@ -622,6 +632,137 @@ where
         Ok(EnvironmentCommandResult::Complete {
             head: Box::new(head),
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum RollbackEnvironmentPhase {
+    Start,
+    DecisionWritten {
+        decision: EnvironmentRollbackDecisionFact,
+    },
+    ServingCommitWritten {
+        decision: EnvironmentRollbackDecisionFact,
+    },
+    HeadWritten {
+        head: Box<EnvironmentHeadFact>,
+    },
+}
+
+struct RollbackEnvironmentPhasedCommand<'a, W, S> {
+    owner: &'a RollbackEnvironmentCommand<'a, W, S>,
+    request: RollbackEnvironmentRequest,
+    catch_up: Option<ProjectionCatchUp>,
+}
+
+impl<W, S> Command for RollbackEnvironmentPhasedCommand<'_, W, S>
+where
+    W: EnvironmentFactWriter,
+    S: ServingFactWriter,
+{
+    type Output = EnvironmentCommandResult;
+    type Error = EnvironmentError;
+
+    fn name(&self) -> CommandName {
+        CommandName::parse("environment-rollback").expect("static command name validates")
+    }
+
+    fn intent_id(&self) -> IntentId {
+        IntentId::parse(self.request.command_id.as_str()).expect("command ids validate as intents")
+    }
+}
+
+impl<W, S> PhasedCommand for RollbackEnvironmentPhasedCommand<'_, W, S>
+where
+    W: EnvironmentFactWriter,
+    S: ServingFactWriter,
+{
+    type Phase = RollbackEnvironmentPhase;
+
+    fn initial_phase(&self) -> Self::Phase {
+        RollbackEnvironmentPhase::Start
+    }
+
+    fn step<'b>(
+        &'b self,
+        _cx: &'b CommandContext,
+        phase: Self::Phase,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        PhaseTransition<Self::Phase, Self::Output>,
+                        <Self as Command>::Error,
+                    >,
+                > + Send
+                + 'b,
+        >,
+    > {
+        Box::pin(async move {
+            match phase {
+                RollbackEnvironmentPhase::Start => {
+                    let decision = self.owner.prepare_rollback_decision(&self.request)?;
+                    self.owner
+                        .fact_writer
+                        .write_rollback_decision(decision.clone())
+                        .await?;
+                    Ok(PhaseTransition::Continue(
+                        RollbackEnvironmentPhase::DecisionWritten { decision },
+                    ))
+                }
+                RollbackEnvironmentPhase::DecisionWritten { decision } => {
+                    self.owner
+                        .serving_writer
+                        .write_serving_commit(&self.request.serving_commit)
+                        .await
+                        .map_err(map_serving_error)?;
+                    Ok(PhaseTransition::Continue(
+                        RollbackEnvironmentPhase::ServingCommitWritten { decision },
+                    ))
+                }
+                RollbackEnvironmentPhase::ServingCommitWritten { decision } => {
+                    let Some(catch_up) = &self.catch_up else {
+                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
+                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing,
+                        }));
+                    };
+                    if catch_up.serving_commit_id() != &decision.target_serving_commit_id {
+                        return Ok(PhaseTransition::Done(EnvironmentCommandResult::Pending {
+                            reason: EnvironmentServingPendingReason::ProjectionCatchUpMismatch,
+                        }));
+                    }
+                    let head = EnvironmentHeadFact {
+                        environment: decision.environment,
+                        epoch: decision.current_head.epoch.next()?,
+                        head_id: environment_head_id_for_command(&decision.command_id),
+                        source_command_id: decision.command_id,
+                        serving_commit_id: decision.target_serving_commit_id,
+                        previous_head: Some(decision.rollback_target),
+                        volume_refs: decision.target_volume_refs,
+                        source_branch_id: None,
+                    };
+                    self.owner.fact_writer.write_head(head.clone()).await?;
+                    Ok(PhaseTransition::Continue(
+                        RollbackEnvironmentPhase::HeadWritten {
+                            head: Box::new(head),
+                        },
+                    ))
+                }
+                RollbackEnvironmentPhase::HeadWritten { head } => {
+                    Ok(PhaseTransition::Done(EnvironmentCommandResult::Complete {
+                        head,
+                    }))
+                }
+            }
+        })
+    }
+
+    fn compensate<'b>(
+        &'b self,
+        _cx: &'b CommandContext,
+        _phase: Self::Phase,
+    ) -> Pin<Box<dyn Future<Output = Result<(), <Self as Command>::Error>> + Send + 'b>> {
+        Box::pin(async { Ok(()) })
     }
 }
 

@@ -469,7 +469,7 @@ async fn phased_promote_resumes_after_serving_commit_without_rewriting_decision(
     let serving = RecordingServingWriter::default();
     let plan = serving_plan("serving-promote-1", "node-branch", "fd00::2:8080", 2);
     let command = PromoteEnvironmentCommand::new(&source, &fixture.session, &writer, &serving);
-    let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::default()));
+    let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
     let request = PromoteEnvironmentRequest {
         command_id: command_id("promote-1"),
         environment: env,
@@ -619,6 +619,81 @@ async fn rollback_writes_forward_head_using_previous_volume_refs() {
     assert!(
         matches!(complete, EnvironmentCommandResult::Complete { head } if head.epoch == epoch(3) && head.volume_refs == vec![volume("db-prod")])
     );
+}
+
+#[tokio::test]
+async fn phased_rollback_resumes_after_serving_commit_without_rewriting_decision() {
+    let fixture = Fixture::new();
+    let env = environment("prod");
+    let previous = head(
+        &env,
+        1,
+        "head-prod-1",
+        "serving-prod-1",
+        vec!["db-prod"],
+        None,
+    );
+    let current = head(
+        &env,
+        2,
+        "head-prod-2",
+        "serving-promote-1",
+        vec!["db-pr-123"],
+        Some(&previous),
+    );
+    let mut source = MemoryFactSource::default();
+    source.insert_head(
+        &fixture,
+        PrincipalId::new("prod"),
+        CandidateStatus::Verified,
+        current,
+    );
+    let writer = RecordingEnvironmentWriter::default();
+    let serving = RecordingServingWriter::default();
+    let plan = serving_plan("serving-rollback-1", "node-prod", "fd00::1:8080", 3);
+    let command = RollbackEnvironmentCommand::new(&source, &fixture.session, &writer, &serving);
+    let cx = CommandContext::new(Arc::new(InMemoryCommandPhaseStore::empty()));
+    let request = RollbackEnvironmentRequest {
+        command_id: command_id("rollback-1"),
+        environment: env,
+        expected_environment_epoch: epoch(2),
+        serving_commit: plan.clone(),
+        visible_nodes: visible_nodes(),
+    };
+
+    let pending = command
+        .execute_phased(&cx, request.clone(), None)
+        .await
+        .expect("phased rollback pending");
+
+    assert!(matches!(
+        pending,
+        EnvironmentCommandResult::Pending {
+            reason: EnvironmentServingPendingReason::ProjectionCatchUpMissing
+        }
+    ));
+    assert_eq!(
+        writer.events(),
+        vec![RecordedEnvironmentEvent::RollbackDecision]
+    );
+    assert_eq!(serving.writes(), vec![plan.serving_commit_id.clone()]);
+
+    let complete = command
+        .execute_phased(&cx, request, Some(catch_up(&fixture, &plan)))
+        .await
+        .expect("phased rollback resumes");
+
+    assert!(
+        matches!(complete, EnvironmentCommandResult::Complete { head } if head.epoch == epoch(3) && head.volume_refs == vec![volume("db-prod")])
+    );
+    assert_eq!(
+        writer.events(),
+        vec![
+            RecordedEnvironmentEvent::RollbackDecision,
+            RecordedEnvironmentEvent::Head
+        ]
+    );
+    assert_eq!(serving.writes(), vec![plan.serving_commit_id]);
 }
 
 #[tokio::test]
