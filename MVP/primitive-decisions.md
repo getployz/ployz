@@ -15,6 +15,17 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 031 adds a process-separated p2panda-net serving proof. A serving role
+  owns a persistent p2panda store, `PandaNetFactNode`, import loop, projection
+  actor, and last-good serving actor; remote publisher processes only submit
+  already-authorized fact operations over p2panda-net. The coordinator/local
+  mutation socket is absent from the update path.
+- Slice 031 found that one p2panda-net stream subscription did not reliably
+  surface later appends from a stable remote peer after the receiver had drained
+  the current stream. The transport wrapper now exposes `refresh_stream`, and
+  the process receiver refreshes after idle timeout. This keeps the primitive
+  anti-entropy-shaped: serving roles can catch later authorized facts without a
+  local coordinator.
 - Slice 027 routing-owned serving commit work moves the serving writer
   contract into `mvp-routing`. Deploy and machine remove now consume
   `ServingFactWriter` instead of owning or bypassing serving-write semantics.

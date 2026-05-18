@@ -1,6 +1,6 @@
 ---
 title: Slice 031 p2panda-net Process Serving Plan
-status: planned
+status: implemented
 created: 2026-05-18
 origin:
   - VISION.md
@@ -76,6 +76,13 @@ Add `p2panda-net-process-serving-contract`:
 The product proof is that serving state can continue to update from networked
 facts after the command/coordinator role is gone. It is not a proof of kernel
 WireGuard, production Pingora, or production DNS server integration.
+
+Implementation note: the shipped contract proves process-separated p2panda-net
+import into serving projections, local mutation unavailability, delayed remote
+serving update after baseline, malformed message rejection, deleted SQLite
+rebuild, and restart from last-good snapshots/local p2panda store. The receiver
+refreshes its p2panda stream after idle timeouts so later appends from a stable
+remote peer are picked up without the local coordinator.
 
 ## Requirements Trace
 
