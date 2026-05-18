@@ -11,6 +11,7 @@ use mvp_projection::{BackendEndpoint, CandidateStatus, FactCandidate, FactSource
 use mvp_routing::ServingCommitId;
 use serde::{Deserialize, Serialize};
 
+use crate::wire::{decode, encode};
 use crate::{DeployError, DeployId, DeployManifest, DeployResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,16 +19,6 @@ use crate::{DeployError, DeployId, DeployManifest, DeployResult};
 pub enum DeployFactPayload {
     Decision(Box<DeployDecisionFact>),
     CleanupDone(DeployCleanupDoneFact),
-}
-
-impl DeployFactPayload {
-    pub fn to_fact_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
-        serde_json::to_vec(self)
-    }
-
-    pub fn from_fact_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,7 +144,10 @@ impl DeployFactWriter for BusDeployFactWriter {
                 &self.bus,
                 &self.session,
                 deploy_decision_fact_key(&fact.deploy_id)?,
-                deploy_decision_fact_payload(&fact)?,
+                encode_deploy_fact(
+                    DeployFactPayload::Decision(Box::new(fact)),
+                    "serialize deploy decision fact",
+                )?,
             )
             .await
         })
@@ -168,7 +162,10 @@ impl DeployFactWriter for BusDeployFactWriter {
                 &self.bus,
                 &self.session,
                 deploy_cleanup_done_fact_key(&fact.deploy_id)?,
-                deploy_cleanup_done_fact_payload(&fact)?,
+                encode_deploy_fact(
+                    DeployFactPayload::CleanupDone(fact),
+                    "serialize deploy cleanup done fact",
+                )?,
             )
             .await
         })
@@ -185,14 +182,14 @@ pub fn deploy_cleanup_done_fact_key(deploy_id: &DeployId) -> DeployResult<FactKe
 
 pub fn deploy_decision_fact_payload(fact: &DeployDecisionFact) -> DeployResult<FactPayload> {
     encode_deploy_fact(
-        &DeployFactPayload::Decision(Box::new(fact.clone())),
+        DeployFactPayload::Decision(Box::new(fact.clone())),
         "serialize deploy decision fact",
     )
 }
 
 pub fn deploy_cleanup_done_fact_payload(fact: &DeployCleanupDoneFact) -> DeployResult<FactPayload> {
     encode_deploy_fact(
-        &DeployFactPayload::CleanupDone(fact.clone()),
+        DeployFactPayload::CleanupDone(fact.clone()),
         "serialize deploy cleanup done fact",
     )
 }
@@ -201,12 +198,7 @@ pub fn decode_deploy_decision_fact(
     key: &FactKey,
     payload: &FactPayload,
 ) -> DeployResult<DeployDecisionFact> {
-    match DeployFactPayload::from_fact_bytes(payload.as_bytes()).map_err(|source| {
-        DeployError::WirePayload {
-            context: "decode deploy decision fact",
-            source,
-        }
-    })? {
+    match decode::<DeployFactPayload>(payload, "decode deploy decision fact")? {
         DeployFactPayload::Decision(fact) => Ok(*fact),
         DeployFactPayload::CleanupDone(_) => Err(DeployError::DeployFactKindMismatch {
             key: key.clone(),
@@ -219,12 +211,7 @@ pub fn decode_deploy_cleanup_done_fact(
     key: &FactKey,
     payload: &FactPayload,
 ) -> DeployResult<DeployCleanupDoneFact> {
-    match DeployFactPayload::from_fact_bytes(payload.as_bytes()).map_err(|source| {
-        DeployError::WirePayload {
-            context: "decode deploy cleanup done fact",
-            source,
-        }
-    })? {
+    match decode::<DeployFactPayload>(payload, "decode deploy cleanup done fact")? {
         DeployFactPayload::CleanupDone(fact) => Ok(fact),
         DeployFactPayload::Decision(_) => Err(DeployError::DeployFactKindMismatch {
             key: key.clone(),
@@ -323,13 +310,10 @@ fn compare_decision_candidates(
 }
 
 fn encode_deploy_fact(
-    payload: &DeployFactPayload,
+    payload: DeployFactPayload,
     context: &'static str,
 ) -> DeployResult<FactPayload> {
-    payload
-        .to_fact_bytes()
-        .map(Into::into)
-        .map_err(|source| DeployError::WirePayload { context, source })
+    encode(&payload, context).map(Into::into)
 }
 
 async fn write_bus_deploy_fact(
