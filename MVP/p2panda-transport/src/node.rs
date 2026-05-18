@@ -15,7 +15,7 @@ use tokio::time::timeout;
 use crate::{PandaNetLogId, PandaNetQuarantineLog, PandaNetStartupStep, PandaNetTransportError};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const STREAM_TIMEOUT: Duration = Duration::from_secs(5);
+const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PandaNetNetworkId([u8; 32]);
