@@ -705,6 +705,16 @@ Current proof status:
   compile-backed evidence that those older transport adapters may no longer be
   earning their keep; deletion still depends on preserving import-status
   behavior in the p2panda-net E2Es.
+- Slice 038 moves the main `PandaNetFactNode` success path to canonical
+  `Operation<PandaFactExtensions>` delivery on p2panda `0.6.0` and non-RC
+  iroh `0.98`. This is not a full deletion win yet: `PFO1`,
+  `PandaFactWireEnvelope`, `PandaNetQuarantineLog`, and the opaque-body net
+  tests still exist as legacy/direct-probe scaffolding.
+- Slice 039 audit concludes the next implementation proof should delete the
+  opaque `PFO1`/`PandaNetNode`/`PandaNetQuarantineLog` path. The proof target is
+  no active all-suite success path encoding `PFO1`, while preserving the
+  branchable import outcomes and process-serving behavior already proven by
+  Slice 038.
 
 ## Required Test Artifacts
 

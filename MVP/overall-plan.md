@@ -547,6 +547,13 @@ Slice 039 is a p2panda substitution deletion audit:
 Now that p2panda-net works without RC iroh, the next decision is which
 remaining MVP-local plumbing can be deleted or demoted before another product
 feature is added.
+The result is
+[MVP/slice-039-p2panda-substitution-deletion-audit.md](slice-039-p2panda-substitution-deletion-audit.md):
+delete the opaque `PFO1`/`PandaNetNode`/`PandaNetQuarantineLog` transport path
+next, then move manual trusted author/replica maps to durable p2panda-auth
+membership operations. p2panda discovery/address-book can improve transport
+reachability after invite/bootstrap, but it does not replace visible nodes at
+command decision time.
 
 ## Crate Scout Protocol
 

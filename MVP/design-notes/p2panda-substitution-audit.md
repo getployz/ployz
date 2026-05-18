@@ -232,6 +232,35 @@ Keep these Ployz-owned:
 
 The goal is substrate deletion, not product semantic deletion.
 
+## Slice 039 Deletion Audit Result
+
+Slice 039 updates the p2panda-net conclusion after the canonical transport
+migration. The active MVP workspace now uses `p2panda-net 0.6.0` on non-RC
+`iroh 0.98.2`; using p2panda-net no longer depends on RC iroh.
+
+The next implementation slice should delete the opaque transport path:
+
+- `PandaFactWireEnvelope` / `PFO1`;
+- `import_fact_body` / `import_fact_body_into_shared_store`;
+- `PandaNetNode` / `PandaNetStream`;
+- `PandaNetQuarantineLog` / `PandaNetStore`;
+- `transport_wire_bodies` harness helpers.
+
+Remaining callers are legacy E2Es and direct rejection probes. Replace them
+with canonical `PandaNetFactNode` coverage or direct
+`Operation<PandaFactExtensions>` import helpers before deleting the old path.
+
+After transport deletion, the next p2panda substitution should be durable
+p2panda-auth membership operations. The current authority seam is useful but
+manual trusted author/replica maps still exist in product-shaped process paths.
+p2panda-auth should own group CRDT mechanics; Ployz must still own root
+anchoring, principal/key/epoch binding, fact-key grants, bus permissions,
+command conflicts, visible-node evidence, and product lifecycle rules.
+
+p2panda discovery and address book are transport reachability tools. They
+should not become durable membership, active partition truth, or command
+consistency boundaries.
+
 ## Verification
 
 This slice changed planning and decision documents only. The uncommitted
