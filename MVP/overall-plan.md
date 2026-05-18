@@ -513,6 +513,17 @@ against the current p2panda API and decide whether `PFO1`,
 `PandaNetQuarantineLog`, manual trust fallbacks, process JSON facts, and
 historical iroh-docs proofs can be deleted or parked before adding another
 product feature.
+The result is
+[MVP/slice-037-p2panda-06-substrate-deletion.md](slice-037-p2panda-06-substrate-deletion.md):
+p2panda-net `0.6.0` is usable with non-RC iroh `0.98`, but not side-by-side
+with the current active MVP iroh `0.96` proof because both iroh lines pin
+different exact `ed25519-dalek` pre-releases. The spike proves canonical
+`Operation<PloyzFactExtensions>` facts, p2panda-store SQLite
+operation/log/topic/group support, p2panda-net `LogSync` type fit, and
+p2panda-auth condition-backed group persistence. Treat the slice report as the
+canonical deletion ledger. The next implementation slice should align the MVP
+p2panda/iroh line and prove live canonical transport before deleting `PFO1` or
+`PandaNetQuarantineLog`.
 
 ## Crate Scout Protocol
 

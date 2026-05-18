@@ -73,7 +73,7 @@ Primary sources checked during this audit:
 | Process fact source | `MVP/e2e/src/process_fact_source.rs` | Replace after persistence slice | It proves process fate separation today, but JSON entry/blob files are another custom fact store. | Process-role E2E uses p2panda persistent fact role; kill/restart fact role; serving/projection recover. |
 | Bus fact store | `MVP/bus/src/facts.rs`, `MVP/projection/src/bus_source.rs` | Shrink to fixture, then delete from product proofs | Useful harness for early bus/projection proofs; not the durable fact direction. | Projection, deploy, serving, scale, and machine scenarios use p2panda or an explicitly named test fixture. |
 | Iroh docs fact source | `MVP/iroh/src/facts.rs` | Park, then delete or shrink to transport bridge | It is the largest remaining custom fact local-view wrapper. p2panda now owns operation envelope/storage; iroh-docs should not be hardened in parallel. | Port `iroh-docs-contract` semantics to p2panda persistence/sync: conflict candidates, unauthorized/unverified status, missing payload, projection rebuild. |
-| p2panda spike crate | deleted in Slice 025 | Deleted | It served its purpose as compile evidence. Keeping it risked two examples diverging. | `mvp-p2panda-facts` covers every spike behavior plus persistence. |
+| p2panda 0.6 spike crate | `MVP/p2panda-06-spike` | Temporary excluded workspace | Slice 037 needs compile evidence for crates.io p2panda `0.6.0` while the active MVP workspace still carries iroh `0.96`. Keep it only until the 0.6 migration lands. | Canonical fact operation, store traits, p2panda-net `LogSync`, and p2panda-auth processor tests pass by manifest path. |
 | Operation export/import | `MVP/p2panda-facts/src/lib.rs` | Keep narrow as harness/debug plumbing | Manual exchange is acceptable for deterministic local E2E. It is not the product replication contract. | Slice 020 proved p2panda-sync catch-up between stores and a git p2panda-net compatibility path. |
 | Membership/revocation | `MVP/mesh`, `MVP/machine`, bus grants | Spike `p2panda-auth` for membership only | Strong removal and eventually consistent group state map to island membership. Subject permissions, queue permissions, response permissions, and bridge imports/exports remain Ployz bus semantics. | Root add/remove/demote, concurrent remove/re-add, tombstone domination, and WireGuard projection tests. |
 | Advisory leases | `MVP/lease/src/lib.rs` | Keep reducer semantics; store as p2panda facts | Lease behavior is Ployz product semantics: TTL, renewal, epoch fencing, supersession, visible-node context, RAII release. p2panda can store signed facts, not decide lease policy. | ACME p2panda HTTP-01 contract after persistence. |
@@ -194,6 +194,26 @@ The next network substitution slice should bias toward the git `p2panda-net`
 line rather than writing more bespoke transport. The remaining blocker is the
 production fact-store migration from stable p2panda 0.5.2 APIs to the current
 git API, not a philosophical objection to p2panda-net.
+
+## p2panda 0.6 Result
+
+Slice 037 updates that conclusion: the relevant p2panda line is no longer git
+only. Crates.io `p2panda-net 0.6.0` depends on non-RC `iroh 0.98.2`, and the
+excluded `mvp-p2panda-06-spike` proves the current desired replacement shape:
+
+- canonical `Operation<PloyzFactExtensions>` facts instead of `PFO1` wrapper
+  envelopes;
+- p2panda-store SQLite operation/log/topic/group traits for the canonical fact
+  store;
+- p2panda-net `LogSync<SqliteStore, PloyzLogId, PloyzFactExtensions>`;
+- p2panda-auth group state with Ployz-owned conditions.
+
+The blocker is now workspace alignment, not upstream availability. The active
+MVP workspace still includes `mvp-iroh` on iroh `0.96`, which conflicts with
+p2panda-net `0.6`'s iroh `0.98` through exact `ed25519-dalek` pre-release pins.
+The next migration should align or park the old direct-iroh proof, then use the
+Slice 037 report as the canonical deletion ledger for the live `PFO1` and
+quarantine-log transport paths.
 
 ## What Not To Substitute
 

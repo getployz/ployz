@@ -15,6 +15,26 @@ the decision concrete.
 
 ## Changed Since Last Slice
 
+- Slice 037 adds an excluded nested `mvp-p2panda-06-spike` crate because the
+  active MVP workspace cannot resolve `iroh 0.96` and p2panda-net's
+  `iroh 0.98` line together: the two iroh-base versions pin different exact
+  `ed25519-dalek` pre-releases. This is a migration constraint, not a reason to
+  avoid p2panda-net `0.6`.
+- Slice 037 proves the p2panda `0.6` replacement shape: canonical
+  `Operation<PloyzFactExtensions>` facts round-trip as `RawOperation`, SQLite
+  store traits support operation/log/topic/group state, p2panda-net `LogSync`
+  accepts `SqliteStore + PloyzLogId + PloyzFactExtensions`, and p2panda-auth
+  persists group state with Ployz-owned conditions.
+- Slice 037 classifies `PandaFactWireEnvelope`/`PFO1`,
+  `PandaNetQuarantineLog`, and wrapper replay suppression as candidate
+  delete-after-0.6-migration targets. Deletion is gated on live canonical
+  p2panda-net sync plus duplicate/conflict/malformed/oversized/wrong-author/
+  unauthorized outcome preservation. `FactSource`, `IslandAuthoritySnapshot`,
+  PloyzBus, fact-key grants, projection reducers, and structured import
+  outcomes remain product-owned seams.
+- Slice 037 rejects p2panda-blobs for now. Published `p2panda-blobs 0.5.2`
+  still has no usable crate-root API and carries the upstream note that it needs
+  refactoring after the p2panda-net refactor.
 - Slice 036 introduces `mvp-commands` as a tiny opt-in command substrate.
   `run_phased` persists explicit phase values, resumes from the latest phase,
   compensates committed phases in reverse on failure, and returns structured
@@ -1351,10 +1371,11 @@ What it replaces:
 Costs:
 - The fact node currently proves in-process local p2panda-net nodes, not
   process-role lifecycle or production relay/discovery topology.
-- Slice 032 removed the git p2panda transport split. The cost moved to version
-  alignment: crates.io `p2panda-net 0.5.2` requires the iroh `0.96` family, so
-  `mvp-iroh` is held on that compatible line until p2panda publishes a newer
-  crates.io release.
+- Slice 037 proves crates.io `p2panda-net 0.6.0` is now available on the
+  non-RC iroh `0.98` family. The remaining cost is workspace alignment:
+  current `mvp-iroh` still pins `iroh 0.96`, and both iroh lines require
+  incompatible exact `ed25519-dalek` pre-releases. Migrating p2panda-net to
+  `0.6` therefore requires upgrading or parking the old direct-iroh proof.
 - p2panda-net live stream refresh can replay already-seen wrapper operations.
   `PandaNetFactNode` suppresses a bounded cache of wrapper operation hashes.
   This is transport replay suppression, not Ployz fact deduplication; duplicate
@@ -1368,8 +1389,10 @@ Costs:
   not with ad hoc fact-node filtering.
 
 Revisit if:
-- A newer crates.io p2panda-net release moves to a newer iroh family and lets
-  `mvp-iroh` advance without a split.
+- The MVP p2panda/iroh line is aligned to p2panda `0.6` and iroh `0.98`.
+  Then live transport should carry canonical `Operation<PloyzFactExtensions>`
+  values. Delete `PandaFactWireEnvelope`/`PFO1` plus
+  `PandaNetQuarantineLog` only after branchable import outcomes are preserved.
 - Process-role serving replication needs long-lived supervisor/status surfaces.
 - p2panda-auth becomes ready to own island membership or replication grants.
 
@@ -1454,6 +1477,8 @@ Required boundary:
 Revisit if:
 - manual trusted-author and trusted-replica fallback APIs have no product
   callers and can move behind harness-only features or be deleted;
+- the authz store migrates to p2panda-auth/store `0.6` while keeping
+  `IslandAuthoritySnapshot` as the Ployz seam;
 - fact operations carry enough membership frontier evidence to safely import
   pre-removal facts from another replica without accepting fresh stale-writer
   forgeries;

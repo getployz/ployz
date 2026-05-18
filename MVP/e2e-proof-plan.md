@@ -227,6 +227,13 @@ Current proof status:
   three rejected operations, one projected node/service/gateway/DNS set, live
   sync/import timing, gateway/DNS snapshot loading, and deleted-SQLite
   projection rebuild from the synced receiver store.
+- Slice 037 proves p2panda `0.6` can carry canonical
+  `Operation<PloyzFactExtensions>` facts and that p2panda-net `0.6.0` accepts
+  the canonical `SqliteStore + PloyzLogId + PloyzFactExtensions` shape. The
+  existing p2panda-net E2Es should be replaced during the 0.6 migration so they
+  move canonical fact operations instead of opaque `PFO1` envelopes while still
+  proving duplicate/conflict/malformed/oversized/wrong-author/unauthorized
+  outcomes. Keep them in `all` until that replacement exists.
 - Slice 024 extracts ACME claim/present/clear into `mvp-acme-command`. The
   p2panda ACME and p2panda-net ACME scenarios still prove the same transport,
   projection, last-good serving, scoped-grant, stale-write, trusted-replica,
@@ -691,6 +698,13 @@ Current proof status:
   repeated p2panda wrapper mechanics moved into `SharedPandaFactStore`, so the
   next command should not need another local `Arc<Mutex<PandaFactStore>>`
   adapter shell.
+- Slice 037 is a maintenance-surface proof. It adds a temporary 0.6 spike, but
+  the deletion ledger says the next implementation slice should try to remove
+  live `PFO1`, `PandaNetQuarantineLog`, and wrapper replay suppression by
+  carrying canonical p2panda operations directly. This is the first
+  compile-backed evidence that those older transport adapters may no longer be
+  earning their keep; deletion still depends on preserving import-status
+  behavior in the p2panda-net E2Es.
 
 ## Required Test Artifacts
 
