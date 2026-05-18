@@ -56,6 +56,18 @@ impl DeployStateMachine {
         }
     }
 
+    pub fn recover_pending_cleanup(
+        deploy_id: DeployId,
+        phases: impl IntoIterator<Item = PhaseId>,
+        visible_nodes: VisibleNodes,
+        serving_commit_id: ServingCommitId,
+    ) -> DeployResult<Self> {
+        let mut state = Self::new(deploy_id, phases);
+        state.record_visible_nodes(visible_nodes);
+        state.commit_serving(serving_commit_id)?;
+        Ok(state)
+    }
+
     pub fn record_visible_nodes(&mut self, visible_nodes: VisibleNodes) {
         self.visible_nodes = visible_nodes;
     }

@@ -2,10 +2,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt, stream};
-use mvp_bus::{BusActorHandle, BusError, BusSession, RequestManyPolicy, RequestTarget, Subject};
+use mvp_bus::{
+    BusActorHandle, BusError, BusSession, IslandId, RequestManyPolicy, RequestTarget, Subject,
+};
 use mvp_identity::{NodeId, VisibleNodes};
+use mvp_projection::FactSource;
+use mvp_routing::{RoutingError, read_exact_serving_commit};
 
-use crate::facts::{BusDeployFactWriter, DeployDecisionFact, DeployFactWriter};
+use crate::facts::{
+    BusDeployFactWriter, DeployCleanupDoneFact, DeployDecisionCandidate, DeployDecisionFact,
+    DeployFactWriter, read_deploy_cleanup_done, read_deploy_decision,
+};
 use crate::serving_commit::{BusServingFactWriter, ServingFactWriter};
 use crate::wire::{
     CapacityRequest, DrainInstanceRequest, InstanceCommandReply, InstanceCommandRequest,
@@ -44,6 +51,27 @@ pub struct ProjectedPendingCleanup {
     pending: PendingCleanup,
 }
 
+#[derive(Debug)]
+pub struct RecoveredPendingCleanup {
+    pending: PendingCleanup,
+    superseded_decisions: Vec<DeployDecisionCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreCommitIncompleteRecovery {
+    pub deploy_id: crate::DeployId,
+    pub visible_nodes: VisibleNodes,
+    pub serving_commit_id: crate::ServingCommitId,
+    pub superseded_decisions: Vec<DeployDecisionCandidate>,
+}
+
+#[derive(Debug)]
+pub enum DeployRecovery {
+    Pending(Box<RecoveredPendingCleanup>),
+    PreCommitIncomplete(PreCommitIncompleteRecovery),
+    CleanupDone(DeployCommandResult),
+}
+
 impl PendingCleanup {
     pub fn after_projection(
         self,
@@ -55,6 +83,25 @@ impl PendingCleanup {
             });
         }
         Ok(ProjectedPendingCleanup { pending: self })
+    }
+}
+
+impl RecoveredPendingCleanup {
+    pub fn after_projection(
+        self,
+        projection: ProjectionCatchUp,
+    ) -> DeployResult<ProjectedPendingCleanup> {
+        self.pending.after_projection(projection)
+    }
+
+    #[must_use]
+    pub fn manifest(&self) -> &DeployManifest {
+        &self.pending.manifest
+    }
+
+    #[must_use]
+    pub fn superseded_decisions(&self) -> &[DeployDecisionCandidate] {
+        &self.superseded_decisions
     }
 }
 
@@ -163,7 +210,56 @@ where
             return Ok(result);
         }
 
-        state.finish_cleanup()
+        let cleanup_done = DeployCleanupDoneFact::new(manifest);
+        let result = state.finish_cleanup()?;
+        self.fact_writer.write_cleanup_done(cleanup_done).await?;
+        Ok(result)
+    }
+
+    pub fn recover_pending_cleanup(
+        &self,
+        source: &dyn FactSource,
+        island: &IslandId,
+        fact_session: &BusSession,
+        deploy_id: &crate::DeployId,
+    ) -> DeployResult<DeployRecovery> {
+        let selection = read_deploy_decision(source, island, fact_session, deploy_id)?;
+        let decision = selection.winner.fact;
+        match read_exact_serving_commit(
+            source,
+            island,
+            fact_session,
+            &decision.manifest.serving_commit,
+        ) {
+            Ok(_serving) => {}
+            Err(RoutingError::ServingFactMissing { .. }) => {
+                return Ok(DeployRecovery::PreCommitIncomplete(
+                    PreCommitIncompleteRecovery {
+                        deploy_id: decision.deploy_id,
+                        visible_nodes: decision.visible_nodes,
+                        serving_commit_id: decision.expected_serving_commit_id,
+                        superseded_decisions: selection.superseded,
+                    },
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        if let Some(cleanup_done) =
+            read_deploy_cleanup_done(source, island, fact_session, deploy_id)?
+        {
+            validate_cleanup_done_fact(&decision.manifest, &cleanup_done)?;
+            let mut state = recovered_cleanup_state(&decision)?;
+            return Ok(DeployRecovery::CleanupDone(state.finish_cleanup()?));
+        }
+
+        Ok(DeployRecovery::Pending(Box::new(RecoveredPendingCleanup {
+            pending: PendingCleanup {
+                state: recovered_cleanup_state(&decision)?,
+                manifest: decision.manifest,
+            },
+            superseded_decisions: selection.superseded,
+        })))
     }
 
     async fn cleanup_old_backends(
@@ -402,6 +498,32 @@ fn instance_command_request(
         instance_id: instance.instance_id.clone(),
         service: instance.service.clone(),
         revision: instance.revision.clone(),
+    }
+}
+
+fn recovered_cleanup_state(decision: &DeployDecisionFact) -> DeployResult<DeployStateMachine> {
+    DeployStateMachine::recover_pending_cleanup(
+        decision.deploy_id.clone(),
+        decision.manifest.phases.iter().map(|phase| phase.phase_id),
+        decision.visible_nodes.clone(),
+        decision.expected_serving_commit_id.clone(),
+    )
+}
+
+fn validate_cleanup_done_fact(
+    manifest: &DeployManifest,
+    cleanup_done: &DeployCleanupDoneFact,
+) -> DeployResult<()> {
+    if cleanup_done.deploy_id == manifest.deploy_id
+        && cleanup_done.serving_commit_id == manifest.serving_commit.serving_commit_id
+        && cleanup_done.cleanup_targets == manifest.serving_commit.old_backends_to_drain
+        && cleanup_done.serving_epoch == manifest.serving_commit.epoch
+    {
+        Ok(())
+    } else {
+        Err(DeployError::DeployFactMismatch {
+            deploy_id: manifest.deploy_id.clone(),
+        })
     }
 }
 

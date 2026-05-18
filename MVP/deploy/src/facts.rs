@@ -272,6 +272,43 @@ pub fn read_deploy_decision(
     select_deploy_decision(decoded, key)
 }
 
+pub fn read_deploy_cleanup_done(
+    source: &dyn FactSource,
+    island: &IslandId,
+    session: &BusSession,
+    deploy_id: &DeployId,
+) -> DeployResult<Option<DeployCleanupDoneFact>> {
+    let key = deploy_cleanup_done_fact_key(deploy_id)?;
+    let pattern = FactKeyPattern::parse(key.as_str())?;
+    let candidates = source
+        .list_candidates(island, &pattern, session)?
+        .into_iter()
+        .filter(|candidate| {
+            candidate.key() == &key
+                && matches!(
+                    candidate.status(),
+                    CandidateStatus::Verified | CandidateStatus::Conflict
+                )
+        })
+        .collect::<Vec<_>>();
+    let payloads = source.read_payloads(island, &candidates, session)?;
+    let mut decoded = Vec::new();
+    for candidate in &candidates {
+        let Some(payload) = payloads.get(candidate.content_hash()) else {
+            continue;
+        };
+        let fact = decode_deploy_cleanup_done_fact(&key, payload)?;
+        if fact.deploy_id != *deploy_id {
+            return Err(DeployError::DeployFactMismatch {
+                deploy_id: deploy_id.clone(),
+            });
+        }
+        decoded.push((candidate.content_hash().clone(), fact));
+    }
+    decoded.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(decoded.into_iter().next().map(|(_hash, fact)| fact))
+}
+
 pub fn select_deploy_decision(
     mut candidates: Vec<DeployDecisionCandidate>,
     key: FactKey,
