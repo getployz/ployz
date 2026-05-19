@@ -267,25 +267,35 @@ Evidence:
 
 ### Unit 6: Cross-Node Overlay Smoke Harness
 
-Status: not started.
+Status: preflight and E2E scenario entry point landed. Real two-node execution
+is still pending; when `MVP_CONTAINER_OVERLAY_DNS_SMOKE=1` is set, the scenario
+checks root/tooling prerequisites and then fails explicitly until the real
+execution path is wired.
 
 Files:
 
-- `MVP/e2e/src/...`
+- `MVP/e2e/src/container_overlay_dns_smoke.rs`
+- `MVP/e2e/src/main.rs`
 
 Work:
 
-- Add a Linux-gated two-node smoke before the full parity smoke:
+- [x] Add the Linux-gated smoke as a normal MVP E2E scenario.
+- [ ] Add real two-node smoke execution before the full parity smoke:
   - two nodes with Docker bridge + WG + service DNS,
   - service on node-b,
   - client on node-a resolves and curls over overlay.
-- Record clear skip/blocker when not root or Docker/WG/eBPF prerequisites are
+- [x] Record clear skip/blocker when not root or Docker/WG/eBPF prerequisites are
   missing.
 
 Tests:
 
-- gated smoke command documented in this plan,
-- cleanup proves bridge, eBPF attach, and containers are removed.
+- [x] gated smoke command documented in this plan,
+- [ ] cleanup proves bridge, eBPF attach, and containers are removed.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e all_scenarios_include_iroh_and_lease_contracts`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- container-overlay-dns-smoke`
 
 ## Acceptance Checklist
 
@@ -306,7 +316,9 @@ Tests:
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh --features linux-wireguard`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime,linux-wireguard`
-- Gated smoke command to be finalized once Unit 6 lands.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- container-overlay-dns-smoke`
+- Privileged two-node smoke command, once execution is wired:
+  `MVP_CONTAINER_OVERLAY_DNS_SMOKE=1 cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- container-overlay-dns-smoke`
 
 ## Explicit Deferrals
 
