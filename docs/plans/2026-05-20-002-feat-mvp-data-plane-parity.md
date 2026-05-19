@@ -286,6 +286,9 @@ Acceptance:
 
 ### Slice 3: Container Overlay Networking And Service DNS
 
+Status: active. Slice plan:
+`docs/plans/2026-05-20-005-feat-mvp-container-overlay-dns-slice.md`.
+
 Goal: connect runtime containers to the overlay and expose service DNS inside
 containers across machines.
 
