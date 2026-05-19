@@ -4,8 +4,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use mvp_node::{
-    DaemonOptions, InitOptions, NodeError, NodeResult, create_invite, init_node, join_from_token,
-    load_node, now_ms, run_daemon_once,
+    DaemonOptions, InitOptions, NodeError, NodeResult, admit_joiner, create_admission_request,
+    create_invite, init_node, join_from_token, load_node, now_ms, run_daemon_once,
 };
 
 fn main() -> ExitCode {
@@ -30,6 +30,8 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "status" => status(rest),
         "invite" => invite(rest),
         "join" => join(rest),
+        "admission" => admission(rest),
+        "admit" => admit(rest),
         "daemon" => daemon(rest),
         "gateway" | "dns" | "deploy" => Err(NodeError::CommandNotWired {
             command: command.clone(),
@@ -39,6 +41,20 @@ fn run(args: Vec<String>) -> NodeResult<String> {
             command: other.to_string(),
         }),
     }
+}
+
+fn admission(args: &[String]) -> NodeResult<String> {
+    let state_dir = parse_state_dir_only(args)?;
+    create_admission_request(state_dir)
+}
+
+fn admit(args: &[String]) -> NodeResult<String> {
+    let parsed = AdmitArgs::parse(args)?;
+    let report = admit_joiner(parsed.state_dir, &parsed.request, now_ms())?;
+    Ok(format!(
+        "admitted node={} principal={}",
+        report.node_id, report.principal_id
+    ))
 }
 
 fn invite(args: &[String]) -> NodeResult<String> {
@@ -217,6 +233,44 @@ struct DaemonArgs {
     run_for_ms: Option<u64>,
 }
 
+struct AdmitArgs {
+    state_dir: PathBuf,
+    request: String,
+}
+
+impl AdmitArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut request = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--request" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--request" });
+                    };
+                    request = Some(value.clone());
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            request: request.ok_or(NodeError::MissingFlagValue { flag: "--request" })?,
+        })
+    }
+}
+
 impl DaemonArgs {
     fn parse(args: &[String]) -> NodeResult<Self> {
         let mut state_dir = None;
@@ -329,6 +383,8 @@ fn help() -> String {
         "  daemon --state <dir> [--run-for-ms <ms>]",
         "  invite --state <dir> [--ttl-ms <ms>]",
         "  join --state <dir> --token <json> [--node-id <id>]",
+        "  admission --state <dir>",
+        "  admit --state <dir> --request <json>",
         "  gateway|dns|deploy  (planned product-vertical commands)",
     ]
     .join("\n")
@@ -362,6 +418,57 @@ mod tests {
 
         assert!(init.contains("initialized node=node-a island=prod"));
         assert!(status.contains("node=node-a island=prod principal=node:node-a"));
+    }
+
+    #[test]
+    fn invite_join_admission_and_admit_round_trip_through_cli_surface() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let node_a = temp.path().join("node-a");
+        let node_b = temp.path().join("node-b");
+        run(vec![
+            "init".to_string(),
+            "--state".to_string(),
+            node_a.display().to_string(),
+            "--island".to_string(),
+            "prod".to_string(),
+            "--node-id".to_string(),
+            "node-a".to_string(),
+        ])
+        .expect("init node a");
+
+        let invite = run(vec![
+            "invite".to_string(),
+            "--state".to_string(),
+            node_a.display().to_string(),
+        ])
+        .expect("invite");
+        let joined = run(vec![
+            "join".to_string(),
+            "--state".to_string(),
+            node_b.display().to_string(),
+            "--token".to_string(),
+            invite,
+            "--node-id".to_string(),
+            "node-b".to_string(),
+        ])
+        .expect("join node b");
+        let admission = run(vec![
+            "admission".to_string(),
+            "--state".to_string(),
+            node_b.display().to_string(),
+        ])
+        .expect("admission");
+        let admitted = run(vec![
+            "admit".to_string(),
+            "--state".to_string(),
+            node_a.display().to_string(),
+            "--request".to_string(),
+            admission,
+        ])
+        .expect("admit node b");
+
+        assert!(joined.contains("joined node=node-b island=prod"));
+        assert!(admitted.contains("admitted node=node-b principal=node:node-b"));
     }
 
     #[test]

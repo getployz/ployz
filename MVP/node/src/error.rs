@@ -16,14 +16,40 @@ pub enum NodeError {
     UnknownArgument { argument: String },
     #[error("command '{command}' is not wired yet")]
     CommandNotWired { command: String },
-    #[error("node ticket is not available; start daemon before creating invite")]
-    MissingNodeTicket,
     #[error("decode invite token: {source}")]
     DecodeInviteToken { source: serde_json::Error },
     #[error("encode invite token: {source}")]
     EncodeInviteToken { source: serde_json::Error },
+    #[error("decode admission request: {source}")]
+    DecodeAdmissionRequest { source: serde_json::Error },
+    #[error("encode admission request: {source}")]
+    EncodeAdmissionRequest { source: serde_json::Error },
     #[error("invite token expired at {expires_at_ms}, now {now_ms}")]
     InviteExpired { expires_at_ms: u64, now_ms: u64 },
+    #[error("invite '{invite_id}' was not issued by this node")]
+    InviteNotFound { invite_id: String },
+    #[error("invite '{invite_id}' secret did not match")]
+    InviteSecretMismatch { invite_id: String },
+    #[error("admission island '{request_island}' does not match local island '{local_island}'")]
+    AdmissionIslandMismatch {
+        local_island: String,
+        request_island: String,
+    },
+    #[error(
+        "admission principal '{principal_id}' does not match expected '{expected}' for node '{node_id}'"
+    )]
+    InvalidAdmissionPrincipal {
+        node_id: String,
+        principal_id: String,
+        expected: String,
+    },
+    #[error("admission conflicts with existing peer node='{node_id}' principal='{principal_id}'")]
+    AdmissionPeerConflict {
+        node_id: String,
+        principal_id: String,
+    },
+    #[error("joined node has no stored invite credentials for admission")]
+    MissingJoinInvite,
     #[error("unsupported node state schema version {found}, expected {expected}")]
     UnsupportedSchemaVersion { found: u32, expected: u32 },
     #[error("create state directory '{path}': {source}")]
