@@ -167,6 +167,16 @@ impl LoadedNodeState {
     }
 
     #[must_use]
+    pub fn admitted_peers(&self) -> Vec<BootstrapPeerConfig> {
+        self.persisted
+            .bootstrap_peers
+            .iter()
+            .filter(|peer| peer.node_id.is_some())
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
     pub fn join_invite(&self) -> Option<&StoredJoinInvite> {
         self.persisted.join_invite.as_ref()
     }

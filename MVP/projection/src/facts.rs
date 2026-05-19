@@ -37,6 +37,7 @@ pub enum ProjectionFactPayload {
     NodeJoined(NodeJoinedFact),
     NodeRemovalStarted(NodeRemovalStartedFact),
     NodeTombstoned(NodeTombstonedFact),
+    PeerAdmitted(PeerAdmittedFact),
     ServiceRegistered(ServiceRegistrationFact),
     ServingCommit(ServingCommitFact),
     RouteCommit(RouteCommitFact),
@@ -80,6 +81,16 @@ pub struct NodeTombstonedFact {
     pub node_id: NodeId,
     pub epoch: u64,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerAdmittedFact {
+    pub node_id: NodeId,
+    pub principal_id: String,
+    pub author_key_hex: String,
+    pub p2panda_ticket: String,
+    pub invite_id: String,
+    pub epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

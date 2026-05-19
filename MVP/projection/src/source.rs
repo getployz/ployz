@@ -11,6 +11,7 @@ pub enum FactKind {
     NodeJoined,
     NodeRemovalStarted,
     NodeTombstoned,
+    PeerAdmitted,
     ServiceRegistered,
     ServingCommit,
     RouteCommit,
@@ -62,6 +63,10 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
         ["facts", "node", _node_id, "tombstoned", epoch]
         | ["facts", "node", _node_id, "tombstoned", epoch, _] => {
             classify_epoch(FactKind::NodeTombstoned, epoch)
+        }
+        ["facts", "peer", _node_id, "admitted", epoch]
+        | ["facts", "peer", _node_id, "admitted", epoch, _] => {
+            classify_epoch(FactKind::PeerAdmitted, epoch)
         }
         ["facts", "service", _service, _node_id, "registered", epoch]
         | [

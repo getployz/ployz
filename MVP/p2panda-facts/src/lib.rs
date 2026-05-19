@@ -2186,6 +2186,30 @@ impl SharedPandaFactStore {
             .can_write_fact(session, key))
     }
 
+    pub async fn list_fact_candidates(
+        &self,
+        island: &IslandId,
+        pattern: &FactKeyPattern,
+        session: &BusSession,
+    ) -> FactSourceResult<Vec<FactCandidate>> {
+        self.store
+            .lock()
+            .await
+            .list_candidates(island, pattern, session)
+    }
+
+    pub async fn read_fact_payloads(
+        &self,
+        island: &IslandId,
+        candidates: &[FactCandidate],
+        session: &BusSession,
+    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
+        self.store
+            .lock()
+            .await
+            .read_payloads(island, candidates, session)
+    }
+
     fn unavailable(&self) -> FactSourceError {
         FactSourceError::Unavailable {
             name: "p2panda fact store".to_string(),

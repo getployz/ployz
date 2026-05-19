@@ -16,8 +16,8 @@ pub use bus_source::BusFactSource;
 pub use error::{ProjectionError, ProjectionResult};
 pub use facts::{
     BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
-    NodeRemovalStartedFact, NodeTombstonedFact, ProjectionFactPayload, RouteCommitFact, RouteId,
-    ServiceName, ServiceRegistrationFact, ServingCommitFact,
+    NodeRemovalStartedFact, NodeTombstonedFact, PeerAdmittedFact, ProjectionFactPayload,
+    RouteCommitFact, RouteId, ServiceName, ServiceRegistrationFact, ServingCommitFact,
 };
 pub use model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
