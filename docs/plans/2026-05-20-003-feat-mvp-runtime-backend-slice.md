@@ -236,22 +236,40 @@ Tests:
 
 ## Acceptance Checklist
 
-- `mvp-node` no longer stores or calls `ProcessRuntime` directly except in
+- [x] `mvp-node` no longer stores or calls `ProcessRuntime` directly except in
   process-fixture construction.
-- Deploy coordination consumes runtime endpoints through the runtime contract.
-- Docker backend starts, lists/adopts, drains, and stops containers with stable
+- [x] Deploy coordination consumes runtime endpoints through the runtime contract.
+- [x] Docker backend starts, lists/adopts, drains, and stops containers with stable
   labels.
-- Process fixture behavior remains available for fast tests.
-- Docker unavailability is reported as a runtime backend failure in Docker mode,
+- [x] Process fixture behavior remains available for fast tests.
+- [x] Docker unavailability is reported as a runtime backend failure in Docker mode,
   not silently replaced by the process fixture.
-- The slice is committed and pushed before Slice 2 starts.
+- [x] The slice is committed and pushed before Slice 2 starts.
 
 ## Verification Commands
 
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node node_agent`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node product_deploy`
-- Docker-gated command to be added by this slice once the backend exists.
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime -p mvp-node node_agent`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime node_agent`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime docker_node_agent`
+
+## Completion Evidence
+
+- Runtime contract checkpoint pushed as `d95f5da8`.
+- Docker runtime backend checkpoint pushed as `4b399069`.
+- Final runtime selection checkpoint is recorded with this evidence update.
+- `MVP/runtime` now owns the runtime-neutral `RuntimeBackend` contract and
+  keeps the process backend as a fixture implementation.
+- `MVP/runtime/src/docker/` splits Docker ownership into backend lifecycle,
+  labels/identity, and config/spec concerns.
+- Docker backend uses deterministic container names, stable MVP labels, real
+  Docker create/start/list/inspect/stop/remove calls, and metadata-backed
+  drain/adoption state.
+- `MVP/node` exposes a `docker-runtime` feature and a `deploy --runtime docker`
+  selection path so product runs can opt into Docker without making deploy
+  coordination Docker-specific.
+- The Docker node-agent test starts and stops a real `busybox` HTTP container
+  through the same node-agent runtime contract used by deploy participant RPC.
 
 ## Explicit Deferrals
 
