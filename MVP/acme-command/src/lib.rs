@@ -478,6 +478,7 @@ pub fn lease_state_from_source(
                 book.record_observed_fact(LeaseFact::Released(fact));
             }
             ProjectionFactPayload::NodeJoined(_)
+            | ProjectionFactPayload::PeerAdmitted(_)
             | ProjectionFactPayload::NodeRemovalStarted(_)
             | ProjectionFactPayload::NodeTombstoned(_)
             | ProjectionFactPayload::ServiceRegistered(_)

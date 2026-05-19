@@ -188,10 +188,12 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
         &island,
         &sessions.receiver_replica,
         &[(&sessions.writer, &writer)],
-        network_id,
-        topic,
-        PandaNetNodeSeed::new(stable_test_id(iteration, b'r')),
-        Vec::new(),
+        FactNodeNetConfig {
+            network_id,
+            topic,
+            seed: PandaNetNodeSeed::new(stable_test_id(iteration, b'r')),
+            bootstrap: Vec::new(),
+        },
     )
     .await?;
     let receiver_info = receiver.node_info();
@@ -200,10 +202,12 @@ async fn run_iteration(iteration: usize) -> Result<P2pandaNetFactNodeReliability
         &island,
         &sessions.receiver_replica,
         &[(&sessions.writer, &writer)],
-        network_id,
-        topic,
-        PandaNetNodeSeed::new(stable_test_id(iteration, b's')),
-        vec![receiver_info],
+        FactNodeNetConfig {
+            network_id,
+            topic,
+            seed: PandaNetNodeSeed::new(stable_test_id(iteration, b's')),
+            bootstrap: vec![receiver_info],
+        },
     )
     .await?;
     receiver
@@ -323,6 +327,13 @@ struct ReliabilityBusSessions {
     receiver_replica: BusSession,
 }
 
+struct FactNodeNetConfig {
+    network_id: PandaNetNetworkId,
+    topic: PandaNetTopic,
+    seed: PandaNetNodeSeed,
+    bootstrap: Vec<PandaNetNodeInfo>,
+}
+
 fn reliability_bus_sessions(
     island: &IslandId,
     iteration: usize,
@@ -351,10 +362,7 @@ async fn fact_node(
     island: &IslandId,
     replica_session: &BusSession,
     authors: &[(&BusSession, &PandaFactAuthor)],
-    network_id: PandaNetNetworkId,
-    topic: PandaNetTopic,
-    seed: PandaNetNodeSeed,
-    bootstrap: Vec<PandaNetNodeInfo>,
+    net: FactNodeNetConfig,
 ) -> Result<PandaNetFactNode, String> {
     let store = SharedPandaFactStore::new(PandaFactStore::new(bus.clone()));
     for &(session, author) in authors {
@@ -367,8 +375,8 @@ async fn fact_node(
         .trust_replica_peer(island, replica_session.principal().clone())
         .await;
     PandaNetFactNode::spawn(PandaNetFactNodeConfig::new(
-        PandaNetNodeConfig::localhost_ephemeral(network_id, seed, bootstrap),
-        topic,
+        PandaNetNodeConfig::localhost_ephemeral(net.network_id, net.seed, net.bootstrap),
+        net.topic,
         store,
         replica_session.clone(),
     ))

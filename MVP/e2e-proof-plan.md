@@ -766,6 +766,17 @@ Current proof status:
 - Slice 046 adds `p2panda-net-fact-node-reliability-contract` to `all`. It is a
   bounded repeated proof for the same canonical `PandaNetFactNode` path and
   fails on any zero-attempt iteration after publish.
+- Slice 056 adds `three-server-product` to `mvp-e2e` plus
+  `MVP/scripts/three-server-smoke.sh`. It mirrors the main product E2E shape:
+  scenario registry entry, runner-owned command execution, process role
+  cleanup, live probes, and a JSON proof artifact. The smoke initializes three
+  product nodes, admits two peers, runs all three daemons concurrently over
+  p2panda-net, asserts every daemon imported membership operations and
+  registered node-agent handlers, deploys a trivial HTTP service, starts
+  product gateway/DNS roles, verifies HTTP/DNS, kills a daemon, verifies
+  HTTP/DNS again, and cleans up runtime child processes. The remaining gap is
+  remote product node-agent deploy RPC; the first product deploy still targets
+  the founder node.
 
 ## Required Test Artifacts
 
@@ -780,6 +791,7 @@ Candidate MVP-local commands:
 
 ```text
 cd MVP && cargo test
+cd MVP && scripts/three-server-smoke.sh
 cd MVP && cargo run -p mvp-e2e -- bus-contract
 cd MVP && cargo run -p mvp-e2e -- scale
 ```
@@ -788,6 +800,7 @@ Final MVP gate:
 
 ```text
 cd MVP && cargo test
+cd MVP && scripts/three-server-smoke.sh
 cd MVP && cargo run -p mvp-e2e -- all
 cd MVP && cargo run -p mvp-e2e -- scale
 ```
