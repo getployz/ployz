@@ -18,6 +18,7 @@ async-trait = "0.1"
 base64 = "0.22"
 blake3 = "1"
 kameo = "0.20"
+ipnet = { version = "2", features = ["serde"] }
 mvp-bus = { path = "../bus" }
 mvp-identity = { path = "../identity" }
 mvp-projection = { path = "../projection" }

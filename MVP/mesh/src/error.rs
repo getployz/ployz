@@ -36,6 +36,10 @@ pub enum MeshError {
     },
     #[error("wireguard key is invalid: {message}")]
     InvalidWireGuardKey { message: String },
+    #[error("container subnet {subnet} is invalid: {message}")]
+    InvalidContainerSubnet { subnet: String, message: String },
+    #[error("container subnet cluster {cluster} has no free /{prefix_len} subnets")]
+    ContainerSubnetExhausted { cluster: String, prefix_len: u8 },
     #[error("wireguard snapshot {operation} failed for {path}: {message}")]
     SnapshotIo {
         operation: &'static str,

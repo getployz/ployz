@@ -4,7 +4,7 @@ use std::path::Path;
 
 use mvp_bus::{IslandId, PrincipalId};
 use mvp_identity::NodeId;
-use mvp_mesh::{WireGuardPrivateKey, derive_overlay_ip};
+use mvp_mesh::{ContainerSubnet, WireGuardPrivateKey, derive_container_subnet, derive_overlay_ip};
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactAuthorKey};
 use mvp_p2panda_transport::{PandaNetNetworkId, PandaNetNodeSeed, PandaNetTopic};
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,11 @@ impl LoadedNodeState {
 
     pub fn wireguard_private_key(&self) -> NodeResult<WireGuardPrivateKey> {
         load_wireguard_private_key(&self.paths)
+    }
+
+    #[must_use]
+    pub fn container_subnet(&self) -> ContainerSubnet {
+        derive_container_subnet(&self.island(), &self.node_id())
     }
 
     #[must_use]
@@ -652,6 +657,13 @@ mod tests {
                 .public_key()
                 .as_str(),
             reopened.wireguard_public_key()
+        );
+        assert_eq!(reopened.container_subnet(), initialized.container_subnet());
+        assert!(
+            reopened
+                .container_subnet()
+                .to_string()
+                .starts_with("10.210.")
         );
         assert!(reopened.paths().wireguard_private_key.exists());
         assert_eq!(reopened.paths().state_dir, state_dir);
