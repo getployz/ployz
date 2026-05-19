@@ -541,8 +541,8 @@ mod tests {
     use mvp_bus::{FactContentHash, FactKeyPattern, Grant, IslandId, PrincipalId};
     use mvp_identity::NodeId;
     use mvp_projection::{
-        BackendEndpoint, BusFactSource, DnsProjection, DnsRecordFact, GatewayProjection,
-        ProjectionState, SnapshotWriteReport,
+        BackendEndpoint, DnsProjection, DnsRecordFact, GatewayProjection, ProjectionState,
+        SnapshotWriteReport, fixtures::BusFactFixtureSource,
     };
 
     use super::*;
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn exact_serving_commit_read_refuses_mismatched_epoch() {
         let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
-        let source = BusFactSource::new(bus.clone());
+        let source = BusFactFixtureSource::new(bus.clone());
         let session = authority.grant_in(
             IslandId::new("prod"),
             PrincipalId::new("deploy"),
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn exact_serving_commit_read_uses_matching_conflict_candidate() {
         let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
-        let source = BusFactSource::new(bus.clone());
+        let source = BusFactFixtureSource::new(bus.clone());
         let writer_a = authority.grant_in(
             IslandId::new("prod"),
             PrincipalId::new("deploy-a"),
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn unconflicted_serving_commit_read_rejects_conflict_candidate() {
         let (bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
-        let source = BusFactSource::new(bus.clone());
+        let source = BusFactFixtureSource::new(bus.clone());
         let writer_a = authority.grant_in(
             IslandId::new("prod"),
             PrincipalId::new("deploy-a"),

@@ -9,10 +9,11 @@ use mvp_bus::{
 };
 use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, CandidateStatus, DnsCommitFact, DnsRecordFact, FactCandidate,
-    FactKind, FactSource, FactSourceResult, GatewayCommitFact, NodeJoinedFact,
-    ProjectionFactPayload, ProjectionIgnoreReason, RouteCommitFact, RouteId, ServiceName,
-    ServiceRegistrationFact, SqliteProjectionStore, load_dns_snapshot, load_gateway_snapshot,
+    BackendEndpoint, CandidateStatus, DnsCommitFact, DnsRecordFact, FactCandidate, FactKind,
+    FactSource, FactSourceResult, GatewayCommitFact, NodeJoinedFact, ProjectionFactPayload,
+    ProjectionIgnoreReason, RouteCommitFact, RouteId, ServiceName, ServiceRegistrationFact,
+    SqliteProjectionStore, fixtures::BusFactFixtureSource, load_dns_snapshot,
+    load_gateway_snapshot,
 };
 use serde::Serialize;
 
@@ -60,7 +61,7 @@ async fn run_async() -> Result<(), String> {
 
     let (bus, projection_session, intruder_session) = seed_base_facts()?;
     let actor = projection_actor(
-        Arc::new(BusFactSource::new(bus.clone())),
+        Arc::new(BusFactFixtureSource::new(bus.clone())),
         projection_session.clone(),
         &root,
     )?;
@@ -255,7 +256,7 @@ async fn run_async() -> Result<(), String> {
 
     let redacted_actor = projection_actor(
         Arc::new(RedactingSource::new(
-            BusFactSource::new(bus),
+            BusFactFixtureSource::new(bus),
             redacted_candidates()?,
         )),
         projection_session,
@@ -507,12 +508,12 @@ fn status_count(
 }
 
 struct RedactingSource {
-    inner: BusFactSource,
+    inner: BusFactFixtureSource,
     extra_candidates: Vec<FactCandidate>,
 }
 
 impl RedactingSource {
-    fn new(inner: BusFactSource, extra_candidates: Vec<FactCandidate>) -> Self {
+    fn new(inner: BusFactFixtureSource, extra_candidates: Vec<FactCandidate>) -> Self {
         Self {
             inner,
             extra_candidates,

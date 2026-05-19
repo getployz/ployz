@@ -12,9 +12,9 @@ use mvp_bus::{
 };
 use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsCommitFact, DnsRecordFact, GatewayCommitFact,
-    NodeJoinedFact, ProjectionActorHandle, ProjectionFactPayload, RouteCommitFact, RouteId,
-    ServiceName, ServiceRegistrationFact, SqliteProjectionStore,
+    BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
+    ProjectionActorHandle, ProjectionFactPayload, RouteCommitFact, RouteId, ServiceName,
+    ServiceRegistrationFact, SqliteProjectionStore, fixtures::BusFactFixtureSource,
 };
 use serde::Serialize;
 
@@ -442,7 +442,7 @@ async fn run_projection_node_count(
     )?;
 
     let actor = ProjectionActorHandle::spawn(
-        Arc::new(BusFactSource::new(bus)),
+        Arc::new(BusFactFixtureSource::new(bus)),
         prod,
         projection,
         fact_pattern("/facts/>")?,

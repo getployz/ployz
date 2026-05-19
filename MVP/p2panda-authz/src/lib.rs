@@ -31,7 +31,13 @@ pub use identity::{
     IslandGroupId, IslandMemberAuthorKey, IslandMemberEpoch, IslandMemberId,
     IslandMemberKeyBinding, IslandMemberRole, IslandOperationId, ReplicaImportAccess,
 };
-pub use store::{IslandAuthzMemoryLog, IslandAuthzStore};
+#[cfg(test)]
+use store::IslandAuthzMemoryLog;
+pub use store::IslandAuthzStore;
+
+pub mod fixtures {
+    pub use crate::store::IslandAuthzMemoryLog;
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct IslandAuthOperation {
