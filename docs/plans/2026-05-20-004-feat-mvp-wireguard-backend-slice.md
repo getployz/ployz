@@ -208,14 +208,14 @@ Tests:
 
 ## Acceptance Checklist
 
-- `mvp-mesh` has a real Linux WireGuard backend behind `WireGuardBackend`.
-- Existing membership/deploy domain crates do not import `defguard_wireguard_rs`
+- [x] `mvp-mesh` has a real Linux WireGuard backend behind `WireGuardBackend`.
+- [x] Existing membership/deploy domain crates do not import `defguard_wireguard_rs`
   or Linux command details.
-- WireGuard key material is stable across node reload/daemon restart.
-- Applying a snapshot is idempotent and bounded.
-- Last-applied snapshot does not advance on failed live apply.
-- Existing non-privileged MVP tests remain green.
-- A Linux-gated smoke proves real interface apply/adoption, or records a clear
+- [x] WireGuard key material is stable across node reload/daemon restart.
+- [ ] Applying a snapshot is idempotent and bounded.
+- [x] Last-applied snapshot does not advance on failed live apply.
+- [x] Existing non-privileged MVP tests remain green.
+- [x] A Linux-gated smoke proves real interface apply/adoption, or records a clear
   privilege/Docker-host blocker if the current environment cannot run it.
 
 ## Verification Commands
@@ -223,8 +223,27 @@ Tests:
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node membership`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e membership_wireguard_contract`
-- Feature-gated Linux WireGuard smoke command to be finalized once the backend
-  module exists.
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh --features linux-wireguard`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features linux-wireguard membership`
+- `MVP_LINUX_WG_SMOKE=1 cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh --features linux-wireguard linux_wireguard_backend_applies -- --nocapture`
+
+## Completion Evidence
+
+- `d2093145`: node init/join now persist real X25519/WireGuard private key
+  material under `NodePaths::wireguard_private_key`, derive the membership
+  public key from it, and reject mismatched key/state on load.
+- `1cedd947`: `mvp-mesh` gained a feature-gated Linux backend behind
+  `WireGuardBackend`, porting the prior `defguard_wireguard_rs` host-interface
+  mechanics for interface configuration, peer reconciliation, route
+  replacement, and snapshot persistence.
+- `64e11cc1`: daemon membership runtime now projects membership facts into a
+  full-mesh `WireGuardAppliedSnapshot` and applies it through the existing
+  WireGuard actor. Default daemon mode remains memory-backed; Linux mode is
+  explicit via `--linux-wireguard-ifname`.
+- The current environment is not root (`id -u` returned `1001`), so the real
+  interface smoke is present and feature-gated but was not run with
+  `MVP_LINUX_WG_SMOKE=1` here. The non-privileged feature-gated smoke command
+  verified the test path skips cleanly when not enabled.
 
 ## Explicit Deferrals
 
