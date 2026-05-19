@@ -1,5 +1,6 @@
 mod error;
 mod facts;
+mod p2panda;
 mod remove;
 mod wire;
 
@@ -12,6 +13,7 @@ pub use facts::{
     machine_remove_decision_fact_payload, read_machine_remove_cleanup_done,
     read_machine_remove_decision, validate_machine_remove_cleanup_done,
 };
+pub use p2panda::{PandaMachineFactStore, PandaMachineFactWriter};
 pub use remove::{
     BusMachineFactWriter, CleanupFailureKind, MachineFactWriter, MachineRemoveCommandInput,
     MachineRemoveCommandResult, MachineRemoveCoordinator, MachineRemoveOutcome,

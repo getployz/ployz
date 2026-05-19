@@ -8,8 +8,8 @@ use mvp_bus::IslandId;
 use mvp_lease::LeaseTimestamp;
 use mvp_projection::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsRecordProjection, DnsSnapshotFile,
-    GatewayRouteProjection, GatewaySnapshotFile, ProjectionError, load_dns_snapshot,
-    load_gateway_snapshot,
+    GatewayRouteProjection, GatewaySnapshotFile, ProjectionError, ServingGenerationManifestFile,
+    load_dns_snapshot, load_gateway_snapshot, load_serving_snapshot_set,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,7 @@ impl ServingSnapshotPaths {
 pub struct ServingSnapshotBatch {
     pub gateway: GatewaySnapshotFile,
     pub dns: DnsSnapshotFile,
+    pub manifest: ServingGenerationManifestFile,
     route_by_hostname: BTreeMap<String, usize>,
     records_by_name_type: BTreeMap<DnsRecordKey, Vec<usize>>,
     acme_http01_by_host_token: BTreeMap<AcmeHttp01ChallengeKey, usize>,
@@ -42,14 +43,17 @@ pub struct ServingSnapshotBatch {
 
 impl ServingSnapshotBatch {
     pub fn load(paths: &ServingSnapshotPaths, expected_island: &IslandId) -> ServingResult<Self> {
-        let gateway = load_gateway(paths.gateway.as_path(), expected_island)?;
-        let dns = load_dns(paths.dns.as_path(), expected_island)?;
-        Self::from_snapshots(gateway, dns)
+        load_gateway(paths.gateway.as_path(), expected_island)?;
+        load_dns(paths.dns.as_path(), expected_island)?;
+        let set = load_serving_snapshot_set(&paths.gateway, &paths.dns, expected_island)
+            .map_err(|error| snapshot_error(ServingSnapshotKind::Manifest, error))?;
+        Self::from_snapshots(set.gateway, set.dns, set.manifest)
     }
 
     #[must_use]
     pub fn revisions(&self) -> ServingRevisions {
         ServingRevisions {
+            generation: self.manifest.generation.clone(),
             gateway: self.gateway.revision.clone(),
             dns: self.dns.revision.clone(),
         }
@@ -105,7 +109,11 @@ impl ServingSnapshotBatch {
         self.gateway.acme_http01.len()
     }
 
-    fn from_snapshots(gateway: GatewaySnapshotFile, dns: DnsSnapshotFile) -> ServingResult<Self> {
+    fn from_snapshots(
+        gateway: GatewaySnapshotFile,
+        dns: DnsSnapshotFile,
+        manifest: ServingGenerationManifestFile,
+    ) -> ServingResult<Self> {
         validate_acme_http01_challenges(&gateway.acme_http01)?;
         let route_by_hostname = index_routes(&gateway.routes);
         let records_by_name_type = index_dns_records(&dns.records);
@@ -113,6 +121,7 @@ impl ServingSnapshotBatch {
         Ok(Self {
             gateway,
             dns,
+            manifest,
             route_by_hostname,
             records_by_name_type,
             acme_http01_by_host_token,
@@ -144,6 +153,7 @@ fn acme_http01_lookup_key(host: &str, token: &str) -> Option<AcmeHttp01Challenge
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServingRevisions {
+    pub generation: String,
     pub gateway: String,
     pub dns: String,
 }
@@ -152,6 +162,7 @@ pub struct ServingRevisions {
 pub enum ServingSnapshotKind {
     Gateway,
     Dns,
+    Manifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

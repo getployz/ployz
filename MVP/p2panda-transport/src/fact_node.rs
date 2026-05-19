@@ -430,21 +430,36 @@ impl PandaNetFactNode {
             .publish_stream
             .as_ref()
             .expect("publish stream was inserted before lookup");
-        match handle.publish(operation.clone()).await {
-            Ok(()) => Ok(()),
-            Err(error) => {
+        match timeout(STREAM_TIMEOUT, handle.publish(operation.clone())).await {
+            Err(_elapsed) => {
+                drop(self.publish_stream.take());
+                Err(PandaNetTransportError::startup(
+                    PandaNetStartupStep::Publish,
+                    format!("publish timed out after {}ms", STREAM_TIMEOUT.as_millis()),
+                ))
+            }
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
                 drop(self.publish_stream.take());
                 self.ensure_publish_stream().await?;
                 let handle = self
                     .publish_stream
                     .as_ref()
                     .expect("publish stream was inserted before retry lookup");
-                handle.publish(operation).await.map_err(|retry_error| {
-                    PandaNetTransportError::startup(
+                match timeout(STREAM_TIMEOUT, handle.publish(operation)).await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(retry_error)) => Err(PandaNetTransportError::startup(
                         PandaNetStartupStep::Publish,
                         format!("{error}; retry failed: {retry_error}"),
-                    )
-                })
+                    )),
+                    Err(_elapsed) => Err(PandaNetTransportError::startup(
+                        PandaNetStartupStep::Publish,
+                        format!(
+                            "{error}; retry timed out after {}ms",
+                            STREAM_TIMEOUT.as_millis()
+                        ),
+                    )),
+                }
             }
         }
     }

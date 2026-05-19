@@ -76,11 +76,19 @@ establish persistent node identity and state paths; `invite` emits a bootstrap
 token with a stable p2panda ticket; `join` initializes a node from that token;
 `admission` emits the joiner's stable ticket and author identity; `admit`
 records that joiner on the bootstrap node; `daemon` starts the product
-p2panda fact node for a bounded run and handles addressed node-agent RPC
-facts; `daemon-status` reads daemon readiness/status from the local control
-socket; `deploy` starts one trivial managed HTTP service through the product
-deploy state machine, including peer targets; and `gateway`/`dns` run
-snapshot-backed serving roles with a local Unix control socket.
+p2panda fact node for a bounded run and handles addressed node-agent command
+facts; `daemon-status` reads structured readiness/status from an owner-only
+local control socket; `deploy` starts one trivial managed HTTP service through
+the product deploy state machine, including peer targets; `deploy-status` reads
+durable deploy lifecycle facts; and `gateway`/`dns` run snapshot-backed serving
+roles with a local Unix control socket.
+
+`deploy` currently has two explicit modes. With `--control <socket>`, deploy is
+submitted through the local daemon that owns transport, membership, and remote
+node-agent command handling. Without `--control`, standalone deploy may run when
+the local coordinator daemon is down, and it owns the local p2panda transport
+for the duration of the operation. If the daemon already owns that transport
+port, standalone deploy fails fast instead of racing the daemon.
 
 The current membership path proves durable product state, stable restart-safe
 tickets, invite/admission handoff, and three-node membership convergence over
@@ -89,10 +97,12 @@ already-joined nodes consume those facts to learn later admitted node authors
 without manual local state updates.
 
 `MVP/scripts/three-server-smoke.sh` is the current product vertical proof. It
-drives three fresh nodes through init/join/admit, concurrent daemon
-convergence, daemon status readiness, deploy from founder to `peer-a`, product
-gateway/DNS serving, and target-daemon-kill steady-state checks using the
-`mvp-node` binary as the system boundary.
+drives three fresh nodes through init/join/admit, a founder daemon that starts
+before peer admission, peer daemon convergence, daemon status readiness,
+daemon-owned deploy from founder to `peer-a`, founder-daemon-down gateway/DNS
+serving, durable deploy status phases, target-daemon-kill steady-state checks,
+and target daemon restart readiness using the `mvp-node` binary as the system
+boundary.
 
 ## Maintainer Notes
 

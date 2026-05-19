@@ -9,8 +9,10 @@ use std::time::Duration;
 use mvp_node::{
     DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions, ServingRoleOptions,
     admit_joiner, create_admission_request, create_invite, deploy_product_service, init_node,
-    join_from_token, load_node, now_ms, run_daemon_once, run_dns_role, run_gateway_role,
+    join_from_token, load_node, now_ms, read_product_deploy_status, run_daemon_once, run_dns_role,
+    run_gateway_role,
 };
+use serde::Serialize;
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -39,6 +41,7 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "daemon" => daemon(rest),
         "daemon-status" => daemon_status(rest),
         "deploy" => deploy(rest),
+        "deploy-status" => deploy_status(rest),
         "runtime-http" => runtime_http(rest),
         "gateway" => gateway(rest),
         "dns" => dns(rest),
@@ -51,12 +54,15 @@ fn run(args: Vec<String>) -> NodeResult<String> {
 
 fn deploy(args: &[String]) -> NodeResult<String> {
     let parsed = DeployArgs::parse(args)?;
+    if let Some(control_socket) = parsed.control_socket.clone() {
+        return daemon_deploy(control_socket, &parsed);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .enable_io()
         .build()
         .map_err(|source| NodeError::Runtime { source })?;
-    let report = runtime.block_on(deploy_product_service(parsed.into_options()))?;
+    let report = runtime.block_on(deploy_product_service(parsed.into_options()?))?;
     let active = report
         .active_backends
         .iter()
@@ -71,6 +77,47 @@ fn deploy(args: &[String]) -> NodeResult<String> {
         report.visible_nodes,
         report.host_network_backends
     ))
+}
+
+fn daemon_deploy(control_socket: PathBuf, parsed: &DeployArgs) -> NodeResult<String> {
+    let request = serde_json::to_vec(&DaemonDeployRequest::from(parsed))
+        .map_err(|source| NodeError::EncodeNodeAgentRpc { source })?;
+    let response = daemon_control_request(control_socket, &request)?;
+    let value = serde_json::from_str::<serde_json::Value>(response.trim()).map_err(|source| {
+        NodeError::NodeAgentRpc {
+            message: format!("daemon deploy returned invalid JSON: {source}"),
+        }
+    })?;
+    match value.get("status").and_then(serde_json::Value::as_str) {
+        Some("deployed") => {}
+        Some("failed") => {
+            return Err(NodeError::NodeAgentRpc {
+                message: value
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("daemon deploy failed")
+                    .to_string(),
+            });
+        }
+        Some(status) => {
+            return Err(NodeError::NodeAgentRpc {
+                message: format!("daemon deploy returned unexpected status '{status}'"),
+            });
+        }
+        None => {
+            return Err(NodeError::NodeAgentRpc {
+                message: "daemon deploy response missing status".to_string(),
+            });
+        }
+    }
+    Ok(response.trim().to_string())
+}
+
+fn deploy_status(args: &[String]) -> NodeResult<String> {
+    let parsed = DeployStatusArgs::parse(args)?;
+    let report = read_product_deploy_status(parsed.state_dir, parsed.deploy_id)?;
+    serde_json::to_string(&DeployStatusResponse::from(report))
+        .map_err(|source| NodeError::EncodeNodeAgentRpc { source })
 }
 
 fn gateway(args: &[String]) -> NodeResult<String> {
@@ -160,6 +207,10 @@ fn daemon(args: &[String]) -> NodeResult<String> {
 
 fn daemon_status(args: &[String]) -> NodeResult<String> {
     let control_socket = parse_control_socket_only(args)?;
+    daemon_control_request(control_socket, b"status\n").map(|response| response.trim().to_string())
+}
+
+fn daemon_control_request(control_socket: PathBuf, request: &[u8]) -> NodeResult<String> {
     let mut stream =
         UnixStream::connect(&control_socket).map_err(|source| NodeError::DaemonControlSocket {
             path: control_socket.clone(),
@@ -167,7 +218,21 @@ fn daemon_status(args: &[String]) -> NodeResult<String> {
             source,
         })?;
     stream
-        .write_all(b"status\n")
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: control_socket.clone(),
+            operation: "set status read timeout",
+            source,
+        })?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: control_socket.clone(),
+            operation: "set status write timeout",
+            source,
+        })?;
+    stream
+        .write_all(request)
         .map_err(|source| NodeError::DaemonControlSocket {
             path: control_socket.clone(),
             operation: "write status request",
@@ -188,7 +253,7 @@ fn daemon_status(args: &[String]) -> NodeResult<String> {
             operation: "read status response",
             source,
         })?;
-    Ok(response.trim().to_string())
+    Ok(response)
 }
 
 fn parse_control_socket_only(args: &[String]) -> NodeResult<PathBuf> {
@@ -371,12 +436,73 @@ struct ServingRoleArgs {
 }
 
 struct DeployArgs {
-    state_dir: PathBuf,
+    state_dir: Option<PathBuf>,
+    control_socket: Option<PathBuf>,
     deploy_id: String,
     target_node: String,
     service: String,
     revision: String,
     hostname: String,
+}
+
+struct DeployStatusArgs {
+    state_dir: PathBuf,
+    deploy_id: String,
+}
+
+#[derive(Serialize)]
+struct DeployStatusResponse {
+    deploy_id: String,
+    statuses: Vec<DeployStatusEntry>,
+}
+
+#[derive(Serialize)]
+struct DeployStatusEntry {
+    sequence: u64,
+    phase: mvp_deploy::DeployStatusPhase,
+    serving_epoch: Option<u64>,
+    message: Option<String>,
+}
+
+impl From<mvp_node::ProductDeployStatusReport> for DeployStatusResponse {
+    fn from(value: mvp_node::ProductDeployStatusReport) -> Self {
+        Self {
+            deploy_id: value.deploy_id.to_string(),
+            statuses: value
+                .statuses
+                .into_iter()
+                .map(|status| DeployStatusEntry {
+                    sequence: status.sequence,
+                    phase: status.phase,
+                    serving_epoch: status.serving_epoch,
+                    message: status.message,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DaemonDeployRequest<'a> {
+    command: &'static str,
+    deploy_id: &'a str,
+    target_node: &'a str,
+    service: &'a str,
+    revision: &'a str,
+    hostname: &'a str,
+}
+
+impl<'a> From<&'a DeployArgs> for DaemonDeployRequest<'a> {
+    fn from(value: &'a DeployArgs) -> Self {
+        Self {
+            command: "deploy",
+            deploy_id: &value.deploy_id,
+            target_node: &value.target_node,
+            service: &value.service,
+            revision: &value.revision,
+            hostname: &value.hostname,
+        }
+    }
 }
 
 impl ServingRoleArgs {
@@ -458,6 +584,7 @@ impl DeployArgs {
         let mut service = None;
         let mut revision = None;
         let mut hostname = None;
+        let mut control_socket = None;
         let mut remaining = args.iter();
         while let Some(argument) = remaining.next() {
             match argument.as_str() {
@@ -466,6 +593,12 @@ impl DeployArgs {
                         return Err(NodeError::MissingFlagValue { flag: "--state" });
                     };
                     state_dir = Some(PathBuf::from(value));
+                }
+                "--control" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--control" });
+                    };
+                    control_socket = Some(PathBuf::from(value));
                 }
                 "--deploy-id" => {
                     let Some(value) = remaining.next() else {
@@ -509,7 +642,8 @@ impl DeployArgs {
             }
         }
         Ok(Self {
-            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            state_dir,
+            control_socket,
             deploy_id: deploy_id.unwrap_or_else(|| "deploy-main".to_string()),
             target_node: target_node.ok_or(NodeError::MissingFlagValue {
                 flag: "--target-node",
@@ -520,13 +654,51 @@ impl DeployArgs {
         })
     }
 
-    fn into_options(self) -> ProductDeployOptions {
-        ProductDeployOptions::new(self.state_dir)
-            .with_deploy_id(self.deploy_id)
-            .with_target_node(self.target_node)
-            .with_service(self.service)
-            .with_revision(self.revision)
-            .with_hostname(self.hostname)
+    fn into_options(self) -> NodeResult<ProductDeployOptions> {
+        Ok(ProductDeployOptions::new(
+            self.state_dir
+                .ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+        )
+        .with_deploy_id(self.deploy_id)
+        .with_target_node(self.target_node)
+        .with_service(self.service)
+        .with_revision(self.revision)
+        .with_hostname(self.hostname))
+    }
+}
+
+impl DeployStatusArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut deploy_id = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--deploy-id" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--deploy-id",
+                        });
+                    };
+                    deploy_id = Some(value.clone());
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            deploy_id: deploy_id.unwrap_or_else(|| "deploy-main".to_string()),
+        })
     }
 }
 
@@ -718,7 +890,8 @@ fn help() -> String {
         "  join --state <dir> --token <json> [--node-id <id>]",
         "  admission --state <dir>",
         "  admit --state <dir> --request <json>",
-        "  deploy --state <dir> --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>]",
+        "  deploy (--state <dir> | --control <socket>) --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>]",
+        "  deploy-status --state <dir> [--deploy-id <id>]",
         "  gateway --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
         "  dns --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
     ]
@@ -728,6 +901,9 @@ fn help() -> String {
 #[cfg(test)]
 mod tests {
     use super::{ParsedArgs, run};
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::thread;
 
     #[test]
     fn init_and_status_round_trip_through_cli_surface() {
@@ -840,6 +1016,38 @@ mod tests {
         assert!(matches!(
             error,
             mvp_node::NodeError::UnknownArgument { argument } if argument == "--island"
+        ));
+    }
+
+    #[test]
+    fn deploy_control_rejects_non_deploy_daemon_response() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join("daemon.sock");
+        let listener = UnixListener::bind(socket.as_path()).expect("bind listener");
+        let server = thread::spawn(move || {
+            let (mut stream, _addr) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).expect("read request");
+            assert!(!request.is_empty());
+            stream
+                .write_all(br#"{"status":"ready","node":"founder"}"#)
+                .expect("write response");
+        });
+
+        let error = run(vec![
+            "deploy".to_string(),
+            "--control".to_string(),
+            socket.display().to_string(),
+            "--target-node".to_string(),
+            "peer-a".to_string(),
+        ])
+        .expect_err("ready is not deployed");
+        server.join().expect("server thread");
+
+        assert!(matches!(
+            error,
+            mvp_node::NodeError::NodeAgentRpc { message }
+                if message.contains("unexpected status 'ready'")
         ));
     }
 }

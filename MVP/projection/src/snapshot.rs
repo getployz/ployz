@@ -16,6 +16,8 @@ const EMPTY_ROUTE_COMMIT_ID: &str = "none";
 const EMPTY_DNS_COMMIT_ID: &str = "none";
 
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+const SERVING_GENERATION_SCHEMA_VERSION: u32 = 1;
+const SERVING_GENERATION_MANIFEST_FILE: &str = "serving-generation.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotWriteReport {
@@ -28,6 +30,7 @@ pub struct SnapshotWriteReport {
 pub struct ProjectionSnapshotWriteReport {
     pub gateway: Option<SnapshotWriteReport>,
     pub dns: Option<SnapshotWriteReport>,
+    pub manifest: Option<SnapshotWriteReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,22 +53,68 @@ pub struct DnsSnapshotFile {
     pub records: Vec<DnsRecordProjection>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServingGenerationManifestFile {
+    pub schema_version: u32,
+    pub island: String,
+    pub generation: String,
+    pub gateway: ServingGenerationSnapshotManifest,
+    pub dns: ServingGenerationSnapshotManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServingGenerationSnapshotManifest {
+    pub path: String,
+    pub revision: String,
+    pub bytes: usize,
+    pub checksum: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionServingSnapshotSet {
+    pub gateway: GatewaySnapshotFile,
+    pub dns: DnsSnapshotFile,
+    pub manifest: ServingGenerationManifestFile,
+}
+
 pub fn write_projection_snapshots(
     state: &ProjectionState,
     gateway_path: impl AsRef<Path>,
     dns_path: impl AsRef<Path>,
 ) -> ProjectionResult<ProjectionSnapshotWriteReport> {
+    let gateway_operation = gateway_operation_for_state(state, gateway_path.as_ref())?;
+    let dns_operation = dns_operation_for_state(state, dns_path.as_ref())?;
+    let manifest_path = serving_generation_manifest_path(gateway_path.as_ref());
+    let manifest_operation = manifest_operation(
+        &gateway_operation,
+        &dns_operation,
+        gateway_path.as_ref(),
+        dns_path.as_ref(),
+        &manifest_path,
+    )?;
     let operations = [
         PlannedSnapshotOperation {
             kind: SnapshotKind::Gateway,
-            operation: gateway_operation_for_state(state, gateway_path.as_ref())?,
+            operation: gateway_operation,
         },
         PlannedSnapshotOperation {
             kind: SnapshotKind::Dns,
-            operation: dns_operation_for_state(state, dns_path.as_ref())?,
+            operation: dns_operation,
+        },
+        PlannedSnapshotOperation {
+            kind: SnapshotKind::Manifest,
+            operation: manifest_operation,
         },
     ];
     apply_snapshot_batch(&operations)
+}
+
+pub fn serving_generation_manifest_path(gateway_path: impl AsRef<Path>) -> PathBuf {
+    gateway_path
+        .as_ref()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(SERVING_GENERATION_MANIFEST_FILE)
 }
 
 pub fn load_gateway_snapshot(
@@ -96,6 +145,93 @@ pub fn load_dns_snapshot(
         expected_island,
     )?;
     Ok(snapshot)
+}
+
+pub fn load_serving_snapshot_set(
+    gateway_path: impl AsRef<Path>,
+    dns_path: impl AsRef<Path>,
+    expected_island: &IslandId,
+) -> ProjectionResult<ProjectionServingSnapshotSet> {
+    let gateway_path = gateway_path.as_ref();
+    let dns_path = dns_path.as_ref();
+    let gateway_bytes = read_snapshot_bytes(gateway_path)?;
+    let dns_bytes = read_snapshot_bytes(dns_path)?;
+    let gateway: GatewaySnapshotFile = serde_json::from_slice(&gateway_bytes)?;
+    let dns: DnsSnapshotFile = serde_json::from_slice(&dns_bytes)?;
+    validate_snapshot_header(
+        gateway_path,
+        gateway.schema_version,
+        &gateway.island,
+        expected_island,
+    )?;
+    validate_snapshot_header(dns_path, dns.schema_version, &dns.island, expected_island)?;
+    let manifest_path = serving_generation_manifest_path(gateway_path);
+    let manifest = load_serving_generation_manifest(&manifest_path, expected_island)?;
+    validate_serving_generation_manifest(
+        &manifest,
+        gateway_path,
+        &gateway,
+        &gateway_bytes,
+        dns_path,
+        &dns,
+        &dns_bytes,
+    )?;
+    Ok(ProjectionServingSnapshotSet {
+        gateway,
+        dns,
+        manifest,
+    })
+}
+
+pub fn load_serving_generation_manifest(
+    path: impl AsRef<Path>,
+    expected_island: &IslandId,
+) -> ProjectionResult<ServingGenerationManifestFile> {
+    reject_symlink_target(path.as_ref())?;
+    let manifest: ServingGenerationManifestFile =
+        serde_json::from_slice(&fs::read(path.as_ref())?)?;
+    if manifest.schema_version != SERVING_GENERATION_SCHEMA_VERSION {
+        return Err(ProjectionError::SnapshotPath {
+            path: path.as_ref().to_path_buf(),
+            reason: format!(
+                "unsupported serving generation schema version {}",
+                manifest.schema_version
+            ),
+        });
+    }
+    if manifest.island != expected_island.as_str() {
+        return Err(ProjectionError::SnapshotPath {
+            path: path.as_ref().to_path_buf(),
+            reason: format!(
+                "serving generation island {} does not match {expected_island}",
+                manifest.island
+            ),
+        });
+    }
+    Ok(manifest)
+}
+
+pub fn write_serving_generation_manifest(
+    gateway_path: impl AsRef<Path>,
+    dns_path: impl AsRef<Path>,
+) -> ProjectionResult<SnapshotWriteReport> {
+    let gateway_path = gateway_path.as_ref();
+    let dns_path = dns_path.as_ref();
+    let gateway_bytes = read_snapshot_bytes(gateway_path)?;
+    let dns_bytes = read_snapshot_bytes(dns_path)?;
+    let gateway: GatewaySnapshotFile = serde_json::from_slice(&gateway_bytes)?;
+    let dns: DnsSnapshotFile = serde_json::from_slice(&dns_bytes)?;
+    let manifest = build_serving_generation_manifest(
+        gateway_path,
+        &gateway,
+        &gateway_bytes,
+        dns_path,
+        &dns,
+        &dns_bytes,
+    )?;
+    let path = serving_generation_manifest_path(gateway_path);
+    let bytes = serde_json::to_vec(&manifest)?;
+    write_snapshot_bytes(&path, &bytes, manifest.generation)
 }
 
 fn gateway_snapshot_for_state(
@@ -215,6 +351,7 @@ fn acme_revision(challenges: &[AcmeHttp01ChallengeProjection]) -> String {
 enum SnapshotKind {
     Gateway,
     Dns,
+    Manifest,
 }
 
 #[derive(Debug, Clone)]
@@ -253,12 +390,62 @@ impl SnapshotOperation {
     }
 }
 
+fn manifest_operation(
+    gateway: &SnapshotOperation,
+    dns: &SnapshotOperation,
+    gateway_path: &Path,
+    dns_path: &Path,
+    manifest_path: &Path,
+) -> ProjectionResult<SnapshotOperation> {
+    match (gateway, dns) {
+        (
+            SnapshotOperation::Write {
+                bytes: gateway_bytes,
+                ..
+            },
+            SnapshotOperation::Write {
+                bytes: dns_bytes, ..
+            },
+        ) => {
+            let gateway_snapshot: GatewaySnapshotFile = serde_json::from_slice(gateway_bytes)?;
+            let dns_snapshot: DnsSnapshotFile = serde_json::from_slice(dns_bytes)?;
+            let manifest = build_serving_generation_manifest(
+                gateway_path,
+                &gateway_snapshot,
+                gateway_bytes,
+                dns_path,
+                &dns_snapshot,
+                dns_bytes,
+            )?;
+            SnapshotOperation::write(
+                manifest_path,
+                serde_json::to_vec(&manifest)?,
+                manifest.generation,
+            )
+        }
+        (SnapshotOperation::Remove { .. }, SnapshotOperation::Remove { .. }) => {
+            Ok(SnapshotOperation::Remove {
+                path: manifest_path.to_path_buf(),
+            })
+        }
+        (SnapshotOperation::Preserve, SnapshotOperation::Preserve) => {
+            Ok(SnapshotOperation::Preserve)
+        }
+        _ => Err(ProjectionError::SnapshotPath {
+            path: manifest_path.to_path_buf(),
+            reason: "gateway and dns snapshot operations must share one serving generation"
+                .to_string(),
+        }),
+    }
+}
+
 fn apply_snapshot_batch(
     operations: &[PlannedSnapshotOperation],
 ) -> ProjectionResult<ProjectionSnapshotWriteReport> {
     let mut report = ProjectionSnapshotWriteReport {
         gateway: None,
         dns: None,
+        manifest: None,
     };
     let mut applied = Vec::new();
 
@@ -279,6 +466,7 @@ fn apply_snapshot_batch(
                 match planned.kind {
                     SnapshotKind::Gateway => report.gateway = write_report,
                     SnapshotKind::Dns => report.dns = write_report,
+                    SnapshotKind::Manifest => report.manifest = write_report,
                 }
             }
             Err(error) => {
@@ -296,6 +484,94 @@ fn apply_snapshot_batch(
     }
 
     Ok(report)
+}
+
+fn build_serving_generation_manifest(
+    gateway_path: &Path,
+    gateway: &GatewaySnapshotFile,
+    gateway_bytes: &[u8],
+    dns_path: &Path,
+    dns: &DnsSnapshotFile,
+    dns_bytes: &[u8],
+) -> ProjectionResult<ServingGenerationManifestFile> {
+    if gateway.island != dns.island {
+        return Err(ProjectionError::SnapshotPath {
+            path: serving_generation_manifest_path(gateway_path),
+            reason: format!(
+                "gateway snapshot island {} does not match dns snapshot island {}",
+                gateway.island, dns.island
+            ),
+        });
+    }
+    let gateway_checksum = checksum_bytes(gateway_bytes);
+    let dns_checksum = checksum_bytes(dns_bytes);
+    let generation = checksum_bytes(
+        format!(
+            "{}:{}:{}:{}",
+            gateway.revision, dns.revision, gateway_checksum, dns_checksum
+        )
+        .as_bytes(),
+    );
+    Ok(ServingGenerationManifestFile {
+        schema_version: SERVING_GENERATION_SCHEMA_VERSION,
+        island: gateway.island.clone(),
+        generation,
+        gateway: ServingGenerationSnapshotManifest {
+            path: snapshot_file_name(gateway_path),
+            revision: gateway.revision.clone(),
+            bytes: gateway_bytes.len(),
+            checksum: gateway_checksum,
+        },
+        dns: ServingGenerationSnapshotManifest {
+            path: snapshot_file_name(dns_path),
+            revision: dns.revision.clone(),
+            bytes: dns_bytes.len(),
+            checksum: dns_checksum,
+        },
+    })
+}
+
+fn validate_serving_generation_manifest(
+    manifest: &ServingGenerationManifestFile,
+    gateway_path: &Path,
+    gateway: &GatewaySnapshotFile,
+    gateway_bytes: &[u8],
+    dns_path: &Path,
+    dns: &DnsSnapshotFile,
+    dns_bytes: &[u8],
+) -> ProjectionResult<()> {
+    let expected = build_serving_generation_manifest(
+        gateway_path,
+        gateway,
+        gateway_bytes,
+        dns_path,
+        dns,
+        dns_bytes,
+    )?;
+    if manifest != &expected {
+        return Err(ProjectionError::SnapshotPath {
+            path: serving_generation_manifest_path(gateway_path),
+            reason: "serving generation manifest does not match gateway and dns snapshots"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn snapshot_file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn checksum_bytes(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+fn read_snapshot_bytes(path: &Path) -> ProjectionResult<Vec<u8>> {
+    reject_symlink_target(path)?;
+    Ok(fs::read(path)?)
 }
 
 fn apply_snapshot_operation(
@@ -444,7 +720,10 @@ mod tests {
         DnsProjection, DnsRecordProjection, GatewayProjection, GatewayRouteProjection,
         ProjectionIgnoreReason, ProjectionState, ProjectionStatus,
     };
-    use crate::snapshot::{load_dns_snapshot, load_gateway_snapshot, write_projection_snapshots};
+    use crate::snapshot::{
+        load_dns_snapshot, load_gateway_snapshot, load_serving_snapshot_set,
+        serving_generation_manifest_path, write_projection_snapshots,
+    };
     use mvp_identity::NodeId;
 
     fn sample_state() -> ProjectionState {
@@ -502,6 +781,11 @@ mod tests {
                 .len(),
             1
         );
+        let set = load_serving_snapshot_set(&gateway_path, &dns_path, &IslandId::new("prod"))
+            .expect("load serving generation");
+        assert_eq!(set.gateway.revision, "gateway:gateway-1:route-1:acme:none");
+        assert_eq!(set.manifest.gateway.revision, set.gateway.revision);
+        assert_eq!(set.manifest.dns.revision, set.dns.revision);
     }
 
     #[test]
@@ -533,6 +817,7 @@ mod tests {
         assert!(report.dns.is_none());
         assert!(!gateway_path.exists());
         assert!(!dns_path.exists());
+        assert!(!serving_generation_manifest_path(&gateway_path).exists());
     }
 
     #[test]
@@ -560,10 +845,11 @@ mod tests {
             gateway_before
         );
         assert_eq!(fs::read(&dns_path).expect("read dns"), dns_before);
+        assert!(serving_generation_manifest_path(&gateway_path).exists());
     }
 
     #[test]
-    fn projection_snapshot_batch_rolls_back_gateway_when_dns_fails() {
+    fn projection_snapshot_batch_rolls_back_gateway_and_manifest_when_dns_fails() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = sample_state();
         let mut next = sample_state();
@@ -576,6 +862,8 @@ mod tests {
         let dns_path = dir.path().join("dns.snapshot");
         write_projection_snapshots(&state, &gateway_path, &dns_path).expect("write snapshots");
         let gateway_before = fs::read(&gateway_path).expect("read gateway");
+        let manifest_path = serving_generation_manifest_path(&gateway_path);
+        let manifest_before = fs::read(&manifest_path).expect("read manifest");
         let bad_parent = dir.path().join("not-a-directory");
         fs::write(&bad_parent, b"file").expect("write blocker");
         let bad_dns_path = bad_parent.join("dns.snapshot");
@@ -587,6 +875,37 @@ mod tests {
             fs::read(&gateway_path).expect("read gateway"),
             gateway_before
         );
+        assert_eq!(
+            fs::read(&manifest_path).expect("read manifest"),
+            manifest_before
+        );
+    }
+
+    #[test]
+    fn serving_generation_loader_rejects_mismatched_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = sample_state();
+        let mut next = sample_state();
+        let Some(dns) = next.dns.as_mut() else {
+            panic!("sample state has dns");
+        };
+        dns.dns_commit_id = "dns-2".to_string();
+        let gateway_path = dir.path().join("gateway.snapshot");
+        let dns_path = dir.path().join("dns.snapshot");
+        write_projection_snapshots(&state, &gateway_path, &dns_path).expect("write snapshots");
+        let manifest_before =
+            fs::read(serving_generation_manifest_path(&gateway_path)).expect("read manifest");
+        write_projection_snapshots(&next, &gateway_path, &dns_path).expect("write next snapshots");
+        fs::write(
+            serving_generation_manifest_path(&gateway_path),
+            manifest_before,
+        )
+        .expect("restore stale manifest");
+
+        let error = load_serving_snapshot_set(&gateway_path, &dns_path, &IslandId::new("prod"))
+            .unwrap_err();
+
+        assert!(matches!(error, ProjectionError::SnapshotPath { .. }));
     }
 
     #[test]

@@ -1,23 +1,27 @@
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mvp_bus::{FactKeyPattern, Grant, PrincipalId};
+use mvp_bus::{BusActorHandle, BusSession, FactKeyPattern, Grant, PrincipalId};
 use mvp_deploy::{
-    DeployCoordinator, DeployId, DeployManifest, DeployTimeouts, DnsCommitId, GatewayCommitId,
-    InstanceCapacityRequirement, InstanceId, InstancePlan, PhaseId, PhasePlan, PhasePolicy,
-    PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId,
-    ServingCommitPlan,
+    DeployCoordinator, DeployEpochReservationFact, DeployError, DeployId, DeployManifest,
+    DeployStatusFact, DeployStatusPhase, DeployTimeouts, DnsCommitId, GatewayCommitId,
+    InstanceCapacityRequirement, InstanceId, InstancePlan, PandaDeployFactWriter, PhaseId,
+    PhasePlan, PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId,
+    ServingCommitId, ServingCommitPlan, decode_deploy_epoch_reservation_fact,
+    deploy_epoch_reservation_fact_key, deploy_epoch_reservation_fact_payload,
+    deploy_status_fact_key, deploy_status_fact_payload, read_deploy_statuses,
 };
-use mvp_deploy_p2panda::PandaDeployFactWriter;
 use mvp_identity::NodeId;
 use mvp_p2panda_facts::{
-    PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey, SharedPandaFactStore,
+    PandaFactStore, PandaFactWriteOutcome, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
+    SharedPandaFactStore,
 };
 use mvp_projection::{
     BackendEndpoint, CandidateStatus, DnsRecordFact, FactSource, GatewayProjection,
     ProjectionActorHandle, ProjectionFactPayload, RouteId, ServiceName, SqliteProjectionStore,
 };
-use mvp_routing_p2panda::PandaServingFactWriter;
+use mvp_routing::PandaServingFactWriter;
 use mvp_runtime::ProcessRuntime;
 
 use crate::error::{NodeError, NodeResult};
@@ -27,7 +31,7 @@ use crate::node_agent::{node_agent_grant, register_node_agent_services};
 use crate::node_agent_rpc::register_remote_node_agent_bridges;
 use crate::state::LoadedNodeState;
 
-const DEPLOY_TIMEOUT: Duration = Duration::from_secs(5);
+const DEPLOY_TIMEOUT: Duration = Duration::from_secs(15);
 const PROJECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +97,12 @@ pub struct ProductDeployReport {
     pub host_network_backends: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductDeployStatusReport {
+    pub deploy_id: DeployId,
+    pub statuses: Vec<DeployStatusFact>,
+}
+
 pub async fn deploy_product_service(
     options: ProductDeployOptions,
 ) -> NodeResult<ProductDeployReport> {
@@ -124,6 +134,7 @@ pub async fn deploy_product_service_with_process(
         None => register_node_agent_services(&bus, &node_agent_session, &state).await?,
     };
 
+    ensure_local_daemon_not_running(&state)?;
     let remote_bridges = register_remote_node_agent_bridges(&bus, &operator, &state).await?;
     let (facts, fact_session) = match remote_bridges {
         Some(bridges) => (bridges.store, bridges.fact_session),
@@ -132,15 +143,68 @@ pub async fn deploy_product_service_with_process(
             operator.clone(),
         ),
     };
-    let projection = projection_actor(&state, facts.clone(), fact_session.clone());
+    deploy_product_service_with_context(options, bus, operator, facts, fact_session, &state).await
+}
+
+pub(crate) async fn deploy_product_service_with_context(
+    options: ProductDeployOptions,
+    bus: BusActorHandle,
+    operator: BusSession,
+    facts: SharedPandaFactStore,
+    fact_session: BusSession,
+    state: &LoadedNodeState,
+) -> NodeResult<ProductDeployReport> {
+    let status_writer = ProductDeployStatusWriter::new(
+        facts.clone(),
+        fact_session.clone(),
+        Arc::new(state.author()?),
+        options.deploy_id.clone(),
+    );
+    status_writer
+        .write(1, DeployStatusPhase::Planned, None, None)
+        .await?;
+    let result = deploy_product_service_with_context_inner(
+        options,
+        bus,
+        operator,
+        facts,
+        fact_session,
+        state,
+        status_writer.clone(),
+    )
+    .await;
+    if let Err(error) = &result {
+        let _ = status_writer
+            .write(
+                900,
+                DeployStatusPhase::Failed,
+                None,
+                Some(error.to_string()),
+            )
+            .await;
+    }
+    result
+}
+
+async fn deploy_product_service_with_context_inner(
+    options: ProductDeployOptions,
+    bus: BusActorHandle,
+    operator: BusSession,
+    facts: SharedPandaFactStore,
+    fact_session: BusSession,
+    state: &LoadedNodeState,
+    status_writer: ProductDeployStatusWriter,
+) -> NodeResult<ProductDeployReport> {
+    let projection = projection_actor(state, facts.clone(), fact_session.clone());
     let existing = projection
         .project_once(PROJECT_TIMEOUT)
         .await
         .map_err(|source| NodeError::Projection { source })?;
     let old_backends_to_drain = current_backends(&existing.state.gateway);
-    let serving_epoch = next_serving_epoch(&facts, &state, &fact_session)?;
+    let serving_epoch = next_serving_epoch(&facts, state, &fact_session)?;
     let manifest = manifest_from_options(&options, old_backends_to_drain, serving_epoch);
     let author = Arc::new(state.author()?);
+    reserve_serving_epoch(&facts, &fact_session, &author, &manifest).await?;
     let coordinator = DeployCoordinator::with_fact_writers(
         bus,
         operator.clone(),
@@ -157,6 +221,14 @@ pub async fn deploy_product_service_with_process(
         .await
         .map_err(|source| NodeError::Deploy { source })?;
     let committed_manifest = pending.manifest().clone();
+    status_writer
+        .write(
+            40,
+            DeployStatusPhase::CleanupPending,
+            Some(committed_manifest.serving_commit.epoch),
+            None,
+        )
+        .await?;
     let projected = projection
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -166,8 +238,7 @@ pub async fn deploy_product_service_with_process(
         .gateway
         .as_ref()
         .ok_or(NodeError::MissingGatewayProjection)?;
-    let networking =
-        apply_host_networking_snapshot(&state, manifest.serving_commit.epoch, gateway)?;
+    let networking = apply_host_networking_snapshot(state, manifest.serving_commit.epoch, gateway)?;
     let catch_up = ProjectionCatchUp::from_report(&committed_manifest.serving_commit, &projected)
         .map_err(|source| NodeError::Routing { source })?;
     let result = coordinator
@@ -178,6 +249,14 @@ pub async fn deploy_product_service_with_process(
         )
         .await
         .map_err(|source| NodeError::Deploy { source })?;
+    status_writer
+        .write(
+            50,
+            DeployStatusPhase::CleanupDone,
+            Some(committed_manifest.serving_commit.epoch),
+            None,
+        )
+        .await?;
     let active_backends = current_backends(&projected.state.gateway);
 
     Ok(ProductDeployReport {
@@ -187,6 +266,109 @@ pub async fn deploy_product_service_with_process(
         visible_nodes: result.visible_nodes.len(),
         host_network_backends: networking.applied.backend_count,
     })
+}
+
+async fn reserve_serving_epoch(
+    facts: &SharedPandaFactStore,
+    session: &BusSession,
+    author: &Arc<mvp_p2panda_facts::PandaFactAuthor>,
+    manifest: &DeployManifest,
+) -> NodeResult<()> {
+    let reservation = DeployEpochReservationFact::new(manifest);
+    let key = deploy_epoch_reservation_fact_key(&reservation)
+        .map_err(|source| NodeError::Deploy { source })?;
+    let payload = deploy_epoch_reservation_fact_payload(&reservation)
+        .map_err(|source| NodeError::Deploy { source })?;
+    match facts
+        .write_fact_payload(session, author.as_ref(), key.clone(), payload)
+        .await
+        .map_err(|source| NodeError::FactStore { source })?
+    {
+        PandaFactWriteOutcome::Inserted(_) | PandaFactWriteOutcome::AlreadyPresent(_) => Ok(()),
+        PandaFactWriteOutcome::Conflict(metadata) => Err(NodeError::Deploy {
+            source: DeployError::DeployFactConflict {
+                key,
+                principal: metadata.author().clone(),
+                content_hash: metadata.content_hash().clone(),
+            },
+        }),
+    }
+}
+
+pub fn read_product_deploy_status(
+    state_dir: impl AsRef<std::path::Path>,
+    deploy_id: impl Into<String>,
+) -> NodeResult<ProductDeployStatusReport> {
+    let state = load_node(state_dir)?;
+    let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let session = authority.grant_in(state.island(), state.principal(), Grant::allow_all());
+    let state_for_store = state.clone();
+    let facts = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(|source| NodeError::Runtime { source })?;
+        runtime.block_on(open_local_fact_store(&state_for_store, Arc::new(raw_bus)))
+    })
+    .join()
+    .map_err(|_| NodeError::NodeAgentRpc {
+        message: "deploy status reader thread panicked".to_string(),
+    })??;
+    let deploy_id = DeployId::new(deploy_id);
+    let statuses = read_deploy_statuses(&facts, &state.island(), &session, &deploy_id)
+        .map_err(|source| NodeError::Deploy { source })?;
+    Ok(ProductDeployStatusReport {
+        deploy_id,
+        statuses,
+    })
+}
+
+#[derive(Clone)]
+struct ProductDeployStatusWriter {
+    facts: SharedPandaFactStore,
+    session: BusSession,
+    author: Arc<mvp_p2panda_facts::PandaFactAuthor>,
+    deploy_id: DeployId,
+}
+
+impl ProductDeployStatusWriter {
+    fn new(
+        facts: SharedPandaFactStore,
+        session: BusSession,
+        author: Arc<mvp_p2panda_facts::PandaFactAuthor>,
+        deploy_id: DeployId,
+    ) -> Self {
+        Self {
+            facts,
+            session,
+            author,
+            deploy_id,
+        }
+    }
+
+    async fn write(
+        &self,
+        sequence: u64,
+        phase: DeployStatusPhase,
+        serving_epoch: Option<u64>,
+        message: Option<String>,
+    ) -> NodeResult<()> {
+        let mut fact = DeployStatusFact::new(self.deploy_id.clone(), sequence, phase);
+        if let Some(serving_epoch) = serving_epoch {
+            fact = fact.with_serving_epoch(serving_epoch);
+        }
+        if let Some(message) = message {
+            fact = fact.with_message(message);
+        }
+        let key = deploy_status_fact_key(&fact).map_err(|source| NodeError::Deploy { source })?;
+        let payload =
+            deploy_status_fact_payload(&fact).map_err(|source| NodeError::Deploy { source })?;
+        self.facts
+            .write_fact_payload(&self.session, self.author.as_ref(), key, payload)
+            .await
+            .map_err(|source| NodeError::FactStore { source })?;
+        Ok(())
+    }
 }
 
 async fn open_local_fact_store(
@@ -246,6 +428,25 @@ fn projection_actor(
     )
 }
 
+fn ensure_local_daemon_not_running(state: &LoadedNodeState) -> NodeResult<()> {
+    match UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, state.p2panda_port())) {
+        Ok(_socket) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            Err(NodeError::NodeAgentRpc {
+                message: format!(
+                    "local daemon appears to own p2panda port {}; stop it before standalone deploy",
+                    state.p2panda_port()
+                ),
+            })
+        }
+        Err(source) => Err(NodeError::DaemonControlSocket {
+            path: state.paths().state_dir.clone(),
+            operation: "check local p2panda bind availability",
+            source,
+        }),
+    }
+}
+
 fn manifest_from_options(
     options: &ProductDeployOptions,
     old_backends_to_drain: Vec<BackendEndpoint>,
@@ -300,21 +501,18 @@ fn next_serving_epoch(
     session: &mvp_bus::BusSession,
 ) -> NodeResult<u64> {
     let pattern = FactKeyPattern::parse("/facts/serving/>").expect("valid serving fact pattern");
-    let candidates = facts
+    let serving_candidates = facts
         .list_candidates(&state.island(), &pattern, session)
         .map_err(|source| NodeError::FactSource { source })?;
-    let payloads = facts
-        .read_payloads(&state.island(), &candidates, session)
+    let serving_payloads = facts
+        .read_payloads(&state.island(), &serving_candidates, session)
         .map_err(|source| NodeError::FactSource { source })?;
     let mut max_epoch = 0;
-    for candidate in candidates {
-        if !matches!(
-            candidate.status(),
-            CandidateStatus::Verified | CandidateStatus::Conflict
-        ) {
+    for candidate in serving_candidates {
+        if candidate.status() != CandidateStatus::Verified {
             continue;
         }
-        let Some(payload) = payloads.get(candidate.content_hash()) else {
+        let Some(payload) = serving_payloads.get(candidate.content_hash()) else {
             continue;
         };
         let Ok(ProjectionFactPayload::ServingCommit(fact)) =
@@ -323,6 +521,26 @@ fn next_serving_epoch(
             continue;
         };
         max_epoch = max_epoch.max(fact.epoch);
+    }
+    let reservation_pattern =
+        FactKeyPattern::parse("/facts/deploy/epoch/>").expect("valid deploy epoch pattern");
+    let reservation_candidates = facts
+        .list_candidates(&state.island(), &reservation_pattern, session)
+        .map_err(|source| NodeError::FactSource { source })?;
+    let reservation_payloads = facts
+        .read_payloads(&state.island(), &reservation_candidates, session)
+        .map_err(|source| NodeError::FactSource { source })?;
+    for candidate in reservation_candidates {
+        if candidate.status() != CandidateStatus::Verified {
+            continue;
+        }
+        let Some(payload) = reservation_payloads.get(candidate.content_hash()) else {
+            continue;
+        };
+        let Ok(fact) = decode_deploy_epoch_reservation_fact(candidate.key(), payload) else {
+            continue;
+        };
+        max_epoch = max_epoch.max(fact.serving_epoch);
     }
     Ok(max_epoch
         .checked_add(1)

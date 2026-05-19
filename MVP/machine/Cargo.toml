@@ -14,6 +14,7 @@ mvp-bus = { path = "../bus" }
 mvp-commands = { path = "../commands" }
 mvp-identity = { path = "../identity" }
 mvp-mesh = { path = "../mesh" }
+mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-projection = { path = "../projection" }
 mvp-routing = { path = "../routing" }
 serde = { version = "1", features = ["derive"] }

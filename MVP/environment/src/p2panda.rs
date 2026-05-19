@@ -2,8 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use mvp_bus::BusSession;
-use mvp_environment::{
+use crate::{
     EnvironmentBranchFact, EnvironmentError, EnvironmentFactWriter, EnvironmentHeadFact,
     EnvironmentPromoteDecisionFact, EnvironmentResult, EnvironmentRollbackDecisionFact,
     WrittenEnvironmentFact, environment_branch_fact_key, environment_branch_fact_payload,
@@ -11,6 +10,7 @@ use mvp_environment::{
     environment_promote_decision_fact_key, environment_promote_decision_fact_payload,
     environment_rollback_decision_fact_key, environment_rollback_decision_fact_payload,
 };
+use mvp_bus::BusSession;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
 
 #[derive(Clone)]
@@ -116,14 +116,14 @@ fn environment_fact_outcome(
 mod tests {
     use std::sync::Arc;
 
-    use mvp_bus::{FactKeyPattern, Grant, IslandId, PrincipalId};
-    use mvp_environment::{
+    use crate::{
         EnvironmentBranchFact, EnvironmentBranchId, EnvironmentCommandId, EnvironmentEpoch,
         EnvironmentFactWriter, EnvironmentHeadFact, EnvironmentHeadId, EnvironmentId,
         EnvironmentPromoteDecisionFact, EnvironmentRollbackDecisionFact, EnvironmentRouteRef,
         EnvironmentVolumeRef, environment_branch_fact_key, environment_head_fact_key,
         environment_promote_decision_fact_key, environment_rollback_decision_fact_key,
     };
+    use mvp_bus::{FactKeyPattern, Grant, IslandId, PrincipalId};
     use mvp_identity::{NodeId, VisibleNodes};
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
     use mvp_routing::ServingCommitId;
@@ -208,7 +208,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            mvp_environment::EnvironmentError::FactConflict { key }
+            crate::EnvironmentError::FactConflict { key }
                 if key == environment_head_fact_key(&original.environment, original.epoch)
                     .expect("head key")
         ));
@@ -228,10 +228,7 @@ mod tests {
             .await
             .expect_err("read principal cannot write");
 
-        assert!(matches!(
-            error,
-            mvp_environment::EnvironmentError::FactWrite { .. }
-        ));
+        assert!(matches!(error, crate::EnvironmentError::FactWrite { .. }));
     }
 
     struct Fixture {

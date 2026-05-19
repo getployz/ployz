@@ -112,6 +112,7 @@ pub struct ServingRoleServingStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServingRoleRevisions {
+    pub generation: String,
     pub gateway: String,
     pub dns: String,
 }
@@ -196,12 +197,12 @@ pub async fn run_dns_role(options: ServingRoleOptions) -> NodeResult<()> {
 
 async fn run_serving_role(kind: ServingRoleKind, options: ServingRoleOptions) -> NodeResult<()> {
     remove_stale_socket(options.control_socket.as_path())?;
-    if let Some(parent) = options.control_socket.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| NodeError::ServingControlSocket {
-            path: options.control_socket.clone(),
-            operation: "create parent directory",
-            source,
-        })?;
+    if let Some(parent) = options
+        .control_socket
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        ensure_private_control_parent(parent)?;
     }
     let listener = UnixListener::bind(&options.control_socket).map_err(|source| {
         NodeError::ServingControlSocket {
@@ -210,6 +211,7 @@ async fn run_serving_role(kind: ServingRoleKind, options: ServingRoleOptions) ->
             source,
         }
     })?;
+    set_control_socket_permissions(options.control_socket.as_path())?;
     let node = load_node(options.state_dir)?;
     let snapshots = ServingSnapshotPaths::new(
         node.paths().gateway_snapshot.clone(),
@@ -373,6 +375,7 @@ async fn status_response(
 fn role_serving_status(status: ServingStatus) -> ServingRoleServingStatus {
     ServingRoleServingStatus {
         loaded_revisions: ServingRoleRevisions {
+            generation: status.loaded_revisions.generation,
             gateway: status.loaded_revisions.gateway,
             dns: status.loaded_revisions.dns,
         },
@@ -458,6 +461,78 @@ fn remove_stale_socket(path: &Path) -> NodeResult<()> {
             source,
         }),
     }
+}
+
+#[cfg(unix)]
+fn ensure_private_control_parent(parent: &Path) -> NodeResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    match std::fs::metadata(parent) {
+        Ok(_metadata) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(parent).map_err(|source| NodeError::ServingControlSocket {
+                path: parent.to_path_buf(),
+                operation: "create parent directory",
+                source,
+            })?;
+            let mut permissions = std::fs::metadata(parent)
+                .map_err(|source| NodeError::ServingControlSocket {
+                    path: parent.to_path_buf(),
+                    operation: "read parent permissions",
+                    source,
+                })?
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(parent, permissions).map_err(|source| {
+                NodeError::ServingControlSocket {
+                    path: parent.to_path_buf(),
+                    operation: "set parent permissions",
+                    source,
+                }
+            })?;
+        }
+        Err(source) => {
+            return Err(NodeError::ServingControlSocket {
+                path: parent.to_path_buf(),
+                operation: "read parent permissions",
+                source,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_control_parent(parent: &Path) -> NodeResult<()> {
+    std::fs::create_dir_all(parent).map_err(|source| NodeError::ServingControlSocket {
+        path: parent.to_path_buf(),
+        operation: "create parent directory",
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn set_control_socket_permissions(path: &Path) -> NodeResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|source| NodeError::ServingControlSocket {
+            path: path.to_path_buf(),
+            operation: "read socket permissions",
+            source,
+        })?
+        .permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions).map_err(|source| NodeError::ServingControlSocket {
+        path: path.to_path_buf(),
+        operation: "set socket permissions",
+        source,
+    })
+}
+
+#[cfg(not(unix))]
+fn set_control_socket_permissions(_path: &Path) -> NodeResult<()> {
+    Ok(())
 }
 
 fn duration_ms(duration: Duration) -> u64 {

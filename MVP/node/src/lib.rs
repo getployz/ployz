@@ -10,8 +10,8 @@ mod state;
 
 pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
 pub use deploy::{
-    ProductDeployOptions, ProductDeployReport, deploy_product_service,
-    deploy_product_service_with_process,
+    ProductDeployOptions, ProductDeployReport, ProductDeployStatusReport, deploy_product_service,
+    deploy_product_service_with_process, read_product_deploy_status,
 };
 pub use error::{NodeError, NodeResult};
 pub use membership::{

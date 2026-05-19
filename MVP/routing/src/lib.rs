@@ -1,3 +1,5 @@
+mod p2panda;
+
 use std::fmt::{self, Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
@@ -15,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub type RoutingResult<T> = Result<T, RoutingError>;
+
+pub use p2panda::PandaServingFactWriter;
 
 #[derive(Debug, Error)]
 pub enum RoutingError {

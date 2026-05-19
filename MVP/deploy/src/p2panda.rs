@@ -3,12 +3,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use mvp_bus::BusSession;
-use mvp_deploy::{
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
+
+use crate::{
     DeployCleanupDoneFact, DeployDecisionFact, DeployError, DeployFactWriter, DeployResult,
     WrittenDeployFact, deploy_cleanup_done_fact_key, deploy_cleanup_done_fact_payload,
     deploy_decision_fact_key, deploy_decision_fact_payload,
 };
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
 
 #[derive(Clone)]
 pub struct PandaDeployFactWriter {
@@ -89,10 +90,6 @@ mod tests {
     use std::sync::Arc;
 
     use mvp_bus::{FactContentHash, FactKeyPattern, Grant, IslandId, PrincipalId};
-    use mvp_deploy::{
-        DeployError, DeployFactWriteStatus, DeployFactWriter, DeployId, DeployManifest,
-        deploy_cleanup_done_fact_payload, deploy_decision_fact_payload,
-    };
     use mvp_identity::{NodeId, VisibleNodes};
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
     use mvp_projection::{BackendEndpoint, DnsRecordFact, RouteId};
@@ -100,7 +97,11 @@ mod tests {
         DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan,
     };
 
-    use crate::PandaDeployFactWriter;
+    use crate::{
+        DeployCleanupDoneFact, DeployError, DeployFactWriteStatus, DeployFactWriter, DeployId,
+        DeployManifest, PandaDeployFactWriter, deploy_cleanup_done_fact_key,
+        deploy_cleanup_done_fact_payload, deploy_decision_fact_key, deploy_decision_fact_payload,
+    };
 
     fn serving_commit() -> ServingCommitPlan {
         ServingCommitPlan {
@@ -134,8 +135,8 @@ mod tests {
         DeployManifest::new(DeployId::new(deploy_id), Vec::new(), serving)
     }
 
-    fn decision_fact(deploy_id: &str, serving_epoch: u64) -> mvp_deploy::DeployDecisionFact {
-        mvp_deploy::DeployDecisionFact::new(
+    fn decision_fact(deploy_id: &str, serving_epoch: u64) -> crate::DeployDecisionFact {
+        crate::DeployDecisionFact::new(
             manifest(deploy_id, serving_epoch),
             VisibleNodes::new([NodeId::new("node-new"), NodeId::new("node-old")]),
         )
@@ -194,7 +195,7 @@ mod tests {
             .write_decision(decision)
             .await
             .expect("repeat decision");
-        let cleanup = mvp_deploy::DeployCleanupDoneFact::new(&manifest("panda-deploy", 1));
+        let cleanup = DeployCleanupDoneFact::new(&manifest("panda-deploy", 1));
         let cleanup_inserted = writer
             .write_cleanup_done(cleanup.clone())
             .await
@@ -232,8 +233,7 @@ mod tests {
             .expect("insert first decision");
 
         let conflicting = decision_fact("panda-conflict", 2);
-        let expected_key =
-            mvp_deploy::deploy_decision_fact_key(&conflicting.deploy_id).expect("decision key");
+        let expected_key = deploy_decision_fact_key(&conflicting.deploy_id).expect("decision key");
         let expected_hash = FactContentHash::for_payload(
             &deploy_decision_fact_payload(&conflicting).expect("decision payload"),
         );
@@ -270,17 +270,16 @@ mod tests {
             Arc::clone(&fixture.author_b),
         );
         writer_a
-            .write_cleanup_done(mvp_deploy::DeployCleanupDoneFact::new(&manifest(
+            .write_cleanup_done(DeployCleanupDoneFact::new(&manifest(
                 "panda-cleanup-conflict",
                 1,
             )))
             .await
             .expect("insert first cleanup");
 
-        let conflicting =
-            mvp_deploy::DeployCleanupDoneFact::new(&manifest("panda-cleanup-conflict", 2));
+        let conflicting = DeployCleanupDoneFact::new(&manifest("panda-cleanup-conflict", 2));
         let expected_key =
-            mvp_deploy::deploy_cleanup_done_fact_key(&conflicting.deploy_id).expect("cleanup key");
+            deploy_cleanup_done_fact_key(&conflicting.deploy_id).expect("cleanup key");
         let expected_hash = FactContentHash::for_payload(
             &deploy_cleanup_done_fact_payload(&conflicting).expect("cleanup payload"),
         );

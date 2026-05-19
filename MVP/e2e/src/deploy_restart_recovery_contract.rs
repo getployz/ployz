@@ -13,12 +13,11 @@ use mvp_deploy::{
     DeployCoordinator, DeployDecisionFact, DeployFactWriter, DeployId, DeployManifest,
     DeployOutcome, DeployRecovery, DeployResult, DeployTimeouts, DnsCommitId, DrainInstanceRequest,
     DrainStatus, GatewayCommitId, InstanceCapacityRequirement, InstanceCommandReply,
-    InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome, PhaseId, PhasePlan,
-    PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId, RouteCommitId, ServingCommitId,
-    ServingCommitPlan, StopInstanceRequest, WrittenDeployFact, deploy_decision_fact_key,
-    deploy_decision_fact_payload,
+    InstanceCommandRequest, InstanceId, InstancePlan, InstanceStartOutcome, PandaDeployFactWriter,
+    PhaseId, PhasePlan, PhasePolicy, PhaseReversibility, ProjectionCatchUp, RevisionId,
+    RouteCommitId, ServingCommitId, ServingCommitPlan, StopInstanceRequest, WrittenDeployFact,
+    deploy_decision_fact_key, deploy_decision_fact_payload,
 };
-use mvp_deploy_p2panda::PandaDeployFactWriter;
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_p2panda_authz::ReplicaImportAccess;
 use mvp_p2panda_facts::{
@@ -27,11 +26,11 @@ use mvp_p2panda_facts::{
 use mvp_projection::{
     BackendEndpoint, DnsRecordFact, RouteId, ServiceName, load_dns_snapshot, load_gateway_snapshot,
 };
+use mvp_routing::PandaServingFactWriter;
 use mvp_routing::{
     RoutingResult, ServingFactWriter, WrittenServingFact, serving_commit_fact_key,
     serving_commit_fact_payload,
 };
-use mvp_routing_p2panda::PandaServingFactWriter;
 use mvp_serving::{ServingActorHandle, ServingSnapshotPaths};
 use serde::Serialize;
 

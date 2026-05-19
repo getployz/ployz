@@ -10,6 +10,7 @@ name = "mvp_projection"
 path = "src/lib.rs"
 
 [dependencies]
+blake3 = "1"
 kameo = "0.20"
 mvp-acme = { path = "../acme" }
 mvp-bus = { path = "../bus" }

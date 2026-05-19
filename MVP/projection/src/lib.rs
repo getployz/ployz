@@ -26,8 +26,12 @@ pub use model::{
 };
 pub use reducer::{payload_matches_key, reduce_facts};
 pub use snapshot::{
-    DnsSnapshotFile, GatewaySnapshotFile, ProjectionSnapshotWriteReport, SnapshotWriteReport,
-    load_dns_snapshot, load_gateway_snapshot, write_projection_snapshots,
+    DnsSnapshotFile, GatewaySnapshotFile, ProjectionServingSnapshotSet,
+    ProjectionSnapshotWriteReport, ServingGenerationManifestFile,
+    ServingGenerationSnapshotManifest, SnapshotWriteReport, load_dns_snapshot,
+    load_gateway_snapshot, load_serving_generation_manifest, load_serving_snapshot_set,
+    serving_generation_manifest_path, write_projection_snapshots,
+    write_serving_generation_manifest,
 };
 pub use source::{
     CandidateStatus, FactCandidate, FactKeyClassification, FactKind, FactSource, FactSourceError,
