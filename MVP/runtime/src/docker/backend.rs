@@ -148,7 +148,18 @@ impl DockerRuntime {
                     operation: "docker inspect",
                     message: format!("container '{name}' disappeared after start"),
                 })?;
-        self.wait_ready(instance).await
+        match self.wait_ready(instance).await {
+            Ok(instance) => Ok(instance),
+            Err(error) => {
+                if let Err(cleanup_error) = self.remove_container(&name).await {
+                    return Err(RuntimeError::DockerOperation {
+                        operation: "docker cleanup failed start",
+                        message: format!("{error}; cleanup failed: {cleanup_error}"),
+                    });
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn create_container(&self, name: &str, spec: &RuntimeInstanceSpec) -> RuntimeResult<()> {
