@@ -3366,11 +3366,13 @@ dependencies = [
 name = "mvp-acme"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "mvp-identity",
  "mvp-lease",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]

@@ -377,6 +377,10 @@ Acceptance:
 Goal: turn existing ACME challenge facts into real local ACME issuance through
 Pebble.
 
+Slice plan:
+
+- `docs/plans/2026-05-20-007-feat-mvp-pebble-acme-tls-slice.md`
+
 Primary files:
 
 - `MVP/acme/Cargo.toml`
