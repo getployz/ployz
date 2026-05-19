@@ -11,7 +11,7 @@ use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RData, RecordType};
 use serde::{Deserialize, Serialize};
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const DNS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -46,6 +46,7 @@ pub(crate) struct ProductChild {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ServingRoleProbe {
     pub listen_addr: SocketAddr,
+    pub loaded_generation: String,
     pub loaded_gateway_revision: String,
     pub loaded_dns_revision: String,
     pub freshness: String,
@@ -200,7 +201,10 @@ impl ProductHarness {
                 "--control",
                 socket.to_str().ok_or("daemon control path is not UTF-8")?,
             ]) {
-                Ok(output) if output.record.stdout.contains("node_agent_handlers=6") => {
+                Ok(output)
+                    if output.record.stdout.contains("node_agent_handlers=6")
+                        || output.record.stdout.contains("\"node_agent_handlers\":6") =>
+                {
                     return Ok(output.record);
                 }
                 Ok(output) => {
@@ -221,21 +225,37 @@ impl ProductHarness {
         }
     }
 
-    pub(crate) fn deploy(
+    pub(crate) fn deploy_via_daemon(
         &self,
-        node: &str,
+        coordinator_node: &str,
         target_node: &str,
         revision: &str,
         hostname: &str,
     ) -> Result<ProductCommandOutput, String> {
+        self.deploy_via_daemon_with_id(
+            coordinator_node,
+            "deploy-smoke",
+            target_node,
+            revision,
+            hostname,
+        )
+    }
+
+    pub(crate) fn deploy_via_daemon_with_id(
+        &self,
+        coordinator_node: &str,
+        deploy_id: &str,
+        target_node: &str,
+        revision: &str,
+        hostname: &str,
+    ) -> Result<ProductCommandOutput, String> {
+        let socket = self.daemon_control_socket(coordinator_node);
         self.node_command([
             "deploy",
-            "--state",
-            self.node_dir(node)
-                .to_str()
-                .ok_or("node path is not UTF-8")?,
+            "--control",
+            socket.to_str().ok_or("daemon control path is not UTF-8")?,
             "--deploy-id",
-            "deploy-smoke",
+            deploy_id,
             "--target-node",
             target_node,
             "--service",
@@ -244,6 +264,22 @@ impl ProductHarness {
             revision,
             "--hostname",
             hostname,
+        ])
+    }
+
+    pub(crate) fn deploy_status(
+        &self,
+        node: &str,
+        deploy_id: &str,
+    ) -> Result<ProductCommandOutput, String> {
+        self.node_command([
+            "deploy-status",
+            "--state",
+            self.node_dir(node)
+                .to_str()
+                .ok_or("node path is not UTF-8")?,
+            "--deploy-id",
+            deploy_id,
         ])
     }
 
@@ -277,6 +313,10 @@ impl ProductHarness {
     ) -> Result<ServingRoleProbe, String> {
         let value = unix_json_request(socket, &serde_json::Value::String(request.to_string()))?;
         parse_role_probe(value)
+    }
+
+    pub(crate) fn reload_role(&self, socket: &Path) -> Result<ServingRoleProbe, String> {
+        self.role_request(socket, "reload")
     }
 
     pub(crate) fn shutdown_role(&self, socket: &Path) -> Result<(), String> {
@@ -628,6 +668,11 @@ fn parse_role_probe(response: serde_json::Value) -> Result<ServingRoleProbe, Str
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| format!("role response missing gateway revision: {response}"))?
         .to_string();
+    let loaded_generation = response
+        .pointer("/data/serving/loaded_revisions/generation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("role response missing generation: {response}"))?
+        .to_string();
     let loaded_dns_revision = response
         .pointer("/data/serving/loaded_revisions/dns")
         .and_then(serde_json::Value::as_str)
@@ -640,6 +685,7 @@ fn parse_role_probe(response: serde_json::Value) -> Result<ServingRoleProbe, Str
         .to_string();
     Ok(ServingRoleProbe {
         listen_addr,
+        loaded_generation,
         loaded_gateway_revision,
         loaded_dns_revision,
         freshness,

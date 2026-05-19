@@ -13,6 +13,7 @@ path = "src/lib.rs"
 mvp-bus = { path = "../bus" }
 mvp-commands = { path = "../commands" }
 mvp-identity = { path = "../identity" }
+mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-projection = { path = "../projection" }
 mvp-routing = { path = "../routing" }
 serde = { version = "1", features = ["derive"] }

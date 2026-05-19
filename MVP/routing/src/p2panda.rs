@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use mvp_bus::BusSession;
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
-use mvp_routing::{
+
+use crate::{
     RoutingError, RoutingResult, ServingCommitPlan, ServingFactWriter, WrittenServingFact,
     serving_commit_fact_key, serving_commit_fact_payload,
 };
@@ -73,12 +74,12 @@ mod tests {
     use mvp_identity::NodeId;
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
     use mvp_projection::{BackendEndpoint, DnsRecordFact, RouteId};
-    use mvp_routing::{
-        DnsCommitId, GatewayCommitId, RouteCommitId, RoutingError, ServingCommitId,
-        ServingCommitPlan, ServingFactWriteStatus, ServingFactWriter,
-    };
 
-    use crate::PandaServingFactWriter;
+    use crate::{
+        DnsCommitId, GatewayCommitId, PandaServingFactWriter, RouteCommitId, RoutingError,
+        ServingCommitId, ServingCommitPlan, ServingFactWriteStatus, ServingFactWriter,
+        serving_commit_fact_key,
+    };
 
     fn fixture() -> (
         SharedPandaFactStore,
@@ -177,8 +178,7 @@ mod tests {
         assert!(matches!(
             error,
             RoutingError::ServingFactConflict { key }
-                if key == mvp_routing::serving_commit_fact_key(&original.serving_commit_id)
-                    .expect("serving key")
+                if key == serving_commit_fact_key(&original.serving_commit_id).expect("serving key")
         ));
     }
 }

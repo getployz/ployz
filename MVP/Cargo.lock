@@ -2742,21 +2742,11 @@ name = "mvp-commands"
 version = "0.1.0"
 dependencies = [
  "mvp-bus",
+ "mvp-p2panda-facts",
+ "mvp-projection",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "mvp-commands-p2panda"
-version = "0.1.0"
-dependencies = [
- "mvp-bus",
- "mvp-commands",
- "mvp-p2panda-facts",
- "mvp-projection",
- "serde_json",
  "tokio",
 ]
 
@@ -2767,24 +2757,12 @@ dependencies = [
  "futures-util",
  "mvp-bus",
  "mvp-identity",
+ "mvp-p2panda-facts",
  "mvp-projection",
  "mvp-routing",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "mvp-deploy-p2panda"
-version = "0.1.0"
-dependencies = [
- "mvp-bus",
- "mvp-deploy",
- "mvp-identity",
- "mvp-p2panda-facts",
- "mvp-projection",
- "mvp-routing",
  "tokio",
 ]
 
@@ -2800,23 +2778,18 @@ dependencies = [
  "mvp-acme-command",
  "mvp-bus",
  "mvp-commands",
- "mvp-commands-p2panda",
  "mvp-deploy",
- "mvp-deploy-p2panda",
  "mvp-environment",
- "mvp-environment-p2panda",
  "mvp-identity",
  "mvp-iroh",
  "mvp-lease",
  "mvp-machine",
- "mvp-machine-p2panda",
  "mvp-mesh",
  "mvp-p2panda-authz",
  "mvp-p2panda-facts",
  "mvp-p2panda-transport",
  "mvp-projection",
  "mvp-routing",
- "mvp-routing-p2panda",
  "mvp-serving",
  "mvp-volume",
  "p2panda-core",
@@ -2834,24 +2807,12 @@ dependencies = [
  "mvp-bus",
  "mvp-commands",
  "mvp-identity",
+ "mvp-p2panda-facts",
  "mvp-projection",
  "mvp-routing",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "mvp-environment-p2panda"
-version = "0.1.0"
-dependencies = [
- "mvp-bus",
- "mvp-environment",
- "mvp-identity",
- "mvp-p2panda-facts",
- "mvp-projection",
- "mvp-routing",
  "tokio",
 ]
 
@@ -2897,26 +2858,12 @@ dependencies = [
  "mvp-commands",
  "mvp-identity",
  "mvp-mesh",
+ "mvp-p2panda-facts",
  "mvp-projection",
  "mvp-routing",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "mvp-machine-p2panda"
-version = "0.1.0"
-dependencies = [
- "mvp-bus",
- "mvp-identity",
- "mvp-machine",
- "mvp-mesh",
- "mvp-p2panda-facts",
- "mvp-projection",
- "mvp-routing",
- "mvp-routing-p2panda",
  "tokio",
 ]
 
@@ -2945,13 +2892,12 @@ dependencies = [
  "hickory-proto",
  "mvp-bus",
  "mvp-deploy",
- "mvp-deploy-p2panda",
  "mvp-identity",
  "mvp-mesh",
  "mvp-p2panda-facts",
  "mvp-p2panda-transport",
  "mvp-projection",
- "mvp-routing-p2panda",
+ "mvp-routing",
  "mvp-runtime",
  "mvp-serving",
  "serde",
@@ -3014,6 +2960,7 @@ dependencies = [
 name = "mvp-projection"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "kameo",
  "mvp-acme",
  "mvp-bus",
@@ -3033,21 +2980,11 @@ version = "0.1.0"
 dependencies = [
  "mvp-bus",
  "mvp-identity",
+ "mvp-p2panda-facts",
  "mvp-projection",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "mvp-routing-p2panda"
-version = "0.1.0"
-dependencies = [
- "mvp-bus",
- "mvp-identity",
- "mvp-p2panda-facts",
- "mvp-projection",
- "mvp-routing",
  "tokio",
 ]
 

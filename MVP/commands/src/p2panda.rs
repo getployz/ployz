@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mvp_bus::{BusSession, FactKey, FactKeyPattern, FactPayload};
-use mvp_commands::{
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
+use mvp_projection::{CandidateStatus, FactCandidate, FactSource};
+
+use crate::{
     CommandError, CommandFact, CommandName, CommandPhaseStore, CommandResult, IntentId,
     StoredCommandPhase, command_intent_fact_key, command_phase_fact_key,
 };
-use mvp_p2panda_facts::{PandaFactAuthor, PandaFactWriteOutcome, SharedPandaFactStore};
-use mvp_projection::{CandidateStatus, FactCandidate, FactSource};
 
 pub struct PandaCommandPhaseStore {
     store: SharedPandaFactStore,
@@ -209,10 +210,10 @@ fn store_error(error: impl std::error::Error) -> CommandError {
 mod tests {
     use std::sync::Arc;
 
-    use mvp_bus::{FactPayload, Grant, IslandId, PrincipalId};
-    use mvp_commands::{
+    use crate::{
         CommandError, CommandFact, CommandName, CommandPhaseStore, IntentId, command_phase_fact_key,
     };
+    use mvp_bus::{FactPayload, Grant, IslandId, PrincipalId};
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactStore, SharedPandaFactStore};
 
     use super::PandaCommandPhaseStore;

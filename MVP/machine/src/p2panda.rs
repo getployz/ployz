@@ -2,13 +2,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use mvp_bus::{BusSession, FactKey, FactPayload};
-use mvp_machine::{
+use crate::{
     MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact, MachineRemoveError,
     MachineRemoveResult, WrittenMachineFact, machine_remove_cleanup_done_fact_key,
     machine_remove_cleanup_done_fact_payload, machine_remove_decision_fact_key,
     machine_remove_decision_fact_payload,
 };
+use mvp_bus::{BusSession, FactKey, FactPayload};
 use mvp_mesh::{removal_started_fact_key, removal_started_fact_payload, tombstone_fact_key};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactError, PandaFactWriteOutcome, SharedPandaFactStore,
@@ -238,27 +238,28 @@ fn written_machine_fact_from_outcome(
 mod tests {
     use std::sync::Arc;
 
+    use crate::{
+        MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact,
+        MachineRemoveError, machine_remove_decision_fact_key, read_machine_remove_decision,
+    };
     use mvp_bus::{
         FactKey, FactKeyPattern, FactPayload, Grant, IslandId, PrincipalId, harness::InMemoryBus,
     };
     use mvp_identity::{NodeId, VisibleNodes};
-    use mvp_machine::{
-        MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveDecisionFact,
-        MachineRemoveError, machine_remove_decision_fact_key, read_machine_remove_decision,
-    };
     use mvp_mesh::{removal_started_fact_key, tombstone_fact_key};
     use mvp_p2panda_facts::{PandaFactAuthor, PandaFactError, PandaFactStore};
     use mvp_projection::{
         BackendEndpoint, DnsRecordFact, FactSource, NodeJoinedFact, NodeRemovalStartedFact,
         NodeTombstonedFact, ProjectionFactPayload, RouteId,
     };
+    use mvp_routing::PandaServingFactWriter;
     use mvp_routing::{
         DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan,
         ServingFactWriteStatus, ServingFactWriter,
     };
-    use mvp_routing_p2panda::PandaServingFactWriter;
 
-    use crate::{PandaMachineFactStore, PandaMachineFactWriter, machine_fact_store_error};
+    use crate::p2panda::machine_fact_store_error;
+    use crate::{PandaMachineFactStore, PandaMachineFactWriter};
 
     struct Fixture {
         facts: PandaMachineFactStore,

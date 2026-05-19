@@ -10,7 +10,7 @@ use mvp_identity::NodeId;
 use mvp_lease::{LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseResource, LeaseTimestamp};
 use mvp_projection::{
     AcmeHttp01ChallengeProjection, BackendEndpoint, DnsRecordProjection, DnsSnapshotFile,
-    GatewayRouteProjection, GatewaySnapshotFile, RouteId,
+    GatewayRouteProjection, GatewaySnapshotFile, RouteId, write_serving_generation_manifest,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -95,17 +95,28 @@ fn empty_dns_snapshot(island: &str, revision: &str) -> DnsSnapshotFile {
 }
 
 fn write_snapshot_files(root: &TempDir, gateway: &GatewaySnapshotFile, dns: &DnsSnapshotFile) {
+    let paths = write_snapshot_files_without_manifest(root, gateway, dns);
+    write_serving_generation_manifest(&paths.gateway, &paths.dns)
+        .expect("write serving generation manifest");
+}
+
+fn write_snapshot_files_without_manifest(
+    root: &TempDir,
+    gateway: &GatewaySnapshotFile,
+    dns: &DnsSnapshotFile,
+) -> ServingSnapshotPaths {
     let paths = snapshot_paths(root);
     fs::write(
-        paths.gateway,
+        &paths.gateway,
         serde_json::to_vec(gateway).expect("serialize gateway snapshot"),
     )
     .expect("write gateway snapshot");
     fs::write(
-        paths.dns,
+        &paths.dns,
         serde_json::to_vec(dns).expect("serialize dns snapshot"),
     )
     .expect("write dns snapshot");
+    paths
 }
 
 fn write_prod_snapshots(root: &TempDir, revision: &str, backend: &str, dns_value: &str) {
@@ -255,6 +266,8 @@ fn batch_rejects_acme_challenge_with_mismatched_key_authorization() {
         serde_json::to_vec(&empty_dns_snapshot("prod", "rev-acme")).expect("serialize dns"),
     )
     .expect("write dns snapshot");
+    write_serving_generation_manifest(&paths.gateway, &paths.dns)
+        .expect("write serving generation manifest");
 
     let error =
         ServingSnapshotBatch::load(&paths, &prod()).expect_err("invalid ACME snapshot fails");
@@ -294,7 +307,7 @@ fn batch_does_not_return_expired_acme_challenge() {
 #[test]
 fn wrong_island_snapshot_is_structured_failure() {
     let root = TempDir::new().expect("tempdir");
-    write_snapshot_files(
+    write_snapshot_files_without_manifest(
         &root,
         &gateway_snapshot("laptop", "rev-1", "web.example.test", "fd00::1:8080"),
         &dns_snapshot("prod", "rev-1", "web.example.test", "fd00::1"),
@@ -979,7 +992,7 @@ async fn wrong_island_reload_preserves_last_good() {
     write_prod_snapshots(&root, "rev-1", "fd00::1:8080", "fd00::1");
     let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
         .expect("spawn serving actor");
-    write_snapshot_files(
+    write_snapshot_files_without_manifest(
         &root,
         &gateway_snapshot("prod", "rev-2", "web.example.test", "fd00::2:8080"),
         &dns_snapshot("laptop", "rev-2", "web.example.test", "fd00::2"),

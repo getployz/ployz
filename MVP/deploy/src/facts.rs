@@ -19,6 +19,8 @@ use crate::{DeployError, DeployId, DeployManifest, DeployResult};
 pub enum DeployFactPayload {
     Decision(Box<DeployDecisionFact>),
     CleanupDone(DeployCleanupDoneFact),
+    Status(DeployStatusFact),
+    EpochReservation(DeployEpochReservationFact),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +63,67 @@ impl DeployCleanupDoneFact {
             serving_epoch: manifest.serving_commit.epoch,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployStatusFact {
+    pub deploy_id: DeployId,
+    pub sequence: u64,
+    pub phase: DeployStatusPhase,
+    pub serving_epoch: Option<u64>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployEpochReservationFact {
+    pub deploy_id: DeployId,
+    pub serving_epoch: u64,
+    pub expected_serving_commit_id: ServingCommitId,
+}
+
+impl DeployEpochReservationFact {
+    #[must_use]
+    pub fn new(manifest: &DeployManifest) -> Self {
+        Self {
+            deploy_id: manifest.deploy_id.clone(),
+            serving_epoch: manifest.serving_commit.epoch,
+            expected_serving_commit_id: manifest.serving_commit.serving_commit_id.clone(),
+        }
+    }
+}
+
+impl DeployStatusFact {
+    #[must_use]
+    pub fn new(deploy_id: DeployId, sequence: u64, phase: DeployStatusPhase) -> Self {
+        Self {
+            deploy_id,
+            sequence,
+            phase,
+            serving_epoch: None,
+            message: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_serving_epoch(mut self, serving_epoch: u64) -> Self {
+        self.serving_epoch = Some(serving_epoch);
+        self
+    }
+
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployStatusPhase {
+    Planned,
+    CleanupPending,
+    CleanupDone,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +245,25 @@ pub fn deploy_cleanup_done_fact_key(deploy_id: &DeployId) -> DeployResult<FactKe
     FactKey::parse(format!("/facts/deploy/{deploy_id}/cleanup/done")).map_err(DeployError::from)
 }
 
+pub fn deploy_status_fact_key(fact: &DeployStatusFact) -> DeployResult<FactKey> {
+    let payload = deploy_status_fact_payload(fact)?;
+    let hash = FactContentHash::for_payload(&payload);
+    FactKey::parse(format!(
+        "/facts/deploy/{}/status/{:04}/{}",
+        fact.deploy_id,
+        fact.sequence,
+        hash.as_str().chars().take(16).collect::<String>()
+    ))
+    .map_err(DeployError::from)
+}
+
+pub fn deploy_epoch_reservation_fact_key(
+    fact: &DeployEpochReservationFact,
+) -> DeployResult<FactKey> {
+    FactKey::parse(format!("/facts/deploy/epoch/{:020}", fact.serving_epoch))
+        .map_err(DeployError::from)
+}
+
 pub fn deploy_decision_fact_payload(fact: &DeployDecisionFact) -> DeployResult<FactPayload> {
     encode_deploy_fact(
         DeployFactPayload::Decision(Box::new(fact.clone())),
@@ -196,13 +278,31 @@ pub fn deploy_cleanup_done_fact_payload(fact: &DeployCleanupDoneFact) -> DeployR
     )
 }
 
+pub fn deploy_status_fact_payload(fact: &DeployStatusFact) -> DeployResult<FactPayload> {
+    encode_deploy_fact(
+        DeployFactPayload::Status(fact.clone()),
+        "serialize deploy status fact",
+    )
+}
+
+pub fn deploy_epoch_reservation_fact_payload(
+    fact: &DeployEpochReservationFact,
+) -> DeployResult<FactPayload> {
+    encode_deploy_fact(
+        DeployFactPayload::EpochReservation(fact.clone()),
+        "serialize deploy epoch reservation fact",
+    )
+}
+
 pub fn decode_deploy_decision_fact(
     key: &FactKey,
     payload: &FactPayload,
 ) -> DeployResult<DeployDecisionFact> {
     match decode::<DeployFactPayload>(payload, "decode deploy decision fact")? {
         DeployFactPayload::Decision(fact) => Ok(*fact),
-        DeployFactPayload::CleanupDone(_) => Err(DeployError::DeployFactKindMismatch {
+        DeployFactPayload::CleanupDone(_)
+        | DeployFactPayload::Status(_)
+        | DeployFactPayload::EpochReservation(_) => Err(DeployError::DeployFactKindMismatch {
             key: key.clone(),
             expected_kind: "decision",
         }),
@@ -215,9 +315,41 @@ pub fn decode_deploy_cleanup_done_fact(
 ) -> DeployResult<DeployCleanupDoneFact> {
     match decode::<DeployFactPayload>(payload, "decode deploy cleanup done fact")? {
         DeployFactPayload::CleanupDone(fact) => Ok(fact),
-        DeployFactPayload::Decision(_) => Err(DeployError::DeployFactKindMismatch {
+        DeployFactPayload::Decision(_)
+        | DeployFactPayload::Status(_)
+        | DeployFactPayload::EpochReservation(_) => Err(DeployError::DeployFactKindMismatch {
             key: key.clone(),
             expected_kind: "cleanup_done",
+        }),
+    }
+}
+
+pub fn decode_deploy_status_fact(
+    key: &FactKey,
+    payload: &FactPayload,
+) -> DeployResult<DeployStatusFact> {
+    match decode::<DeployFactPayload>(payload, "decode deploy status fact")? {
+        DeployFactPayload::Status(fact) => Ok(fact),
+        DeployFactPayload::Decision(_)
+        | DeployFactPayload::CleanupDone(_)
+        | DeployFactPayload::EpochReservation(_) => Err(DeployError::DeployFactKindMismatch {
+            key: key.clone(),
+            expected_kind: "status",
+        }),
+    }
+}
+
+pub fn decode_deploy_epoch_reservation_fact(
+    key: &FactKey,
+    payload: &FactPayload,
+) -> DeployResult<DeployEpochReservationFact> {
+    match decode::<DeployFactPayload>(payload, "decode deploy epoch reservation fact")? {
+        DeployFactPayload::EpochReservation(fact) => Ok(fact),
+        DeployFactPayload::Decision(_)
+        | DeployFactPayload::CleanupDone(_)
+        | DeployFactPayload::Status(_) => Err(DeployError::DeployFactKindMismatch {
+            key: key.clone(),
+            expected_kind: "epoch_reservation",
         }),
     }
 }
@@ -309,6 +441,36 @@ pub fn read_deploy_cleanup_done(
     }
     decoded.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(decoded.into_iter().next().map(|(_hash, fact)| fact))
+}
+
+pub fn read_deploy_statuses(
+    source: &dyn FactSource,
+    island: &IslandId,
+    session: &BusSession,
+    deploy_id: &DeployId,
+) -> DeployResult<Vec<DeployStatusFact>> {
+    let pattern = FactKeyPattern::parse(format!("/facts/deploy/{deploy_id}/status/>"))?;
+    let candidates = source
+        .list_candidates(island, &pattern, session)?
+        .into_iter()
+        .filter(|candidate| candidate.status() == CandidateStatus::Verified)
+        .collect::<Vec<_>>();
+    let payloads = source.read_payloads(island, &candidates, session)?;
+    let mut decoded = Vec::new();
+    for candidate in &candidates {
+        let Some(payload) = payloads.get(candidate.content_hash()) else {
+            continue;
+        };
+        let fact = decode_deploy_status_fact(candidate.key(), payload)?;
+        if fact.deploy_id != *deploy_id {
+            return Err(DeployError::DeployFactMismatch {
+                deploy_id: deploy_id.clone(),
+            });
+        }
+        decoded.push((fact.sequence, candidate.key().clone(), fact));
+    }
+    decoded.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    Ok(decoded.into_iter().map(|(_, _, fact)| fact).collect())
 }
 
 pub fn select_deploy_decision(

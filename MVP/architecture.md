@@ -102,6 +102,13 @@ not be the fate-sharing boundary for steady-state data-plane behavior. Feature
 state belongs to actors/subsystems, and steady-state roles need their own
 lifecycle story.
 
+For the current MVP binary surface, `mvp-node deploy --control <socket>` enters
+through the local daemon's typed control API so transport, membership, and
+node-agent command handling have one owner. Standalone `mvp-node deploy` remains
+an explicit daemon-down operation. It must fail fast when the local daemon
+already owns the node's p2panda transport; silently starting a second local
+transport owner is not an acceptable shortcut.
+
 When the coordinator role is down:
 
 - existing workloads keep running,

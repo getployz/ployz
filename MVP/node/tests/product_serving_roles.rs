@@ -41,8 +41,9 @@ fn gateway_and_dns_roles_serve_snapshots_without_daemon() {
         ))
         .expect("deploy service");
 
-    let gateway_control = temp.path().join("gateway.sock");
-    let dns_control = temp.path().join("dns.sock");
+    let control_dir = temp.path().join("control");
+    let gateway_control = control_dir.join("gateway.sock");
+    let dns_control = control_dir.join("dns.sock");
     let mut gateway = SpawnedRole::start(
         "gateway",
         temp.path(),
@@ -53,6 +54,8 @@ fn gateway_and_dns_roles_serve_snapshots_without_daemon() {
 
     let gateway_status = wait_for_status(gateway_control.as_path());
     let dns_status = wait_for_status(dns_control.as_path());
+    assert_owner_only_control_socket(gateway_control.as_path());
+    assert_owner_only_control_socket(dns_control.as_path());
 
     assert!(
         http_get(gateway_status.listen_addr, "web.example.test")
@@ -173,6 +176,29 @@ fn connect_control(control: &Path) -> std::os::unix::net::UnixStream {
         }
     }
 }
+
+#[cfg(unix)]
+fn assert_owner_only_control_socket(control: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let socket_mode = std::fs::metadata(control)
+        .expect("control socket metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(socket_mode, 0o600);
+
+    let parent = control.parent().expect("control socket parent");
+    let parent_mode = std::fs::metadata(parent)
+        .expect("control socket parent metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(parent_mode, 0o700);
+}
+
+#[cfg(not(unix))]
+fn assert_owner_only_control_socket(_control: &Path) {}
 
 fn http_get(addr: SocketAddr, host: &str) -> String {
     let mut stream = TcpStream::connect(addr).expect("connect gateway");

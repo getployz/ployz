@@ -179,7 +179,24 @@ impl ProcessRuntime {
         })?;
         let bytes = serde_json::to_vec_pretty(instance)
             .map_err(|source| RuntimeError::EncodeMetadata { source })?;
-        fs::write(&path, bytes).map_err(|source| RuntimeError::WriteMetadata { path, source })
+        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|source| {
+            RuntimeError::WriteMetadata {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        file.write_all(&bytes)
+            .and_then(|_| file.as_file_mut().sync_all())
+            .map_err(|source| RuntimeError::WriteMetadata {
+                path: path.clone(),
+                source,
+            })?;
+        file.persist(&path)
+            .map(|_file| ())
+            .map_err(|error| RuntimeError::WriteMetadata {
+                path,
+                source: error.error,
+            })
     }
 
     fn instance_dir(&self, instance_id: &InstanceId) -> PathBuf {
@@ -256,6 +273,9 @@ fn is_ready(address: &str) -> bool {
 }
 
 fn stop_pid(instance_id: &InstanceId, pid: u32) -> RuntimeResult<()> {
+    if !pid_exists(pid) {
+        return Ok(());
+    }
     let status = Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
@@ -266,6 +286,8 @@ fn stop_pid(instance_id: &InstanceId, pid: u32) -> RuntimeResult<()> {
             source,
         })?;
     if status.success() {
+        wait_pid_exited(instance_id, pid, Duration::from_secs(2))
+    } else if !pid_exists(pid) {
         Ok(())
     } else {
         Err(RuntimeError::Stop {
@@ -274,4 +296,72 @@ fn stop_pid(instance_id: &InstanceId, pid: u32) -> RuntimeResult<()> {
             source: std::io::Error::other(format!("kill exited with {status}")),
         })
     }
+}
+
+fn wait_pid_exited(instance_id: &InstanceId, pid: u32, timeout: Duration) -> RuntimeResult<()> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !pid_exists(pid) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let status = Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .status()
+        .map_err(|source| RuntimeError::Stop {
+            instance_id: instance_id.to_string(),
+            pid,
+            source,
+        })?;
+    if !status.success() {
+        if !pid_exists(pid) {
+            return Ok(());
+        }
+        return Err(RuntimeError::Stop {
+            instance_id: instance_id.to_string(),
+            pid,
+            source: std::io::Error::other(format!("kill -KILL exited with {status}")),
+        });
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if !pid_exists(pid) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Err(RuntimeError::Stop {
+        instance_id: instance_id.to_string(),
+        pid,
+        source: std::io::Error::other("process did not exit after SIGKILL"),
+    })
+}
+
+fn pid_exists(pid: u32) -> bool {
+    if pid_is_zombie(pid) {
+        return false;
+    }
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn pid_is_zombie(pid: u32) -> bool {
+    let Ok(status) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    status
+        .split_whitespace()
+        .nth(2)
+        .is_some_and(|state| state == "Z")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pid_is_zombie(_pid: u32) -> bool {
+    false
 }

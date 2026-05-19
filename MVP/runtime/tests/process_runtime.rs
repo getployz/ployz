@@ -1,5 +1,8 @@
 use std::io::Read;
 use std::net::TcpStream;
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use mvp_deploy::{InstanceId, RevisionId};
 use mvp_projection::ServiceName;
@@ -42,6 +45,35 @@ fn process_runtime_starts_drains_stops_and_rediscovers_http_service() {
         .expect("stopped instance");
     assert_eq!(stopped.state, RuntimeState::Stopped);
     assert!(stopped.pid.is_none());
+    assert!(TcpStream::connect(&started.address).is_err());
+}
+
+#[test]
+fn process_runtime_stop_clears_metadata_when_recorded_pid_is_already_gone() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let runtime =
+        ProcessRuntime::managed_http(temp.path(), env!("CARGO_BIN_EXE_mvp-runtime-http-child"));
+    let spec = ProcessInstanceSpec::new(
+        InstanceId::new("instance-a"),
+        ServiceName::new("web"),
+        RevisionId::new("rev-1"),
+    );
+
+    let started = runtime.start(&spec).expect("start");
+    let pid = started.pid.expect("started pid");
+    Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .status()
+        .expect("kill child");
+    wait_until_unreachable(&started.address);
+
+    let stopped = runtime
+        .stop(&InstanceId::new("instance-a"))
+        .expect("stop")
+        .expect("stopped instance");
+    assert_eq!(stopped.state, RuntimeState::Stopped);
+    assert!(stopped.pid.is_none());
 }
 
 fn assert_response_contains(address: &str, expected: &str) {
@@ -55,6 +87,17 @@ fn assert_response_contains(address: &str, expected: &str) {
         response.contains(expected),
         "response {response:?} did not contain {expected:?}"
     );
+}
+
+fn wait_until_unreachable(address: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if TcpStream::connect(address).is_err() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    panic!("{address} remained reachable");
 }
 
 use std::io::Write;

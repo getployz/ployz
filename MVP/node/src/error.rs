@@ -154,6 +154,8 @@ pub enum NodeError {
         operation: &'static str,
         source: std::io::Error,
     },
+    #[error("daemon control task failed: {message}")]
+    DaemonControlTask { message: String },
     #[error("encode serving role control response: {source}")]
     EncodeServingRoleResponse { source: serde_json::Error },
     #[error("projection failed: {source}")]

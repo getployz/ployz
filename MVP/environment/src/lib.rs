@@ -2,6 +2,7 @@ mod command;
 mod domain;
 mod error;
 mod facts;
+mod p2panda;
 
 pub use command::{
     BranchEnvironmentCommand, BranchEnvironmentRequest, BranchEnvironmentResult,
@@ -26,6 +27,7 @@ pub use facts::{
     environment_rollback_decision_fact_key, environment_rollback_decision_fact_payload,
     read_environment_heads, require_expected_environment_epoch,
 };
+pub use p2panda::PandaEnvironmentFactWriter;
 
 #[cfg(test)]
 mod tests;

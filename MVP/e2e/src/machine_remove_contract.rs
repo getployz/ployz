@@ -10,18 +10,18 @@ use mvp_bus::{
     BusAuthority, BusError, BusSession, FactKey, Grant, HandlerFailure, IslandId, PrincipalId,
 };
 use mvp_commands::CommandContext;
-use mvp_commands_p2panda::PandaCommandPhaseStore;
+use mvp_commands::PandaCommandPhaseStore;
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_machine::{
     MachineFactWriter, MachineRemoveCleanupDoneFact, MachineRemoveCommandInput,
     MachineRemoveCoordinator, MachineRemoveDecisionFact, MachineRemoveId, MachineRemoveOutcome,
-    MachineRemoveRequest, MachineRemoveResult, MachineRemoveTimeouts, PrepareRemoveIntent,
-    PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest, RemoveCleanupStatus,
-    StopRemovedWorkloadsOutcome, StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest,
-    WrittenMachineFact, machine_remove_decision_fact_key, machine_remove_decision_fact_payload,
-    prepare_remove_subject, stop_removed_workloads_subject,
+    MachineRemoveRequest, MachineRemoveResult, MachineRemoveTimeouts, PandaMachineFactStore,
+    PandaMachineFactWriter, PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply,
+    PrepareRemoveRequest, RemoveCleanupStatus, StopRemovedWorkloadsOutcome,
+    StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest, WrittenMachineFact,
+    machine_remove_decision_fact_key, machine_remove_decision_fact_payload, prepare_remove_subject,
+    stop_removed_workloads_subject,
 };
-use mvp_machine_p2panda::{PandaMachineFactStore, PandaMachineFactWriter};
 use mvp_mesh::{
     InviteId, InviteSecret, IrohEndpointId, JoinCommand, JoinRequest, MachineInvite,
     WireGuardAppliedSnapshot, WireGuardPublicKey, WireGuardSnapshotPaths, plan_full_mesh,
@@ -33,11 +33,11 @@ use mvp_projection::{
     BackendEndpoint, DnsRecordFact, FactSource, NodeRemovalStartedFact, NodeTombstonedFact,
     ProjectionIgnoreReason, ProjectionState, RouteId,
 };
+use mvp_routing::PandaServingFactWriter;
 use mvp_routing::{
     DnsCommitId, GatewayCommitId, ProjectionCatchUp, RouteCommitId, ServingCommitId,
     ServingCommitPlan, ServingFactWriter,
 };
-use mvp_routing_p2panda::PandaServingFactWriter;
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;

@@ -1,6 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mvp_bus::{BusAuthority, FactKey, FactKeyPattern, Grant, PrincipalId, harness::InMemoryBus};
@@ -17,19 +18,33 @@ use mvp_projection::{
     NodeJoinedFact, PeerAdmittedFact, ProjectionFactPayload, payload_matches_key,
 };
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::oneshot;
+use tokio::task::LocalSet;
+use tokio::time::timeout;
 
 use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
+use crate::deploy::{ProductDeployOptions, deploy_product_service_with_context};
 use crate::error::{NodeError, NodeResult};
 use crate::node_agent::{node_agent_grant, node_agent_request_grant, register_node_agent_services};
-use crate::node_agent_rpc::handle_node_agent_rpc_requests;
+use crate::node_agent_rpc::{
+    handle_node_agent_rpc_requests, register_remote_node_agent_bridges_with_fact_node,
+};
 use crate::state::{
     IssuedInviteRecord, LoadedNodeState, init_joined_node, load_issued_invite, load_node,
     record_bootstrap_peer, record_issued_invite as persist_issued_invite, write_node_ticket,
 };
 
+const DAEMON_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_CONTROL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_DAEMON_CONTROL_REQUEST_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InviteToken {
     pub island_id: String,
+    #[serde(default)]
+    pub bootstrap_node_id: Option<String>,
     pub p2panda_network_id_hex: String,
     pub p2panda_topic_hex: String,
     pub bootstrap_ticket: String,
@@ -113,6 +128,39 @@ pub struct DaemonReport {
     pub node_agent_handlers: usize,
 }
 
+struct DaemonControlRuntime {
+    state: Arc<DaemonControlSharedState>,
+    shutdown: oneshot::Sender<()>,
+    task: std::thread::JoinHandle<NodeResult<()>>,
+}
+
+impl DaemonControlRuntime {
+    fn record_import_progress(&self, batches: u64, operations: u64) {
+        self.state
+            .imported_batches
+            .store(batches, Ordering::Relaxed);
+        self.state
+            .imported_operations
+            .store(operations, Ordering::Relaxed);
+    }
+
+    async fn shutdown(self) -> NodeResult<()> {
+        let _ = self.shutdown.send(());
+        match self.task.join() {
+            Ok(result) => result,
+            Err(error) => Err(NodeError::DaemonControlTask {
+                message: format!("{error:?}"),
+            }),
+        }
+    }
+}
+
+struct DaemonControlSharedState {
+    imported_batches: AtomicU64,
+    imported_operations: AtomicU64,
+    node_agent_handlers: usize,
+}
+
 pub fn create_invite(state_dir: impl AsRef<std::path::Path>, ttl: Duration) -> NodeResult<String> {
     let state = load_node(state_dir)?;
     let author = state.author()?;
@@ -120,6 +168,7 @@ pub fn create_invite(state_dir: impl AsRef<std::path::Path>, ttl: Duration) -> N
     let now = now_ms();
     let token = InviteToken {
         island_id: state.island_id().to_string(),
+        bootstrap_node_id: Some(state.node_id_str().to_string()),
         p2panda_network_id_hex: state.p2panda_network_id_hex().to_string(),
         p2panda_topic_hex: state.p2panda_topic_hex().to_string(),
         bootstrap_ticket,
@@ -156,7 +205,7 @@ pub fn join_from_token(
         p2panda_network_id_hex: token.p2panda_network_id_hex,
         p2panda_topic_hex: token.p2panda_topic_hex,
         bootstrap_peer: BootstrapPeerConfig::new(
-            None,
+            token.bootstrap_node_id,
             token.bootstrap_principal_id,
             token.bootstrap_author_key_hex,
             token.bootstrap_ticket,
@@ -264,6 +313,11 @@ pub async fn run_daemon_once(
     let state = load_node(state_dir)?;
     let (product_bus, product_authority, _raw_product_bus) =
         mvp_bus::harness::actor_with_authority();
+    let operator_session = product_authority.grant_in(
+        state.island(),
+        PrincipalId::new(format!("daemon-operator:{}", state.node_id_str())),
+        Grant::allow_all(),
+    );
     let node_agent_session = product_authority.grant_in(
         state.island(),
         state.principal(),
@@ -276,84 +330,162 @@ pub async fn run_daemon_once(
     );
     let (_node_agent, node_agent_report) =
         register_node_agent_services(&product_bus, &node_agent_session, &state).await?;
-    let (mut fact_node, writer_session, author, authority) = spawn_fact_node(&state).await?;
+    let (fact_node_inner, writer_session, author, authority) = spawn_fact_node(&state).await?;
+    let fact_node = Arc::new(tokio::sync::Mutex::new(fact_node_inner));
     let ticket = ensure_node_ticket(&state)?;
     write_node_ticket(&state, &ticket)?;
-    publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
-    publish_admitted_peers(&mut fact_node, &state, &writer_session, &author).await?;
+    {
+        let mut fact_node = fact_node.lock().await;
+        publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
+        publish_admitted_peers(&mut fact_node, &state, &writer_session, &author).await?;
+    }
+    let mut remote_bridges = register_remote_node_agent_bridges_with_fact_node(
+        &product_bus,
+        &operator_session,
+        &state,
+        Arc::clone(&fact_node),
+        writer_session.clone(),
+        state.author()?,
+    )
+    .await?;
+    let local_fact_store = {
+        let fact_node = fact_node.lock().await;
+        fact_node.store()
+    };
+    let deploy_facts = remote_bridges
+        .as_ref()
+        .map(|bridges| bridges.store.clone())
+        .unwrap_or(local_fact_store);
+    let deploy_fact_session = remote_bridges
+        .as_ref()
+        .map(|bridges| bridges.fact_session.clone())
+        .unwrap_or_else(|| writer_session.clone());
     let control = match &options.control_socket {
-        Some(path) => Some(open_daemon_control_socket(path)?),
+        Some(path) => Some(start_daemon_control_task(DaemonControlTaskOptions {
+            socket_path: path.clone(),
+            state: state.clone(),
+            product_bus: product_bus.clone(),
+            operator_session: operator_session.clone(),
+            facts: deploy_facts.clone(),
+            fact_session: deploy_fact_session.clone(),
+            node_agent_handlers: node_agent_report.registered_handlers,
+        })?),
         None => None,
     };
     let started = std::time::Instant::now();
     let mut last_advertised = started;
+    let mut last_stream_refresh = started;
     let mut imported_batches = 0;
     let mut imported_operations = 0;
     while started.elapsed() < options.run_for {
         if last_advertised.elapsed() >= Duration::from_millis(100) {
-            publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
+            {
+                let mut fact_node = fact_node.lock().await;
+                publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
+            }
             let current_state = load_node(state.paths().state_dir.clone())?;
-            publish_admitted_peers(&mut fact_node, &current_state, &writer_session, &author)
-                .await?;
+            {
+                let mut fact_node = fact_node.lock().await;
+                publish_admitted_peers(&mut fact_node, &current_state, &writer_session, &author)
+                    .await?;
+            }
             last_advertised = std::time::Instant::now();
         }
-        match fact_node
-            .import_next_fact_batch_with_idle_timeout(options.import_idle)
-            .await
-        {
+        let import_result = {
+            let mut fact_node = fact_node.lock().await;
+            fact_node
+                .import_next_fact_batch_with_idle_timeout(options.import_idle)
+                .await
+        };
+        match import_result {
             Ok(Some(outcomes)) => {
                 imported_batches += 1;
                 imported_operations += outcomes
                     .iter()
                     .filter(|outcome| matches!(outcome, PandaNetFactImportOutcome::Imported))
                     .count() as u64;
-                apply_peer_admissions(&mut fact_node, &state, &writer_session, &authority).await?;
+                if let Some(control) = &control {
+                    control.record_import_progress(imported_batches, imported_operations);
+                }
                 let current_state = load_node(state.paths().state_dir.clone())?;
-                let _handled_rpc = handle_node_agent_rpc_requests(
-                    &mut fact_node,
-                    &writer_session,
-                    &author,
+                {
+                    let mut fact_node = fact_node.lock().await;
+                    apply_peer_admissions(
+                        &mut fact_node,
+                        &current_state,
+                        &writer_session,
+                        &authority,
+                    )
+                    .await?;
+                }
+                let current_state = load_node(state.paths().state_dir.clone())?;
+                ensure_remote_bridges_registered(
                     &product_bus,
-                    &node_agent_request_session,
+                    &operator_session,
                     &current_state,
+                    Arc::clone(&fact_node),
+                    &writer_session,
+                    &mut remote_bridges,
                 )
                 .await?;
-                serve_daemon_control(
-                    control.as_ref(),
-                    &state,
-                    imported_batches,
-                    imported_operations,
-                    node_agent_report.registered_handlers,
-                )?;
+                {
+                    let mut fact_node = fact_node.lock().await;
+                    let _handled_rpc = handle_node_agent_rpc_requests(
+                        &mut fact_node,
+                        &writer_session,
+                        &author,
+                        &product_bus,
+                        &node_agent_request_session,
+                        &current_state,
+                    )
+                    .await?;
+                }
             }
             Ok(None) => {
-                fact_node
-                    .refresh_stream()
-                    .await
-                    .map_err(|source| NodeError::Transport { source })?;
-                serve_daemon_control(
-                    control.as_ref(),
-                    &state,
-                    imported_batches,
-                    imported_operations,
-                    node_agent_report.registered_handlers,
-                )?;
+                if last_stream_refresh.elapsed() >= Duration::from_secs(1) {
+                    let mut fact_node = fact_node.lock().await;
+                    fact_node
+                        .refresh_stream()
+                        .await
+                        .map_err(|source| NodeError::Transport { source })?;
+                    last_stream_refresh = std::time::Instant::now();
+                }
+                let current_state = load_node(state.paths().state_dir.clone())?;
+                ensure_remote_bridges_registered(
+                    &product_bus,
+                    &operator_session,
+                    &current_state,
+                    Arc::clone(&fact_node),
+                    &writer_session,
+                    &mut remote_bridges,
+                )
+                .await?;
+                {
+                    let mut fact_node = fact_node.lock().await;
+                    let _handled_rpc = handle_node_agent_rpc_requests(
+                        &mut fact_node,
+                        &writer_session,
+                        &author,
+                        &product_bus,
+                        &node_agent_request_session,
+                        &current_state,
+                    )
+                    .await?;
+                }
             }
             Err(error) if is_recoverable_stream_error(&error) => {
+                let mut fact_node = fact_node.lock().await;
                 fact_node
                     .refresh_stream()
                     .await
                     .map_err(|source| NodeError::Transport { source })?;
-                serve_daemon_control(
-                    control.as_ref(),
-                    &state,
-                    imported_batches,
-                    imported_operations,
-                    node_agent_report.registered_handlers,
-                )?;
+                last_stream_refresh = std::time::Instant::now();
             }
             Err(error) => return Err(NodeError::Transport { source: error }),
         }
+    }
+    if let Some(control) = control {
+        control.shutdown().await?;
     }
     Ok(DaemonReport {
         node_id: state.node_id_str().to_string(),
@@ -364,13 +496,77 @@ pub async fn run_daemon_once(
     })
 }
 
+async fn ensure_remote_bridges_registered(
+    product_bus: &mvp_bus::BusActorHandle,
+    operator_session: &mvp_bus::BusSession,
+    current_state: &LoadedNodeState,
+    fact_node: Arc<tokio::sync::Mutex<PandaNetFactNode>>,
+    writer_session: &mvp_bus::BusSession,
+    remote_bridges: &mut Option<crate::node_agent_rpc::RemoteNodeAgentBridgeSet>,
+) -> NodeResult<()> {
+    if let Some(bridges) = remote_bridges {
+        return bridges
+            .register_missing(product_bus, operator_session, current_state)
+            .await;
+    }
+    *remote_bridges = register_remote_node_agent_bridges_with_fact_node(
+        product_bus,
+        operator_session,
+        current_state,
+        fact_node,
+        writer_session.clone(),
+        current_state.author()?,
+    )
+    .await?;
+    Ok(())
+}
+
+struct DaemonControlTaskOptions {
+    socket_path: PathBuf,
+    state: LoadedNodeState,
+    product_bus: mvp_bus::BusActorHandle,
+    operator_session: mvp_bus::BusSession,
+    facts: SharedPandaFactStore,
+    fact_session: mvp_bus::BusSession,
+    node_agent_handlers: usize,
+}
+
+fn start_daemon_control_task(
+    options: DaemonControlTaskOptions,
+) -> NodeResult<DaemonControlRuntime> {
+    let listener = open_daemon_control_socket(&options.socket_path)?;
+    let shared_state = Arc::new(DaemonControlSharedState {
+        imported_batches: AtomicU64::new(0),
+        imported_operations: AtomicU64::new(0),
+        node_agent_handlers: options.node_agent_handlers,
+    });
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task_state = Arc::clone(&shared_state);
+    let task = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(|source| NodeError::Runtime { source })?;
+        let local = LocalSet::new();
+        local.block_on(
+            &runtime,
+            run_daemon_control_task(listener, shutdown_rx, task_state, options),
+        )
+    });
+    Ok(DaemonControlRuntime {
+        state: shared_state,
+        shutdown: shutdown_tx,
+        task,
+    })
+}
+
 fn open_daemon_control_socket(path: &Path) -> NodeResult<std::os::unix::net::UnixListener> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| NodeError::DaemonControlSocket {
-            path: parent.to_path_buf(),
-            operation: "create parent",
-            source,
-        })?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        ensure_private_control_parent(parent)?;
     }
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -390,6 +586,7 @@ fn open_daemon_control_socket(path: &Path) -> NodeResult<std::os::unix::net::Uni
             source,
         }
     })?;
+    set_control_socket_permissions(path)?;
     listener
         .set_nonblocking(true)
         .map_err(|source| NodeError::DaemonControlSocket {
@@ -400,52 +597,330 @@ fn open_daemon_control_socket(path: &Path) -> NodeResult<std::os::unix::net::Uni
     Ok(listener)
 }
 
-fn serve_daemon_control(
-    listener: Option<&std::os::unix::net::UnixListener>,
-    state: &LoadedNodeState,
-    imported_batches: u64,
-    imported_operations: u64,
-    node_agent_handlers: usize,
+#[cfg(unix)]
+fn ensure_private_control_parent(parent: &Path) -> NodeResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    match std::fs::metadata(parent) {
+        Ok(_metadata) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(parent).map_err(|source| NodeError::DaemonControlSocket {
+                path: parent.to_path_buf(),
+                operation: "create parent",
+                source,
+            })?;
+            let mut permissions = std::fs::metadata(parent)
+                .map_err(|source| NodeError::DaemonControlSocket {
+                    path: parent.to_path_buf(),
+                    operation: "read parent permissions",
+                    source,
+                })?
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(parent, permissions).map_err(|source| {
+                NodeError::DaemonControlSocket {
+                    path: parent.to_path_buf(),
+                    operation: "set parent permissions",
+                    source,
+                }
+            })?;
+        }
+        Err(source) => {
+            return Err(NodeError::DaemonControlSocket {
+                path: parent.to_path_buf(),
+                operation: "read parent permissions",
+                source,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_control_parent(parent: &Path) -> NodeResult<()> {
+    std::fs::create_dir_all(parent).map_err(|source| NodeError::DaemonControlSocket {
+        path: parent.to_path_buf(),
+        operation: "create parent",
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn set_control_socket_permissions(path: &Path) -> NodeResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: path.to_path_buf(),
+            operation: "read socket permissions",
+            source,
+        })?
+        .permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions).map_err(|source| NodeError::DaemonControlSocket {
+        path: path.to_path_buf(),
+        operation: "set socket permissions",
+        source,
+    })
+}
+
+#[cfg(not(unix))]
+fn set_control_socket_permissions(_path: &Path) -> NodeResult<()> {
+    Ok(())
+}
+
+async fn run_daemon_control_task(
+    listener: std::os::unix::net::UnixListener,
+    mut shutdown: oneshot::Receiver<()>,
+    shared_state: Arc<DaemonControlSharedState>,
+    options: DaemonControlTaskOptions,
 ) -> NodeResult<()> {
-    let Some(listener) = listener else {
-        return Ok(());
-    };
+    let listener =
+        UnixListener::from_std(listener).map_err(|source| NodeError::DaemonControlSocket {
+            path: options.socket_path.clone(),
+            operation: "convert to async listener",
+            source,
+        })?;
     loop {
-        match listener.accept() {
-            Ok((mut stream, _addr)) => {
-                let mut request = [0u8; 128];
-                let _read = std::io::Read::read(&mut stream, &mut request).map_err(|source| {
-                    NodeError::DaemonControlSocket {
-                        path: state.paths().state_dir.clone(),
-                        operation: "read status request",
-                        source,
-                    }
-                })?;
-                let response = format!(
-                    "node={} imported_batches={} imported_operations={} node_agent_handlers={}\n",
-                    state.node_id_str(),
-                    imported_batches,
-                    imported_operations,
-                    node_agent_handlers
-                );
-                std::io::Write::write_all(&mut stream, response.as_bytes()).map_err(|source| {
-                    NodeError::DaemonControlSocket {
-                        path: state.paths().state_dir.clone(),
-                        operation: "write status",
-                        source,
-                    }
-                })?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-            Err(source) => {
-                return Err(NodeError::DaemonControlSocket {
-                    path: state.paths().state_dir.clone(),
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => return Ok(()),
+            accepted = listener.accept() => {
+                let (stream, _addr) = accepted.map_err(|source| NodeError::DaemonControlSocket {
+                    path: options.socket_path.clone(),
                     operation: "accept",
                     source,
-                });
+                })?;
+                tokio::task::spawn_local(handle_daemon_control_connection(
+                    stream,
+                    options.socket_path.clone(),
+                    options.state.clone(),
+                    options.product_bus.clone(),
+                    options.operator_session.clone(),
+                    options.facts.clone(),
+                    options.fact_session.clone(),
+                    Arc::clone(&shared_state),
+                ));
             }
         }
     }
+}
+
+async fn handle_daemon_control_connection(
+    mut stream: UnixStream,
+    socket_path: PathBuf,
+    state: LoadedNodeState,
+    product_bus: mvp_bus::BusActorHandle,
+    operator_session: mvp_bus::BusSession,
+    facts: SharedPandaFactStore,
+    fact_session: mvp_bus::BusSession,
+    shared_state: Arc<DaemonControlSharedState>,
+) {
+    let response = match read_daemon_control_request(&mut stream).await {
+        Ok(bytes) => match parse_daemon_control_request(&bytes) {
+            Some(DaemonControlRequest::Status) => daemon_status_json(&state, &shared_state),
+            Some(DaemonControlRequest::Deploy(request)) => {
+                match deploy_product_service_with_context(
+                    request.into_options(state.paths().state_dir.clone()),
+                    product_bus,
+                    operator_session,
+                    facts,
+                    fact_session,
+                    &state,
+                )
+                .await
+                {
+                    Ok(report) => serde_json::to_string(&DaemonDeployResponse::from(report))
+                        .map_err(|source| NodeError::EncodeNodeAgentRpc { source }),
+                    Err(error) => daemon_failure_json(error.to_string()),
+                }
+            }
+            None => daemon_failure_json("invalid daemon control request"),
+        },
+        Err(error) => daemon_failure_json(error),
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => format!(r#"{{"status":"failed","error":"{}"}}"#, error),
+    };
+    let _ = write_daemon_control_response(&mut stream, socket_path, response.into_bytes()).await;
+}
+
+async fn read_daemon_control_request(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
+    timeout(
+        DAEMON_CONTROL_READ_TIMEOUT,
+        read_daemon_control_request_bounded(stream),
+    )
+    .await
+    .map_err(|_| "read daemon control request timed out".to_string())?
+}
+
+async fn read_daemon_control_request_bounded(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            return Ok(request);
+        }
+        if request.len() + read > MAX_DAEMON_CONTROL_REQUEST_BYTES {
+            return Err(format!(
+                "daemon control request exceeds {MAX_DAEMON_CONTROL_REQUEST_BYTES} bytes"
+            ));
+        }
+        request.extend_from_slice(&chunk[..read]);
+    }
+}
+
+async fn write_daemon_control_response(
+    stream: &mut UnixStream,
+    socket_path: PathBuf,
+    response: Vec<u8>,
+) -> NodeResult<()> {
+    timeout(DAEMON_CONTROL_WRITE_TIMEOUT, stream.write_all(&response))
+        .await
+        .map_err(|_| NodeError::DaemonControlSocket {
+            path: socket_path.clone(),
+            operation: "write response timeout",
+            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "write response timed out"),
+        })?
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: socket_path.clone(),
+            operation: "write response",
+            source,
+        })?;
+    timeout(DAEMON_CONTROL_WRITE_TIMEOUT, stream.write_all(b"\n"))
+        .await
+        .map_err(|_| NodeError::DaemonControlSocket {
+            path: socket_path.clone(),
+            operation: "write response newline timeout",
+            source: std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "write response newline timed out",
+            ),
+        })?
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: socket_path.clone(),
+            operation: "write response newline",
+            source,
+        })?;
+    timeout(DAEMON_CONTROL_WRITE_TIMEOUT, stream.shutdown())
+        .await
+        .map_err(|_| NodeError::DaemonControlSocket {
+            path: socket_path.clone(),
+            operation: "shutdown response timeout",
+            source: std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "shutdown response timed out",
+            ),
+        })?
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: socket_path,
+            operation: "shutdown response",
+            source,
+        })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+enum DaemonControlRequest {
+    Status,
+    Deploy(DaemonDeployRequest),
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonDeployRequest {
+    deploy_id: String,
+    target_node: String,
+    service: String,
+    revision: String,
+    hostname: String,
+}
+
+impl DaemonDeployRequest {
+    fn into_options(self, state_dir: PathBuf) -> ProductDeployOptions {
+        ProductDeployOptions::new(state_dir)
+            .with_deploy_id(self.deploy_id)
+            .with_target_node(self.target_node)
+            .with_service(self.service)
+            .with_revision(self.revision)
+            .with_hostname(self.hostname)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonStatusResponse<'a> {
+    status: &'static str,
+    node: &'a str,
+    imported_batches: u64,
+    imported_operations: u64,
+    node_agent_handlers: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonDeployResponse {
+    status: &'static str,
+    deploy_id: String,
+    active_backends: Vec<String>,
+    old_backends: usize,
+    visible_nodes: usize,
+    host_network_backends: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonFailureResponse {
+    status: &'static str,
+    error: String,
+}
+
+fn daemon_failure_json(message: impl Into<String>) -> NodeResult<String> {
+    serde_json::to_string(&DaemonFailureResponse {
+        status: "failed",
+        error: message.into(),
+    })
+    .map_err(|source| NodeError::EncodeNodeAgentRpc { source })
+}
+
+impl From<crate::ProductDeployReport> for DaemonDeployResponse {
+    fn from(report: crate::ProductDeployReport) -> Self {
+        Self {
+            status: "deployed",
+            deploy_id: report.deploy_id.to_string(),
+            active_backends: report
+                .active_backends
+                .into_iter()
+                .map(|backend| format!("{}@{}", backend.node_id, backend.address))
+                .collect(),
+            old_backends: report.old_backends_to_drain.len(),
+            visible_nodes: report.visible_nodes,
+            host_network_backends: report.host_network_backends,
+        }
+    }
+}
+
+fn parse_daemon_control_request(bytes: &[u8]) -> Option<DaemonControlRequest> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    if text.is_empty() || text == "status" {
+        return Some(DaemonControlRequest::Status);
+    }
+    serde_json::from_str(text).ok()
+}
+
+fn daemon_status_json(
+    state: &LoadedNodeState,
+    shared_state: &DaemonControlSharedState,
+) -> NodeResult<String> {
+    serde_json::to_string(&DaemonStatusResponse {
+        status: "ready",
+        node: state.node_id_str(),
+        imported_batches: shared_state.imported_batches.load(Ordering::Relaxed),
+        imported_operations: shared_state.imported_operations.load(Ordering::Relaxed),
+        node_agent_handlers: shared_state.node_agent_handlers,
+    })
+    .map_err(|source| NodeError::EncodeNodeAgentRpc { source })
 }
 
 fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {
@@ -512,6 +987,12 @@ async fn apply_peer_admissions(
         .await
         .map_err(|source| NodeError::FactSource { source })?;
     for candidate in candidates {
+        if candidate.status() != mvp_projection::CandidateStatus::Verified {
+            continue;
+        }
+        if !admission_authorized(state, candidate.author()) {
+            continue;
+        }
         let Some(payload) = payloads.get(candidate.content_hash()) else {
             continue;
         };
@@ -538,6 +1019,17 @@ async fn apply_peer_admissions(
         install_peer_runtime(fact_node, &updated, authority, &peer).await?;
     }
     Ok(())
+}
+
+fn admission_authorized(state: &LoadedNodeState, author: &PrincipalId) -> bool {
+    if author == &state.principal() {
+        return true;
+    }
+    state
+        .bootstrap_peers()
+        .into_iter()
+        .filter(|peer| peer.invite_id.is_some())
+        .any(|peer| PrincipalId::new(peer.principal_id) == *author)
 }
 
 async fn install_peer_runtime(
@@ -739,305 +1231,4 @@ fn stable_suffix(now_ms: u64, value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use mvp_bus::{FactKeyPattern, Grant, IslandId, PrincipalId, harness::InMemoryBus};
-    use mvp_p2panda_facts::{PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey};
-    use mvp_projection::{FactSource, reduce_facts};
-
-    use crate::{
-        DaemonOptions, InitOptions, admit_joiner, create_admission_request, create_invite,
-        init_node, join_from_token, load_node, load_node_ticket, run_daemon_once,
-    };
-
-    #[test]
-    fn invite_creates_stable_ticket_without_daemon() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let state_dir = temp.path().join("node-a");
-        init_node(InitOptions::new(&state_dir)).expect("init node");
-
-        let token = create_invite(&state_dir, Duration::from_secs(60)).expect("invite");
-        let state = load_node(&state_dir).expect("load node");
-        let ticket = load_node_ticket(&state).expect("load ticket");
-
-        assert!(!token.is_empty());
-        assert!(!ticket.is_empty());
-    }
-
-    #[tokio::test]
-    async fn join_from_token_initializes_state_with_bootstrap_network_and_topic() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let node_a = temp.path().join("node-a");
-        init_node(
-            InitOptions::new(&node_a)
-                .with_island("prod")
-                .with_node_id("node-a"),
-        )
-        .expect("init node a");
-        let token = create_invite(&node_a, Duration::from_secs(60)).expect("invite");
-        let invite = super::InviteToken::decode(&token).expect("decode invite");
-
-        let state = join_from_token(
-            temp.path().join("node-b"),
-            &token,
-            Some("node-b".to_string()),
-            super::now_ms(),
-        )
-        .expect("join state");
-
-        assert_eq!(state.island_id(), "prod");
-        assert_eq!(state.node_id_str(), "node-b");
-        assert_eq!(
-            state.p2panda_network_id_hex(),
-            invite.p2panda_network_id_hex
-        );
-        assert_eq!(state.p2panda_topic_hex(), invite.p2panda_topic_hex);
-    }
-
-    #[tokio::test]
-    async fn malformed_non_expired_join_token_does_not_poison_state_dir() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let node_a = temp.path().join("node-a");
-        let node_b = temp.path().join("node-b");
-        init_node(
-            InitOptions::new(&node_a)
-                .with_island("prod")
-                .with_node_id("node-a"),
-        )
-        .expect("init node a");
-        let token = create_invite(&node_a, Duration::from_secs(60)).expect("invite");
-        let mut malformed = super::InviteToken::decode(&token).expect("decode invite");
-        malformed.bootstrap_ticket = "not-a-ticket".to_string();
-        let malformed = malformed.encode().expect("encode malformed invite");
-
-        let error = join_from_token(
-            &node_b,
-            &malformed,
-            Some("node-b".to_string()),
-            super::now_ms(),
-        )
-        .expect_err("malformed invite fails");
-        let joined = join_from_token(&node_b, &token, Some("node-b".to_string()), super::now_ms())
-            .expect("valid invite still works");
-
-        assert!(matches!(
-            error,
-            crate::NodeError::InvalidBootstrapTicket { .. }
-        ));
-        assert_eq!(joined.node_id_str(), "node-b");
-    }
-
-    #[test]
-    fn expired_join_token_fails_before_state_init() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let token = super::InviteToken {
-            island_id: "prod".to_string(),
-            p2panda_network_id_hex: "01".repeat(32),
-            p2panda_topic_hex: "02".repeat(32),
-            bootstrap_ticket: "".to_string(),
-            bootstrap_principal_id: "node:bootstrap".to_string(),
-            bootstrap_author_key_hex: mvp_p2panda_facts::PandaFactAuthor::new(PrincipalId::new(
-                "node:bootstrap",
-            ))
-            .author_key()
-            .as_hex(),
-            invite_id: "invite".to_string(),
-            invite_secret: "secret".to_string(),
-            expires_at_ms: 10,
-        }
-        .encode()
-        .expect("encode token");
-
-        let error = join_from_token(temp.path().join("node-b"), &token, None, 10)
-            .expect_err("expired token fails");
-
-        assert!(matches!(error, crate::NodeError::InviteExpired { .. }));
-    }
-
-    #[tokio::test]
-    async fn three_admitted_product_daemons_converge_join_facts_over_p2panda_net() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let node_a = temp.path().join("node-a");
-        let node_b = temp.path().join("node-b");
-        let node_c = temp.path().join("node-c");
-        init_node(
-            InitOptions::new(&node_a)
-                .with_island("prod")
-                .with_node_id("node-a"),
-        )
-        .expect("init node a");
-        let token_b = create_invite(&node_a, Duration::from_secs(60)).expect("invite b");
-        join_from_token(
-            &node_b,
-            &token_b,
-            Some("node-b".to_string()),
-            super::now_ms(),
-        )
-        .expect("join node b");
-        let admission_b = create_admission_request(&node_b).expect("admission request b");
-        admit_joiner(&node_a, &admission_b, super::now_ms()).expect("admit node b");
-
-        let token_c = create_invite(&node_a, Duration::from_secs(60)).expect("invite c");
-        join_from_token(
-            &node_c,
-            &token_c,
-            Some("node-c".to_string()),
-            super::now_ms(),
-        )
-        .expect("join node c");
-        let admission_c = create_admission_request(&node_c).expect("admission request c");
-        admit_joiner(&node_a, &admission_c, super::now_ms()).expect("admit node c");
-
-        let (a, b, c) = tokio::join!(
-            run_daemon_once(&node_a, DaemonOptions::new(Duration::from_millis(3_000))),
-            run_daemon_once(&node_b, DaemonOptions::new(Duration::from_millis(3_000))),
-            run_daemon_once(&node_c, DaemonOptions::new(Duration::from_millis(3_000)))
-        );
-        let report_a = a.expect("node a daemon");
-        let report_b = b.expect("node b daemon");
-        let report_c = c.expect("node c daemon");
-
-        let state_a = load_node(&node_a).expect("load node a");
-        let state_b = load_node(&node_b).expect("load node b");
-        let state_c = load_node(&node_c).expect("load node c");
-        let trusted = &[state_a.clone(), state_b.clone(), state_c.clone()];
-        let projected_a = projected_node_count(&node_a, trusted).await;
-        let projected_b = projected_node_count(&node_b, trusted).await;
-        let projected_c = projected_node_count(&node_c, trusted).await;
-
-        assert_eq!(
-            (projected_a, projected_b, projected_c),
-            (3, 3, 3),
-            "membership projection mismatch after reports: {report_a:?} {report_b:?} {report_c:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn admission_rejects_principal_that_does_not_match_node_id() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let node_a = temp.path().join("node-a");
-        let node_b = temp.path().join("node-b");
-        init_node(
-            InitOptions::new(&node_a)
-                .with_island("prod")
-                .with_node_id("node-a"),
-        )
-        .expect("init node a");
-        let token = create_invite(&node_a, Duration::from_secs(60)).expect("invite");
-        join_from_token(&node_b, &token, Some("node-b".to_string()), super::now_ms())
-            .expect("join node b");
-        let admission = create_admission_request(&node_b).expect("admission request");
-        let mut request = super::AdmissionRequest::decode(&admission).expect("decode admission");
-        request.principal_id = "node:other".to_string();
-        let admission = request.encode().expect("encode admission");
-
-        let error = admit_joiner(&node_a, &admission, super::now_ms())
-            .expect_err("principal mismatch fails");
-
-        assert!(matches!(
-            error,
-            crate::NodeError::InvalidAdmissionPrincipal { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn admission_rejects_conflicting_existing_peer_identity() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let node_a = temp.path().join("node-a");
-        let node_b = temp.path().join("node-b");
-        let node_c = temp.path().join("node-c");
-        init_node(
-            InitOptions::new(&node_a)
-                .with_island("prod")
-                .with_node_id("node-a"),
-        )
-        .expect("init node a");
-        let token_b = create_invite(&node_a, Duration::from_secs(60)).expect("invite b");
-        join_from_token(
-            &node_b,
-            &token_b,
-            Some("node-b".to_string()),
-            super::now_ms(),
-        )
-        .expect("join node b");
-        let admission_b = create_admission_request(&node_b).expect("admission b");
-        admit_joiner(&node_a, &admission_b, super::now_ms()).expect("admit node b");
-
-        let token_c = create_invite(&node_a, Duration::from_secs(60)).expect("invite c");
-        join_from_token(
-            &node_c,
-            &token_c,
-            Some("node-c".to_string()),
-            super::now_ms(),
-        )
-        .expect("join node c");
-        let admission_c = create_admission_request(&node_c).expect("admission c");
-        let mut conflicting =
-            super::AdmissionRequest::decode(&admission_c).expect("decode admission c");
-        conflicting.node_id = "node-b".to_string();
-        conflicting.principal_id = "node:node-b".to_string();
-        let conflicting = conflicting.encode().expect("encode conflicting admission");
-
-        let error = admit_joiner(&node_a, &conflicting, super::now_ms())
-            .expect_err("conflicting peer fails");
-
-        assert!(matches!(
-            error,
-            crate::NodeError::AdmissionPeerConflict { .. }
-        ));
-    }
-
-    async fn projected_node_count(
-        path: &std::path::Path,
-        trusted_states: &[crate::LoadedNodeState],
-    ) -> usize {
-        let state = load_node(path).expect("load node");
-        let (raw_bus, authority) = InMemoryBus::new_with_authority();
-        let session = authority.grant_in(
-            IslandId::new(state.island_id()),
-            PrincipalId::new("projection"),
-            Grant::empty().with_fact_read(
-                FactKeyPattern::parse("/facts/node/>").expect("valid fact pattern"),
-            ),
-        );
-        for trusted in trusted_states {
-            authority.grant_in(
-                trusted.island(),
-                trusted.principal(),
-                Grant::empty()
-                    .with_fact_write(
-                        FactKeyPattern::parse("/facts/>").expect("valid product fact grant"),
-                    )
-                    .with_fact_read(
-                        FactKeyPattern::parse("/facts/>").expect("valid product fact grant"),
-                    ),
-            );
-        }
-        let mut store_config = PandaSqliteOpenConfig::new(
-            state.paths().fact_store.clone(),
-            vec![IslandId::new(state.island_id())],
-        );
-        for trusted in trusted_states {
-            let author = trusted.author().expect("trusted node author");
-            store_config = store_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
-                trusted.island(),
-                trusted.principal(),
-                author.author_key(),
-            ));
-        }
-        let store = PandaFactStore::open_sqlite(std::sync::Arc::new(raw_bus), store_config)
-            .await
-            .expect("open projection store");
-        let pattern = FactKeyPattern::parse("/facts/node/>").expect("node pattern");
-        let candidates = store
-            .list_candidates(&state.island(), &pattern, &session)
-            .expect("list candidates");
-        let payloads = store
-            .read_payloads(&state.island(), &candidates, &session)
-            .expect("read payloads");
-        reduce_facts(&state.island(), &candidates, &payloads)
-            .nodes
-            .len()
-    }
-}
+mod tests;

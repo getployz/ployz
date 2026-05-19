@@ -12,25 +12,20 @@ hickory-proto = { version = "=0.26.0-beta.4", default-features = false, features
 memory-stats = "1"
 mvp-bus = { path = "../bus" }
 mvp-commands = { path = "../commands" }
-mvp-commands-p2panda = { path = "../commands-p2panda" }
 mvp-deploy = { path = "../deploy" }
-mvp-deploy-p2panda = { path = "../deploy-p2panda" }
 mvp-environment = { path = "../environment" }
-mvp-environment-p2panda = { path = "../environment-p2panda" }
 mvp-identity = { path = "../identity" }
 mvp-iroh = { path = "../iroh" }
 mvp-acme = { path = "../acme", features = ["harness"] }
 mvp-acme-command = { path = "../acme-command" }
 mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-machine = { path = "../machine" }
-mvp-machine-p2panda = { path = "../machine-p2panda" }
 mvp-mesh = { path = "../mesh" }
 mvp-p2panda-authz = { path = "../p2panda-authz" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-p2panda-transport = { path = "../p2panda-transport", features = ["harness"] }
 mvp-projection = { path = "../projection" }
 mvp-routing = { path = "../routing" }
-mvp-routing-p2panda = { path = "../routing-p2panda" }
 mvp-serving = { path = "../serving" }
 mvp-volume = { path = "../volume" }
 p2panda-core = "0.6.0"

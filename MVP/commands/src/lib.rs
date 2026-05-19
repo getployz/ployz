@@ -4,10 +4,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+mod p2panda;
+
 use mvp_bus::{BusError, FactKey, FactPayload};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use p2panda::PandaCommandPhaseStore;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CommandName(String);
