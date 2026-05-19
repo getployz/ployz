@@ -200,6 +200,10 @@ Quality gates for every slice:
 
 ### Slice 1: Real Runtime Backend Boundary
 
+Status: complete. Slice plan:
+`docs/plans/2026-05-20-003-feat-mvp-runtime-backend-slice.md`.
+Key checkpoints: `d95f5da8`, `4b399069`, `bd119e9b`.
+
 Goal: replace the placeholder process runtime with a real container runtime
 backend while keeping deploy orchestration runtime-agnostic.
 
@@ -238,6 +242,9 @@ Acceptance:
   runtime backend.
 
 ### Slice 2: Real WireGuard Backend And Overlay Adoption
+
+Status: planned. Slice plan:
+`docs/plans/2026-05-20-004-feat-mvp-wireguard-backend-slice.md`.
 
 Goal: make the existing mesh plan apply to real Linux WireGuard state and keep
 it alive independently of the daemon.
