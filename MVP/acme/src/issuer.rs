@@ -257,6 +257,7 @@ pub trait AcmeHttp01ChallengePublisher: Send {
         &mut self,
         hostname: &AcmeHostname,
         token: &AcmeChallengeToken,
+        cleared_at_secs: u64,
     ) -> Result<(), AcmeIssuanceError>;
 }
 
@@ -533,7 +534,9 @@ impl AcmeIssuer for InstantAcmeIssuer {
             .await
             .map_err(acme_operation("poll_certificate"))?;
         for token in &order_tokens {
-            challenge_publisher.clear_http01(&hostname, token).await?;
+            challenge_publisher
+                .clear_http01(&hostname, token, now_secs)
+                .await?;
         }
         Ok(IssuedCertificate {
             hostname,

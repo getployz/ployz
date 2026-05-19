@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+async-trait = "0.1"
 mvp-acme = { path = "../acme" }
 mvp-bus = { path = "../bus" }
 mvp-identity = { path = "../identity" }

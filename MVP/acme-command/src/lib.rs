@@ -15,7 +15,7 @@ use mvp_projection::{
 };
 use thiserror::Error;
 
-pub use p2panda::PandaAcmeCommandAdapter;
+pub use p2panda::{PandaAcmeCommandAdapter, PandaAcmeHttp01Publisher};
 
 #[derive(Debug, Error)]
 pub enum AcmeCommandError {

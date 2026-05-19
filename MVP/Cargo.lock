@@ -3409,6 +3409,7 @@ dependencies = [
 name = "mvp-acme-command"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "mvp-acme",
  "mvp-bus",
  "mvp-identity",
