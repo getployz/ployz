@@ -1392,8 +1392,8 @@ Costs:
 - The first runner is local multi-process, not SSH/remote-host. It proves the
   product binary boundary and p2panda-net convergence, but not packaging or
   host provisioning.
-- The deploy target remains the founder node until remote node-agent RPC is
-  productized.
+- Remote deploy participation is proven between local product node processes.
+  Separate-machine packaging and SSH execution remain outside this harness.
 
 Crates:
 - `mvp-e2e` owns the scenario registry and local product runner.
@@ -1537,13 +1537,57 @@ What it replaces:
   network address.
 
 Costs:
-- The current product deploy wrapper still runs participant RPC on a local bus.
-  Remote product node-agent request/reply remains the next transport slice.
+- Remote product deploy RPC is currently carried as internal facts over the
+  p2panda-net fact stream. This preserves the existing deploy coordinator and
+  node-agent subject ABI, but it is still a minimal MVP bridge rather than a
+  general product bus transport.
 
 Revisit if:
 - Recovery needs to distinguish operator intent facts from materialized serving
   facts more explicitly. At that point add a separate materialization fact or
   command phase rather than hiding runtime output in the initial intent.
+
+## Fact-Backed Product Node-Agent RPC
+
+Why this:
+- The three-server product vertical needs founder-initiated deploys to reach a
+  peer node-agent without turning the daemon into a feature registry or
+  deserializing public CLI requests on peers.
+- The existing deploy coordinator already owns the correct typed participant
+  protocol through `node.<id>.capacity` and `node.<id>.rpc.*` subjects.
+- p2panda-net fact transport is already the real cross-process substrate in the
+  MVP binary.
+
+Decision:
+- `mvp-node` registers a narrow node-agent RPC bridge for admitted peers during
+  product deploy.
+- The bridge subscribes locally to remote node-agent subjects, writes internal
+  request facts under `/facts/node-rpc/request/<target>/<request-id>`, imports
+  reply facts, and answers the original bus request with the remote payload.
+- Running daemons scan only request facts addressed to their own node id,
+  validate that the embedded subject targets that same node-agent boundary, run
+  the existing local node-agent handler through the product bus, and publish a
+  reply fact under `/facts/node-rpc/reply/<requester>/<request-id>`.
+- Request/reply facts are internal node protocol. They are not public CLI/API
+  request payloads and do not add variants to a public daemon command router.
+- Long-running daemon smoke runs expose readiness through
+  `mvp-node daemon-status --control <socket>` before deploy asks the target
+  node-agent for capacity.
+
+What it replaces:
+- Founder-only product deploy smoke.
+- Test-only participant closures for the product vertical.
+
+Costs:
+- This is a bounded MVP bridge for node-agent deploy participation, not a
+  general distributed bus implementation.
+- It is proven by local multi-process p2panda-net transport. Separate-host
+  packaging remains future work.
+
+Revisit if:
+- Multiple feature protocols need cross-node request/reply. At that point
+  introduce an internal transport abstraction below feature coordinators rather
+  than adding more fact-backed bridges ad hoc.
 
 ## hdrhistogram and memory-stats for E2E Proof
 

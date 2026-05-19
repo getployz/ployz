@@ -773,10 +773,11 @@ Current proof status:
   product nodes, admits two peers, runs all three daemons concurrently over
   p2panda-net, asserts every daemon imported membership operations and
   registered node-agent handlers, deploys a trivial HTTP service, starts
-  product gateway/DNS roles, verifies HTTP/DNS, kills a daemon, verifies
-  HTTP/DNS again, and cleans up runtime child processes. The remaining gap is
-  remote product node-agent deploy RPC; the first product deploy still targets
-  the founder node.
+  product gateway/DNS roles, verifies HTTP/DNS, kills the target daemon,
+  verifies HTTP/DNS again, and cleans up runtime child processes. The deploy
+  target is `peer-a`, reached after `mvp-node daemon-status` readiness through
+  product node-agent request/reply carried as internal facts over the
+  p2panda-net transport.
 
 ## Required Test Artifacts
 

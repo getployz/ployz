@@ -1,5 +1,7 @@
 use std::env;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -35,6 +37,7 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "admission" => admission(rest),
         "admit" => admit(rest),
         "daemon" => daemon(rest),
+        "daemon-status" => daemon_status(rest),
         "deploy" => deploy(rest),
         "runtime-http" => runtime_http(rest),
         "gateway" => gateway(rest),
@@ -140,10 +143,11 @@ fn daemon(args: &[String]) -> NodeResult<String> {
         .enable_io()
         .build()
         .map_err(|source| NodeError::Runtime { source })?;
-    let report = runtime.block_on(run_daemon_once(
-        parsed.state_dir,
-        DaemonOptions::new(Duration::from_millis(parsed.run_for_ms.unwrap_or(1_000))),
-    ))?;
+    let mut options = DaemonOptions::new(Duration::from_millis(parsed.run_for_ms.unwrap_or(1_000)));
+    if let Some(control_socket) = parsed.control_socket {
+        options = options.with_control_socket(control_socket);
+    }
+    let report = runtime.block_on(run_daemon_once(parsed.state_dir, options))?;
     Ok(format!(
         "daemon node={} ticket={} imported_batches={} imported_operations={} node_agent_handlers={}",
         report.node_id,
@@ -152,6 +156,60 @@ fn daemon(args: &[String]) -> NodeResult<String> {
         report.imported_operations,
         report.node_agent_handlers
     ))
+}
+
+fn daemon_status(args: &[String]) -> NodeResult<String> {
+    let control_socket = parse_control_socket_only(args)?;
+    let mut stream =
+        UnixStream::connect(&control_socket).map_err(|source| NodeError::DaemonControlSocket {
+            path: control_socket.clone(),
+            operation: "connect",
+            source,
+        })?;
+    stream
+        .write_all(b"status\n")
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: control_socket.clone(),
+            operation: "write status request",
+            source,
+        })?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: control_socket.clone(),
+            operation: "finish status request",
+            source,
+        })?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: control_socket,
+            operation: "read status response",
+            source,
+        })?;
+    Ok(response.trim().to_string())
+}
+
+fn parse_control_socket_only(args: &[String]) -> NodeResult<PathBuf> {
+    let mut control_socket = None;
+    let mut remaining = args.iter();
+    while let Some(argument) = remaining.next() {
+        match argument.as_str() {
+            "--control" => {
+                let Some(value) = remaining.next() else {
+                    return Err(NodeError::MissingFlagValue { flag: "--control" });
+                };
+                control_socket = Some(PathBuf::from(value));
+            }
+            other => {
+                return Err(NodeError::UnknownArgument {
+                    argument: other.to_string(),
+                });
+            }
+        }
+    }
+    control_socket.ok_or(NodeError::MissingFlagValue { flag: "--control" })
 }
 
 fn init(args: &[String]) -> NodeResult<String> {
@@ -292,6 +350,7 @@ impl JoinArgs {
 struct DaemonArgs {
     state_dir: PathBuf,
     run_for_ms: Option<u64>,
+    control_socket: Option<PathBuf>,
 }
 
 struct AdmitArgs {
@@ -541,6 +600,7 @@ impl DaemonArgs {
     fn parse(args: &[String]) -> NodeResult<Self> {
         let mut state_dir = None;
         let mut run_for_ms = None;
+        let mut control_socket = None;
         let mut remaining = args.iter();
         while let Some(argument) = remaining.next() {
             match argument.as_str() {
@@ -565,6 +625,12 @@ impl DaemonArgs {
                                 })?,
                         );
                 }
+                "--control" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--control" });
+                    };
+                    control_socket = Some(PathBuf::from(value));
+                }
                 other => {
                     return Err(NodeError::UnknownArgument {
                         argument: other.to_string(),
@@ -575,6 +641,7 @@ impl DaemonArgs {
         Ok(Self {
             state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
             run_for_ms,
+            control_socket,
         })
     }
 }

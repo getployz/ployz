@@ -4,6 +4,7 @@ mod error;
 mod membership;
 mod networking;
 mod node_agent;
+mod node_agent_rpc;
 mod serving;
 mod state;
 

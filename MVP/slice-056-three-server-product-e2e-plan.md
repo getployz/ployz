@@ -21,8 +21,8 @@ producing, and responsible for cleanup.
 - No SSH/remote-host mode in this slice.
 - No kernel WireGuard proof. This smoke uses the host-network backend from the
   current product vertical.
-- No distributed deploy participant RPC yet; the deploy target remains the
-  founder node while membership convergence is still proven across three nodes.
+- No separate-machine packaging proof. The smoke now runs remote deploy
+  participant RPC between separate product node processes on one host.
 
 ## Product-E2E Pattern Borrowed
 

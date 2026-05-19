@@ -64,7 +64,8 @@ cargo run -p mvp-node -- invite --state /var/lib/ployz-mvp
 cargo run -p mvp-node -- join --state /var/lib/ployz-mvp-b --token '<invite-json>' --node-id node-b
 cargo run -p mvp-node -- admission --state /var/lib/ployz-mvp-b
 cargo run -p mvp-node -- admit --state /var/lib/ployz-mvp --request '<admission-json>'
-cargo run -p mvp-node -- deploy --state /var/lib/ployz-mvp --target-node node-a
+cargo run -p mvp-node -- daemon-status --control /tmp/ployz-daemon.sock
+cargo run -p mvp-node -- deploy --state /var/lib/ployz-mvp --target-node node-b
 cargo run -p mvp-node -- gateway --state /var/lib/ployz-mvp --listen 127.0.0.1:0 --control /tmp/ployz-gateway.sock
 cargo run -p mvp-node -- dns --state /var/lib/ployz-mvp --listen 127.0.0.1:0 --control /tmp/ployz-dns.sock
 cargo run -p mvp-node -- status --state /var/lib/ployz-mvp
@@ -75,8 +76,10 @@ establish persistent node identity and state paths; `invite` emits a bootstrap
 token with a stable p2panda ticket; `join` initializes a node from that token;
 `admission` emits the joiner's stable ticket and author identity; `admit`
 records that joiner on the bootstrap node; `daemon` starts the product
-p2panda fact node for a bounded run; `deploy` starts one trivial managed HTTP
-service through the product deploy state machine; and `gateway`/`dns` run
+p2panda fact node for a bounded run and handles addressed node-agent RPC
+facts; `daemon-status` reads daemon readiness/status from the local control
+socket; `deploy` starts one trivial managed HTTP service through the product
+deploy state machine, including peer targets; and `gateway`/`dns` run
 snapshot-backed serving roles with a local Unix control socket.
 
 The current membership path proves durable product state, stable restart-safe
@@ -87,8 +90,9 @@ without manual local state updates.
 
 `MVP/scripts/three-server-smoke.sh` is the current product vertical proof. It
 drives three fresh nodes through init/join/admit, concurrent daemon
-convergence, deploy, product gateway/DNS serving, and daemon-kill steady-state
-checks using the `mvp-node` binary as the system boundary.
+convergence, daemon status readiness, deploy from founder to `peer-a`, product
+gateway/DNS serving, and target-daemon-kill steady-state checks using the
+`mvp-node` binary as the system boundary.
 
 ## Maintainer Notes
 
