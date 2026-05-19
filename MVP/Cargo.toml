@@ -16,6 +16,7 @@ members = [
     "machine",
     "machine-p2panda",
     "mesh",
+    "node",
     "p2panda-authz",
     "p2panda-facts",
     "p2panda-transport",

@@ -2938,6 +2938,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mvp-node"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "mvp-bus",
+ "mvp-identity",
+ "mvp-mesh",
+ "mvp-p2panda-facts",
+ "mvp-p2panda-transport",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "mvp-p2panda-authz"
 version = "0.1.0"
 dependencies = [

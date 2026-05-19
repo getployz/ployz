@@ -51,6 +51,21 @@ Each scenario writes a JSON proof artifact under `MVP/target/mvp-e2e/`.
 The `all` scenario is capped by `MVP_E2E_ALL_TIMEOUT`, defaulting to `120s`,
 when run through `just test`.
 
+## Product Binary Track
+
+The three-server product vertical starts with `mvp-node`, a product-facing
+binary that is separate from the E2E harness:
+
+```text
+cargo run -p mvp-node -- init --state /var/lib/ployz-mvp --island prod --node-id node-a
+cargo run -p mvp-node -- status --state /var/lib/ployz-mvp
+```
+
+The currently wired surface is intentionally small: `init` and `status`
+establish persistent node identity and state paths. `invite`, `join`, `daemon`,
+`gateway`, `dns`, and `deploy` are reserved product commands that return
+explicit not-wired errors until their three-server slices land.
+
 ## Maintainer Notes
 
 Use [MVP/primitive-decisions.md](primitive-decisions.md) as the living
