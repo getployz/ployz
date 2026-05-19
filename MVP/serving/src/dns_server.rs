@@ -1,4 +1,4 @@
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -165,12 +165,16 @@ async fn response_for_request(request: Message, state: &WireServingState) -> Mes
         return response;
     };
     response.add_query(query.clone());
-    if query.query_type() != RecordType::AAAA {
-        response.metadata.response_code = ResponseCode::NoError;
-        return response;
-    }
     let lookup_name = lookup_name(query.name());
-    let records = match state.dns_records(lookup_name, "AAAA").await {
+    let record_type = match query.query_type() {
+        RecordType::A => "A",
+        RecordType::AAAA => "AAAA",
+        _ => {
+            response.metadata.response_code = ResponseCode::NoError;
+            return response;
+        }
+    };
+    let records = match state.dns_records(lookup_name, record_type).await {
         Ok(records) => records,
         Err(_) => {
             response.metadata.response_code = ResponseCode::ServFail;
@@ -182,14 +186,29 @@ async fn response_for_request(request: Message, state: &WireServingState) -> Mes
         return response;
     }
     for record in records {
-        let Ok(addr) = record.value.parse::<Ipv6Addr>() else {
-            continue;
-        };
-        response.add_answer(Record::from_rdata(
-            query.name().clone(),
-            record.ttl_seconds,
-            RData::AAAA(addr.into()),
-        ));
+        match record.record_type.as_str() {
+            "A" => {
+                let Ok(addr) = record.value.parse::<Ipv4Addr>() else {
+                    continue;
+                };
+                response.add_answer(Record::from_rdata(
+                    query.name().clone(),
+                    record.ttl_seconds,
+                    RData::A(addr.into()),
+                ));
+            }
+            "AAAA" => {
+                let Ok(addr) = record.value.parse::<Ipv6Addr>() else {
+                    continue;
+                };
+                response.add_answer(Record::from_rdata(
+                    query.name().clone(),
+                    record.ttl_seconds,
+                    RData::AAAA(addr.into()),
+                ));
+            }
+            _ => {}
+        }
     }
     response
 }

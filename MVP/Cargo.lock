@@ -2942,6 +2942,7 @@ name = "mvp-node"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "hickory-proto",
  "mvp-bus",
  "mvp-deploy",
  "mvp-deploy-p2panda",
@@ -2952,6 +2953,7 @@ dependencies = [
  "mvp-projection",
  "mvp-routing-p2panda",
  "mvp-runtime",
+ "mvp-serving",
  "serde",
  "serde_json",
  "tempfile",
