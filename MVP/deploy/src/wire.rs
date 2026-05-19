@@ -26,6 +26,7 @@ pub struct InstanceCommandRequest {
 pub struct InstanceCommandReply {
     pub instance_id: InstanceId,
     pub outcome: InstanceStartOutcome,
+    pub backend: Option<BackendEndpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

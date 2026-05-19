@@ -4,8 +4,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use mvp_node::{
-    DaemonOptions, InitOptions, NodeError, NodeResult, admit_joiner, create_admission_request,
-    create_invite, init_node, join_from_token, load_node, now_ms, run_daemon_once,
+    DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions, admit_joiner,
+    create_admission_request, create_invite, deploy_product_service, init_node, join_from_token,
+    load_node, now_ms, run_daemon_once,
 };
 
 fn main() -> ExitCode {
@@ -33,8 +34,9 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "admission" => admission(rest),
         "admit" => admit(rest),
         "daemon" => daemon(rest),
+        "deploy" => deploy(rest),
         "runtime-http" => runtime_http(rest),
-        "gateway" | "dns" | "deploy" => Err(NodeError::CommandNotWired {
+        "gateway" | "dns" => Err(NodeError::CommandNotWired {
             command: command.clone(),
         }),
         "--help" | "-h" | "help" => Ok(help()),
@@ -42,6 +44,29 @@ fn run(args: Vec<String>) -> NodeResult<String> {
             command: other.to_string(),
         }),
     }
+}
+
+fn deploy(args: &[String]) -> NodeResult<String> {
+    let parsed = DeployArgs::parse(args)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .map_err(|source| NodeError::Runtime { source })?;
+    let report = runtime.block_on(deploy_product_service(parsed.into_options()))?;
+    let active = report
+        .active_backends
+        .iter()
+        .map(|backend| format!("{}@{}", backend.node_id, backend.address))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "deployed id={} active_backends={} old_backends={} visible_nodes={} host_network_backends={}",
+        report.deploy_id,
+        active,
+        report.old_backends_to_drain.len(),
+        report.visible_nodes,
+        report.host_network_backends
+    ))
 }
 
 fn runtime_http(args: &[String]) -> NodeResult<String> {
@@ -255,6 +280,95 @@ struct RuntimeHttpArgs {
     root: PathBuf,
 }
 
+struct DeployArgs {
+    state_dir: PathBuf,
+    deploy_id: String,
+    target_node: String,
+    service: String,
+    revision: String,
+    hostname: String,
+}
+
+impl DeployArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut deploy_id = None;
+        let mut target_node = None;
+        let mut service = None;
+        let mut revision = None;
+        let mut hostname = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--deploy-id" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--deploy-id",
+                        });
+                    };
+                    deploy_id = Some(value.clone());
+                }
+                "--target-node" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--target-node",
+                        });
+                    };
+                    target_node = Some(value.clone());
+                }
+                "--service" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--service" });
+                    };
+                    service = Some(value.clone());
+                }
+                "--revision" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--revision" });
+                    };
+                    revision = Some(value.clone());
+                }
+                "--hostname" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--hostname" });
+                    };
+                    hostname = Some(value.clone());
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            deploy_id: deploy_id.unwrap_or_else(|| "deploy-main".to_string()),
+            target_node: target_node.ok_or(NodeError::MissingFlagValue {
+                flag: "--target-node",
+            })?,
+            service: service.unwrap_or_else(|| "web".to_string()),
+            revision: revision.unwrap_or_else(|| "rev-1".to_string()),
+            hostname: hostname.unwrap_or_else(|| "web.example.test".to_string()),
+        })
+    }
+
+    fn into_options(self) -> ProductDeployOptions {
+        ProductDeployOptions::new(self.state_dir)
+            .with_deploy_id(self.deploy_id)
+            .with_target_node(self.target_node)
+            .with_service(self.service)
+            .with_revision(self.revision)
+            .with_hostname(self.hostname)
+    }
+}
+
 impl RuntimeHttpArgs {
     fn parse(args: &[String]) -> NodeResult<Self> {
         let mut addr = None;
@@ -435,7 +549,8 @@ fn help() -> String {
         "  join --state <dir> --token <json> [--node-id <id>]",
         "  admission --state <dir>",
         "  admit --state <dir> --request <json>",
-        "  gateway|dns|deploy  (planned product-vertical commands)",
+        "  deploy --state <dir> --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>]",
+        "  gateway|dns  (planned product-vertical commands)",
     ]
     .join("\n")
 }

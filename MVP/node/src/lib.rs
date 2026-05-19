@@ -1,4 +1,5 @@
 mod config;
+mod deploy;
 mod error;
 mod membership;
 mod networking;
@@ -6,6 +7,10 @@ mod node_agent;
 mod state;
 
 pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
+pub use deploy::{
+    ProductDeployOptions, ProductDeployReport, deploy_product_service,
+    deploy_product_service_with_process,
+};
 pub use error::{NodeError, NodeResult};
 pub use membership::{
     AdmissionReport, AdmissionRequest, DaemonOptions, DaemonReport, InviteToken, admit_joiner,

@@ -6,7 +6,7 @@ use mvp_bus::{
     BusActorHandle, BusError, BusSession, IslandId, RequestManyPolicy, RequestTarget, Subject,
 };
 use mvp_identity::{NodeId, VisibleNodes};
-use mvp_projection::FactSource;
+use mvp_projection::{BackendEndpoint, FactSource};
 use mvp_routing::{
     BusServingFactWriter, RoutingError, ServingFactWriter, read_exact_serving_commit,
 };
@@ -77,6 +77,11 @@ pub enum DeployRecovery {
 }
 
 impl PendingCleanup {
+    #[must_use]
+    pub fn manifest(&self) -> &DeployManifest {
+        &self.manifest
+    }
+
     pub fn after_projection(
         self,
         projection: ProjectionCatchUp,
@@ -230,8 +235,10 @@ where
         state.record_visible_nodes(visible_nodes);
         let mut candidates = CandidateCleanupTracker::default();
 
-        for phase in &manifest.phases {
+        let mut manifest = manifest;
+        for phase in manifest.phases.clone() {
             state.mark_preparing(phase.phase_id)?;
+            let mut phase_backends = Vec::new();
             for instance in &phase.instances {
                 candidates.track(instance, CandidateCleanupState::PrepareAttempted);
                 if let Err(error) = self.prepare_instance(&manifest, instance).await {
@@ -262,20 +269,25 @@ where
                     }
                 };
                 candidates.track(instance, CandidateCleanupState::Started);
-                if let Err(error) = classify_start_reply(&mut state, instance, reply) {
-                    return Err(self
-                        .classify_or_cleanup_pre_commit_failure(
-                            &mut state,
-                            &manifest,
-                            &candidates,
-                            error,
-                        )
-                        .await);
+                match classify_start_reply(&mut state, instance, reply) {
+                    Ok(Some(backend)) => phase_backends.push(backend),
+                    Ok(None) => {}
+                    Err(error) => {
+                        return Err(self
+                            .classify_or_cleanup_pre_commit_failure(
+                                &mut state,
+                                &manifest,
+                                &candidates,
+                                error,
+                            )
+                            .await);
+                    }
                 }
             }
             state.mark_ready(phase.phase_id)?;
             state.commit_phase(phase.phase_id, phase.policy)?;
             if phase.policy.commits_serving() {
+                materialize_serving_backends(&mut manifest, &phase_backends);
                 if let Err(error) = self
                     .serving_writer
                     .write_serving_commit(&manifest.serving_commit)
@@ -809,9 +821,19 @@ fn classify_start_reply(
     state: &mut DeployStateMachine,
     instance: &InstancePlan,
     reply: InstanceCommandReply,
-) -> DeployResult<()> {
+) -> DeployResult<Option<BackendEndpoint>> {
+    if reply.instance_id != instance.instance_id {
+        return Err(classify_pre_commit_error(
+            state,
+            DeployError::InstanceReplyMismatch {
+                node_id: instance.node_id.clone(),
+                expected_instance_id: instance.instance_id.clone(),
+                actual_instance_id: reply.instance_id,
+            },
+        ));
+    }
     match reply.outcome {
-        InstanceStartOutcome::Ready => Ok(()),
+        InstanceStartOutcome::Ready => Ok(reply.backend),
         InstanceStartOutcome::NotReady { reason } => Err(classify_pre_commit_error(
             state,
             DeployError::InstanceNotReady {
@@ -820,6 +842,27 @@ fn classify_start_reply(
                 reason,
             },
         )),
+    }
+}
+
+fn materialize_serving_backends(manifest: &mut DeployManifest, backends: &[BackendEndpoint]) {
+    if backends.is_empty() {
+        return;
+    }
+    let serving_nodes = manifest
+        .serving_commit
+        .active_backends
+        .iter()
+        .map(|backend| backend.node_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut materialized = backends
+        .iter()
+        .filter(|backend| serving_nodes.contains(&backend.node_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    materialized.sort();
+    if !materialized.is_empty() {
+        manifest.serving_commit.active_backends = materialized;
     }
 }
 
@@ -862,6 +905,7 @@ fn cleanup_failure_kind(error: &DeployError) -> CleanupFailureKind {
         | DeployError::InsufficientCapacity { .. }
         | DeployError::CapacityReplyNodeMismatch { .. }
         | DeployError::InstanceNotReady { .. }
+        | DeployError::InstanceReplyMismatch { .. }
         | DeployError::WirePayload { .. }
         | DeployError::FactSource(_)
         | DeployError::SubjectParse(_)

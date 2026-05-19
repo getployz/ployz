@@ -126,6 +126,16 @@ pub enum NodeError {
     RuntimeBackend { source: mvp_runtime::RuntimeError },
     #[error("create runtime: {source}")]
     Runtime { source: std::io::Error },
+    #[error("deploy failed: {source}")]
+    Deploy { source: mvp_deploy::DeployError },
+    #[error("projection failed: {source}")]
+    Projection {
+        source: mvp_projection::ProjectionError,
+    },
+    #[error("routing failed: {source}")]
+    Routing { source: mvp_deploy::RoutingError },
+    #[error("deployed route did not produce a gateway projection")]
+    MissingGatewayProjection,
 }
 
 pub type NodeResult<T> = Result<T, NodeError>;

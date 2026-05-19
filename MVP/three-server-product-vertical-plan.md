@@ -457,6 +457,14 @@ writer in `MVP/routing-p2panda/src/lib.rs`.
 **Verification:** The deploy path uses real product node-agent services and a
 real runtime backend, with no E2E-local participant closures.
 
+**Current status:** Slice 054 adds the first product deploy command. It can
+deploy one service to a local product node through real node-agent handlers,
+start the shipped `mvp-node runtime-http` child process, write deploy and
+serving facts through p2panda-backed writers, project gateway/DNS snapshots,
+apply host-network reachability, and update by draining/stopping the old
+backend after projection catch-up. The remaining gap is remote node-agent
+request/reply between separate product node processes.
+
 ### U7. Serving Roles From Product State
 
 **Goal:** Run gateway and DNS roles from product state and snapshots, not from

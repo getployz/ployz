@@ -82,6 +82,14 @@ pub enum DeployError {
         node_id: NodeId,
         reason: InstanceNotReadyReason,
     },
+    #[error(
+        "instance reply from {node_id} returned {actual_instance_id}, expected {expected_instance_id}"
+    )]
+    InstanceReplyMismatch {
+        node_id: NodeId,
+        expected_instance_id: InstanceId,
+        actual_instance_id: InstanceId,
+    },
     #[error("invalid wire payload: {context}: {source}")]
     WirePayload {
         context: &'static str,

@@ -1111,6 +1111,7 @@ async fn register_instance_participants(
                     &InstanceCommandReply {
                         instance_id: request.instance_id,
                         outcome: InstanceStartOutcome::Ready,
+                        backend: None,
                     },
                     "start instance reply",
                 )

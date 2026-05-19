@@ -906,6 +906,7 @@ async fn register_instance_participants(
                 let reply = InstanceCommandReply {
                     instance_id: request.instance_id,
                     outcome: InstanceStartOutcome::Ready,
+                    backend: None,
                 };
                 ctx.reply(
                     serde_json::to_vec(&reply)

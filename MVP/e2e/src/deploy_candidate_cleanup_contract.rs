@@ -348,6 +348,7 @@ async fn register_successful_instance(
                 serde_json::to_vec(&InstanceCommandReply {
                     instance_id: request.instance_id,
                     outcome: InstanceStartOutcome::Ready,
+                    backend: None,
                 })
                 .map_err(|_| BusError::HandlerFailed {
                     subject: ctx.message.subject().to_string(),

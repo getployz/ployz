@@ -260,15 +260,21 @@ fn start_handler(
         .map_err(|_| handler_failed(&ctx))?;
     let instance_id = request.instance_id;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
-    if let Some(process) = &runtime.process {
-        process
+    let backend = if let Some(process) = &runtime.process {
+        let instance = process
             .start(&ProcessInstanceSpec::new(
                 instance_id.clone(),
-                request.service,
-                request.revision,
+                request.service.clone(),
+                request.revision.clone(),
             ))
             .map_err(|_| handler_failed(&ctx))?;
-    }
+        Some(mvp_projection::BackendEndpoint {
+            node_id: runtime.node_id.clone(),
+            address: instance.address,
+        })
+    } else {
+        None
+    };
     runtime.prepared.insert(instance_id.clone());
     runtime.running.insert(instance_id.clone());
     runtime.stopped.remove(&instance_id);
@@ -277,6 +283,7 @@ fn start_handler(
             &InstanceCommandReply {
                 instance_id,
                 outcome: InstanceStartOutcome::Ready,
+                backend,
             },
             "start instance reply",
         )
@@ -291,7 +298,8 @@ fn drain_handler(
     let request: DrainInstanceRequest = decode(ctx.message.payload(), "drain instance request")
         .map_err(|_| handler_failed(&ctx))?;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
-    let instance_id = instance_id_from_backend(&request.cleanup_target);
+    let instance_id = instance_id_from_backend(&runtime, &request.cleanup_target)
+        .map_err(|_| handler_failed(&ctx))?;
     if let Some(process) = &runtime.process {
         process
             .drain(&instance_id)
@@ -308,7 +316,8 @@ fn stop_handler(
     let request: StopInstanceRequest =
         decode(ctx.message.payload(), "stop instance request").map_err(|_| handler_failed(&ctx))?;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
-    let instance_id = instance_id_from_backend(&request.cleanup_target);
+    let instance_id = instance_id_from_backend(&runtime, &request.cleanup_target)
+        .map_err(|_| handler_failed(&ctx))?;
     if let Some(process) = &runtime.process {
         process
             .stop(&instance_id)
@@ -350,8 +359,22 @@ fn process_spec(request: &InstanceCommandRequest) -> ProcessInstanceSpec {
     )
 }
 
-fn instance_id_from_backend(endpoint: &mvp_projection::BackendEndpoint) -> InstanceId {
-    InstanceId::new(endpoint.address.clone())
+fn instance_id_from_backend(
+    runtime: &NodeAgentRuntime,
+    endpoint: &mvp_projection::BackendEndpoint,
+) -> NodeResult<InstanceId> {
+    let Some(process) = &runtime.process else {
+        return Ok(InstanceId::new(endpoint.address.clone()));
+    };
+    for instance in process
+        .list()
+        .map_err(|source| NodeError::RuntimeBackend { source })?
+    {
+        if instance.address == endpoint.address {
+            return Ok(instance.instance_id);
+        }
+    }
+    Ok(InstanceId::new(endpoint.address.clone()))
 }
 
 fn node_subject_pattern(node_id: &str, suffix: &str) -> NodeResult<SubjectPattern> {

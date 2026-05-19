@@ -494,6 +494,7 @@ async fn register_instance_participants_with_not_ready(
                     } else {
                         InstanceStartOutcome::Ready
                     },
+                    backend: None,
                 };
                 ctx.reply(serde_json::to_vec(&reply).map_err(|_| {
                     mvp_bus::BusError::HandlerFailed {
