@@ -1,4 +1,5 @@
 use std::net::AddrParseError;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use mvp_identity::NodeId;
@@ -55,6 +56,14 @@ pub enum MeshError {
     ActorUnavailable {
         operation: &'static str,
         reason: String,
+    },
+    #[error("host network endpoint {address} is invalid: {message}")]
+    InvalidHostEndpoint { address: String, message: String },
+    #[error("host network route {address} was unreachable during {operation}: {message}")]
+    HostEndpointUnreachable {
+        address: SocketAddr,
+        operation: &'static str,
+        message: String,
     },
 }
 
