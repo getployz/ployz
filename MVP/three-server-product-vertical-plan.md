@@ -507,6 +507,14 @@ and `MVP/e2e/src/wire_serving_contract.rs`.
 **Verification:** Gateway and DNS are started as product binary roles in the
 three-server contract.
 
+**Current status:** Slice 055 wires `mvp-node gateway` and `mvp-node dns` as
+product roles over the existing snapshot-backed serving actor. They expose a
+small Unix control socket for readiness, status, reload, and shutdown; the
+product-role proof starts them as subprocesses after a deploy, verifies HTTP
+and DNS reachability with no daemon running, and confirms a bad snapshot reload
+does not replace the last-good gateway state. The remaining gap is folding
+these product role commands into the three-server black-box harness.
+
 ### U8. Three-Server Black-Box Harness
 
 **Goal:** Add the acceptance harness that proves the product vertical outside

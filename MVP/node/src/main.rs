@@ -1,12 +1,13 @@
 use std::env;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use mvp_node::{
-    DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions, admit_joiner,
-    create_admission_request, create_invite, deploy_product_service, init_node, join_from_token,
-    load_node, now_ms, run_daemon_once,
+    DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions, ServingRoleOptions,
+    admit_joiner, create_admission_request, create_invite, deploy_product_service, init_node,
+    join_from_token, load_node, now_ms, run_daemon_once, run_dns_role, run_gateway_role,
 };
 
 fn main() -> ExitCode {
@@ -36,9 +37,8 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "daemon" => daemon(rest),
         "deploy" => deploy(rest),
         "runtime-http" => runtime_http(rest),
-        "gateway" | "dns" => Err(NodeError::CommandNotWired {
-            command: command.clone(),
-        }),
+        "gateway" => gateway(rest),
+        "dns" => dns(rest),
         "--help" | "-h" | "help" => Ok(help()),
         other => Err(NodeError::UnsupportedCommand {
             command: other.to_string(),
@@ -50,6 +50,7 @@ fn deploy(args: &[String]) -> NodeResult<String> {
     let parsed = DeployArgs::parse(args)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
+        .enable_io()
         .build()
         .map_err(|source| NodeError::Runtime { source })?;
     let report = runtime.block_on(deploy_product_service(parsed.into_options()))?;
@@ -67,6 +68,28 @@ fn deploy(args: &[String]) -> NodeResult<String> {
         report.visible_nodes,
         report.host_network_backends
     ))
+}
+
+fn gateway(args: &[String]) -> NodeResult<String> {
+    let parsed = ServingRoleArgs::parse(args)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .enable_io()
+        .build()
+        .map_err(|source| NodeError::Runtime { source })?;
+    runtime.block_on(run_gateway_role(parsed.into_options()))?;
+    Ok("gateway stopped".to_string())
+}
+
+fn dns(args: &[String]) -> NodeResult<String> {
+    let parsed = ServingRoleArgs::parse(args)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .enable_io()
+        .build()
+        .map_err(|source| NodeError::Runtime { source })?;
+    runtime.block_on(run_dns_role(parsed.into_options()))?;
+    Ok("dns stopped".to_string())
 }
 
 fn runtime_http(args: &[String]) -> NodeResult<String> {
@@ -114,6 +137,7 @@ fn daemon(args: &[String]) -> NodeResult<String> {
     let parsed = DaemonArgs::parse(args)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
+        .enable_io()
         .build()
         .map_err(|source| NodeError::Runtime { source })?;
     let report = runtime.block_on(run_daemon_once(
@@ -280,6 +304,13 @@ struct RuntimeHttpArgs {
     root: PathBuf,
 }
 
+struct ServingRoleArgs {
+    state_dir: PathBuf,
+    listen: SocketAddr,
+    control_socket: PathBuf,
+    stale_after_ms: Option<u64>,
+}
+
 struct DeployArgs {
     state_dir: PathBuf,
     deploy_id: String,
@@ -287,6 +318,77 @@ struct DeployArgs {
     service: String,
     revision: String,
     hostname: String,
+}
+
+impl ServingRoleArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut listen = None;
+        let mut control_socket = None;
+        let mut stale_after_ms = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--listen" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--listen" });
+                    };
+                    listen = Some(value.parse::<SocketAddr>().map_err(|_| {
+                        NodeError::UnknownArgument {
+                            argument: value.clone(),
+                        }
+                    })?);
+                }
+                "--control" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--control" });
+                    };
+                    control_socket = Some(PathBuf::from(value));
+                }
+                "--stale-after-ms" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--stale-after-ms",
+                        });
+                    };
+                    stale_after_ms =
+                        Some(
+                            value
+                                .parse::<u64>()
+                                .map_err(|_| NodeError::UnknownArgument {
+                                    argument: value.clone(),
+                                })?,
+                        );
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            listen: listen.ok_or(NodeError::MissingFlagValue { flag: "--listen" })?,
+            control_socket: control_socket
+                .ok_or(NodeError::MissingFlagValue { flag: "--control" })?,
+            stale_after_ms,
+        })
+    }
+
+    fn into_options(self) -> ServingRoleOptions {
+        let options = ServingRoleOptions::new(self.state_dir, self.listen, self.control_socket);
+        match self.stale_after_ms {
+            Some(stale_after_ms) => options.with_stale_after(Duration::from_millis(stale_after_ms)),
+            None => options,
+        }
+    }
 }
 
 impl DeployArgs {
@@ -550,7 +652,8 @@ fn help() -> String {
         "  admission --state <dir>",
         "  admit --state <dir> --request <json>",
         "  deploy --state <dir> --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>]",
-        "  gateway|dns  (planned product-vertical commands)",
+        "  gateway --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
+        "  dns --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
     ]
     .join("\n")
 }

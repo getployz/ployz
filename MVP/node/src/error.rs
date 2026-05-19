@@ -128,6 +128,22 @@ pub enum NodeError {
     Runtime { source: std::io::Error },
     #[error("deploy failed: {source}")]
     Deploy { source: mvp_deploy::DeployError },
+    #[error("serving failed: {source}")]
+    Serving { source: mvp_serving::ServingError },
+    #[error("HTTP gateway failed: {source}")]
+    HttpGateway {
+        source: mvp_serving::HttpGatewayError,
+    },
+    #[error("DNS server failed: {source}")]
+    DnsServer { source: mvp_serving::DnsServerError },
+    #[error("serving role control socket '{path}' failed during {operation}: {source}")]
+    ServingControlSocket {
+        path: PathBuf,
+        operation: &'static str,
+        source: std::io::Error,
+    },
+    #[error("encode serving role control response: {source}")]
+    EncodeServingRoleResponse { source: serde_json::Error },
     #[error("projection failed: {source}")]
     Projection {
         source: mvp_projection::ProjectionError,

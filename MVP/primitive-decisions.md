@@ -1337,6 +1337,41 @@ Revisit if:
 - Wire request throughput exposes snapshot-read lock contention. Move from
   `RwLock` to immutable `Arc` snapshots swapped by reload.
 
+## Product Serving Role Commands
+
+Why this:
+- The steady-state proof needs roles that are launched through the shipped
+  product binary, not only through the E2E harness.
+- `mvp-node gateway` and `mvp-node dns` should read the same persisted snapshot
+  paths that projection writes. They should not need the daemon, fact store, or
+  SQLite to answer requests.
+- The role control surface is intentionally small: readiness, status, reload,
+  and shutdown over a Unix socket. That is enough for tests and later
+  supervision without making process role control into a second product API.
+
+What it replaces:
+- The placeholder CLI state where `gateway` and `dns` were known commands but
+  explicitly unwired.
+- E2E-only role wiring as the only way to exercise real HTTP/DNS sockets.
+
+Costs:
+- The control protocol is JSON over a Unix socket. That is deliberately boring
+  and local; it is not a remote management API.
+- The placeholder DNS role now answers `A` as well as `AAAA` records because
+  product deploy currently writes `A` records. Production DNS integration still
+  belongs behind the same snapshot interface.
+
+Crates:
+- `mvp-node` owns product process-role wiring and the Unix control protocol.
+- `mvp-serving` owns snapshot loading, reload validation, last-good state, and
+  placeholder wire serving.
+
+Revisit if:
+- Product supervision needs richer lifecycle reporting. Extend the local role
+  control protocol without letting it mutate cluster truth.
+- Pingora or `hickory-server` lands. Preserve the `mvp-serving` snapshot/last
+  good interface and replace only the wire server implementation.
+
 ## Membership And Last-Applied WireGuard
 
 Why this:

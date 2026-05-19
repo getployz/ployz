@@ -4,6 +4,7 @@ mod error;
 mod membership;
 mod networking;
 mod node_agent;
+mod serving;
 mod state;
 
 pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
@@ -22,6 +23,11 @@ pub use networking::{
 pub use node_agent::{
     NodeAgentReport, NodeAgentServices, node_agent_grant, register_node_agent_services,
     register_node_agent_services_with_process,
+};
+pub use serving::{
+    ServingRoleFailure, ServingRoleFailureKind, ServingRoleKind, ServingRoleOptions,
+    ServingRoleProcessStatus, ServingRoleRequest, ServingRoleResponse, ServingRoleServingStatus,
+    ServingRoleSuccess, run_dns_role, run_gateway_role,
 };
 pub use state::{
     LoadedNodeState, init_joined_node, init_node, load_node, load_node_ticket, write_node_ticket,
