@@ -4,6 +4,7 @@ mod authority_contract;
 mod bridge_contract;
 mod bus_contract;
 mod bus_syntax;
+mod container_overlay_dns_smoke;
 mod deploy_candidate_cleanup_contract;
 mod deploy_commit_drain_contract;
 mod deploy_restart_recovery_contract;
@@ -256,6 +257,10 @@ const SCENARIOS: &[Scenario] = &[
         three_server_product_contract::run,
         three_server_product_contract::cleanup_orphaned_children,
     ),
+    Scenario::new(
+        "container-overlay-dns-smoke",
+        container_overlay_dns_smoke::run,
+    ),
     Scenario::new("volume-transfer-contract", volume_transfer_contract::run),
     Scenario::new("scale", scale::run),
 ];
@@ -404,6 +409,7 @@ mod tests {
         assert!(names.contains(&"membership-wireguard-contract"));
         assert!(names.contains(&"machine-remove-contract"));
         assert!(names.contains(&"three-server-product"));
+        assert!(names.contains(&"container-overlay-dns-smoke"));
         assert!(scenario_help().contains("lease-acme-contract"));
         assert!(scenario_help().contains("environment-branch-promote-rollback-contract"));
         assert!(scenario_help().contains("p2panda-process-role-serving-contract"));
@@ -411,6 +417,7 @@ mod tests {
         assert!(scenario_help().contains("membership-wireguard-contract"));
         assert!(scenario_help().contains("machine-remove-contract"));
         assert!(scenario_help().contains("three-server-product"));
+        assert!(scenario_help().contains("container-overlay-dns-smoke"));
     }
 
     #[test]
