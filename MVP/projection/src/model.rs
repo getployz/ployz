@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
+use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization, AcmeOrderUrl};
 use mvp_bus::IslandId;
 use mvp_lease::{LeaseContentHash, LeaseEpoch, LeaseHolder, LeaseTimestamp};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ pub struct ProjectionState {
     pub gateway: Option<GatewayProjection>,
     pub dns: Option<DnsProjection>,
     pub acme_http01: BTreeMap<AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection>,
+    pub certificates: BTreeMap<AcmeHostname, ServingCertificateProjection>,
     pub statuses: Vec<ProjectionStatus>,
 }
 
@@ -33,6 +34,7 @@ impl ProjectionState {
             gateway: None,
             dns: None,
             acme_http01: BTreeMap::new(),
+            certificates: BTreeMap::new(),
             statuses: Vec::new(),
         }
     }
@@ -115,6 +117,17 @@ pub struct AcmeHttp01ChallengeProjection {
     pub claim_hash: LeaseContentHash,
     pub published_at: LeaseTimestamp,
     pub expires_at: LeaseTimestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ServingCertificateProjection {
+    pub hostname: AcmeHostname,
+    pub order_url: AcmeOrderUrl,
+    pub fullchain_pem: String,
+    pub private_key_pem: String,
+    pub issued_at_secs: u64,
+    pub not_before_secs: Option<u64>,
+    pub not_after_secs: Option<u64>,
 }
 
 impl From<DnsRecordFact> for DnsRecordProjection {

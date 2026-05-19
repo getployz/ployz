@@ -183,3 +183,9 @@ Run after implementation units land:
   p2panda claim/present facts and clears by reconstructing the active lease for
   the exact hostname/token. Verified with
   `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme -p mvp-acme-command`.
+- 2026-05-20: Unit 4 started. Projected serving state now includes active
+  certificates as a separate concept from routes and HTTP-01 challenges.
+  Certificate activation facts reduce to latest-per-host serving certificate
+  projections, snapshots include certificate material, SQLite persists it, and
+  `mvp-serving` can look up certs by canonical hostname. Verified with
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme -p mvp-acme-command -p mvp-projection -p mvp-serving -p mvp-volume`.

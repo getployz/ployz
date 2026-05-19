@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
+use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization, AcmeOrderUrl};
 use mvp_bus::IslandId;
 use mvp_lease::{LeaseContentHash, LeaseEpoch, LeaseHolder, LeaseTimestamp};
 use rusqlite::{Connection, OptionalExtension, params, types::Type};
@@ -13,6 +13,7 @@ use crate::model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
     ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
+    ServingCertificateProjection,
 };
 use mvp_identity::NodeId;
 
@@ -30,6 +31,7 @@ pub struct ProjectionRowCounts {
     pub gateway_routes: usize,
     pub dns_records: usize,
     pub acme_http01_challenges: usize,
+    pub certificates: usize,
     pub statuses: usize,
 }
 
@@ -93,6 +95,7 @@ impl SqliteProjectionStore {
         write_gateway(&transaction, state)?;
         write_dns(&transaction, state)?;
         write_acme_http01(&transaction, state)?;
+        write_certificates(&transaction, state)?;
         write_statuses(&transaction, state)?;
         transaction.commit()?;
         Ok(())
@@ -123,6 +126,7 @@ impl SqliteProjectionStore {
         load_gateway(&connection, &mut state)?;
         load_dns(&connection, &mut state)?;
         load_acme_http01(&connection, &mut state)?;
+        load_certificates(&connection, &mut state)?;
         load_statuses(&connection, &mut state)?;
         Ok(state)
     }
@@ -138,6 +142,7 @@ impl SqliteProjectionStore {
             gateway_routes: count_rows(&connection, "gateway_routes")?,
             dns_records: count_rows(&connection, "dns_records")?,
             acme_http01_challenges: count_rows(&connection, "acme_http01_challenges")?,
+            certificates: count_rows(&connection, "certificates")?,
             statuses: count_rows(&connection, "projection_statuses")?,
         })
     }
@@ -201,6 +206,15 @@ fn create_schema(connection: &Connection) -> ProjectionResult<()> {
           expires_at INTEGER NOT NULL,
           PRIMARY KEY (hostname, token)
         );
+        CREATE TABLE IF NOT EXISTS certificates (
+          hostname TEXT PRIMARY KEY,
+          order_url TEXT NOT NULL,
+          fullchain_pem TEXT NOT NULL,
+          private_key_pem TEXT NOT NULL,
+          issued_at_secs INTEGER NOT NULL,
+          not_before_secs INTEGER,
+          not_after_secs INTEGER
+        );
         CREATE TABLE IF NOT EXISTS projection_statuses (
           reason TEXT PRIMARY KEY,
           count INTEGER NOT NULL
@@ -227,6 +241,7 @@ fn clear_projection_tables(connection: &Connection) -> ProjectionResult<()> {
         "gateway_routes",
         "dns_records",
         "acme_http01_challenges",
+        "certificates",
         "projection_statuses",
     ] {
         connection.execute(&format!("DELETE FROM {table}"), [])?;
@@ -391,6 +406,35 @@ fn write_acme_http01(connection: &Connection, state: &ProjectionState) -> Projec
             challenge.claim_hash.as_hex(),
             challenge.published_at.value() as i64,
             challenge.expires_at.value() as i64
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_certificates(connection: &Connection, state: &ProjectionState) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        INSERT INTO certificates (
+          hostname,
+          order_url,
+          fullchain_pem,
+          private_key_pem,
+          issued_at_secs,
+          not_before_secs,
+          not_after_secs
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
+    for certificate in state.certificates.values() {
+        statement.execute(params![
+            certificate.hostname.as_str(),
+            certificate.order_url.as_str(),
+            certificate.fullchain_pem.as_str(),
+            certificate.private_key_pem.as_str(),
+            certificate.issued_at_secs as i64,
+            certificate.not_before_secs.map(|value| value as i64),
+            certificate.not_after_secs.map(|value| value as i64)
         ])?;
     }
     Ok(())
@@ -633,6 +677,37 @@ fn load_acme_http01(connection: &Connection, state: &mut ProjectionState) -> Pro
     Ok(())
 }
 
+fn load_certificates(connection: &Connection, state: &mut ProjectionState) -> ProjectionResult<()> {
+    let mut statement = connection.prepare(
+        "
+        SELECT hostname, order_url, fullchain_pem, private_key_pem, issued_at_secs,
+               not_before_secs, not_after_secs
+        FROM certificates
+        ORDER BY hostname
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let hostname = AcmeHostname::parse(row.get::<_, String>(0)?).map_err(to_sql_error)?;
+        let order_url = AcmeOrderUrl::parse(row.get::<_, String>(1)?).map_err(to_sql_error)?;
+        Ok(ServingCertificateProjection {
+            hostname,
+            order_url,
+            fullchain_pem: row.get(2)?,
+            private_key_pem: row.get(3)?,
+            issued_at_secs: read_u64(row.get::<_, i64>(4)?, 4)?,
+            not_before_secs: optional_u64(row.get::<_, Option<i64>>(5)?, 5)?,
+            not_after_secs: optional_u64(row.get::<_, Option<i64>>(6)?, 6)?,
+        })
+    })?;
+    for row in rows {
+        let certificate = row?;
+        state
+            .certificates
+            .insert(certificate.hostname.clone(), certificate);
+    }
+    Ok(())
+}
+
 fn load_statuses(connection: &Connection, state: &mut ProjectionState) -> ProjectionResult<()> {
     let mut statement =
         connection.prepare("SELECT reason, count FROM projection_statuses ORDER BY reason")?;
@@ -685,6 +760,10 @@ fn read_u64(value: i64, column: usize) -> rusqlite::Result<u64> {
     u64::try_from(value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
     })
+}
+
+fn optional_u64(value: Option<i64>, column: usize) -> rusqlite::Result<Option<u64>> {
+    value.map(|value| read_u64(value, column)).transpose()
 }
 
 #[cfg(test)]

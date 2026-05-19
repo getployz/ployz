@@ -4,13 +4,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hickory_proto::op::{Message, Query, ResponseCode};
 use hickory_proto::rr::{Name, RData, RecordType};
-use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization};
+use mvp_acme::{AcmeChallengeToken, AcmeHostname, AcmeKeyAuthorization, AcmeOrderUrl};
 use mvp_bus::IslandId;
 use mvp_identity::NodeId;
 use mvp_lease::{LeaseClaimed, LeaseEpoch, LeaseFact, LeaseHolder, LeaseResource, LeaseTimestamp};
 use mvp_projection::{
     AcmeHttp01ChallengeProjection, BackendEndpoint, DnsRecordProjection, DnsSnapshotFile,
-    GatewayRouteProjection, GatewaySnapshotFile, RouteId, write_serving_generation_manifest,
+    GatewayRouteProjection, GatewaySnapshotFile, RouteId, ServingCertificateProjection,
+    write_serving_generation_manifest,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -64,6 +65,7 @@ fn gateway_snapshot_for_route(
             old_backends_to_drain: Vec::new(),
         }],
         acme_http01: Vec::new(),
+        certificates: Vec::new(),
     }
 }
 
@@ -91,6 +93,7 @@ fn empty_gateway_snapshot(island: &str, revision: &str) -> GatewaySnapshotFile {
         route_commit_id: format!("{revision}-route"),
         routes: Vec::new(),
         acme_http01: Vec::new(),
+        certificates: Vec::new(),
     }
 }
 
@@ -102,6 +105,34 @@ fn empty_dns_snapshot(island: &str, revision: &str) -> DnsSnapshotFile {
         dns_commit_id: format!("{revision}-dns"),
         records: Vec::new(),
     }
+}
+
+#[test]
+fn batch_indexes_certificates_by_canonical_hostname() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut gateway = empty_gateway_snapshot("prod", "rev-1");
+    gateway.certificates.push(ServingCertificateProjection {
+        hostname: AcmeHostname::parse("Example.test").expect("hostname"),
+        order_url: AcmeOrderUrl::parse("https://pebble.test/order/1").expect("order url"),
+        fullchain_pem: "chain".to_string(),
+        private_key_pem: "key".to_string(),
+        issued_at_secs: 10,
+        not_before_secs: Some(9),
+        not_after_secs: Some(90),
+    });
+    let dns = empty_dns_snapshot("prod", "rev-1");
+    write_snapshot_files(&root, &gateway, &dns);
+
+    let batch = ServingSnapshotBatch::load(&snapshot_paths(&root), &IslandId::new("prod"))
+        .expect("batch loads");
+
+    assert_eq!(
+        batch
+            .certificate_for_host("EXAMPLE.TEST")
+            .expect("certificate")
+            .private_key_pem,
+        "key"
+    );
 }
 
 fn write_snapshot_files(root: &TempDir, gateway: &GatewaySnapshotFile, dns: &DnsSnapshotFile) {

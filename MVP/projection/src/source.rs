@@ -22,6 +22,7 @@ pub enum FactKind {
     LeaseReleased,
     AcmeHttp01Presented,
     AcmeHttp01Cleared,
+    AcmeCertificateActivated,
     Unsupported,
 }
 
@@ -110,6 +111,10 @@ pub(crate) enum ParsedFactKey {
         epoch: String,
         claim_hash: String,
     },
+    AcmeCertificateActivated {
+        hostname: String,
+        issued_at: String,
+    },
     Unsupported,
 }
 
@@ -138,6 +143,9 @@ impl ParsedFactKey {
             }
             Self::AcmeHttp01Cleared { epoch, .. } => {
                 classify_epoch(FactKind::AcmeHttp01Cleared, epoch)
+            }
+            Self::AcmeCertificateActivated { issued_at, .. } => {
+                classify_epoch(FactKind::AcmeCertificateActivated, issued_at)
             }
             Self::Unsupported => FactKeyClassification::new(FactKind::Unsupported, 0),
         }
@@ -301,6 +309,26 @@ pub(crate) fn parse_fact_key(key: &FactKey) -> ParsedFactKey {
             token: (*_token).to_string(),
             epoch: (*epoch).to_string(),
             claim_hash: (*_claim_hash).to_string(),
+        },
+        [
+            "facts",
+            "acme",
+            "certificate",
+            _hostname,
+            "activated",
+            _issued_at,
+        ]
+        | [
+            "facts",
+            "acme",
+            "certificate",
+            _hostname,
+            "activated",
+            _issued_at,
+            _,
+        ] => ParsedFactKey::AcmeCertificateActivated {
+            hostname: (*_hostname).to_string(),
+            issued_at: (*_issued_at).to_string(),
         },
         _ => ParsedFactKey::Unsupported,
     }

@@ -7,8 +7,8 @@ use crate::facts::{
 use crate::model::{ProjectionIgnoreReason, ProjectionState};
 use crate::source::{CandidateStatus, FactCandidate, FactKind};
 use mvp_acme::{
-    AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ClearedFact,
-    AcmeHttp01PresentedFact, AcmeKeyAuthorization,
+    AcmeCertificateActivatedFact, AcmeChallengeId, AcmeChallengeToken, AcmeHostname,
+    AcmeHttp01ClearedFact, AcmeHttp01PresentedFact, AcmeKeyAuthorization, AcmeOrderUrl,
 };
 use mvp_bus::{FactContentHash, FactKey, FactPayload, IslandId, PrincipalId};
 use mvp_identity::NodeId;
@@ -117,6 +117,62 @@ fn acme_cleared(
     cleared_at: LeaseTimestamp,
 ) -> AcmeHttp01ClearedFact {
     AcmeHttp01ClearedFact::from_parts(id, LeaseHolder::new(holder), epoch, claim_hash, cleared_at)
+}
+
+#[test]
+fn reducer_projects_latest_acme_certificate_by_hostname() {
+    let mut payloads = BTreeMap::new();
+    let old = AcmeCertificateActivatedFact {
+        hostname: AcmeHostname::parse("Example.test").expect("hostname"),
+        order_url: AcmeOrderUrl::parse("https://pebble.test/order/old").expect("order url"),
+        fullchain_pem: "old-chain".to_string(),
+        private_key_pem: "old-key".to_string(),
+        issued_at_secs: 10,
+        not_before_secs: Some(9),
+        not_after_secs: Some(90),
+    };
+    let new = AcmeCertificateActivatedFact {
+        hostname: AcmeHostname::parse("example.test").expect("hostname"),
+        order_url: AcmeOrderUrl::parse("https://pebble.test/order/new").expect("order url"),
+        fullchain_pem: "new-chain".to_string(),
+        private_key_pem: "new-key".to_string(),
+        issued_at_secs: 20,
+        not_before_secs: Some(19),
+        not_after_secs: Some(190),
+    };
+    let old_hash = insert_payload(
+        &mut payloads,
+        ProjectionFactPayload::AcmeCertificateActivated(old),
+    );
+    let new_hash = insert_payload(
+        &mut payloads,
+        ProjectionFactPayload::AcmeCertificateActivated(new),
+    );
+    let candidates = vec![
+        candidate(
+            "/facts/acme/certificate/example.test/activated/10",
+            FactKind::AcmeCertificateActivated,
+            old_hash,
+        ),
+        candidate(
+            "/facts/acme/certificate/example.test/activated/20",
+            FactKind::AcmeCertificateActivated,
+            new_hash,
+        ),
+    ];
+
+    let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+    let certificate = state
+        .certificates
+        .get(&AcmeHostname::parse("example.test").expect("hostname"))
+        .expect("certificate projects");
+    assert_eq!(certificate.fullchain_pem, "new-chain");
+    assert_eq!(certificate.private_key_pem, "new-key");
+    assert_eq!(
+        status_count(&state, ProjectionIgnoreReason::Superseded),
+        1
+    );
 }
 
 #[test]
@@ -984,4 +1040,3 @@ fn reducer_projects_serving_commit_as_single_gateway_dns_boundary() {
     assert_eq!(dns.records[0].value, expected.3);
     assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
 }
-

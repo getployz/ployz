@@ -9,6 +9,7 @@ use tempfile::NamedTempFile;
 use crate::error::{ProjectionError, ProjectionResult};
 use crate::model::{
     AcmeHttp01ChallengeProjection, DnsRecordProjection, GatewayRouteProjection, ProjectionState,
+    ServingCertificateProjection,
 };
 
 const EMPTY_GATEWAY_COMMIT_ID: &str = "none";
@@ -42,6 +43,7 @@ pub struct GatewaySnapshotFile {
     pub route_commit_id: String,
     pub routes: Vec<GatewayRouteProjection>,
     pub acme_http01: Vec<AcmeHttp01ChallengeProjection>,
+    pub certificates: Vec<ServingCertificateProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,11 +239,16 @@ pub fn write_serving_generation_manifest(
 fn gateway_snapshot_for_state(
     state: &ProjectionState,
 ) -> ProjectionResult<Option<GatewaySnapshotFile>> {
-    if state.gateway.is_none() && state.acme_http01.is_empty() && state.dns.is_none() {
+    if state.gateway.is_none()
+        && state.acme_http01.is_empty()
+        && state.certificates.is_empty()
+        && state.dns.is_none()
+    {
         return Ok(None);
     }
     let island = island_string(state);
     let acme_http01 = state.acme_http01.values().cloned().collect::<Vec<_>>();
+    let certificates = state.certificates.values().cloned().collect::<Vec<_>>();
     let gateway_commit_id = state.gateway.as_ref().map_or_else(
         || EMPTY_GATEWAY_COMMIT_ID.to_string(),
         |gateway| gateway.gateway_commit_id.clone(),
@@ -255,8 +262,9 @@ fn gateway_snapshot_for_state(
         .as_ref()
         .map_or_else(Vec::new, |gateway| gateway.routes.clone());
     let revision = format!(
-        "gateway:{gateway_commit_id}:{route_commit_id}:acme:{}",
-        acme_revision(&acme_http01)
+        "gateway:{gateway_commit_id}:{route_commit_id}:acme:{}:certs:{}",
+        acme_revision(&acme_http01),
+        certificate_revision(&certificates)
     );
     Ok(Some(GatewaySnapshotFile {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -266,11 +274,16 @@ fn gateway_snapshot_for_state(
         route_commit_id,
         routes,
         acme_http01,
+        certificates,
     }))
 }
 
 fn dns_snapshot_for_state(state: &ProjectionState) -> ProjectionResult<Option<DnsSnapshotFile>> {
-    if state.dns.is_none() && state.gateway.is_none() && state.acme_http01.is_empty() {
+    if state.dns.is_none()
+        && state.gateway.is_none()
+        && state.acme_http01.is_empty()
+        && state.certificates.is_empty()
+    {
         return Ok(None);
     }
     let island = island_string(state);
@@ -290,6 +303,25 @@ fn dns_snapshot_for_state(state: &ProjectionState) -> ProjectionResult<Option<Dn
         dns_commit_id,
         records,
     }))
+}
+
+fn certificate_revision(certificates: &[ServingCertificateProjection]) -> String {
+    if certificates.is_empty() {
+        return "none".to_string();
+    }
+    certificates
+        .iter()
+        .map(|certificate| {
+            format!(
+                "{}:{}:{}:{}",
+                certificate.hostname.as_str(),
+                certificate.order_url.as_str(),
+                certificate.issued_at_secs,
+                certificate.fullchain_pem.len()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn gateway_operation_for_state(
@@ -783,7 +815,10 @@ mod tests {
         );
         let set = load_serving_snapshot_set(&gateway_path, &dns_path, &IslandId::new("prod"))
             .expect("load serving generation");
-        assert_eq!(set.gateway.revision, "gateway:gateway-1:route-1:acme:none");
+        assert_eq!(
+            set.gateway.revision,
+            "gateway:gateway-1:route-1:acme:none:certs:none"
+        );
         assert_eq!(set.manifest.gateway.revision, set.gateway.revision);
         assert_eq!(set.manifest.dns.revision, set.dns.revision);
     }

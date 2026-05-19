@@ -9,8 +9,9 @@ use mvp_bus::IslandId;
 use mvp_lease::LeaseTimestamp;
 use mvp_projection::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsRecordProjection, DnsSnapshotFile,
-    GatewayRouteProjection, GatewaySnapshotFile, ProjectionError, ServingGenerationManifestFile,
-    load_dns_snapshot, load_gateway_snapshot, load_serving_snapshot_set,
+    GatewayRouteProjection, GatewaySnapshotFile, ProjectionError, ServingCertificateProjection,
+    ServingGenerationManifestFile, load_dns_snapshot, load_gateway_snapshot,
+    load_serving_snapshot_set,
 };
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +41,7 @@ pub struct ServingSnapshotBatch {
     route_by_hostname: BTreeMap<String, usize>,
     records_by_name_type: BTreeMap<DnsRecordKey, Vec<usize>>,
     acme_http01_by_host_token: BTreeMap<AcmeHttp01ChallengeKey, usize>,
+    certificates_by_hostname: BTreeMap<String, usize>,
 }
 
 impl ServingSnapshotBatch {
@@ -149,6 +151,14 @@ impl ServingSnapshotBatch {
         self.gateway.acme_http01.len()
     }
 
+    #[must_use]
+    pub fn certificate_for_host(&self, host: &str) -> Option<ServingCertificateProjection> {
+        self.certificates_by_hostname
+            .get(&normalize_lookup_part(host))
+            .and_then(|certificate_index| self.gateway.certificates.get(*certificate_index))
+            .cloned()
+    }
+
     fn from_snapshots(
         gateway: GatewaySnapshotFile,
         dns: DnsSnapshotFile,
@@ -158,6 +168,7 @@ impl ServingSnapshotBatch {
         let route_by_hostname = index_routes(&gateway.routes);
         let records_by_name_type = index_dns_records(&dns.records);
         let acme_http01_by_host_token = index_acme_http01(&gateway.acme_http01);
+        let certificates_by_hostname = index_certificates(&gateway.certificates);
         Ok(Self {
             gateway,
             dns,
@@ -165,6 +176,7 @@ impl ServingSnapshotBatch {
             route_by_hostname,
             records_by_name_type,
             acme_http01_by_host_token,
+            certificates_by_hostname,
         })
     }
 }
@@ -338,6 +350,17 @@ fn index_acme_http01(
         index.insert(
             AcmeHttp01ChallengeKey::new(challenge.hostname.clone(), challenge.token.clone()),
             challenge_index,
+        );
+    }
+    index
+}
+
+fn index_certificates(certificates: &[ServingCertificateProjection]) -> BTreeMap<String, usize> {
+    let mut index = BTreeMap::new();
+    for (certificate_index, certificate) in certificates.iter().enumerate() {
+        index.insert(
+            normalize_lookup_part(certificate.hostname.as_str()),
+            certificate_index,
         );
     }
     index

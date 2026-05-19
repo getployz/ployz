@@ -1,4 +1,4 @@
-use mvp_acme::{AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
+use mvp_acme::{AcmeCertificateActivatedFact, AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
 use mvp_identity::NodeId;
 use mvp_lease::{LeaseClaimed, LeaseReleased, LeaseRenewed};
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,7 @@ pub enum ProjectionFactPayload {
     LeaseReleased(LeaseReleased),
     AcmeHttp01Presented(AcmeHttp01PresentedFact),
     AcmeHttp01Cleared(AcmeHttp01ClearedFact),
+    AcmeCertificateActivated(AcmeCertificateActivatedFact),
 }
 
 impl ProjectionFactPayload {
