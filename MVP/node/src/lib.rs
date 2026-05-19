@@ -11,7 +11,8 @@ mod state;
 pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
 pub use deploy::{
     ProductDeployOptions, ProductDeployReport, ProductDeployStatusReport, deploy_product_service,
-    deploy_product_service_with_process, read_product_deploy_status,
+    deploy_product_service_with_process, deploy_product_service_with_runtime,
+    read_product_deploy_status,
 };
 pub use error::{NodeError, NodeResult};
 pub use membership::{
@@ -23,7 +24,7 @@ pub use networking::{
 };
 pub use node_agent::{
     NodeAgentReport, NodeAgentServices, node_agent_grant, register_node_agent_services,
-    register_node_agent_services_with_process,
+    register_node_agent_services_with_process, register_node_agent_services_with_runtime,
 };
 pub use serving::{
     ServingRoleFailure, ServingRoleFailureKind, ServingRoleKind, ServingRoleOptions,

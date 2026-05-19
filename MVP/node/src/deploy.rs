@@ -22,7 +22,7 @@ use mvp_projection::{
     ProjectionFactPayload, RouteId, ServiceName, SqliteProjectionStore,
 };
 use mvp_routing::PandaServingFactWriter;
-use mvp_runtime::ProcessRuntime;
+use mvp_runtime::{ProcessRuntime, RuntimeBackend};
 
 use crate::error::{NodeError, NodeResult};
 use crate::load_node;
@@ -113,6 +113,14 @@ pub async fn deploy_product_service_with_process(
     options: ProductDeployOptions,
     process: Option<ProcessRuntime>,
 ) -> NodeResult<ProductDeployReport> {
+    let backend = process.map(|process| Arc::new(process) as Arc<dyn RuntimeBackend>);
+    deploy_product_service_with_runtime(options, backend).await
+}
+
+pub async fn deploy_product_service_with_runtime(
+    options: ProductDeployOptions,
+    backend: Option<Arc<dyn RuntimeBackend>>,
+) -> NodeResult<ProductDeployReport> {
     let state = load_node(&options.state_dir)?;
     let (bus, authority, raw_bus) = mvp_bus::local::actor_with_authority();
     let operator = authority.grant_in(state.island(), state.principal(), Grant::allow_all());
@@ -121,13 +129,13 @@ pub async fn deploy_product_service_with_process(
         PrincipalId::new(format!("node-agent:{}", state.node_id_str())),
         node_agent_grant(state.node_id_str())?,
     );
-    let (_node_agent, _node_agent_report) = match process {
-        Some(process) => {
-            crate::register_node_agent_services_with_process(
+    let (_node_agent, _node_agent_report) = match backend {
+        Some(backend) => {
+            crate::register_node_agent_services_with_runtime(
                 &bus,
                 &node_agent_session,
                 &state,
-                Some(process),
+                Some(backend),
             )
             .await?
         }
