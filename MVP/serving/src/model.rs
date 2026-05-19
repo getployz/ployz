@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -78,6 +79,45 @@ impl ServingSnapshotBatch {
             .filter_map(|record_index| self.dns.records.get(*record_index))
             .cloned()
             .collect()
+    }
+
+    #[must_use]
+    pub fn service_dns_records(&self, name: &str, record_type: &str) -> Vec<DnsRecordProjection> {
+        let name = normalize_lookup_part(name);
+        let record_type = normalize_lookup_part(record_type);
+        if record_type != "a" && record_type != "aaaa" {
+            return Vec::new();
+        }
+
+        let mut records = Vec::new();
+        for route in &self.gateway.routes {
+            if !service_dns_names(route).contains(&name) {
+                continue;
+            }
+            for backend in &route.backends {
+                let Ok(address) = backend.address.parse::<SocketAddr>() else {
+                    continue;
+                };
+                match (record_type.as_str(), address) {
+                    ("a", SocketAddr::V4(address)) => records.push(DnsRecordProjection {
+                        name: name.clone(),
+                        record_type: "A".to_string(),
+                        value: address.ip().to_string(),
+                        ttl_seconds: 5,
+                    }),
+                    ("aaaa", SocketAddr::V6(address)) => records.push(DnsRecordProjection {
+                        name: name.clone(),
+                        record_type: "AAAA".to_string(),
+                        value: address.ip().to_string(),
+                        ttl_seconds: 5,
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        records.sort();
+        records.dedup();
+        records
     }
 
     pub fn acme_http01_challenge(
@@ -262,6 +302,21 @@ fn index_routes(routes: &[GatewayRouteProjection]) -> BTreeMap<String, usize> {
         }
     }
     index
+}
+
+fn service_dns_names(route: &GatewayRouteProjection) -> Vec<String> {
+    let service = normalize_lookup_part(route.route_id.as_str());
+    let mut names = vec![service.clone(), format!("{service}.service")];
+    for hostname in &route.hostnames {
+        let hostname = normalize_lookup_part(hostname);
+        let Some((_first_label, zone)) = hostname.split_once('.') else {
+            continue;
+        };
+        names.push(format!("{service}.service.{zone}"));
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn index_dns_records(records: &[DnsRecordProjection]) -> BTreeMap<DnsRecordKey, Vec<usize>> {

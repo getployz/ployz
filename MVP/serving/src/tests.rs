@@ -38,6 +38,16 @@ fn gateway_snapshot(
     host: &str,
     backend: &str,
 ) -> GatewaySnapshotFile {
+    gateway_snapshot_for_route(island, revision, "web-http", host, backend)
+}
+
+fn gateway_snapshot_for_route(
+    island: &str,
+    revision: &str,
+    route_id: &str,
+    host: &str,
+    backend: &str,
+) -> GatewaySnapshotFile {
     GatewaySnapshotFile {
         schema_version: 1,
         island: island.to_string(),
@@ -45,7 +55,7 @@ fn gateway_snapshot(
         gateway_commit_id: format!("{revision}-gateway"),
         route_commit_id: format!("{revision}-route"),
         routes: vec![GatewayRouteProjection {
-            route_id: RouteId::new("web-http"),
+            route_id: RouteId::new(route_id),
             hostnames: vec![host.to_string()],
             backends: vec![BackendEndpoint {
                 node_id: NodeId::new("node-web"),
@@ -658,6 +668,75 @@ async fn dns_server_unknown_name_returns_nxdomain() {
         server.listen_addr(),
         "missing.example.test.",
         RecordType::AAAA,
+    )
+    .await;
+
+    assert_eq!(response.metadata.response_code, ResponseCode::NXDomain);
+    assert!(response.answers.is_empty());
+    server.shutdown().await.expect("shutdown dns server");
+}
+
+#[tokio::test]
+async fn dns_server_answers_service_a_from_gateway_backends() {
+    let root = TempDir::new().expect("tempdir");
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot_for_route(
+            "prod",
+            "rev-1",
+            "echo",
+            "echo.example.test",
+            "10.210.55.2:8080",
+        ),
+        &empty_dns_snapshot("prod", "rev-1"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+
+    let response = dns_query(
+        server.listen_addr(),
+        "echo.service.example.test.",
+        RecordType::A,
+    )
+    .await;
+
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.answers.len(), 1);
+    assert_eq!(response.answers[0].ttl, 5);
+    assert!(matches!(
+        &response.answers[0].data,
+        RData::A(addr) if addr.to_string() == "10.210.55.2"
+    ));
+    server.shutdown().await.expect("shutdown dns server");
+}
+
+#[tokio::test]
+async fn dns_server_unknown_service_name_returns_nxdomain() {
+    let root = TempDir::new().expect("tempdir");
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot_for_route(
+            "prod",
+            "rev-1",
+            "echo",
+            "echo.example.test",
+            "10.210.55.2:8080",
+        ),
+        &empty_dns_snapshot("prod", "rev-1"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let server = spawn_dns_server(loopback_any(), WireServingState::new(actor))
+        .await
+        .expect("spawn dns server");
+
+    let response = dns_query(
+        server.listen_addr(),
+        "missing.service.example.test.",
+        RecordType::A,
     )
     .await;
 

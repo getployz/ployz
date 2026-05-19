@@ -174,13 +174,22 @@ async fn response_for_request(request: Message, state: &WireServingState) -> Mes
             return response;
         }
     };
-    let records = match state.dns_records(lookup_name, record_type).await {
+    let mut records = match state.dns_records(&lookup_name, record_type).await {
         Ok(records) => records,
         Err(_) => {
             response.metadata.response_code = ResponseCode::ServFail;
             return response;
         }
     };
+    if records.is_empty() {
+        records = match state.service_dns_records(lookup_name, record_type).await {
+            Ok(records) => records,
+            Err(_) => {
+                response.metadata.response_code = ResponseCode::ServFail;
+                return response;
+            }
+        };
+    }
     if records.is_empty() {
         response.metadata.response_code = ResponseCode::NXDomain;
         return response;

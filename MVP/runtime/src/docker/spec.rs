@@ -16,6 +16,7 @@ pub struct DockerRuntimeConfig {
     pub service_images: BTreeMap<String, String>,
     pub command: Option<Vec<String>>,
     pub network: Option<String>,
+    pub dns_servers: Vec<String>,
     pub service_port: u16,
     pub readiness_timeout: Duration,
     pub stop_timeout: Duration,
@@ -35,6 +36,7 @@ impl DockerRuntimeConfig {
             service_images: BTreeMap::new(),
             command: None,
             network: None,
+            dns_servers: Vec::new(),
             service_port: 8080,
             readiness_timeout: Duration::from_secs(30),
             stop_timeout: Duration::from_secs(10),
@@ -62,6 +64,12 @@ impl DockerRuntimeConfig {
     #[must_use]
     pub fn with_network(mut self, network: impl Into<String>) -> Self {
         self.network = Some(network.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_dns_server(mut self, dns_server: impl Into<String>) -> Self {
+        self.dns_servers.push(dns_server.into());
         self
     }
 
@@ -160,5 +168,13 @@ mod tests {
             );
 
         assert_eq!(config.image_for(&spec), "web:v2");
+    }
+
+    #[test]
+    fn dns_servers_are_recorded_in_runtime_config() {
+        let config = DockerRuntimeConfig::new(NodeId::new("node-a"), "runtime", "default:latest")
+            .with_dns_server("10.210.1.1");
+
+        assert_eq!(config.dns_servers, vec!["10.210.1.1"]);
     }
 }
