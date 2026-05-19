@@ -327,6 +327,9 @@ Acceptance:
 
 ### Slice 4: Pingora HTTP/HTTPS Gateway On Every Node
 
+Status: active. Slice plan:
+`docs/plans/2026-05-20-006-feat-mvp-pingora-gateway-slice.md`.
+
 Goal: replace the MVP hyper gateway with a Pingora-backed gateway that serves
 HTTP, HTTPS, and ACME challenge paths from existing serving state.
 
