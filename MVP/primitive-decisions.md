@@ -1444,6 +1444,39 @@ Revisit if:
 - The product deploy proof is stable and the next risk is private data-plane
   security or cross-network reachability rather than command/deploy semantics.
 
+## Runtime-Reported Deploy Backends
+
+Why this:
+- The process runtime owns socket allocation. A deploy manifest cannot honestly
+  know the final backend address before the participant starts or reuses the
+  instance.
+- Gateway and host-network projection need concrete socket endpoints, not
+  instance ids disguised as addresses.
+
+Decision:
+- Deploy participant start replies may include a concrete `BackendEndpoint`.
+- The deploy coordinator preserves existing static manifests when replies omit
+  the endpoint.
+- When replies include endpoints, the serving commit active backends are
+  materialized from those runtime-reported endpoints before writing serving
+  facts.
+- Node-agent cleanup resolves old backend addresses back to runtime instance ids
+  by consulting process metadata, so update deploys can stop the old child
+  process after projection catch-up.
+
+What it replaces:
+- Treating `BackendEndpoint.address` as both an instance id and a routeable
+  network address.
+
+Costs:
+- The current product deploy wrapper still runs participant RPC on a local bus.
+  Remote product node-agent request/reply remains the next transport slice.
+
+Revisit if:
+- Recovery needs to distinguish operator intent facts from materialized serving
+  facts more explicitly. At that point add a separate materialization fact or
+  command phase rather than hiding runtime output in the initial intent.
+
 ## hdrhistogram and memory-stats for E2E Proof
 
 Why this:
