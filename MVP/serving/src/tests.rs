@@ -614,6 +614,31 @@ async fn http_gateway_invalid_backend_returns_503_and_records_failure() {
     gateway.shutdown().await.expect("shutdown gateway");
 }
 
+#[test]
+fn gateway_backend_parser_accepts_overlay_addresses() {
+    let backend = BackendEndpoint {
+        node_id: NodeId::new("node-a"),
+        address: "10.210.55.2:8080".to_string(),
+    };
+
+    let parsed = crate::http_gateway::parse_backend(&backend).expect("overlay backend parses");
+
+    assert_eq!(parsed.to_string(), "10.210.55.2:8080");
+}
+
+#[test]
+fn gateway_backend_parser_rejects_malformed_addresses() {
+    let backend = BackendEndpoint {
+        node_id: NodeId::new("node-a"),
+        address: "not-a-socket".to_string(),
+    };
+
+    let error = crate::http_gateway::parse_backend(&backend)
+        .expect_err("malformed backend is rejected");
+
+    assert!(error.contains("invalid backend address"));
+}
+
 #[tokio::test]
 async fn dns_server_answers_aaaa_from_snapshot() {
     let root = TempDir::new().expect("tempdir");
