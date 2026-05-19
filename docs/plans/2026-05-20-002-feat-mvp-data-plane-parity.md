@@ -118,6 +118,11 @@ Out of scope until the parity smoke passes:
   inventing a fake provider.
 - `crates/ployz-cert-backends/src/instant_acme_issuer.rs` is the reference for
   `instant-acme` account/order/challenge/finalize behavior.
+- Existing non-MVP networking, eBPF, runtime, gateway, and install code should
+  be treated as preferred source material for complex substrate mechanics where
+  it fits. Port proven pieces behind the MVP trait boundaries instead of
+  reimplementing difficult Linux behavior from scratch or importing old
+  orchestration types upward.
 
 ## Decisions
 
@@ -126,6 +131,15 @@ Out of scope until the parity smoke passes:
 `mvp-node` may compose real backends, but command logic in `mvp-deploy`,
 `mvp-routing`, `mvp-machine`, and `mvp-environment` must not import Docker,
 WireGuard system tooling, Pingora, or Pebble directly.
+
+### Prefer porting proven substrate mechanics
+
+For complex networking, eBPF, container runtime, gateway, ACME, and install
+work, first look for equivalent working code in the pre-existing codebase. If
+the existing implementation already solved the Linux substrate problem, port
+the mechanic into the MVP owner crate behind the existing boundary. Do not
+clone old architecture wholesale, add compatibility shims, or let old backend
+types leak into command-domain crates.
 
 ### Use Pebble, not a hand-rolled fake ACME provider
 

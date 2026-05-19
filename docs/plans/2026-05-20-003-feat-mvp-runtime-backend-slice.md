@@ -50,6 +50,11 @@ inside one large file.
   `crates/ployz-runtime-backends/src/runtime/*` already contain Docker runtime
   patterns, label constants, drift comparison, and image/container handling to
   reuse conceptually without importing the old crate upward into command logic.
+- The user preference for complex substrate work is to port proven mechanics
+  from the pre-existing codebase where they fit. For this slice, that means
+  copying/adapting the useful Docker label/spec/engine/readiness ideas into
+  `mvp-runtime` behind `RuntimeBackend`, not reusing old orchestration types or
+  inventing a parallel runtime model from scratch.
 
 ## Design Decisions
 
