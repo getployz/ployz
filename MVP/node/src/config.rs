@@ -3,6 +3,22 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedFactAuthorConfig {
+    pub principal_id: String,
+    pub author_key_hex: String,
+}
+
+impl TrustedFactAuthorConfig {
+    #[must_use]
+    pub fn new(principal_id: impl Into<String>, author_key_hex: impl Into<String>) -> Self {
+        Self {
+            principal_id: principal_id.into(),
+            author_key_hex: author_key_hex.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodePaths {
     pub state_dir: PathBuf,
     pub state_file: PathBuf,
@@ -54,5 +70,39 @@ impl InitOptions {
     pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
         self.node_id = Some(node_id.into());
         self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinedInitOptions {
+    pub state_dir: PathBuf,
+    pub island: String,
+    pub node_id: String,
+    pub p2panda_network_id_hex: String,
+    pub p2panda_topic_hex: String,
+    pub bootstrap_ticket: String,
+    pub trusted_fact_author: TrustedFactAuthorConfig,
+}
+
+impl JoinedInitOptions {
+    #[must_use]
+    pub fn new(
+        state_dir: impl Into<PathBuf>,
+        island: impl Into<String>,
+        node_id: impl Into<String>,
+        p2panda_network_id_hex: impl Into<String>,
+        p2panda_topic_hex: impl Into<String>,
+        bootstrap_ticket: impl Into<String>,
+        trusted_fact_author: TrustedFactAuthorConfig,
+    ) -> Self {
+        Self {
+            state_dir: state_dir.into(),
+            island: island.into(),
+            node_id: node_id.into(),
+            p2panda_network_id_hex: p2panda_network_id_hex.into(),
+            p2panda_topic_hex: p2panda_topic_hex.into(),
+            bootstrap_ticket: bootstrap_ticket.into(),
+            trusted_fact_author,
+        }
     }
 }

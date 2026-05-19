@@ -16,6 +16,14 @@ pub enum NodeError {
     UnknownArgument { argument: String },
     #[error("command '{command}' is not wired yet")]
     CommandNotWired { command: String },
+    #[error("node ticket is not available; start daemon before creating invite")]
+    MissingNodeTicket,
+    #[error("decode invite token: {source}")]
+    DecodeInviteToken { source: serde_json::Error },
+    #[error("encode invite token: {source}")]
+    EncodeInviteToken { source: serde_json::Error },
+    #[error("invite token expired at {expires_at_ms}, now {now_ms}")]
+    InviteExpired { expires_at_ms: u64, now_ms: u64 },
     #[error("unsupported node state schema version {found}, expected {expected}")]
     UnsupportedSchemaVersion { found: u32, expected: u32 },
     #[error("create state directory '{path}': {source}")]
@@ -66,6 +74,22 @@ pub enum NodeError {
     InvalidTopic {
         source: mvp_p2panda_transport::PandaNetConfigError,
     },
+    #[error("invalid stored p2panda bootstrap ticket: {source}")]
+    InvalidBootstrapTicket {
+        source: mvp_p2panda_transport::PandaNetConfigError,
+    },
+    #[error("p2panda fact store failed: {source}")]
+    FactStore {
+        source: mvp_p2panda_facts::PandaFactError,
+    },
+    #[error("p2panda transport failed: {source}")]
+    Transport {
+        source: mvp_p2panda_transport::PandaNetTransportError,
+    },
+    #[error("mesh command failed: {source}")]
+    Mesh { source: mvp_mesh::MeshError },
+    #[error("create runtime: {source}")]
+    Runtime { source: std::io::Error },
 }
 
 pub type NodeResult<T> = Result<T, NodeError>;

@@ -58,13 +58,24 @@ binary that is separate from the E2E harness:
 
 ```text
 cargo run -p mvp-node -- init --state /var/lib/ployz-mvp --island prod --node-id node-a
+cargo run -p mvp-node -- daemon --state /var/lib/ployz-mvp --run-for-ms 1000
+cargo run -p mvp-node -- invite --state /var/lib/ployz-mvp
+cargo run -p mvp-node -- join --state /var/lib/ployz-mvp-b --token '<invite-json>' --node-id node-b
 cargo run -p mvp-node -- status --state /var/lib/ployz-mvp
 ```
 
-The currently wired surface is intentionally small: `init` and `status`
-establish persistent node identity and state paths. `invite`, `join`, `daemon`,
+The currently wired surface is still intentionally small: `init` and `status`
+establish persistent node identity and state paths; `daemon` starts the product
+p2panda fact node for a bounded run; `invite` emits a bootstrap token after the
+daemon has written a node ticket; and `join` initializes a node from that token.
 `gateway`, `dns`, and `deploy` are reserved product commands that return
 explicit not-wired errors until their three-server slices land.
+
+The current membership path proves durable product state, self join facts,
+bootstrap tickets, and bootstrap author trust. Full multi-node convergence
+still requires the next product slice: a bootstrap admission request that lets
+the existing node learn the joiner's p2panda node info and fact-author key
+instead of relying on test-only reciprocal address-book mutation.
 
 ## Maintainer Notes
 

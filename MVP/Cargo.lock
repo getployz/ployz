@@ -2947,10 +2947,12 @@ dependencies = [
  "mvp-mesh",
  "mvp-p2panda-facts",
  "mvp-p2panda-transport",
+ "mvp-projection",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
