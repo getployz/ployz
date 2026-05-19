@@ -12,8 +12,8 @@ use mvp_deploy::{
 };
 use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsRecordFact, ProjectionIgnoreReason, RouteId, ServiceName,
-    load_dns_snapshot, load_gateway_snapshot,
+    BackendEndpoint, DnsRecordFact, ProjectionIgnoreReason, RouteId, ServiceName,
+    fixtures::BusFactFixtureSource, load_dns_snapshot, load_gateway_snapshot,
 };
 use serde::Serialize;
 
@@ -115,7 +115,7 @@ async fn run_async() -> Result<(), String> {
             && participant_state.stop_requests.load(Ordering::SeqCst) == 0;
     let projection_started = Instant::now();
     let projection_actor = projection_actor(
-        Arc::new(BusFactSource::new(raw_bus.clone())),
+        Arc::new(BusFactFixtureSource::new(raw_bus.clone())),
         projection.clone(),
         &root,
     )?;
@@ -650,7 +650,7 @@ async fn cleanup_pending_variant() -> Result<usize, String> {
         .await
         .map_err(|error| format!("cleanup pending deploy commit: {error}"))?;
     let projection_actor = projection_actor(
-        Arc::new(BusFactSource::new(raw_bus)),
+        Arc::new(BusFactFixtureSource::new(raw_bus)),
         projection.clone(),
         &root,
     )?;
@@ -765,8 +765,11 @@ async fn irreversible_failure_variant() -> Result<(), String> {
         0,
     )?;
 
-    let projection_actor =
-        projection_actor(Arc::new(BusFactSource::new(raw_bus)), projection, &root)?;
+    let projection_actor = projection_actor(
+        Arc::new(BusFactFixtureSource::new(raw_bus)),
+        projection,
+        &root,
+    )?;
     let projected = projection_actor
         .project_once(PROJECT_TIMEOUT)
         .await
@@ -829,7 +832,7 @@ async fn serving_conflict_after_irreversible_variant() -> Result<(), String> {
         0,
     )?;
 
-    let source = Arc::new(BusFactSource::new(raw_bus));
+    let source = Arc::new(BusFactFixtureSource::new(raw_bus));
     let actor = projection_actor(source, node, &scenario_dir("deploy-commit-conflict"))?;
     let report = actor
         .project_once(PROJECT_TIMEOUT)
@@ -960,7 +963,7 @@ async fn supersession_variant(
     mvp_routing::write_serving_commit(bus, projection, &manifest.serving_commit)
         .await
         .map_err(|error| format!("write superseded serving commit: {error}"))?;
-    let source = Arc::new(BusFactSource::new(raw_bus.clone()));
+    let source = Arc::new(BusFactFixtureSource::new(raw_bus.clone()));
     let actor = projection_actor(source, projection.clone(), &root.join("supersession"))?;
     let report = actor
         .project_once(PROJECT_TIMEOUT)

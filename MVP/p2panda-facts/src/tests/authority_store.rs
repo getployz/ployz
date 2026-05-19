@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use mvp_bus::{BusAuthority, Grant, harness::InMemoryBus};
 use mvp_p2panda_authz::{
-    IslandAuthz, IslandAuthzMemoryLog, IslandAuthzStore, IslandMemberAuthorKey, IslandMemberEpoch,
+    fixtures::IslandAuthzMemoryLog, IslandAuthz, IslandAuthzStore, IslandMemberAuthorKey, IslandMemberEpoch,
     IslandMemberKeyBinding, IslandRootAuthority, ReplicaImportAccess,
 };
 use tempfile::tempdir;

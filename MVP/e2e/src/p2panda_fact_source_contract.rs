@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use mvp_bus::{BusSession, Grant, IslandId, PrincipalId, harness::InMemoryBus};
 use mvp_identity::NodeId;
 use mvp_p2panda_authz::{
-    IslandAuthoritySnapshot, IslandAuthzMemoryLog, IslandMemberAuthorKey, IslandMemberEpoch,
-    IslandMemberKeyBinding, ReplicaImportAccess,
+    IslandAuthoritySnapshot, IslandMemberAuthorKey, IslandMemberEpoch, IslandMemberKeyBinding,
+    ReplicaImportAccess, fixtures::IslandAuthzMemoryLog,
 };
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactStore, PandaFactWriteOutcome, PandaSqliteOpenConfig,

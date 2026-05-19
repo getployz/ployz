@@ -9,18 +9,18 @@ use crate::source::{
 };
 
 #[derive(Clone)]
-pub struct BusFactSource {
+pub struct BusFactFixtureSource {
     bus: InMemoryBus,
 }
 
-impl BusFactSource {
+impl BusFactFixtureSource {
     #[must_use]
     pub fn new(bus: InMemoryBus) -> Self {
         Self { bus }
     }
 }
 
-impl FactSource for BusFactSource {
+impl FactSource for BusFactFixtureSource {
     fn list_candidates(
         &self,
         island: &IslandId,
@@ -83,7 +83,7 @@ fn fact_to_candidate(fact: Fact, status: CandidateStatus) -> FactCandidate {
 
 #[cfg(test)]
 mod tests {
-    use super::BusFactSource;
+    use super::BusFactFixtureSource;
     use crate::facts::{NodeJoinedFact, ProjectionFactPayload};
     use crate::source::{FactKind, FactSource};
     use mvp_bus::{
@@ -108,9 +108,9 @@ mod tests {
         FactKeyPattern::parse(value).expect("fact pattern parses")
     }
 
-    fn bus_with_source() -> (InMemoryBus, BusAuthority, BusFactSource) {
+    fn bus_with_source() -> (InMemoryBus, BusAuthority, BusFactFixtureSource) {
         let (bus, authority) = InMemoryBus::new_with_authority();
-        let source = BusFactSource::new(bus.clone());
+        let source = BusFactFixtureSource::new(bus.clone());
         (bus, authority, source)
     }
 

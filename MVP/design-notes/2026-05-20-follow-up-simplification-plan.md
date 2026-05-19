@@ -268,25 +268,58 @@ Evidence:
 
 ### Slice 6: Fixture substrate quarantine
 
+Status: complete.
+
 Goal: make old proof substrates hard to use accidentally in production paths.
 
 Implementation:
 
-- Rename public fixture surfaces or gate them behind test/e2e-facing modules
-  where workspace callers allow it.
-- Replace production-looking imports with p2panda-backed stores or explicit
-  local runtime fixtures.
-- Update design notes so deletion triggers are concept/caller based, not stale
-  LOC based.
+- Rename `BusFactSource` to `BusFactFixtureSource` and move it behind
+  `mvp_projection::fixtures`.
+- Move `IslandAuthzMemoryLog` behind `mvp_p2panda_authz::fixtures`.
+- Keep p2panda manual trust APIs public because they are used by node,
+  machine, command, and transport bootstrap paths as explicit manual admission
+  surfaces, not as test fixtures.
 
 Verification:
 
-- `cargo test --manifest-path MVP/Cargo.toml --workspace`
-- Search for production imports of fixture/harness-only surfaces.
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-projection -p mvp-deploy -p mvp-routing -p mvp-p2panda-authz -p mvp-p2panda-facts`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- projection-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-candidate-cleanup-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- deploy-commit-drain-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- steady-state-serving-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-fact-source-contract`
+  passed.
+- `rg -n "pub use bus_source::BusFact|mvp_projection::\{[^\n]*BusFact|BusFactSource|mvp_p2panda_authz::\{[^\n]*IslandAuthzMemoryLog|mvp_p2panda_authz::IslandAuthzMemoryLog|pub use store::\{IslandAuthzMemoryLog" MVP -g '*.rs'`
+  returns no matches.
+
+Evidence:
+
+- External fixture callers now import `mvp_projection::fixtures::BusFactFixtureSource`
+  instead of a production-looking root export.
+- External fixture callers now import
+  `mvp_p2panda_authz::fixtures::IslandAuthzMemoryLog` instead of a
+  production-looking root export.
+- The remaining public p2panda trust functions are intentionally named manual
+  admission methods on p2panda-backed stores and are exercised by production
+  node/bootstrap paths.
+- While verifying the final smoke gate, projection exposed one remaining
+  readiness leak: a temporarily write-locked p2panda fact store surfaced as a
+  deploy failure. `ProjectionJob` now treats `FactSourceError::Unavailable` as
+  a bounded wait under the projection deadline, preserving visible timeout
+  failure for persistent outages while allowing transient store readiness to
+  recover.
 
 ## Final Gate
 
 - No new product feature slice has landed during this simplification work.
 - `cargo test --manifest-path MVP/Cargo.toml --workspace` passes.
+- `MVP/scripts/three-server-smoke.sh` passes, including live deploy update,
+  daemon status after restart, and gateway/DNS serving after daemon shutdown.
 - A final audit lists remaining hotspots and marks each as simplified,
   cohesive-as-is, or deferred with a concrete trigger.

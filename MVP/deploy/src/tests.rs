@@ -10,9 +10,9 @@ use mvp_bus::{
 };
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsProjection, DnsRecordFact, DnsRecordProjection,
-    GatewayProjection, GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId,
-    SnapshotWriteReport,
+    BackendEndpoint, DnsProjection, DnsRecordFact, DnsRecordProjection, GatewayProjection,
+    GatewayRouteProjection, ProjectionReport, ProjectionState, RouteId, SnapshotWriteReport,
+    fixtures::BusFactFixtureSource,
 };
 use mvp_routing::{ServingFactWriter, WrittenServingFact, write_serving_commit};
 
@@ -549,7 +549,7 @@ async fn pre_commit_recovery_cleans_planned_candidates_without_rerunning_prepare
         .await
         .expect("write pre-commit decision");
     register_candidate_cleanup_participant(&bus, &node, Arc::clone(&cleaned)).await;
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
     let DeployRecovery::PreCommitIncomplete(recovery) = coordinator
         .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
@@ -585,7 +585,7 @@ async fn recovery_with_missing_decision_returns_structured_missing_fact() {
         PrincipalId::new("operator"),
         Grant::allow_all(),
     );
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
 
     let error = coordinator
@@ -613,7 +613,7 @@ async fn recovery_with_decision_but_no_serving_commit_is_pre_commit_incomplete()
         .write_decision(DeployDecisionFact::new(manifest.clone(), visible_nodes()))
         .await
         .expect("write decision");
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
 
     let recovery = coordinator
@@ -667,7 +667,7 @@ async fn pre_commit_recovery_cleans_superseded_decision_candidates() {
         .await
         .expect_err("newer decision is stored as a conflict candidate");
     register_candidate_cleanup_participant(&bus, &node, Arc::clone(&cleaned)).await;
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let coordinator = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
     let DeployRecovery::PreCommitIncomplete(recovery) = coordinator
         .recover_pending_cleanup(&source, operator.island(), &operator, &deploy_id)
@@ -720,7 +720,7 @@ async fn recovery_after_serving_commit_resumes_cleanup_after_projection() {
         .await
         .expect("initial coordinator reaches serving commit");
     let event_count_after_commit = events.lock().expect("events").len();
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let restarted = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
 
     let recovery = restarted
@@ -780,7 +780,7 @@ async fn recovery_with_cleanup_done_returns_complete_without_rpc() {
         .write_cleanup_done(crate::DeployCleanupDoneFact::new(&manifest))
         .await
         .expect("write cleanup done");
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let restarted = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
 
     let recovery = restarted
@@ -818,7 +818,7 @@ async fn recovered_cleanup_failure_returns_cleanup_pending_status() {
         .execute_until_serving_commit(manifest.clone())
         .await
         .expect("initial coordinator reaches serving commit");
-    let source = BusFactSource::new(raw_bus);
+    let source = BusFactFixtureSource::new(raw_bus);
     let restarted = crate::DeployCoordinator::new(bus, operator.clone(), test_timeouts());
     let DeployRecovery::Pending(recovered) = restarted
         .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
@@ -977,7 +977,7 @@ fn wrong_deploy_fact_kind_is_structured() {
 #[test]
 fn deploy_decision_reader_selects_conflict_candidate_without_operator_choice() {
     let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
-    let source = BusFactSource::new(raw_bus.clone());
+    let source = BusFactFixtureSource::new(raw_bus.clone());
     let writer_a = authority.grant_in(
         IslandId::new("prod"),
         PrincipalId::new("deploy-a"),

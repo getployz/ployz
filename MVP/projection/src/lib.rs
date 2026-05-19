@@ -12,7 +12,6 @@ pub use actor::{
     ProjectionActorHandle, ProjectionActorStatus, ProjectionFailureKind, ProjectionFailureStatus,
     ProjectionReport, ProjectionSuccessStatus,
 };
-pub use bus_source::BusFactSource;
 pub use error::{ProjectionError, ProjectionResult};
 pub use facts::{
     BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
@@ -38,3 +37,7 @@ pub use source::{
     FactSourceResult, classify_fact_key,
 };
 pub use sqlite::{ProjectionRowCounts, SqliteProjectionStore};
+
+pub mod fixtures {
+    pub use crate::bus_source::BusFactFixtureSource;
+}

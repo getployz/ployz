@@ -16,12 +16,16 @@ use crate::error::{ProjectionError, ProjectionResult};
 use crate::model::ProjectionState;
 use crate::reducer::reduce_facts;
 use crate::snapshot::{SnapshotWriteReport, write_projection_snapshots};
-use crate::source::{CandidateStatus, FactCandidate, FactSource, is_reducible_conflict_kind};
+use crate::source::{
+    CandidateStatus, FactCandidate, FactSource, FactSourceError, FactSourceResult,
+    is_reducible_conflict_kind,
+};
 use crate::sqlite::SqliteProjectionStore;
 
 const PROJECTION_ACTOR_MAILBOX_CAPACITY: usize = 16;
 const PROJECTION_ACTOR_MAILBOX_TIMEOUT: Duration = Duration::from_secs(5);
 const PROJECTION_ACTOR_STATUS_REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+const FACT_SOURCE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone)]
 pub struct ProjectionReport {
@@ -396,12 +400,11 @@ impl ProjectionJob {
         deadline: Instant,
         permit: ProjectionWorkerPermit,
     ) -> ProjectionResult<PreparedProjection> {
-        ensure_before(deadline, "list_candidates")?;
-        let candidates = self
-            .source
-            .list_candidates(&self.island, &self.pattern, &self.session)?;
-        ensure_before(deadline, "read_payloads")?;
-        let payloads = self.read_payloads(&candidates)?;
+        let candidates = retry_fact_source(deadline, "list_candidates", || {
+            self.source
+                .list_candidates(&self.island, &self.pattern, &self.session)
+        })?;
+        let payloads = self.read_payloads(&candidates, deadline)?;
         ensure_before(deadline, "reduce")?;
         let state = reduce_facts(&self.island, &candidates, &payloads);
         ensure_before(deadline, "publish")?;
@@ -416,7 +419,11 @@ impl ProjectionJob {
         })
     }
 
-    fn read_payloads(&self, candidates: &[FactCandidate]) -> ProjectionResult<PayloadMap> {
+    fn read_payloads(
+        &self,
+        candidates: &[FactCandidate],
+        deadline: Instant,
+    ) -> ProjectionResult<PayloadMap> {
         let mut seen = BTreeSet::new();
         let verified = candidates
             .iter()
@@ -427,9 +434,10 @@ impl ProjectionJob {
             })
             .cloned()
             .collect::<Vec<_>>();
-        Ok(self
-            .source
-            .read_payloads(&self.island, &verified, &self.session)?)
+        Ok(retry_fact_source(deadline, "read_payloads", || {
+            self.source
+                .read_payloads(&self.island, &verified, &self.session)
+        })?)
     }
 }
 
@@ -473,6 +481,24 @@ impl PreparedProjection {
 
 type PayloadMap = std::collections::BTreeMap<FactContentHash, FactPayload>;
 
+fn retry_fact_source<T>(
+    deadline: Instant,
+    operation: &'static str,
+    mut read: impl FnMut() -> FactSourceResult<T>,
+) -> ProjectionResult<T> {
+    loop {
+        ensure_before(deadline, operation)?;
+        match read() {
+            Ok(value) => return Ok(value),
+            Err(FactSourceError::Unavailable { .. }) => {
+                let remaining = remaining_until(deadline, operation)?;
+                std::thread::sleep(remaining.min(FACT_SOURCE_RETRY_DELAY));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn ensure_before(deadline: Instant, operation: &'static str) -> ProjectionResult<()> {
     if Instant::now() > deadline {
         return Err(ProjectionError::Timeout { operation });
@@ -509,12 +535,12 @@ fn map_mailbox_send_error(error: SendError) -> ProjectionError {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
 
     use crate::actor::ProjectionActorHandle;
-    use crate::bus_source::BusFactSource;
+    use crate::bus_source::BusFactFixtureSource;
     use crate::facts::{
         BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
         ProjectionFactPayload, RouteCommitFact, RouteId,
@@ -643,7 +669,7 @@ mod tests {
     async fn project_once_writes_sqlite_and_snapshots() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (bus, session) = seed_projectable_facts();
-        let actor = actor_for(Arc::new(BusFactSource::new(bus)), session, &dir);
+        let actor = actor_for(Arc::new(BusFactFixtureSource::new(bus)), session, &dir);
 
         let report = actor
             .project_once(Duration::from_secs(2))
@@ -662,7 +688,7 @@ mod tests {
     async fn dropped_hint_does_not_block_full_projection() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (bus, session) = seed_projectable_facts();
-        let actor = actor_for(Arc::new(BusFactSource::new(bus)), session, &dir);
+        let actor = actor_for(Arc::new(BusFactFixtureSource::new(bus)), session, &dir);
 
         actor.fact_hint().await.expect("fact hint");
         let report = actor
@@ -679,7 +705,7 @@ mod tests {
     async fn failure_preserves_last_success_status() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (bus, session) = seed_projectable_facts();
-        let source = Arc::new(FlakySource::new(BusFactSource::new(bus)));
+        let source = Arc::new(FlakySource::new(BusFactFixtureSource::new(bus)));
         let actor = actor_for(source.clone(), session, &dir);
         actor
             .project_once(Duration::from_secs(2))
@@ -688,14 +714,33 @@ mod tests {
         source.fail();
 
         let error = actor
-            .project_once(Duration::from_secs(2))
+            .project_once(Duration::from_millis(20))
             .await
             .unwrap_err();
         let status = actor.status().await.expect("status");
 
-        assert!(matches!(error, crate::ProjectionError::FactSource(_)));
+        assert!(matches!(error, crate::ProjectionError::Timeout { .. }));
         assert!(status.last_success.is_some());
         assert!(status.last_failure.is_some());
+    }
+
+    #[tokio::test]
+    async fn transient_source_unavailable_is_retried_until_ready() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (bus, session) = seed_projectable_facts();
+        let source = Arc::new(TemporarilyUnavailableSource::new(
+            BusFactFixtureSource::new(bus),
+            2,
+        ));
+        let actor = actor_for(source.clone(), session, &dir);
+
+        let report = actor
+            .project_once(Duration::from_secs(2))
+            .await
+            .expect("project once");
+
+        assert_eq!(report.state.nodes.len(), 1);
+        assert_eq!(source.failures_remaining.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -792,7 +837,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (bus, session) = seed_projectable_facts();
         let actor = actor_for(
-            Arc::new(BusFactSource::new(bus.clone())),
+            Arc::new(BusFactFixtureSource::new(bus.clone())),
             session.clone(),
             &dir,
         );
@@ -832,11 +877,11 @@ mod tests {
 
     struct FlakySource {
         fail: AtomicBool,
-        inner: BusFactSource,
+        inner: BusFactFixtureSource,
     }
 
     impl FlakySource {
-        fn new(inner: BusFactSource) -> Self {
+        fn new(inner: BusFactFixtureSource) -> Self {
             Self {
                 fail: AtomicBool::new(false),
                 inner,
@@ -858,6 +903,51 @@ mod tests {
             if self.fail.load(Ordering::SeqCst) {
                 return Err(FactSourceError::Unavailable {
                     name: "flaky".to_string(),
+                });
+            }
+            self.inner.list_candidates(island, pattern, session)
+        }
+
+        fn read_payloads(
+            &self,
+            island: &IslandId,
+            candidates: &[FactCandidate],
+            session: &BusSession,
+        ) -> FactSourceResult<std::collections::BTreeMap<FactContentHash, FactPayload>> {
+            self.inner.read_payloads(island, candidates, session)
+        }
+    }
+
+    struct TemporarilyUnavailableSource {
+        failures_remaining: AtomicUsize,
+        inner: BusFactFixtureSource,
+    }
+
+    impl TemporarilyUnavailableSource {
+        fn new(inner: BusFactFixtureSource, failures: usize) -> Self {
+            Self {
+                failures_remaining: AtomicUsize::new(failures),
+                inner,
+            }
+        }
+    }
+
+    impl FactSource for TemporarilyUnavailableSource {
+        fn list_candidates(
+            &self,
+            island: &IslandId,
+            pattern: &FactKeyPattern,
+            session: &BusSession,
+        ) -> FactSourceResult<Vec<FactCandidate>> {
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(FactSourceError::Unavailable {
+                    name: "temporary".to_string(),
                 });
             }
             self.inner.list_candidates(island, pattern, session)

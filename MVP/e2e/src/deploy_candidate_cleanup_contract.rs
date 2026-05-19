@@ -13,7 +13,9 @@ use mvp_deploy::{
     StopInstanceRequest,
 };
 use mvp_identity::NodeId;
-use mvp_projection::{BackendEndpoint, BusFactSource, DnsRecordFact, RouteId, ServiceName};
+use mvp_projection::{
+    BackendEndpoint, DnsRecordFact, RouteId, ServiceName, fixtures::BusFactFixtureSource,
+};
 use serde::Serialize;
 
 use crate::assertions::assert_eq_named;
@@ -123,7 +125,7 @@ async fn run_async() -> Result<(), String> {
     )?;
     let foreground_cleanup_count = state.cleanup_request_count();
 
-    let source = BusFactSource::new(raw_bus.clone());
+    let source = BusFactFixtureSource::new(raw_bus.clone());
     let recovery = coordinator
         .recover_pending_cleanup(&source, operator.island(), &operator, &manifest.deploy_id)
         .map_err(|error| format!("recover pre-commit candidate cleanup: {error}"))?;

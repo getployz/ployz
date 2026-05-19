@@ -7,7 +7,8 @@ use mvp_bus::{Grant, IslandId, PrincipalId};
 use mvp_deploy::{DnsCommitId, GatewayCommitId, RouteCommitId, ServingCommitId, ServingCommitPlan};
 use mvp_identity::NodeId;
 use mvp_projection::{
-    BackendEndpoint, BusFactSource, DnsRecordFact, DnsSnapshotFile, RouteId, load_dns_snapshot,
+    BackendEndpoint, DnsRecordFact, DnsSnapshotFile, RouteId, fixtures::BusFactFixtureSource,
+    load_dns_snapshot,
 };
 use mvp_routing::write_serving_commit;
 use mvp_serving::{
@@ -73,7 +74,7 @@ async fn run_async() -> Result<(), String> {
 
     let paths = ServingSnapshotPaths::new(root.join("gateway.snapshot"), root.join("dns.snapshot"));
     let projection = projection_actor(
-        Arc::new(BusFactSource::new(raw_bus.clone())),
+        Arc::new(BusFactFixtureSource::new(raw_bus.clone())),
         projection_session.clone(),
         &root,
     )?;
@@ -132,7 +133,7 @@ async fn run_async() -> Result<(), String> {
 
     let projection_rebuild_started = Instant::now();
     let rebuild_projection = projection_actor(
-        Arc::new(BusFactSource::new(raw_bus.clone())),
+        Arc::new(BusFactFixtureSource::new(raw_bus.clone())),
         projection_session,
         &root,
     )?;
