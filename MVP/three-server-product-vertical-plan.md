@@ -101,7 +101,8 @@ Main gaps:
   p2panda-net,
 - authority/trust propagation for newly admitted peers is now modeled as
   durable admitted-peer facts consumed by already-joined nodes,
-- no real node-agent participant process,
+- product daemon-owned node-agent participant handlers are wired on the local
+  bus for capacity, prepare, start, drain, stop, and candidate cleanup,
 - no real runtime backend,
 - no real Linux network apply proof,
 - no black-box three-host E2E.
@@ -296,6 +297,14 @@ needed to keep already-started services alive must be owned below it.
 
 **Verification:** Deploy participant behavior is exercised through product
 daemon services, not test-local handler closures.
+
+**Current status:** The daemon registers node-agent handlers during startup, and
+the `mvp-node` tests exercise those handlers through `BusActorHandle` using the
+existing deploy wire types. The handlers maintain local prepared/running/
+draining/stopped state in a small runtime object below the daemon boundary. The
+remaining gap is distributed product bus transport between nodes; U4 can now
+replace the in-memory runtime behavior with a real process backend without
+changing deploy wire subjects.
 
 ### U4. Minimal Runtime Backend
 

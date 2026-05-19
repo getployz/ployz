@@ -34,6 +34,7 @@ pub use state_machine::{DeployStateMachine, PhaseState};
 pub use wire::{
     CapacityRequest, CleanupDeployCandidatesRequest, DrainInstanceRequest, InstanceCommandReply,
     InstanceCommandRequest, InstanceNotReadyReason, InstanceStartOutcome, StopInstanceRequest,
+    decode, decode_capacity_reply, encode,
 };
 
 #[cfg(test)]

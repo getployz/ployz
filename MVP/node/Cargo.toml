@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 blake3 = "1"
 mvp-bus = { path = "../bus" }
+mvp-deploy = { path = "../deploy" }
 mvp-identity = { path = "../identity" }
 mvp-mesh = { path = "../mesh" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }

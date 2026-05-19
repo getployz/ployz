@@ -2943,6 +2943,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "mvp-bus",
+ "mvp-deploy",
  "mvp-identity",
  "mvp-mesh",
  "mvp-p2panda-facts",

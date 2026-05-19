@@ -88,8 +88,12 @@ fn daemon(args: &[String]) -> NodeResult<String> {
         DaemonOptions::new(Duration::from_millis(parsed.run_for_ms.unwrap_or(1_000))),
     ))?;
     Ok(format!(
-        "daemon node={} ticket={} imported_batches={} imported_operations={}",
-        report.node_id, report.ticket, report.imported_batches, report.imported_operations
+        "daemon node={} ticket={} imported_batches={} imported_operations={} node_agent_handlers={}",
+        report.node_id,
+        report.ticket,
+        report.imported_batches,
+        report.imported_operations,
+        report.node_agent_handlers
     ))
 }
 
