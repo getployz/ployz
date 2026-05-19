@@ -623,6 +623,8 @@ mod tests {
             service: ServiceName::new("web"),
             revision: RevisionId::new("rev-0"),
             address: "runtime://existing".to_string(),
+            backend_id: None,
+            backend_name: None,
             pid: None,
             state: RuntimeInstanceState::Running,
         }));
@@ -862,6 +864,8 @@ mod tests {
                 service: spec.service.clone(),
                 revision: spec.revision.clone(),
                 address: format!("runtime://{}", spec.instance_id.as_str()),
+                backend_id: None,
+                backend_name: None,
                 pid: None,
                 state,
             };

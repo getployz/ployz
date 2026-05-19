@@ -69,6 +69,8 @@ impl ProcessRuntime {
                 service: spec.service.clone(),
                 revision: spec.revision.clone(),
                 address: allocate_loopback_address()?,
+                backend_id: None,
+                backend_name: None,
                 pid: None,
                 state: RuntimeState::Prepared,
             },

@@ -58,6 +58,10 @@ pub struct RuntimeInstance {
     pub service: ServiceName,
     pub revision: RevisionId,
     pub address: String,
+    #[serde(default)]
+    pub backend_id: Option<String>,
+    #[serde(default)]
+    pub backend_name: Option<String>,
     pub pid: Option<u32>,
     pub state: RuntimeInstanceState,
 }

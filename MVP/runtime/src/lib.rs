@@ -1,7 +1,11 @@
+#[cfg(feature = "docker")]
+mod docker;
 mod error;
 mod model;
 mod process;
 
+#[cfg(feature = "docker")]
+pub use docker::{DockerRuntime, DockerRuntimeConfig};
 pub use error::{RuntimeError, RuntimeResult};
 pub use model::{
     ManagedHttpCommand, ProcessInstance, ProcessInstanceSpec, ProcessRuntimeConfig,
