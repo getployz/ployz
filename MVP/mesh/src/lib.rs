@@ -2,6 +2,7 @@ mod actor;
 mod container;
 mod domain;
 mod error;
+mod forwarding;
 mod invite;
 mod linux;
 mod snapshot;
@@ -18,6 +19,12 @@ pub use domain::{
     WireGuardPrivateKey, WireGuardPublicKey, derive_overlay_ip,
 };
 pub use error::{MeshError, MeshResult};
+pub use forwarding::{
+    ForwardingCommand, ForwardingObservation, ForwardingRouteKey, IptablesRule,
+    LinuxForwardingPlan, LinuxOverlayForwardingBackend, LinuxOverlayForwardingConfig,
+    OverlayForwardingApplyReport, OverlayForwardingBackend, OverlayForwardingSnapshot,
+    forwarding_route_key,
+};
 pub use invite::{
     InviteId, InviteSecret, JoinCommand, JoinCommandResult, JoinRequest, TombstoneCommand,
     TombstoneCommandResult, joined_fact_key, removal_started_fact_key,

@@ -163,25 +163,35 @@ Evidence:
 
 ### Unit 3: Overlay Forwarding Adapter
 
+Status: complete except privileged smoke execution in this non-root/default
+environment. The gated smoke is implemented and skipped unless
+`MVP_LINUX_FORWARDING_SMOKE=1`.
+
 Files:
 
 - `MVP/mesh/src/forwarding.rs`
-- `MVP/mesh/src/wireguard_linux.rs`
-- possibly `MVP/mesh/src/ebpf.rs`
+- `MVP/mesh/tests/linux_forwarding_backend.rs`
 
 Work:
 
-- Port the iptables exemptions and eBPF route-map mechanics behind a
+- [x] Port the iptables exemptions and eBPF route-map mechanics behind a
   forwarding trait.
-- Attach TC classifiers to the Docker bridge only in Linux data-plane mode.
-- Program remote container subnets to the WG ifindex.
-- Keep observation toggles separate from forwarding correctness.
+- [x] Attach TC classifiers to the Docker bridge only in Linux data-plane mode.
+- [x] Program remote container subnets to the WG ifindex.
+- [x] Keep observation toggles separate from forwarding correctness.
 
 Tests:
 
-- non-privileged unit tests for route-key encoding and command construction,
-- Linux-gated smoke attaches/detaches on a throwaway bridge when enabled,
-- no service/domain types in forwarding adapter APIs.
+- [x] non-privileged unit tests for route-key encoding and command construction,
+- [x] Linux-gated smoke attaches/detaches on a throwaway bridge when enabled,
+- [x] no service/domain types in forwarding adapter APIs.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh`
+- Privileged smoke command for a root Linux runner with `ployz-bpfctl`
+  available:
+  `MVP_LINUX_FORWARDING_SMOKE=1 cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh --test linux_forwarding_backend -- --nocapture`
 
 ### Unit 4: Runtime Network Attachment
 
