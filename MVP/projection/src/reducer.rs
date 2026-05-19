@@ -201,7 +201,7 @@ impl<'a> Reducer<'a> {
             }
             (FactKind::LeaseClaimed, ProjectionFactPayload::LeaseClaimed(fact)) => {
                 self.lease_claims
-                    .entry(fact.resource().clone())
+                    .entry(fact.resource.clone())
                     .or_default()
                     .push(CommitCandidate {
                         author,
@@ -211,7 +211,7 @@ impl<'a> Reducer<'a> {
             }
             (FactKind::LeaseRenewed, ProjectionFactPayload::LeaseRenewed(fact)) => {
                 self.lease_renewals
-                    .entry(fact.resource().clone())
+                    .entry(fact.resource.clone())
                     .or_default()
                     .push(CommitCandidate {
                         author,
@@ -221,7 +221,7 @@ impl<'a> Reducer<'a> {
             }
             (FactKind::LeaseReleased, ProjectionFactPayload::LeaseReleased(fact)) => {
                 self.lease_releases
-                    .entry(fact.resource().clone())
+                    .entry(fact.resource.clone())
                     .or_default()
                     .push(CommitCandidate {
                         author,
@@ -371,19 +371,20 @@ impl<'a> Reducer<'a> {
 
     fn active_lease_for_resource(&self, resource: &LeaseResource) -> Option<ActiveLeaseHead> {
         let claims = self.lease_claims.get(resource)?;
-        let winner = select_lease_claim_head(claims.iter().filter(|candidate| {
-            author_matches_holder(&candidate.author, candidate.fact.holder())
-        }))?;
+        let winner =
+            select_lease_claim_head(claims.iter().filter(|candidate| {
+                author_matches_holder(&candidate.author, &candidate.fact.holder)
+            }))?;
         let claim_hash = lease_claim_hash(&winner.fact);
         let expires_at = self.latest_lease_expiry(resource, &winner.fact, claim_hash);
         if self.has_matching_lease_release(resource, &winner.fact, claim_hash, expires_at) {
             return None;
         }
         Some(ActiveLeaseHead {
-            holder: winner.fact.holder().clone(),
-            epoch: winner.fact.epoch(),
+            holder: winner.fact.holder.clone(),
+            epoch: winner.fact.epoch,
             claim_hash,
-            acquired_at: winner.fact.acquired_at(),
+            acquired_at: winner.fact.acquired_at,
             expires_at,
         })
     }
@@ -400,21 +401,21 @@ impl<'a> Reducer<'a> {
             .into_iter()
             .flat_map(|renewals| renewals.iter())
             .filter(|renewed| {
-                author_matches_holder(&renewed.author, renewed.fact.holder())
-                    && renewed.fact.holder() == claim.holder()
-                    && renewed.fact.epoch() == claim.epoch()
-                    && renewed.fact.claim_hash() == claim_hash
+                author_matches_holder(&renewed.author, &renewed.fact.holder)
+                    && renewed.fact.holder == claim.holder
+                    && renewed.fact.epoch == claim.epoch
+                    && renewed.fact.claim_hash == claim_hash
             })
             .collect::<Vec<_>>();
-        renewals.sort_by_key(|renewed| (renewed.fact.renewed_at(), renewed.content_hash.clone()));
+        renewals.sort_by_key(|renewed| (renewed.fact.renewed_at, renewed.content_hash.clone()));
 
-        let mut expires_at = claim.expires_at();
+        let mut expires_at = claim.expires_at;
         for renewed in renewals {
-            if renewed.fact.renewed_at() >= claim.acquired_at()
-                && renewed.fact.renewed_at() < expires_at
-                && renewed.fact.expires_at() > renewed.fact.renewed_at()
+            if renewed.fact.renewed_at >= claim.acquired_at
+                && renewed.fact.renewed_at < expires_at
+                && renewed.fact.expires_at > renewed.fact.renewed_at
             {
-                expires_at = renewed.fact.expires_at();
+                expires_at = renewed.fact.expires_at;
             }
         }
         expires_at
@@ -432,11 +433,11 @@ impl<'a> Reducer<'a> {
             .into_iter()
             .flat_map(|releases| releases.iter())
             .any(|released| {
-                author_matches_holder(&released.author, released.fact.holder())
-                    && released.fact.holder() == claim.holder()
-                    && released.fact.epoch() == claim.epoch()
-                    && released.fact.claim_hash() == claim_hash
-                    && release_applies_to_claim(released.fact.release(), claim, expires_at)
+                author_matches_holder(&released.author, &released.fact.holder)
+                    && released.fact.holder == claim.holder
+                    && released.fact.epoch == claim.epoch
+                    && released.fact.claim_hash == claim_hash
+                    && release_applies_to_claim(released.fact.release, claim, expires_at)
             })
     }
 
@@ -715,7 +716,7 @@ where
     let mut candidate_count: usize = 0;
     for candidate in candidates {
         candidate_count += 1;
-        let candidate_epoch = candidate.fact.epoch();
+        let candidate_epoch = candidate.fact.epoch;
         let candidate_claim_hash = lease_claim_hash(&candidate.fact);
         let replace = match (selected, selected_claim_hash) {
             (None, _) => true,
@@ -723,7 +724,7 @@ where
             (Some(current), Some(current_hash)) if candidate_epoch == selected_epoch => {
                 candidate_claim_hash
                     .cmp(&current_hash)
-                    .then_with(|| candidate.fact.holder().cmp(current.fact.holder()))
+                    .then_with(|| candidate.fact.holder.cmp(&current.fact.holder))
                     .is_lt()
             }
             (Some(_), _) => false,
@@ -817,7 +818,7 @@ fn release_applies_to_claim(
     match release {
         LeaseRelease::DroppedWithoutTimestamp => true,
         LeaseRelease::At(released_at) => {
-            released_at >= claim.acquired_at() && released_at < expires_at
+            released_at >= claim.acquired_at && released_at < expires_at
         }
     }
 }

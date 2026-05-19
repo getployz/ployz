@@ -128,7 +128,7 @@ pub fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPa
             Some(KeyExpectation::LeaseClaimed { resource, epoch }),
             FactKind::LeaseClaimed,
             ProjectionFactPayload::LeaseClaimed(fact),
-        ) => fact.resource().as_str() == resource && fact.epoch() == epoch,
+        ) => fact.resource.as_str() == resource && fact.epoch == epoch,
         (
             Some(KeyExpectation::LeaseRenewed {
                 resource,
@@ -139,10 +139,10 @@ pub fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPa
             FactKind::LeaseRenewed,
             ProjectionFactPayload::LeaseRenewed(fact),
         ) => {
-            fact.resource().as_str() == resource
-                && fact.epoch() == epoch
-                && fact.claim_hash() == claim_hash
-                && fact.renewed_at() == renewed_at
+            fact.resource.as_str() == resource
+                && fact.epoch == epoch
+                && fact.claim_hash == claim_hash
+                && fact.renewed_at == renewed_at
         }
         (
             Some(KeyExpectation::LeaseReleased {
@@ -154,10 +154,10 @@ pub fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPa
             FactKind::LeaseReleased,
             ProjectionFactPayload::LeaseReleased(fact),
         ) => {
-            fact.resource().as_str() == resource
-                && fact.epoch() == epoch
-                && fact.claim_hash() == claim_hash
-                && fact.release() == release
+            fact.resource.as_str() == resource
+                && fact.epoch == epoch
+                && fact.claim_hash == claim_hash
+                && fact.release == release
         }
         (
             Some(KeyExpectation::AcmeHttp01Presented {
