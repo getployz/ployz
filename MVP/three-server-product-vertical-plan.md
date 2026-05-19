@@ -402,6 +402,15 @@ not a port target.
 **Verification:** A service request can cross from one node to another using the
 networking mode selected for the three-host proof.
 
+**Current status:** Slice 053 selects host-routable TCP as the first networking
+mode for the three-server product proof. `mvp-mesh` now has a typed
+`HostNetworkBackend` that converts projected gateway backends into socket
+addresses, validates active endpoints with bounded TCP connect, and persists a
+last-applied `host-network.snapshot`. `mvp-node` exposes small state-scoped
+apply/load helpers. This deliberately does not claim kernel WireGuard; the Linux
+WireGuard adapter remains the next strengthening layer after the product deploy
+path is black-box testable.
+
 ### U6. Product Deploy Command
 
 **Goal:** Wire operator `deploy` to the existing deploy coordinator, product

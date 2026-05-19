@@ -1,6 +1,7 @@
 mod config;
 mod error;
 mod membership;
+mod networking;
 mod node_agent;
 mod state;
 
@@ -9,6 +10,9 @@ pub use error::{NodeError, NodeResult};
 pub use membership::{
     AdmissionReport, AdmissionRequest, DaemonOptions, DaemonReport, InviteToken, admit_joiner,
     create_admission_request, create_invite, join_from_token, now_ms, run_daemon_once,
+};
+pub use networking::{
+    HostNetworkingReport, apply_host_networking_snapshot, load_host_networking_snapshot,
 };
 pub use node_agent::{
     NodeAgentReport, NodeAgentServices, node_agent_grant, register_node_agent_services,

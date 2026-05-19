@@ -39,6 +39,7 @@ pub struct NodePaths {
     pub gateway_snapshot: PathBuf,
     pub dns_snapshot: PathBuf,
     pub runtime_dir: PathBuf,
+    pub host_network_snapshot: PathBuf,
 }
 
 impl NodePaths {
@@ -52,6 +53,7 @@ impl NodePaths {
             gateway_snapshot: state_dir.join("gateway.snapshot"),
             dns_snapshot: state_dir.join("dns.snapshot"),
             runtime_dir: state_dir.join("runtime"),
+            host_network_snapshot: state_dir.join("host-network.snapshot"),
             state_dir,
         }
     }

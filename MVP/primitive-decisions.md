@@ -1405,6 +1405,45 @@ Revisit if:
   `WireGuardBackend` boundary rather than changing membership reducers or join
   command semantics.
 
+## Host Network Backend For Three-Server Product Proof
+
+Why this:
+- The three-server milestone needs an actual service endpoint to cross from one
+  node to another soon. Waiting for privileged kernel WireGuard mutation would
+  delay the product vertical before the deploy path is even black-box testable.
+- Many first proof environments already have host-routable private addresses.
+  The foundation should use that when available and keep the WireGuard adapter
+  as a swappable strengthening layer, not a blocker for proving semantics.
+
+Decision:
+- Slice 053 adds `HostNetworkBackend` as an explicit host-routable TCP backend,
+  not as a fake WireGuard backend.
+- Projected gateway backend addresses are parsed into typed
+  `HostServiceAddress` values before they can be applied.
+- Active backend endpoints are validated by bounded TCP connect before the
+  snapshot is recorded.
+- The last applied host-network snapshot is persisted under node state as
+  `host-network.snapshot`, so a fresh daemon/backend value can reload the same
+  applied state.
+
+What it replaces:
+- Treating backend addresses as unchecked strings at the node networking
+  boundary.
+- Blocking the three-server deploy proof on privileged OS network mutation.
+
+Costs:
+- This proves host reachability and persisted applied-state semantics. It does
+  not prove encrypted overlay routing, firewall policy, or kernel WireGuard
+  packet flow.
+- Backend health is checked at apply time only. Runtime serving health remains
+  gateway/serving responsibility.
+
+Revisit if:
+- The three-server smoke is running on hosts without routable private addresses.
+  At that point the Linux WireGuard adapter becomes a milestone blocker.
+- The product deploy proof is stable and the next risk is private data-plane
+  security or cross-network reachability rather than command/deploy semantics.
+
 ## hdrhistogram and memory-stats for E2E Proof
 
 Why this:
