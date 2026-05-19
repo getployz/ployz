@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use mvp_bus::{BusActorHandle, BusSession, FactKey, FactPayload, FactWriteOutcome, Subject};
+use mvp_bus::{BusActorHandle, BusSession, FactKey, FactPayload, FactWriteOutcome};
 use mvp_commands::{
     Command, CommandCompensationFuture, CommandContext, CommandName, CommandStepFuture, IntentId,
     PhaseTransition, PhasedCommand, run_phased,
@@ -21,13 +21,18 @@ use crate::facts::{
     machine_remove_cleanup_done_fact_key, machine_remove_cleanup_done_fact_payload,
     machine_remove_decision_fact_key, machine_remove_decision_fact_payload,
 };
-use crate::wire::{
-    PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,
-    StopRemovedWorkloadsOutcome, StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest, decode,
-    encode,
-};
 use crate::{MachineRemoveError, MachineRemoveResult};
 use serde::{Deserialize, Serialize};
+
+mod participant;
+use participant::MachineRemoveParticipantClient;
+pub use participant::{prepare_remove_subject, stop_removed_workloads_subject};
+
+#[cfg(test)]
+use crate::wire::{
+    PrepareRemoveIntent, PrepareRemoveOutcome, PrepareRemoveReply, PrepareRemoveRequest,
+    StopRemovedWorkloadsOutcome, StopRemovedWorkloadsReply, StopRemovedWorkloadsRequest,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MachineRemoveTimeouts {
@@ -172,11 +177,9 @@ async fn write_machine_fact(
 }
 
 pub struct MachineRemoveCoordinator<W = BusMachineFactWriter, S = BusServingFactWriter> {
-    bus: BusActorHandle,
-    session: BusSession,
+    participant_client: MachineRemoveParticipantClient,
     fact_writer: W,
     serving_writer: S,
-    timeouts: MachineRemoveTimeouts,
 }
 
 impl MachineRemoveCoordinator<BusMachineFactWriter, BusServingFactWriter> {
@@ -185,11 +188,9 @@ impl MachineRemoveCoordinator<BusMachineFactWriter, BusServingFactWriter> {
         let fact_writer = BusMachineFactWriter::new(bus.clone(), session.clone());
         let serving_writer = BusServingFactWriter::new(bus.clone(), session.clone());
         Self {
-            bus,
-            session,
+            participant_client: MachineRemoveParticipantClient::new(bus, session, timeouts),
             fact_writer,
             serving_writer,
-            timeouts,
         }
     }
 }
@@ -208,11 +209,9 @@ where
         timeouts: MachineRemoveTimeouts,
     ) -> Self {
         Self {
-            bus,
-            session,
+            participant_client: MachineRemoveParticipantClient::new(bus, session, timeouts),
             fact_writer,
             serving_writer,
-            timeouts,
         }
     }
 
@@ -231,124 +230,6 @@ where
             },
         )
         .await
-    }
-
-    async fn probe_prepare_responder(
-        &self,
-        request: &MachineRemoveRequest,
-    ) -> MachineRemoveResult<()> {
-        let reply = self
-            .request_prepare(
-                &request.target_node_id,
-                &request.reason,
-                PrepareRemoveIntent::Probe,
-            )
-            .await?;
-        match reply.outcome {
-            PrepareRemoveOutcome::ResponderReady
-            | PrepareRemoveOutcome::NoNewWorkAndDrained
-            | PrepareRemoveOutcome::NotDrained { .. } => Ok(()),
-        }
-    }
-
-    async fn prepare_remove_decision(
-        &self,
-        decision: &MachineRemoveDecisionFact,
-    ) -> MachineRemoveResult<()> {
-        let reply = self
-            .request_prepare(
-                &decision.target_node_id,
-                &decision.reason,
-                PrepareRemoveIntent::Drain,
-            )
-            .await?;
-        require_drained(&decision.target_node_id, reply)
-    }
-
-    async fn request_prepare(
-        &self,
-        target_node_id: &NodeId,
-        reason: &str,
-        intent: PrepareRemoveIntent,
-    ) -> MachineRemoveResult<PrepareRemoveReply> {
-        let subject = prepare_remove_subject(target_node_id)?;
-        let response = self
-            .bus
-            .request(
-                &self.session,
-                subject,
-                encode(
-                    &PrepareRemoveRequest {
-                        target_node_id: target_node_id.clone(),
-                        reason: reason.to_string(),
-                        intent,
-                    },
-                    "prepare remove request",
-                )?,
-                self.timeouts.participant,
-            )
-            .await?;
-        let reply: PrepareRemoveReply = decode(response.payload(), "prepare remove reply")?;
-        if &reply.target_node_id != target_node_id {
-            return Err(MachineRemoveError::ParticipantNodeMismatch {
-                operation: "prepare_remove",
-                expected_node_id: target_node_id.clone(),
-                actual_node_id: reply.target_node_id,
-            });
-        }
-        Ok(reply)
-    }
-
-    async fn stop_removed_workloads_decision(
-        &self,
-        decision: &MachineRemoveDecisionFact,
-    ) -> MachineRemoveResult<()> {
-        let subject = stop_removed_workloads_subject(&decision.target_node_id)?;
-        let response = self
-            .bus
-            .request(
-                &self.session,
-                subject,
-                encode(
-                    &StopRemovedWorkloadsRequest {
-                        target_node_id: decision.target_node_id.clone(),
-                        reason: decision.reason.clone(),
-                    },
-                    "stop removed workloads request",
-                )?,
-                self.timeouts.participant,
-            )
-            .await?;
-        let reply: StopRemovedWorkloadsReply =
-            decode(response.payload(), "stop removed workloads reply")?;
-        if reply.target_node_id != decision.target_node_id {
-            return Err(MachineRemoveError::ParticipantNodeMismatch {
-                operation: "stop_removed_workloads",
-                expected_node_id: decision.target_node_id.clone(),
-                actual_node_id: reply.target_node_id,
-            });
-        }
-        match reply.outcome {
-            StopRemovedWorkloadsOutcome::Stopped => Ok(()),
-            StopRemovedWorkloadsOutcome::Failed { .. } => {
-                Err(MachineRemoveError::Bus(mvp_bus::BusError::HandlerFailed {
-                    subject: stop_removed_workloads_subject(&decision.target_node_id)?.to_string(),
-                    failure: mvp_bus::HandlerFailure::Application,
-                }))
-            }
-        }
-    }
-}
-
-fn require_drained(target_node_id: &NodeId, reply: PrepareRemoveReply) -> MachineRemoveResult<()> {
-    match reply.outcome {
-        PrepareRemoveOutcome::NoNewWorkAndDrained => Ok(()),
-        PrepareRemoveOutcome::ResponderReady | PrepareRemoveOutcome::NotDrained { .. } => {
-            Err(MachineRemoveError::PrepareRemoveRejected {
-                node_id: target_node_id.clone(),
-                outcome: reply.outcome,
-            })
-        }
     }
 }
 
@@ -418,7 +299,10 @@ where
                         });
                     };
                     validate_preconditions(request)?;
-                    self.owner.probe_prepare_responder(request).await?;
+                    self.owner
+                        .participant_client
+                        .probe_prepare_responder(request)
+                        .await?;
                     let decision = decision_fact_from_request(request);
                     self.owner
                         .fact_writer
@@ -442,7 +326,10 @@ where
                     ))
                 }
                 MachineRemovePhase::RemovalStartedWritten(decision) => {
-                    self.owner.prepare_remove_decision(&decision).await?;
+                    self.owner
+                        .participant_client
+                        .prepare_remove_decision(&decision)
+                        .await?;
                     Ok(PhaseTransition::Continue(MachineRemovePhase::Prepared(
                         decision,
                     )))
@@ -475,7 +362,12 @@ where
                             },
                         )));
                     }
-                    match self.owner.stop_removed_workloads_decision(&decision).await {
+                    match self
+                        .owner
+                        .participant_client
+                        .stop_removed_workloads_decision(&decision)
+                        .await
+                    {
                         Ok(()) => Ok(PhaseTransition::Continue(MachineRemovePhase::Stopped(
                             decision,
                         ))),
@@ -694,21 +586,6 @@ fn pending_from_decision(
         decision,
         removal_started_fact_key,
     ))
-}
-
-pub fn prepare_remove_subject(node_id: &NodeId) -> MachineRemoveResult<Subject> {
-    participant_subject(node_id, "prepare_remove")
-}
-
-pub fn stop_removed_workloads_subject(node_id: &NodeId) -> MachineRemoveResult<Subject> {
-    participant_subject(node_id, "stop_removed_workloads")
-}
-
-fn participant_subject(node_id: &NodeId, suffix: &str) -> MachineRemoveResult<Subject> {
-    Ok(Subject::parse(format!(
-        "node.{}.rpc.{suffix}",
-        node_id.as_str()
-    ))?)
 }
 
 fn cleanup_failure_kind(error: &MachineRemoveError) -> CleanupFailureKind {
