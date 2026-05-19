@@ -52,13 +52,9 @@ impl PandaFactStore {
         Self {
             backend,
             authorizer,
-            fact_index: BTreeMap::new(),
+            derived_index: DerivedFactIndex::empty(),
             operations: Vec::new(),
             operation_hashes: BTreeSet::new(),
-            facts: Vec::new(),
-            facts_by_identity: BTreeMap::new(),
-            facts_by_key_hash: BTreeMap::new(),
-            payloads: BTreeMap::new(),
             authority_snapshots: BTreeMap::new(),
             trusted_author_keys: BTreeMap::new(),
             trusted_replica_peers: BTreeSet::new(),
@@ -452,13 +448,9 @@ impl PandaFactStore {
         Ok(())
     }
     fn clear_derived_indexes(&mut self) {
-        self.fact_index.clear();
+        self.derived_index.clear();
         self.operations.clear();
         self.operation_hashes.clear();
-        self.facts.clear();
-        self.facts_by_identity.clear();
-        self.facts_by_key_hash.clear();
-        self.payloads.clear();
     }
 
     fn record_rebuilt_operation(&mut self, raw_operation: RawOperation) -> Result<()> {
@@ -499,17 +491,7 @@ impl PandaFactStore {
     }
 
     fn pre_ingest_status(&self, metadata: &PandaFactMetadata) -> FactPreIngestStatus {
-        let Some(existing) = self
-            .fact_index
-            .get(&(metadata.island.clone(), metadata.key.clone()))
-        else {
-            return FactPreIngestStatus::Inserted;
-        };
-        if existing.contains(&metadata.content_hash) {
-            FactPreIngestStatus::AlreadyPresent
-        } else {
-            FactPreIngestStatus::Conflict
-        }
+        self.derived_index.pre_ingest_status(metadata)
     }
 
     fn record_operation(&mut self, operation_hash: Hash, operation: PandaFactOperation) {
@@ -524,89 +506,8 @@ impl PandaFactStore {
         payload: FactPayload,
         status: FactPreIngestStatus,
     ) -> PandaFactWriteOutcome {
-        if status == FactPreIngestStatus::AlreadyPresent {
-            return PandaFactWriteOutcome::AlreadyPresent(metadata);
-        }
-        self.fact_index
-            .entry((metadata.island.clone(), metadata.key.clone()))
-            .or_default()
-            .insert(metadata.content_hash.clone());
-        self.payloads
-            .entry(metadata.content_hash.clone())
-            .or_insert(payload);
-        let identity = StoredFactIdentity::from_metadata(&metadata);
-        let key_hash = StoredFactKeyHash::from_metadata(&metadata);
-        self.facts_by_identity.entry(identity).or_insert_with(|| {
-            let index = self.facts.len();
-            self.facts.push(StoredFactOperation::new(metadata.clone()));
-            self.facts_by_key_hash.insert(key_hash, index);
-            index
-        });
-        match status {
-            FactPreIngestStatus::Inserted => PandaFactWriteOutcome::Inserted(metadata),
-            FactPreIngestStatus::Conflict => PandaFactWriteOutcome::Conflict(metadata),
-            FactPreIngestStatus::AlreadyPresent => PandaFactWriteOutcome::AlreadyPresent(metadata),
-        }
-    }
-}
-
-impl FactSource for PandaFactStore {
-    fn list_candidates(
-        &self,
-        island: &IslandId,
-        pattern: &FactKeyPattern,
-        session: &BusSession,
-    ) -> FactSourceResult<Vec<FactCandidate>> {
-        if island != session.island() {
-            return Ok(Vec::new());
-        }
-        if let Ok(exact_key) = FactKey::parse(pattern.as_str()) {
-            return Ok(self.exact_candidates(island, &exact_key, pattern, session));
-        }
-        let candidates = self
-            .facts
-            .iter()
-            .filter(|stored| stored.metadata.island == *island)
-            .filter_map(|stored| self.candidate_for(stored, island, pattern, session))
-            .collect::<Vec<_>>();
-        Ok(candidates)
-    }
-
-    fn read_payloads(
-        &self,
-        island: &IslandId,
-        candidates: &[FactCandidate],
-        session: &BusSession,
-    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        if island != session.island() {
-            return Ok(BTreeMap::new());
-        }
-        let mut payloads = BTreeMap::new();
-        for candidate in candidates {
-            if candidate.island() != island {
-                continue;
-            }
-            let identity = StoredFactIdentity::from_candidate(candidate);
-            let Some(stored) = self
-                .facts_by_identity
-                .get(&identity)
-                .and_then(|index| self.facts.get(*index))
-            else {
-                continue;
-            };
-            let Some(current) =
-                self.candidate_for(stored, island, &exact_pattern(candidate), session)
-            else {
-                continue;
-            };
-            if current != *candidate || !candidate_payload_is_readable(current.status()) {
-                continue;
-            }
-            if let Some(payload) = self.payloads.get(&stored.metadata.content_hash) {
-                payloads.insert(stored.metadata.content_hash.clone(), payload.clone());
-            }
-        }
-        Ok(payloads)
+        self.derived_index
+            .record_fact_operation(metadata, payload, status)
     }
 }
 
@@ -788,7 +689,7 @@ impl SharedPandaFactStore {
             .read_payloads(island, candidates, session)
     }
 
-    fn unavailable(&self) -> FactSourceError {
+    pub(crate) fn unavailable(&self) -> FactSourceError {
         FactSourceError::Unavailable {
             name: "p2panda fact store".to_string(),
         }
@@ -944,44 +845,6 @@ impl TopicStore<Topic, VerifyingKey, PandaFactLogId> for SharedPandaFactStore {
     }
 }
 
-impl FactSource for SharedPandaFactStore {
-    fn list_candidates(
-        &self,
-        island: &IslandId,
-        pattern: &FactKeyPattern,
-        session: &BusSession,
-    ) -> FactSourceResult<Vec<FactCandidate>> {
-        self.store
-            .try_lock()
-            .map_err(|_| self.unavailable())?
-            .list_candidates(island, pattern, session)
-    }
-
-    fn read_payloads(
-        &self,
-        island: &IslandId,
-        candidates: &[FactCandidate],
-        session: &BusSession,
-    ) -> FactSourceResult<BTreeMap<FactContentHash, FactPayload>> {
-        self.store
-            .try_lock()
-            .map_err(|_| self.unavailable())?
-            .read_payloads(island, candidates, session)
-    }
-}
-
-fn exact_pattern(candidate: &FactCandidate) -> FactKeyPattern {
-    FactKeyPattern::parse(candidate.key().as_str())
-        .expect("stored fact candidate key is always a valid exact fact pattern")
-}
-
-fn candidate_payload_is_readable(status: CandidateStatus) -> bool {
-    matches!(
-        status,
-        CandidateStatus::Verified | CandidateStatus::Conflict
-    )
-}
-
 impl PandaFactStore {
     fn operation_for_metadata(
         &self,
@@ -1001,74 +864,5 @@ impl PandaFactStore {
             }
         }
         Ok(None)
-    }
-
-    fn exact_candidates(
-        &self,
-        island: &IslandId,
-        key: &FactKey,
-        pattern: &FactKeyPattern,
-        session: &BusSession,
-    ) -> Vec<FactCandidate> {
-        let Some(content_hashes) = self.fact_index.get(&(island.clone(), key.clone())) else {
-            return Vec::new();
-        };
-        content_hashes
-            .iter()
-            .filter_map(|content_hash| {
-                let identity =
-                    StoredFactKeyHash::new(island.clone(), key.clone(), content_hash.clone());
-                self.facts_by_key_hash
-                    .get(&identity)
-                    .and_then(|index| self.facts.get(*index))
-                    .and_then(|stored| self.candidate_for(stored, island, pattern, session))
-            })
-            .collect()
-    }
-
-    fn candidate_for(
-        &self,
-        stored: &StoredFactOperation,
-        island: &IslandId,
-        pattern: &FactKeyPattern,
-        session: &BusSession,
-    ) -> Option<FactCandidate> {
-        if !pattern.matches(&stored.metadata.key) {
-            return None;
-        }
-        let status = if stored.metadata.island != *island {
-            CandidateStatus::CrossIsland
-        } else if !self.authorizer.can_session_access_fact(
-            session,
-            &stored.metadata.key,
-            FactAccess::Read,
-        ) {
-            CandidateStatus::Unauthorized
-        } else if !self.authorizer.can_principal_access_fact(
-            &stored.metadata.island,
-            &stored.metadata.author,
-            &stored.metadata.key,
-            FactAccess::Write,
-        ) {
-            CandidateStatus::Unverified
-        } else if self
-            .fact_index
-            .get(&(stored.metadata.island.clone(), stored.metadata.key.clone()))
-            .is_some_and(|hashes| hashes.len() > 1)
-        {
-            CandidateStatus::Conflict
-        } else {
-            CandidateStatus::Verified
-        };
-        let classification = classify_fact_key(&stored.metadata.key);
-        Some(FactCandidate::new(
-            stored.metadata.island.clone(),
-            stored.metadata.key.clone(),
-            stored.metadata.author.clone(),
-            stored.metadata.content_hash.clone(),
-            classification.kind(),
-            classification.epoch(),
-            status,
-        ))
     }
 }

@@ -200,6 +200,8 @@ Evidence:
 
 ### Slice 4: Clarify p2panda fact ownership
 
+Status: complete.
+
 Goal: make p2panda fact storage, derived indexes, and projection source output
 separate concepts with smaller public surfaces.
 
@@ -209,13 +211,31 @@ Implementation:
 - Keep p2panda operation import/write paths in the store runtime.
 - Move projection `FactSource` adapter logic to a projection-facing adapter
   module or type instead of making the store itself look like a reducer source.
-- Quarantine manual trust/import helpers as fixture/debug APIs where tests
-  still require them.
+- Leave manual trust/import helper quarantine to Slice 6, where fixture-shaped
+  public APIs are handled together.
 
 Verification:
 
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts`
-- p2panda fact source, sync, process role, and auth membership E2Es.
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts` passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-fact-source-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-sync-fact-source-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-auth-membership-contract`
+  passed.
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-process-role-serving-contract`
+  passed.
+
+Evidence:
+
+- `MVP/p2panda-facts/src/derived_index.rs` now owns the derived projection
+  candidate index, payload index, conflict detection, and `FactCandidate`
+  construction.
+- `MVP/p2panda-facts/src/projection_source.rs` now owns the `FactSource`
+  adapters for `PandaFactStore` and `SharedPandaFactStore`.
+- `MVP/p2panda-facts/src/store_runtime.rs` keeps p2panda write/import/rebuild
+  runtime behavior and delegates projection catalog operations to the named
+  derived index.
 
 ### Slice 5: Split daemon loop by supervisor services
 

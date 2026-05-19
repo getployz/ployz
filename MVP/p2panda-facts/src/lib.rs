@@ -609,13 +609,9 @@ impl PandaFactOperation {
 pub struct PandaFactStore {
     backend: PandaFactBackend,
     authorizer: Arc<dyn FactAuthorizer>,
-    fact_index: BTreeMap<(IslandId, FactKey), BTreeSet<FactContentHash>>,
+    derived_index: DerivedFactIndex,
     operations: Vec<PandaFactOperation>,
     operation_hashes: BTreeSet<Hash>,
-    facts: Vec<StoredFactOperation>,
-    facts_by_identity: BTreeMap<StoredFactIdentity, usize>,
-    facts_by_key_hash: BTreeMap<StoredFactKeyHash, usize>,
-    payloads: BTreeMap<FactContentHash, FactPayload>,
     authority_snapshots: BTreeMap<IslandId, IslandAuthoritySnapshot>,
     trusted_author_keys: BTreeMap<(IslandId, PrincipalId), VerifyingKey>,
     trusted_replica_peers: BTreeSet<(IslandId, PrincipalId)>,
@@ -719,86 +715,19 @@ fn require_manual_author_key(
 }
 
 mod backend;
+mod derived_index;
+mod projection_source;
 mod store_runtime;
 mod sync;
 
 use backend::{PandaFactBackend, PandaFactStoreAdapterError, PandaMemoryStore};
+use derived_index::{DerivedFactIndex, FactPreIngestStatus};
 pub use store_runtime::SharedPandaFactStore;
 pub use sync::sync_panda_fact_stores;
-
-struct StoredFactOperation {
-    metadata: PandaFactMetadata,
-}
-
-impl StoredFactOperation {
-    fn new(metadata: PandaFactMetadata) -> Self {
-        Self { metadata }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct StoredFactIdentity {
-    island: IslandId,
-    key: FactKey,
-    author: PrincipalId,
-    content_hash: FactContentHash,
-}
-
-impl StoredFactIdentity {
-    fn from_metadata(metadata: &PandaFactMetadata) -> Self {
-        Self {
-            island: metadata.island.clone(),
-            key: metadata.key.clone(),
-            author: metadata.author.clone(),
-            content_hash: metadata.content_hash.clone(),
-        }
-    }
-
-    fn from_candidate(candidate: &FactCandidate) -> Self {
-        Self {
-            island: candidate.island().clone(),
-            key: candidate.key().clone(),
-            author: candidate.author().clone(),
-            content_hash: candidate.content_hash().clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct StoredFactKeyHash {
-    island: IslandId,
-    key: FactKey,
-    content_hash: FactContentHash,
-}
-
-impl StoredFactKeyHash {
-    fn new(island: IslandId, key: FactKey, content_hash: FactContentHash) -> Self {
-        Self {
-            island,
-            key,
-            content_hash,
-        }
-    }
-
-    fn from_metadata(metadata: &PandaFactMetadata) -> Self {
-        Self {
-            island: metadata.island.clone(),
-            key: metadata.key.clone(),
-            content_hash: metadata.content_hash.clone(),
-        }
-    }
-}
 
 struct LogPosition {
     seq_num: u64,
     backlink: Option<Hash>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FactPreIngestStatus {
-    AlreadyPresent,
-    Inserted,
-    Conflict,
 }
 
 fn metadata_from_operation(
