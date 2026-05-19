@@ -25,7 +25,7 @@ use tokio::task::LocalSet;
 use tokio::time::timeout;
 
 use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
-use crate::deploy::{ProductDeployOptions, deploy_product_service_with_context};
+use crate::deploy::deploy_product_service_with_context;
 use crate::error::{NodeError, NodeResult};
 use crate::node_agent::{node_agent_grant, node_agent_request_grant, register_node_agent_services};
 use crate::node_agent_rpc::{
@@ -35,6 +35,12 @@ use crate::state::{
     IssuedInviteRecord, LoadedNodeState, init_joined_node, load_issued_invite, load_node,
     record_bootstrap_peer, record_issued_invite as persist_issued_invite, write_node_ticket,
 };
+use daemon_control_protocol::{
+    DaemonControlRequest, daemon_deploy_json, daemon_failure_json, daemon_status_json,
+    parse_daemon_control_request,
+};
+
+mod daemon_control_protocol;
 
 const DAEMON_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_CONTROL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -718,7 +724,12 @@ async fn handle_daemon_control_connection(
 ) {
     let response = match read_daemon_control_request(&mut stream).await {
         Ok(bytes) => match parse_daemon_control_request(&bytes) {
-            Some(DaemonControlRequest::Status) => daemon_status_json(&state, &shared_state),
+            Some(DaemonControlRequest::Status) => daemon_status_json(
+                state.node_id_str(),
+                shared_state.imported_batches.load(Ordering::Relaxed),
+                shared_state.imported_operations.load(Ordering::Relaxed),
+                shared_state.node_agent_handlers,
+            ),
             Some(DaemonControlRequest::Deploy(request)) => {
                 match deploy_product_service_with_context(
                     request.into_options(state.paths().state_dir.clone()),
@@ -730,8 +741,7 @@ async fn handle_daemon_control_connection(
                 )
                 .await
                 {
-                    Ok(report) => serde_json::to_string(&DaemonDeployResponse::from(report))
-                        .map_err(|source| NodeError::EncodeNodeAgentRpc { source }),
+                    Ok(report) => daemon_deploy_json(report),
                     Err(error) => daemon_failure_json(error.to_string()),
                 }
             }
@@ -822,105 +832,6 @@ async fn write_daemon_control_response(
             operation: "shutdown response",
             source,
         })
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
-enum DaemonControlRequest {
-    Status,
-    Deploy(DaemonDeployRequest),
-}
-
-#[derive(Debug, Deserialize)]
-struct DaemonDeployRequest {
-    deploy_id: String,
-    target_node: String,
-    service: String,
-    revision: String,
-    hostname: String,
-}
-
-impl DaemonDeployRequest {
-    fn into_options(self, state_dir: PathBuf) -> ProductDeployOptions {
-        ProductDeployOptions::new(state_dir)
-            .with_deploy_id(self.deploy_id)
-            .with_target_node(self.target_node)
-            .with_service(self.service)
-            .with_revision(self.revision)
-            .with_hostname(self.hostname)
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct DaemonStatusResponse<'a> {
-    status: &'static str,
-    node: &'a str,
-    imported_batches: u64,
-    imported_operations: u64,
-    node_agent_handlers: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct DaemonDeployResponse {
-    status: &'static str,
-    deploy_id: String,
-    active_backends: Vec<String>,
-    old_backends: usize,
-    visible_nodes: usize,
-    host_network_backends: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct DaemonFailureResponse {
-    status: &'static str,
-    error: String,
-}
-
-fn daemon_failure_json(message: impl Into<String>) -> NodeResult<String> {
-    serde_json::to_string(&DaemonFailureResponse {
-        status: "failed",
-        error: message.into(),
-    })
-    .map_err(|source| NodeError::EncodeNodeAgentRpc { source })
-}
-
-impl From<crate::ProductDeployReport> for DaemonDeployResponse {
-    fn from(report: crate::ProductDeployReport) -> Self {
-        Self {
-            status: "deployed",
-            deploy_id: report.deploy_id.to_string(),
-            active_backends: report
-                .active_backends
-                .into_iter()
-                .map(|backend| format!("{}@{}", backend.node_id, backend.address))
-                .collect(),
-            old_backends: report.old_backends_to_drain.len(),
-            visible_nodes: report.visible_nodes,
-            host_network_backends: report.host_network_backends,
-        }
-    }
-}
-
-fn parse_daemon_control_request(bytes: &[u8]) -> Option<DaemonControlRequest> {
-    let text = std::str::from_utf8(bytes).ok()?.trim();
-    if text.is_empty() || text == "status" {
-        return Some(DaemonControlRequest::Status);
-    }
-    serde_json::from_str(text).ok()
-}
-
-fn daemon_status_json(
-    state: &LoadedNodeState,
-    shared_state: &DaemonControlSharedState,
-) -> NodeResult<String> {
-    serde_json::to_string(&DaemonStatusResponse {
-        status: "ready",
-        node: state.node_id_str(),
-        imported_batches: shared_state.imported_batches.load(Ordering::Relaxed),
-        imported_operations: shared_state.imported_operations.load(Ordering::Relaxed),
-        node_agent_handlers: shared_state.node_agent_handlers,
-    })
-    .map_err(|source| NodeError::EncodeNodeAgentRpc { source })
 }
 
 fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {

@@ -545,9 +545,9 @@ impl AcmeChallengeCoordinator {
         let LeaseState::Active { current, .. } = self.lease_state(id, now) else {
             return None;
         };
-        if current.holder() == record.holder()
-            && current.epoch() == record.epoch()
-            && current.content_hash() == record.claim_hash()
+        if current.holder == record.holder
+            && current.epoch == record.epoch
+            && current.content_hash == record.claim_hash
         {
             return Some(record);
         }
@@ -775,10 +775,10 @@ mod tests {
         let record = coordinator
             .active_challenge(lease.id(), at(101))
             .expect("challenge is published");
-        assert_eq!(record.holder(), &holder("issuer-a"));
-        assert_eq!(record.epoch(), LeaseEpoch::first());
+        assert_eq!(record.holder, holder("issuer-a"));
+        assert_eq!(record.epoch, LeaseEpoch::first());
         assert_eq!(lease.id().hostname().as_str(), "example.com");
-        assert_eq!(lease.visible_nodes().len(), 2);
+        assert_eq!(lease.visible_nodes.len(), 2);
     }
 
     #[test]
@@ -806,7 +806,7 @@ mod tests {
         assert!(matches!(
             error,
             AcmeCoordinationError::Lease(LeaseError::Conflict(conflict))
-                if conflict.conflicting_holder() == &holder("issuer-a")
+                if conflict.conflicting_holder == holder("issuer-a")
         ));
         std::mem::forget(lease);
     }
@@ -854,8 +854,8 @@ mod tests {
         let record = coordinator
             .active_challenge(second.id(), at(112))
             .expect("challenge remains");
-        assert_eq!(record.holder(), &holder("issuer-b"));
-        assert_eq!(record.epoch(), second_epoch());
+        assert_eq!(record.holder, holder("issuer-b"));
+        assert_eq!(record.epoch, second_epoch());
         assert_eq!(
             record.key_authorization().as_str(),
             format!("{}.keyauthB", second.id().token().as_str())
@@ -898,8 +898,8 @@ mod tests {
         let record = coordinator
             .active_challenge(second.id(), at(113))
             .expect("new holder challenge remains active");
-        assert_eq!(record.holder(), &holder("issuer-b"));
-        assert_eq!(record.epoch(), second_epoch());
+        assert_eq!(record.holder, holder("issuer-b"));
+        assert_eq!(record.epoch, second_epoch());
         assert_eq!(
             record.key_authorization().as_str(),
             format!("{}.keyauthB", second.id().token().as_str())
@@ -941,9 +941,9 @@ mod tests {
         };
 
         assert_eq!(superseded.len(), 1);
-        assert_eq!(current.content_hash(), winner_hash);
-        assert_eq!(superseded[0].content_hash(), loser_hash);
-        assert_eq!(superseded[0].by_epoch(), LeaseEpoch::first());
+        assert_eq!(current.content_hash, winner_hash);
+        assert_eq!(superseded[0].content_hash, loser_hash);
+        assert_eq!(superseded[0].by_epoch, LeaseEpoch::first());
     }
 
     #[test]
@@ -1152,7 +1152,7 @@ mod tests {
             .expect("second issuer publishes");
         assert!(matches!(
             coordinator.active_challenge(next.id(), at(103)),
-            Some(record) if record.holder() == &holder("issuer-b") && record.epoch() == second_epoch()
+            Some(record) if record.holder == holder("issuer-b") && record.epoch == second_epoch()
         ));
     }
 }
