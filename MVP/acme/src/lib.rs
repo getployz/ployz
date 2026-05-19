@@ -15,8 +15,8 @@ pub use issuer::{
     AcmeAuthorizationStatus, AcmeHttp01ChallengePublisher, AcmeHttp01ChallengeReadiness,
     AcmeHttp01OrderChallenge, AcmeIssuanceError, AcmeIssuer, AcmeIssuerConfig, AcmeOrderStatus,
     AcmeOrderUrl, DEFAULT_ACME_DIRECTORY_URL, DEFAULT_HTTP01_CHALLENGE_TTL_SECS,
-    DisabledAcmeIssuer, IssuedCertificate, NoopAcmeAccountCoordinator, StartedAcmeOrder,
-    contact_uris, ensure_order_url_matches_directory,
+    DisabledAcmeIssuer, InstantAcmeIssuer, IssuedCertificate, NoopAcmeAccountCoordinator,
+    StartedAcmeOrder, contact_uris, ensure_order_url_matches_directory,
 };
 
 const MIN_ACME_TOKEN_LEN: usize = 22;

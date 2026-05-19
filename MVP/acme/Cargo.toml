@@ -14,12 +14,14 @@ harness = ["mvp-lease/harness"]
 
 [dependencies]
 async-trait = "0.1"
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring"] }
 mvp-identity = { path = "../identity" }
 mvp-lease = { path = "../lease" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 url = "2"
 
 [dev-dependencies]
 mvp-lease = { path = "../lease", features = ["harness"] }
-serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
