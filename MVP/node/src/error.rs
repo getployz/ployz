@@ -118,6 +118,10 @@ pub enum NodeError {
     },
     #[error("mesh command failed: {source}")]
     Mesh { source: mvp_mesh::MeshError },
+    #[error("bus operation failed: {source}")]
+    Bus { source: mvp_bus::BusError },
+    #[error("bus subject is invalid: {source}")]
+    BusSubject { source: mvp_bus::SubjectParseError },
     #[error("create runtime: {source}")]
     Runtime { source: std::io::Error },
 }

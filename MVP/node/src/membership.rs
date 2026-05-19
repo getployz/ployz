@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
 use crate::error::{NodeError, NodeResult};
+use crate::node_agent::{node_agent_grant, register_node_agent_services};
 use crate::state::{
     IssuedInviteRecord, LoadedNodeState, init_joined_node, load_issued_invite, load_node,
     record_bootstrap_peer, record_issued_invite as persist_issued_invite, write_node_ticket,
@@ -99,6 +100,7 @@ pub struct DaemonReport {
     pub ticket: String,
     pub imported_batches: u64,
     pub imported_operations: u64,
+    pub node_agent_handlers: usize,
 }
 
 pub fn create_invite(state_dir: impl AsRef<std::path::Path>, ttl: Duration) -> NodeResult<String> {
@@ -250,6 +252,15 @@ pub async fn run_daemon_once(
     options: DaemonOptions,
 ) -> NodeResult<DaemonReport> {
     let state = load_node(state_dir)?;
+    let (product_bus, product_authority, _raw_product_bus) =
+        mvp_bus::harness::actor_with_authority();
+    let node_agent_session = product_authority.grant_in(
+        state.island(),
+        state.principal(),
+        node_agent_grant(state.node_id_str())?,
+    );
+    let (_node_agent, node_agent_report) =
+        register_node_agent_services(&product_bus, &node_agent_session, &state).await?;
     let (mut fact_node, writer_session, author, authority) = spawn_fact_node(&state).await?;
     let ticket = ensure_node_ticket(&state)?;
     write_node_ticket(&state, &ticket)?;
@@ -299,6 +310,7 @@ pub async fn run_daemon_once(
         ticket,
         imported_batches,
         imported_operations,
+        node_agent_handlers: node_agent_report.registered_handlers,
     })
 }
 
