@@ -53,15 +53,15 @@ impl ServingFactWriter for PandaServingFactWriter {
 fn serving_fact_outcome(outcome: PandaFactWriteOutcome) -> RoutingResult<WrittenServingFact> {
     match outcome {
         PandaFactWriteOutcome::Inserted(metadata) => Ok(WrittenServingFact::inserted(
-            metadata.key().clone(),
-            metadata.content_hash().clone(),
+            metadata.key.clone(),
+            metadata.content_hash.clone(),
         )),
         PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenServingFact::already_present(
-            metadata.key().clone(),
-            metadata.content_hash().clone(),
+            metadata.key.clone(),
+            metadata.content_hash.clone(),
         )),
         PandaFactWriteOutcome::Conflict(metadata) => Err(RoutingError::ServingFactConflict {
-            key: metadata.key().clone(),
+            key: metadata.key.clone(),
         }),
     }
 }

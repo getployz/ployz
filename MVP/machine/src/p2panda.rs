@@ -226,10 +226,10 @@ fn written_machine_fact_from_outcome(
     match outcome {
         PandaFactWriteOutcome::Inserted(metadata)
         | PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenMachineFact {
-            key: metadata.key().clone(),
+            key: metadata.key.clone(),
         }),
         PandaFactWriteOutcome::Conflict(metadata) => Err(MachineRemoveError::FactConflict {
-            key: metadata.key().clone(),
+            key: metadata.key.clone(),
         }),
     }
 }
