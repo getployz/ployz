@@ -239,6 +239,8 @@ Evidence:
 
 ### Slice 5: Split daemon loop by supervisor services
 
+Status: complete.
+
 Goal: keep `run_daemon_once` as readable composition over named services.
 
 Implementation:
@@ -251,8 +253,18 @@ Implementation:
 
 Verification:
 
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
-- `MVP/scripts/three-server-smoke.sh`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node` passed.
+- `MVP/scripts/three-server-smoke.sh` passed.
+
+Evidence:
+
+- `MVP/node/src/membership/daemon_runtime.rs` now owns the timed daemon loop,
+  import progress accounting, stream refresh, observed-fact handling, remote
+  bridge maintenance, and node-agent RPC pump.
+- `MVP/node/src/membership.rs` keeps node startup, local bus/fact-node/control
+  setup, initial membership publication, and report construction explicit.
+- `MVP/node/src/membership.rs` dropped 125 lines and added 26 lines in this
+  slice; the daemon loop moved behind the named daemon runtime concept.
 
 ### Slice 6: Fixture substrate quarantine
 
