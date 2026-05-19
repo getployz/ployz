@@ -45,6 +45,7 @@ Individual E2E scenarios are also runnable while iterating:
 - `cargo run -p mvp-e2e -- authority-contract`
 - `cargo run -p mvp-e2e -- bridge-contract`
 - `cargo run -p mvp-e2e -- projection-contract`
+- `MVP/scripts/three-server-smoke.sh`
 - `cargo run -p mvp-e2e -- scale`
 
 Each scenario writes a JSON proof artifact under `MVP/target/mvp-e2e/`.
@@ -63,6 +64,9 @@ cargo run -p mvp-node -- invite --state /var/lib/ployz-mvp
 cargo run -p mvp-node -- join --state /var/lib/ployz-mvp-b --token '<invite-json>' --node-id node-b
 cargo run -p mvp-node -- admission --state /var/lib/ployz-mvp-b
 cargo run -p mvp-node -- admit --state /var/lib/ployz-mvp --request '<admission-json>'
+cargo run -p mvp-node -- deploy --state /var/lib/ployz-mvp --target-node node-a
+cargo run -p mvp-node -- gateway --state /var/lib/ployz-mvp --listen 127.0.0.1:0 --control /tmp/ployz-gateway.sock
+cargo run -p mvp-node -- dns --state /var/lib/ployz-mvp --listen 127.0.0.1:0 --control /tmp/ployz-dns.sock
 cargo run -p mvp-node -- status --state /var/lib/ployz-mvp
 ```
 
@@ -70,16 +74,21 @@ The currently wired surface is still intentionally small: `init` and `status`
 establish persistent node identity and state paths; `invite` emits a bootstrap
 token with a stable p2panda ticket; `join` initializes a node from that token;
 `admission` emits the joiner's stable ticket and author identity; `admit`
-records that joiner on the bootstrap node; and `daemon` starts the product
-p2panda fact node for a bounded run. `gateway`, `dns`, and `deploy` are reserved
-product commands that return explicit not-wired errors until their three-server
-slices land.
+records that joiner on the bootstrap node; `daemon` starts the product
+p2panda fact node for a bounded run; `deploy` starts one trivial managed HTTP
+service through the product deploy state machine; and `gateway`/`dns` run
+snapshot-backed serving roles with a local Unix control socket.
 
 The current membership path proves durable product state, stable restart-safe
 tickets, invite/admission handoff, and three-node membership convergence over
 p2panda-net. The bootstrap node publishes durable admitted-peer facts, and
 already-joined nodes consume those facts to learn later admitted node authors
 without manual local state updates.
+
+`MVP/scripts/three-server-smoke.sh` is the current product vertical proof. It
+drives three fresh nodes through init/join/admit, concurrent daemon
+convergence, deploy, product gateway/DNS serving, and daemon-kill steady-state
+checks using the `mvp-node` binary as the system boundary.
 
 ## Maintainer Notes
 

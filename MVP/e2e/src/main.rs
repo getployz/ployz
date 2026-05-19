@@ -112,6 +112,20 @@ mod projection_contract;
 mod projection_harness;
 mod scale;
 mod steady_state_serving_contract;
+#[cfg(unix)]
+mod three_server_harness;
+#[cfg(unix)]
+mod three_server_product_contract;
+#[cfg(not(unix))]
+mod three_server_product_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("three-server-product uses Unix sockets in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
 mod volume_transfer_contract;
 
 use std::env;
@@ -236,6 +250,11 @@ const SCENARIOS: &[Scenario] = &[
         "machine-remove-contract",
         machine_remove_contract::run,
         machine_remove_contract::cleanup_orphaned_children,
+    ),
+    Scenario::with_cleanup(
+        "three-server-product",
+        three_server_product_contract::run,
+        three_server_product_contract::cleanup_orphaned_children,
     ),
     Scenario::new("volume-transfer-contract", volume_transfer_contract::run),
     Scenario::new("scale", scale::run),
@@ -384,12 +403,14 @@ mod tests {
         assert!(names.contains(&"wire-serving-contract"));
         assert!(names.contains(&"membership-wireguard-contract"));
         assert!(names.contains(&"machine-remove-contract"));
+        assert!(names.contains(&"three-server-product"));
         assert!(scenario_help().contains("lease-acme-contract"));
         assert!(scenario_help().contains("environment-branch-promote-rollback-contract"));
         assert!(scenario_help().contains("p2panda-process-role-serving-contract"));
         assert!(scenario_help().contains("p2panda-net-process-serving-contract"));
         assert!(scenario_help().contains("membership-wireguard-contract"));
         assert!(scenario_help().contains("machine-remove-contract"));
+        assert!(scenario_help().contains("three-server-product"));
     }
 
     #[test]

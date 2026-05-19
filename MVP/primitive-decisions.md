@@ -1372,6 +1372,39 @@ Revisit if:
 - Pingora or `hickory-server` lands. Preserve the `mvp-serving` snapshot/last
   good interface and replace only the wire server implementation.
 
+## Product-Style MVP E2E Harness
+
+Why this:
+- The three-server product proof should look like the main product E2E, not
+  another in-process semantic contract. The system boundary is the shipped
+  `mvp-node` binary.
+- The harness should own command execution, process role lifetimes, probes,
+  cleanup, and JSON proof artifacts so failures are diagnosable without reading
+  logs as the only audience.
+- Keeping the harness inside `MVP/` preserves isolation while borrowing the
+  mature shape from `crates/ployz-e2e`.
+
+What it replaces:
+- One-off E2E contracts that directly call crate APIs for product behavior.
+- Manual reproduction notes for the three-server vertical.
+
+Costs:
+- The first runner is local multi-process, not SSH/remote-host. It proves the
+  product binary boundary and p2panda-net convergence, but not packaging or
+  host provisioning.
+- The deploy target remains the founder node until remote node-agent RPC is
+  productized.
+
+Crates:
+- `mvp-e2e` owns the scenario registry and local product runner.
+- `mvp-node` remains the only product binary invoked by the smoke.
+
+Revisit if:
+- Remote smoke becomes the next blocker. Add a command-runner trait with local
+  and SSH implementations instead of forking the scenario logic.
+- The harness grows more process plumbing. Move repeated command/probe pieces
+  into `three_server_harness` only after a second product scenario needs them.
+
 ## Membership And Last-Applied WireGuard
 
 Why this:

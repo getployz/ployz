@@ -66,10 +66,7 @@ async fn run_async() -> Result<(), String> {
         &island,
         &writer,
         &membership,
-        "serving-1",
-        "fd00::1:8080",
-        "fd00::1",
-        1,
+        ServingCommitInput::new("serving-1", "fd00::1:8080", "fd00::1", 1),
     )
     .await?;
 
@@ -114,10 +111,7 @@ async fn run_async() -> Result<(), String> {
         &island,
         &writer,
         &membership,
-        "serving-2",
-        "fd00::2:8080",
-        "fd00::2",
-        2,
+        ServingCommitInput::new("serving-2", "fd00::2:8080", "fd00::2", 2),
     )
     .await?;
     let serving_process_alive_after_update = serving.is_running()?;
@@ -176,10 +170,7 @@ async fn write_serving_commit(
     island: &IslandId,
     author: &PandaFactAuthor,
     membership: &P2pandaMembershipFixture,
-    commit_id: &str,
-    backend: &str,
-    dns: &str,
-    epoch: u64,
+    input: ServingCommitInput,
 ) -> Result<(), String> {
     let (bus, session) = p2panda_writer_bus(island, author.principal());
     let authority_source = membership.authority_source(island).await?;
@@ -190,9 +181,8 @@ async fn write_serving_commit(
     )
     .await
     .map_err(|error| format!("open p2panda serving writer store: {error}"))?;
-    let input = ServingCommitInput::new(commit_id, backend, dns, epoch);
     let payload = serving_commit_payload_for_input(&input)?;
-    let key = FactKey::parse(format!("/facts/serving/{commit_id}"))
+    let key = FactKey::parse(format!("/facts/serving/{}", input.commit_id()))
         .map_err(|error| format!("parse p2panda serving fact key: {error}"))?;
     store
         .write_fact_payload(&session, author, key, payload.into())

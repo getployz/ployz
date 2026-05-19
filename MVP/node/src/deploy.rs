@@ -186,22 +186,39 @@ async fn open_local_fact_store(
     raw_bus: Arc<mvp_bus::harness::InMemoryBus>,
 ) -> NodeResult<SharedPandaFactStore> {
     let author = state.author()?;
-    let store = PandaFactStore::open_sqlite(
-        raw_bus,
+    let mut store_config =
         PandaSqliteOpenConfig::new(state.paths().fact_store.clone(), vec![state.island()])
             .with_trusted_author_key(PandaTrustedAuthorKey::new(
                 state.island(),
                 state.principal(),
                 author.author_key(),
-            )),
-    )
-    .await
-    .map_err(|source| NodeError::FactStore { source })?;
+            ));
+    let trusted_authors = state.trusted_fact_authors()?;
+    for trusted in &trusted_authors {
+        store_config = store_config.with_trusted_author_key(PandaTrustedAuthorKey::new(
+            state.island(),
+            trusted.principal().clone(),
+            trusted.author_key(),
+        ));
+    }
+    let store = PandaFactStore::open_sqlite(raw_bus, store_config)
+        .await
+        .map_err(|source| NodeError::FactStore { source })?;
     let shared = SharedPandaFactStore::new(store);
     shared
         .trust_author_key(&state.island(), state.principal(), author.author_key())
         .await
         .map_err(|source| NodeError::FactStore { source })?;
+    for trusted in &trusted_authors {
+        shared
+            .trust_author_key(
+                &state.island(),
+                trusted.principal().clone(),
+                trusted.author_key(),
+            )
+            .await
+            .map_err(|source| NodeError::FactStore { source })?;
+    }
     Ok(shared)
 }
 

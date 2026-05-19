@@ -562,6 +562,19 @@ metrics style in `MVP/e2e/src/metrics.rs`.
 membership convergence, deploy result, serving response, daemon-death response,
 and cleanup status.
 
+**Current status:** Slice 056 adds `mvp-e2e` scenario `three-server-product`
+and `MVP/scripts/three-server-smoke.sh`. The scenario follows the main
+product E2E shape: a scenario registry entry delegates to a harness that owns
+product-binary command execution, process role spawning, probes, cleanup, and a
+JSON proof artifact. The local smoke initializes three product nodes,
+invite/join/admit two peers, runs all three daemons concurrently over
+p2panda-net, asserts every daemon imported membership operations and registered
+node-agent handlers, deploys a trivial HTTP service, starts `mvp-node gateway`
+and `mvp-node dns`, proves HTTP/DNS before and after killing a daemon, and
+cleans up the runtime process. Remaining product gap: deploy participant RPC is
+still local to the target node rather than remote across product node-agent
+processes.
+
 ## Delivery Sequence
 
 Recommended slice order:

@@ -1334,6 +1334,10 @@ impl ServingCommitInput {
             epoch,
         }
     }
+
+    pub(crate) fn commit_id(&self) -> &str {
+        &self.commit_id
+    }
 }
 
 pub(crate) fn serving_commit_payload_for_input(
@@ -2658,7 +2662,7 @@ async fn role_status_kind(
         return RoleStatusKind::ServingProjection;
     };
     let status = status.lock().await;
-    RoleStatusKind::P2pandaNetServingProjection(P2pandaNetRoleStatus {
+    RoleStatusKind::P2pandaNetServingProjection(Box::new(P2pandaNetRoleStatus {
         node_ticket,
         attempted_import_batches: status.attempted_import_batches,
         imported: status.imported,
@@ -2677,7 +2681,7 @@ async fn role_status_kind(
         session_finished: status.session_finished,
         last_failure: status.last_failure.clone(),
         last_reload: status.last_reload.clone(),
-    })
+    }))
 }
 
 async fn serving_handle(
@@ -3686,7 +3690,7 @@ impl RoleStatus {
     pub(crate) fn p2panda_net(&self) -> Option<&P2pandaNetRoleStatus> {
         match &self.role {
             RoleStatusKind::ServingProjection => None,
-            RoleStatusKind::P2pandaNetServingProjection(status) => Some(status),
+            RoleStatusKind::P2pandaNetServingProjection(status) => Some(status.as_ref()),
         }
     }
 }
@@ -3695,7 +3699,7 @@ impl RoleStatus {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoleStatusKind {
     ServingProjection,
-    P2pandaNetServingProjection(P2pandaNetRoleStatus),
+    P2pandaNetServingProjection(Box<P2pandaNetRoleStatus>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
