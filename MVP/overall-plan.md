@@ -834,3 +834,12 @@ iterations visible. The first reliability run completed 12 fact-node roundtrips
 with 12 attempted imports and zero zero-import iterations. The next product
 slice should move volume transfer onto membership-backed p2panda facts and
 delete the last product-shaped manual-trust canary.
+
+Slice 047 redirects the next product work toward the three-server vertical:
+[MVP/slice-047-product-binary-state.md](slice-047-product-binary-state.md).
+`mvp-node` is now the product-facing binary track, separate from `mvp-e2e`.
+The first slice wires only `init` and `status`, but it persists the node,
+island, principal, p2panda author, p2panda-net seed/topic/network, WireGuard
+identity placeholder, and fact/projection/snapshot paths future real join and
+deploy slices will consume. Future commands are visible but return explicit
+not-wired errors instead of using harness shortcuts.

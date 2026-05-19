@@ -144,6 +144,12 @@ impl PandaNetFactNodeStats {
     }
 }
 
+impl Default for PandaNetFactNodeStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PandaNetFactNode {
     pub async fn spawn(config: PandaNetFactNodeConfig) -> Result<Self, PandaNetTransportError> {
         let (network_id, signing_key, bind, bootstrap_nodes) = config.node.clone_parts();
