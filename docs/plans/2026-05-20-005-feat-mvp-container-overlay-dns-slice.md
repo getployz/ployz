@@ -106,25 +106,31 @@ stringly special cases.
 
 ### Unit 1: Container Network Model And Deterministic Subnets
 
+Status: complete in checkpoint pending push.
+
 Files:
 
-- `MVP/mesh/src/container.rs` or `MVP/runtime/src/network.rs`
+- `MVP/mesh/src/container.rs`
 - `MVP/node/src/state.rs`
-- `MVP/node/src/config.rs`
 
 Work:
 
-- Add typed `ContainerSubnet`, `ContainerIp`, and deterministic derivation from
+- [x] Add typed `ContainerSubnet`, `ContainerIp`, and deterministic derivation from
   island/node id.
-- Store node-local container subnet in state or derive it from stable state in
+- [x] Store node-local container subnet in state or derive it from stable state in
   one place.
-- Add conversions to Docker IPAM strings and peer allowed CIDRs.
+- [x] Add conversions to Docker IPAM strings and peer allowed CIDRs.
 
 Tests:
 
-- deterministic subnet derivation is stable and node-scoped,
-- subnets do not overlap for representative node sets,
-- typed subnet/IP serialization round trips.
+- [x] deterministic subnet derivation is stable and node-scoped,
+- [x] subnets do not overlap for representative node sets,
+- [x] typed subnet/IP serialization round trips.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh -p mvp-node state`
 
 ### Unit 2: Docker Bridge Backend
 

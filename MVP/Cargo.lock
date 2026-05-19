@@ -3230,6 +3230,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "defguard_wireguard_rs",
+ "ipnet",
  "kameo",
  "mvp-bus",
  "mvp-identity",

@@ -1,4 +1,5 @@
 mod actor;
+mod container;
 mod domain;
 mod error;
 mod invite;
@@ -9,6 +10,9 @@ mod wireguard;
 mod wireguard_linux;
 
 pub use actor::{WireGuardActorHandle, WireGuardActorStatus};
+pub use container::{
+    ContainerIp, ContainerSubnet, derive_container_subnet, derive_container_subnet_plan,
+};
 pub use domain::{
     IrohEndpointId, MachineInvite, MeshNode, WireGuardOverlayCidr, WireGuardOverlayIp,
     WireGuardPrivateKey, WireGuardPublicKey, derive_overlay_ip,
