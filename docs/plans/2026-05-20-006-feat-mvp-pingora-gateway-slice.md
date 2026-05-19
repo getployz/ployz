@@ -84,7 +84,7 @@ Work:
 
 - [x] Introduce a small gateway engine abstraction around start/shutdown/status.
 - [x] Keep `WireServingState` as the input boundary.
-- [ ] Move shared host extraction, ACME path parsing, backend parsing, and response
+- [x] Move shared host extraction, ACME path parsing, backend parsing, and response
   helpers behind engine-neutral functions where useful.
 - [x] Remove loopback-only backend restriction from the production gateway path.
 
@@ -101,6 +101,8 @@ Evidence:
 - Gateway engine boundary checkpoint adds `GatewayOptions`, `GatewayEngineKind`,
   `GatewayHandle`, and `spawn_gateway`; `mvp-node` now starts gateway roles
   through that engine-neutral API while preserving the existing hyper behavior.
+- Shared request checkpoint adds `MVP/serving/src/gateway_request.rs` for
+  engine-neutral host normalization and ACME HTTP-01 token parsing.
 
 ### Unit 2: Pingora HTTP Proxy Engine
 
@@ -127,7 +129,7 @@ Tests:
 
 - [x] proxy to a backend address in a controlled test,
 - [ ] proxy to a non-loopback/overlay-style backend address in a controlled test,
-- [ ] unknown host and missing backend responses match existing behavior,
+- [x] unknown host and missing backend responses match existing behavior,
 - [x] ACME HTTP-01 path is served before route proxying.
 
 Evidence:
@@ -139,6 +141,9 @@ Evidence:
   available behind the explicit engine selector.
 - Serving tests now exercise the default Pingora engine for backend proxying and
   ACME HTTP-01 challenge serving before route lookup.
+- Serving tests now exercise the default Pingora engine for unknown host,
+  malformed backend, and no-backend failure paths, preserving request and
+  backend-failure metrics semantics.
 
 ### Unit 3: Node Gateway Default And Compatibility
 

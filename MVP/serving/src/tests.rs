@@ -494,6 +494,50 @@ async fn gateway_default_pingora_engine_routes_to_selected_backend() {
 }
 
 #[tokio::test]
+async fn gateway_default_pingora_engine_reports_route_and_backend_failures() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway_snapshot =
+        gateway_snapshot("prod", "rev-1", "web.example.test", "not-a-socket");
+    gateway_snapshot.routes.push(GatewayRouteProjection {
+        route_id: RouteId::new("api"),
+        hostnames: vec!["api.example.test".to_string()],
+        backends: Vec::new(),
+        old_backends_to_drain: Vec::new(),
+    });
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot,
+        &empty_dns_snapshot("prod", "rev-1"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_gateway(
+        GatewayOptions::new(loopback_any()),
+        WireServingState::new(actor),
+    )
+    .await
+    .expect("spawn pingora gateway");
+
+    let unknown = http_get(gateway.listen_addr(), "missing.example.test", "/").await;
+    let invalid_backend = http_get(gateway.listen_addr(), "web.example.test", "/").await;
+    let no_backend = http_get(gateway.listen_addr(), "api.example.test", "/").await;
+    let metrics = gateway.metrics();
+
+    assert!(unknown.starts_with("HTTP/1.1 404 Not Found"), "{unknown}");
+    assert!(
+        invalid_backend.starts_with("HTTP/1.1 503 Service Unavailable"),
+        "{invalid_backend}"
+    );
+    assert!(
+        no_backend.starts_with("HTTP/1.1 503 Service Unavailable"),
+        "{no_backend}"
+    );
+    assert_eq!(metrics.request_count, 3);
+    assert_eq!(metrics.backend_failure_count, 2);
+    gateway.shutdown().await.expect("shutdown gateway");
+}
+
+#[tokio::test]
 async fn http_gateway_unknown_host_returns_not_found() {
     let root = TempDir::new().expect("tempdir");
     write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");

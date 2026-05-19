@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use hyper::http::{Method, Response, StatusCode, header::HOST};
+use hyper::http::{Method, Response, StatusCode};
 use pingora::apps::{HttpServerApp, http_app::ServeHttp};
 use pingora::protocols::http::ServerSession;
 use tokio::net::TcpListener;
@@ -11,6 +11,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
+use crate::gateway_request::{acme_http01_token, request_host};
 use crate::http_gateway::{
     BackendProxyResponse, HttpGatewayError, HttpGatewayHandle, HttpGatewayResult, parse_backend,
     proxy_get_path,
@@ -20,8 +21,6 @@ use crate::{WireMetricsRecorder, WireServingState};
 const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_CONNECTIONS: usize = 256;
 const MAX_LATENCY_SAMPLES: usize = 256;
-const ACME_HTTP01_PREFIX: &str = "/.well-known/acme-challenge/";
-
 pub async fn spawn_pingora_gateway(
     listen_addr: SocketAddr,
     state: WireServingState,
@@ -107,7 +106,7 @@ async fn response_for_session(
     if request.method != Method::GET {
         return text_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed\n");
     }
-    let Some(host) = request_host(request) else {
+    let Some(host) = request_host(&request.headers) else {
         return text_response(StatusCode::BAD_REQUEST, "missing host\n");
     };
     let path = request
@@ -154,35 +153,6 @@ async fn response_for_session(
             text_response(StatusCode::SERVICE_UNAVAILABLE, message)
         }
     }
-}
-
-fn request_host(request: &pingora::http::RequestHeader) -> Option<String> {
-    request
-        .headers
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(strip_port)
-        .filter(|value| !value.trim().is_empty())
-}
-
-fn strip_port(value: &str) -> String {
-    let value = value.trim();
-    if value.starts_with('[') {
-        return value
-            .split(']')
-            .next()
-            .map_or(value, |host| host.trim_start_matches('['))
-            .to_string();
-    }
-    value.split(':').next().unwrap_or(value).to_string()
-}
-
-fn acme_http01_token(path: &str) -> Option<&str> {
-    let token = path.strip_prefix(ACME_HTTP01_PREFIX)?;
-    if token.is_empty() || token.contains('/') {
-        return None;
-    }
-    Some(token)
 }
 
 fn text_response(status: StatusCode, body: impl Into<String>) -> Response<Vec<u8>> {
