@@ -9,7 +9,7 @@ mod wireguard;
 pub use actor::{WireGuardActorHandle, WireGuardActorStatus};
 pub use domain::{
     IrohEndpointId, MachineInvite, MeshNode, WireGuardOverlayCidr, WireGuardOverlayIp,
-    WireGuardPublicKey, derive_overlay_ip,
+    WireGuardPrivateKey, WireGuardPublicKey, derive_overlay_ip,
 };
 pub use error::{MeshError, MeshResult};
 pub use invite::{

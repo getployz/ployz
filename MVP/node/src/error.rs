@@ -118,6 +118,8 @@ pub enum NodeError {
     },
     #[error("mesh command failed: {source}")]
     Mesh { source: mvp_mesh::MeshError },
+    #[error("wireguard identity public key does not match private key in {path}")]
+    WireGuardKeyMismatch { path: PathBuf },
     #[error("bus operation failed: {source}")]
     Bus { source: mvp_bus::BusError },
     #[error("bus subject is invalid: {source}")]

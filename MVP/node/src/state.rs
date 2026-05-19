@@ -4,7 +4,7 @@ use std::path::Path;
 
 use mvp_bus::{IslandId, PrincipalId};
 use mvp_identity::NodeId;
-use mvp_mesh::{WireGuardPublicKey, derive_overlay_ip};
+use mvp_mesh::{WireGuardPrivateKey, derive_overlay_ip};
 use mvp_p2panda_facts::{PandaFactAuthor, PandaFactAuthorKey};
 use mvp_p2panda_transport::{PandaNetNetworkId, PandaNetNodeSeed, PandaNetTopic};
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,10 @@ impl LoadedNodeState {
     #[must_use]
     pub fn wireguard_public_key(&self) -> &str {
         &self.persisted.wg_public_key
+    }
+
+    pub fn wireguard_private_key(&self) -> NodeResult<WireGuardPrivateKey> {
+        load_wireguard_private_key(&self.paths)
     }
 
     #[must_use]
@@ -268,7 +272,8 @@ fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState
     let principal_id = format!("node:{node_id}");
     let node_id_typed = NodeId::new(node_id.clone());
     let overlay_ip = derive_overlay_ip(&island, &node_id_typed);
-    let wg_public_key = format!("mvp-wg-{}", &stable_hex("wg", &node_seed)[..32]);
+    let wg_private_key = WireGuardPrivateKey::from_seed(&node_seed);
+    let wg_public_key = wg_private_key.public_key();
 
     let state = PersistedNodeState {
         schema_version: STATE_SCHEMA_VERSION,
@@ -284,7 +289,7 @@ fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState
         p2panda_topic_hex: options
             .p2panda_topic_hex
             .unwrap_or_else(|| stable_hex("topic", &topic_seed)),
-        wg_public_key: WireGuardPublicKey::new(wg_public_key).to_string(),
+        wg_public_key: wg_public_key.to_string(),
         wg_overlay_ip: overlay_ip.to_string(),
         bootstrap_peers: options.bootstrap_peers,
         join_invite: options.join_invite,
@@ -293,7 +298,9 @@ fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState
         persisted: state,
         paths,
     };
-    validate_loaded_state(&loaded)?;
+    validate_loaded_state_metadata(&loaded)?;
+    write_wireguard_private_key(&loaded.paths, &wg_private_key)?;
+    validate_wireguard_key(&loaded)?;
     write_state(&loaded.paths, &loaded.persisted)?;
     Ok(loaded)
 }
@@ -526,6 +533,12 @@ fn validate_schema_version(found: u32) -> NodeResult<()> {
 }
 
 fn validate_loaded_state(state: &LoadedNodeState) -> NodeResult<()> {
+    validate_loaded_state_metadata(state)?;
+    validate_wireguard_key(state)?;
+    Ok(())
+}
+
+fn validate_loaded_state_metadata(state: &LoadedNodeState) -> NodeResult<()> {
     state.author()?;
     state.p2panda_network_id()?;
     state.p2panda_node_seed()?;
@@ -533,6 +546,60 @@ fn validate_loaded_state(state: &LoadedNodeState) -> NodeResult<()> {
     state.bootstrap_tickets()?;
     state.trusted_fact_authors()?;
     Ok(())
+}
+
+fn validate_wireguard_key(state: &LoadedNodeState) -> NodeResult<()> {
+    let private_key = state.wireguard_private_key()?;
+    let derived_public_key = private_key.public_key();
+    if derived_public_key.as_str() != state.wireguard_public_key() {
+        return Err(NodeError::WireGuardKeyMismatch {
+            path: state.paths.wireguard_private_key.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn load_wireguard_private_key(paths: &NodePaths) -> NodeResult<WireGuardPrivateKey> {
+    let encoded = fs::read_to_string(&paths.wireguard_private_key).map_err(|source| {
+        NodeError::ReadState {
+            path: paths.wireguard_private_key.clone(),
+            source,
+        }
+    })?;
+    WireGuardPrivateKey::from_base64(encoded.trim()).map_err(|source| NodeError::Mesh { source })
+}
+
+fn write_wireguard_private_key(
+    paths: &NodePaths,
+    private_key: &WireGuardPrivateKey,
+) -> NodeResult<()> {
+    fs::create_dir_all(&paths.wireguard_dir).map_err(|source| NodeError::CreateStateDir {
+        path: paths.wireguard_dir.clone(),
+        source,
+    })?;
+    let mut temporary =
+        NamedTempFile::new_in(&paths.wireguard_dir).map_err(|source| NodeError::WriteState {
+            path: paths.wireguard_dir.clone(),
+            source,
+        })?;
+    temporary
+        .write_all(private_key.to_base64().as_bytes())
+        .and_then(|_| temporary.write_all(b"\n"))
+        .map_err(|source| NodeError::WriteState {
+            path: temporary.path().to_path_buf(),
+            source,
+        })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|source| NodeError::WriteState {
+            path: temporary.path().to_path_buf(),
+            source,
+        })?;
+    temporary
+        .persist_noclobber(&paths.wireguard_private_key)
+        .map_err(|error| persist_error(paths, error.error))?;
+    sync_state_dir(&paths.wireguard_dir)
 }
 
 fn random_seed_hex(label: &'static str) -> String {
@@ -578,6 +645,15 @@ mod tests {
         assert_eq!(reopened.node_id_str(), "node-a");
         assert_eq!(reopened.principal_id(), "node:node-a");
         assert!(reopened.wireguard_overlay_ip().starts_with("fd"));
+        assert_eq!(
+            reopened
+                .wireguard_private_key()
+                .expect("private key")
+                .public_key()
+                .as_str(),
+            reopened.wireguard_public_key()
+        );
+        assert!(reopened.paths().wireguard_private_key.exists());
         assert_eq!(reopened.paths().state_dir, state_dir);
         assert!(reopened.author().is_ok());
         assert!(reopened.p2panda_network_id().is_ok());
@@ -657,6 +733,12 @@ mod tests {
             copied.join("node-state.json"),
         )
         .expect("copy state");
+        fs::create_dir_all(copied.join("wireguard")).expect("create copied wireguard dir");
+        fs::copy(
+            original.join("wireguard").join("private.key"),
+            copied.join("wireguard").join("private.key"),
+        )
+        .expect("copy wireguard key");
 
         let loaded = load_node(&copied).expect("load copied state");
 
@@ -665,6 +747,32 @@ mod tests {
             loaded.paths().fact_store,
             loaded.paths().state_dir.join("facts.sqlite")
         );
+        assert_eq!(
+            loaded
+                .wireguard_private_key()
+                .expect("private key")
+                .public_key()
+                .as_str(),
+            loaded.wireguard_public_key()
+        );
+    }
+
+    #[test]
+    fn load_rejects_wireguard_key_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_dir = temp.path().join("node-a");
+        init_node(InitOptions::new(&state_dir)).expect("init node");
+        fs::write(
+            state_dir.join("wireguard").join("private.key"),
+            mvp_mesh::WireGuardPrivateKey::from_seed("different")
+                .to_base64()
+                .as_bytes(),
+        )
+        .expect("replace wireguard key");
+
+        let error = load_node(&state_dir).expect_err("mismatch fails");
+
+        assert!(matches!(error, NodeError::WireGuardKeyMismatch { .. }));
     }
 
     #[test]

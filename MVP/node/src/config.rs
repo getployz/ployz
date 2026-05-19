@@ -39,6 +39,8 @@ pub struct NodePaths {
     pub gateway_snapshot: PathBuf,
     pub dns_snapshot: PathBuf,
     pub runtime_dir: PathBuf,
+    pub wireguard_dir: PathBuf,
+    pub wireguard_private_key: PathBuf,
     pub host_network_snapshot: PathBuf,
 }
 
@@ -53,6 +55,8 @@ impl NodePaths {
             gateway_snapshot: state_dir.join("gateway.snapshot"),
             dns_snapshot: state_dir.join("dns.snapshot"),
             runtime_dir: state_dir.join("runtime"),
+            wireguard_dir: state_dir.join("wireguard"),
+            wireguard_private_key: state_dir.join("wireguard").join("private.key"),
             host_network_snapshot: state_dir.join("host-network.snapshot"),
             state_dir,
         }
