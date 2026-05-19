@@ -694,8 +694,8 @@ async fn write_source_operation(
         .await
         .map_err(|error| format!("write source deploy recovery operation: {error}"))?;
     write
-        .operation()
-        .cloned()
+        .operation
+        .clone()
         .ok_or_else(|| "source deploy recovery operation was already present".to_string())
 }
 

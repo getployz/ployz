@@ -272,12 +272,12 @@ impl PandaNetFactNode {
             .map_err(|error| PandaNetTransportError::FactStore {
                 message: error.to_string(),
             })?;
-        if let Some(operation) = write.operation() {
+        if let Some(operation) = write.operation.as_ref() {
             self.append_operation(operation).await?;
-        } else if !matches!(write.outcome(), PandaFactWriteOutcome::AlreadyPresent(_)) {
+        } else if !matches!(&write.outcome, PandaFactWriteOutcome::AlreadyPresent(_)) {
             return Err(PandaNetTransportError::MissingLocalOperation);
         }
-        Ok(write.into_outcome())
+        Ok(write.outcome)
     }
 
     pub async fn import_next_fact(

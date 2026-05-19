@@ -104,10 +104,10 @@ fn environment_fact_outcome(
     match outcome {
         PandaFactWriteOutcome::Inserted(metadata)
         | PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenEnvironmentFact {
-            key: metadata.key().clone(),
+            key: metadata.key.clone(),
         }),
         PandaFactWriteOutcome::Conflict(metadata) => Err(EnvironmentError::FactConflict {
-            key: metadata.key().clone(),
+            key: metadata.key.clone(),
         }),
     }
 }

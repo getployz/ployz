@@ -70,17 +70,17 @@ impl DeployFactWriter for PandaDeployFactWriter {
 fn deploy_fact_outcome(outcome: PandaFactWriteOutcome) -> DeployResult<WrittenDeployFact> {
     match outcome {
         PandaFactWriteOutcome::Inserted(metadata) => Ok(WrittenDeployFact::inserted(
-            metadata.key().clone(),
-            metadata.content_hash().clone(),
+            metadata.key.clone(),
+            metadata.content_hash.clone(),
         )),
         PandaFactWriteOutcome::AlreadyPresent(metadata) => Ok(WrittenDeployFact::already_present(
-            metadata.key().clone(),
-            metadata.content_hash().clone(),
+            metadata.key.clone(),
+            metadata.content_hash.clone(),
         )),
         PandaFactWriteOutcome::Conflict(metadata) => Err(DeployError::DeployFactConflict {
-            key: metadata.key().clone(),
-            principal: metadata.author().clone(),
-            content_hash: metadata.content_hash().clone(),
+            key: metadata.key.clone(),
+            principal: metadata.author.clone(),
+            content_hash: metadata.content_hash.clone(),
         }),
     }
 }

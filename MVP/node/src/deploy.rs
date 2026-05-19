@@ -288,8 +288,8 @@ async fn reserve_serving_epoch(
         PandaFactWriteOutcome::Conflict(metadata) => Err(NodeError::Deploy {
             source: DeployError::DeployFactConflict {
                 key,
-                principal: metadata.author().clone(),
-                content_hash: metadata.content_hash().clone(),
+                principal: metadata.author.clone(),
+                content_hash: metadata.content_hash.clone(),
             },
         }),
     }
