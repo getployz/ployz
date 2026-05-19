@@ -12,7 +12,10 @@ use mvp_node::{
     InitOptions, init_node, node_agent_grant, register_node_agent_services_with_runtime,
 };
 use mvp_projection::ServiceName;
-use mvp_runtime::{DockerRuntime, DockerRuntimeConfig, RuntimeBackend, RuntimeInstanceState};
+use mvp_runtime::{
+    ContainerNetworkBackend, DockerBridgeNetwork, DockerBridgeNetworkConfig, DockerRuntime,
+    DockerRuntimeConfig, RuntimeBackend, RuntimeInstanceState,
+};
 
 #[tokio::test]
 async fn docker_node_agent_starts_and_stops_container_through_runtime_contract() {
@@ -24,6 +27,16 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
             .with_node_id("node-a"),
     )
     .expect("init node");
+    let bridge = match DockerBridgeNetwork::connect(DockerBridgeNetworkConfig::new(
+        format!("ployz-mvp-node-agent-test-{}", std::process::id()),
+        state.container_subnet(),
+    )) {
+        Ok(network) => Arc::new(network),
+        Err(error) => {
+            eprintln!("skipping Docker node-agent integration test: {error}");
+            return;
+        }
+    };
     let config = DockerRuntimeConfig::new(
         state.node_id(),
         state.paths().runtime_dir.clone(),
@@ -36,7 +49,8 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
     ])
     .with_readiness_timeout(Duration::from_secs(10))
     .with_stop_timeout(Duration::from_secs(1));
-    let docker_runtime = match DockerRuntime::connect(config) {
+    let docker_runtime = match DockerRuntime::connect_with_container_network(config, bridge.clone())
+    {
         Ok(runtime) => Arc::new(runtime),
         Err(error) => {
             eprintln!("skipping Docker node-agent integration test: {error}");
@@ -79,6 +93,7 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
         mvp_deploy::decode(response.payload(), "start reply").expect("start reply");
     assert_eq!(reply.outcome, InstanceStartOutcome::Ready);
     let backend = reply.backend.expect("backend endpoint");
+    assert!(backend.address.starts_with("10.210."));
 
     bus.request(
         &requester,
@@ -127,4 +142,5 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
             .iter()
             .all(|instance| instance.instance_id != instance_id)
     );
+    bridge.remove().expect("remove bridge network");
 }

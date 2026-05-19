@@ -792,7 +792,15 @@ fn docker_runtime_backend(
     if let Some(command) = command {
         config = config.with_command(command.iter().cloned());
     }
-    let runtime = mvp_runtime::DockerRuntime::connect(config)
+    let network = mvp_runtime::DockerBridgeNetwork::connect(mvp_runtime::DockerBridgeNetworkConfig::new(
+        format!("ployz-mvp-{}", state.node_id_str()),
+        state.container_subnet(),
+    ))
+    .map_err(|source| NodeError::RuntimeBackend { source })?;
+    let runtime = mvp_runtime::DockerRuntime::connect_with_container_network(
+        config,
+        Arc::new(network),
+    )
         .map_err(|source| NodeError::RuntimeBackend { source })?;
     Ok(Some(Arc::new(runtime)))
 }

@@ -195,6 +195,8 @@ Evidence:
 
 ### Unit 4: Runtime Network Attachment
 
+Status: complete in checkpoint pending push.
+
 Files:
 
 - `MVP/runtime/src/docker/backend.rs`
@@ -204,17 +206,22 @@ Files:
 
 Work:
 
-- Let Docker runtime accept a container network backend/config.
-- Start containers on the bridge with static service IPs.
-- Return overlay endpoint addresses from Docker inspect/attachment metadata.
-- Preserve process fixture behavior.
+- [x] Let Docker runtime accept a container network backend/config.
+- [x] Start containers on the bridge with static service IPs.
+- [x] Return overlay endpoint addresses from Docker inspect/attachment metadata.
+- [x] Preserve process fixture behavior.
 
 Tests:
 
-- Docker runtime starts/list/adopts with overlay endpoint,
-- changed revision preserves service IP policy or intentionally moves to a new
+- [x] Docker runtime starts/list/adopts with overlay endpoint,
+- [x] changed revision preserves service IP policy or intentionally moves to a new
   deterministic IP,
-- node-agent Docker RPC returns overlay endpoint.
+- [x] node-agent Docker RPC returns overlay endpoint.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime docker_node_agent`
 
 ### Unit 5: Container-Facing Service DNS
 
