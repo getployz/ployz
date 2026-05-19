@@ -243,8 +243,11 @@ Acceptance:
 
 ### Slice 2: Real WireGuard Backend And Overlay Adoption
 
-Status: planned. Slice plan:
+Status: complete except privileged smoke execution in this non-root
+environment. Slice plan:
 `docs/plans/2026-05-20-004-feat-mvp-wireguard-backend-slice.md`.
+Key checkpoints: `d2093145`, `1cedd947`, `64e11cc1`, `b07edcc8`,
+`d784899b`.
 
 Goal: make the existing mesh plan apply to real Linux WireGuard state and keep
 it alive independently of the daemon.
