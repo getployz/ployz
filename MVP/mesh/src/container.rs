@@ -97,6 +97,11 @@ pub struct ContainerIp(Ipv4Addr);
 
 impl ContainerIp {
     #[must_use]
+    pub fn new(value: Ipv4Addr) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
     pub fn address(self) -> Ipv4Addr {
         self.0
     }

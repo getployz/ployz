@@ -3355,6 +3355,7 @@ dependencies = [
  "futures-util",
  "mvp-deploy",
  "mvp-identity",
+ "mvp-mesh",
  "mvp-projection",
  "serde",
  "serde_json",

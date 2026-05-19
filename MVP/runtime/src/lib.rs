@@ -2,6 +2,7 @@
 mod docker;
 mod error;
 mod model;
+mod network;
 mod process;
 
 #[cfg(feature = "docker")]
@@ -11,6 +12,11 @@ pub use model::{
     ManagedHttpCommand, ProcessInstance, ProcessInstanceSpec, ProcessRuntimeConfig,
     RuntimeInstance, RuntimeInstanceSpec, RuntimeInstanceState, RuntimeState,
 };
+pub use network::{
+    ContainerNetworkAttachment, ContainerNetworkBackend, ContainerNetworkState, stable_network_name,
+};
+#[cfg(feature = "docker")]
+pub use network::{DockerBridgeNetwork, DockerBridgeNetworkConfig};
 pub use process::{ProcessRuntime, run_static_http_server};
 
 pub trait RuntimeBackend: Send + Sync {
