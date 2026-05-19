@@ -97,7 +97,7 @@ mod tests {
 
     use super::{
         LABEL_INSTANCE, LABEL_MANAGED, LABEL_NODE, LABEL_REVISION, LABEL_SERVICE, LABEL_STATE,
-        labels_for,
+        instance_from_labels, labels_for,
     };
 
     #[test]
@@ -122,5 +122,58 @@ mod tests {
             Some("rev-1")
         );
         assert_eq!(labels.get(LABEL_STATE).map(String::as_str), Some("running"));
+    }
+
+    #[test]
+    fn parsed_labels_restore_runtime_instance_identity() {
+        let labels = labels_for(
+            &NodeId::new("node-a"),
+            &InstanceId::new("web-1"),
+            &ServiceName::new("web"),
+            &RevisionId::new("rev-1"),
+            RuntimeInstanceState::Draining,
+        );
+
+        let instance = instance_from_labels(
+            "ployz-mvp-node-a-web-1",
+            Some("container-id".to_string()),
+            &labels,
+            "172.18.0.2:8080".to_string(),
+        )
+        .expect("labels should parse");
+
+        assert_eq!(instance.instance_id, InstanceId::new("web-1"));
+        assert_eq!(instance.service, ServiceName::new("web"));
+        assert_eq!(instance.revision, RevisionId::new("rev-1"));
+        assert_eq!(instance.state, RuntimeInstanceState::Draining);
+        assert_eq!(instance.backend_id.as_deref(), Some("container-id"));
+        assert_eq!(
+            instance.backend_name.as_deref(),
+            Some("ployz-mvp-node-a-web-1")
+        );
+    }
+
+    #[test]
+    fn parsed_labels_reject_missing_identity() {
+        let labels = labels_for(
+            &NodeId::new("node-a"),
+            &InstanceId::new("web-1"),
+            &ServiceName::new("web"),
+            &RevisionId::new("rev-1"),
+            RuntimeInstanceState::Running,
+        )
+        .into_iter()
+        .filter(|(key, _value)| key != LABEL_INSTANCE)
+        .collect();
+
+        let error = instance_from_labels(
+            "ployz-mvp-node-a-web-1",
+            Some("container-id".to_string()),
+            &labels,
+            "172.18.0.2:8080".to_string(),
+        )
+        .expect_err("missing instance label should be rejected");
+
+        assert!(error.to_string().contains(LABEL_INSTANCE));
     }
 }

@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use mvp_bus::{Grant, IslandId, PrincipalId, Subject};
 use mvp_deploy::{
-    DeployId, InstanceCommandReply, InstanceCommandRequest, InstanceId, InstanceStartOutcome,
-    RevisionId, StopInstanceRequest, encode,
+    DeployId, DrainInstanceRequest, InstanceCommandReply, InstanceCommandRequest, InstanceId,
+    InstanceStartOutcome, RevisionId, StopInstanceRequest, encode,
 };
 use mvp_node::{
     InitOptions, init_node, node_agent_grant, register_node_agent_services_with_runtime,
 };
 use mvp_projection::ServiceName;
-use mvp_runtime::{DockerRuntime, DockerRuntimeConfig, RuntimeBackend};
+use mvp_runtime::{DockerRuntime, DockerRuntimeConfig, RuntimeBackend, RuntimeInstanceState};
 
 #[tokio::test]
 async fn docker_node_agent_starts_and_stops_container_through_runtime_contract() {
@@ -79,6 +79,31 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
         mvp_deploy::decode(response.payload(), "start reply").expect("start reply");
     assert_eq!(reply.outcome, InstanceStartOutcome::Ready);
     let backend = reply.backend.expect("backend endpoint");
+
+    bus.request(
+        &requester,
+        Subject::parse("node.node-a.rpc.drain_instance").expect("subject"),
+        encode(
+            &DrainInstanceRequest {
+                deploy_id: DeployId::new("deploy-1"),
+                cleanup_target: backend.clone(),
+            },
+            "drain request",
+        )
+        .expect("request"),
+        Duration::from_secs(15),
+    )
+    .await
+    .expect("drain request");
+    assert_eq!(
+        docker_runtime
+            .list()
+            .expect("list containers")
+            .iter()
+            .find(|instance| instance.instance_id == instance_id)
+            .map(|instance| instance.state.clone()),
+        Some(RuntimeInstanceState::Draining)
+    );
 
     bus.request(
         &requester,
