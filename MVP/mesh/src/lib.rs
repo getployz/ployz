@@ -5,6 +5,8 @@ mod invite;
 mod linux;
 mod snapshot;
 mod wireguard;
+#[cfg(all(feature = "linux-wireguard", target_os = "linux"))]
+mod wireguard_linux;
 
 pub use actor::{WireGuardActorHandle, WireGuardActorStatus};
 pub use domain::{
@@ -28,3 +30,5 @@ pub use snapshot::{
 pub use wireguard::{
     MemoryWireGuardBackend, WireGuardBackend, WireGuardPeer, WireGuardPeerPlan, plan_full_mesh,
 };
+#[cfg(all(feature = "linux-wireguard", target_os = "linux"))]
+pub use wireguard_linux::{LinuxWireGuardBackend, LinuxWireGuardConfig};
