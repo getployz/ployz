@@ -22,6 +22,7 @@ pub use model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
     ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
+    ServingCertificateProjection,
 };
 pub use reducer::{payload_matches_key, reduce_facts};
 pub use snapshot::{

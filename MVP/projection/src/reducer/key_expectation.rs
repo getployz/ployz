@@ -126,6 +126,17 @@ pub fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPa
                 && parse_lease_epoch(&epoch) == Some(fact.epoch())
                 && LeaseContentHash::from_hex(&claim_hash).ok() == Some(fact.claim_hash())
         }
+        (
+            ParsedFactKey::AcmeCertificateActivated {
+                hostname,
+                issued_at,
+            },
+            FactKind::AcmeCertificateActivated,
+            ProjectionFactPayload::AcmeCertificateActivated(fact),
+        ) => {
+            AcmeHostname::parse(&hostname).ok().as_ref() == Some(&fact.hostname)
+                && issued_at.parse::<u64>().ok() == Some(fact.issued_at_secs)
+        }
         _ => false,
     }
 }

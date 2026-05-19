@@ -487,7 +487,8 @@ pub fn lease_state_from_source(
             | ProjectionFactPayload::GatewayCommit(_)
             | ProjectionFactPayload::DnsCommit(_)
             | ProjectionFactPayload::AcmeHttp01Presented(_)
-            | ProjectionFactPayload::AcmeHttp01Cleared(_) => {}
+            | ProjectionFactPayload::AcmeHttp01Cleared(_)
+            | ProjectionFactPayload::AcmeCertificateActivated(_) => {}
         }
     }
     Ok(book.state(challenge.lease_resource(), now))

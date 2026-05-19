@@ -142,6 +142,40 @@ pub struct IssuedCertificate {
     pub not_after_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeCertificateActivatedFact {
+    pub hostname: AcmeHostname,
+    pub order_url: AcmeOrderUrl,
+    pub fullchain_pem: String,
+    pub private_key_pem: String,
+    pub issued_at_secs: u64,
+    pub not_before_secs: Option<u64>,
+    pub not_after_secs: Option<u64>,
+}
+
+impl AcmeCertificateActivatedFact {
+    #[must_use]
+    pub fn from_issued(certificate: IssuedCertificate) -> Self {
+        Self {
+            hostname: certificate.hostname,
+            order_url: certificate.order_url,
+            fullchain_pem: certificate.fullchain_pem,
+            private_key_pem: certificate.private_key_pem,
+            issued_at_secs: certificate.issued_at_secs,
+            not_before_secs: certificate.not_before_secs,
+            not_after_secs: certificate.not_after_secs,
+        }
+    }
+
+    #[must_use]
+    pub fn fact_key(&self) -> String {
+        format!(
+            "/facts/acme/certificate/{}/activated/{}",
+            self.hostname, self.issued_at_secs
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcmeAuthorizationStatus {
     Pending,

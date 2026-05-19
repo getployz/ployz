@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use mvp_acme::{AcmeChallengeId, AcmeHttp01ClearedFact, AcmeHttp01PresentedFact};
+use mvp_acme::{
+    AcmeCertificateActivatedFact, AcmeChallengeId, AcmeHostname, AcmeHttp01ClearedFact,
+    AcmeHttp01PresentedFact,
+};
 use mvp_bus::{FactContentHash, FactPayload, IslandId, PrincipalId};
 use mvp_lease::{
     LeaseClaimed, LeaseContentHash, LeaseEpoch, LeaseFact, LeaseHolder, LeaseRelease,
@@ -15,6 +18,7 @@ use crate::model::{
     AcmeHttp01ChallengeKey, AcmeHttp01ChallengeProjection, DnsProjection, DnsRecordProjection,
     GatewayProjection, GatewayRouteProjection, NodeProjection, ProjectionIgnoreReason,
     ProjectionState, ProjectionStatus, RemovingNodeProjection, ServiceProjection,
+    ServingCertificateProjection,
 };
 use crate::source::{FactCandidate, FactKind};
 use mvp_identity::NodeId;
@@ -60,6 +64,7 @@ struct Reducer<'a> {
     lease_releases: BTreeMap<LeaseResource, Vec<CommitCandidate<LeaseReleased>>>,
     acme_presented: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01PresentedFact>>>,
     acme_cleared: BTreeMap<AcmeHttp01ChallengeKey, Vec<CommitCandidate<AcmeHttp01ClearedFact>>>,
+    certificates: BTreeMap<AcmeHostname, Vec<CommitCandidate<AcmeCertificateActivatedFact>>>,
     node_removals: BTreeMap<NodeId, Vec<CommitCandidate<NodeRemovalStartedFact>>>,
     node_tombstones: BTreeMap<NodeId, u64>,
     node_conflicts: BTreeMap<NodeId, u64>,
@@ -81,6 +86,7 @@ impl<'a> Reducer<'a> {
             lease_releases: BTreeMap::new(),
             acme_presented: BTreeMap::new(),
             acme_cleared: BTreeMap::new(),
+            certificates: BTreeMap::new(),
             node_removals: BTreeMap::new(),
             node_tombstones: BTreeMap::new(),
             node_conflicts: BTreeMap::new(),
@@ -251,6 +257,19 @@ impl<'a> Reducer<'a> {
                         fact,
                     });
             }
+            (
+                FactKind::AcmeCertificateActivated,
+                ProjectionFactPayload::AcmeCertificateActivated(fact),
+            ) => {
+                self.certificates
+                    .entry(fact.hostname.clone())
+                    .or_default()
+                    .push(CommitCandidate {
+                        author,
+                        content_hash,
+                        fact,
+                    });
+            }
             _ => self.ignore(ProjectionIgnoreReason::MalformedPayload),
         }
     }
@@ -259,6 +278,7 @@ impl<'a> Reducer<'a> {
         self.state.removing_nodes = self.project_node_removals();
         self.state.tombstoned_nodes = std::mem::take(&mut self.node_tombstones);
         self.state.acme_http01 = self.project_acme_http01();
+        self.state.certificates = self.project_certificates();
         self.record_lease_supersession();
         if let Some(commit) = self.serving_head() {
             self.state.gateway = Some(project_gateway_from_serving(&commit));
@@ -332,6 +352,37 @@ impl<'a> Reducer<'a> {
                     claim_hash: presented.fact.claim_hash(),
                     published_at: presented.fact.published_at(),
                     expires_at: active_lease.expires_at,
+                },
+            );
+        }
+        projected
+    }
+
+    fn project_certificates(&mut self) -> BTreeMap<AcmeHostname, ServingCertificateProjection> {
+        let mut projected = BTreeMap::new();
+        let hostnames = self.certificates.keys().cloned().collect::<Vec<_>>();
+        for hostname in hostnames {
+            let Some(candidates) = self.certificates.get(&hostname) else {
+                continue;
+            };
+            let Some(selected) = select_head(
+                candidates.iter(),
+                |fact| fact.issued_at_secs,
+                |fact| fact.order_url.as_str(),
+            ) else {
+                continue;
+            };
+            self.ignore_many(ProjectionIgnoreReason::Superseded, selected.superseded);
+            projected.insert(
+                hostname,
+                ServingCertificateProjection {
+                    hostname: selected.fact.hostname.clone(),
+                    order_url: selected.fact.order_url.clone(),
+                    fullchain_pem: selected.fact.fullchain_pem.clone(),
+                    private_key_pem: selected.fact.private_key_pem.clone(),
+                    issued_at_secs: selected.fact.issued_at_secs,
+                    not_before_secs: selected.fact.not_before_secs,
+                    not_after_secs: selected.fact.not_after_secs,
                 },
             );
         }
