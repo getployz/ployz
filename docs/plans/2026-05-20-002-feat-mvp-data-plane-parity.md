@@ -44,6 +44,8 @@ In scope:
 - Pebble-backed ACME HTTP-01 issuance through `instant-acme`.
 - A real install/bootstrap flow usable by the parity smoke.
 - A cross-machine smoke with three equal nodes: `node-a`, `node-b`, `node-c`.
+- Additional slices when a subsystem needs its own planning/verification loop
+  to stay production-shaped.
 
 Out of scope until the parity smoke passes:
 
@@ -85,6 +87,10 @@ Out of scope until the parity smoke passes:
   running containers serving.
 - R14: Verification stays green with focused tests per slice and a final
   workspace plus parity smoke gate.
+- R15: New production files stay small enough to review and own one concept.
+  If a file approaches 1,000 LOC or mixes runtime, networking, serving, ACME,
+  install, and orchestration responsibilities, split by concept before adding
+  more behavior.
 
 ## Current Architecture To Preserve
 
@@ -145,6 +151,14 @@ The parity smoke can be the first caller, but install/bootstrap must leave a
 real command or script surface that a Linux operator can run outside the test
 harness.
 
+### Slice count can grow to protect quality
+
+The original goal asked for 5-7 planned slices as a scoping signal, not a hard
+limit. If implementation research shows that Docker runtime, network
+attachment, service DNS, Pingora, ACME issuance, install, or smoke harness work
+would become a mixed-responsibility patch, split the work into additional
+slice plans before coding.
+
 ## Implementation Slices
 
 Execution workflow:
@@ -152,11 +166,23 @@ Execution workflow:
 - Keep this document as the single top-level plan and scope boundary.
 - Before implementing each slice, generate a focused slice plan that names the
   exact files, trait decisions, tests, and acceptance evidence for that slice.
+- Split a slice before implementation if it would create a god module, cross a
+  responsibility boundary, or require unrelated test gates to pass together.
 - Execute slices in LFG-style autonomous loops: plan, implement, review, test,
   fix failures, commit, and push regularly.
 - Do not create PRs as part of the slice loop unless explicitly requested.
 - Do not start a later slice until the current slice has a committed,
   pushed checkpoint and its slice-specific evidence is recorded.
+
+Quality gates for every slice:
+
+- The slice plan must name the owner concept for each new production module.
+- No handler or runtime file may own orchestration, substrate mutation,
+  persistence, and presentation at once.
+- No Docker, WireGuard, Pingora, Pebble, or install detail may leak into
+  command-domain crates.
+- Before commit, run a small LOC/responsibility audit on changed production
+  files and split obvious mixed concepts immediately.
 
 ### Slice 1: Real Runtime Backend Boundary
 
