@@ -35,13 +35,13 @@ impl ProcessRuntimeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcessInstanceSpec {
+pub struct RuntimeInstanceSpec {
     pub instance_id: InstanceId,
     pub service: ServiceName,
     pub revision: RevisionId,
 }
 
-impl ProcessInstanceSpec {
+impl RuntimeInstanceSpec {
     #[must_use]
     pub fn new(instance_id: InstanceId, service: ServiceName, revision: RevisionId) -> Self {
         Self {
@@ -53,19 +53,23 @@ impl ProcessInstanceSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProcessInstance {
+pub struct RuntimeInstance {
     pub instance_id: InstanceId,
     pub service: ServiceName,
     pub revision: RevisionId,
     pub address: String,
     pub pid: Option<u32>,
-    pub state: RuntimeState,
+    pub state: RuntimeInstanceState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeState {
+pub enum RuntimeInstanceState {
     Prepared,
     Running,
     Draining,
     Stopped,
 }
+
+pub type ProcessInstanceSpec = RuntimeInstanceSpec;
+pub type ProcessInstance = RuntimeInstance;
+pub type RuntimeState = RuntimeInstanceState;

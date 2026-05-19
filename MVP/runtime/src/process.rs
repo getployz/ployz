@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use mvp_deploy::InstanceId;
 
 use crate::{
-    ManagedHttpCommand, ProcessInstance, ProcessInstanceSpec, ProcessRuntimeConfig, RuntimeError,
-    RuntimeResult, RuntimeState,
+    ManagedHttpCommand, ProcessInstance, ProcessInstanceSpec, ProcessRuntimeConfig, RuntimeBackend,
+    RuntimeError, RuntimeResult, RuntimeState,
 };
 
 #[derive(Debug, Clone)]
@@ -208,6 +208,28 @@ impl ProcessRuntime {
 
     fn metadata_path(&self, instance_id: &InstanceId) -> PathBuf {
         self.instance_dir(instance_id).join("instance.json")
+    }
+}
+
+impl RuntimeBackend for ProcessRuntime {
+    fn prepare(&self, spec: &ProcessInstanceSpec) -> RuntimeResult<ProcessInstance> {
+        Self::prepare(self, spec)
+    }
+
+    fn start(&self, spec: &ProcessInstanceSpec) -> RuntimeResult<ProcessInstance> {
+        Self::start(self, spec)
+    }
+
+    fn drain(&self, instance_id: &InstanceId) -> RuntimeResult<Option<ProcessInstance>> {
+        Self::drain(self, instance_id)
+    }
+
+    fn stop(&self, instance_id: &InstanceId) -> RuntimeResult<Option<ProcessInstance>> {
+        Self::stop(self, instance_id)
+    }
+
+    fn list(&self) -> RuntimeResult<Vec<ProcessInstance>> {
+        Self::list(self)
     }
 }
 
