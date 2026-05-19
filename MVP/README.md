@@ -76,10 +76,10 @@ product commands that return explicit not-wired errors until their three-server
 slices land.
 
 The current membership path proves durable product state, stable restart-safe
-tickets, invite/admission handoff, and two-node membership convergence over
-p2panda-net. Three-node convergence still needs authority/trust propagation so
-non-bootstrap nodes learn later admitted node authors without manual local state
-updates.
+tickets, invite/admission handoff, and three-node membership convergence over
+p2panda-net. The bootstrap node publishes durable admitted-peer facts, and
+already-joined nodes consume those facts to learn later admitted node authors
+without manual local state updates.
 
 ## Maintainer Notes
 

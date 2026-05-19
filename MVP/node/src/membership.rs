@@ -2,17 +2,19 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mvp_bus::{FactKeyPattern, Grant, PrincipalId, harness::InMemoryBus};
+use mvp_bus::{BusAuthority, FactKey, FactKeyPattern, Grant, PrincipalId, harness::InMemoryBus};
 use mvp_mesh::{IrohEndpointId, MeshError, WireGuardPublicKey, joined_fact_key};
 use mvp_p2panda_facts::{
-    PandaFactAuthor, PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
-    SharedPandaFactStore,
+    PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig,
+    PandaTrustedAuthorKey, SharedPandaFactStore,
 };
 use mvp_p2panda_transport::{
     PandaNetBindConfig, PandaNetFactImportOutcome, PandaNetFactNode, PandaNetFactNodeConfig,
     PandaNetNodeConfig, PandaNetNodeTicket, PandaNetTransportError,
 };
-use mvp_projection::{NodeJoinedFact, ProjectionFactPayload};
+use mvp_projection::{
+    NodeJoinedFact, PeerAdmittedFact, ProjectionFactPayload, payload_matches_key,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
@@ -248,10 +250,11 @@ pub async fn run_daemon_once(
     options: DaemonOptions,
 ) -> NodeResult<DaemonReport> {
     let state = load_node(state_dir)?;
-    let (mut fact_node, writer_session, author) = spawn_fact_node(&state).await?;
+    let (mut fact_node, writer_session, author, authority) = spawn_fact_node(&state).await?;
     let ticket = ensure_node_ticket(&state)?;
     write_node_ticket(&state, &ticket)?;
     publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
+    publish_admitted_peers(&mut fact_node, &state, &writer_session, &author).await?;
     let started = std::time::Instant::now();
     let mut last_advertised = started;
     let mut imported_batches = 0;
@@ -259,6 +262,9 @@ pub async fn run_daemon_once(
     while started.elapsed() < options.run_for {
         if last_advertised.elapsed() >= Duration::from_millis(100) {
             publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
+            let current_state = load_node(state.paths().state_dir.clone())?;
+            publish_admitted_peers(&mut fact_node, &current_state, &writer_session, &author)
+                .await?;
             last_advertised = std::time::Instant::now();
         }
         match fact_node
@@ -271,6 +277,7 @@ pub async fn run_daemon_once(
                     .iter()
                     .filter(|outcome| matches!(outcome, PandaNetFactImportOutcome::Imported))
                     .count() as u64;
+                apply_peer_admissions(&mut fact_node, &state, &writer_session, &authority).await?;
             }
             Ok(None) => {
                 fact_node
@@ -304,6 +311,138 @@ fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {
     )
 }
 
+async fn publish_admitted_peers(
+    fact_node: &mut PandaNetFactNode,
+    state: &LoadedNodeState,
+    session: &mvp_bus::BusSession,
+    author: &PandaFactAuthor,
+) -> NodeResult<()> {
+    for peer in state.admitted_peers() {
+        let Some(node_id) = peer.node_id.clone() else {
+            continue;
+        };
+        let Some(invite_id) = peer.invite_id.clone() else {
+            continue;
+        };
+        let fact_key = admitted_peer_fact_key(&node_id, 1)?;
+        let fact_payload = ProjectionFactPayload::PeerAdmitted(PeerAdmittedFact {
+            node_id: mvp_identity::NodeId::new(node_id),
+            principal_id: peer.principal_id,
+            author_key_hex: peer.author_key_hex,
+            p2panda_ticket: peer.p2panda_ticket,
+            invite_id,
+            epoch: 1,
+        })
+        .to_fact_bytes()
+        .map(Into::into)
+        .map_err(|error| NodeError::Mesh {
+            source: MeshError::Backend {
+                operation: "serialize admitted peer fact",
+                message: error.to_string(),
+            },
+        })?;
+        fact_node
+            .publish_fact_payload(session, author, fact_key, fact_payload)
+            .await
+            .map_err(|source| NodeError::Transport { source })?;
+    }
+    Ok(())
+}
+
+async fn apply_peer_admissions(
+    fact_node: &mut PandaNetFactNode,
+    state: &LoadedNodeState,
+    session: &mvp_bus::BusSession,
+    authority: &BusAuthority,
+) -> NodeResult<()> {
+    let store = fact_node.store();
+    let pattern = FactKeyPattern::parse("/facts/peer/>").expect("valid peer fact pattern");
+    let candidates = store
+        .list_fact_candidates(&state.island(), &pattern, session)
+        .await
+        .map_err(|source| NodeError::FactSource { source })?;
+    let payloads = store
+        .read_fact_payloads(&state.island(), &candidates, session)
+        .await
+        .map_err(|source| NodeError::FactSource { source })?;
+    for candidate in candidates {
+        let Some(payload) = payloads.get(candidate.content_hash()) else {
+            continue;
+        };
+        let Ok(ProjectionFactPayload::PeerAdmitted(fact)) =
+            ProjectionFactPayload::from_fact_bytes(payload.as_bytes())
+        else {
+            continue;
+        };
+        let fact_payload = ProjectionFactPayload::PeerAdmitted(fact.clone());
+        if !payload_matches_key(&candidate, &fact_payload) {
+            continue;
+        }
+        if fact.node_id == state.node_id() {
+            continue;
+        }
+        let peer = BootstrapPeerConfig::new(
+            Some(fact.node_id.as_str().to_string()),
+            fact.principal_id.clone(),
+            fact.author_key_hex.clone(),
+            fact.p2panda_ticket.clone(),
+            Some(fact.invite_id.clone()),
+        );
+        let updated = record_bootstrap_peer(state.paths().state_dir.clone(), peer.clone())?;
+        install_peer_runtime(fact_node, &updated, authority, &peer).await?;
+    }
+    Ok(())
+}
+
+async fn install_peer_runtime(
+    fact_node: &PandaNetFactNode,
+    state: &LoadedNodeState,
+    authority: &BusAuthority,
+    peer: &BootstrapPeerConfig,
+) -> NodeResult<()> {
+    authority.grant_in(
+        state.island(),
+        PrincipalId::new(peer.principal_id.clone()),
+        product_fact_grant(),
+    );
+    let author_key = PandaFactAuthorKey::parse_hex(&peer.author_key_hex)
+        .map_err(|source| NodeError::InvalidAuthorKey { source })?;
+    fact_node
+        .store()
+        .trust_author_key(
+            &state.island(),
+            PrincipalId::new(peer.principal_id.clone()),
+            author_key,
+        )
+        .await
+        .map_err(|source| NodeError::FactStore { source })?;
+    let node_info = PandaNetNodeTicket::parse(&peer.p2panda_ticket)
+        .map_err(|source| NodeError::InvalidBootstrapTicket { source })?
+        .into_node_info()
+        .map_err(|source| NodeError::InvalidBootstrapTicket { source })?;
+    fact_node
+        .add_node_info(node_info)
+        .await
+        .map_err(|source| NodeError::Transport { source })
+}
+
+fn admitted_peer_fact_key(node_id: &str, epoch: u64) -> NodeResult<FactKey> {
+    FactKey::parse(format!("/facts/peer/{node_id}/admitted/{epoch}")).map_err(|error| {
+        NodeError::Mesh {
+            source: MeshError::Backend {
+                operation: "build admitted peer fact key",
+                message: error.to_string(),
+            },
+        }
+    })
+}
+
+fn product_fact_grant() -> Grant {
+    Grant::empty()
+        .with_fact_write(FactKeyPattern::parse("/facts/>").expect("valid product fact grant"))
+        .with_fact_read(FactKeyPattern::parse("/facts/>").expect("valid product fact grant"))
+}
+
 fn ensure_node_ticket(state: &LoadedNodeState) -> NodeResult<String> {
     let ticket = PandaNetNodeTicket::from_socket_addr(
         state.p2panda_node_seed()?,
@@ -318,15 +457,16 @@ fn ensure_node_ticket(state: &LoadedNodeState) -> NodeResult<String> {
 
 async fn spawn_fact_node(
     state: &LoadedNodeState,
-) -> NodeResult<(PandaNetFactNode, mvp_bus::BusSession, PandaFactAuthor)> {
+) -> NodeResult<(
+    PandaNetFactNode,
+    mvp_bus::BusSession,
+    PandaFactAuthor,
+    BusAuthority,
+)> {
     let (raw_bus, authority) = InMemoryBus::new_with_authority();
-    let fact_grant = || {
-        Grant::empty()
-            .with_fact_write(FactKeyPattern::parse("/facts/>").expect("valid product fact grant"))
-            .with_fact_read(FactKeyPattern::parse("/facts/>").expect("valid product fact grant"))
-    };
     let trusted_authors = state.trusted_fact_authors()?;
-    let writer_session = authority.grant_in(state.island(), state.principal(), fact_grant());
+    let writer_session =
+        authority.grant_in(state.island(), state.principal(), product_fact_grant());
     let replica_session = authority.grant_in(
         writer_session.island().clone(),
         PrincipalId::new(format!("{}:replica", writer_session.principal().as_str())),
@@ -334,7 +474,11 @@ async fn spawn_fact_node(
             .with_fact_read(FactKeyPattern::parse("/facts/>").expect("valid product fact grant")),
     );
     for trusted in &trusted_authors {
-        authority.grant_in(state.island(), trusted.principal().clone(), fact_grant());
+        authority.grant_in(
+            state.island(),
+            trusted.principal().clone(),
+            product_fact_grant(),
+        );
     }
     let author = state.author()?;
     let mut store_config =
@@ -399,7 +543,7 @@ async fn spawn_fact_node(
     ))
     .await
     .map_err(|source| NodeError::Transport { source })?;
-    Ok((fact_node, writer_session, author))
+    Ok((fact_node, writer_session, author, authority))
 }
 
 async fn publish_self_join(
@@ -566,38 +710,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admitted_product_daemons_converge_join_facts_over_p2panda_net() {
+    async fn three_admitted_product_daemons_converge_join_facts_over_p2panda_net() {
         let temp = tempfile::tempdir().expect("tempdir");
         let node_a = temp.path().join("node-a");
         let node_b = temp.path().join("node-b");
+        let node_c = temp.path().join("node-c");
         init_node(
             InitOptions::new(&node_a)
                 .with_island("prod")
                 .with_node_id("node-a"),
         )
         .expect("init node a");
-        let token = create_invite(&node_a, Duration::from_secs(60)).expect("invite");
-        join_from_token(&node_b, &token, Some("node-b".to_string()), super::now_ms())
-            .expect("join node b");
-        let admission = create_admission_request(&node_b).expect("admission request");
-        admit_joiner(&node_a, &admission, super::now_ms()).expect("admit node b");
+        let token_b = create_invite(&node_a, Duration::from_secs(60)).expect("invite b");
+        join_from_token(
+            &node_b,
+            &token_b,
+            Some("node-b".to_string()),
+            super::now_ms(),
+        )
+        .expect("join node b");
+        let admission_b = create_admission_request(&node_b).expect("admission request b");
+        admit_joiner(&node_a, &admission_b, super::now_ms()).expect("admit node b");
 
-        let (a, b) = tokio::join!(
-            run_daemon_once(&node_a, DaemonOptions::new(Duration::from_millis(1_500))),
-            run_daemon_once(&node_b, DaemonOptions::new(Duration::from_millis(1_500)))
+        let token_c = create_invite(&node_a, Duration::from_secs(60)).expect("invite c");
+        join_from_token(
+            &node_c,
+            &token_c,
+            Some("node-c".to_string()),
+            super::now_ms(),
+        )
+        .expect("join node c");
+        let admission_c = create_admission_request(&node_c).expect("admission request c");
+        admit_joiner(&node_a, &admission_c, super::now_ms()).expect("admit node c");
+
+        let (a, b, c) = tokio::join!(
+            run_daemon_once(&node_a, DaemonOptions::new(Duration::from_millis(3_000))),
+            run_daemon_once(&node_b, DaemonOptions::new(Duration::from_millis(3_000))),
+            run_daemon_once(&node_c, DaemonOptions::new(Duration::from_millis(3_000)))
         );
         let report_a = a.expect("node a daemon");
         let report_b = b.expect("node b daemon");
+        let report_c = c.expect("node c daemon");
 
         let state_a = load_node(&node_a).expect("load node a");
         let state_b = load_node(&node_b).expect("load node b");
-        let projected_a = projected_node_count(&node_a, &[state_a.clone(), state_b.clone()]).await;
-        let projected_b = projected_node_count(&node_b, &[state_a, state_b]).await;
+        let state_c = load_node(&node_c).expect("load node c");
+        let trusted = &[state_a.clone(), state_b.clone(), state_c.clone()];
+        let projected_a = projected_node_count(&node_a, trusted).await;
+        let projected_b = projected_node_count(&node_b, trusted).await;
+        let projected_c = projected_node_count(&node_c, trusted).await;
 
         assert_eq!(
-            (projected_a, projected_b),
-            (2, 2),
-            "membership projection mismatch after reports: {report_a:?} {report_b:?}"
+            (projected_a, projected_b, projected_c),
+            (3, 3, 3),
+            "membership projection mismatch after reports: {report_a:?} {report_b:?} {report_c:?}"
         );
     }
 

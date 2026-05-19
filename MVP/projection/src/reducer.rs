@@ -156,6 +156,7 @@ impl<'a> Reducer<'a> {
             (FactKind::NodeTombstoned, ProjectionFactPayload::NodeTombstoned(fact)) => {
                 self.apply_node_tombstone(fact);
             }
+            (FactKind::PeerAdmitted, ProjectionFactPayload::PeerAdmitted(_fact)) => {}
             (FactKind::ServiceRegistered, ProjectionFactPayload::ServiceRegistered(fact)) => {
                 let key = (fact.service.clone(), fact.node_id.clone());
                 let service = ServiceProjection {
@@ -858,6 +859,10 @@ enum KeyExpectation {
         node_id: String,
         epoch: u64,
     },
+    PeerAdmitted {
+        node_id: String,
+        epoch: u64,
+    },
     ServiceRegistered {
         service: String,
         node_id: String,
@@ -920,6 +925,11 @@ pub fn payload_matches_key(candidate: &FactCandidate, payload: &ProjectionFactPa
             Some(KeyExpectation::NodeTombstoned { node_id, epoch }),
             FactKind::NodeTombstoned,
             ProjectionFactPayload::NodeTombstoned(fact),
+        ) => fact.node_id.as_str() == node_id && fact.epoch == epoch,
+        (
+            Some(KeyExpectation::PeerAdmitted { node_id, epoch }),
+            FactKind::PeerAdmitted,
+            ProjectionFactPayload::PeerAdmitted(fact),
         ) => fact.node_id.as_str() == node_id && fact.epoch == epoch,
         (
             Some(KeyExpectation::ServiceRegistered {
@@ -1043,6 +1053,11 @@ fn key_expectation(candidate: &FactCandidate) -> Option<KeyExpectation> {
                 epoch: epoch.parse().ok()?,
             })
         }
+        ["facts", "peer", node_id, "admitted", epoch]
+        | ["facts", "peer", node_id, "admitted", epoch, _] => Some(KeyExpectation::PeerAdmitted {
+            node_id: (*node_id).to_string(),
+            epoch: epoch.parse().ok()?,
+        }),
         ["facts", "service", service, node_id, "registered", epoch]
         | ["facts", "service", service, node_id, "registered", epoch, _] => {
             Some(KeyExpectation::ServiceRegistered {

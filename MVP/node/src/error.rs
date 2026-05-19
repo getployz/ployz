@@ -108,6 +108,10 @@ pub enum NodeError {
     FactStore {
         source: mvp_p2panda_facts::PandaFactError,
     },
+    #[error("fact source failed: {source}")]
+    FactSource {
+        source: mvp_projection::FactSourceError,
+    },
     #[error("p2panda transport failed: {source}")]
     Transport {
         source: mvp_p2panda_transport::PandaNetTransportError,
