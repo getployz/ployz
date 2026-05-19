@@ -5,12 +5,12 @@ use std::path::Path;
 use mvp_bus::{IslandId, PrincipalId};
 use mvp_identity::NodeId;
 use mvp_mesh::{WireGuardPublicKey, derive_overlay_ip};
-use mvp_p2panda_facts::PandaFactAuthor;
+use mvp_p2panda_facts::{PandaFactAuthor, PandaFactAuthorKey};
 use mvp_p2panda_transport::{PandaNetNetworkId, PandaNetNodeSeed, PandaNetTopic};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use crate::config::{InitOptions, NodePaths};
+use crate::config::{InitOptions, JoinedInitOptions, NodePaths, TrustedFactAuthorConfig};
 use crate::error::{NodeError, NodeResult};
 
 const STATE_SCHEMA_VERSION: u32 = 1;
@@ -27,6 +27,10 @@ struct PersistedNodeState {
     pub p2panda_topic_hex: String,
     pub wg_public_key: String,
     pub wg_overlay_ip: String,
+    #[serde(default)]
+    pub bootstrap_tickets: Vec<String>,
+    #[serde(default)]
+    pub trusted_fact_authors: Vec<TrustedFactAuthorConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +58,11 @@ impl LoadedNodeState {
     #[must_use]
     pub fn wireguard_overlay_ip(&self) -> &str {
         &self.persisted.wg_overlay_ip
+    }
+
+    #[must_use]
+    pub fn wireguard_public_key(&self) -> &str {
+        &self.persisted.wg_public_key
     }
 
     #[must_use]
@@ -98,9 +107,98 @@ impl LoadedNodeState {
         PandaNetTopic::parse_hex(&self.persisted.p2panda_topic_hex)
             .map_err(|source| NodeError::InvalidTopic { source })
     }
+
+    #[must_use]
+    pub fn p2panda_network_id_hex(&self) -> &str {
+        &self.persisted.p2panda_network_id_hex
+    }
+
+    #[must_use]
+    pub fn p2panda_topic_hex(&self) -> &str {
+        &self.persisted.p2panda_topic_hex
+    }
+
+    pub fn bootstrap_tickets(&self) -> NodeResult<Vec<mvp_p2panda_transport::PandaNetNodeTicket>> {
+        self.persisted
+            .bootstrap_tickets
+            .iter()
+            .map(|ticket| {
+                mvp_p2panda_transport::PandaNetNodeTicket::parse(ticket)
+                    .map_err(|source| NodeError::InvalidBootstrapTicket { source })
+            })
+            .collect()
+    }
+
+    pub fn trusted_fact_authors(&self) -> NodeResult<Vec<TrustedFactAuthor>> {
+        self.persisted
+            .trusted_fact_authors
+            .iter()
+            .map(|trusted| {
+                Ok(TrustedFactAuthor {
+                    principal: PrincipalId::new(trusted.principal_id.clone()),
+                    author_key: PandaFactAuthorKey::parse_hex(&trusted.author_key_hex)
+                        .map_err(|source| NodeError::InvalidAuthorKey { source })?,
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedFactAuthor {
+    principal: PrincipalId,
+    author_key: PandaFactAuthorKey,
+}
+
+impl TrustedFactAuthor {
+    #[must_use]
+    pub fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    #[must_use]
+    pub fn author_key(&self) -> PandaFactAuthorKey {
+        self.author_key
+    }
 }
 
 pub fn init_node(options: InitOptions) -> NodeResult<LoadedNodeState> {
+    let state_options = NewNodeStateOptions {
+        state_dir: options.state_dir,
+        island: options.island,
+        node_id: options.node_id,
+        p2panda_network_id_hex: None,
+        p2panda_topic_hex: None,
+        bootstrap_tickets: Vec::new(),
+        trusted_fact_authors: Vec::new(),
+    };
+    create_node_state(state_options)
+}
+
+pub fn init_joined_node(options: JoinedInitOptions) -> NodeResult<LoadedNodeState> {
+    let state_options = NewNodeStateOptions {
+        state_dir: options.state_dir,
+        island: options.island,
+        node_id: Some(options.node_id),
+        p2panda_network_id_hex: Some(options.p2panda_network_id_hex),
+        p2panda_topic_hex: Some(options.p2panda_topic_hex),
+        bootstrap_tickets: vec![options.bootstrap_ticket],
+        trusted_fact_authors: vec![options.trusted_fact_author],
+    };
+    create_node_state(state_options)
+}
+
+struct NewNodeStateOptions {
+    state_dir: std::path::PathBuf,
+    island: String,
+    node_id: Option<String>,
+    p2panda_network_id_hex: Option<String>,
+    p2panda_topic_hex: Option<String>,
+    bootstrap_tickets: Vec<String>,
+    trusted_fact_authors: Vec<TrustedFactAuthorConfig>,
+}
+
+fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState> {
     let paths = NodePaths::for_state_dir(options.state_dir);
     if paths.state_file.exists() {
         return Err(NodeError::AlreadyInitialized {
@@ -131,21 +229,24 @@ pub fn init_node(options: InitOptions) -> NodeResult<LoadedNodeState> {
         node_id,
         principal_id: principal_id.clone(),
         p2panda_author_private_key_hex: author_seed,
-        p2panda_network_id_hex: stable_hex("network-id", &network_seed),
+        p2panda_network_id_hex: options
+            .p2panda_network_id_hex
+            .unwrap_or_else(|| stable_hex("network-id", &network_seed)),
         p2panda_node_seed_hex: stable_hex("node-seed", &node_seed),
-        p2panda_topic_hex: stable_hex("topic", &topic_seed),
+        p2panda_topic_hex: options
+            .p2panda_topic_hex
+            .unwrap_or_else(|| stable_hex("topic", &topic_seed)),
         wg_public_key: WireGuardPublicKey::new(wg_public_key).to_string(),
         wg_overlay_ip: overlay_ip.to_string(),
+        bootstrap_tickets: options.bootstrap_tickets,
+        trusted_fact_authors: options.trusted_fact_authors,
     };
     write_state(&paths, &state)?;
     let loaded = LoadedNodeState {
         persisted: state,
         paths,
     };
-    loaded.author()?;
-    loaded.p2panda_network_id()?;
-    loaded.p2panda_node_seed()?;
-    loaded.p2panda_topic()?;
+    validate_loaded_state(&loaded)?;
     Ok(loaded)
 }
 
@@ -169,11 +270,26 @@ pub fn load_node(state_dir: impl AsRef<Path>) -> NodeResult<LoadedNodeState> {
     })?;
     validate_schema_version(persisted.schema_version)?;
     let loaded = LoadedNodeState { persisted, paths };
-    loaded.author()?;
-    loaded.p2panda_network_id()?;
-    loaded.p2panda_node_seed()?;
-    loaded.p2panda_topic()?;
+    validate_loaded_state(&loaded)?;
     Ok(loaded)
+}
+
+pub fn node_ticket_path(state: &LoadedNodeState) -> std::path::PathBuf {
+    state.paths().state_dir.join("node.ticket")
+}
+
+pub fn load_node_ticket(state: &LoadedNodeState) -> NodeResult<String> {
+    let path = node_ticket_path(state);
+    let ticket = fs::read_to_string(&path).map_err(|source| NodeError::ReadState {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(ticket.trim().to_string())
+}
+
+pub fn write_node_ticket(state: &LoadedNodeState, ticket: &str) -> NodeResult<()> {
+    let path = node_ticket_path(state);
+    fs::write(&path, ticket).map_err(|source| NodeError::WriteState { path, source })
 }
 
 fn write_state(paths: &NodePaths, state: &PersistedNodeState) -> NodeResult<()> {
@@ -232,6 +348,16 @@ fn validate_schema_version(found: u32) -> NodeResult<()> {
         found,
         expected: STATE_SCHEMA_VERSION,
     })
+}
+
+fn validate_loaded_state(state: &LoadedNodeState) -> NodeResult<()> {
+    state.author()?;
+    state.p2panda_network_id()?;
+    state.p2panda_node_seed()?;
+    state.p2panda_topic()?;
+    state.bootstrap_tickets()?;
+    state.trusted_fact_authors()?;
+    Ok(())
 }
 
 fn random_seed_hex(label: &'static str) -> String {

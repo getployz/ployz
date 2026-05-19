@@ -1,8 +1,12 @@
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use mvp_node::{InitOptions, NodeError, NodeResult, init_node, load_node};
+use mvp_node::{
+    DaemonOptions, InitOptions, NodeError, NodeResult, create_invite, init_node, join_from_token,
+    load_node, now_ms, run_daemon_once,
+};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -24,16 +28,53 @@ fn run(args: Vec<String>) -> NodeResult<String> {
     match command.as_str() {
         "init" => init(rest),
         "status" => status(rest),
-        "invite" | "join" | "daemon" | "gateway" | "dns" | "deploy" => {
-            Err(NodeError::CommandNotWired {
-                command: command.clone(),
-            })
-        }
+        "invite" => invite(rest),
+        "join" => join(rest),
+        "daemon" => daemon(rest),
+        "gateway" | "dns" | "deploy" => Err(NodeError::CommandNotWired {
+            command: command.clone(),
+        }),
         "--help" | "-h" | "help" => Ok(help()),
         other => Err(NodeError::UnsupportedCommand {
             command: other.to_string(),
         }),
     }
+}
+
+fn invite(args: &[String]) -> NodeResult<String> {
+    let parsed = InviteArgs::parse(args)?;
+    let token = create_invite(
+        parsed.state_dir,
+        Duration::from_millis(parsed.ttl_ms.unwrap_or(600_000)),
+    )?;
+    Ok(token)
+}
+
+fn join(args: &[String]) -> NodeResult<String> {
+    let parsed = JoinArgs::parse(args)?;
+    let state = join_from_token(parsed.state_dir, &parsed.token, parsed.node_id, now_ms())?;
+    Ok(format!(
+        "joined node={} island={} state={}",
+        state.node_id_str(),
+        state.island_id(),
+        state.paths().state_dir.display()
+    ))
+}
+
+fn daemon(args: &[String]) -> NodeResult<String> {
+    let parsed = DaemonArgs::parse(args)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .map_err(|source| NodeError::Runtime { source })?;
+    let report = runtime.block_on(run_daemon_once(
+        parsed.state_dir,
+        DaemonOptions::new(Duration::from_millis(parsed.run_for_ms.unwrap_or(1_000))),
+    ))?;
+    Ok(format!(
+        "daemon node={} ticket={} imported_batches={} imported_operations={}",
+        report.node_id, report.ticket, report.imported_batches, report.imported_operations
+    ))
 }
 
 fn init(args: &[String]) -> NodeResult<String> {
@@ -77,6 +118,145 @@ struct ParsedArgs {
     state_dir: Option<PathBuf>,
     island: Option<String>,
     node_id: Option<String>,
+}
+
+struct InviteArgs {
+    state_dir: PathBuf,
+    ttl_ms: Option<u64>,
+}
+
+impl InviteArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut ttl_ms = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--ttl-ms" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--ttl-ms" });
+                    };
+                    ttl_ms =
+                        Some(
+                            value
+                                .parse::<u64>()
+                                .map_err(|_| NodeError::UnknownArgument {
+                                    argument: value.clone(),
+                                })?,
+                        );
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            ttl_ms,
+        })
+    }
+}
+
+struct JoinArgs {
+    state_dir: PathBuf,
+    token: String,
+    node_id: Option<String>,
+}
+
+impl JoinArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut token = None;
+        let mut node_id = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--token" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--token" });
+                    };
+                    token = Some(value.clone());
+                }
+                "--node-id" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--node-id" });
+                    };
+                    node_id = Some(value.clone());
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            token: token.ok_or(NodeError::MissingFlagValue { flag: "--token" })?,
+            node_id,
+        })
+    }
+}
+
+struct DaemonArgs {
+    state_dir: PathBuf,
+    run_for_ms: Option<u64>,
+}
+
+impl DaemonArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut run_for_ms = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--run-for-ms" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--run-for-ms",
+                        });
+                    };
+                    run_for_ms =
+                        Some(
+                            value
+                                .parse::<u64>()
+                                .map_err(|_| NodeError::UnknownArgument {
+                                    argument: value.clone(),
+                                })?,
+                        );
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            run_for_ms,
+        })
+    }
 }
 
 impl ParsedArgs {
@@ -146,7 +326,10 @@ fn help() -> String {
         "Commands:",
         "  init --state <dir> [--island <id>] [--node-id <id>]",
         "  status --state <dir>",
-        "  invite|join|daemon|gateway|dns|deploy  (planned product-vertical commands)",
+        "  daemon --state <dir> [--run-for-ms <ms>]",
+        "  invite --state <dir> [--ttl-ms <ms>]",
+        "  join --state <dir> --token <json> [--node-id <id>]",
+        "  gateway|dns|deploy  (planned product-vertical commands)",
     ]
     .join("\n")
 }

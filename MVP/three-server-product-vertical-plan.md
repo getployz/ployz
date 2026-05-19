@@ -95,9 +95,10 @@ Already available and proven locally:
 
 Main gaps:
 
-- no installable product binary,
-- no persistent product node state directory,
-- no real multi-host join command path,
+- product binary exists but is not packaged or long-running yet,
+- persistent product node state directory exists for node identity/fact paths,
+- product `invite`/`join` initializes joined state and bootstrap trust, but the
+  bootstrap admission request is still missing,
 - no real node-agent participant process,
 - no real runtime backend,
 - no real Linux network apply proof,
@@ -222,6 +223,17 @@ bootstrap p2panda-net node info, invite id, secret, and expiry. `join` should
 start or contact the local fact node, insert bootstrap peer info, validate the
 invite through a bootstrap request path, write the joined fact locally, and
 wait for membership projection evidence.
+
+**Current status:** The first product-facing half has landed: `daemon` writes a
+dialable node ticket in local runs, publishes a durable self-join fact, `invite`
+emits the bootstrap p2panda network/topic/ticket plus bootstrap fact-author
+identity, and `join` persists the joined node with bootstrap trust. The remaining
+U2 blocker is bootstrap admission: the joining daemon must send its node info,
+principal, fact-author key, WireGuard identity, and invite proof to the
+bootstrap daemon; the bootstrap daemon must then admit the node and persist the
+reciprocal authority/address-book facts. Without that request path, each node
+can prove its own joined fact, but the product path does not yet produce
+cluster-wide membership convergence.
 
 **Patterns to follow:** `MVP/mesh/src/invite.rs` for join/tombstone facts;
 `MVP/e2e/src/p2panda_net_fact_node_contract.rs` for p2panda-net peer exchange;
