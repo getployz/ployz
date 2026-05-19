@@ -1,19 +1,31 @@
 #![cfg(feature = "docker")]
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mvp_deploy::{InstanceId, RevisionId};
 use mvp_identity::NodeId;
+use mvp_mesh::ContainerSubnet;
 use mvp_projection::ServiceName;
 use mvp_runtime::{
-    DockerRuntime, DockerRuntimeConfig, RuntimeBackend, RuntimeInstanceSpec, RuntimeInstanceState,
+    ContainerNetworkBackend, DockerBridgeNetwork, DockerBridgeNetworkConfig, DockerRuntime,
+    DockerRuntimeConfig, RuntimeBackend, RuntimeInstanceSpec, RuntimeInstanceState,
 };
 
 #[test]
 fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let config = runtime_config(temp.path());
-    let runtime = match DockerRuntime::connect(config.clone()) {
+    let node_id = format!("node-runtime-lifecycle-{}", unique_suffix());
+    let config = runtime_config(temp.path(), &node_id);
+    let network = match docker_network("runtime-lifecycle", "10.210.90.0/24") {
+        Ok(network) => Arc::new(network),
+        Err(error) => {
+            eprintln!("skipping Docker integration test: {error}");
+            return;
+        }
+    };
+    let runtime = match DockerRuntime::connect_with_container_network(config.clone(), network.clone())
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("skipping Docker integration test: {error}");
@@ -28,6 +40,7 @@ fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
     assert_eq!(started.revision, RevisionId::new("rev-1"));
     assert!(started.backend_id.is_some());
     assert!(started.backend_name.is_some());
+    assert!(started.address.starts_with("10.210.90."));
 
     let listed = runtime.list().expect("list containers");
     assert!(
@@ -36,7 +49,8 @@ fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
             .any(|instance| instance.instance_id == spec.instance_id)
     );
 
-    let restarted_runtime = DockerRuntime::connect(config)
+    let restarted_runtime =
+        DockerRuntime::connect_with_container_network(config.clone(), network.clone())
         .expect("reconnect docker runtime")
         .adopt()
         .expect("adopt containers");
@@ -51,10 +65,11 @@ fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
         .expect("drain container")
         .expect("drained instance");
     assert_eq!(drained.state, RuntimeInstanceState::Draining);
-    let adopted_after_drain = DockerRuntime::connect(runtime_config(temp.path()))
-        .expect("reconnect docker runtime")
-        .adopt()
-        .expect("adopt drained container");
+    let adopted_after_drain =
+        DockerRuntime::connect_with_container_network(config.clone(), network.clone())
+            .expect("reconnect docker runtime")
+            .adopt()
+            .expect("adopt drained container");
     assert_eq!(
         adopted_after_drain
             .iter()
@@ -68,12 +83,24 @@ fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
         .expect("stop container")
         .expect("stopped instance");
     assert_eq!(stopped.state, RuntimeInstanceState::Stopped);
+    network.remove().expect("remove bridge network");
 }
 
 #[test]
 fn docker_runtime_adopts_same_spec_and_recreates_changed_revision() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime = match DockerRuntime::connect(runtime_config(temp.path())) {
+    let node_id = format!("node-runtime-recreate-{}", unique_suffix());
+    let network = match docker_network("runtime-recreate", "10.210.91.0/24") {
+        Ok(network) => Arc::new(network),
+        Err(error) => {
+            eprintln!("skipping Docker integration test: {error}");
+            return;
+        }
+    };
+    let runtime = match DockerRuntime::connect_with_container_network(
+        runtime_config(temp.path(), &node_id),
+        network.clone(),
+    ) {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("skipping Docker integration test: {error}");
@@ -91,19 +118,22 @@ fn docker_runtime_adopts_same_spec_and_recreates_changed_revision() {
     let first_id = first.backend_id.clone().expect("first backend id");
     let adopted = runtime.start(&rev_1).expect("start same revision");
     assert_eq!(adopted.backend_id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(adopted.address, first.address);
 
     let replaced = runtime.start(&rev_2).expect("start changed revision");
     assert_eq!(replaced.revision, RevisionId::new("rev-2"));
     assert_ne!(replaced.backend_id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(replaced.address, first.address);
 
     runtime
         .stop(&rev_1.instance_id)
         .expect("stop replacement")
         .expect("stopped replacement");
+    network.remove().expect("remove bridge network");
 }
 
-fn runtime_config(root: &std::path::Path) -> DockerRuntimeConfig {
-    DockerRuntimeConfig::new(NodeId::new("node-a"), root, "busybox:latest")
+fn runtime_config(root: &std::path::Path, node_id: &str) -> DockerRuntimeConfig {
+    DockerRuntimeConfig::new(NodeId::new(node_id), root, "busybox:latest")
         .with_command([
             "sh",
             "-c",
@@ -131,4 +161,13 @@ fn unique_suffix() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_nanos()
+}
+
+fn docker_network(label: &str, subnet: &str) -> mvp_runtime::RuntimeResult<DockerBridgeNetwork> {
+    let subnet =
+        ContainerSubnet::new(subnet.parse().expect("valid test subnet")).expect("test subnet");
+    DockerBridgeNetwork::connect(DockerBridgeNetworkConfig::new(
+        format!("ployz-mvp-runtime-test-{label}-{}", std::process::id()),
+        subnet,
+    ))
 }

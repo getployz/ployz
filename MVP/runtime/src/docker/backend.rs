@@ -9,7 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::models::{
+    ContainerCreateBody, EndpointIpamConfig, EndpointSettings, HostConfig, NetworkingConfig,
+};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
     StopContainerOptionsBuilder,
@@ -17,8 +19,8 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 
 use crate::{
-    RuntimeBackend, RuntimeError, RuntimeInstance, RuntimeInstanceSpec, RuntimeInstanceState,
-    RuntimeResult,
+    ContainerNetworkBackend, ContainerNetworkState, RuntimeBackend, RuntimeError, RuntimeInstance,
+    RuntimeInstanceSpec, RuntimeInstanceState, RuntimeResult,
 };
 
 use super::labels::{LABEL_MANAGED, LABEL_NODE, instance_from_labels, labels_for};
@@ -29,10 +31,25 @@ pub struct DockerRuntime {
     config: DockerRuntimeConfig,
     docker: Docker,
     executor: Arc<tokio::runtime::Runtime>,
+    container_network: Option<Arc<dyn ContainerNetworkBackend>>,
 }
 
 impl DockerRuntime {
     pub fn connect(config: DockerRuntimeConfig) -> RuntimeResult<Self> {
+        Self::connect_with_optional_container_network(config, None)
+    }
+
+    pub fn connect_with_container_network(
+        config: DockerRuntimeConfig,
+        container_network: Arc<dyn ContainerNetworkBackend>,
+    ) -> RuntimeResult<Self> {
+        Self::connect_with_optional_container_network(config, Some(container_network))
+    }
+
+    fn connect_with_optional_container_network(
+        config: DockerRuntimeConfig,
+        container_network: Option<Arc<dyn ContainerNetworkBackend>>,
+    ) -> RuntimeResult<Self> {
         let docker = Docker::connect_with_socket_defaults().map_err(|source| {
             RuntimeError::DockerOperation {
                 operation: "docker connect",
@@ -52,6 +69,7 @@ impl DockerRuntime {
             config,
             docker,
             executor,
+            container_network,
         };
         runtime.run(async {
             runtime
@@ -134,8 +152,27 @@ impl DockerRuntime {
     }
 
     async fn create_container(&self, name: &str, spec: &RuntimeInstanceSpec) -> RuntimeResult<()> {
+        let container_network = self.container_network_state()?;
+        let networking_config = container_network.as_ref().map(|state| {
+            let ip = container_ip_for(state, spec);
+            NetworkingConfig {
+                endpoints_config: Some(HashMap::from([(
+                    state.name.clone(),
+                    EndpointSettings {
+                        ipam_config: Some(EndpointIpamConfig {
+                            ipv4_address: Some(ip.to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )])),
+            }
+        });
         let host_config = HostConfig {
-            network_mode: self.config.network.clone(),
+            network_mode: container_network
+                .as_ref()
+                .map(|state| state.name.clone())
+                .or_else(|| self.config.network.clone()),
             ..Default::default()
         };
         let labels = labels_for(
@@ -150,6 +187,7 @@ impl DockerRuntime {
             cmd: self.config.command.clone(),
             labels: Some(labels),
             host_config: Some(host_config),
+            networking_config,
             ..Default::default()
         };
         let options = CreateContainerOptionsBuilder::default().name(name).build();
@@ -297,7 +335,7 @@ impl DockerRuntime {
             &name,
             info.id.clone(),
             &labels,
-            self.address_from_inspect(&info),
+            self.address_from_inspect(&info)?,
         )?;
         let running = info
             .state
@@ -310,20 +348,49 @@ impl DockerRuntime {
         Ok(Some(self.merge_metadata_state(instance)?))
     }
 
-    fn address_from_inspect(&self, info: &bollard::models::ContainerInspectResponse) -> String {
+    fn address_from_inspect(
+        &self,
+        info: &bollard::models::ContainerInspectResponse,
+    ) -> RuntimeResult<String> {
+        let preferred_network = self
+            .container_network
+            .as_ref()
+            .map(|network| network.state().map(|state| state.name))
+            .transpose()?
+            .or_else(|| self.config.network.clone());
         let ip = info
             .network_settings
             .as_ref()
             .and_then(|settings| settings.networks.as_ref())
             .and_then(|networks| {
-                networks
-                    .values()
-                    .filter_map(|endpoint| endpoint.ip_address.as_deref())
-                    .find(|ip| !ip.is_empty())
+                preferred_network
+                    .as_ref()
+                    .and_then(|name| networks.get(name))
+                    .and_then(|endpoint| endpoint.ip_address.as_deref())
+                    .filter(|ip| !ip.is_empty())
+                    .or_else(|| {
+                        networks
+                            .values()
+                            .filter_map(|endpoint| endpoint.ip_address.as_deref())
+                            .find(|ip| !ip.is_empty())
+                    })
             })
             .and_then(|ip| ip.parse::<IpAddr>().ok())
-            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-        SocketAddr::new(ip, self.config.service_port).to_string()
+            .ok_or_else(|| RuntimeError::DockerOperation {
+                operation: "docker inspect address",
+                message: format!(
+                    "container has no address on {}",
+                    preferred_network.as_deref().unwrap_or("any network")
+                ),
+            })?;
+        Ok(SocketAddr::new(ip, self.config.service_port).to_string())
+    }
+
+    fn container_network_state(&self) -> RuntimeResult<Option<ContainerNetworkState>> {
+        self.container_network
+            .as_ref()
+            .map(|network| network.ensure())
+            .transpose()
     }
 
     async fn wait_ready(&self, instance: RuntimeInstance) -> RuntimeResult<RuntimeInstance> {
@@ -339,6 +406,20 @@ impl DockerRuntime {
             address: instance.address,
         })
     }
+}
+
+fn container_ip_for(
+    network: &ContainerNetworkState,
+    spec: &RuntimeInstanceSpec,
+) -> mvp_mesh::ContainerIp {
+    let key = format!("{}:{}", spec.service.as_str(), spec.instance_id.as_str());
+    let hash = blake3::hash(key.as_bytes());
+    let bytes = hash.as_bytes();
+    let slot = u32::from(u16::from_be_bytes([bytes[0], bytes[1]])) % 253;
+    let host_offset = 2 + slot;
+    mvp_mesh::ContainerIp::new(std::net::Ipv4Addr::from(
+        u32::from(network.subnet.as_net().network()) + host_offset,
+    ))
 }
 
 impl RuntimeBackend for DockerRuntime {
