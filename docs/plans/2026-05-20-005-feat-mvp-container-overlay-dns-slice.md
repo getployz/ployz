@@ -225,10 +225,11 @@ Evidence:
 
 ### Unit 5: Container-Facing Service DNS
 
-Status: partial. Service-DNS answers are implemented as a projection-derived
-read view and Docker runtime can accept DNS server addresses. Remaining work:
-wire a node-local DNS listener address into Docker runtime config and add the
-Docker one-shot client smoke that resolves and curls through that listener.
+Status: complete except privileged smoke execution in this non-root/default
+environment. Service-DNS answers are implemented as a projection-derived read
+view, Docker deployments default container DNS to the node bridge gateway, and
+the Docker one-shot client smoke is implemented behind
+`MVP_DOCKER_SERVICE_DNS_SMOKE=1`.
 
 Files:
 
@@ -238,12 +239,14 @@ Files:
 - `MVP/serving/src/wire.rs`
 - `MVP/runtime/src/docker/spec.rs`
 - `MVP/runtime/src/docker/backend.rs`
+- `MVP/node/src/main.rs`
+- `MVP/node/tests/container_service_dns.rs`
 
 Work:
 
 - [x] Add a service-DNS view for names like `echo.<test-domain>` or
   `echo.service.<domain>` based on projected service backends.
-- [ ] Configure Docker containers to use the node-local DNS listener.
+- [x] Configure Docker containers to use the node-local DNS listener.
 - [x] Return A records for overlay container addresses.
 - [x] Keep existing public route DNS semantics intact.
 
@@ -251,13 +254,16 @@ Tests:
 
 - [x] DNS unit tests for service names and unknown services,
 - [x] integration test runs DNS server and resolves a projected service,
-- [ ] Docker-gated one-shot client resolves and curls another container by service
+- [x] Docker-gated one-shot client resolves and curls another container by service
   DNS on the same host before cross-machine smoke.
 
 Evidence:
 
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime --test container_service_dns -- --nocapture`
+- Privileged smoke command for a root Linux runner:
+  `MVP_DOCKER_SERVICE_DNS_SMOKE=1 cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime --test container_service_dns -- --nocapture`
 
 ### Unit 6: Cross-Node Overlay Smoke Harness
 
