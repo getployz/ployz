@@ -117,6 +117,15 @@ impl ServingActorHandle {
         Ok(read_snapshots(&self.snapshots).dns_records(&name.into(), &record_type.into()))
     }
 
+    pub async fn service_dns_records(
+        &self,
+        name: impl Into<String>,
+        record_type: impl Into<String>,
+    ) -> ServingResult<Vec<DnsRecordProjection>> {
+        Ok(read_snapshots(&self.snapshots)
+            .service_dns_records(&name.into(), &record_type.into()))
+    }
+
     pub async fn acme_http01_challenge(
         &self,
         host: impl Into<String>,

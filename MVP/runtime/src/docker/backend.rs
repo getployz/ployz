@@ -173,6 +173,7 @@ impl DockerRuntime {
                 .as_ref()
                 .map(|state| state.name.clone())
                 .or_else(|| self.config.network.clone()),
+            dns: (!self.config.dns_servers.is_empty()).then(|| self.config.dns_servers.clone()),
             ..Default::default()
         };
         let labels = labels_for(

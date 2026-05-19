@@ -120,6 +120,14 @@ impl WireServingState {
         self.serving.dns_records(name, record_type).await
     }
 
+    pub async fn service_dns_records(
+        &self,
+        name: impl Into<String>,
+        record_type: impl Into<String>,
+    ) -> ServingResult<Vec<DnsRecordProjection>> {
+        self.serving.service_dns_records(name, record_type).await
+    }
+
     pub async fn acme_http01_challenge(
         &self,
         host: impl Into<String>,

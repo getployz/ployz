@@ -225,26 +225,39 @@ Evidence:
 
 ### Unit 5: Container-Facing Service DNS
 
+Status: partial. Service-DNS answers are implemented as a projection-derived
+read view and Docker runtime can accept DNS server addresses. Remaining work:
+wire a node-local DNS listener address into Docker runtime config and add the
+Docker one-shot client smoke that resolves and curls through that listener.
+
 Files:
 
 - `MVP/serving/src/dns_server.rs`
-- `MVP/serving/src/state.rs` or equivalent serving-state module
-- `MVP/node/src/serving.rs`
+- `MVP/serving/src/model.rs`
+- `MVP/serving/src/actor.rs`
+- `MVP/serving/src/wire.rs`
+- `MVP/runtime/src/docker/spec.rs`
+- `MVP/runtime/src/docker/backend.rs`
 
 Work:
 
-- Add a service-DNS view for names like `echo.<test-domain>` or
+- [x] Add a service-DNS view for names like `echo.<test-domain>` or
   `echo.service.<domain>` based on projected service backends.
-- Configure Docker containers to use the node-local DNS listener.
-- Return A records for overlay container addresses.
-- Keep existing public route DNS semantics intact.
+- [ ] Configure Docker containers to use the node-local DNS listener.
+- [x] Return A records for overlay container addresses.
+- [x] Keep existing public route DNS semantics intact.
 
 Tests:
 
-- DNS unit tests for service names and unknown services,
-- integration test runs DNS server and resolves a projected service,
-- Docker-gated one-shot client resolves and curls another container by service
+- [x] DNS unit tests for service names and unknown services,
+- [x] integration test runs DNS server and resolves a projected service,
+- [ ] Docker-gated one-shot client resolves and curls another container by service
   DNS on the same host before cross-machine smoke.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
 
 ### Unit 6: Cross-Node Overlay Smoke Harness
 
