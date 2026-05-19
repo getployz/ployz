@@ -42,6 +42,20 @@ impl WireGuardPublicKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn to_bytes(&self) -> MeshResult<[u8; 32]> {
+        let bytes =
+            BASE64
+                .decode(self.0.trim())
+                .map_err(|source| MeshError::InvalidWireGuardKey {
+                    message: source.to_string(),
+                })?;
+        bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| MeshError::InvalidWireGuardKey {
+                message: format!("public key must be 32 bytes, got {}", bytes.len()),
+            })
+    }
 }
 
 impl Display for WireGuardPublicKey {
@@ -307,5 +321,13 @@ mod tests {
         assert_eq!(decoded.as_bytes(), private.as_bytes());
         assert_eq!(decoded.public_key(), private.public_key());
         assert!(!private.public_key().as_str().starts_with("mvp-wg-"));
+        assert_eq!(
+            private
+                .public_key()
+                .to_bytes()
+                .expect("public key bytes")
+                .len(),
+            32
+        );
     }
 }
