@@ -11,16 +11,16 @@ pub(super) fn reduce_lease_state(
         let LeaseFact::Claimed(claim) = fact else {
             continue;
         };
-        if claim.resource() != resource {
+        if &claim.resource != resource {
             continue;
         }
         match highest_epoch {
-            Some(epoch) if claim.epoch() < epoch => {}
-            Some(epoch) if claim.epoch() == epoch => {
+            Some(epoch) if claim.epoch < epoch => {}
+            Some(epoch) if claim.epoch == epoch => {
                 candidates.push(LeaseCandidate::from_claim(claim));
             }
             Some(_) | None => {
-                highest_epoch = Some(claim.epoch());
+                highest_epoch = Some(claim.epoch);
                 candidates.clear();
                 candidates.push(LeaseCandidate::from_claim(claim));
             }
@@ -98,11 +98,11 @@ struct LeaseCandidate {
 impl LeaseCandidate {
     fn from_claim(claim: &LeaseClaimed) -> Self {
         Self {
-            resource: claim.resource().clone(),
-            holder: claim.holder().clone(),
-            epoch: claim.epoch(),
-            acquired_at: claim.acquired_at(),
-            expires_at: claim.expires_at(),
+            resource: claim.resource.clone(),
+            holder: claim.holder.clone(),
+            epoch: claim.epoch,
+            acquired_at: claim.acquired_at,
+            expires_at: claim.expires_at,
             content_hash: claimed_content_hash(claim),
         }
     }
@@ -118,12 +118,12 @@ fn latest_release(
         .iter()
         .filter_map(|fact| match fact {
             LeaseFact::Released(released)
-                if released.resource() == &candidate.resource
-                    && released.holder() == &candidate.holder
-                    && released.epoch() == candidate.epoch
-                    && released.claim_hash() == candidate.content_hash =>
+                if released.resource == candidate.resource
+                    && released.holder == candidate.holder
+                    && released.epoch == candidate.epoch
+                    && released.claim_hash == candidate.content_hash =>
             {
-                release_if_observable(released.release(), candidate.acquired_at, expires_at, now)
+                release_if_observable(released.release, candidate.acquired_at, expires_at, now)
             }
             LeaseFact::Claimed(_) | LeaseFact::Renewed(_) | LeaseFact::Released(_) => None,
         })
@@ -135,15 +135,15 @@ fn latest_expiry(facts: &[LeaseFact], candidate: &LeaseCandidate) -> LeaseTimest
         .iter()
         .filter_map(|fact| match fact {
             LeaseFact::Renewed(renewed)
-                if renewed.resource() == &candidate.resource
-                    && renewed.holder() == &candidate.holder
-                    && renewed.epoch() == candidate.epoch
-                    && renewed.claim_hash() == candidate.content_hash =>
+                if renewed.resource == candidate.resource
+                    && renewed.holder == candidate.holder
+                    && renewed.epoch == candidate.epoch
+                    && renewed.claim_hash == candidate.content_hash =>
             {
                 Some((
-                    renewed.renewed_at(),
+                    renewed.renewed_at,
                     renewed_content_hash(renewed),
-                    renewed.expires_at(),
+                    renewed.expires_at,
                 ))
             }
             LeaseFact::Claimed(_) | LeaseFact::Renewed(_) | LeaseFact::Released(_) => None,
@@ -199,34 +199,34 @@ fn hash_u64(hasher: &mut blake3::Hasher, value: u64) {
 pub(super) fn claimed_content_hash(fact: &LeaseClaimed) -> LeaseContentHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"lease-claimed");
-    hash_str(&mut hasher, fact.resource().as_str());
-    hash_str(&mut hasher, fact.holder().as_str());
-    hash_u64(&mut hasher, fact.epoch().value());
-    hash_u64(&mut hasher, fact.acquired_at().value());
-    hash_u64(&mut hasher, fact.expires_at().value());
+    hash_str(&mut hasher, fact.resource.as_str());
+    hash_str(&mut hasher, fact.holder.as_str());
+    hash_u64(&mut hasher, fact.epoch.value());
+    hash_u64(&mut hasher, fact.acquired_at.value());
+    hash_u64(&mut hasher, fact.expires_at.value());
     LeaseContentHash(*hasher.finalize().as_bytes())
 }
 
 pub(super) fn renewed_content_hash(fact: &LeaseRenewed) -> LeaseContentHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"lease-renewed");
-    hash_str(&mut hasher, fact.resource().as_str());
-    hash_str(&mut hasher, fact.holder().as_str());
-    hash_u64(&mut hasher, fact.epoch().value());
-    hash_content_hash(&mut hasher, fact.claim_hash());
-    hash_u64(&mut hasher, fact.renewed_at().value());
-    hash_u64(&mut hasher, fact.expires_at().value());
+    hash_str(&mut hasher, fact.resource.as_str());
+    hash_str(&mut hasher, fact.holder.as_str());
+    hash_u64(&mut hasher, fact.epoch.value());
+    hash_content_hash(&mut hasher, fact.claim_hash);
+    hash_u64(&mut hasher, fact.renewed_at.value());
+    hash_u64(&mut hasher, fact.expires_at.value());
     LeaseContentHash(*hasher.finalize().as_bytes())
 }
 
 pub(super) fn released_content_hash(fact: &LeaseReleased) -> LeaseContentHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"lease-released");
-    hash_str(&mut hasher, fact.resource().as_str());
-    hash_str(&mut hasher, fact.holder().as_str());
-    hash_u64(&mut hasher, fact.epoch().value());
-    hash_content_hash(&mut hasher, fact.claim_hash());
-    hash_release(&mut hasher, fact.release());
+    hash_str(&mut hasher, fact.resource.as_str());
+    hash_str(&mut hasher, fact.holder.as_str());
+    hash_u64(&mut hasher, fact.epoch.value());
+    hash_content_hash(&mut hasher, fact.claim_hash);
+    hash_release(&mut hasher, fact.release);
     LeaseContentHash(*hasher.finalize().as_bytes())
 }
 

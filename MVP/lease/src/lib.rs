@@ -275,27 +275,27 @@ impl LeaseFact {
     #[must_use]
     pub fn resource(&self) -> &LeaseResource {
         match self {
-            Self::Claimed(fact) => fact.resource(),
-            Self::Renewed(fact) => fact.resource(),
-            Self::Released(fact) => fact.resource(),
+            Self::Claimed(fact) => &fact.resource,
+            Self::Renewed(fact) => &fact.resource,
+            Self::Released(fact) => &fact.resource,
         }
     }
 
     #[must_use]
     pub fn epoch(&self) -> LeaseEpoch {
         match self {
-            Self::Claimed(fact) => fact.epoch(),
-            Self::Renewed(fact) => fact.epoch(),
-            Self::Released(fact) => fact.epoch(),
+            Self::Claimed(fact) => fact.epoch,
+            Self::Renewed(fact) => fact.epoch,
+            Self::Released(fact) => fact.epoch,
         }
     }
 
     #[must_use]
     pub fn holder(&self) -> &LeaseHolder {
         match self {
-            Self::Claimed(fact) => fact.holder(),
-            Self::Renewed(fact) => fact.holder(),
-            Self::Released(fact) => fact.holder(),
+            Self::Claimed(fact) => &fact.holder,
+            Self::Renewed(fact) => &fact.holder,
+            Self::Released(fact) => &fact.holder,
         }
     }
 
@@ -335,7 +335,6 @@ impl LeaseClaimed {
             expires_at,
         }
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,7 +366,6 @@ impl LeaseRenewed {
             expires_at,
         }
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,7 +410,6 @@ impl LeaseReleased {
             release: LeaseRelease::DroppedWithoutTimestamp,
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -745,16 +742,16 @@ impl LeaseBook {
             } => {
                 return Err(LeaseError::EpochOverflow {
                     resource,
-                    last_epoch: previous.epoch(),
+                    last_epoch: previous.epoch,
                     observed_at: now,
                 });
             }
             LeaseState::Active { current, .. } => {
                 return Ok(LeaseDecision::Conflict(LeaseConflict {
                     resource,
-                    conflicting_holder: current.holder().clone(),
-                    conflicting_epoch: current.epoch(),
-                    conflicting_fact: current.content_hash(),
+                    conflicting_holder: current.holder.clone(),
+                    conflicting_epoch: current.epoch,
+                    conflicting_fact: current.content_hash,
                     observed_at: now,
                     visible_nodes: context.visible_nodes,
                 }));
@@ -793,10 +790,10 @@ impl LeaseBook {
     ) -> Result<(), LeaseError> {
         self.assert_current(guard, now)?;
         self.push_fact(LeaseFact::Renewed(LeaseRenewed::new(
-            guard.resource().clone(),
-            guard.holder().clone(),
-            guard.epoch(),
-            guard.claim_hash(),
+            guard.resource.clone(),
+            guard.holder.clone(),
+            guard.epoch,
+            guard.claim_hash,
             now,
             now.checked_add(policy.ttl()),
         )));
@@ -806,10 +803,10 @@ impl LeaseBook {
     pub fn release(&self, guard: &mut LeaseGuard, now: LeaseTimestamp) -> Result<(), LeaseError> {
         self.assert_current(guard, now)?;
         self.push_fact(LeaseFact::Released(LeaseReleased::new_at(
-            guard.resource().clone(),
-            guard.holder().clone(),
-            guard.epoch(),
-            guard.claim_hash(),
+            guard.resource.clone(),
+            guard.holder.clone(),
+            guard.epoch,
+            guard.claim_hash,
             now,
         )));
         guard.disarm_drop_release();
@@ -823,32 +820,32 @@ impl LeaseBook {
     ) -> Result<(), LeaseError> {
         if guard.book_id != self.id() {
             return Err(LeaseError::ForeignGuard {
-                resource: guard.resource().clone(),
-                holder: guard.holder().clone(),
-                epoch: guard.epoch(),
+                resource: guard.resource.clone(),
+                holder: guard.holder.clone(),
+                epoch: guard.epoch,
             });
         }
-        match self.state(guard.resource(), now) {
+        match self.state(&guard.resource, now) {
             LeaseState::Active { current, .. }
-                if current.holder() == guard.holder()
-                    && current.epoch() == guard.epoch()
-                    && current.content_hash() == guard.claim_hash() =>
+                if current.holder == guard.holder
+                    && current.epoch == guard.epoch
+                    && current.content_hash == guard.claim_hash =>
             {
                 Ok(())
             }
             LeaseState::Active { current, .. } => Err(LeaseError::Superseded {
-                resource: guard.resource().clone(),
-                holder: guard.holder().clone(),
-                epoch: guard.epoch(),
-                by_holder: current.holder().clone(),
-                by_epoch: current.epoch(),
+                resource: guard.resource.clone(),
+                holder: guard.holder.clone(),
+                epoch: guard.epoch,
+                by_holder: current.holder.clone(),
+                by_epoch: current.epoch,
             }),
             LeaseState::Vacant { .. }
             | LeaseState::Expired { .. }
             | LeaseState::Released { .. } => Err(LeaseError::StaleGuard {
-                resource: guard.resource().clone(),
-                holder: guard.holder().clone(),
-                epoch: guard.epoch(),
+                resource: guard.resource.clone(),
+                holder: guard.holder.clone(),
+                epoch: guard.epoch,
             }),
         }
     }
