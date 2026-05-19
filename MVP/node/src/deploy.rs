@@ -24,6 +24,7 @@ use crate::error::{NodeError, NodeResult};
 use crate::load_node;
 use crate::networking::apply_host_networking_snapshot;
 use crate::node_agent::{node_agent_grant, register_node_agent_services};
+use crate::node_agent_rpc::register_remote_node_agent_bridges;
 use crate::state::LoadedNodeState;
 
 const DEPLOY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -123,21 +124,28 @@ pub async fn deploy_product_service_with_process(
         None => register_node_agent_services(&bus, &node_agent_session, &state).await?,
     };
 
-    let facts = open_local_fact_store(&state, Arc::new(raw_bus)).await?;
-    let projection = projection_actor(&state, facts.clone(), operator.clone());
+    let remote_bridges = register_remote_node_agent_bridges(&bus, &operator, &state).await?;
+    let (facts, fact_session) = match remote_bridges {
+        Some(bridges) => (bridges.store, bridges.fact_session),
+        None => (
+            open_local_fact_store(&state, Arc::new(raw_bus)).await?,
+            operator.clone(),
+        ),
+    };
+    let projection = projection_actor(&state, facts.clone(), fact_session.clone());
     let existing = projection
         .project_once(PROJECT_TIMEOUT)
         .await
         .map_err(|source| NodeError::Projection { source })?;
     let old_backends_to_drain = current_backends(&existing.state.gateway);
-    let serving_epoch = next_serving_epoch(&facts, &state, &operator)?;
+    let serving_epoch = next_serving_epoch(&facts, &state, &fact_session)?;
     let manifest = manifest_from_options(&options, old_backends_to_drain, serving_epoch);
     let author = Arc::new(state.author()?);
     let coordinator = DeployCoordinator::with_fact_writers(
         bus,
         operator.clone(),
-        PandaDeployFactWriter::new(facts.clone(), operator.clone(), Arc::clone(&author)),
-        PandaServingFactWriter::new(facts.clone(), operator.clone(), author),
+        PandaDeployFactWriter::new(facts.clone(), fact_session.clone(), Arc::clone(&author)),
+        PandaServingFactWriter::new(facts.clone(), fact_session, author),
         DeployTimeouts {
             capacity: DEPLOY_TIMEOUT,
             participant: DEPLOY_TIMEOUT,

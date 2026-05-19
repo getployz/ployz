@@ -5,9 +5,10 @@
 `mvp-e2e` now has a `three-server-product` scenario that launches the shipped
 `mvp-node` binary as the system boundary. The scenario initializes three nodes,
 invites and admits two peers, runs all three daemons concurrently over the real
-p2panda-net fact transport, deploys a trivial HTTP service, starts product
-gateway/DNS roles, probes HTTP and DNS, kills a daemon, and probes HTTP/DNS
-again.
+p2panda-net fact transport, deploys a trivial HTTP service to `peer-a` through
+the product node-agent request/reply path after daemon status readiness, starts
+product gateway/DNS roles, probes HTTP and DNS, kills the target daemon, and
+probes HTTP/DNS again.
 
 ## Proof Artifact
 
@@ -18,8 +19,9 @@ MVP/target/mvp-e2e/three-server-product/three-server-product-report.json
 ```
 
 The report includes command stdout/stderr, daemon import counts, node-agent
-handler counts, deploy output, gateway/DNS listen addresses, before/after
-daemon-kill HTTP/DNS probes, and runtime cleanup count.
+handler counts, remote deploy target, daemon status output, deploy output,
+gateway/DNS listen addresses, before/after daemon-kill HTTP/DNS probes, and
+runtime cleanup count.
 
 ## Command
 
@@ -33,9 +35,9 @@ The script builds `mvp-node` and `mvp-e2e`, sets `MVP_NODE_BIN`, and runs:
 cargo run -p mvp-e2e -- three-server-product
 ```
 
-## Known Remaining Gap
+## Remaining Gap
 
-The deploy target is still the founder node. Three-node membership and
-p2panda-net convergence are real, and gateway/DNS steady state is product
-binary driven, but remote node-agent request/reply for deploy participants is a
-later vertical gap.
+The local smoke is still multi-process on one host, not SSH or separate
+machines. It now proves the product binary boundary, real p2panda-net
+membership convergence, remote node-agent deploy participation, and
+gateway/DNS/service survival after the target daemon exits.

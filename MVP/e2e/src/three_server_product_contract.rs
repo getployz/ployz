@@ -23,6 +23,8 @@ struct ThreeServerProductReport {
     daemon_commands: Vec<ProductCommandRecord>,
     daemon_imported_operations: Vec<u64>,
     daemon_node_agent_handlers: Vec<u64>,
+    deploy_target_node: &'static str,
+    deploy_target_daemon_status: ProductCommandRecord,
     deploy: ProductCommandRecord,
     gateway_before_daemon_kill: HttpProbe,
     dns_before_daemon_kill: DnsProbe,
@@ -87,8 +89,10 @@ pub(crate) fn run() -> Result<(), String> {
         ));
     }
 
+    let mut deploy_target_daemon = harness.spawn_daemon("peer-a", 30_000)?;
+    let deploy_target_daemon_status = harness.wait_daemon_status("peer-a")?;
     let deploy = harness
-        .deploy("founder", "founder", "rev-1", HOSTNAME)?
+        .deploy("founder", "peer-a", "rev-1", HOSTNAME)?
         .record;
     let mut gateway = harness.spawn_gateway("founder")?;
     let mut dns = harness.spawn_dns("founder")?;
@@ -98,8 +102,7 @@ pub(crate) fn run() -> Result<(), String> {
         harness.wait_http(gateway_status.listen_addr, HOSTNAME, EXPECTED_BODY)?;
     let dns_before_daemon_kill = harness.wait_dns(dns_status.listen_addr, HOSTNAME, "127.0.0.1")?;
 
-    let mut daemon = harness.spawn_daemon("founder", 30_000)?;
-    let _daemon_exit = daemon.kill()?;
+    let _daemon_exit = deploy_target_daemon.kill()?;
     let gateway_after_daemon_kill =
         harness.wait_http(gateway_status.listen_addr, HOSTNAME, EXPECTED_BODY)?;
     let dns_after_daemon_kill = harness.wait_dns(dns_status.listen_addr, HOSTNAME, "127.0.0.1")?;
@@ -119,6 +122,8 @@ pub(crate) fn run() -> Result<(), String> {
         daemon_commands,
         daemon_imported_operations,
         daemon_node_agent_handlers,
+        deploy_target_node: "peer-a",
+        deploy_target_daemon_status,
         deploy,
         gateway_before_daemon_kill,
         dns_before_daemon_kill,

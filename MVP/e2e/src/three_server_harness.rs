@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
@@ -82,6 +83,12 @@ impl ProductHarness {
 
     pub(crate) fn control_socket(&self, role: &str) -> PathBuf {
         self.root.join("control").join(format!("{role}.sock"))
+    }
+
+    pub(crate) fn daemon_control_socket(&self, node: &str) -> PathBuf {
+        self.root
+            .join("control")
+            .join(format!("daemon-{node}.sock"))
     }
 
     pub(crate) fn init_node(&self, node: &str) -> Result<ProductCommandOutput, String> {
@@ -169,6 +176,7 @@ impl ProductHarness {
     }
 
     pub(crate) fn spawn_daemon(&self, node: &str, run_for_ms: u64) -> Result<ProductChild, String> {
+        let control_socket = self.daemon_control_socket(node);
         self.spawn_node(
             format!("daemon-{node}"),
             [
@@ -177,8 +185,40 @@ impl ProductHarness {
                 self.node_dir(node).display().to_string(),
                 "--run-for-ms".to_string(),
                 run_for_ms.to_string(),
+                "--control".to_string(),
+                control_socket.display().to_string(),
             ],
         )
+    }
+
+    pub(crate) fn wait_daemon_status(&self, node: &str) -> Result<ProductCommandRecord, String> {
+        let socket = self.daemon_control_socket(node);
+        let deadline = Instant::now() + ROLE_WAIT_TIMEOUT;
+        loop {
+            match self.node_command([
+                "daemon-status",
+                "--control",
+                socket.to_str().ok_or("daemon control path is not UTF-8")?,
+            ]) {
+                Ok(output) if output.record.stdout.contains("node_agent_handlers=6") => {
+                    return Ok(output.record);
+                }
+                Ok(output) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "daemon {node} status did not become ready: {}",
+                            output.record.stdout
+                        ));
+                    }
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!("daemon {node} did not become ready: {error}"));
+                    }
+                    thread::sleep(POLL);
+                }
+            }
+        }
     }
 
     pub(crate) fn deploy(
@@ -548,10 +588,10 @@ fn unix_json_request(
     })
 }
 
-fn connect_unix(socket: &Path) -> Result<std::os::unix::net::UnixStream, String> {
+fn connect_unix(socket: &Path) -> Result<UnixStream, String> {
     let deadline = Instant::now() + ROLE_WAIT_TIMEOUT;
     loop {
-        match std::os::unix::net::UnixStream::connect(socket) {
+        match UnixStream::connect(socket) {
             Ok(stream) => return Ok(stream),
             Err(error) => {
                 if Instant::now() >= deadline {

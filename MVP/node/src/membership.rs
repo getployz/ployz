@@ -1,4 +1,5 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -19,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
 use crate::error::{NodeError, NodeResult};
-use crate::node_agent::{node_agent_grant, register_node_agent_services};
+use crate::node_agent::{node_agent_grant, node_agent_request_grant, register_node_agent_services};
+use crate::node_agent_rpc::handle_node_agent_rpc_requests;
 use crate::state::{
     IssuedInviteRecord, LoadedNodeState, init_joined_node, load_issued_invite, load_node,
     record_bootstrap_peer, record_issued_invite as persist_issued_invite, write_node_ticket,
@@ -78,10 +80,11 @@ impl InviteToken {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonOptions {
     pub run_for: Duration,
     pub import_idle: Duration,
+    pub control_socket: Option<PathBuf>,
 }
 
 impl DaemonOptions {
@@ -90,7 +93,14 @@ impl DaemonOptions {
         Self {
             run_for,
             import_idle: Duration::from_millis(50),
+            control_socket: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_control_socket(mut self, control_socket: impl Into<PathBuf>) -> Self {
+        self.control_socket = Some(control_socket.into());
+        self
     }
 }
 
@@ -259,6 +269,11 @@ pub async fn run_daemon_once(
         state.principal(),
         node_agent_grant(state.node_id_str())?,
     );
+    let node_agent_request_session = product_authority.grant_in(
+        state.island(),
+        PrincipalId::new(format!("node-agent-rpc:{}", state.node_id_str())),
+        node_agent_request_grant(),
+    );
     let (_node_agent, node_agent_report) =
         register_node_agent_services(&product_bus, &node_agent_session, &state).await?;
     let (mut fact_node, writer_session, author, authority) = spawn_fact_node(&state).await?;
@@ -266,6 +281,10 @@ pub async fn run_daemon_once(
     write_node_ticket(&state, &ticket)?;
     publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
     publish_admitted_peers(&mut fact_node, &state, &writer_session, &author).await?;
+    let control = match &options.control_socket {
+        Some(path) => Some(open_daemon_control_socket(path)?),
+        None => None,
+    };
     let started = std::time::Instant::now();
     let mut last_advertised = started;
     let mut imported_batches = 0;
@@ -289,18 +308,49 @@ pub async fn run_daemon_once(
                     .filter(|outcome| matches!(outcome, PandaNetFactImportOutcome::Imported))
                     .count() as u64;
                 apply_peer_admissions(&mut fact_node, &state, &writer_session, &authority).await?;
+                let current_state = load_node(state.paths().state_dir.clone())?;
+                let _handled_rpc = handle_node_agent_rpc_requests(
+                    &mut fact_node,
+                    &writer_session,
+                    &author,
+                    &product_bus,
+                    &node_agent_request_session,
+                    &current_state,
+                )
+                .await?;
+                serve_daemon_control(
+                    control.as_ref(),
+                    &state,
+                    imported_batches,
+                    imported_operations,
+                    node_agent_report.registered_handlers,
+                )?;
             }
             Ok(None) => {
                 fact_node
                     .refresh_stream()
                     .await
                     .map_err(|source| NodeError::Transport { source })?;
+                serve_daemon_control(
+                    control.as_ref(),
+                    &state,
+                    imported_batches,
+                    imported_operations,
+                    node_agent_report.registered_handlers,
+                )?;
             }
             Err(error) if is_recoverable_stream_error(&error) => {
                 fact_node
                     .refresh_stream()
                     .await
                     .map_err(|source| NodeError::Transport { source })?;
+                serve_daemon_control(
+                    control.as_ref(),
+                    &state,
+                    imported_batches,
+                    imported_operations,
+                    node_agent_report.registered_handlers,
+                )?;
             }
             Err(error) => return Err(NodeError::Transport { source: error }),
         }
@@ -312,6 +362,90 @@ pub async fn run_daemon_once(
         imported_operations,
         node_agent_handlers: node_agent_report.registered_handlers,
     })
+}
+
+fn open_daemon_control_socket(path: &Path) -> NodeResult<std::os::unix::net::UnixListener> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| NodeError::DaemonControlSocket {
+            path: parent.to_path_buf(),
+            operation: "create parent",
+            source,
+        })?;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(NodeError::DaemonControlSocket {
+                path: path.to_path_buf(),
+                operation: "remove stale socket",
+                source,
+            });
+        }
+    }
+    let listener = std::os::unix::net::UnixListener::bind(path).map_err(|source| {
+        NodeError::DaemonControlSocket {
+            path: path.to_path_buf(),
+            operation: "bind",
+            source,
+        }
+    })?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|source| NodeError::DaemonControlSocket {
+            path: path.to_path_buf(),
+            operation: "set nonblocking",
+            source,
+        })?;
+    Ok(listener)
+}
+
+fn serve_daemon_control(
+    listener: Option<&std::os::unix::net::UnixListener>,
+    state: &LoadedNodeState,
+    imported_batches: u64,
+    imported_operations: u64,
+    node_agent_handlers: usize,
+) -> NodeResult<()> {
+    let Some(listener) = listener else {
+        return Ok(());
+    };
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _addr)) => {
+                let mut request = [0u8; 128];
+                let _read = std::io::Read::read(&mut stream, &mut request).map_err(|source| {
+                    NodeError::DaemonControlSocket {
+                        path: state.paths().state_dir.clone(),
+                        operation: "read status request",
+                        source,
+                    }
+                })?;
+                let response = format!(
+                    "node={} imported_batches={} imported_operations={} node_agent_handlers={}\n",
+                    state.node_id_str(),
+                    imported_batches,
+                    imported_operations,
+                    node_agent_handlers
+                );
+                std::io::Write::write_all(&mut stream, response.as_bytes()).map_err(|source| {
+                    NodeError::DaemonControlSocket {
+                        path: state.paths().state_dir.clone(),
+                        operation: "write status",
+                        source,
+                    }
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(source) => {
+                return Err(NodeError::DaemonControlSocket {
+                    path: state.paths().state_dir.clone(),
+                    operation: "accept",
+                    source,
+                });
+            }
+        }
+    }
 }
 
 fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {
@@ -467,7 +601,7 @@ fn ensure_node_ticket(state: &LoadedNodeState) -> NodeResult<String> {
     Ok(ticket)
 }
 
-async fn spawn_fact_node(
+pub(crate) async fn spawn_fact_node(
     state: &LoadedNodeState,
 ) -> NodeResult<(
     PandaNetFactNode,

@@ -408,7 +408,6 @@ pub fn node_agent_grant(node_id: &str) -> NodeResult<mvp_bus::Grant> {
         .with_response())
 }
 
-#[cfg(test)]
 pub fn node_agent_request_grant() -> mvp_bus::Grant {
     mvp_bus::Grant::empty().with_publish(
         mvp_bus::SubjectPattern::parse("node.*.>").expect("valid node-agent request subject grant"),

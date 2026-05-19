@@ -122,6 +122,12 @@ pub enum NodeError {
     Bus { source: mvp_bus::BusError },
     #[error("bus subject is invalid: {source}")]
     BusSubject { source: mvp_bus::SubjectParseError },
+    #[error("fact key is invalid: {source}")]
+    FactKey { source: mvp_bus::FactKeyParseError },
+    #[error("node-agent rpc failed: {message}")]
+    NodeAgentRpc { message: String },
+    #[error("encode node-agent rpc fact: {source}")]
+    EncodeNodeAgentRpc { source: serde_json::Error },
     #[error("runtime backend failed: {source}")]
     RuntimeBackend { source: mvp_runtime::RuntimeError },
     #[error("create runtime: {source}")]
@@ -138,6 +144,12 @@ pub enum NodeError {
     DnsServer { source: mvp_serving::DnsServerError },
     #[error("serving role control socket '{path}' failed during {operation}: {source}")]
     ServingControlSocket {
+        path: PathBuf,
+        operation: &'static str,
+        source: std::io::Error,
+    },
+    #[error("daemon control socket '{path}' failed during {operation}: {source}")]
+    DaemonControlSocket {
         path: PathBuf,
         operation: &'static str,
         source: std::io::Error,

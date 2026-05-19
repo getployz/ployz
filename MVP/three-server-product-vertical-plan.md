@@ -302,10 +302,9 @@ daemon services, not test-local handler closures.
 **Current status:** The daemon registers node-agent handlers during startup, and
 the `mvp-node` tests exercise those handlers through `BusActorHandle` using the
 existing deploy wire types. The handlers maintain local prepared/running/
-draining/stopped state in a small runtime object below the daemon boundary. The
-remaining gap is distributed product bus transport between nodes; U4 can now
-replace the in-memory runtime behavior with a real process backend without
-changing deploy wire subjects.
+draining/stopped state in a small runtime object below the daemon boundary.
+Slice 056 adds a fact-backed product bridge so founder deploy can reach a peer
+node-agent over p2panda-net without changing deploy wire subjects.
 
 ### U4. Minimal Runtime Backend
 
@@ -457,13 +456,13 @@ writer in `MVP/routing-p2panda/src/lib.rs`.
 **Verification:** The deploy path uses real product node-agent services and a
 real runtime backend, with no E2E-local participant closures.
 
-**Current status:** Slice 054 adds the first product deploy command. It can
-deploy one service to a local product node through real node-agent handlers,
-start the shipped `mvp-node runtime-http` child process, write deploy and
-serving facts through p2panda-backed writers, project gateway/DNS snapshots,
-apply host-network reachability, and update by draining/stopping the old
-backend after projection catch-up. The remaining gap is remote node-agent
-request/reply between separate product node processes.
+**Current status:** Slice 054 adds the first product deploy command. Slice 056
+extends the product smoke so founder deploys one service to `peer-a` through
+remote product node-agent request/reply, starts the shipped `mvp-node
+runtime-http` child process on the target, writes deploy and serving facts
+through p2panda-backed writers, projects gateway/DNS snapshots, applies
+host-network reachability, and keeps gateway/DNS/service reachable after the
+target daemon exits.
 
 ### U7. Serving Roles From Product State
 
@@ -512,8 +511,8 @@ product roles over the existing snapshot-backed serving actor. They expose a
 small Unix control socket for readiness, status, reload, and shutdown; the
 product-role proof starts them as subprocesses after a deploy, verifies HTTP
 and DNS reachability with no daemon running, and confirms a bad snapshot reload
-does not replace the last-good gateway state. The remaining gap is folding
-these product role commands into the three-server black-box harness.
+does not replace the last-good gateway state. Slice 056 folds those product
+role commands into the three-server black-box harness.
 
 ### U8. Three-Server Black-Box Harness
 
