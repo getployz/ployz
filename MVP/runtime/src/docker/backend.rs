@@ -5,6 +5,7 @@ use std::io::Write;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
@@ -67,10 +68,16 @@ impl DockerRuntime {
 
     fn run<F, T>(&self, future: F) -> RuntimeResult<T>
     where
-        F: Future<Output = RuntimeResult<T>>,
+        F: Future<Output = RuntimeResult<T>> + Send,
+        T: Send,
     {
         if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| self.executor.block_on(future))
+            thread::scope(|scope| {
+                scope
+                    .spawn(|| self.executor.block_on(future))
+                    .join()
+                    .expect("docker runtime worker thread panicked")
+            })
         } else {
             self.executor.block_on(future)
         }

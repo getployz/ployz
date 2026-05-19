@@ -4,13 +4,14 @@ use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mvp_node::{
     DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions, ServingRoleOptions,
-    admit_joiner, create_admission_request, create_invite, deploy_product_service, init_node,
-    join_from_token, load_node, now_ms, read_product_deploy_status, run_daemon_once, run_dns_role,
-    run_gateway_role,
+    admit_joiner, create_admission_request, create_invite, deploy_product_service,
+    deploy_product_service_with_runtime, init_node, join_from_token, load_node, now_ms,
+    read_product_deploy_status, run_daemon_once, run_dns_role, run_gateway_role,
 };
 use serde::Serialize;
 
@@ -62,7 +63,15 @@ fn deploy(args: &[String]) -> NodeResult<String> {
         .enable_io()
         .build()
         .map_err(|source| NodeError::Runtime { source })?;
-    let report = runtime.block_on(deploy_product_service(parsed.into_options()?))?;
+    let options = parsed.clone().into_options()?;
+    let runtime_backend = parsed.runtime_backend()?;
+    let report = match runtime_backend {
+        Some(runtime_backend) => runtime.block_on(deploy_product_service_with_runtime(
+            options,
+            Some(runtime_backend),
+        ))?,
+        None => runtime.block_on(deploy_product_service(options))?,
+    };
     let active = report
         .active_backends
         .iter()
@@ -435,6 +444,7 @@ struct ServingRoleArgs {
     stale_after_ms: Option<u64>,
 }
 
+#[derive(Clone)]
 struct DeployArgs {
     state_dir: Option<PathBuf>,
     control_socket: Option<PathBuf>,
@@ -443,6 +453,17 @@ struct DeployArgs {
     service: String,
     revision: String,
     hostname: String,
+    runtime: DeployRuntimeArgs,
+}
+
+#[derive(Clone)]
+enum DeployRuntimeArgs {
+    Process,
+    Docker {
+        image: String,
+        service_port: u16,
+        command: Option<Vec<String>>,
+    },
 }
 
 struct DeployStatusArgs {
@@ -585,6 +606,10 @@ impl DeployArgs {
         let mut revision = None;
         let mut hostname = None;
         let mut control_socket = None;
+        let mut deploy_runtime = DeployRuntimeArgs::Process;
+        let mut docker_image = None;
+        let mut docker_service_port = None;
+        let mut docker_command = None;
         let mut remaining = args.iter();
         while let Some(argument) = remaining.next() {
             match argument.as_str() {
@@ -634,6 +659,58 @@ impl DeployArgs {
                     };
                     hostname = Some(value.clone());
                 }
+                "--runtime" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--runtime" });
+                    };
+                    deploy_runtime = match value.as_str() {
+                        "process" => DeployRuntimeArgs::Process,
+                        "docker" => DeployRuntimeArgs::Docker {
+                            image: String::new(),
+                            service_port: 8080,
+                            command: None,
+                        },
+                        _ => {
+                            return Err(NodeError::UnknownArgument {
+                                argument: value.clone(),
+                            });
+                        }
+                    };
+                }
+                "--image" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--image" });
+                    };
+                    docker_image = Some(value.clone());
+                }
+                "--service-port" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--service-port",
+                        });
+                    };
+                    docker_service_port =
+                        Some(
+                            value
+                                .parse::<u16>()
+                                .map_err(|_| NodeError::UnknownArgument {
+                                    argument: value.clone(),
+                                })?,
+                        );
+                }
+                "--container-command" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--container-command",
+                        });
+                    };
+                    docker_command = Some(
+                        value
+                            .split_whitespace()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>(),
+                    );
+                }
                 other => {
                     return Err(NodeError::UnknownArgument {
                         argument: other.to_string(),
@@ -651,6 +728,14 @@ impl DeployArgs {
             service: service.unwrap_or_else(|| "web".to_string()),
             revision: revision.unwrap_or_else(|| "rev-1".to_string()),
             hostname: hostname.unwrap_or_else(|| "web.example.test".to_string()),
+            runtime: match deploy_runtime {
+                DeployRuntimeArgs::Process => DeployRuntimeArgs::Process,
+                DeployRuntimeArgs::Docker { .. } => DeployRuntimeArgs::Docker {
+                    image: docker_image.ok_or(NodeError::MissingFlagValue { flag: "--image" })?,
+                    service_port: docker_service_port.unwrap_or(8080),
+                    command: docker_command,
+                },
+            },
         })
     }
 
@@ -665,6 +750,55 @@ impl DeployArgs {
         .with_revision(self.revision)
         .with_hostname(self.hostname))
     }
+
+    fn runtime_backend(&self) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
+        match &self.runtime {
+            DeployRuntimeArgs::Process => Ok(None),
+            DeployRuntimeArgs::Docker {
+                image,
+                service_port,
+                command,
+            } => docker_runtime_backend(self, image, *service_port, command.as_deref()),
+        }
+    }
+}
+
+#[cfg(feature = "docker-runtime")]
+fn docker_runtime_backend(
+    args: &DeployArgs,
+    image: &str,
+    service_port: u16,
+    command: Option<&[String]>,
+) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
+    let state_dir = args
+        .state_dir
+        .as_ref()
+        .ok_or(NodeError::MissingFlagValue { flag: "--state" })?;
+    let state = load_node(state_dir)?;
+    let mut config = mvp_runtime::DockerRuntimeConfig::new(
+        state.node_id(),
+        state.paths().runtime_dir.clone(),
+        image,
+    )
+    .with_service_port(service_port);
+    if let Some(command) = command {
+        config = config.with_command(command.iter().cloned());
+    }
+    let runtime = mvp_runtime::DockerRuntime::connect(config)
+        .map_err(|source| NodeError::RuntimeBackend { source })?;
+    Ok(Some(Arc::new(runtime)))
+}
+
+#[cfg(not(feature = "docker-runtime"))]
+fn docker_runtime_backend(
+    _args: &DeployArgs,
+    _image: &str,
+    _service_port: u16,
+    _command: Option<&[String]>,
+) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
+    Err(NodeError::CommandNotWired {
+        command: "deploy --runtime docker requires the docker-runtime feature".to_string(),
+    })
 }
 
 impl DeployStatusArgs {
@@ -890,7 +1024,7 @@ fn help() -> String {
         "  join --state <dir> --token <json> [--node-id <id>]",
         "  admission --state <dir>",
         "  admit --state <dir> --request <json>",
-        "  deploy (--state <dir> | --control <socket>) --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>]",
+        "  deploy (--state <dir> | --control <socket>) --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]",
         "  deploy-status --state <dir> [--deploy-id <id>]",
         "  gateway --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
         "  dns --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",

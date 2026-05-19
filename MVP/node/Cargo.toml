@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+docker-runtime = ["mvp-runtime/docker"]
+
 [dependencies]
 blake3 = "1"
 mvp-bus = { path = "../bus" }
@@ -14,7 +18,7 @@ mvp-mesh = { path = "../mesh" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-p2panda-transport = { path = "../p2panda-transport" }
 mvp-projection = { path = "../projection" }
-mvp-runtime = { path = "../runtime" }
+mvp-runtime = { path = "../runtime", default-features = false }
 mvp-routing = { path = "../routing" }
 mvp-serving = { path = "../serving" }
 serde = { version = "1", features = ["derive"] }
