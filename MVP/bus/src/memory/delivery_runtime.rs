@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -7,9 +8,7 @@ use crossbeam_channel::{
     Receiver as DeliveryReceiver, SendTimeoutError, Sender as DeliverySender, TrySendError,
 };
 
-use super::{
-    BusRuntimeConfig, BusRuntimeSnapshot, Handler, Inflight, RequestContext, remaining_until,
-};
+use super::{BusRuntimeConfig, BusRuntimeSnapshot, Handler, RequestContext, remaining_until};
 use crate::message::{ReplyInbox, ReplyPermit};
 use crate::{BusError, BusMessage, PrincipalId, ResponseEnvelope, Result};
 
@@ -88,9 +87,10 @@ pub(super) struct DeliveryRuntime {
 }
 
 impl DeliveryRuntime {
-    pub(super) fn new(config: BusRuntimeConfig, inflight: Arc<Inflight>) -> Self {
+    pub(super) fn new(config: BusRuntimeConfig) -> Self {
         let (sender, receiver) = crossbeam_channel::bounded(config.delivery_queue_capacity());
         let metrics = Arc::new(DeliveryRuntimeMetrics::default());
+        let inflight = Arc::new(Inflight::default());
         for worker_index in 0..config.delivery_workers() {
             spawn_delivery_worker(
                 worker_index,
@@ -113,6 +113,7 @@ impl DeliveryRuntime {
         deadline: Instant,
         timeout_subject: String,
     ) -> Result<()> {
+        self.inflight.add(deliveries.len());
         self.enqueue(deliveries, None, deadline, timeout_subject)
     }
 
@@ -126,6 +127,7 @@ impl DeliveryRuntime {
             return Ok(());
         }
         let expected = deliveries.len();
+        self.inflight.add(expected);
         let (result_tx, result_rx) = mpsc::channel();
         self.enqueue(
             deliveries,
@@ -169,6 +171,10 @@ impl DeliveryRuntime {
             enqueue_full_count: self.metrics.enqueue_full_count(),
             enqueue_blocked_ns: self.metrics.enqueue_blocked_ns(),
         }
+    }
+
+    pub(super) fn wait_for_idle(&self, deadline: Duration) -> Result<()> {
+        self.inflight.wait_for_idle(deadline)
     }
 
     fn enqueue(
@@ -222,6 +228,74 @@ impl DeliveryRuntime {
             self.metrics.record_queue_depth(self.sender.len());
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct Inflight {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+impl Inflight {
+    fn add(&self, count: usize) {
+        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
+        *in_flight += count;
+    }
+
+    fn complete(&self) {
+        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
+        *in_flight = in_flight.saturating_sub(1);
+        if *in_flight == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    fn complete_many(&self, count: usize) {
+        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
+        *in_flight = in_flight.saturating_sub(count);
+        if *in_flight == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    fn guard(self: &Arc<Self>) -> InflightGuard {
+        InflightGuard {
+            inflight: Arc::clone(self),
+        }
+    }
+
+    fn wait_for_idle(&self, deadline: Duration) -> Result<()> {
+        let started = Instant::now();
+        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
+        while *in_flight > 0 {
+            let Some(remaining) = deadline.checked_sub(started.elapsed()) else {
+                return Err(BusError::Timeout {
+                    subject: String::from("drain"),
+                });
+            };
+            let (guard, wait_result) = self
+                .idle
+                .wait_timeout(in_flight, remaining)
+                .expect("in-flight condvar wait poisoned");
+            in_flight = guard;
+            if wait_result.timed_out() && *in_flight > 0 {
+                return Err(BusError::Timeout {
+                    subject: String::from("drain"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+struct InflightGuard {
+    inflight: Arc<Inflight>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.inflight.complete();
     }
 }
 

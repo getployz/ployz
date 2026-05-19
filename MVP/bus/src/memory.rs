@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::bridge::BridgeRuleSet;
@@ -167,74 +167,6 @@ struct StreamBridgeTarget {
     state: BridgeState,
 }
 
-#[derive(Debug, Default)]
-struct Inflight {
-    count: Mutex<usize>,
-    idle: Condvar,
-}
-
-impl Inflight {
-    fn add(&self, count: usize) {
-        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
-        *in_flight += count;
-    }
-
-    fn complete(&self) {
-        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
-        *in_flight = in_flight.saturating_sub(1);
-        if *in_flight == 0 {
-            self.idle.notify_all();
-        }
-    }
-
-    fn complete_many(&self, count: usize) {
-        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
-        *in_flight = in_flight.saturating_sub(count);
-        if *in_flight == 0 {
-            self.idle.notify_all();
-        }
-    }
-
-    fn guard(self: &Arc<Self>) -> InflightGuard {
-        InflightGuard {
-            inflight: Arc::clone(self),
-        }
-    }
-
-    fn wait_for_idle(&self, deadline: Duration) -> Result<()> {
-        let started = Instant::now();
-        let mut in_flight = self.count.lock().expect("in-flight mutex poisoned");
-        while *in_flight > 0 {
-            let Some(remaining) = deadline.checked_sub(started.elapsed()) else {
-                return Err(BusError::Timeout {
-                    subject: String::from("drain"),
-                });
-            };
-            let (guard, wait_result) = self
-                .idle
-                .wait_timeout(in_flight, remaining)
-                .expect("in-flight condvar wait poisoned");
-            in_flight = guard;
-            if wait_result.timed_out() && *in_flight > 0 {
-                return Err(BusError::Timeout {
-                    subject: String::from("drain"),
-                });
-            }
-        }
-        Ok(())
-    }
-}
-
-struct InflightGuard {
-    inflight: Arc<Inflight>,
-}
-
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
-        self.inflight.complete();
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub message: BusMessage,
@@ -274,7 +206,6 @@ impl RequestContext {
 #[derive(Clone)]
 pub struct MemoryBus {
     inner: Arc<Mutex<Inner>>,
-    inflight: Arc<Inflight>,
     runtime: Arc<DeliveryRuntime>,
 }
 
@@ -284,11 +215,9 @@ impl MemoryBus {
     }
 
     fn with_config(config: BusRuntimeConfig) -> Self {
-        let inflight = Arc::new(Inflight::default());
         Self {
             inner: Arc::new(Mutex::new(Inner::new())),
-            runtime: Arc::new(DeliveryRuntime::new(config, Arc::clone(&inflight))),
-            inflight,
+            runtime: Arc::new(DeliveryRuntime::new(config)),
         }
     }
 
@@ -534,7 +463,6 @@ impl MemoryBus {
             );
             let stream_dispatch = inner.stream_bridge_deliveries_for(&message);
             dispatch.extend(stream_dispatch);
-            self.inflight.add(dispatch.len());
             dispatch
         };
 
@@ -670,7 +598,7 @@ impl MemoryBus {
             }
             inner.draining = true;
         }
-        self.inflight.wait_for_idle(deadline)
+        self.runtime.wait_for_idle(deadline)
     }
 
     pub fn write_fact(
@@ -820,7 +748,6 @@ impl MemoryBus {
                     .cloned()
             {
                 let imported = inner.prepare_service_import_request(session, import, spec, tx)?;
-                self.inflight.add(imported.len());
                 imported
             } else {
                 inner.authorize_request(session, &spec.target, &spec.subject)?;
@@ -836,7 +763,6 @@ impl MemoryBus {
                         bridge_origin: None,
                         tx,
                     })?;
-                self.inflight.add(dispatch.len());
                 dispatch
             }
         };
