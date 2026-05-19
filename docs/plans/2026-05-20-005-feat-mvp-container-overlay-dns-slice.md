@@ -134,6 +134,8 @@ Evidence:
 
 ### Unit 2: Docker Bridge Backend
 
+Status: complete in checkpoint pending push.
+
 Files:
 
 - `MVP/runtime/src/network/mod.rs`
@@ -142,17 +144,22 @@ Files:
 
 Work:
 
-- Port Docker bridge lifecycle from `crates/ployz-runtime-backends`.
-- Keep bridge creation/inspection/connect/disconnect in a network backend,
+- [x] Port Docker bridge lifecycle from `crates/ployz-runtime-backends`.
+- [x] Keep bridge creation/inspection/connect/disconnect in a network backend,
   not in `DockerRuntime` lifecycle.
-- Resolve bridge interface name for eBPF attachment.
-- Return gateway/container IPs through typed structs.
+- [x] Resolve bridge interface name for eBPF attachment.
+- [x] Return gateway/container IPs through typed structs.
 
 Tests:
 
-- unit tests for network names, IPAM config, and bridge interface naming,
-- Docker-gated integration test creates/removes a bridge network,
-- Docker-gated test connects a busybox container at a static IP.
+- [x] unit tests for network names, IPAM config, and bridge interface naming,
+- [x] Docker-gated integration test creates/removes a bridge network,
+- [x] Docker-gated test connects a busybox container at a static IP.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker --test docker_bridge_network`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
 
 ### Unit 3: Overlay Forwarding Adapter
 
