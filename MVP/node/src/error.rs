@@ -122,6 +122,8 @@ pub enum NodeError {
     Bus { source: mvp_bus::BusError },
     #[error("bus subject is invalid: {source}")]
     BusSubject { source: mvp_bus::SubjectParseError },
+    #[error("runtime backend failed: {source}")]
+    RuntimeBackend { source: mvp_runtime::RuntimeError },
     #[error("create runtime: {source}")]
     Runtime { source: std::io::Error },
 }

@@ -2949,6 +2949,7 @@ dependencies = [
  "mvp-p2panda-facts",
  "mvp-p2panda-transport",
  "mvp-projection",
+ "mvp-runtime",
  "serde",
  "serde_json",
  "tempfile",
@@ -3044,6 +3045,18 @@ dependencies = [
  "mvp-projection",
  "mvp-routing",
  "tokio",
+]
+
+[[package]]
+name = "mvp-runtime"
+version = "0.1.0"
+dependencies = [
+ "mvp-deploy",
+ "mvp-projection",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

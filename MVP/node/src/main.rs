@@ -33,6 +33,7 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "admission" => admission(rest),
         "admit" => admit(rest),
         "daemon" => daemon(rest),
+        "runtime-http" => runtime_http(rest),
         "gateway" | "dns" | "deploy" => Err(NodeError::CommandNotWired {
             command: command.clone(),
         }),
@@ -41,6 +42,13 @@ fn run(args: Vec<String>) -> NodeResult<String> {
             command: other.to_string(),
         }),
     }
+}
+
+fn runtime_http(args: &[String]) -> NodeResult<String> {
+    let parsed = RuntimeHttpArgs::parse(args)?;
+    mvp_runtime::run_static_http_server(&parsed.addr, &parsed.root)
+        .map_err(|source| NodeError::RuntimeBackend { source })?;
+    Ok("runtime-http stopped".to_string())
 }
 
 fn admission(args: &[String]) -> NodeResult<String> {
@@ -240,6 +248,44 @@ struct DaemonArgs {
 struct AdmitArgs {
     state_dir: PathBuf,
     request: String,
+}
+
+struct RuntimeHttpArgs {
+    addr: String,
+    root: PathBuf,
+}
+
+impl RuntimeHttpArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut addr = None;
+        let mut root = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--addr" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--addr" });
+                    };
+                    addr = Some(value.clone());
+                }
+                "--root" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--root" });
+                    };
+                    root = Some(PathBuf::from(value));
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            addr: addr.ok_or(NodeError::MissingFlagValue { flag: "--addr" })?,
+            root: root.ok_or(NodeError::MissingFlagValue { flag: "--root" })?,
+        })
+    }
 }
 
 impl AdmitArgs {
