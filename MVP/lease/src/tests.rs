@@ -63,8 +63,8 @@ fn first_local_claim_becomes_active_and_reports_visible_nodes() {
     let LeaseDecision::Acquired(acquired) = decision else {
         panic!("expected acquired");
     };
-    assert_eq!(acquired.guard().epoch(), LeaseEpoch::first());
-    assert_eq!(acquired.visible_nodes().len(), 2);
+    assert_eq!(acquired.guard().epoch, LeaseEpoch::first());
+    assert_eq!(acquired.visible_nodes.len(), 2);
     assert!(matches!(
         book.state(&resource(), at(101)),
         LeaseState::Active { .. }
@@ -87,7 +87,7 @@ fn local_claim_does_not_require_visible_peer_witnesses() {
     let LeaseDecision::Acquired(acquired) = decision else {
         panic!("expected acquired");
     };
-    assert!(acquired.visible_nodes().is_empty());
+    assert!(acquired.visible_nodes.is_empty());
     assert_eq!(book.fact_count(), 1);
 }
 
@@ -118,14 +118,14 @@ fn active_claim_returns_conflict_before_mutation() {
     assert!(matches!(
         second,
         LeaseDecision::Conflict(conflict)
-            if conflict.conflicting_holder() == &holder("issuer-a")
-                && conflict.visible_nodes().len() == 2
+            if conflict.conflicting_holder == holder("issuer-a")
+                && conflict.visible_nodes.len() == 2
     ));
     assert_eq!(book.fact_count(), before_conflict);
     assert!(matches!(
         book.state(&resource(), at(101)),
         LeaseState::Active { current, superseded }
-            if current.holder() == &holder("issuer-a") && superseded.is_empty()
+            if current.holder == holder("issuer-a") && superseded.is_empty()
     ));
 }
 
@@ -152,7 +152,7 @@ fn renewal_by_current_holder_extends_expiry() {
         LeaseState::Active {
             current,
             ..
-        } if current.expires_at() == at(115)
+        } if current.expires_at == at(115)
     ));
 }
 
@@ -302,8 +302,8 @@ fn expired_lease_allows_next_holder_with_incremented_epoch() {
     assert!(matches!(
         second,
         LeaseDecision::Acquired(acquired)
-            if acquired.guard().holder() == &holder("issuer-b")
-                && acquired.guard().epoch() == second_epoch()
+            if acquired.guard().holder == holder("issuer-b")
+                && acquired.guard().epoch == second_epoch()
     ));
 }
 
@@ -320,12 +320,12 @@ fn conflicting_same_epoch_claims_reduce_deterministically_with_superseded_loser(
     let reversed = active_state_for_claim_order([second_claim, first_claim]);
 
     for (current, superseded) in [forward, reversed] {
-        assert_eq!(current.epoch(), LeaseEpoch::first());
-        assert_eq!(current.content_hash(), winner_hash);
+        assert_eq!(current.epoch, LeaseEpoch::first());
+        assert_eq!(current.content_hash, winner_hash);
         assert_eq!(superseded.len(), 1);
-        assert_eq!(superseded[0].content_hash(), loser_hash);
-        assert_eq!(superseded[0].by_content_hash(), winner_hash);
-        assert_eq!(superseded[0].by_epoch(), LeaseEpoch::first());
+        assert_eq!(superseded[0].content_hash, loser_hash);
+        assert_eq!(superseded[0].by_content_hash, winner_hash);
+        assert_eq!(superseded[0].by_epoch, LeaseEpoch::first());
     }
 }
 
@@ -367,7 +367,7 @@ fn renew_for_superseded_same_holder_claim_does_not_extend_winner() {
 
     assert!(matches!(
         book.state(&resource(), at(150)),
-        LeaseState::Expired { previous, .. } if previous.content_hash() == winner_hash
+        LeaseState::Expired { previous, .. } if previous.content_hash == winner_hash
     ));
 }
 
@@ -389,7 +389,7 @@ fn imported_stale_renewal_after_expiry_does_not_resurrect_claim() {
 
     assert!(matches!(
         book.state(&resource(), at(120)),
-        LeaseState::Expired { previous, .. } if previous.content_hash() == expired_hash
+        LeaseState::Expired { previous, .. } if previous.content_hash == expired_hash
     ));
 
     let second = book
@@ -405,8 +405,8 @@ fn imported_stale_renewal_after_expiry_does_not_resurrect_claim() {
     assert!(matches!(
         second,
         LeaseDecision::Acquired(acquired)
-            if acquired.guard().holder() == &holder("issuer-b")
-                && acquired.guard().epoch() == second_epoch()
+            if acquired.guard().holder == holder("issuer-b")
+                && acquired.guard().epoch == second_epoch()
     ));
 }
 
@@ -432,7 +432,7 @@ fn release_for_superseded_same_holder_claim_does_not_release_winner() {
 
     assert!(matches!(
         book.state(&resource(), at(103)),
-        LeaseState::Active { current, .. } if current.content_hash() == winner_hash
+        LeaseState::Active { current, .. } if current.content_hash == winner_hash
     ));
 }
 
