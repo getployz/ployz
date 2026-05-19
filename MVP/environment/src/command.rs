@@ -3,8 +3,8 @@ use std::pin::Pin;
 
 use mvp_bus::FactKey;
 use mvp_commands::{
-    Command, CommandCompensationFuture, CommandContext, CommandName, CommandStepFuture, IntentId,
-    PhaseTransition, PhasedCommand, run_phased,
+    Command, CommandContext, CommandName, CommandStepFuture, IntentId, PhaseTransition,
+    PhasedCommand, run_phased,
 };
 use mvp_identity::VisibleNodes;
 use mvp_projection::FactSource;
@@ -443,14 +443,6 @@ where
             }
         })
     }
-
-    fn compensate<'b>(
-        &'b self,
-        _cx: &'b CommandContext,
-        _phase: Self::Phase,
-    ) -> CommandCompensationFuture<'b, <Self as Command>::Error> {
-        Box::pin(async { Ok(()) })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -686,14 +678,6 @@ where
                 }
             }
         })
-    }
-
-    fn compensate<'b>(
-        &'b self,
-        _cx: &'b CommandContext,
-        _phase: Self::Phase,
-    ) -> CommandCompensationFuture<'b, <Self as Command>::Error> {
-        Box::pin(async { Ok(()) })
     }
 }
 

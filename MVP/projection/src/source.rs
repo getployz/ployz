@@ -48,26 +48,132 @@ impl FactKeyClassification {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedFactKey {
+    NodeJoined {
+        node_id: String,
+        epoch: String,
+    },
+    NodeRemovalStarted {
+        node_id: String,
+        epoch: String,
+    },
+    NodeTombstoned {
+        node_id: String,
+        epoch: String,
+    },
+    PeerAdmitted {
+        node_id: String,
+        epoch: String,
+    },
+    ServiceRegistered {
+        service: String,
+        node_id: String,
+        epoch: String,
+    },
+    ServingCommit {
+        serving_commit_id: String,
+    },
+    RouteCommit {
+        route_commit_id: String,
+    },
+    GatewayCommit {
+        gateway_commit_id: String,
+    },
+    DnsCommit {
+        dns_commit_id: String,
+    },
+    LeaseClaimed {
+        resource: String,
+        epoch: String,
+    },
+    LeaseRenewed {
+        resource: String,
+        epoch: String,
+        claim_hash: String,
+        renewed_at: String,
+    },
+    LeaseReleased {
+        resource: String,
+        epoch: String,
+        claim_hash: String,
+        release: String,
+    },
+    AcmeHttp01Presented {
+        hostname: String,
+        token: String,
+        epoch: String,
+    },
+    AcmeHttp01Cleared {
+        hostname: String,
+        token: String,
+        epoch: String,
+        claim_hash: String,
+    },
+    Unsupported,
+}
+
+impl ParsedFactKey {
+    #[must_use]
+    pub(crate) fn classification(&self) -> FactKeyClassification {
+        match self {
+            Self::NodeJoined { epoch, .. } => classify_epoch(FactKind::NodeJoined, epoch),
+            Self::NodeRemovalStarted { epoch, .. } => {
+                classify_epoch(FactKind::NodeRemovalStarted, epoch)
+            }
+            Self::NodeTombstoned { epoch, .. } => classify_epoch(FactKind::NodeTombstoned, epoch),
+            Self::PeerAdmitted { epoch, .. } => classify_epoch(FactKind::PeerAdmitted, epoch),
+            Self::ServiceRegistered { epoch, .. } => {
+                classify_epoch(FactKind::ServiceRegistered, epoch)
+            }
+            Self::ServingCommit { .. } => FactKeyClassification::new(FactKind::ServingCommit, 0),
+            Self::RouteCommit { .. } => FactKeyClassification::new(FactKind::RouteCommit, 0),
+            Self::GatewayCommit { .. } => FactKeyClassification::new(FactKind::GatewayCommit, 0),
+            Self::DnsCommit { .. } => FactKeyClassification::new(FactKind::DnsCommit, 0),
+            Self::LeaseClaimed { epoch, .. } => classify_epoch(FactKind::LeaseClaimed, epoch),
+            Self::LeaseRenewed { epoch, .. } => classify_epoch(FactKind::LeaseRenewed, epoch),
+            Self::LeaseReleased { epoch, .. } => classify_epoch(FactKind::LeaseReleased, epoch),
+            Self::AcmeHttp01Presented { epoch, .. } => {
+                classify_epoch(FactKind::AcmeHttp01Presented, epoch)
+            }
+            Self::AcmeHttp01Cleared { epoch, .. } => {
+                classify_epoch(FactKind::AcmeHttp01Cleared, epoch)
+            }
+            Self::Unsupported => FactKeyClassification::new(FactKind::Unsupported, 0),
+        }
+    }
+}
+
 #[must_use]
 pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
+    parse_fact_key(key).classification()
+}
+
+pub(crate) fn parse_fact_key(key: &FactKey) -> ParsedFactKey {
     let segments = key.segments().collect::<Vec<_>>();
     match segments.as_slice() {
         ["facts", "node", _node_id, "joined", epoch]
-        | ["facts", "node", _node_id, "joined", epoch, _] => {
-            classify_epoch(FactKind::NodeJoined, epoch)
-        }
+        | ["facts", "node", _node_id, "joined", epoch, _] => ParsedFactKey::NodeJoined {
+            node_id: (*_node_id).to_string(),
+            epoch: (*epoch).to_string(),
+        },
         ["facts", "node", _node_id, "removal_started", epoch]
         | ["facts", "node", _node_id, "removal_started", epoch, _] => {
-            classify_epoch(FactKind::NodeRemovalStarted, epoch)
+            ParsedFactKey::NodeRemovalStarted {
+                node_id: (*_node_id).to_string(),
+                epoch: (*epoch).to_string(),
+            }
         }
         ["facts", "node", _node_id, "tombstoned", epoch]
-        | ["facts", "node", _node_id, "tombstoned", epoch, _] => {
-            classify_epoch(FactKind::NodeTombstoned, epoch)
-        }
+        | ["facts", "node", _node_id, "tombstoned", epoch, _] => ParsedFactKey::NodeTombstoned {
+            node_id: (*_node_id).to_string(),
+            epoch: (*epoch).to_string(),
+        },
         ["facts", "peer", _node_id, "admitted", epoch]
-        | ["facts", "peer", _node_id, "admitted", epoch, _] => {
-            classify_epoch(FactKind::PeerAdmitted, epoch)
-        }
+        | ["facts", "peer", _node_id, "admitted", epoch, _] => ParsedFactKey::PeerAdmitted {
+            node_id: (*_node_id).to_string(),
+            epoch: (*epoch).to_string(),
+        },
         ["facts", "service", _service, _node_id, "registered", epoch]
         | [
             "facts",
@@ -77,19 +183,28 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             "registered",
             epoch,
             _,
-        ] => classify_epoch(FactKind::ServiceRegistered, epoch),
-        ["facts", "serving", _serving_commit] => {
-            FactKeyClassification::new(FactKind::ServingCommit, 0)
-        }
-        ["facts", "routes", _route_commit] => FactKeyClassification::new(FactKind::RouteCommit, 0),
-        ["facts", "gateway", _gateway_commit] => {
-            FactKeyClassification::new(FactKind::GatewayCommit, 0)
-        }
-        ["facts", "dns", _dns_commit] => FactKeyClassification::new(FactKind::DnsCommit, 0),
+        ] => ParsedFactKey::ServiceRegistered {
+            service: (*_service).to_string(),
+            node_id: (*_node_id).to_string(),
+            epoch: (*epoch).to_string(),
+        },
+        ["facts", "serving", _serving_commit] => ParsedFactKey::ServingCommit {
+            serving_commit_id: (*_serving_commit).to_string(),
+        },
+        ["facts", "routes", _route_commit] => ParsedFactKey::RouteCommit {
+            route_commit_id: (*_route_commit).to_string(),
+        },
+        ["facts", "gateway", _gateway_commit] => ParsedFactKey::GatewayCommit {
+            gateway_commit_id: (*_gateway_commit).to_string(),
+        },
+        ["facts", "dns", _dns_commit] => ParsedFactKey::DnsCommit {
+            dns_commit_id: (*_dns_commit).to_string(),
+        },
         ["facts", "lease", _resource, "claimed", epoch]
-        | ["facts", "lease", _resource, "claimed", epoch, _] => {
-            classify_epoch(FactKind::LeaseClaimed, epoch)
-        }
+        | ["facts", "lease", _resource, "claimed", epoch, _] => ParsedFactKey::LeaseClaimed {
+            resource: (*_resource).to_string(),
+            epoch: (*epoch).to_string(),
+        },
         [
             "facts",
             "lease",
@@ -108,7 +223,12 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             _claim_hash,
             _renewed_at,
             _,
-        ] => classify_epoch(FactKind::LeaseRenewed, epoch),
+        ] => ParsedFactKey::LeaseRenewed {
+            resource: (*_resource).to_string(),
+            epoch: (*epoch).to_string(),
+            claim_hash: (*_claim_hash).to_string(),
+            renewed_at: (*_renewed_at).to_string(),
+        },
         [
             "facts",
             "lease",
@@ -127,7 +247,12 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             _claim_hash,
             _released_at,
             _,
-        ] => classify_epoch(FactKind::LeaseReleased, epoch),
+        ] => ParsedFactKey::LeaseReleased {
+            resource: (*_resource).to_string(),
+            epoch: (*epoch).to_string(),
+            claim_hash: (*_claim_hash).to_string(),
+            release: (*_released_at).to_string(),
+        },
         [
             "facts",
             "acme",
@@ -146,7 +271,11 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             "presented",
             epoch,
             _,
-        ] => classify_epoch(FactKind::AcmeHttp01Presented, epoch),
+        ] => ParsedFactKey::AcmeHttp01Presented {
+            hostname: (*_hostname).to_string(),
+            token: (*_token).to_string(),
+            epoch: (*epoch).to_string(),
+        },
         [
             "facts",
             "acme",
@@ -167,8 +296,13 @@ pub fn classify_fact_key(key: &FactKey) -> FactKeyClassification {
             epoch,
             _claim_hash,
             _,
-        ] => classify_epoch(FactKind::AcmeHttp01Cleared, epoch),
-        _ => FactKeyClassification::new(FactKind::Unsupported, 0),
+        ] => ParsedFactKey::AcmeHttp01Cleared {
+            hostname: (*_hostname).to_string(),
+            token: (*_token).to_string(),
+            epoch: (*epoch).to_string(),
+            claim_hash: (*_claim_hash).to_string(),
+        },
+        _ => ParsedFactKey::Unsupported,
     }
 }
 

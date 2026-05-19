@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mvp_bus::{BusAuthority, FactKey, FactKeyPattern, Grant, PrincipalId, harness::InMemoryBus};
+use mvp_bus::{BusAuthority, FactKey, FactKeyPattern, Grant, PrincipalId, local::LocalBus};
 use mvp_mesh::{IrohEndpointId, MeshError, WireGuardPublicKey, joined_fact_key};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig,
@@ -271,8 +271,7 @@ pub async fn run_daemon_once(
     options: DaemonOptions,
 ) -> NodeResult<DaemonReport> {
     let state = load_node(state_dir)?;
-    let (product_bus, product_authority, _raw_product_bus) =
-        mvp_bus::harness::actor_with_authority();
+    let (product_bus, product_authority, _raw_product_bus) = mvp_bus::local::actor_with_authority();
     let operator_session = product_authority.grant_in(
         state.island(),
         PrincipalId::new(format!("daemon-operator:{}", state.node_id_str())),
@@ -659,7 +658,7 @@ pub(crate) async fn spawn_fact_node(
     PandaFactAuthor,
     BusAuthority,
 )> {
-    let (raw_bus, authority) = InMemoryBus::new_with_authority();
+    let (raw_bus, authority) = LocalBus::new_with_authority();
     let trusted_authors = state.trusted_fact_authors()?;
     let writer_session =
         authority.grant_in(state.island(), state.principal(), product_fact_grant());

@@ -732,7 +732,7 @@ impl PandaVolumeFactStore {
             LeaseTimestamp::from_secs(window.0),
             LeaseTimestamp::from_secs(window.1),
         );
-        let key = FactKey::parse(format!("/facts/lease/{}/claimed/{epoch}", claim.resource()))
+        let key = FactKey::parse(format!("/facts/lease/{}/claimed/{epoch}", claim.resource))
             .map_err(|error| error.to_string())?;
         let payload = mvp_projection::ProjectionFactPayload::LeaseClaimed(claim)
             .to_fact_bytes()

@@ -82,8 +82,8 @@ pub(crate) fn run() -> Result<(), String> {
         matches!(
             error,
             AcmeCoordinationError::Lease(LeaseError::Conflict(conflict))
-                if conflict.conflicting_holder() == &issuer_a
-                    && conflict.visible_nodes().len() == 2
+                if conflict.conflicting_holder == issuer_a
+                    && conflict.visible_nodes.len() == 2
         )
     })?;
     let conflict_detected = true;
