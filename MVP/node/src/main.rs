@@ -788,7 +788,8 @@ fn docker_runtime_backend(
         state.paths().runtime_dir.clone(),
         image,
     )
-    .with_service_port(service_port);
+    .with_service_port(service_port)
+    .with_dns_server(state.container_subnet().docker_gateway_ip().to_string());
     if let Some(command) = command {
         config = config.with_command(command.iter().cloned());
     }
