@@ -241,6 +241,10 @@ Tests:
 - [x] Deploy coordination consumes runtime endpoints through the runtime contract.
 - [x] Docker backend starts, lists/adopts, drains, and stops containers with stable
   labels.
+- [x] Docker start failure is a bounded readiness failure and does not leave a
+  newly-created unready container adoptable.
+- [x] Docker-backed node-agent registration adopts already-running containers
+  after the agent/daemon control process is recreated.
 - [x] Process fixture behavior remains available for fast tests.
 - [x] Docker unavailability is reported as a runtime backend failure in Docker mode,
   not silently replaced by the process fixture.
@@ -250,6 +254,7 @@ Tests:
 
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime -p mvp-node node_agent`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker docker_runtime -- --nocapture`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime node_agent`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime docker_node_agent`
 
@@ -270,6 +275,21 @@ Tests:
   coordination Docker-specific.
 - The Docker node-agent test starts and stops a real `busybox` HTTP container
   through the same node-agent runtime contract used by deploy participant RPC.
+- Docker coverage hardening checkpoint adds:
+  `docker_runtime_removes_new_container_when_readiness_fails`, which proves a
+  newly-created container that never opens its service port returns a structured
+  `ReadinessTimeout` and is removed instead of becoming restart-adoptable; and a
+  Docker node-agent restart assertion, which reconnects a fresh Docker runtime
+  and registers a fresh node-agent service set that adopts the already-running
+  container as running.
+- 2026-05-20 verification:
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker -- --nocapture`
+  passed locally against Docker 29.4.2, including Docker bridge network tests and
+  Docker runtime lifecycle/failure tests.
+- 2026-05-20 verification:
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime docker_node_agent -- --nocapture`
+  passed locally against Docker 29.4.2, including Docker node-agent restart
+  adoption before drain/stop cleanup.
 
 ## Explicit Deferrals
 

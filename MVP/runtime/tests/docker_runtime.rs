@@ -9,7 +9,7 @@ use mvp_mesh::ContainerSubnet;
 use mvp_projection::ServiceName;
 use mvp_runtime::{
     ContainerNetworkBackend, DockerBridgeNetwork, DockerBridgeNetworkConfig, DockerRuntime,
-    DockerRuntimeConfig, RuntimeBackend, RuntimeInstanceSpec, RuntimeInstanceState,
+    DockerRuntimeConfig, RuntimeBackend, RuntimeError, RuntimeInstanceSpec, RuntimeInstanceState,
 };
 
 #[test]
@@ -24,14 +24,14 @@ fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
             return;
         }
     };
-    let runtime = match DockerRuntime::connect_with_container_network(config.clone(), network.clone())
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("skipping Docker integration test: {error}");
-            return;
-        }
-    };
+    let runtime =
+        match DockerRuntime::connect_with_container_network(config.clone(), network.clone()) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("skipping Docker integration test: {error}");
+                return;
+            }
+        };
     let spec = runtime_spec("runtime-lifecycle", "rev-1");
 
     let started = runtime.start(&spec).expect("start container");
@@ -51,9 +51,9 @@ fn docker_runtime_starts_lists_adopts_drains_and_stops_container() {
 
     let restarted_runtime =
         DockerRuntime::connect_with_container_network(config.clone(), network.clone())
-        .expect("reconnect docker runtime")
-        .adopt()
-        .expect("adopt containers");
+            .expect("reconnect docker runtime")
+            .adopt()
+            .expect("adopt containers");
     assert!(
         restarted_runtime
             .iter()
@@ -129,6 +129,49 @@ fn docker_runtime_adopts_same_spec_and_recreates_changed_revision() {
         .stop(&rev_1.instance_id)
         .expect("stop replacement")
         .expect("stopped replacement");
+    network.remove().expect("remove bridge network");
+}
+
+#[test]
+fn docker_runtime_removes_new_container_when_readiness_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let node_id = format!("node-runtime-readiness-{}", unique_suffix());
+    let network = match docker_network("runtime-readiness", "10.210.93.0/24") {
+        Ok(network) => Arc::new(network),
+        Err(error) => {
+            eprintln!("skipping Docker integration test: {error}");
+            return;
+        }
+    };
+    let config = DockerRuntimeConfig::new(NodeId::new(&node_id), temp.path(), "busybox:latest")
+        .with_command(["sh", "-c", "sleep 60"])
+        .with_service_port(8080)
+        .with_readiness_timeout(Duration::from_millis(250))
+        .with_stop_timeout(Duration::from_secs(1));
+    let runtime = match DockerRuntime::connect_with_container_network(config, network.clone()) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("skipping Docker integration test: {error}");
+            return;
+        }
+    };
+    let spec = runtime_spec("runtime-readiness", "rev-1");
+
+    let error = runtime
+        .start(&spec)
+        .expect_err("container without a listener should fail readiness");
+    assert!(
+        matches!(error, RuntimeError::ReadinessTimeout { .. }),
+        "expected readiness timeout, got {error:?}"
+    );
+    assert!(
+        runtime
+            .list()
+            .expect("list containers")
+            .iter()
+            .all(|instance| instance.instance_id != spec.instance_id),
+        "failed readiness containers must not remain adoptable"
+    );
     network.remove().expect("remove bridge network");
 }
 

@@ -49,14 +49,14 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
     ])
     .with_readiness_timeout(Duration::from_secs(10))
     .with_stop_timeout(Duration::from_secs(1));
-    let docker_runtime = match DockerRuntime::connect_with_container_network(config, bridge.clone())
-    {
-        Ok(runtime) => Arc::new(runtime),
-        Err(error) => {
-            eprintln!("skipping Docker node-agent integration test: {error}");
-            return;
-        }
-    };
+    let docker_runtime =
+        match DockerRuntime::connect_with_container_network(config.clone(), bridge.clone()) {
+            Ok(runtime) => Arc::new(runtime),
+            Err(error) => {
+                eprintln!("skipping Docker node-agent integration test: {error}");
+                return;
+            }
+        };
     let runtime_backend = Arc::clone(&docker_runtime) as Arc<dyn RuntimeBackend>;
     let (bus, authority, _raw) = mvp_bus::harness::actor_with_authority();
     let agent = authority.grant_in(
@@ -94,6 +94,28 @@ async fn docker_node_agent_starts_and_stops_container_through_runtime_contract()
     assert_eq!(reply.outcome, InstanceStartOutcome::Ready);
     let backend = reply.backend.expect("backend endpoint");
     assert!(backend.address.starts_with("10.210."));
+
+    let restarted_runtime =
+        DockerRuntime::connect_with_container_network(config.clone(), bridge.clone())
+            .expect("reconnect docker runtime");
+    let (restart_bus, restart_authority, _raw) = mvp_bus::harness::actor_with_authority();
+    let restarted_agent = restart_authority.grant_in(
+        state.island(),
+        PrincipalId::new("node-agent-restarted"),
+        node_agent_grant(state.node_id_str()).expect("agent grant"),
+    );
+    let (restarted_services, _report) = register_node_agent_services_with_runtime(
+        &restart_bus,
+        &restarted_agent,
+        &state,
+        Some(Arc::new(restarted_runtime) as Arc<dyn RuntimeBackend>),
+    )
+    .await
+    .expect("register restarted node agent");
+    assert_eq!(
+        restarted_services.running_instances(),
+        vec![instance_id.clone()]
+    );
 
     bus.request(
         &requester,
