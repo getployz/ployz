@@ -20,9 +20,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, timeout};
 
 use crate::{
-    ServingActorHandle, ServingError, ServingFailureKind, ServingFreshness, ServingSnapshotBatch,
-    ServingSnapshotKind, ServingSnapshotPaths, WireServingState, spawn_dns_server,
-    spawn_http_gateway,
+    GatewayEngineKind, GatewayOptions, ServingActorHandle, ServingError, ServingFailureKind,
+    ServingFreshness, ServingSnapshotBatch, ServingSnapshotKind, ServingSnapshotPaths,
+    WireServingState, spawn_dns_server, spawn_gateway, spawn_http_gateway,
 };
 
 fn snapshot_paths(root: &TempDir) -> ServingSnapshotPaths {
@@ -470,6 +470,30 @@ async fn http_gateway_routes_to_selected_backend() {
 }
 
 #[tokio::test]
+async fn gateway_default_pingora_engine_routes_to_selected_backend() {
+    let backend = TestBackend::spawn("pingora-backend-1").await;
+    let root = TempDir::new().expect("tempdir");
+    write_prod_snapshots(&root, "rev-1", &backend.addr().to_string(), "fd00::1");
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_gateway(
+        GatewayOptions::new(loopback_any()),
+        WireServingState::new(actor),
+    )
+    .await
+    .expect("spawn pingora gateway");
+
+    let response = http_get(gateway.listen_addr(), "web.example.test", "/health").await;
+
+    assert_eq!(gateway.engine(), GatewayEngineKind::Pingora);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("pingora-backend-1 /health"), "{response}");
+    assert_eq!(gateway.metrics().request_count, 1);
+    gateway.shutdown().await.expect("shutdown gateway");
+    backend.shutdown().await;
+}
+
+#[tokio::test]
 async fn http_gateway_unknown_host_returns_not_found() {
     let root = TempDir::new().expect("tempdir");
     write_prod_snapshots(&root, "rev-1", "127.0.0.1:1", "fd00::1");
@@ -513,6 +537,47 @@ async fn http_gateway_serves_acme_http01_challenge_before_route_lookup() {
     )
     .await;
 
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        response.ends_with("tokAcme0123456789abcdef.thumbprintA"),
+        "{response}"
+    );
+    assert_eq!(gateway.metrics().request_count, 1);
+    assert_eq!(gateway.metrics().backend_failure_count, 0);
+    gateway.shutdown().await.expect("shutdown gateway");
+}
+
+#[tokio::test]
+async fn gateway_default_pingora_engine_serves_acme_http01_before_route_lookup() {
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway_snapshot = empty_gateway_snapshot("prod", "rev-acme");
+    gateway_snapshot.acme_http01.push(acme_challenge(
+        "example.test",
+        "tokAcme0123456789abcdef",
+        "thumbprintA",
+    ));
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot,
+        &empty_dns_snapshot("prod", "rev-acme"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_gateway(
+        GatewayOptions::new(loopback_any()),
+        WireServingState::new(actor),
+    )
+    .await
+    .expect("spawn pingora gateway");
+
+    let response = http_get(
+        gateway.listen_addr(),
+        "example.test",
+        "/.well-known/acme-challenge/tokAcme0123456789abcdef",
+    )
+    .await;
+
+    assert_eq!(gateway.engine(), GatewayEngineKind::Pingora);
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert!(
         response.ends_with("tokAcme0123456789abcdef.thumbprintA"),
@@ -633,8 +698,8 @@ fn gateway_backend_parser_rejects_malformed_addresses() {
         address: "not-a-socket".to_string(),
     };
 
-    let error = crate::http_gateway::parse_backend(&backend)
-        .expect_err("malformed backend is rejected");
+    let error =
+        crate::http_gateway::parse_backend(&backend).expect_err("malformed backend is rejected");
 
     assert!(error.contains("invalid backend address"));
 }

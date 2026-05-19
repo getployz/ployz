@@ -46,10 +46,10 @@ pub enum HttpGatewayError {
 }
 
 pub struct HttpGatewayHandle {
-    listen_addr: SocketAddr,
-    shutdown: Option<oneshot::Sender<()>>,
-    task: Option<JoinHandle<HttpGatewayResult<()>>>,
-    metrics: WireMetricsRecorder,
+    pub(crate) listen_addr: SocketAddr,
+    pub(crate) shutdown: Option<oneshot::Sender<()>>,
+    pub(crate) task: Option<JoinHandle<HttpGatewayResult<()>>>,
+    pub(crate) metrics: WireMetricsRecorder,
 }
 
 impl HttpGatewayHandle {
@@ -261,19 +261,33 @@ pub(crate) fn parse_backend(backend: &BackendEndpoint) -> Result<SocketAddr, Str
         .map_err(|error| format!("invalid backend address '{address}': {error}\n"))
 }
 
+pub(crate) struct BackendProxyResponse {
+    pub status: StatusCode,
+    pub body: Bytes,
+}
+
 async fn proxy_get(
     request: &Request<Incoming>,
     backend: SocketAddr,
     route: &GatewayRouteProjection,
 ) -> Result<Response<Full<Bytes>>, String> {
-    let mut stream = timeout(BACKEND_CONNECT_TIMEOUT, TcpStream::connect(backend))
-        .await
-        .map_err(|_| format!("connect backend {backend} timed out\n"))?
-        .map_err(|error| format!("connect backend {backend}: {error}\n"))?;
     let path = request
         .uri()
         .path_and_query()
         .map_or("/", |value| value.as_str());
+    let response = proxy_get_path(path, backend, route).await?;
+    Ok(response.into_hyper_response())
+}
+
+pub(crate) async fn proxy_get_path(
+    path: &str,
+    backend: SocketAddr,
+    route: &GatewayRouteProjection,
+) -> Result<BackendProxyResponse, String> {
+    let mut stream = timeout(BACKEND_CONNECT_TIMEOUT, TcpStream::connect(backend))
+        .await
+        .map_err(|_| format!("connect backend {backend} timed out\n"))?
+        .map_err(|error| format!("connect backend {backend}: {error}\n"))?;
     let upstream = format!(
         "GET {path} HTTP/1.1\r\nHost: {backend}\r\nConnection: close\r\nX-Ployz-Route: {}\r\n\r\n",
         route.route_id.as_str()
@@ -311,7 +325,7 @@ async fn read_limited(
     }
 }
 
-fn parse_backend_response(bytes: Vec<u8>) -> Result<Response<Full<Bytes>>, String> {
+fn parse_backend_response(bytes: Vec<u8>) -> Result<BackendProxyResponse, String> {
     let split = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -325,16 +339,24 @@ fn parse_backend_response(bytes: Vec<u8>) -> Result<Response<Full<Bytes>>, Strin
         .and_then(|value| value.parse::<u16>().ok())
         .and_then(|status| StatusCode::from_u16(status).ok())
         .unwrap_or(StatusCode::BAD_GATEWAY);
-    let body = Bytes::copy_from_slice(body_bytes);
-    Ok(Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "text/plain")
-        .header(CONTENT_LENGTH, body.len())
-        .body(Full::new(body))
-        .expect("valid backend proxy response"))
+    Ok(BackendProxyResponse {
+        status,
+        body: Bytes::copy_from_slice(body_bytes),
+    })
 }
 
-fn text_response(status: StatusCode, body: impl Into<String>) -> Response<Full<Bytes>> {
+impl BackendProxyResponse {
+    fn into_hyper_response(self) -> Response<Full<Bytes>> {
+        Response::builder()
+            .status(self.status)
+            .header(CONTENT_TYPE, "text/plain")
+            .header(CONTENT_LENGTH, self.body.len())
+            .body(Full::new(self.body))
+            .expect("valid backend proxy response")
+    }
+}
+
+pub(crate) fn text_response(status: StatusCode, body: impl Into<String>) -> Response<Full<Bytes>> {
     let body = body.into();
     Response::builder()
         .status(status)

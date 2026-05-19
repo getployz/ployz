@@ -10,6 +10,7 @@ name = "mvp_serving"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = "0.1"
 bytes = "1"
 http-body-util = "0.1"
 hickory-proto = { version = "=0.26.0-beta.4", default-features = false, features = ["std"] }
@@ -20,6 +21,7 @@ mvp-acme = { path = "../acme" }
 mvp-bus = { path = "../bus" }
 mvp-lease = { path = "../lease" }
 mvp-projection = { path = "../projection" }
+pingora = { version = "0.8", features = ["proxy"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }

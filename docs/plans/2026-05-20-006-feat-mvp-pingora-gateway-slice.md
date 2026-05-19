@@ -104,6 +104,12 @@ Evidence:
 
 ### Unit 2: Pingora HTTP Proxy Engine
 
+Status: partial. The node gateway default now runs through a Pingora-backed
+HTTP/1 engine using Pingora's downstream HTTP session/app layer inside the
+existing bounded accept loop. The engine preserves `WireServingState`, ACME
+HTTP-01 priority, overlay-safe backend parsing, metrics, and shutdown behavior.
+TLS wiring remains Unit 4.
+
 Files:
 
 - `MVP/serving/Cargo.toml`
@@ -111,17 +117,28 @@ Files:
 
 Work:
 
-- Add Pingora dependencies with the smallest feature set needed for HTTP proxy
+- [x] Add Pingora dependencies with the smallest feature set needed for HTTP proxy
   and later TLS (`proxy`, likely `rustls`).
-- Implement Pingora request handling over `WireServingState`.
-- Preserve metrics semantics: request count, backend failures, latency samples.
-- Preserve bounded backend connect/read/write behavior.
+- [x] Implement Pingora request handling over `WireServingState`.
+- [x] Preserve metrics semantics: request count, backend failures, latency samples.
+- [x] Preserve bounded backend connect/read/write behavior.
 
 Tests:
 
-- proxy to a non-loopback/overlay-style backend address in a controlled test,
-- unknown host and missing backend responses match existing behavior,
-- ACME HTTP-01 path is served before route proxying.
+- [x] proxy to a backend address in a controlled test,
+- [ ] proxy to a non-loopback/overlay-style backend address in a controlled test,
+- [ ] unknown host and missing backend responses match existing behavior,
+- [x] ACME HTTP-01 path is served before route proxying.
+
+Evidence:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --test product_serving_roles`
+- Pingora engine checkpoint adds `MVP/serving/src/pingora_gateway.rs`, switches
+  `GatewayOptions::default()` to `GatewayEngineKind::Pingora`, and keeps hyper
+  available behind the explicit engine selector.
+- Serving tests now exercise the default Pingora engine for backend proxying and
+  ACME HTTP-01 challenge serving before route lookup.
 
 ### Unit 3: Node Gateway Default And Compatibility
 
