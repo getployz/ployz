@@ -178,3 +178,8 @@ Run after implementation units land:
   waits on a readiness trait before `set_ready`, validates resumed order URL
   origins, finalizes to PEM material, and clears only the tokens owned by the
   order. Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`.
+- 2026-05-20: Unit 3 started. `mvp-acme-command` now exposes
+  `PandaAcmeHttp01Publisher`, which maps issuer challenges onto existing
+  p2panda claim/present facts and clears by reconstructing the active lease for
+  the exact hostname/token. Verified with
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme -p mvp-acme-command`.

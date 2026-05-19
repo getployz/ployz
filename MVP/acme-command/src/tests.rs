@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mvp_acme::{AcmeChallengeId, AcmeChallengeToken, AcmeHostname};
+use mvp_acme::{
+    AcmeChallengeId, AcmeChallengeToken, AcmeHostname, AcmeHttp01ChallengePublisher,
+    AcmeHttp01OrderChallenge, AcmeKeyAuthorization,
+};
 use mvp_bus::{
     BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant, IslandId,
     PrincipalId, harness::InMemoryBus,
@@ -17,6 +20,7 @@ use mvp_projection::{
 use crate::{
     AcmeClaimCommand, AcmeClearHttp01Command, AcmeCommandError, AcmeCommandExecutor,
     AcmeFactWriter, AcmeLeaseHandle, AcmePresentHttp01Command, PandaAcmeCommandAdapter,
+    PandaAcmeHttp01Publisher,
 };
 
 const TOKEN: &str = "tokCommand0123456789abcd";
@@ -262,6 +266,50 @@ async fn clear_release_preflight_failure_happens_before_any_write() {
     ));
     assert_eq!(writer.preflighted.into_inner(), vec![release_key]);
     assert!(writer.writes.is_empty());
+}
+
+#[tokio::test]
+async fn p2panda_http01_publisher_claims_presents_and_clears_order_token() {
+    let mut fixture = Fixture::with_grant(Grant::empty().with_fact_write(pattern("/facts/>")));
+    let hostname = AcmeHostname::parse("example.test").expect("hostname parses");
+    let token = AcmeChallengeToken::parse(TOKEN).expect("token parses");
+    let key_authorization =
+        AcmeKeyAuthorization::parse_for_token(&token, format!("{TOKEN}.thumbprint0123456789"))
+            .expect("key authorization parses");
+    let challenge = AcmeHttp01OrderChallenge {
+        hostname: hostname.clone(),
+        token: token.clone(),
+        key_authorization,
+        expires_at_secs: 110,
+    };
+
+    {
+        let mut publisher = PandaAcmeHttp01Publisher::new(&mut fixture.adapter, &mut fixture.store);
+        publisher
+            .publish_http01(challenge)
+            .await
+            .expect("publisher writes claim and present facts");
+    }
+
+    assert_eq!(
+        visible_candidate_count(&fixture.store, fixture.adapter.session())
+            .expect("candidate count"),
+        2
+    );
+
+    {
+        let mut publisher = PandaAcmeHttp01Publisher::new(&mut fixture.adapter, &mut fixture.store);
+        publisher
+            .clear_http01(&hostname, &token, 109)
+            .await
+            .expect("publisher clears active token");
+    }
+
+    assert_eq!(
+        visible_candidate_count(&fixture.store, fixture.adapter.session())
+            .expect("candidate count"),
+        4
+    );
 }
 
 struct Fixture {
