@@ -1,6 +1,7 @@
 mod actor;
 mod dns_server;
 mod error;
+mod gateway;
 mod http_gateway;
 mod model;
 mod wire;
@@ -8,6 +9,7 @@ mod wire;
 pub use actor::ServingActorHandle;
 pub use dns_server::{DnsServerError, DnsServerHandle, DnsServerResult, spawn_dns_server};
 pub use error::{ServingError, ServingResult};
+pub use gateway::{GatewayEngineKind, GatewayHandle, GatewayOptions, spawn_gateway};
 pub use http_gateway::{
     HttpGatewayError, HttpGatewayHandle, HttpGatewayResult, spawn_http_gateway,
 };

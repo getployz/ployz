@@ -71,8 +71,8 @@ gateway engine has the explicit TLS boundary.
 ### Unit 1: Gateway Engine Boundary
 
 Status: partial. Overlay-safe backend parsing is implemented in the current
-hyper gateway path as a first compatibility step. The engine abstraction itself
-is still pending.
+hyper gateway path as a first compatibility step. A gateway engine boundary now
+exists and defaults to the existing hyper engine while the Pingora engine lands.
 
 Files:
 
@@ -82,7 +82,7 @@ Files:
 
 Work:
 
-- [ ] Introduce a small gateway engine abstraction around start/shutdown/status.
+- [x] Introduce a small gateway engine abstraction around start/shutdown/status.
 - [x] Keep `WireServingState` as the input boundary.
 - [ ] Move shared host extraction, ACME path parsing, backend parsing, and response
   helpers behind engine-neutral functions where useful.
@@ -97,6 +97,10 @@ Tests:
 Evidence:
 
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --test product_serving_roles`
+- Gateway engine boundary checkpoint adds `GatewayOptions`, `GatewayEngineKind`,
+  `GatewayHandle`, and `spawn_gateway`; `mvp-node` now starts gateway roles
+  through that engine-neutral API while preserving the existing hyper behavior.
 
 ### Unit 2: Pingora HTTP Proxy Engine
 
