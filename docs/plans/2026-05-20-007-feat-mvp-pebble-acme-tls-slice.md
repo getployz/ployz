@@ -172,3 +172,9 @@ Run after implementation units land:
   account/order/certificate domain types, account coordination shape, disabled
   issuer fallback, contact URI handling, and order URL origin validation.
   Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`.
+- 2026-05-20: Unit 2 started. `mvp-acme` now includes an `InstantAcmeIssuer`
+  behind the issuer trait. It creates/resumes real ACME accounts and orders via
+  `instant-acme`, publishes HTTP-01 challenges through the MVP publisher trait,
+  waits on a readiness trait before `set_ready`, validates resumed order URL
+  origins, finalizes to PEM material, and clears only the tokens owned by the
+  order. Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`.

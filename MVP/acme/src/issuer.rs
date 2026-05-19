@@ -2,6 +2,10 @@ use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use instant_acme::{
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
+    NewOrder, OrderStatus, RetryPolicy,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -353,6 +357,196 @@ impl AcmeIssuer for DisabledAcmeIssuer {
     }
 }
 
+pub struct InstantAcmeIssuer {
+    config: AcmeIssuerConfig,
+    account_coordinator: Box<dyn AcmeAccountCoordinator>,
+}
+
+impl InstantAcmeIssuer {
+    #[must_use]
+    pub fn new(config: AcmeIssuerConfig) -> Self {
+        Self::with_account_coordinator(config, Box::new(NoopAcmeAccountCoordinator))
+    }
+
+    #[must_use]
+    pub fn with_account_coordinator(
+        config: AcmeIssuerConfig,
+        account_coordinator: Box<dyn AcmeAccountCoordinator>,
+    ) -> Self {
+        Self {
+            config,
+            account_coordinator,
+        }
+    }
+}
+
+#[async_trait]
+impl AcmeIssuer for InstantAcmeIssuer {
+    async fn start_order(
+        &self,
+        account_store: &mut dyn AcmeAccountStore,
+        challenge_publisher: &mut dyn AcmeHttp01ChallengePublisher,
+        hostname: AcmeHostname,
+        now_secs: u64,
+    ) -> Result<StartedAcmeOrder, AcmeIssuanceError> {
+        let account = load_or_create_account(
+            account_store,
+            &self.config,
+            self.account_coordinator.as_ref(),
+            now_secs,
+        )
+        .await?;
+        let identifiers = [Identifier::Dns(hostname.as_str().to_string())];
+        let mut order = account
+            .new_order(&NewOrder::new(&identifiers))
+            .await
+            .map_err(acme_operation("new_order"))?;
+        let order_url = AcmeOrderUrl::parse(order.url().to_string())?;
+        let mut published = Vec::new();
+        let mut authorizations = order.authorizations();
+        while let Some(result) = authorizations.next().await {
+            let mut authorization = result.map_err(acme_operation("authorization"))?;
+            match authorization.status {
+                AuthorizationStatus::Valid => continue,
+                AuthorizationStatus::Pending => {}
+                AuthorizationStatus::Invalid
+                | AuthorizationStatus::Revoked
+                | AuthorizationStatus::Expired
+                | AuthorizationStatus::Deactivated => {
+                    return Err(AcmeIssuanceError::AuthorizationUnexpectedStatus {
+                        hostname,
+                        status: acme_authorization_status(authorization.status),
+                    });
+                }
+            }
+            let challenge = authorization
+                .challenge(ChallengeType::Http01)
+                .ok_or_else(|| AcmeIssuanceError::Http01ChallengeMissing {
+                    hostname: hostname.clone(),
+                })?;
+            let token = AcmeChallengeToken::parse(challenge.token.clone()).map_err(|source| {
+                AcmeIssuanceError::Operation {
+                    operation: "http01_token",
+                    message: source.to_string(),
+                }
+            })?;
+            let key_authorization = AcmeKeyAuthorization::parse_for_token(
+                &token,
+                challenge.key_authorization().as_str(),
+            )
+            .map_err(|source| AcmeIssuanceError::Operation {
+                operation: "http01_key_authorization",
+                message: source.to_string(),
+            })?;
+            let challenge = AcmeHttp01OrderChallenge {
+                hostname: hostname.clone(),
+                token,
+                key_authorization,
+                expires_at_secs: now_secs + DEFAULT_HTTP01_CHALLENGE_TTL_SECS,
+            };
+            challenge_publisher
+                .publish_http01(challenge.clone())
+                .await?;
+            published.push(challenge);
+        }
+        Ok(StartedAcmeOrder {
+            hostname,
+            order_url,
+            challenges: published,
+        })
+    }
+
+    async fn finalize_order(
+        &self,
+        account_store: &mut dyn AcmeAccountStore,
+        readiness: &dyn AcmeHttp01ChallengeReadiness,
+        challenge_publisher: &mut dyn AcmeHttp01ChallengePublisher,
+        hostname: AcmeHostname,
+        order_url: AcmeOrderUrl,
+        now_secs: u64,
+    ) -> Result<IssuedCertificate, AcmeIssuanceError> {
+        order_url.ensure_same_origin_as_directory(&self.config.directory_url)?;
+        let account = load_or_create_account(
+            account_store,
+            &self.config,
+            self.account_coordinator.as_ref(),
+            now_secs,
+        )
+        .await?;
+        let mut order = account
+            .order(order_url.as_str().to_string())
+            .await
+            .map_err(acme_operation("resume_order"))?;
+        let mut order_tokens = Vec::new();
+        let mut authorizations = order.authorizations();
+        while let Some(result) = authorizations.next().await {
+            let mut authorization = result.map_err(acme_operation("authorization"))?;
+            let status = authorization.status;
+            let mut challenge =
+                authorization
+                    .challenge(ChallengeType::Http01)
+                    .ok_or_else(|| AcmeIssuanceError::Http01ChallengeMissing {
+                        hostname: hostname.clone(),
+                    })?;
+            let token = AcmeChallengeToken::parse(challenge.token.clone()).map_err(|source| {
+                AcmeIssuanceError::Operation {
+                    operation: "http01_token",
+                    message: source.to_string(),
+                }
+            })?;
+            order_tokens.push(token.clone());
+            match status {
+                AuthorizationStatus::Valid => continue,
+                AuthorizationStatus::Pending => {}
+                AuthorizationStatus::Invalid
+                | AuthorizationStatus::Revoked
+                | AuthorizationStatus::Expired
+                | AuthorizationStatus::Deactivated => {
+                    return Err(AcmeIssuanceError::AuthorizationUnexpectedStatus {
+                        hostname,
+                        status: acme_authorization_status(status),
+                    });
+                }
+            }
+            readiness.wait_ready(&hostname, &token).await?;
+            challenge
+                .set_ready()
+                .await
+                .map_err(acme_operation("set_ready"))?;
+        }
+        drop(authorizations);
+
+        let status = order
+            .poll_ready(&RetryPolicy::default())
+            .await
+            .map_err(acme_operation("poll_ready"))?;
+        if status != OrderStatus::Ready {
+            return Err(AcmeIssuanceError::OrderUnexpectedStatus {
+                hostname,
+                status: acme_order_status(status),
+            });
+        }
+
+        let private_key_pem = order.finalize().await.map_err(acme_operation("finalize"))?;
+        let fullchain_pem = order
+            .poll_certificate(&RetryPolicy::default())
+            .await
+            .map_err(acme_operation("poll_certificate"))?;
+        for token in &order_tokens {
+            challenge_publisher.clear_http01(&hostname, token).await?;
+        }
+        Ok(IssuedCertificate {
+            hostname,
+            order_url,
+            fullchain_pem,
+            private_key_pem,
+            issued_at_secs: now_secs,
+            not_before_secs: None,
+            not_after_secs: None,
+        })
+    }
+}
+
 pub fn contact_uris(contact_email: Option<&str>) -> Vec<String> {
     let Some(contact_email) = contact_email else {
         return Vec::new();
@@ -361,6 +555,129 @@ pub fn contact_uris(contact_email: Option<&str>) -> Vec<String> {
         vec![contact_email.to_string()]
     } else {
         vec![format!("mailto:{contact_email}")]
+    }
+}
+
+async fn load_or_create_account(
+    account_store: &mut dyn AcmeAccountStore,
+    config: &AcmeIssuerConfig,
+    coordinator: &dyn AcmeAccountCoordinator,
+    now_secs: u64,
+) -> Result<Account, AcmeIssuanceError> {
+    if let Some(record) = account_store.load_account(&config.directory_url).await? {
+        return account_from_record(config, &record).await;
+    }
+    let hold = match coordinator.try_acquire_account(&config.directory_url).await {
+        AccountAcquisition::Allowed(hold) => hold,
+        AccountAcquisition::VetoedByPeer(message) => {
+            return Err(AcmeIssuanceError::AccountCreationDeferred {
+                directory_url: config.directory_url.clone(),
+                message,
+            });
+        }
+        AccountAcquisition::CoordinationFailed(message) => {
+            return Err(AcmeIssuanceError::AccountLockFailed {
+                directory_url: config.directory_url.clone(),
+                message,
+            });
+        }
+    };
+    let result = load_or_create_account_under_lock(account_store, config, now_secs).await;
+    hold.release().await;
+    result
+}
+
+async fn load_or_create_account_under_lock(
+    account_store: &mut dyn AcmeAccountStore,
+    config: &AcmeIssuerConfig,
+    now_secs: u64,
+) -> Result<Account, AcmeIssuanceError> {
+    if let Some(record) = account_store.load_account(&config.directory_url).await? {
+        return account_from_record(config, &record).await;
+    }
+    let contact = contact_uris(config.contact_email.as_deref());
+    let contact_refs = contact.iter().map(String::as_str).collect::<Vec<_>>();
+    let (account, credentials) = account_builder(config)?
+        .create(
+            &NewAccount {
+                contact: &contact_refs,
+                terms_of_service_agreed: true,
+                only_return_existing: false,
+            },
+            config.directory_url.clone(),
+            None,
+        )
+        .await
+        .map_err(acme_operation("account_create"))?;
+    account_store
+        .save_account(AcmeAccountRecord {
+            account_id: AcmeAccountId::for_directory_url(&config.directory_url),
+            directory_url: config.directory_url.clone(),
+            contact_email: config.contact_email.clone(),
+            account_credentials_json: serde_json::to_string(&credentials).map_err(|source| {
+                AcmeIssuanceError::Operation {
+                    operation: "acme_account_encode",
+                    message: source.to_string(),
+                }
+            })?,
+            created_at_secs: now_secs,
+            updated_at_secs: now_secs,
+        })
+        .await?;
+    Ok(account)
+}
+
+async fn account_from_record(
+    config: &AcmeIssuerConfig,
+    record: &AcmeAccountRecord,
+) -> Result<Account, AcmeIssuanceError> {
+    let credentials: AccountCredentials = serde_json::from_str(&record.account_credentials_json)
+        .map_err(|source| AcmeIssuanceError::InvalidAccountCredentials {
+            directory_url: config.directory_url.clone(),
+            message: source.to_string(),
+        })?;
+    account_builder(config)?
+        .from_credentials(credentials)
+        .await
+        .map_err(acme_operation("account_from_credentials"))
+}
+
+fn account_builder(
+    config: &AcmeIssuerConfig,
+) -> Result<instant_acme::AccountBuilder, AcmeIssuanceError> {
+    match &config.root_ca_path {
+        Some(path) => Account::builder_with_root(path).map_err(acme_operation("account_builder")),
+        None => Account::builder().map_err(acme_operation("account_builder")),
+    }
+}
+
+fn acme_operation(
+    operation: &'static str,
+) -> impl FnOnce(instant_acme::Error) -> AcmeIssuanceError + Send + Sync + 'static {
+    move |source| AcmeIssuanceError::Operation {
+        operation,
+        message: source.to_string(),
+    }
+}
+
+fn acme_authorization_status(status: AuthorizationStatus) -> AcmeAuthorizationStatus {
+    match status {
+        AuthorizationStatus::Pending => AcmeAuthorizationStatus::Pending,
+        AuthorizationStatus::Valid => AcmeAuthorizationStatus::Valid,
+        AuthorizationStatus::Invalid => AcmeAuthorizationStatus::Invalid,
+        AuthorizationStatus::Revoked => AcmeAuthorizationStatus::Revoked,
+        AuthorizationStatus::Expired => AcmeAuthorizationStatus::Expired,
+        AuthorizationStatus::Deactivated => AcmeAuthorizationStatus::Deactivated,
+    }
+}
+
+fn acme_order_status(status: OrderStatus) -> AcmeOrderStatus {
+    match status {
+        OrderStatus::Pending => AcmeOrderStatus::Pending,
+        OrderStatus::Ready => AcmeOrderStatus::Ready,
+        OrderStatus::Processing => AcmeOrderStatus::Processing,
+        OrderStatus::Valid => AcmeOrderStatus::Valid,
+        OrderStatus::Invalid => AcmeOrderStatus::Invalid,
     }
 }
 
@@ -391,6 +708,49 @@ pub fn ensure_order_url_matches_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct VetoAccountCoordinator;
+
+    #[async_trait]
+    impl AcmeAccountCoordinator for VetoAccountCoordinator {
+        async fn try_acquire_account(&self, directory_url: &str) -> AccountAcquisition {
+            AccountAcquisition::VetoedByPeer(format!("peer holds {directory_url}"))
+        }
+    }
+
+    struct FailingAccountCoordinator;
+
+    #[async_trait]
+    impl AcmeAccountCoordinator for FailingAccountCoordinator {
+        async fn try_acquire_account(&self, directory_url: &str) -> AccountAcquisition {
+            AccountAcquisition::CoordinationFailed(format!(
+                "lock backend failed for {directory_url}"
+            ))
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryAccountStore {
+        record: Option<AcmeAccountRecord>,
+    }
+
+    #[async_trait]
+    impl AcmeAccountStore for MemoryAccountStore {
+        async fn load_account(
+            &self,
+            _directory_url: &str,
+        ) -> Result<Option<AcmeAccountRecord>, AcmeIssuanceError> {
+            Ok(self.record.clone())
+        }
+
+        async fn save_account(
+            &mut self,
+            record: AcmeAccountRecord,
+        ) -> Result<(), AcmeIssuanceError> {
+            self.record = Some(record);
+            Ok(())
+        }
+    }
 
     #[test]
     fn order_url_origin_must_match_directory() {
@@ -446,5 +806,65 @@ mod tests {
     fn order_url_parser_rejects_non_urls() {
         let error = AcmeOrderUrl::parse("not a url").expect_err("bad URL rejected");
         assert!(matches!(error, AcmeIssuanceError::InvalidOrderUrl { .. }));
+    }
+
+    #[tokio::test]
+    async fn account_creation_respects_directory_scoped_coordination_veto() {
+        let config = config_with_directory("https://acme.test/dir");
+        let mut store = MemoryAccountStore::default();
+        let error =
+            match load_or_create_account(&mut store, &config, &VetoAccountCoordinator, 1).await {
+                Ok(_) => panic!("coordination veto should stop before ACME create"),
+                Err(error) => error,
+            };
+
+        assert!(matches!(
+            error,
+            AcmeIssuanceError::AccountCreationDeferred { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn account_creation_surfaces_coordination_backend_failure() {
+        let config = config_with_directory("https://acme.test/dir");
+        let mut store = MemoryAccountStore::default();
+        let error = match load_or_create_account(&mut store, &config, &FailingAccountCoordinator, 1)
+            .await
+        {
+            Ok(_) => panic!("coordination backend failure should stop before ACME create"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, AcmeIssuanceError::AccountLockFailed { .. }));
+    }
+
+    #[tokio::test]
+    async fn account_from_record_rejects_malformed_credentials_json() {
+        let config = config_with_directory("https://acme.test/dir");
+        let record = AcmeAccountRecord {
+            account_id: AcmeAccountId::for_directory_url(&config.directory_url),
+            directory_url: config.directory_url.clone(),
+            contact_email: None,
+            account_credentials_json: "{not json".to_string(),
+            created_at_secs: 1,
+            updated_at_secs: 1,
+        };
+
+        let error = match account_from_record(&config, &record).await {
+            Ok(_) => panic!("malformed credentials should fail before account rehydrate"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AcmeIssuanceError::InvalidAccountCredentials { .. }
+        ));
+    }
+
+    fn config_with_directory(directory_url: &str) -> AcmeIssuerConfig {
+        AcmeIssuerConfig {
+            directory_url: directory_url.to_string(),
+            contact_email: None,
+            root_ca_path: None,
+        }
     }
 }
