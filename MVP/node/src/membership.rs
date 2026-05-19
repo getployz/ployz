@@ -4,7 +4,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mvp_bus::{BusAuthority, FactKey, FactKeyPattern, Grant, PrincipalId, local::LocalBus};
-use mvp_mesh::{IrohEndpointId, MeshError, WireGuardPublicKey, joined_fact_key};
+use mvp_mesh::{
+    IrohEndpointId, MemoryWireGuardBackend, MeshError, WireGuardActorHandle, WireGuardBackend,
+    WireGuardPublicKey, joined_fact_key,
+};
+#[cfg(all(feature = "linux-wireguard", target_os = "linux"))]
+use mvp_mesh::{LinuxWireGuardBackend, LinuxWireGuardConfig, WireGuardSnapshotPaths};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactAuthorKey, PandaFactStore, PandaSqliteOpenConfig,
     PandaTrustedAuthorKey, SharedPandaFactStore,
@@ -95,6 +100,7 @@ pub struct DaemonOptions {
     pub run_for: Duration,
     pub import_idle: Duration,
     pub control_socket: Option<PathBuf>,
+    pub wireguard: DaemonWireGuardMode,
 }
 
 impl DaemonOptions {
@@ -104,6 +110,7 @@ impl DaemonOptions {
             run_for,
             import_idle: Duration::from_millis(50),
             control_socket: None,
+            wireguard: DaemonWireGuardMode::Memory,
         }
     }
 
@@ -112,6 +119,21 @@ impl DaemonOptions {
         self.control_socket = Some(control_socket.into());
         self
     }
+
+    #[must_use]
+    pub fn with_linux_wireguard(mut self, ifname: impl Into<String>) -> Self {
+        self.wireguard = DaemonWireGuardMode::Linux {
+            ifname: ifname.into(),
+            listen_port: 51820,
+        };
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonWireGuardMode {
+    Memory,
+    Linux { ifname: String, listen_port: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +143,8 @@ pub struct DaemonReport {
     pub imported_batches: u64,
     pub imported_operations: u64,
     pub node_agent_handlers: usize,
+    pub wireguard_backend: String,
+    pub wireguard_applied_revision: Option<u64>,
 }
 
 pub fn create_invite(state_dir: impl AsRef<std::path::Path>, ttl: Duration) -> NodeResult<String> {
@@ -333,6 +357,8 @@ pub async fn run_daemon_once(
         })?),
         None => None,
     };
+    let wireguard_backend_name = wireguard_backend_name(&options.wireguard);
+    let wireguard = WireGuardActorHandle::spawn(create_wireguard_backend(&state, &options)?);
     let runtime = DaemonRuntime {
         state: state.clone(),
         options,
@@ -345,6 +371,7 @@ pub async fn run_daemon_once(
         authority,
         remote_bridges,
         control,
+        wireguard,
     };
     let runtime_report = runtime.run().await?;
     Ok(DaemonReport {
@@ -353,6 +380,58 @@ pub async fn run_daemon_once(
         imported_batches: runtime_report.imported_batches,
         imported_operations: runtime_report.imported_operations,
         node_agent_handlers: node_agent_report.registered_handlers,
+        wireguard_backend: wireguard_backend_name,
+        wireguard_applied_revision: runtime_report.wireguard_applied_revision,
+    })
+}
+
+fn wireguard_backend_name(mode: &DaemonWireGuardMode) -> String {
+    match mode {
+        DaemonWireGuardMode::Memory => "memory".to_string(),
+        DaemonWireGuardMode::Linux { ifname, .. } => format!("linux:{ifname}"),
+    }
+}
+
+fn create_wireguard_backend(
+    state: &LoadedNodeState,
+    options: &DaemonOptions,
+) -> NodeResult<Arc<dyn WireGuardBackend>> {
+    match &options.wireguard {
+        DaemonWireGuardMode::Memory => Ok(Arc::new(MemoryWireGuardBackend::new())),
+        DaemonWireGuardMode::Linux {
+            ifname,
+            listen_port,
+        } => create_linux_wireguard_backend(state, ifname, *listen_port),
+    }
+}
+
+#[cfg(all(feature = "linux-wireguard", target_os = "linux"))]
+fn create_linux_wireguard_backend(
+    state: &LoadedNodeState,
+    ifname: &str,
+    listen_port: u16,
+) -> NodeResult<Arc<dyn WireGuardBackend>> {
+    let config = LinuxWireGuardConfig::new(
+        state.island(),
+        ifname,
+        state.wireguard_private_key()?,
+        WireGuardSnapshotPaths::new(&state.paths().wireguard_dir),
+    )
+    .with_listen_port(listen_port);
+    let backend =
+        LinuxWireGuardBackend::new(config).map_err(|source| NodeError::Mesh { source })?;
+    Ok(Arc::new(backend))
+}
+
+#[cfg(not(all(feature = "linux-wireguard", target_os = "linux")))]
+fn create_linux_wireguard_backend(
+    _state: &LoadedNodeState,
+    _ifname: &str,
+    _listen_port: u16,
+) -> NodeResult<Arc<dyn WireGuardBackend>> {
+    Err(NodeError::CommandNotWired {
+        command: "linux wireguard backend requires the linux-wireguard feature on Linux"
+            .to_string(),
     })
 }
 

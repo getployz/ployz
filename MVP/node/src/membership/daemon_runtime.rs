@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use mvp_bus::FactKeyPattern;
 use mvp_bus::{BusActorHandle, BusAuthority, BusSession};
 use mvp_p2panda_transport::{PandaNetFactImportOutcome, PandaNetFactNode};
+use mvp_projection::{ProjectionActorHandle, SqliteProjectionStore};
 use tokio::sync::Mutex;
 
 use super::daemon_control::DaemonControlRuntime;
@@ -14,6 +16,7 @@ use super::{
 use crate::error::{NodeError, NodeResult};
 use crate::node_agent_rpc::RemoteNodeAgentBridgeSet;
 use crate::state::LoadedNodeState;
+use mvp_mesh::{WireGuardActorHandle, WireGuardAppliedSnapshot, plan_full_mesh};
 
 pub(super) struct DaemonRuntime {
     pub(super) state: LoadedNodeState,
@@ -27,11 +30,13 @@ pub(super) struct DaemonRuntime {
     pub(super) authority: BusAuthority,
     pub(super) remote_bridges: Option<RemoteNodeAgentBridgeSet>,
     pub(super) control: Option<DaemonControlRuntime>,
+    pub(super) wireguard: WireGuardActorHandle,
 }
 
 pub(super) struct DaemonRuntimeReport {
     pub(super) imported_batches: u64,
     pub(super) imported_operations: u64,
+    pub(super) wireguard_applied_revision: Option<u64>,
 }
 
 impl DaemonRuntime {
@@ -78,6 +83,12 @@ impl DaemonRuntime {
         Ok(DaemonRuntimeReport {
             imported_batches,
             imported_operations,
+            wireguard_applied_revision: self
+                .wireguard
+                .status()
+                .await
+                .ok()
+                .and_then(|status| status.applied_revision),
         })
     }
 
@@ -134,6 +145,7 @@ impl DaemonRuntime {
             &mut self.remote_bridges,
         )
         .await?;
+        self.apply_wireguard_snapshot(&current_state).await?;
         let mut fact_node = self.fact_node.lock().await;
         let _handled_rpc = handle_node_agent_rpc_requests(
             &mut fact_node,
@@ -144,6 +156,41 @@ impl DaemonRuntime {
             &current_state,
         )
         .await?;
+        Ok(())
+    }
+
+    async fn apply_wireguard_snapshot(&self, current_state: &LoadedNodeState) -> NodeResult<()> {
+        let facts = {
+            let fact_node = self.fact_node.lock().await;
+            fact_node.store()
+        };
+        let projection = ProjectionActorHandle::spawn(
+            Arc::new(facts),
+            current_state.island(),
+            self.writer_session.clone(),
+            FactKeyPattern::parse("/facts/>").map_err(|source| NodeError::Bus { source })?,
+            SqliteProjectionStore::new(current_state.paths().projection_db.clone()),
+            current_state.paths().gateway_snapshot.clone(),
+            current_state.paths().dns_snapshot.clone(),
+        );
+        let report = projection
+            .project_once(Duration::from_secs(2))
+            .await
+            .map_err(|source| NodeError::Projection { source })?;
+        let revision = report
+            .state
+            .nodes
+            .values()
+            .map(|node| node.epoch)
+            .max()
+            .unwrap_or(0);
+        let plan = plan_full_mesh(&report.state, &current_state.node_id(), revision)
+            .map_err(|source| NodeError::Mesh { source })?;
+        let snapshot = WireGuardAppliedSnapshot::from_plan(current_state.island(), plan);
+        self.wireguard
+            .apply(snapshot)
+            .await
+            .map_err(|source| NodeError::Mesh { source })?;
         Ok(())
     }
 
