@@ -2,6 +2,7 @@ mod actor;
 mod dns_server;
 mod error;
 mod gateway;
+mod gateway_request;
 mod http_gateway;
 mod model;
 mod pingora_gateway;

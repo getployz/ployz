@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST};
+use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::http::{Method, Request, Response, StatusCode};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -19,9 +19,9 @@ use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
+use crate::gateway_request::{acme_http01_token, request_host};
 use crate::{WireMetricsRecorder, WireRoleMetrics, WireServingState};
 
-const ACME_HTTP01_PREFIX: &str = "/.well-known/acme-challenge/";
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -174,7 +174,7 @@ async fn response_for_request(
             "method not allowed\n",
         ));
     }
-    let Some(host) = request_host(&request) else {
+    let Some(host) = request_host(request.headers()) else {
         return Err(text_response(StatusCode::BAD_REQUEST, "missing host\n"));
     };
     if let Some(token) = acme_http01_token(request.uri().path()) {
@@ -223,35 +223,6 @@ async fn response_for_request(
             Err(text_response(StatusCode::SERVICE_UNAVAILABLE, message))
         }
     }
-}
-
-fn acme_http01_token(path: &str) -> Option<&str> {
-    let token = path.strip_prefix(ACME_HTTP01_PREFIX)?;
-    if token.is_empty() || token.contains('/') {
-        return None;
-    }
-    Some(token)
-}
-
-fn request_host(request: &Request<Incoming>) -> Option<String> {
-    request
-        .headers()
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(strip_port)
-        .filter(|value| !value.trim().is_empty())
-}
-
-fn strip_port(value: &str) -> String {
-    let value = value.trim();
-    if value.starts_with('[') {
-        return value
-            .split(']')
-            .next()
-            .map_or(value, |host| host.trim_start_matches('['))
-            .to_string();
-    }
-    value.split(':').next().unwrap_or(value).to_string()
 }
 
 pub(crate) fn parse_backend(backend: &BackendEndpoint) -> Result<SocketAddr, String> {
