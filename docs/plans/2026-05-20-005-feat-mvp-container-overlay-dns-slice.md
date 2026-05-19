@@ -106,7 +106,7 @@ stringly special cases.
 
 ### Unit 1: Container Network Model And Deterministic Subnets
 
-Status: complete in checkpoint pending push.
+Status: complete in checkpoint `89cddf1a`.
 
 Files:
 
@@ -134,7 +134,7 @@ Evidence:
 
 ### Unit 2: Docker Bridge Backend
 
-Status: complete in checkpoint pending push.
+Status: complete in checkpoint `117da132`.
 
 Files:
 
@@ -195,7 +195,7 @@ Evidence:
 
 ### Unit 4: Runtime Network Attachment
 
-Status: complete in checkpoint pending push.
+Status: complete in checkpoint `d4ba7927`.
 
 Files:
 
@@ -229,7 +229,7 @@ Status: complete except privileged smoke execution in this non-root/default
 environment. Service-DNS answers are implemented as a projection-derived read
 view, Docker deployments default container DNS to the node bridge gateway, and
 the Docker one-shot client smoke is implemented behind
-`MVP_DOCKER_SERVICE_DNS_SMOKE=1`.
+`MVP_DOCKER_SERVICE_DNS_SMOKE=1`. Checkpoints: `f5e9b274`, `33dd62bc`.
 
 Files:
 
@@ -266,6 +266,8 @@ Evidence:
   `MVP_DOCKER_SERVICE_DNS_SMOKE=1 cargo test --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime --test container_service_dns -- --nocapture`
 
 ### Unit 6: Cross-Node Overlay Smoke Harness
+
+Status: not started.
 
 Files:
 
