@@ -21,6 +21,7 @@ members = [
     "p2panda-facts",
     "p2panda-transport",
     "projection",
+    "runtime",
     "routing",
     "routing-p2panda",
     "serving",

@@ -103,7 +103,8 @@ Main gaps:
   durable admitted-peer facts consumed by already-joined nodes,
 - product daemon-owned node-agent participant handlers are wired on the local
   bus for capacity, prepare, start, drain, stop, and candidate cleanup,
-- no real runtime backend,
+- minimal process runtime backend can prepare/start/drain/stop a managed HTTP
+  service process and rediscover metadata after restart,
 - no real Linux network apply proof,
 - no black-box three-host E2E.
 
@@ -350,6 +351,15 @@ supervision and orphan cleanup patterns in `MVP/e2e/src/process_role_harness.rs`
 
 **Verification:** A real local process receives traffic before and after daemon
 restart.
+
+**Current status:** `mvp-runtime` provides the first process backend. It writes
+per-instance metadata under the node runtime directory, starts a managed static
+HTTP child process, waits for readiness by TCP connect, marks drain without
+killing the process, stops by PID, and can rediscover persisted instance
+metadata after the coordinator restarts. The product `mvp-node` binary includes
+the hidden `runtime-http` child role, and the node-agent integration test proves
+the node-agent start/stop handlers can launch and stop that shipped-binary
+service path.
 
 ### U5. Linux Networking Backend
 

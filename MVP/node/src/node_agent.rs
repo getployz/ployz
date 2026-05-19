@@ -7,6 +7,7 @@ use mvp_deploy::{
     InstanceCommandReply, InstanceCommandRequest, InstanceId, InstanceStartOutcome,
     StopInstanceRequest, decode, encode,
 };
+use mvp_runtime::{ProcessInstanceSpec, ProcessRuntime, RuntimeState};
 
 use crate::error::{NodeError, NodeResult};
 use crate::state::LoadedNodeState;
@@ -25,6 +26,7 @@ pub struct NodeAgentServices {
 #[derive(Debug)]
 struct NodeAgentRuntime {
     node_id: mvp_identity::NodeId,
+    process: Option<ProcessRuntime>,
     prepared: BTreeSet<InstanceId>,
     running: BTreeSet<InstanceId>,
     draining: BTreeSet<InstanceId>,
@@ -32,14 +34,44 @@ struct NodeAgentRuntime {
 }
 
 impl NodeAgentRuntime {
-    fn new(node_id: mvp_identity::NodeId) -> Self {
+    fn new(node_id: mvp_identity::NodeId, process: Option<ProcessRuntime>) -> Self {
         Self {
             node_id,
+            process,
             prepared: BTreeSet::new(),
             running: BTreeSet::new(),
             draining: BTreeSet::new(),
             stopped: BTreeSet::new(),
         }
+    }
+
+    fn load_process_instances(&mut self) -> NodeResult<()> {
+        let Some(process) = &self.process else {
+            return Ok(());
+        };
+        for instance in process
+            .list()
+            .map_err(|source| NodeError::RuntimeBackend { source })?
+        {
+            match instance.state {
+                RuntimeState::Prepared => {
+                    self.prepared.insert(instance.instance_id);
+                }
+                RuntimeState::Running => {
+                    self.prepared.insert(instance.instance_id.clone());
+                    self.running.insert(instance.instance_id);
+                }
+                RuntimeState::Draining => {
+                    self.prepared.insert(instance.instance_id.clone());
+                    self.running.insert(instance.instance_id.clone());
+                    self.draining.insert(instance.instance_id);
+                }
+                RuntimeState::Stopped => {
+                    self.stopped.insert(instance.instance_id);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -94,7 +126,22 @@ pub async fn register_node_agent_services(
     session: &BusSession,
     state: &LoadedNodeState,
 ) -> NodeResult<(NodeAgentServices, NodeAgentReport)> {
-    let runtime = Arc::new(Mutex::new(NodeAgentRuntime::new(state.node_id())));
+    let program = std::env::current_exe().map_err(|source| NodeError::RuntimeBackend {
+        source: mvp_runtime::RuntimeError::CurrentExe { source },
+    })?;
+    let process = ProcessRuntime::managed_http(state.paths().runtime_dir.clone(), program);
+    register_node_agent_services_with_process(bus, session, state, Some(process)).await
+}
+
+pub async fn register_node_agent_services_with_process(
+    bus: &BusActorHandle,
+    session: &BusSession,
+    state: &LoadedNodeState,
+    process: Option<ProcessRuntime>,
+) -> NodeResult<(NodeAgentServices, NodeAgentReport)> {
+    let mut runtime_state = NodeAgentRuntime::new(state.node_id(), process);
+    runtime_state.load_process_instances()?;
+    let runtime = Arc::new(Mutex::new(runtime_state));
     let node_id = state.node_id_str();
     let mut registered_handlers = 0usize;
 
@@ -195,11 +242,13 @@ fn prepare_handler(
 ) -> mvp_bus::HandlerOutcome {
     let request: InstanceCommandRequest = decode(ctx.message.payload(), "prepare instance request")
         .map_err(|_| handler_failed(&ctx))?;
-    runtime
-        .lock()
-        .map_err(|_| handler_failed(&ctx))?
-        .prepared
-        .insert(request.instance_id);
+    let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
+    if let Some(process) = &runtime.process {
+        process
+            .prepare(&process_spec(&request))
+            .map_err(|_| handler_failed(&ctx))?;
+    }
+    runtime.prepared.insert(request.instance_id);
     ctx.reply(b"prepared".to_vec())
 }
 
@@ -211,6 +260,15 @@ fn start_handler(
         .map_err(|_| handler_failed(&ctx))?;
     let instance_id = request.instance_id;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
+    if let Some(process) = &runtime.process {
+        process
+            .start(&ProcessInstanceSpec::new(
+                instance_id.clone(),
+                request.service,
+                request.revision,
+            ))
+            .map_err(|_| handler_failed(&ctx))?;
+    }
     runtime.prepared.insert(instance_id.clone());
     runtime.running.insert(instance_id.clone());
     runtime.stopped.remove(&instance_id);
@@ -233,9 +291,13 @@ fn drain_handler(
     let request: DrainInstanceRequest = decode(ctx.message.payload(), "drain instance request")
         .map_err(|_| handler_failed(&ctx))?;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
-    if let Some(instance_id) = instance_id_from_backend(&request.cleanup_target) {
-        runtime.draining.insert(instance_id);
+    let instance_id = instance_id_from_backend(&request.cleanup_target);
+    if let Some(process) = &runtime.process {
+        process
+            .drain(&instance_id)
+            .map_err(|_| handler_failed(&ctx))?;
     }
+    runtime.draining.insert(instance_id);
     ctx.reply(b"drained".to_vec())
 }
 
@@ -246,11 +308,15 @@ fn stop_handler(
     let request: StopInstanceRequest =
         decode(ctx.message.payload(), "stop instance request").map_err(|_| handler_failed(&ctx))?;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
-    if let Some(instance_id) = instance_id_from_backend(&request.cleanup_target) {
-        runtime.running.remove(&instance_id);
-        runtime.draining.remove(&instance_id);
-        runtime.stopped.insert(instance_id);
+    let instance_id = instance_id_from_backend(&request.cleanup_target);
+    if let Some(process) = &runtime.process {
+        process
+            .stop(&instance_id)
+            .map_err(|_| handler_failed(&ctx))?;
     }
+    runtime.running.remove(&instance_id);
+    runtime.draining.remove(&instance_id);
+    runtime.stopped.insert(instance_id);
     ctx.reply(b"stopped".to_vec())
 }
 
@@ -263,6 +329,11 @@ fn cleanup_candidates_handler(
             .map_err(|_| handler_failed(&ctx))?;
     let mut runtime = runtime.lock().map_err(|_| handler_failed(&ctx))?;
     for candidate in request.candidates {
+        if let Some(process) = &runtime.process {
+            process
+                .stop(&candidate.instance_id)
+                .map_err(|_| handler_failed(&ctx))?;
+        }
         runtime.prepared.remove(&candidate.instance_id);
         runtime.running.remove(&candidate.instance_id);
         runtime.draining.remove(&candidate.instance_id);
@@ -271,8 +342,16 @@ fn cleanup_candidates_handler(
     ctx.reply(b"cleaned".to_vec())
 }
 
-fn instance_id_from_backend(endpoint: &mvp_projection::BackendEndpoint) -> Option<InstanceId> {
-    Some(InstanceId::new(endpoint.address.clone()))
+fn process_spec(request: &InstanceCommandRequest) -> ProcessInstanceSpec {
+    ProcessInstanceSpec::new(
+        request.instance_id.clone(),
+        request.service.clone(),
+        request.revision.clone(),
+    )
+}
+
+fn instance_id_from_backend(endpoint: &mvp_projection::BackendEndpoint) -> InstanceId {
+    InstanceId::new(endpoint.address.clone())
 }
 
 fn node_subject_pattern(node_id: &str, suffix: &str) -> NodeResult<SubjectPattern> {
@@ -324,6 +403,15 @@ pub fn product_bus_for_node_agent_tests() -> (
 }
 
 #[cfg(test)]
+async fn register_node_agent_services_in_memory(
+    bus: &BusActorHandle,
+    session: &BusSession,
+    state: &LoadedNodeState,
+) -> NodeResult<(NodeAgentServices, NodeAgentReport)> {
+    register_node_agent_services_with_process(bus, session, state, None).await
+}
+
+#[cfg(test)]
 mod tests {
     use std::time::Duration;
 
@@ -339,7 +427,7 @@ mod tests {
 
     use super::{
         node_agent_grant, node_agent_request_grant, product_bus_for_node_agent_tests,
-        register_node_agent_services,
+        register_node_agent_services_in_memory,
     };
 
     #[tokio::test]
@@ -364,7 +452,7 @@ mod tests {
             node_agent_request_grant(),
         );
 
-        let (services, report) = register_node_agent_services(&bus, &agent, &state)
+        let (services, report) = register_node_agent_services_in_memory(&bus, &agent, &state)
             .await
             .expect("register node agent");
 
@@ -466,7 +554,7 @@ mod tests {
             node_agent_grant(state.node_id_str()).expect("agent grant"),
         );
 
-        let (_services, report) = register_node_agent_services(&bus, &agent, &state)
+        let (_services, report) = register_node_agent_services_in_memory(&bus, &agent, &state)
             .await
             .expect("register restarted node agent");
 
@@ -494,7 +582,7 @@ mod tests {
             PrincipalId::new("intruder"),
             mvp_bus::Grant::empty(),
         );
-        register_node_agent_services(&bus, &agent, &state)
+        register_node_agent_services_in_memory(&bus, &agent, &state)
             .await
             .expect("register node agent");
 
@@ -535,7 +623,7 @@ mod tests {
             PrincipalId::new("operator"),
             node_agent_request_grant(),
         );
-        let (services, _report) = register_node_agent_services(&bus, &agent, &state)
+        let (services, _report) = register_node_agent_services_in_memory(&bus, &agent, &state)
             .await
             .expect("register node agent");
         let instance = instance_request("instance-a");

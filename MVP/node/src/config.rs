@@ -38,6 +38,7 @@ pub struct NodePaths {
     pub projection_db: PathBuf,
     pub gateway_snapshot: PathBuf,
     pub dns_snapshot: PathBuf,
+    pub runtime_dir: PathBuf,
 }
 
 impl NodePaths {
@@ -50,6 +51,7 @@ impl NodePaths {
             projection_db: state_dir.join("projections.sqlite"),
             gateway_snapshot: state_dir.join("gateway.snapshot"),
             dns_snapshot: state_dir.join("dns.snapshot"),
+            runtime_dir: state_dir.join("runtime"),
             state_dir,
         }
     }
