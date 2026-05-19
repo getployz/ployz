@@ -254,15 +254,11 @@ fn strip_port(value: &str) -> String {
     value.split(':').next().unwrap_or(value).to_string()
 }
 
-fn parse_backend(backend: &BackendEndpoint) -> Result<SocketAddr, String> {
+pub(crate) fn parse_backend(backend: &BackendEndpoint) -> Result<SocketAddr, String> {
     let address = backend.address.trim();
-    let addr = address
+    address
         .parse::<SocketAddr>()
-        .map_err(|error| format!("invalid backend address '{address}': {error}\n"))?;
-    if !addr.ip().is_loopback() {
-        return Err(format!("backend address '{address}' is not loopback\n"));
-    }
-    Ok(addr)
+        .map_err(|error| format!("invalid backend address '{address}': {error}\n"))
 }
 
 async fn proxy_get(
