@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mvp_serving::{
-    DnsServerHandle, HttpGatewayHandle, ServingFailure, ServingFreshness, ServingSnapshotPaths,
-    ServingStatus, WireRoleMetrics, WireServingState, spawn_dns_server, spawn_http_gateway,
+    DnsServerHandle, GatewayHandle, GatewayOptions, ServingFailure, ServingFreshness,
+    ServingSnapshotPaths, ServingStatus, WireRoleMetrics, WireServingState, spawn_dns_server,
+    spawn_gateway,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -154,7 +155,7 @@ impl ServingRoleFailure {
 }
 
 enum ServingWireHandle {
-    Gateway(HttpGatewayHandle),
+    Gateway(GatewayHandle),
     Dns(DnsServerHandle),
 }
 
@@ -223,7 +224,7 @@ async fn run_serving_role(kind: ServingRoleKind, options: ServingRoleOptions) ->
     let wire = WireServingState::new(serving);
     let server = match kind {
         ServingRoleKind::Gateway => ServingWireHandle::Gateway(
-            spawn_http_gateway(options.listen, wire.clone())
+            spawn_gateway(GatewayOptions::new(options.listen), wire.clone())
                 .await
                 .map_err(|source| NodeError::HttpGateway { source })?,
         ),
