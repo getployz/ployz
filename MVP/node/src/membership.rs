@@ -10,8 +10,8 @@ use mvp_p2panda_facts::{
     PandaTrustedAuthorKey, SharedPandaFactStore,
 };
 use mvp_p2panda_transport::{
-    PandaNetBindConfig, PandaNetFactImportOutcome, PandaNetFactNode, PandaNetFactNodeConfig,
-    PandaNetNodeConfig, PandaNetNodeTicket, PandaNetTransportError,
+    PandaNetBindConfig, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNodeConfig,
+    PandaNetNodeTicket, PandaNetTransportError,
 };
 use mvp_projection::{
     NodeJoinedFact, PeerAdmittedFact, ProjectionFactPayload, payload_matches_key,
@@ -29,9 +29,11 @@ use crate::state::{
     record_bootstrap_peer, record_issued_invite as persist_issued_invite, write_node_ticket,
 };
 use daemon_control::{DaemonControlTaskOptions, start_daemon_control_task};
+use daemon_runtime::DaemonRuntime;
 
 mod daemon_control;
 mod daemon_control_protocol;
+mod daemon_runtime;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InviteToken {
@@ -298,7 +300,7 @@ pub async fn run_daemon_once(
         publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
         publish_admitted_peers(&mut fact_node, &state, &writer_session, &author).await?;
     }
-    let mut remote_bridges = register_remote_node_agent_bridges_with_fact_node(
+    let remote_bridges = register_remote_node_agent_bridges_with_fact_node(
         &product_bus,
         &operator_session,
         &state,
@@ -331,131 +333,30 @@ pub async fn run_daemon_once(
         })?),
         None => None,
     };
-    let started = std::time::Instant::now();
-    let mut last_advertised = started;
-    let mut last_stream_refresh = started;
-    let mut imported_batches = 0;
-    let mut imported_operations = 0;
-    while started.elapsed() < options.run_for {
-        if last_advertised.elapsed() >= Duration::from_millis(100) {
-            {
-                let mut fact_node = fact_node.lock().await;
-                publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
-            }
-            let current_state = load_node(state.paths().state_dir.clone())?;
-            {
-                let mut fact_node = fact_node.lock().await;
-                publish_admitted_peers(&mut fact_node, &current_state, &writer_session, &author)
-                    .await?;
-            }
-            last_advertised = std::time::Instant::now();
-        }
-        let import_result = {
-            let mut fact_node = fact_node.lock().await;
-            fact_node
-                .import_next_fact_batch_with_idle_timeout(options.import_idle)
-                .await
-        };
-        match import_result {
-            Ok(Some(outcomes)) => {
-                imported_batches += 1;
-                imported_operations += outcomes
-                    .iter()
-                    .filter(|outcome| matches!(outcome, PandaNetFactImportOutcome::Imported))
-                    .count() as u64;
-                if let Some(control) = &control {
-                    control.record_import_progress(imported_batches, imported_operations);
-                }
-                let current_state = load_node(state.paths().state_dir.clone())?;
-                {
-                    let mut fact_node = fact_node.lock().await;
-                    apply_peer_admissions(
-                        &mut fact_node,
-                        &current_state,
-                        &writer_session,
-                        &authority,
-                    )
-                    .await?;
-                }
-                let current_state = load_node(state.paths().state_dir.clone())?;
-                ensure_remote_bridges_registered(
-                    &product_bus,
-                    &operator_session,
-                    &current_state,
-                    Arc::clone(&fact_node),
-                    &writer_session,
-                    &mut remote_bridges,
-                )
-                .await?;
-                {
-                    let mut fact_node = fact_node.lock().await;
-                    let _handled_rpc = handle_node_agent_rpc_requests(
-                        &mut fact_node,
-                        &writer_session,
-                        &author,
-                        &product_bus,
-                        &node_agent_request_session,
-                        &current_state,
-                    )
-                    .await?;
-                }
-            }
-            Ok(None) => {
-                if last_stream_refresh.elapsed() >= Duration::from_secs(1) {
-                    let mut fact_node = fact_node.lock().await;
-                    fact_node
-                        .refresh_stream()
-                        .await
-                        .map_err(|source| NodeError::Transport { source })?;
-                    last_stream_refresh = std::time::Instant::now();
-                }
-                let current_state = load_node(state.paths().state_dir.clone())?;
-                ensure_remote_bridges_registered(
-                    &product_bus,
-                    &operator_session,
-                    &current_state,
-                    Arc::clone(&fact_node),
-                    &writer_session,
-                    &mut remote_bridges,
-                )
-                .await?;
-                {
-                    let mut fact_node = fact_node.lock().await;
-                    let _handled_rpc = handle_node_agent_rpc_requests(
-                        &mut fact_node,
-                        &writer_session,
-                        &author,
-                        &product_bus,
-                        &node_agent_request_session,
-                        &current_state,
-                    )
-                    .await?;
-                }
-            }
-            Err(error) if is_recoverable_stream_error(&error) => {
-                let mut fact_node = fact_node.lock().await;
-                fact_node
-                    .refresh_stream()
-                    .await
-                    .map_err(|source| NodeError::Transport { source })?;
-                last_stream_refresh = std::time::Instant::now();
-            }
-            Err(error) => return Err(NodeError::Transport { source: error }),
-        }
-    }
-    if let Some(control) = control {
-        control.shutdown().await?;
-    }
+    let runtime = DaemonRuntime {
+        state: state.clone(),
+        options,
+        product_bus,
+        operator_session,
+        node_agent_request_session,
+        fact_node,
+        writer_session,
+        author,
+        authority,
+        remote_bridges,
+        control,
+    };
+    let runtime_report = runtime.run().await?;
     Ok(DaemonReport {
         node_id: state.node_id_str().to_string(),
         ticket,
-        imported_batches,
-        imported_operations,
+        imported_batches: runtime_report.imported_batches,
+        imported_operations: runtime_report.imported_operations,
         node_agent_handlers: node_agent_report.registered_handlers,
     })
 }
 
-async fn ensure_remote_bridges_registered(
+pub(super) async fn ensure_remote_bridges_registered(
     product_bus: &mvp_bus::BusActorHandle,
     operator_session: &mvp_bus::BusSession,
     current_state: &LoadedNodeState,
@@ -480,7 +381,7 @@ async fn ensure_remote_bridges_registered(
     Ok(())
 }
 
-fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {
+pub(super) fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {
     matches!(
         error,
         PandaNetTransportError::StreamEnded { .. }
@@ -489,7 +390,7 @@ fn is_recoverable_stream_error(error: &PandaNetTransportError) -> bool {
     )
 }
 
-async fn publish_admitted_peers(
+pub(super) async fn publish_admitted_peers(
     fact_node: &mut PandaNetFactNode,
     state: &LoadedNodeState,
     session: &mvp_bus::BusSession,
@@ -527,7 +428,7 @@ async fn publish_admitted_peers(
     Ok(())
 }
 
-async fn apply_peer_admissions(
+pub(super) async fn apply_peer_admissions(
     fact_node: &mut PandaNetFactNode,
     state: &LoadedNodeState,
     session: &mvp_bus::BusSession,
@@ -741,7 +642,7 @@ pub(crate) async fn spawn_fact_node(
     Ok((fact_node, writer_session, author, authority))
 }
 
-async fn publish_self_join(
+pub(super) async fn publish_self_join(
     fact_node: &mut PandaNetFactNode,
     state: &LoadedNodeState,
     session: &mvp_bus::BusSession,
