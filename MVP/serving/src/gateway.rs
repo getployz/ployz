@@ -8,11 +8,12 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayEngineKind {
     Hyper,
+    Pingora,
 }
 
 impl Default for GatewayEngineKind {
     fn default() -> Self {
-        Self::Hyper
+        Self::Pingora
     }
 }
 
@@ -45,6 +46,7 @@ pub struct GatewayHandle {
 
 enum GatewayEngineHandle {
     Hyper(HttpGatewayHandle),
+    Pingora(HttpGatewayHandle),
 }
 
 impl GatewayHandle {
@@ -57,6 +59,7 @@ impl GatewayHandle {
     pub fn listen_addr(&self) -> SocketAddr {
         match &self.inner {
             GatewayEngineHandle::Hyper(handle) => handle.listen_addr(),
+            GatewayEngineHandle::Pingora(handle) => handle.listen_addr(),
         }
     }
 
@@ -64,12 +67,14 @@ impl GatewayHandle {
     pub fn metrics(&self) -> WireRoleMetrics {
         match &self.inner {
             GatewayEngineHandle::Hyper(handle) => handle.metrics(),
+            GatewayEngineHandle::Pingora(handle) => handle.metrics(),
         }
     }
 
     pub async fn shutdown(self) -> Result<(), HttpGatewayError> {
         match self.inner {
             GatewayEngineHandle::Hyper(handle) => handle.shutdown().await,
+            GatewayEngineHandle::Pingora(handle) => handle.shutdown().await,
         }
     }
 }
@@ -86,6 +91,14 @@ pub async fn spawn_gateway(
                 inner: GatewayEngineHandle::Hyper(handle),
             })
         }
+        GatewayEngineKind::Pingora => {
+            let handle =
+                crate::pingora_gateway::spawn_pingora_gateway(options.listen_addr, state).await?;
+            Ok(GatewayHandle {
+                engine: GatewayEngineKind::Pingora,
+                inner: GatewayEngineHandle::Pingora(handle),
+            })
+        }
     }
 }
 
@@ -96,12 +109,12 @@ mod tests {
     use super::{GatewayEngineKind, GatewayOptions};
 
     #[test]
-    fn gateway_options_default_to_current_hyper_engine() {
+    fn gateway_options_default_to_pingora_engine() {
         let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
         let options = GatewayOptions::new(listen_addr);
 
         assert_eq!(options.listen_addr, listen_addr);
-        assert_eq!(options.engine, GatewayEngineKind::Hyper);
+        assert_eq!(options.engine, GatewayEngineKind::Pingora);
     }
 }

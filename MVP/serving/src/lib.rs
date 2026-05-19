@@ -4,6 +4,7 @@ mod error;
 mod gateway;
 mod http_gateway;
 mod model;
+mod pingora_gateway;
 mod wire;
 
 pub use actor::ServingActorHandle;
