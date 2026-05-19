@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use mvp_bus::{BusActorHandle, BusSession, FactKey, FactPayload, FactWriteOutcome};
 use mvp_commands::{
-    Command, CommandCompensationFuture, CommandContext, CommandName, CommandStepFuture, IntentId,
-    PhaseTransition, PhasedCommand, run_phased,
+    Command, CommandContext, CommandName, CommandStepFuture, IntentId, PhaseTransition,
+    PhasedCommand, run_phased,
 };
 use mvp_identity::{NodeId, VisibleNodes};
 use mvp_mesh::{removal_started_fact_key, removal_started_fact_payload, tombstone_fact_key};
@@ -415,14 +415,6 @@ where
                 }
             }
         })
-    }
-
-    fn compensate<'b>(
-        &'b self,
-        _cx: &'b CommandContext,
-        _phase: Self::Phase,
-    ) -> CommandCompensationFuture<'b, <Self as Command>::Error> {
-        Box::pin(async { Ok(()) })
     }
 }
 

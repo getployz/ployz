@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mvp_bus::{BusActorHandle, BusSession, FactKeyPattern, Grant, PrincipalId};
+use mvp_bus::{BusActorHandle, BusSession, FactKeyPattern, Grant, PrincipalId, local::LocalBus};
 use mvp_deploy::{
     DeployCoordinator, DeployEpochReservationFact, DeployError, DeployId, DeployManifest,
     DeployStatusFact, DeployStatusPhase, DeployTimeouts, DnsCommitId, GatewayCommitId,
@@ -18,8 +18,8 @@ use mvp_p2panda_facts::{
     SharedPandaFactStore,
 };
 use mvp_projection::{
-    BackendEndpoint, CandidateStatus, DnsRecordFact, FactSource, GatewayProjection,
-    ProjectionActorHandle, ProjectionFactPayload, RouteId, ServiceName, SqliteProjectionStore,
+    BackendEndpoint, CandidateStatus, DnsRecordFact, GatewayProjection, ProjectionActorHandle,
+    ProjectionFactPayload, RouteId, ServiceName, SqliteProjectionStore,
 };
 use mvp_routing::PandaServingFactWriter;
 use mvp_runtime::ProcessRuntime;
@@ -114,7 +114,7 @@ pub async fn deploy_product_service_with_process(
     process: Option<ProcessRuntime>,
 ) -> NodeResult<ProductDeployReport> {
     let state = load_node(&options.state_dir)?;
-    let (bus, authority, raw_bus) = mvp_bus::harness::actor_with_authority();
+    let (bus, authority, raw_bus) = mvp_bus::local::actor_with_authority();
     let operator = authority.grant_in(state.island(), state.principal(), Grant::allow_all());
     let node_agent_session = authority.grant_in(
         state.island(),
@@ -201,7 +201,7 @@ async fn deploy_product_service_with_context_inner(
         .await
         .map_err(|source| NodeError::Projection { source })?;
     let old_backends_to_drain = current_backends(&existing.state.gateway);
-    let serving_epoch = next_serving_epoch(&facts, state, &fact_session)?;
+    let serving_epoch = next_serving_epoch(&facts, state, &fact_session).await?;
     let manifest = manifest_from_options(&options, old_backends_to_drain, serving_epoch);
     let author = Arc::new(state.author()?);
     reserve_serving_epoch(&facts, &fact_session, &author, &manifest).await?;
@@ -300,7 +300,7 @@ pub fn read_product_deploy_status(
     deploy_id: impl Into<String>,
 ) -> NodeResult<ProductDeployStatusReport> {
     let state = load_node(state_dir)?;
-    let (raw_bus, authority) = mvp_bus::harness::InMemoryBus::new_with_authority();
+    let (raw_bus, authority) = LocalBus::new_with_authority();
     let session = authority.grant_in(state.island(), state.principal(), Grant::allow_all());
     let state_for_store = state.clone();
     let facts = std::thread::spawn(move || {
@@ -373,7 +373,7 @@ impl ProductDeployStatusWriter {
 
 async fn open_local_fact_store(
     state: &LoadedNodeState,
-    raw_bus: Arc<mvp_bus::harness::InMemoryBus>,
+    raw_bus: Arc<LocalBus>,
 ) -> NodeResult<SharedPandaFactStore> {
     let author = state.author()?;
     let mut store_config =
@@ -495,17 +495,19 @@ fn manifest_from_options(
     )
 }
 
-fn next_serving_epoch(
+async fn next_serving_epoch(
     facts: &SharedPandaFactStore,
     state: &LoadedNodeState,
     session: &mvp_bus::BusSession,
 ) -> NodeResult<u64> {
     let pattern = FactKeyPattern::parse("/facts/serving/>").expect("valid serving fact pattern");
     let serving_candidates = facts
-        .list_candidates(&state.island(), &pattern, session)
+        .list_fact_candidates(&state.island(), &pattern, session)
+        .await
         .map_err(|source| NodeError::FactSource { source })?;
     let serving_payloads = facts
-        .read_payloads(&state.island(), &serving_candidates, session)
+        .read_fact_payloads(&state.island(), &serving_candidates, session)
+        .await
         .map_err(|source| NodeError::FactSource { source })?;
     let mut max_epoch = 0;
     for candidate in serving_candidates {
@@ -525,10 +527,12 @@ fn next_serving_epoch(
     let reservation_pattern =
         FactKeyPattern::parse("/facts/deploy/epoch/>").expect("valid deploy epoch pattern");
     let reservation_candidates = facts
-        .list_candidates(&state.island(), &reservation_pattern, session)
+        .list_fact_candidates(&state.island(), &reservation_pattern, session)
+        .await
         .map_err(|source| NodeError::FactSource { source })?;
     let reservation_payloads = facts
-        .read_payloads(&state.island(), &reservation_candidates, session)
+        .read_fact_payloads(&state.island(), &reservation_candidates, session)
+        .await
         .map_err(|source| NodeError::FactSource { source })?;
     for candidate in reservation_candidates {
         if candidate.status() != CandidateStatus::Verified {

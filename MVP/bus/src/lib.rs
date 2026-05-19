@@ -25,15 +25,24 @@ pub(crate) use message::ResponseEnvelope;
 pub use message::{BusMessage, Payload, RequestManyPolicy, RequestTarget, ResponseMessage};
 pub use subject::{Subject, SubjectPattern};
 
-pub mod harness {
+pub mod local {
     use crate::{BusActorHandle, BusAuthority};
 
-    pub use crate::memory::MemoryBus as InMemoryBus;
+    pub type LocalBus = crate::memory::MemoryBus;
 
     #[must_use]
-    pub fn actor_with_authority() -> (BusActorHandle, BusAuthority, InMemoryBus) {
-        let (bus, authority) = InMemoryBus::new_with_authority();
+    pub fn actor_with_authority() -> (BusActorHandle, BusAuthority, LocalBus) {
+        let (bus, authority) = LocalBus::new_with_authority();
         let handle = BusActorHandle::spawn(bus.clone());
         (handle, authority, bus)
+    }
+}
+
+pub mod harness {
+    pub use crate::local::{LocalBus as InMemoryBus, actor_with_authority};
+
+    #[must_use]
+    pub fn in_memory_bus_with_authority() -> (InMemoryBus, crate::BusAuthority) {
+        InMemoryBus::new_with_authority()
     }
 }

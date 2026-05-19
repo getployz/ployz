@@ -284,8 +284,8 @@ impl AcmeCommandExecutor {
             } => next_epoch,
             LeaseState::Active { current, .. } => {
                 return Err(AcmeCommandError::Conflict {
-                    holder: current.holder().clone(),
-                    epoch: current.epoch(),
+                    holder: current.holder.clone(),
+                    epoch: current.epoch,
                 });
             }
             LeaseState::Expired {
@@ -366,7 +366,7 @@ impl AcmeCommandExecutor {
         let release_key = FactKey::parse(command.challenge.lease_released_fact_key(
             command.lease.epoch,
             command.lease.claim_hash,
-            release.release(),
+            release.release,
         ))?;
         let clear_key = FactKey::parse(
             command
@@ -501,9 +501,9 @@ fn assert_current_lease(
 ) -> Result<(), AcmeCommandError> {
     match lease_state_from_source(source, session, &lease.challenge, now)? {
         LeaseState::Active { current, .. }
-            if current.holder() == &lease.holder
-                && current.epoch() == lease.epoch
-                && current.content_hash() == lease.claim_hash =>
+            if current.holder == lease.holder
+                && current.epoch == lease.epoch
+                && current.content_hash == lease.claim_hash =>
         {
             Ok(())
         }

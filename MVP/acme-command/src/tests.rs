@@ -227,7 +227,7 @@ async fn clear_release_preflight_failure_happens_before_any_write() {
     let lease = AcmeLeaseHandle::new(
         fixture.challenge.clone(),
         LeaseHolder::new(fixture.session.principal().as_str()),
-        claim.epoch(),
+        claim.epoch,
         claim_hash,
     );
     let prepared = fixture
@@ -450,12 +450,12 @@ fn candidate_for_claim(
     let bytes = payload.to_fact_bytes().expect("payload serializes");
     FactCandidate::new(
         fixture.session.island().clone(),
-        FactKey::parse(fixture.challenge.lease_claimed_fact_key(claim.epoch()))
+        FactKey::parse(fixture.challenge.lease_claimed_fact_key(claim.epoch))
             .expect("lease claim key parses"),
         fixture.session.principal().clone(),
         FactContentHash::for_payload(&FactPayload::copy_from_slice(&bytes)),
         FactKind::LeaseClaimed,
-        claim.epoch().value(),
+        claim.epoch.value(),
         status,
     )
 }

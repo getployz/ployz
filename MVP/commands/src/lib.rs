@@ -116,19 +116,10 @@ pub trait PhasedCommand: Command {
         cx: &'a CommandContext,
         phase: Self::Phase,
     ) -> CommandStepFuture<'a, Self::Phase, <Self as Command>::Output, <Self as Command>::Error>;
-
-    fn compensate<'a>(
-        &'a self,
-        cx: &'a CommandContext,
-        phase: Self::Phase,
-    ) -> CommandCompensationFuture<'a, <Self as Command>::Error>;
 }
 
 pub type CommandStepFuture<'a, P, O, E> =
     Pin<Box<dyn Future<Output = Result<PhaseTransition<P, O>, E>> + Send + 'a>>;
-
-pub type CommandCompensationFuture<'a, E> =
-    Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'a>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhaseTransition<P, O> {
@@ -309,8 +300,8 @@ where
         .store
         .read_phase_history(&command.name(), &command.intent_id())?;
     let mut current_stored = history.last().cloned();
-    let mut committed = deserialize_phase_history::<C::Phase>(history)?;
-    let mut current = committed
+    let phases = deserialize_phase_history::<C::Phase>(history)?;
+    let mut current = phases
         .last()
         .cloned()
         .unwrap_or_else(|| command.initial_phase());
@@ -318,25 +309,12 @@ where
     loop {
         match command.step(cx, current.clone()).await {
             Ok(PhaseTransition::Continue(next)) => {
-                let stored_next = match cx.write_next_phase(command, current_stored.as_ref(), &next)
-                {
-                    Ok(stored_next) => stored_next,
-                    Err(error) => {
-                        command.compensate(cx, next).await?;
-                        return Err(error.into());
-                    }
-                };
-                committed.push(next.clone());
+                let stored_next = cx.write_next_phase(command, current_stored.as_ref(), &next)?;
                 current_stored = Some(stored_next);
                 current = next;
             }
             Ok(PhaseTransition::Done(output)) => return Ok(output),
-            Err(error) => {
-                for phase in committed.into_iter().rev() {
-                    command.compensate(cx, phase).await?;
-                }
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -573,7 +551,6 @@ mod tests {
     enum TestError {
         Command(CommandError),
         Failed,
-        Compensation,
     }
 
     impl From<CommandError> for TestError {
@@ -584,28 +561,12 @@ mod tests {
 
     struct TestCommand {
         fail_at: Option<TestPhase>,
-        fail_compensation: bool,
         seen: Arc<Mutex<Vec<TestPhase>>>,
-        compensated: Arc<Mutex<Vec<TestPhase>>>,
     }
 
     impl TestCommand {
-        fn new(
-            fail_at: Option<TestPhase>,
-            seen: Arc<Mutex<Vec<TestPhase>>>,
-            compensated: Arc<Mutex<Vec<TestPhase>>>,
-        ) -> Self {
-            Self {
-                fail_at,
-                fail_compensation: false,
-                seen,
-                compensated,
-            }
-        }
-
-        fn with_failing_compensation(mut self) -> Self {
-            self.fail_compensation = true;
-            self
+        fn new(fail_at: Option<TestPhase>, seen: Arc<Mutex<Vec<TestPhase>>>) -> Self {
+            Self { fail_at, seen }
         }
     }
 
@@ -652,23 +613,6 @@ mod tests {
                 }
             })
         }
-
-        fn compensate<'a>(
-            &'a self,
-            _cx: &'a CommandContext,
-            phase: Self::Phase,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-            Box::pin(async move {
-                self.compensated
-                    .lock()
-                    .expect("compensated lock")
-                    .push(phase);
-                if self.fail_compensation {
-                    return Err(TestError::Compensation);
-                }
-                Ok(())
-            })
-        }
     }
 
     #[tokio::test]
@@ -676,8 +620,7 @@ mod tests {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(None, Arc::clone(&seen), compensated);
+        let command = TestCommand::new(None, Arc::clone(&seen));
 
         let result = run_phased(&cx, &command).await.expect("command runs");
 
@@ -697,12 +640,7 @@ mod tests {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let initial_seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let initial = TestCommand::new(
-            Some(TestPhase::Prepared),
-            Arc::clone(&initial_seen),
-            Arc::clone(&compensated),
-        );
+        let initial = TestCommand::new(Some(TestPhase::Prepared), Arc::clone(&initial_seen));
 
         let error = run_phased(&cx, &initial).await.expect_err("prepared fails");
         assert!(matches!(error, TestError::Failed));
@@ -712,7 +650,7 @@ mod tests {
         );
 
         let resumed_seen = Arc::new(Mutex::new(Vec::new()));
-        let resumed = TestCommand::new(None, Arc::clone(&resumed_seen), compensated);
+        let resumed = TestCommand::new(None, Arc::clone(&resumed_seen));
         run_phased(&cx, &resumed).await.expect("resume");
 
         assert_eq!(
@@ -722,16 +660,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumed_failure_compensates_persisted_phase() {
+    async fn resumed_failure_returns_original_error_without_rewriting_phase() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(
-            Some(TestPhase::Prepared),
-            Arc::clone(&seen),
-            Arc::clone(&compensated),
-        );
+        let command = TestCommand::new(Some(TestPhase::Prepared), Arc::clone(&seen));
         cx.write_phase(&command, &TestPhase::Prepared)
             .expect("seed persisted phase");
 
@@ -743,22 +676,17 @@ mod tests {
             &[TestPhase::Prepared]
         );
         assert_eq!(
-            compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Prepared]
+            cx.read_phase::<TestPhase>(&command).expect("phase"),
+            Some(TestPhase::Prepared)
         );
     }
 
     #[tokio::test]
-    async fn resumed_failure_compensates_full_persisted_history() {
+    async fn resumed_failure_preserves_full_persisted_history() {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(
-            Some(TestPhase::Committed),
-            Arc::clone(&seen),
-            Arc::clone(&compensated),
-        );
+        let command = TestCommand::new(Some(TestPhase::Committed), Arc::clone(&seen));
         cx.write_phase(&command, &TestPhase::Prepared)
             .expect("seed prepared phase");
         cx.write_phase(&command, &TestPhase::Committed)
@@ -774,8 +702,10 @@ mod tests {
             &[TestPhase::Committed]
         );
         assert_eq!(
-            compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Committed, TestPhase::Prepared]
+            cx.read_stored_phase_history(&command)
+                .expect("phase history")
+                .len(),
+            2
         );
     }
 
@@ -786,12 +716,10 @@ mod tests {
         let slow_started = Arc::new(Notify::new());
         let slow_release = Arc::new(Notify::new());
         let slow_seen = Arc::new(Mutex::new(Vec::new()));
-        let slow_compensated = Arc::new(Mutex::new(Vec::new()));
         let slow = GatedStartCommand {
             started: Arc::clone(&slow_started),
             release: Arc::clone(&slow_release),
             seen: Arc::clone(&slow_seen),
-            compensated: Arc::clone(&slow_compensated),
         };
         let (result_tx, result_rx) = oneshot::channel();
 
@@ -802,8 +730,7 @@ mod tests {
         slow_started.notified().await;
 
         let fast_seen = Arc::new(Mutex::new(Vec::new()));
-        let fast_compensated = Arc::new(Mutex::new(Vec::new()));
-        let fast = TestCommand::new(None, Arc::clone(&fast_seen), fast_compensated);
+        let fast = TestCommand::new(None, Arc::clone(&fast_seen));
         run_phased(&cx, &fast).await.expect("fast runner completes");
 
         slow_release.notify_waiters();
@@ -820,52 +747,6 @@ mod tests {
             cx.read_phase::<TestPhase>(&fast).expect("latest phase"),
             Some(TestPhase::Committed)
         );
-        assert_eq!(
-            slow_compensated
-                .lock()
-                .expect("slow compensated")
-                .as_slice(),
-            &[TestPhase::Prepared]
-        );
-    }
-
-    #[tokio::test]
-    async fn compensation_walks_committed_phases_in_reverse_without_failing_phase() {
-        let store = Arc::new(InMemoryCommandPhaseStore::empty());
-        let cx = CommandContext::new(store);
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(Some(TestPhase::Committed), seen, Arc::clone(&compensated));
-
-        let error = run_phased(&cx, &command)
-            .await
-            .expect_err("committed fails");
-
-        assert!(matches!(error, TestError::Failed));
-        assert_eq!(
-            compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Committed, TestPhase::Prepared]
-        );
-    }
-
-    #[tokio::test]
-    async fn compensation_failure_is_returned_to_caller() {
-        let store = Arc::new(InMemoryCommandPhaseStore::empty());
-        let cx = CommandContext::new(store);
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(Some(TestPhase::Committed), seen, Arc::clone(&compensated))
-            .with_failing_compensation();
-
-        let error = run_phased(&cx, &command)
-            .await
-            .expect_err("compensation error returned");
-
-        assert!(matches!(error, TestError::Compensation));
-        assert_eq!(
-            compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Committed]
-        );
     }
 
     #[test]
@@ -873,8 +754,7 @@ mod tests {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store.clone());
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(None, seen, compensated);
+        let command = TestCommand::new(None, seen);
         let name = command.name();
         let intent = command.intent_id();
         store
@@ -908,8 +788,7 @@ mod tests {
         let store = Arc::new(InMemoryCommandPhaseStore::empty());
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(None, seen, compensated);
+        let command = TestCommand::new(None, seen);
         cx.write_phase(&command, &TestPhase::Prepared)
             .expect("write first phase");
         let name = command.name();
@@ -933,12 +812,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn phase_write_failure_compensates_only_uncommitted_next_phase() {
+    async fn phase_write_failure_returns_store_error() {
         let store = Arc::new(FailingPhaseWriteStore);
         let cx = CommandContext::new(store);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let compensated = Arc::new(Mutex::new(Vec::new()));
-        let command = TestCommand::new(None, Arc::clone(&seen), Arc::clone(&compensated));
+        let command = TestCommand::new(None, Arc::clone(&seen));
 
         let error = run_phased(&cx, &command)
             .await
@@ -948,10 +826,6 @@ mod tests {
         assert_eq!(
             seen.lock().expect("seen lock").as_slice(),
             &[TestPhase::Start]
-        );
-        assert_eq!(
-            compensated.lock().expect("compensated lock").as_slice(),
-            &[TestPhase::Prepared]
         );
     }
 
@@ -1000,7 +874,6 @@ mod tests {
         started: Arc<Notify>,
         release: Arc<Notify>,
         seen: Arc<Mutex<Vec<TestPhase>>>,
-        compensated: Arc<Mutex<Vec<TestPhase>>>,
     }
 
     impl Command for GatedStartCommand {
@@ -1045,20 +918,6 @@ mod tests {
                     TestPhase::Prepared => Ok(PhaseTransition::Continue(TestPhase::Committed)),
                     TestPhase::Committed => Ok(PhaseTransition::Done("done")),
                 }
-            })
-        }
-
-        fn compensate<'a>(
-            &'a self,
-            _cx: &'a CommandContext,
-            phase: Self::Phase,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
-            Box::pin(async move {
-                self.compensated
-                    .lock()
-                    .expect("compensated lock")
-                    .push(phase);
-                Ok(())
             })
         }
     }

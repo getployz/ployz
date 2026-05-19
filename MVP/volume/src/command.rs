@@ -308,8 +308,8 @@ where
             } => next_epoch,
             LeaseState::Active { current, .. } => {
                 return Err(VolumeError::LeaseConflict {
-                    holder: current.holder().clone(),
-                    epoch: current.epoch(),
+                    holder: current.holder.clone(),
+                    epoch: current.epoch,
                 });
             }
             LeaseState::Expired {
@@ -554,9 +554,9 @@ fn assert_current_volume_lease(
 ) -> VolumeResult<()> {
     match lease_state_from_source(source, session, &lease.resource, now)? {
         LeaseState::Active { current, .. }
-            if current.holder() == &lease.holder
-                && current.epoch() == lease.epoch
-                && current.content_hash() == lease.claim_hash =>
+            if current.holder == lease.holder
+                && current.epoch == lease.epoch
+                && current.content_hash == lease.claim_hash =>
         {
             Ok(())
         }
