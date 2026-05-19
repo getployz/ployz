@@ -34,6 +34,8 @@ pub enum MeshError {
         node_id: NodeId,
         field: &'static str,
     },
+    #[error("wireguard key is invalid: {message}")]
+    InvalidWireGuardKey { message: String },
     #[error("wireguard snapshot {operation} failed for {path}: {message}")]
     SnapshotIo {
         operation: &'static str,

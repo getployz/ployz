@@ -1,10 +1,12 @@
 use std::fmt::{self, Display, Formatter};
 use std::net::Ipv6Addr;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use mvp_bus::IslandId;
 use mvp_identity::NodeId;
 use mvp_projection::NodeProjection;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 use crate::{MeshError, MeshResult};
 
@@ -45,6 +47,60 @@ impl WireGuardPublicKey {
 impl Display for WireGuardPublicKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct WireGuardPrivateKey([u8; 32]);
+
+impl WireGuardPrivateKey {
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn from_base64(value: &str) -> MeshResult<Self> {
+        let bytes =
+            BASE64
+                .decode(value.trim())
+                .map_err(|source| MeshError::InvalidWireGuardKey {
+                    message: source.to_string(),
+                })?;
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|bytes: Vec<u8>| MeshError::InvalidWireGuardKey {
+                    message: format!("private key must be 32 bytes, got {}", bytes.len()),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    #[must_use]
+    pub fn from_seed(seed: &str) -> Self {
+        Self(*blake3::hash(format!("wireguard-private:{seed}").as_bytes()).as_bytes())
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn to_base64(&self) -> String {
+        BASE64.encode(self.0)
+    }
+
+    #[must_use]
+    pub fn public_key(&self) -> WireGuardPublicKey {
+        let secret = StaticSecret::from(self.0);
+        let public = X25519PublicKey::from(&secret);
+        WireGuardPublicKey::new(BASE64.encode(public.to_bytes()))
+    }
+}
+
+impl std::fmt::Debug for WireGuardPrivateKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("WireGuardPrivateKey(***)")
     }
 }
 
@@ -192,7 +248,9 @@ pub fn derive_overlay_ip(island: &IslandId, node_id: &NodeId) -> WireGuardOverla
 
 #[cfg(test)]
 mod tests {
-    use super::{MeshNode, WireGuardOverlayCidr, WireGuardOverlayIp, derive_overlay_ip};
+    use super::{
+        MeshNode, WireGuardOverlayCidr, WireGuardOverlayIp, WireGuardPrivateKey, derive_overlay_ip,
+    };
     use mvp_bus::IslandId;
     use mvp_identity::NodeId;
     use mvp_projection::NodeProjection;
@@ -238,5 +296,16 @@ mod tests {
         assert_eq!(decoded, cidr);
         assert!(serde_json::from_str::<WireGuardOverlayCidr>(r#""fd00::1""#).is_err());
         assert!(serde_json::from_str::<WireGuardOverlayCidr>(r#""fd00::1/64""#).is_err());
+    }
+
+    #[test]
+    fn wireguard_private_key_derives_stable_public_key() {
+        let private = WireGuardPrivateKey::from_seed("node-a");
+        let encoded = private.to_base64();
+        let decoded = WireGuardPrivateKey::from_base64(&encoded).expect("key decodes");
+
+        assert_eq!(decoded.as_bytes(), private.as_bytes());
+        assert_eq!(decoded.public_key(), private.public_key());
+        assert!(!private.public_key().as_str().starts_with("mvp-wg-"));
     }
 }
