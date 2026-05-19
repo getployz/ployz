@@ -3,17 +3,29 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrustedFactAuthorConfig {
+pub struct BootstrapPeerConfig {
+    pub node_id: Option<String>,
     pub principal_id: String,
     pub author_key_hex: String,
+    pub p2panda_ticket: String,
+    pub invite_id: Option<String>,
 }
 
-impl TrustedFactAuthorConfig {
+impl BootstrapPeerConfig {
     #[must_use]
-    pub fn new(principal_id: impl Into<String>, author_key_hex: impl Into<String>) -> Self {
+    pub fn new(
+        node_id: Option<String>,
+        principal_id: impl Into<String>,
+        author_key_hex: impl Into<String>,
+        p2panda_ticket: impl Into<String>,
+        invite_id: Option<String>,
+    ) -> Self {
         Self {
+            node_id,
             principal_id: principal_id.into(),
             author_key_hex: author_key_hex.into(),
+            p2panda_ticket: p2panda_ticket.into(),
+            invite_id,
         }
     }
 }
@@ -78,31 +90,10 @@ pub struct JoinedInitOptions {
     pub state_dir: PathBuf,
     pub island: String,
     pub node_id: String,
+    pub invite_id: String,
+    pub invite_secret: String,
+    pub invite_expires_at_ms: u64,
     pub p2panda_network_id_hex: String,
     pub p2panda_topic_hex: String,
-    pub bootstrap_ticket: String,
-    pub trusted_fact_author: TrustedFactAuthorConfig,
-}
-
-impl JoinedInitOptions {
-    #[must_use]
-    pub fn new(
-        state_dir: impl Into<PathBuf>,
-        island: impl Into<String>,
-        node_id: impl Into<String>,
-        p2panda_network_id_hex: impl Into<String>,
-        p2panda_topic_hex: impl Into<String>,
-        bootstrap_ticket: impl Into<String>,
-        trusted_fact_author: TrustedFactAuthorConfig,
-    ) -> Self {
-        Self {
-            state_dir: state_dir.into(),
-            island: island.into(),
-            node_id: node_id.into(),
-            p2panda_network_id_hex: p2panda_network_id_hex.into(),
-            p2panda_topic_hex: p2panda_topic_hex.into(),
-            bootstrap_ticket: bootstrap_ticket.into(),
-            trusted_fact_author,
-        }
-    }
+    pub bootstrap_peer: BootstrapPeerConfig,
 }

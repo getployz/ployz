@@ -61,21 +61,25 @@ cargo run -p mvp-node -- init --state /var/lib/ployz-mvp --island prod --node-id
 cargo run -p mvp-node -- daemon --state /var/lib/ployz-mvp --run-for-ms 1000
 cargo run -p mvp-node -- invite --state /var/lib/ployz-mvp
 cargo run -p mvp-node -- join --state /var/lib/ployz-mvp-b --token '<invite-json>' --node-id node-b
+cargo run -p mvp-node -- admission --state /var/lib/ployz-mvp-b
+cargo run -p mvp-node -- admit --state /var/lib/ployz-mvp --request '<admission-json>'
 cargo run -p mvp-node -- status --state /var/lib/ployz-mvp
 ```
 
 The currently wired surface is still intentionally small: `init` and `status`
-establish persistent node identity and state paths; `daemon` starts the product
-p2panda fact node for a bounded run; `invite` emits a bootstrap token after the
-daemon has written a node ticket; and `join` initializes a node from that token.
-`gateway`, `dns`, and `deploy` are reserved product commands that return
-explicit not-wired errors until their three-server slices land.
+establish persistent node identity and state paths; `invite` emits a bootstrap
+token with a stable p2panda ticket; `join` initializes a node from that token;
+`admission` emits the joiner's stable ticket and author identity; `admit`
+records that joiner on the bootstrap node; and `daemon` starts the product
+p2panda fact node for a bounded run. `gateway`, `dns`, and `deploy` are reserved
+product commands that return explicit not-wired errors until their three-server
+slices land.
 
-The current membership path proves durable product state, self join facts,
-bootstrap tickets, and bootstrap author trust. Full multi-node convergence
-still requires the next product slice: a bootstrap admission request that lets
-the existing node learn the joiner's p2panda node info and fact-author key
-instead of relying on test-only reciprocal address-book mutation.
+The current membership path proves durable product state, stable restart-safe
+tickets, invite/admission handoff, and two-node membership convergence over
+p2panda-net. Three-node convergence still needs authority/trust propagation so
+non-bootstrap nodes learn later admitted node authors without manual local state
+updates.
 
 ## Maintainer Notes
 

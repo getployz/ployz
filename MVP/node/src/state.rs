@@ -10,7 +10,7 @@ use mvp_p2panda_transport::{PandaNetNetworkId, PandaNetNodeSeed, PandaNetTopic};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use crate::config::{InitOptions, JoinedInitOptions, NodePaths, TrustedFactAuthorConfig};
+use crate::config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
 use crate::error::{NodeError, NodeResult};
 
 const STATE_SCHEMA_VERSION: u32 = 1;
@@ -24,13 +24,29 @@ struct PersistedNodeState {
     pub p2panda_author_private_key_hex: String,
     pub p2panda_network_id_hex: String,
     pub p2panda_node_seed_hex: String,
+    #[serde(default)]
+    pub p2panda_port: Option<u16>,
     pub p2panda_topic_hex: String,
     pub wg_public_key: String,
     pub wg_overlay_ip: String,
     #[serde(default)]
-    pub bootstrap_tickets: Vec<String>,
+    pub bootstrap_peers: Vec<BootstrapPeerConfig>,
     #[serde(default)]
-    pub trusted_fact_authors: Vec<TrustedFactAuthorConfig>,
+    pub join_invite: Option<StoredJoinInvite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredJoinInvite {
+    pub invite_id: String,
+    pub invite_secret: String,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct IssuedInviteRecord {
+    pub invite_id: String,
+    pub invite_secret: String,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +119,13 @@ impl LoadedNodeState {
             .map_err(|source| NodeError::InvalidNodeSeed { source })
     }
 
+    #[must_use]
+    pub fn p2panda_port(&self) -> u16 {
+        self.persisted
+            .p2panda_port
+            .unwrap_or_else(|| stable_port(self.node_id_str()))
+    }
+
     pub fn p2panda_topic(&self) -> NodeResult<PandaNetTopic> {
         PandaNetTopic::parse_hex(&self.persisted.p2panda_topic_hex)
             .map_err(|source| NodeError::InvalidTopic { source })
@@ -120,10 +143,10 @@ impl LoadedNodeState {
 
     pub fn bootstrap_tickets(&self) -> NodeResult<Vec<mvp_p2panda_transport::PandaNetNodeTicket>> {
         self.persisted
-            .bootstrap_tickets
+            .bootstrap_peers
             .iter()
-            .map(|ticket| {
-                mvp_p2panda_transport::PandaNetNodeTicket::parse(ticket)
+            .map(|peer| {
+                mvp_p2panda_transport::PandaNetNodeTicket::parse(&peer.p2panda_ticket)
                     .map_err(|source| NodeError::InvalidBootstrapTicket { source })
             })
             .collect()
@@ -131,16 +154,21 @@ impl LoadedNodeState {
 
     pub fn trusted_fact_authors(&self) -> NodeResult<Vec<TrustedFactAuthor>> {
         self.persisted
-            .trusted_fact_authors
+            .bootstrap_peers
             .iter()
-            .map(|trusted| {
+            .map(|peer| {
                 Ok(TrustedFactAuthor {
-                    principal: PrincipalId::new(trusted.principal_id.clone()),
-                    author_key: PandaFactAuthorKey::parse_hex(&trusted.author_key_hex)
+                    principal: PrincipalId::new(peer.principal_id.clone()),
+                    author_key: PandaFactAuthorKey::parse_hex(&peer.author_key_hex)
                         .map_err(|source| NodeError::InvalidAuthorKey { source })?,
                 })
             })
             .collect()
+    }
+
+    #[must_use]
+    pub fn join_invite(&self) -> Option<&StoredJoinInvite> {
+        self.persisted.join_invite.as_ref()
     }
 }
 
@@ -169,8 +197,8 @@ pub fn init_node(options: InitOptions) -> NodeResult<LoadedNodeState> {
         node_id: options.node_id,
         p2panda_network_id_hex: None,
         p2panda_topic_hex: None,
-        bootstrap_tickets: Vec::new(),
-        trusted_fact_authors: Vec::new(),
+        bootstrap_peers: Vec::new(),
+        join_invite: None,
     };
     create_node_state(state_options)
 }
@@ -182,8 +210,12 @@ pub fn init_joined_node(options: JoinedInitOptions) -> NodeResult<LoadedNodeStat
         node_id: Some(options.node_id),
         p2panda_network_id_hex: Some(options.p2panda_network_id_hex),
         p2panda_topic_hex: Some(options.p2panda_topic_hex),
-        bootstrap_tickets: vec![options.bootstrap_ticket],
-        trusted_fact_authors: vec![options.trusted_fact_author],
+        bootstrap_peers: vec![options.bootstrap_peer],
+        join_invite: Some(StoredJoinInvite {
+            invite_id: options.invite_id,
+            invite_secret: options.invite_secret,
+            expires_at_ms: options.invite_expires_at_ms,
+        }),
     };
     create_node_state(state_options)
 }
@@ -194,8 +226,8 @@ struct NewNodeStateOptions {
     node_id: Option<String>,
     p2panda_network_id_hex: Option<String>,
     p2panda_topic_hex: Option<String>,
-    bootstrap_tickets: Vec<String>,
-    trusted_fact_authors: Vec<TrustedFactAuthorConfig>,
+    bootstrap_peers: Vec<BootstrapPeerConfig>,
+    join_invite: Option<StoredJoinInvite>,
 }
 
 fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState> {
@@ -233,41 +265,27 @@ fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState
             .p2panda_network_id_hex
             .unwrap_or_else(|| stable_hex("network-id", &network_seed)),
         p2panda_node_seed_hex: stable_hex("node-seed", &node_seed),
+        p2panda_port: Some(stable_port(&node_seed)),
         p2panda_topic_hex: options
             .p2panda_topic_hex
             .unwrap_or_else(|| stable_hex("topic", &topic_seed)),
         wg_public_key: WireGuardPublicKey::new(wg_public_key).to_string(),
         wg_overlay_ip: overlay_ip.to_string(),
-        bootstrap_tickets: options.bootstrap_tickets,
-        trusted_fact_authors: options.trusted_fact_authors,
+        bootstrap_peers: options.bootstrap_peers,
+        join_invite: options.join_invite,
     };
-    write_state(&paths, &state)?;
     let loaded = LoadedNodeState {
         persisted: state,
         paths,
     };
     validate_loaded_state(&loaded)?;
+    write_state(&loaded.paths, &loaded.persisted)?;
     Ok(loaded)
 }
 
 pub fn load_node(state_dir: impl AsRef<Path>) -> NodeResult<LoadedNodeState> {
     let paths = NodePaths::for_state_dir(state_dir.as_ref());
-    if !paths.state_file.exists() {
-        return Err(NodeError::NotInitialized {
-            path: paths.state_dir,
-        });
-    }
-    let contents =
-        fs::read_to_string(&paths.state_file).map_err(|source| NodeError::ReadState {
-            path: paths.state_file.clone(),
-            source,
-        })?;
-    let persisted = serde_json::from_str::<PersistedNodeState>(&contents).map_err(|source| {
-        NodeError::DecodeState {
-            path: paths.state_file.clone(),
-            source,
-        }
-    })?;
+    let persisted = read_persisted_state(&paths)?;
     validate_schema_version(persisted.schema_version)?;
     let loaded = LoadedNodeState { persisted, paths };
     validate_loaded_state(&loaded)?;
@@ -290,6 +308,120 @@ pub fn load_node_ticket(state: &LoadedNodeState) -> NodeResult<String> {
 pub fn write_node_ticket(state: &LoadedNodeState, ticket: &str) -> NodeResult<()> {
     let path = node_ticket_path(state);
     fs::write(&path, ticket).map_err(|source| NodeError::WriteState { path, source })
+}
+
+pub(crate) fn record_bootstrap_peer(
+    state_dir: impl AsRef<Path>,
+    peer: BootstrapPeerConfig,
+) -> NodeResult<LoadedNodeState> {
+    let paths = NodePaths::for_state_dir(state_dir.as_ref());
+    let mut persisted = read_persisted_state(&paths)?;
+    validate_schema_version(persisted.schema_version)?;
+
+    mvp_p2panda_transport::PandaNetNodeTicket::parse(&peer.p2panda_ticket)
+        .map_err(|source| NodeError::InvalidBootstrapTicket { source })?;
+    PandaFactAuthorKey::parse_hex(&peer.author_key_hex)
+        .map_err(|source| NodeError::InvalidAuthorKey { source })?;
+
+    if let Some(index) = persisted.bootstrap_peers.iter().position(|stored| {
+        stored.principal_id == peer.principal_id || stored.node_id == peer.node_id
+    }) {
+        if persisted.bootstrap_peers[index] != peer {
+            return Err(NodeError::AdmissionPeerConflict {
+                node_id: peer.node_id.unwrap_or_else(|| "<unknown>".to_string()),
+                principal_id: peer.principal_id,
+            });
+        }
+        persisted.bootstrap_peers[index] = peer;
+    } else {
+        persisted.bootstrap_peers.push(peer);
+    }
+
+    replace_state(&paths, &persisted)?;
+    let loaded = LoadedNodeState { persisted, paths };
+    validate_loaded_state(&loaded)?;
+    Ok(loaded)
+}
+
+pub(crate) fn record_issued_invite(
+    state: &LoadedNodeState,
+    issued: &IssuedInviteRecord,
+) -> NodeResult<()> {
+    let path = issued_invite_path(state, &issued.invite_id);
+    let parent = path.parent().expect("issued invite path has parent");
+    fs::create_dir_all(parent).map_err(|source| NodeError::CreateStateDir {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let bytes =
+        serde_json::to_vec_pretty(issued).map_err(|source| NodeError::EncodeState { source })?;
+    let mut temporary = NamedTempFile::new_in(parent).map_err(|source| NodeError::WriteState {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    temporary
+        .write_all(&bytes)
+        .map_err(|source| NodeError::WriteState {
+            path: temporary.path().to_path_buf(),
+            source,
+        })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|source| NodeError::WriteState {
+            path: temporary.path().to_path_buf(),
+            source,
+        })?;
+    fs::rename(temporary.path(), &path).map_err(|source| NodeError::WriteState {
+        path: path.clone(),
+        source,
+    })?;
+    sync_state_dir(parent)
+}
+
+pub(crate) fn load_issued_invite(
+    state: &LoadedNodeState,
+    invite_id: &str,
+) -> NodeResult<IssuedInviteRecord> {
+    let path = issued_invite_path(state, invite_id);
+    let contents = fs::read_to_string(&path).map_err(|source| {
+        if source.kind() == ErrorKind::NotFound {
+            return NodeError::InviteNotFound {
+                invite_id: invite_id.to_string(),
+            };
+        }
+        NodeError::ReadState {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    serde_json::from_str(&contents).map_err(|source| NodeError::DecodeState { path, source })
+}
+
+fn issued_invite_path(state: &LoadedNodeState, invite_id: &str) -> std::path::PathBuf {
+    let digest = blake3::hash(invite_id.as_bytes()).to_hex().to_string();
+    state
+        .paths()
+        .state_dir
+        .join("invites")
+        .join(format!("{digest}.json"))
+}
+
+fn read_persisted_state(paths: &NodePaths) -> NodeResult<PersistedNodeState> {
+    if !paths.state_file.exists() {
+        return Err(NodeError::NotInitialized {
+            path: paths.state_dir.clone(),
+        });
+    }
+    let contents =
+        fs::read_to_string(&paths.state_file).map_err(|source| NodeError::ReadState {
+            path: paths.state_file.clone(),
+            source,
+        })?;
+    serde_json::from_str::<PersistedNodeState>(&contents).map_err(|source| NodeError::DecodeState {
+        path: paths.state_file.clone(),
+        source,
+    })
 }
 
 fn write_state(paths: &NodePaths, state: &PersistedNodeState) -> NodeResult<()> {
@@ -316,6 +448,34 @@ fn write_state(paths: &NodePaths, state: &PersistedNodeState) -> NodeResult<()> 
     temporary
         .persist_noclobber(&paths.state_file)
         .map_err(|error| persist_error(paths, error.error))?;
+    sync_state_dir(&paths.state_dir)
+}
+
+fn replace_state(paths: &NodePaths, state: &PersistedNodeState) -> NodeResult<()> {
+    let bytes =
+        serde_json::to_vec_pretty(state).map_err(|source| NodeError::EncodeState { source })?;
+    let mut temporary =
+        NamedTempFile::new_in(&paths.state_dir).map_err(|source| NodeError::WriteState {
+            path: paths.state_dir.clone(),
+            source,
+        })?;
+    temporary
+        .write_all(&bytes)
+        .map_err(|source| NodeError::WriteState {
+            path: temporary.path().to_path_buf(),
+            source,
+        })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|source| NodeError::WriteState {
+            path: temporary.path().to_path_buf(),
+            source,
+        })?;
+    fs::rename(temporary.path(), &paths.state_file).map_err(|source| NodeError::WriteState {
+        path: paths.state_file.clone(),
+        source,
+    })?;
     sync_state_dir(&paths.state_dir)
 }
 
@@ -368,6 +528,13 @@ fn random_seed_hex(label: &'static str) -> String {
 fn stable_hex(label: &'static str, seed: &str) -> String {
     let hash = blake3::hash(format!("{label}:{seed}").as_bytes());
     hash.to_hex().to_string()
+}
+
+fn stable_port(value: &str) -> u16 {
+    let hash = blake3::hash(format!("p2panda-port:{value}").as_bytes());
+    let bytes = hash.as_bytes();
+    let offset = u16::from_be_bytes([bytes[0], bytes[1]]) % 20_000;
+    30_000 + offset
 }
 
 #[cfg(test)]

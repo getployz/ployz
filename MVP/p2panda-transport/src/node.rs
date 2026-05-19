@@ -170,6 +170,16 @@ pub struct PandaNetNodeTicket {
 }
 
 impl PandaNetNodeTicket {
+    pub fn from_socket_addr(
+        signing_key_seed: PandaNetNodeSeed,
+        socket_addr: SocketAddr,
+    ) -> Result<Self, PandaNetConfigError> {
+        let signing_key = signing_key_seed.signing_key();
+        let endpoint_addr = EndpointAddr::new(from_verifying_key(signing_key.verifying_key()))
+            .with_ip_addr(socket_addr);
+        Self::new(PandaNetNodeInfo(NodeInfo::from(endpoint_addr).bootstrap()))
+    }
+
     pub fn new(node_info: PandaNetNodeInfo) -> Result<Self, PandaNetConfigError> {
         let endpoint_addr = EndpointAddr::try_from(node_info.0).map_err(|error| {
             PandaNetConfigError::TicketEncode {

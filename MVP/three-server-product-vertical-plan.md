@@ -97,8 +97,10 @@ Main gaps:
 
 - product binary exists but is not packaged or long-running yet,
 - persistent product node state directory exists for node identity/fact paths,
-- product `invite`/`join` initializes joined state and bootstrap trust, but the
-  bootstrap admission request is still missing,
+- product `invite`/`join`/`admission`/`admit` can converge two nodes over
+  p2panda-net,
+- three-node convergence still needs authority/trust propagation so admitted
+  node author keys reach already-joined non-bootstrap nodes,
 - no real node-agent participant process,
 - no real runtime backend,
 - no real Linux network apply proof,
@@ -224,16 +226,15 @@ start or contact the local fact node, insert bootstrap peer info, validate the
 invite through a bootstrap request path, write the joined fact locally, and
 wait for membership projection evidence.
 
-**Current status:** The first product-facing half has landed: `daemon` writes a
-dialable node ticket in local runs, publishes a durable self-join fact, `invite`
-emits the bootstrap p2panda network/topic/ticket plus bootstrap fact-author
-identity, and `join` persists the joined node with bootstrap trust. The remaining
-U2 blocker is bootstrap admission: the joining daemon must send its node info,
-principal, fact-author key, WireGuard identity, and invite proof to the
-bootstrap daemon; the bootstrap daemon must then admit the node and persist the
-reciprocal authority/address-book facts. Without that request path, each node
-can prove its own joined fact, but the product path does not yet produce
-cluster-wide membership convergence.
+**Current status:** The product-facing admission path has landed for two nodes:
+`invite` emits a stable bootstrap p2panda network/topic/ticket plus bootstrap
+fact-author identity, `join` persists the joined node with bootstrap trust,
+`admission` emits the joiner's stable p2panda ticket and author identity, and
+`admit` records that peer on the bootstrap node. The local product test proves
+the two admitted nodes exchange signed membership facts over p2panda-net. The
+remaining U2 blocker for the full three-server vertical is authority/trust
+propagation: node B must learn node C's author key, and node C must learn node
+B's author key, through durable facts instead of local state edits.
 
 **Patterns to follow:** `MVP/mesh/src/invite.rs` for join/tombstone facts;
 `MVP/e2e/src/p2panda_net_fact_node_contract.rs` for p2panda-net peer exchange;
