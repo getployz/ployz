@@ -720,9 +720,11 @@ fn require_manual_author_key(
 
 mod backend;
 mod store_runtime;
+mod sync;
 
 use backend::{PandaFactBackend, PandaFactStoreAdapterError, PandaMemoryStore};
-pub use store_runtime::{SharedPandaFactStore, sync_panda_fact_stores};
+pub use store_runtime::SharedPandaFactStore;
+pub use sync::sync_panda_fact_stores;
 
 struct StoredFactOperation {
     metadata: PandaFactMetadata,
