@@ -36,6 +36,10 @@ async fn linux_wireguard_backend_applies_and_adopts_real_interface_when_enabled(
         .apply(snapshot.clone())
         .await
         .expect("apply snapshot");
+    backend
+        .apply(snapshot.clone())
+        .await
+        .expect("reapply same snapshot");
 
     assert_eq!(
         backend.last_applied().await.expect("last applied"),

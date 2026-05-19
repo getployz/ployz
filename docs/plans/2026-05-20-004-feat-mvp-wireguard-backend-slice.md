@@ -212,7 +212,7 @@ Tests:
 - [x] Existing membership/deploy domain crates do not import `defguard_wireguard_rs`
   or Linux command details.
 - [x] WireGuard key material is stable across node reload/daemon restart.
-- [ ] Applying a snapshot is idempotent and bounded.
+- [x] Applying a snapshot is idempotent and bounded.
 - [x] Last-applied snapshot does not advance on failed live apply.
 - [x] Existing non-privileged MVP tests remain green.
 - [x] A Linux-gated smoke proves real interface apply/adoption, or records a clear
@@ -243,7 +243,9 @@ Tests:
 - The current environment is not root (`id -u` returned `1001`), so the real
   interface smoke is present and feature-gated but was not run with
   `MVP_LINUX_WG_SMOKE=1` here. The non-privileged feature-gated smoke command
-  verified the test path skips cleanly when not enabled.
+  verified the test path skips cleanly when not enabled. When enabled, the
+  smoke applies the same real-interface snapshot twice before checking
+  `last_applied`.
 
 ## Explicit Deferrals
 
