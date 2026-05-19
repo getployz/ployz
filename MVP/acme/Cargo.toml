@@ -13,10 +13,12 @@ path = "src/lib.rs"
 harness = ["mvp-lease/harness"]
 
 [dependencies]
+async-trait = "0.1"
 mvp-identity = { path = "../identity" }
 mvp-lease = { path = "../lease" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+url = "2"
 
 [dev-dependencies]
 mvp-lease = { path = "../lease", features = ["harness"] }
