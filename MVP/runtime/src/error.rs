@@ -40,6 +40,16 @@ pub enum RuntimeError {
     HttpServer { source: std::io::Error },
     #[error("runtime command path is unavailable: {source}")]
     CurrentExe { source: std::io::Error },
+    #[error("{operation}: {message}")]
+    DockerOperation {
+        operation: &'static str,
+        message: String,
+    },
+    #[error("docker container '{container_name}' is missing required label '{label}'")]
+    MissingDockerLabel {
+        container_name: String,
+        label: &'static str,
+    },
     #[error("stop instance '{instance_id}' pid {pid}: {source}")]
     Stop {
         instance_id: String,
