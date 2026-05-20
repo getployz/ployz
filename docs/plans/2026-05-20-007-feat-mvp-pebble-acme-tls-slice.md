@@ -189,3 +189,9 @@ Run after implementation units land:
   projections, snapshots include certificate material, SQLite persists it, and
   `mvp-serving` can look up certs by canonical hostname. Verified with
   `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme -p mvp-acme-command -p mvp-projection -p mvp-serving -p mvp-volume`.
+- 2026-05-20: Unit 5 started. The Pingora gateway can now run an optional TLS
+  listener alongside the existing HTTP listener, select projected certificate
+  material by SNI, terminate TLS, and route the decrypted request through the
+  same Pingora request path. Verified with
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving` and
+  `cargo check --manifest-path MVP/Cargo.toml -p mvp-node`.
