@@ -286,7 +286,8 @@ Acceptance:
 
 ### Slice 3: Container Overlay Networking And Service DNS
 
-Status: active. Slice plan:
+Status: complete for local Docker/service-DNS behavior; privileged two-node
+overlay execution remains a carried blocker for Slice 7. Slice plan:
 `docs/plans/2026-05-20-005-feat-mvp-container-overlay-dns-slice.md`.
 
 Goal: connect runtime containers to the overlay and expose service DNS inside
@@ -327,7 +328,8 @@ Acceptance:
 
 ### Slice 4: Pingora HTTP/HTTPS Gateway On Every Node
 
-Status: active. Slice plan:
+Status: complete for HTTP/TLS gateway product wiring and local serving proof.
+Slice plan:
 `docs/plans/2026-05-20-006-feat-mvp-pingora-gateway-slice.md`.
 
 Goal: replace the MVP hyper gateway with a Pingora-backed gateway that serves
@@ -374,12 +376,13 @@ Acceptance:
 
 ### Slice 5: Pebble ACME Issuance With `instant-acme`
 
+Status: complete for real Pebble issuance through the product gateway and
+Pingora TLS. Slice plan:
+
+- `docs/plans/2026-05-20-007-feat-mvp-pebble-acme-tls-slice.md`.
+
 Goal: turn existing ACME challenge facts into real local ACME issuance through
 Pebble.
-
-Slice plan:
-
-- `docs/plans/2026-05-20-007-feat-mvp-pebble-acme-tls-slice.md`
 
 Primary files:
 
@@ -425,6 +428,9 @@ Acceptance:
 
 ### Slice 6: Real Install Flow And Equal-Node Bootstrap
 
+Status: next. Slice plan:
+`docs/plans/2026-05-20-008-feat-mvp-real-install-bootstrap-slice.md`.
+
 Goal: make the parity smoke install and bootstrap nodes through product
 surfaces instead of prewired local assumptions.
 
@@ -442,6 +448,8 @@ Work:
 - Add or harden an install/bootstrap command for Linux nodes that lays out
   state dirs, keys, runtime directories, serving role sockets, and data-plane
   prerequisites.
+- Build and run the smoke through an installed `mvp-node` binary path, not
+  through crate APIs or a hand-picked target binary from the developer shell.
 - Make node init/join produce all identity material needed by WireGuard,
   p2panda, runtime, gateway, DNS, and ACME.
 - Start daemon, gateway, DNS, and runtime support consistently on every node.
@@ -457,9 +465,16 @@ Tests:
 Acceptance:
 
 - No smoke step hand-edits node state to make the data plane work.
+- The slice has a committed installed-binary proof: build payload or install
+  layout, install into a clean root, run the installed binary, bootstrap three
+  clean node dirs, and verify role readiness from product commands.
 - Every node can be independently restarted and report its local roles.
 
 ### Slice 7: Three-Node Data-Plane Parity Smoke
+
+Status: planned after Slice 6. A focused Slice 7 plan must be created after
+Slice 6 lands so it can use the final install/bootstrap surfaces rather than
+guessing their CLI shape.
 
 Goal: prove the full end-to-end product behavior on three equal Linux nodes.
 
