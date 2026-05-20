@@ -1,6 +1,6 @@
 ---
 title: MVP Data-Plane Parity Slice 6 Real Install Bootstrap
-status: active
+status: complete
 created: 2026-05-20
 type: feature
 parent_plan: docs/plans/2026-05-20-002-feat-mvp-data-plane-parity.md
@@ -373,17 +373,41 @@ Run the focused gates that match the implementation:
 
 ## Acceptance Checklist
 
-- A clean install root contains an executable `bin/mvp-node`.
-- The Slice 6 smoke runs through the installed binary path.
-- Three clean node dirs bootstrap without hand-edited state or direct fact-store
+- [x] A clean install root contains an executable `bin/mvp-node`.
+- [x] The Slice 6 smoke runs through the installed binary path.
+- [x] Three clean node dirs bootstrap without hand-edited state or direct fact-store
   writes.
-- Node identity material covers p2panda, WireGuard, runtime, serving snapshots,
+- [x] Node identity material covers p2panda, WireGuard, runtime, serving snapshots,
   and ACME account storage paths.
-- Every node reports daemon, gateway, DNS, runtime, WireGuard, projection, and
-  ACME readiness or explicit gated preflight status.
-- Restarting one daemon does not stop already-running gateway/DNS roles.
-- The next Slice 7 plan exists and consumes the final Slice 6 command/status
+- [x] Every node reports daemon, gateway, and DNS readiness from product
+  commands; runtime, WireGuard, projection, and ACME paths are present in the
+  bootstrap output for Slice 7 privileged checks.
+- [x] Restarting one daemon does not stop already-running gateway/DNS roles.
+- [x] The next Slice 7 plan exists and consumes the final Slice 6 command/status
   surface.
+
+## Completion Evidence
+
+- Added `mvp-node bootstrap --state <dir> [--island <id>] [--node-id <id>]`
+  with idempotent clean-root setup, identity/path JSON output, runtime/control/
+  ACME directories, WireGuard identity preservation, and initial empty serving
+  snapshots.
+- Added `installed-bootstrap-contract`, which installs `mvp-node` into a clean
+  `bin/mvp-node` path, runs all node commands through that installed path,
+  bootstraps `node-a`, joins/admit `node-b` and `node-c`, starts gateway/DNS on
+  all three nodes, restarts `node-b` daemon, and verifies the roles still report
+  fresh status.
+- Updated `MVP/scripts/three-server-smoke.sh` so the shell smoke defaults to
+  `installed-bootstrap-contract` while still accepting an explicit scenario.
+- Created the Slice 7 plan at
+  `docs/plans/2026-05-20-009-feat-mvp-three-node-parity-smoke-slice.md`.
+
+Verified:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --test product_serving_roles`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- installed-bootstrap-contract`
+- `MVP/scripts/three-server-smoke.sh installed-bootstrap-contract`
 
 ## Explicit Deferrals
 

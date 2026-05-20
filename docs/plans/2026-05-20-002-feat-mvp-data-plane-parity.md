@@ -428,7 +428,8 @@ Acceptance:
 
 ### Slice 6: Real Install Flow And Equal-Node Bootstrap
 
-Status: next. Slice plan:
+Status: complete for installed-binary bootstrap, equal-node admission, local
+gateway/DNS readiness, and daemon restart observation. Slice plan:
 `docs/plans/2026-05-20-008-feat-mvp-real-install-bootstrap-slice.md`.
 
 Goal: make the parity smoke install and bootstrap nodes through product
@@ -472,9 +473,8 @@ Acceptance:
 
 ### Slice 7: Three-Node Data-Plane Parity Smoke
 
-Status: planned after Slice 6. A focused Slice 7 plan must be created after
-Slice 6 lands so it can use the final install/bootstrap surfaces rather than
-guessing their CLI shape.
+Status: next. Slice plan:
+`docs/plans/2026-05-20-009-feat-mvp-three-node-parity-smoke-slice.md`.
 
 Goal: prove the full end-to-end product behavior on three equal Linux nodes.
 

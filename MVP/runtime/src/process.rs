@@ -277,7 +277,7 @@ fn allocate_loopback_address() -> RuntimeResult<String> {
 
 fn wait_ready(instance: &ProcessInstance) -> RuntimeResult<()> {
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(2) {
+    while started.elapsed() < Duration::from_secs(10) {
         if is_ready(&instance.address) {
             return Ok(());
         }
