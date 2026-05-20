@@ -55,6 +55,14 @@ mod p2panda_net_fact_node_contract;
 mod p2panda_net_fact_node_reliability_contract;
 #[cfg(unix)]
 mod p2panda_net_process_serving_contract;
+#[cfg(unix)]
+mod pebble_acme_https_contract;
+#[cfg(not(unix))]
+mod pebble_acme_https_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("pebble-acme-https-contract uses Unix sockets in the MVP harness".to_string())
+    }
+}
 #[cfg(not(unix))]
 mod p2panda_net_process_serving_contract {
     pub(crate) fn run() -> Result<(), String> {
@@ -200,6 +208,10 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "docs-backed-acme-http01-contract",
         docs_backed_acme_http01_contract::run,
+    ),
+    Scenario::new(
+        "pebble-acme-https-contract",
+        pebble_acme_https_contract::run,
     ),
     Scenario::new(
         "deploy-commit-drain-contract",

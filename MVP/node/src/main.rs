@@ -470,6 +470,7 @@ struct AcmeIssueArgs {
     state_dir: PathBuf,
     hostname: String,
     gateway_url: String,
+    gateway_control_socket: Option<PathBuf>,
     issuer_holder: Option<String>,
     account_path: Option<PathBuf>,
 }
@@ -655,6 +656,7 @@ impl AcmeIssueArgs {
         let mut state_dir = None;
         let mut hostname = None;
         let mut gateway_url = None;
+        let mut gateway_control_socket = None;
         let mut issuer_holder = None;
         let mut account_path = None;
         let mut remaining = args.iter();
@@ -677,6 +679,14 @@ impl AcmeIssueArgs {
                         return Err(NodeError::MissingFlagValue { flag: "--gateway" });
                     };
                     gateway_url = Some(value.clone());
+                }
+                "--gateway-control" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--gateway-control",
+                        });
+                    };
+                    gateway_control_socket = Some(PathBuf::from(value));
                 }
                 "--issuer-holder" => {
                     let Some(value) = remaining.next() else {
@@ -705,6 +715,7 @@ impl AcmeIssueArgs {
             state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
             hostname: hostname.ok_or(NodeError::MissingFlagValue { flag: "--hostname" })?,
             gateway_url: gateway_url.ok_or(NodeError::MissingFlagValue { flag: "--gateway" })?,
+            gateway_control_socket,
             issuer_holder,
             account_path,
         })
@@ -712,6 +723,9 @@ impl AcmeIssueArgs {
 
     fn into_options(self) -> AcmeIssueOptions {
         let mut options = AcmeIssueOptions::new(self.state_dir, self.hostname, self.gateway_url);
+        if let Some(gateway_control_socket) = self.gateway_control_socket {
+            options = options.with_gateway_control_socket(gateway_control_socket);
+        }
         if let Some(issuer_holder) = self.issuer_holder {
             options = options.with_issuer_holder(issuer_holder);
         }
@@ -1169,7 +1183,7 @@ fn help() -> String {
         "  admit --state <dir> --request <json>",
         "  deploy (--state <dir> | --control <socket>) --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]",
         "  deploy-status --state <dir> [--deploy-id <id>]",
-        "  acme-issue --state <dir> --hostname <host> --gateway <url> [--issuer-holder <id>] [--account-path <path>]",
+        "  acme-issue --state <dir> --hostname <host> --gateway <url> [--gateway-control <socket>] [--issuer-holder <id>] [--account-path <path>]",
         "  gateway --state <dir> --listen <addr> --control <socket> [--tls-listen <addr>] [--stale-after-ms <ms>]",
         "  dns --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
     ]

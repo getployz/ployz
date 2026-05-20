@@ -67,7 +67,7 @@ cargo run -p mvp-node -- admit --state /var/lib/ployz-mvp --request '<admission-
 cargo run -p mvp-node -- daemon-status --control /tmp/ployz-daemon.sock
 cargo run -p mvp-node -- deploy --state /var/lib/ployz-mvp --target-node node-b
 cargo run -p mvp-node -- gateway --state /var/lib/ployz-mvp --listen 127.0.0.1:0 --control /tmp/ployz-gateway.sock --tls-listen 127.0.0.1:0
-cargo run -p mvp-node -- acme-issue --state /var/lib/ployz-mvp --hostname web.example.test --gateway http://127.0.0.1:8080
+cargo run -p mvp-node -- acme-issue --state /var/lib/ployz-mvp --hostname web.example.test --gateway http://127.0.0.1:8080 --gateway-control /tmp/ployz-gateway.sock
 cargo run -p mvp-node -- dns --state /var/lib/ployz-mvp --listen 127.0.0.1:0 --control /tmp/ployz-dns.sock
 cargo run -p mvp-node -- status --state /var/lib/ployz-mvp
 ```
@@ -81,10 +81,12 @@ p2panda fact node for a bounded run and handles addressed node-agent command
 facts; `daemon-status` reads structured readiness/status from an owner-only
 local control socket; `deploy` starts one trivial managed HTTP service through
 the product deploy state machine, including peer targets; `deploy-status` reads
-durable deploy lifecycle facts; `acme-issue` performs ACME HTTP-01 issuance and
-writes the activated certificate into the serving projection; and `gateway`/`dns`
-run snapshot-backed serving roles with a local Unix control socket. `gateway`
-can also bind a product TLS listener with `--tls-listen <addr>`.
+durable deploy lifecycle facts; `acme-issue` performs ACME HTTP-01 issuance,
+reloads the gateway through `--gateway-control` before validation when supplied,
+and writes the activated certificate into the serving projection; and
+`gateway`/`dns` run snapshot-backed serving roles with a local Unix control
+socket. `gateway` can also bind a product TLS listener with `--tls-listen
+<addr>`.
 
 `deploy` currently has two explicit modes. With `--control <socket>`, deploy is
 submitted through the local daemon that owns transport, membership, and remote

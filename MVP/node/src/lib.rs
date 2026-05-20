@@ -11,7 +11,7 @@ mod state;
 
 pub use acme::{
     AcmeIssueOptions, AcmeIssueReport, issue_product_certificate,
-    issue_product_certificate_with_issuer,
+    issue_product_certificate_with_config, issue_product_certificate_with_issuer,
 };
 pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
 pub use deploy::{
