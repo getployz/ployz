@@ -362,6 +362,12 @@ command output, scenario report field, or explicit host blocker.
     container-DNS responses. On the current host this remains blocked by the
     recorded Linux/root/tooling preflight, so local reports keep both arrays
     empty.
+- U6 local final-gate checkpoint:
+  - `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml --workspace`
+  - Evidence: the full MVP workspace test suite passes locally with privileged
+    Linux-only Docker/WireGuard binaries skipped by their feature/env gates.
+    This strengthens the local final gate but does not prove U2-U5 data-plane
+    parity, which still requires the privileged smoke run.
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
 - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`

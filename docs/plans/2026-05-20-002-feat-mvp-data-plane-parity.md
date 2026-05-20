@@ -576,7 +576,10 @@ assertions still require a privileged Linux host with Docker, `ip`,
   `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`,
   `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`,
   `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime`, and
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`.
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`. The
+  broader local final gate
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml --workspace` also
+  passed after the U6 audit checkpoint.
 - R15: Passed for this slice. The U5 changes stay in the parity smoke and
   Docker runtime backend env wiring; no production handler absorbed runtime,
   networking, serving, ACME, install, and orchestration responsibilities.
