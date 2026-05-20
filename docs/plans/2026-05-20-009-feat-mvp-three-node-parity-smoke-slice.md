@@ -229,6 +229,14 @@ HTTP response body.
 **Goal:** update `api` from v1 to v2, verify all gateways converge, verify old
 backend drain, and restart one daemon without interrupting data-plane serving.
 
+**Status:** privileged U5 branch is wired into the installed-binary smoke. The
+smoke now emits revision-distinct container bodies, proves `api` returns
+`rev-1` before update and `rev-2` after update on every gateway, records the
+deploy response old-backend count plus cleanup status phases, reloads gateways
+through product control sockets, restarts `node-b`'s daemon, and rechecks
+gateway plus container-DNS responses. The current host still records the
+Linux/root/tooling preflight blockers before U5 can execute for real.
+
 **Requirements:** R11, R13, R14.
 
 **Dependencies:** U3, U4.
@@ -332,6 +340,23 @@ command output, scenario report field, or explicit host blocker.
     must return the `echo` HTTP body. On the current host this remains blocked
     by the recorded Linux/root/tooling preflight, so local reports keep the
     array empty.
+- U5 checkpoint:
+  - `cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e`
+  - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
+  - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
+  - `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime`
+  - `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`
+  - Evidence: Docker runtime containers receive `PLOYZ_SERVICE`,
+    `PLOYZ_REVISION`, `PLOYZ_INSTANCE_ID`, and `PLOYZ_NODE` env vars so the
+    smoke can distinguish `api` v1 from v2 by response body. The privileged
+    smoke report now carries `update_drain_checks` and `daemon_restart_checks`.
+    In privileged mode it verifies `ok-api-rev-1`, deploys `deploy-api-v2`,
+    asserts nonzero old-backend drain count and `cleanup_done` deploy status,
+    reloads gateways, verifies `ok-api-rev-2` through `node-a`, `node-b`, and
+    `node-c`, restarts `node-b`'s daemon, then rechecks gateway and
+    container-DNS responses. On the current host this remains blocked by the
+    recorded Linux/root/tooling preflight, so local reports keep both arrays
+    empty.
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
 - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
@@ -364,16 +389,19 @@ Residual local Docker verification:
   host.
 - [ ] Container client resolves and curls `echo` by service DNS. Product path
   is wired; passing evidence still requires a privileged Linux host.
-- `api` update drains old backend and all gateways converge to v2.
-- Daemon restart does not stop gateway, DNS, or already-running containers.
-- Parent plan final gate has a requirement audit for R1-R14.
+- [ ] `api` update drains old backend and all gateways converge to v2. Product
+  path is wired; passing evidence still requires a privileged Linux host.
+- [ ] Daemon restart does not stop gateway, DNS, or already-running containers.
+  Product path is wired; passing evidence still requires a privileged Linux
+  host.
+- [ ] Parent plan final gate has a requirement audit for R1-R14.
 
 ## Next Slice 7 Sub-Slice
 
-The next implementation pass should start U5, update/drain and daemon restart
-survival, in the same privileged branch. Before claiming U2, U3, or U4
-complete, run the current smoke on a privileged Linux host and fix any
-placement, gateway, Pebble, or container DNS failures surfaced there.
+The next implementation pass should start U6, final gate and requirement audit.
+Before claiming U2, U3, U4, or U5 complete, run the current smoke on a
+privileged Linux host and fix any placement, gateway, Pebble, container DNS,
+update/drain, or daemon restart failures surfaced there.
 
 ## Explicit Deferrals
 
