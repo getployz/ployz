@@ -165,13 +165,8 @@ impl ProjectionCatchUp {
         if report.gateway_snapshot.is_none() || report.dns_snapshot.is_none() {
             return Err(RoutingError::ProjectionCatchUpMissing);
         }
-        if !gateway_snapshot_revision_matches(report, commit)
-            || dns_snapshot_revision(report) != Some(expected_dns_revision(commit).as_str())
-            || gateway.gateway_commit_id != commit.gateway_commit_id.to_string()
-            || gateway.route_commit_id != commit.route_commit_id.to_string()
-            || gateway.routes != expected_gateway_routes(commit)
-            || dns.dns_commit_id != commit.dns_commit_id.to_string()
-            || dns.records != expected_dns_records(commit)
+        if !projected_gateway_contains_commit(gateway, commit)
+            || !projected_dns_contains_commit(dns, commit)
         {
             return Err(RoutingError::ProjectionCatchUpMismatch {
                 serving_commit_id: commit.serving_commit_id.clone(),
@@ -468,43 +463,22 @@ fn written_serving_fact_from_outcome(
     }
 }
 
-fn expected_gateway_revision_prefix(commit: &ServingCommitPlan) -> String {
-    format!(
-        "gateway:{}:{}",
-        commit.gateway_commit_id, commit.route_commit_id
-    )
-}
-
-fn expected_dns_revision(commit: &ServingCommitPlan) -> String {
-    format!("dns:{}", commit.dns_commit_id)
-}
-
-fn gateway_snapshot_revision(report: &ProjectionReport) -> Option<&str> {
-    report
-        .gateway_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.revision.as_str())
-}
-
-fn gateway_snapshot_revision_matches(
-    report: &ProjectionReport,
+fn projected_gateway_contains_commit(
+    gateway: &mvp_projection::GatewayProjection,
     commit: &ServingCommitPlan,
 ) -> bool {
-    let Some(revision) = gateway_snapshot_revision(report) else {
-        return false;
-    };
-    let expected = expected_gateway_revision_prefix(commit);
-    revision == expected
-        || revision
-            .strip_prefix(&expected)
-            .is_some_and(|suffix| suffix.starts_with(':'))
+    expected_gateway_routes(commit)
+        .into_iter()
+        .all(|route| gateway.routes.contains(&route))
 }
 
-fn dns_snapshot_revision(report: &ProjectionReport) -> Option<&str> {
-    report
-        .dns_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.revision.as_str())
+fn projected_dns_contains_commit(
+    dns: &mvp_projection::DnsProjection,
+    commit: &ServingCommitPlan,
+) -> bool {
+    expected_dns_records(commit)
+        .into_iter()
+        .all(|record| dns.records.contains(&record))
 }
 
 fn expected_gateway_routes(commit: &ServingCommitPlan) -> Vec<GatewayRouteProjection> {
@@ -581,6 +555,37 @@ mod tests {
             "gateway:gateway-commit-1:route-commit-1:acme:none",
             "dns:dns-commit-1",
         );
+
+        let proof = ProjectionCatchUp::from_report(&commit, &report).expect("catch-up proof");
+
+        assert_eq!(proof.serving_commit_id(), &commit.serving_commit_id);
+    }
+
+    #[test]
+    fn projection_catch_up_accepts_commit_with_additional_routes() {
+        let commit = serving_commit();
+        let mut report =
+            projection_report_for_commit(&commit, "gateway:later:route-later", "dns:later");
+        let gateway = report.state.gateway.as_mut().expect("gateway");
+        gateway.gateway_commit_id = "later".to_string();
+        gateway.route_commit_id = "route-later".to_string();
+        gateway.routes.push(mvp_projection::GatewayRouteProjection {
+            route_id: RouteId::new("api"),
+            hostnames: vec!["api.example.test".to_string()],
+            backends: vec![BackendEndpoint {
+                node_id: NodeId::new("node-api"),
+                address: "fd00::3:8080".to_string(),
+            }],
+            old_backends_to_drain: Vec::new(),
+        });
+        let dns = report.state.dns.as_mut().expect("dns");
+        dns.dns_commit_id = "later".to_string();
+        dns.records.push(mvp_projection::DnsRecordProjection {
+            name: "api.example.test".to_string(),
+            record_type: "AAAA".to_string(),
+            value: "fd00::3".to_string(),
+            ttl_seconds: 30,
+        });
 
         let proof = ProjectionCatchUp::from_report(&commit, &report).expect("catch-up proof");
 

@@ -175,6 +175,57 @@ async fn product_deploy_update_drains_and_stops_old_backend() {
 }
 
 #[tokio::test]
+async fn product_deploy_keeps_old_backends_route_scoped() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let state = init_node(
+        InitOptions::new(temp.path())
+            .with_island("prod")
+            .with_node_id("node-a"),
+    )
+    .expect("init node");
+    let runtime =
+        ProcessRuntime::managed_http(state.paths().runtime_dir.clone(), mvp_node_binary());
+
+    let web = deploy_product_service_with_process(
+        ProductDeployOptions::new(temp.path())
+            .with_deploy_id("deploy-web")
+            .with_target_node("node-a")
+            .with_service("web")
+            .with_revision("rev-1")
+            .with_hostname("web.example.test"),
+        Some(runtime.clone()),
+    )
+    .await
+    .expect("web deploy");
+    let api = deploy_product_service_with_process(
+        ProductDeployOptions::new(temp.path())
+            .with_deploy_id("deploy-api")
+            .with_target_node("node-a")
+            .with_service("api")
+            .with_revision("rev-1")
+            .with_hostname("api.example.test"),
+        Some(runtime.clone()),
+    )
+    .await
+    .expect("api deploy");
+
+    assert_eq!(api.old_backends_to_drain, Vec::new());
+    assert_eq!(api.active_backends.len(), 1);
+    assert_ne!(
+        api.active_backends[0].address,
+        web.active_backends[0].address
+    );
+    assert!(TcpStream::connect(&web.active_backends[0].address).is_ok());
+    assert!(TcpStream::connect(&api.active_backends[0].address).is_ok());
+    runtime
+        .stop(&InstanceId::new("deploy-web-web-rev-1"))
+        .expect("stop web instance");
+    runtime
+        .stop(&InstanceId::new("deploy-api-api-rev-1"))
+        .expect("stop api instance");
+}
+
+#[tokio::test]
 async fn product_deploy_reserves_serving_epochs_between_failed_attempts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = init_node(

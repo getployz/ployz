@@ -21,17 +21,15 @@ use mvp_serving::{ServingActorHandle, ServingSnapshotPaths, WireServingState, sp
 
 #[tokio::test]
 async fn docker_container_resolves_service_dns_on_bridge_when_enabled() {
-    if std::env::var("MVP_DOCKER_SERVICE_DNS_SMOKE").ok().as_deref() != Some("1") {
-        eprintln!(
-            "skipping Docker service-DNS smoke; set MVP_DOCKER_SERVICE_DNS_SMOKE=1 to run"
-        );
+    if std::env::var("MVP_DOCKER_SERVICE_DNS_SMOKE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        eprintln!("skipping Docker service-DNS smoke; set MVP_DOCKER_SERVICE_DNS_SMOKE=1 to run");
         return;
     }
-    let uid = Command::new("id")
-        .arg("-u")
-        .output()
-        .expect("id -u")
-        .stdout;
+    let uid = Command::new("id").arg("-u").output().expect("id -u").stdout;
     assert_eq!(
         String::from_utf8_lossy(&uid).trim(),
         "0",

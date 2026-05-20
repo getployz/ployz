@@ -195,7 +195,13 @@ impl LinuxForwardingPlan {
         wireguard_ifindex: u32,
     ) -> Self {
         let previous_routes = previous
-            .map(|snapshot| snapshot.remote_subnets.iter().copied().collect::<BTreeSet<_>>())
+            .map(|snapshot| {
+                snapshot
+                    .remote_subnets
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+            })
             .unwrap_or_default();
         let desired_routes = desired
             .remote_subnets
@@ -546,7 +552,11 @@ mod tests {
         let rules = iptables_rules(&snapshot);
 
         assert_eq!(rules.len(), 4);
-        assert!(rules.iter().all(|rule| rule.args.contains(&"ACCEPT".to_string())));
+        assert!(
+            rules
+                .iter()
+                .all(|rule| rule.args.contains(&"ACCEPT".to_string()))
+        );
         assert!(
             rules
                 .iter()

@@ -15,7 +15,7 @@ use mvp_bus::{BusSession, FactContentHash, FactKeyPattern, FactPayload, IslandId
 use crate::error::{ProjectionError, ProjectionResult};
 use crate::model::ProjectionState;
 use crate::reducer::reduce_facts;
-use crate::snapshot::{SnapshotWriteReport, write_projection_snapshots};
+use crate::snapshot::{SnapshotWriteReport, load_gateway_snapshot, write_projection_snapshots};
 use crate::source::{
     CandidateStatus, FactCandidate, FactSource, FactSourceError, FactSourceResult,
     is_reducible_conflict_kind,
@@ -459,23 +459,66 @@ struct PreparedProjection {
 
 impl PreparedProjection {
     fn publish(self) -> ProjectionResult<ProjectionReport> {
-        let _permit = self.permit;
-        ensure_before(self.deadline, "sqlite_stage")?;
-        let staged_sqlite = self.sqlite.stage_rebuild(&self.state)?;
-        ensure_before(self.deadline, "snapshot_write")?;
-        let snapshots = write_projection_snapshots(
-            &self.state,
-            &self.gateway_snapshot_path,
-            &self.dns_snapshot_path,
-        )?;
+        let PreparedProjection {
+            mut state,
+            sqlite,
+            gateway_snapshot_path,
+            dns_snapshot_path,
+            started,
+            deadline,
+            permit,
+        } = self;
+        let _permit = permit;
+        preserve_local_acme_snapshot_state(&mut state, &gateway_snapshot_path);
+        ensure_before(deadline, "sqlite_stage")?;
+        let staged_sqlite = sqlite.stage_rebuild(&state)?;
+        ensure_before(deadline, "snapshot_write")?;
+        let snapshots =
+            write_projection_snapshots(&state, &gateway_snapshot_path, &dns_snapshot_path)?;
         staged_sqlite.promote()?;
         Ok(ProjectionReport {
-            state: self.state,
-            sqlite_path: self.sqlite.path().to_path_buf(),
+            state,
+            sqlite_path: sqlite.path().to_path_buf(),
             gateway_snapshot: snapshots.gateway,
             dns_snapshot: snapshots.dns,
-            duration: self.started.elapsed(),
+            duration: started.elapsed(),
         })
+    }
+}
+
+fn preserve_local_acme_snapshot_state(
+    state: &mut ProjectionState,
+    gateway_snapshot_path: &PathBuf,
+) {
+    if (!state.acme_http01.is_empty() && !state.certificates.is_empty())
+        || !gateway_snapshot_path.exists()
+    {
+        return;
+    }
+    let Ok(snapshot) = load_gateway_snapshot(gateway_snapshot_path, &state.island) else {
+        return;
+    };
+    if state.acme_http01.is_empty() {
+        state.acme_http01 = snapshot
+            .acme_http01
+            .into_iter()
+            .map(|challenge| {
+                (
+                    crate::model::AcmeHttp01ChallengeKey::new(
+                        challenge.hostname.clone(),
+                        challenge.token.clone(),
+                    ),
+                    challenge,
+                )
+            })
+            .collect();
+    }
+    if state.certificates.is_empty() {
+        state.certificates = snapshot
+            .certificates
+            .into_iter()
+            .map(|certificate| (certificate.hostname.clone(), certificate))
+            .collect();
     }
 }
 
@@ -545,10 +588,16 @@ mod tests {
         BackendEndpoint, DnsCommitFact, DnsRecordFact, GatewayCommitFact, NodeJoinedFact,
         ProjectionFactPayload, RouteCommitFact, RouteId,
     };
+    use crate::model::{
+        DnsProjection, GatewayProjection, GatewayRouteProjection, ProjectionState,
+        ServingCertificateProjection,
+    };
+    use crate::snapshot::{load_gateway_snapshot, write_projection_snapshots};
     use crate::source::{
         CandidateStatus, FactCandidate, FactKind, FactSource, FactSourceError, FactSourceResult,
     };
     use crate::sqlite::SqliteProjectionStore;
+    use mvp_acme::{AcmeHostname, AcmeOrderUrl};
     use mvp_bus::{
         BusSession, FactContentHash, FactKey, FactKeyPattern, FactPayload, Grant, IslandId,
         PrincipalId, harness::InMemoryBus,
@@ -682,6 +731,62 @@ mod tests {
         assert!(dir.path().join("projections.sqlite").exists());
         assert!(dir.path().join("gateway.snapshot").exists());
         assert!(dir.path().join("dns.snapshot").exists());
+    }
+
+    #[tokio::test]
+    async fn project_once_preserves_local_acme_snapshot_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (bus, session) = seed_projectable_facts();
+        let mut state = ProjectionState::for_island(island("prod"));
+        state.gateway = Some(GatewayProjection {
+            gateway_commit_id: "gateway-1".to_string(),
+            route_commit_id: "route-1".to_string(),
+            routes: vec![GatewayRouteProjection {
+                route_id: RouteId::new("web-http"),
+                hostnames: vec!["web.example.com".to_string()],
+                backends: vec![BackendEndpoint {
+                    node_id: NodeId::new("node-1"),
+                    address: "10.0.0.1:8080".to_string(),
+                }],
+                old_backends_to_drain: Vec::new(),
+            }],
+        });
+        state.dns = Some(DnsProjection {
+            dns_commit_id: "dns-1".to_string(),
+            records: Vec::new(),
+        });
+        let hostname = AcmeHostname::parse("web.example.com").expect("hostname");
+        state.certificates.insert(
+            hostname.clone(),
+            ServingCertificateProjection {
+                hostname: hostname.clone(),
+                order_url: AcmeOrderUrl::parse("https://acme.test/order/1").expect("order"),
+                fullchain_pem: "fake-chain".to_string(),
+                private_key_pem: "fake-key".to_string(),
+                issued_at_secs: 1,
+                not_before_secs: Some(1),
+                not_after_secs: Some(60),
+            },
+        );
+        write_projection_snapshots(
+            &state,
+            dir.path().join("gateway.snapshot"),
+            dir.path().join("dns.snapshot"),
+        )
+        .expect("seed snapshots");
+        let actor = actor_for(Arc::new(BusFactFixtureSource::new(bus)), session, &dir);
+
+        let report = actor
+            .project_once(Duration::from_secs(2))
+            .await
+            .expect("project once");
+
+        assert!(report.state.certificates.contains_key(&hostname));
+        let snapshot = load_gateway_snapshot(dir.path().join("gateway.snapshot"), &island("prod"))
+            .expect("load gateway snapshot");
+        assert_eq!(snapshot.certificates.len(), 1);
+        assert_eq!(snapshot.certificates[0].hostname, hostname);
+        assert_eq!(snapshot.routes.len(), 1);
     }
 
     #[tokio::test]

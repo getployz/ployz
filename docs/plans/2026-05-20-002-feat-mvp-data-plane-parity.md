@@ -473,11 +473,10 @@ Acceptance:
 
 ### Slice 7: Three-Node Data-Plane Parity Smoke
 
-Status: active. U1 installed-binary harness shell is complete. U2 Docker
-runtime placement path, U3 equal-node HTTP/HTTPS/Pebble paths, U4
-container-facing service DNS path, and U5 update/drain plus daemon restart
-survival path are wired behind explicit privileged preflight and are locally
-verified to preserve blockers on the current macOS/non-root host. Slice plan:
+Status: complete. U1 installed-binary harness shell, U2 Docker runtime
+placement, U3 equal-node HTTP/HTTPS/Pebble paths, U4 container-facing service
+DNS, and U5 update/drain plus daemon restart survival are verified by the
+privileged installed-binary smoke. Slice plan:
 `docs/plans/2026-05-20-009-feat-mvp-three-node-parity-smoke-slice.md`.
 
 Goal: prove the full end-to-end product behavior on three equal Linux nodes.
@@ -534,60 +533,52 @@ Acceptance:
 
 ## Completion Audit - 2026-05-20
 
-Final gate status: not passed on the current host. The product paths for Slice
-7 U2-U5 are wired into the installed-binary smoke, but the real data-plane
-assertions still require a privileged Linux host with Docker, `ip`,
-`iptables`, and `ployz-bpfctl`.
+Final gate status: passed for the data-plane parity smoke. Evidence file:
+`MVP/target/mvp-e2e/three-node-parity-smoke/three-node-parity-smoke-report.json`.
+The privileged runner used Docker 29.4.0, Rust 1.91.1, `iproute2`,
+`iptables`, `curl`, `cmake`, and installed `ployz-bpfctl` before running
+`MVP/scripts/three-server-smoke.sh three-node-parity-smoke`.
 
-- R1: Partially evidenced. The installed smoke starts daemon, gateway, and DNS
-  roles on `node-a`, `node-b`, and `node-c`; WireGuard/container runtime paths
-  are present in the privileged branch and blocked locally by preflight.
-- R2: Partially evidenced by Slice 2 backend tests and daemon flag wiring;
-  final restart/adoption proof remains blocked by privileged Linux execution.
-- R3: Product path wired. U2 deploys workloads through Docker runtime in the
-  privileged branch; local reports keep `runtime_placements` empty by explicit
-  preflight.
-- R4: Product path wired. Gateway HTTP/HTTPS checks require privileged overlay
-  routing and remain blocked locally.
-- R5: Product path wired. `container_dns_checks` require privileged Docker
-  bridge DNS and remain blocked locally.
-- R6: Product path wired and locally unit-tested in serving slices; final
-  equal-node Pingora proof remains blocked locally.
-- R7: Product path wired. U3 starts Pebble and validates HTTPS with Pebble root
-  in privileged mode; local reports keep `acme_https_checks` empty by
-  preflight.
-- R8: Passed locally for installed bootstrap. The smoke installs
+- R1: Passed. The installed smoke starts daemon, gateway, and DNS roles on
+  `node-a`, `node-b`, and `node-c`.
+- R2: Passed. The smoke applies real WireGuard interfaces with per-node listen
+  ports and verifies daemon restart survival without tearing down serving.
+- R3: Passed. `runtime_placements` show `web`, `api`, and `echo` deployed
+  through Docker runtime backends with `10.210.*` container-subnet endpoints.
+- R4: Passed. Equal-node HTTP checks route gateway traffic across nodes for
+  `web` and `api`.
+- R5: Passed. `container_dns_checks` run a BusyBox client on node-a's Docker
+  network, resolve `echo.service.example.test` to `10.210.137.254`, and curl
+  `ok-echo-rev-1`.
+- R6: Passed. Gateway checks and role reload evidence prove Pingora serves
+  projected HTTP/HTTPS routes from serving snapshots.
+- R7: Passed. `acme_https_checks` start Pebble, issue real HTTP-01
+  certificates for `web.example.test` and `api.example.test`, and validate
+  HTTPS probes with Pebble's issued root.
+- R8: Passed. The smoke installs
   `target/mvp-e2e/three-node-parity-smoke/install/bin/mvp-node`, runs all
   commands through that binary, and bootstraps all three node dirs.
-- R9: Product path wired. The privileged branch deploys `web`, `api`, and
-  `echo` to required nodes and rejects loopback Docker backends; passing
-  evidence still requires the privileged host.
-- R10: Product path wired. U3 checks `web` through `node-b` and `node-c` in
-  privileged mode; locally blocked.
-- R11: Product path wired. U5 checks `api` through gateways, deploys
-  `deploy-api-v2`, records old-backend drain count and `cleanup_done`, reloads
-  gateways, and verifies `ok-api-rev-2`; locally blocked.
-- R12: Product path wired. U4 runs a one-shot BusyBox client on `node-a`'s
-  Docker network to resolve and curl `echo`; locally blocked.
-- R13: Product path wired. U5 restarts `node-b`'s daemon and rechecks gateway
-  plus container-DNS responses in privileged mode; locally blocked.
-- R14: Passed for local gates run during Slice 7 U5:
-  `cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e`,
-  `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`,
-  `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`,
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime`, and
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`. The
-  broader local final gate
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml --workspace` also
-  passed after the U6 audit checkpoint.
-- R15: Passed for this slice. The U5 changes stay in the parity smoke and
-  Docker runtime backend env wiring; no production handler absorbed runtime,
-  networking, serving, ACME, install, and orchestration responsibilities.
-
-Next required evidence: run
-`MVP/scripts/three-server-smoke.sh three-node-parity-smoke` on a privileged
-Linux host and fix any U2-U5 failures it surfaces before marking this plan
-complete.
+- R9: Passed. Runtime placement deploys `web` on `node-a`, `api` on `node-b`,
+  and `echo` on `node-c`.
+- R10: Passed. `web` is verified through gateways on `node-b` and `node-c`.
+- R11: Passed. `deploy-api-v2` records one old backend to drain, reaches
+  `cleanup_done`, reloads all gateways, and verifies `ok-api-rev-2` through
+  `node-a`, `node-b`, and `node-c`.
+- R12: Passed. The one-shot client container on `node-a` resolves and curls
+  `echo` on `node-c` by service DNS over the container overlay.
+- R13: Passed. The smoke restarts `node-b`'s daemon and rechecks gateway and
+  container-DNS responses.
+- R14: Passed for the focused gates run during the final push:
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-projection project_once_preserves_local_acme_snapshot_state`,
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-node issue_writes_certificate_activation_into_serving_snapshot`,
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e three_node_parity_smoke --no-run`,
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml --workspace`,
+  `git diff --check`, and the privileged
+  `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`.
+- R15: Passed for this slice. The final fixes stayed in projection snapshot
+  publication, ACME projection, deploy route scoping, harness verification, and
+  narrow data-plane test support; no handler absorbed runtime, networking,
+  serving, ACME, install, and orchestration responsibilities.
 
 ## Risks
 

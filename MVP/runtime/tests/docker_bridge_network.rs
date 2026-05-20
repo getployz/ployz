@@ -26,7 +26,12 @@ fn docker_bridge_creates_inspects_and_removes_network() {
     assert_eq!(state.subnet.to_string(), "10.210.81.0/24");
     assert_eq!(state.gateway_ip.to_string(), "10.210.81.1");
     assert_eq!(state.first_service_ip.to_string(), "10.210.81.2");
-    assert!(state.bridge_ifname.as_deref().is_some_and(|name| name.starts_with("br-")));
+    assert!(
+        state
+            .bridge_ifname
+            .as_deref()
+            .is_some_and(|name| name.starts_with("br-"))
+    );
 
     let second = network.ensure().expect("ensure bridge network again");
     assert_eq!(second.name, state.name);

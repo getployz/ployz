@@ -208,7 +208,8 @@ async fn deploy_product_service_with_context_inner(
         .project_once(PROJECT_TIMEOUT)
         .await
         .map_err(|source| NodeError::Projection { source })?;
-    let old_backends_to_drain = current_backends(&existing.state.gateway);
+    let route_id = RouteId::new(options.service.as_str());
+    let old_backends_to_drain = current_backends_for_route(&existing.state.gateway, &route_id);
     let serving_epoch = next_serving_epoch(&facts, state, &fact_session).await?;
     let manifest = manifest_from_options(&options, old_backends_to_drain, serving_epoch);
     let author = Arc::new(state.author()?);
@@ -265,7 +266,10 @@ async fn deploy_product_service_with_context_inner(
             None,
         )
         .await?;
-    let active_backends = current_backends(&projected.state.gateway);
+    let active_backends = current_backends_for_route(
+        &projected.state.gateway,
+        &committed_manifest.serving_commit.route_id,
+    );
 
     Ok(ProductDeployReport {
         deploy_id: manifest.deploy_id,
@@ -559,13 +563,17 @@ async fn next_serving_epoch(
         .expect("serving epoch overflow would break deploy ordering"))
 }
 
-fn current_backends(gateway: &Option<GatewayProjection>) -> Vec<BackendEndpoint> {
+fn current_backends_for_route(
+    gateway: &Option<GatewayProjection>,
+    route_id: &RouteId,
+) -> Vec<BackendEndpoint> {
     let Some(gateway) = gateway else {
         return Vec::new();
     };
     gateway
         .routes
         .iter()
+        .filter(|route| &route.route_id == route_id)
         .flat_map(|route| route.backends.iter().cloned())
         .collect()
 }

@@ -1040,3 +1040,99 @@ fn reducer_projects_serving_commit_as_single_gateway_dns_boundary() {
     assert_eq!(dns.records[0].value, expected.3);
     assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
 }
+
+#[test]
+fn reducer_projects_latest_serving_commit_per_route() {
+    let mut payloads = BTreeMap::new();
+    let web_1 = insert_payload(
+        &mut payloads,
+        ProjectionFactPayload::ServingCommit(ServingCommitFact {
+            serving_commit_id: "serving-web-1".to_string(),
+            route_commit_id: "route-web-1".to_string(),
+            gateway_commit_id: "gateway-web-1".to_string(),
+            dns_commit_id: "dns-web-1".to_string(),
+            route_id: RouteId::new("web"),
+            hostnames: vec!["web.example.com".to_string()],
+            backends: vec![BackendEndpoint {
+                node_id: NodeId::new("node-1"),
+                address: "10.210.1.2:8080".to_string(),
+            }],
+            old_backends_to_drain: Vec::new(),
+            dns_records: vec![DnsRecordFact {
+                name: "web.example.com".to_string(),
+                record_type: "A".to_string(),
+                value: "10.210.1.2".to_string(),
+                ttl_seconds: 30,
+            }],
+            epoch: 1,
+        }),
+    );
+    let api = insert_payload(
+        &mut payloads,
+        ProjectionFactPayload::ServingCommit(ServingCommitFact {
+            serving_commit_id: "serving-api-1".to_string(),
+            route_commit_id: "route-api-1".to_string(),
+            gateway_commit_id: "gateway-api-1".to_string(),
+            dns_commit_id: "dns-api-1".to_string(),
+            route_id: RouteId::new("api"),
+            hostnames: vec!["api.example.com".to_string()],
+            backends: vec![BackendEndpoint {
+                node_id: NodeId::new("node-2"),
+                address: "10.210.2.2:8080".to_string(),
+            }],
+            old_backends_to_drain: Vec::new(),
+            dns_records: vec![DnsRecordFact {
+                name: "api.example.com".to_string(),
+                record_type: "A".to_string(),
+                value: "10.210.2.2".to_string(),
+                ttl_seconds: 30,
+            }],
+            epoch: 1,
+        }),
+    );
+    let web_2 = insert_payload(
+        &mut payloads,
+        ProjectionFactPayload::ServingCommit(ServingCommitFact {
+            serving_commit_id: "serving-web-2".to_string(),
+            route_commit_id: "route-web-2".to_string(),
+            gateway_commit_id: "gateway-web-2".to_string(),
+            dns_commit_id: "dns-web-2".to_string(),
+            route_id: RouteId::new("web"),
+            hostnames: vec!["web.example.com".to_string()],
+            backends: vec![BackendEndpoint {
+                node_id: NodeId::new("node-3"),
+                address: "10.210.3.2:8080".to_string(),
+            }],
+            old_backends_to_drain: vec![BackendEndpoint {
+                node_id: NodeId::new("node-1"),
+                address: "10.210.1.2:8080".to_string(),
+            }],
+            dns_records: vec![DnsRecordFact {
+                name: "web.example.com".to_string(),
+                record_type: "A".to_string(),
+                value: "10.210.3.2".to_string(),
+                ttl_seconds: 30,
+            }],
+            epoch: 2,
+        }),
+    );
+    let candidates = vec![
+        candidate("/facts/serving/serving-web-1", FactKind::ServingCommit, web_1),
+        candidate("/facts/serving/serving-api-1", FactKind::ServingCommit, api),
+        candidate("/facts/serving/serving-web-2", FactKind::ServingCommit, web_2),
+    ];
+
+    let state = reduce_facts(&island("prod"), &candidates, &payloads);
+
+    let gateway = state.gateway.as_ref().expect("gateway");
+    let dns = state.dns.as_ref().expect("dns");
+    assert_eq!(gateway.routes.len(), 2);
+    assert_eq!(gateway.routes[0].route_id, RouteId::new("api"));
+    assert_eq!(gateway.routes[1].route_id, RouteId::new("web"));
+    assert_eq!(
+        gateway.routes[1].backends[0].address,
+        "10.210.3.2:8080".to_string()
+    );
+    assert_eq!(dns.records.len(), 2);
+    assert_eq!(status_count(&state, ProjectionIgnoreReason::Superseded), 1);
+}

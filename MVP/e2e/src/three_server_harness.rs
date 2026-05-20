@@ -292,6 +292,8 @@ impl ProductHarness {
                 control_socket.display().to_string(),
                 "--linux-wireguard-ifname".to_string(),
                 format!("ployz-{node}"),
+                "--linux-wireguard-listen-port".to_string(),
+                wireguard_listen_port(node).to_string(),
                 "--runtime".to_string(),
                 "docker".to_string(),
                 "--image".to_string(),
@@ -622,6 +624,7 @@ impl ProductHarness {
         host: &str,
         url: &str,
     ) -> Result<ContainerDnsClientProbe, String> {
+        let lookup_command = format!("nslookup {host} || true");
         let nslookup = docker_run(
             [
                 "run",
@@ -631,8 +634,9 @@ impl ProductHarness {
                 "--dns",
                 dns_server,
                 "busybox:latest",
-                "nslookup",
-                host,
+                "sh",
+                "-c",
+                lookup_command.as_str(),
             ],
             COMMAND_TIMEOUT,
         )?;
@@ -724,6 +728,9 @@ impl ProductHarness {
 
     pub(crate) fn cleanup_docker_runtime(&self, nodes: &[&str]) -> Result<(), String> {
         for node in nodes {
+            let _ = Command::new("ip")
+                .args(["link", "delete", "dev", &format!("ployz-{node}")])
+                .status();
             let output = Command::new("docker")
                 .args([
                     "ps",
@@ -861,6 +868,15 @@ impl ProductHarness {
     }
 }
 
+fn wireguard_listen_port(node: &str) -> u16 {
+    match node {
+        "node-a" => 51820,
+        "node-b" => 51821,
+        "node-c" => 51822,
+        _ => 51820,
+    }
+}
+
 impl ProductChild {
     pub(crate) fn wait(&mut self) -> Result<ExitStatus, String> {
         self.child
@@ -897,8 +913,7 @@ impl Drop for ProductChild {
 impl PebbleAcme {
     pub(crate) fn start(output_root: &Path) -> Result<Self, String> {
         docker_available_for_pebble()?;
-        let repo = std::env::current_dir().map_err(|error| error.to_string())?;
-        let pebble_dir = repo.join("packaging/e2e/pebble");
+        let pebble_dir = resolve_pebble_dir()?;
         let port = free_loopback_port()?;
         let management_port = free_loopback_port()?;
         let output = Command::new("docker")
@@ -941,6 +956,23 @@ impl PebbleAcme {
             id,
         })
     }
+}
+
+fn resolve_pebble_dir() -> Result<PathBuf, String> {
+    let current = std::env::current_dir().map_err(|error| error.to_string())?;
+    for root in [
+        current.as_path(),
+        current.parent().unwrap_or(current.as_path()),
+    ] {
+        let candidate = root.join("packaging/e2e/pebble");
+        if candidate.join("pebble-config.json").exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "resolve Pebble config directory from '{}'",
+        current.display()
+    ))
 }
 
 impl Drop for PebbleAcme {
@@ -1165,6 +1197,9 @@ fn curl_https(addr: SocketAddr, host: &str, root_ca: &Path) -> Result<String, St
         .arg("--silent")
         .arg("--show-error")
         .arg("--fail")
+        .arg("--http1.1")
+        .arg("--noproxy")
+        .arg("*")
         .arg("--cacert")
         .arg(root_ca)
         .arg("--resolve")

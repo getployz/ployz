@@ -19,7 +19,8 @@ use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactStore, PandaSqliteOpenConfig, PandaTrustedAuthorKey,
 };
 use mvp_projection::{
-    FactSource, ProjectionFactPayload, SqliteProjectionStore, reduce_facts,
+    DnsProjection, FactSource, GatewayProjection, ProjectionFactPayload, ProjectionState,
+    SqliteProjectionStore, load_dns_snapshot, load_gateway_snapshot, reduce_facts,
     write_projection_snapshots,
 };
 use reqwest::header::HOST;
@@ -190,6 +191,9 @@ pub async fn issue_product_certificate_with_issuer(
     };
     write_certificate_activation(&mut store, &session, &certificate_author, certificate).await?;
     let projected_certificates = project_store(&store, &state, &session)?;
+    if let Some(control_socket) = &options.gateway_control_socket {
+        reload_gateway(control_socket)?;
+    }
     Ok(AcmeIssueReport {
         projected_certificates,
         ..report
@@ -481,7 +485,8 @@ fn project_store(
     let payloads = store
         .read_payloads(&state.island(), &candidates, session)
         .map_err(|source| NodeError::FactSource { source })?;
-    let projection = reduce_facts(&state.island(), &candidates, &payloads);
+    let mut projection = reduce_facts(&state.island(), &candidates, &payloads);
+    preserve_existing_serving_projection(&mut projection, state);
     SqliteProjectionStore::new(state.paths().projection_db.clone())
         .rebuild(&projection)
         .map_err(|source| NodeError::Projection { source })?;
@@ -492,6 +497,35 @@ fn project_store(
     )
     .map_err(|source| NodeError::Projection { source })?;
     Ok(projection.certificates.len())
+}
+
+fn preserve_existing_serving_projection(projection: &mut ProjectionState, state: &LoadedNodeState) {
+    if projection
+        .gateway
+        .as_ref()
+        .is_none_or(|gateway| gateway.routes.is_empty())
+        && let Ok(snapshot) =
+            load_gateway_snapshot(&state.paths().gateway_snapshot, &state.island())
+        && !snapshot.routes.is_empty()
+    {
+        projection.gateway = Some(GatewayProjection {
+            gateway_commit_id: snapshot.gateway_commit_id,
+            route_commit_id: snapshot.route_commit_id,
+            routes: snapshot.routes,
+        });
+    }
+    if projection
+        .dns
+        .as_ref()
+        .is_none_or(|dns| dns.records.is_empty())
+        && let Ok(snapshot) = load_dns_snapshot(&state.paths().dns_snapshot, &state.island())
+        && !snapshot.records.is_empty()
+    {
+        projection.dns = Some(DnsProjection {
+            dns_commit_id: snapshot.dns_commit_id,
+            records: snapshot.records,
+        });
+    }
 }
 
 fn visible_nodes(state: &LoadedNodeState) -> VisibleNodes {
@@ -517,7 +551,11 @@ mod tests {
         AcmeHttp01ChallengePublisher, AcmeHttp01OrderChallenge, AcmeKeyAuthorization, AcmeOrderUrl,
         IssuedCertificate, StartedAcmeOrder,
     };
-    use mvp_projection::load_gateway_snapshot;
+    use mvp_projection::{
+        BackendEndpoint, DnsProjection, DnsRecordProjection, GatewayProjection,
+        GatewayRouteProjection, ProjectionState, RouteId, load_dns_snapshot, load_gateway_snapshot,
+        write_projection_snapshots,
+    };
 
     struct FakeIssuer;
 
@@ -617,6 +655,35 @@ mod tests {
                 .with_node_id("node-a"),
         )
         .expect("init");
+        let mut projection = ProjectionState::for_island(mvp_bus::IslandId::new("prod"));
+        projection.gateway = Some(GatewayProjection {
+            gateway_commit_id: "gateway-web".to_string(),
+            route_commit_id: "route-web".to_string(),
+            routes: vec![GatewayRouteProjection {
+                route_id: RouteId::new("web"),
+                hostnames: vec!["web.example.test".to_string()],
+                backends: vec![BackendEndpoint {
+                    node_id: NodeId::new("node-a"),
+                    address: "10.210.121.237:8080".to_string(),
+                }],
+                old_backends_to_drain: Vec::new(),
+            }],
+        });
+        projection.dns = Some(DnsProjection {
+            dns_commit_id: "dns-services".to_string(),
+            records: vec![DnsRecordProjection {
+                name: "web.service.example.test".to_string(),
+                record_type: "A".to_string(),
+                value: "10.210.121.237".to_string(),
+                ttl_seconds: 30,
+            }],
+        });
+        write_projection_snapshots(
+            &projection,
+            temp.path().join("gateway.snapshot"),
+            temp.path().join("dns.snapshot"),
+        )
+        .expect("write existing serving snapshots");
         let report = issue_product_certificate_with_issuer(
             AcmeIssueOptions::new(temp.path(), "web.example.test", "http://127.0.0.1:1"),
             &FakeIssuer,
@@ -639,5 +706,17 @@ mod tests {
             .expect("certificate projected");
         assert_eq!(certificate.fullchain_pem, "fake-chain");
         assert!(snapshot.acme_http01.is_empty());
+        assert_eq!(snapshot.gateway_commit_id, "gateway-web");
+        assert_eq!(snapshot.route_commit_id, "route-web");
+        assert_eq!(snapshot.routes.len(), 1);
+        assert_eq!(snapshot.routes[0].route_id, RouteId::new("web"));
+
+        let dns_snapshot = load_dns_snapshot(
+            temp.path().join("dns.snapshot"),
+            &mvp_bus::IslandId::new("prod"),
+        )
+        .expect("load dns snapshot");
+        assert_eq!(dns_snapshot.dns_commit_id, "dns-services");
+        assert_eq!(dns_snapshot.records.len(), 1);
     }
 }

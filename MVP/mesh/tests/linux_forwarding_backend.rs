@@ -15,11 +15,7 @@ fn linux_forwarding_backend_attaches_routes_and_detaches_when_enabled() {
         eprintln!("skipping Linux forwarding smoke; set MVP_LINUX_FORWARDING_SMOKE=1 to run");
         return;
     }
-    let uid = Command::new("id")
-        .arg("-u")
-        .output()
-        .expect("id -u")
-        .stdout;
+    let uid = Command::new("id").arg("-u").output().expect("id -u").stdout;
     assert_eq!(
         String::from_utf8_lossy(&uid).trim(),
         "0",

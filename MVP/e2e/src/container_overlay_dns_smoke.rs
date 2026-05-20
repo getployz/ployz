@@ -62,8 +62,10 @@ pub(crate) fn run() -> Result<(), String> {
         elapsed_ms: started.elapsed().as_millis(),
     };
     let _ = write_json(&root.join("container-overlay-dns-smoke.json"), &report)?;
-    Err("container-overlay-dns-smoke preflight passed, but two-node execution is not wired yet"
-        .to_string())
+    Err(
+        "container-overlay-dns-smoke preflight passed, but two-node execution is not wired yet"
+            .to_string(),
+    )
 }
 
 fn missing_prerequisites() -> Vec<String> {
@@ -95,6 +97,8 @@ fn command_available(command: &str) -> bool {
     Command::new(command)
         .arg("--help")
         .output()
-        .map(|output| output.status.success() || !output.stderr.is_empty() || !output.stdout.is_empty())
+        .map(|output| {
+            output.status.success() || !output.stderr.is_empty() || !output.stdout.is_empty()
+        })
         .unwrap_or(false)
 }
