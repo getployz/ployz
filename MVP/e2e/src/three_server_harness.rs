@@ -69,6 +69,15 @@ pub(crate) struct DnsProbe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ContainerDnsClientProbe {
+    pub network: String,
+    pub dns_server: String,
+    pub host: String,
+    pub nslookup_stdout: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct HttpsProbe {
     pub addr: SocketAddr,
     pub host: String,
@@ -448,6 +457,25 @@ impl ProductHarness {
         self.spawn_serving_role("dns", node, self.role_control_socket(node, "dns"))
     }
 
+    pub(crate) fn spawn_node_dns_at(
+        &self,
+        node: &str,
+        listen: SocketAddr,
+    ) -> Result<ProductChild, String> {
+        self.spawn_node(
+            format!("dns-{node}"),
+            [
+                "dns".to_string(),
+                "--state".to_string(),
+                self.node_dir(node).display().to_string(),
+                "--listen".to_string(),
+                listen.to_string(),
+                "--control".to_string(),
+                self.role_control_socket(node, "dns").display().to_string(),
+            ],
+        )
+    }
+
     pub(crate) fn wait_role(&self, socket: &Path) -> Result<ServingRoleProbe, String> {
         let deadline = Instant::now() + ROLE_WAIT_TIMEOUT;
         loop {
@@ -585,6 +613,51 @@ impl ProductHarness {
             }
             thread::sleep(POLL);
         }
+    }
+
+    pub(crate) fn run_container_dns_client(
+        &self,
+        network: &str,
+        dns_server: &str,
+        host: &str,
+        url: &str,
+    ) -> Result<ContainerDnsClientProbe, String> {
+        let nslookup = docker_run(
+            [
+                "run",
+                "--rm",
+                "--network",
+                network,
+                "--dns",
+                dns_server,
+                "busybox:latest",
+                "nslookup",
+                host,
+            ],
+            COMMAND_TIMEOUT,
+        )?;
+        let body = docker_run(
+            [
+                "run",
+                "--rm",
+                "--network",
+                network,
+                "--dns",
+                dns_server,
+                "busybox:latest",
+                "wget",
+                "-qO-",
+                url,
+            ],
+            COMMAND_TIMEOUT,
+        )?;
+        Ok(ContainerDnsClientProbe {
+            network: network.to_string(),
+            dns_server: dns_server.to_string(),
+            host: host.to_string(),
+            nslookup_stdout: nslookup,
+            body,
+        })
     }
 
     pub(crate) fn acme_issue_with_pebble(
@@ -1108,6 +1181,53 @@ fn curl_https(addr: SocketAddr, host: &str, root_ca: &Path) -> Result<String, St
         "curl HTTPS check failed: {}",
         String::from_utf8_lossy(&output.stderr)
     ))
+}
+
+fn docker_run<I, S>(args: I, timeout: Duration) -> Result<String, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string())
+        .collect::<Vec<_>>();
+    let mut child = Command::new("docker")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("spawn docker: {error}; args={args:?}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| format!("collect docker output: {error}"))?;
+                if output.status.success() {
+                    return String::from_utf8(output.stdout).map_err(|error| error.to_string());
+                }
+                return Err(format!(
+                    "docker command failed status={} args={:?} stdout={} stderr={}",
+                    output.status.code().unwrap_or(-1),
+                    args,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("docker command timed out; args={args:?}"));
+                }
+            }
+            Err(error) => return Err(format!("poll docker command: {error}; args={args:?}")),
+        }
+        thread::sleep(POLL);
+    }
 }
 
 fn docker_available_for_pebble() -> Result<(), String> {

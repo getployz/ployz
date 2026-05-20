@@ -194,6 +194,10 @@ hostnames, gateway addresses, and HTTPS response bodies.
 **Goal:** run a one-shot client on `node-a` that resolves and curls `echo` on
 `node-c` by service DNS over the overlay.
 
+**Status:** privileged U4 branch is wired into the installed-binary smoke. The
+current host still records the Linux/root/tooling preflight blockers before
+runtime placement or container DNS can execute.
+
 **Requirements:** R5, R12, R14.
 
 **Dependencies:** U2.
@@ -315,6 +319,19 @@ command output, scenario report field, or explicit host blocker.
     installed `mvp-node acme-issue`, and validates HTTPS with Pebble's issued
     root. On the current host those checks remain blocked by the recorded
     Linux/root/tooling preflight, so local reports keep both arrays empty.
+- U4 checkpoint:
+  - `cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e`
+  - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
+  - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
+  - `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`
+  - Evidence: the smoke report now carries `container_dns_checks`. In
+    privileged mode DNS roles bind to each node's Docker bridge gateway IP,
+    the client runs in a one-shot BusyBox container on `node-a`'s Docker
+    network with node-local DNS configured, `nslookup` must return a
+    `10.210.*` service answer for `echo.service.example.test`, and `wget`
+    must return the `echo` HTTP body. On the current host this remains blocked
+    by the recorded Linux/root/tooling preflight, so local reports keep the
+    array empty.
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
 - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
@@ -345,17 +362,18 @@ Residual local Docker verification:
 - [ ] Pebble ACME issues certificates and HTTPS validates with Pebble root.
   Product path is wired; passing evidence still requires a privileged Linux
   host.
-- Container client resolves and curls `echo` by service DNS.
+- [ ] Container client resolves and curls `echo` by service DNS. Product path
+  is wired; passing evidence still requires a privileged Linux host.
 - `api` update drains old backend and all gateways converge to v2.
 - Daemon restart does not stop gateway, DNS, or already-running containers.
 - Parent plan final gate has a requirement audit for R1-R14.
 
 ## Next Slice 7 Sub-Slice
 
-The next implementation pass should start U4, container-facing service DNS, in
-the same privileged branch. Before claiming U2 or U3 complete, run the current
-smoke on a privileged Linux host and fix any placement, gateway, or Pebble
-failures surfaced there.
+The next implementation pass should start U5, update/drain and daemon restart
+survival, in the same privileged branch. Before claiming U2, U3, or U4
+complete, run the current smoke on a privileged Linux host and fix any
+placement, gateway, Pebble, or container DNS failures surfaced there.
 
 ## Explicit Deferrals
 

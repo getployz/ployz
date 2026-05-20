@@ -1,3 +1,4 @@
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::time::Instant;
 
@@ -5,7 +6,8 @@ use serde::Serialize;
 
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::three_server_harness::{
-    HttpProbe, HttpsProbe, PebbleAcme, ProductCommandRecord, ProductHarness, ServingRoleProbe,
+    ContainerDnsClientProbe, HttpProbe, HttpsProbe, PebbleAcme, ProductCommandRecord,
+    ProductHarness, ServingRoleProbe,
 };
 
 const SCENARIO: &str = "three-node-parity-smoke";
@@ -30,6 +32,7 @@ struct ThreeNodeParityReport {
     runtime_placements: Vec<RuntimePlacementEvidence>,
     gateway_http_checks: Vec<GatewayHttpEvidence>,
     acme_https_checks: Vec<GatewayHttpsEvidence>,
+    container_dns_checks: Vec<ContainerDnsEvidence>,
     gateway_statuses: Vec<NodeRoleStatus>,
     dns_statuses: Vec<NodeRoleStatus>,
     elapsed_ms: u128,
@@ -76,6 +79,14 @@ struct GatewayHttpsEvidence {
     gateway_node: &'static str,
     acme_issue: ProductCommandRecord,
     probe: HttpsProbe,
+}
+
+#[derive(Debug, Serialize)]
+struct ContainerDnsEvidence {
+    client_node: &'static str,
+    service: &'static str,
+    dns_answer: String,
+    probe: ContainerDnsClientProbe,
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -150,10 +161,13 @@ pub(crate) fn run() -> Result<(), String> {
     for node in NODES {
         if privileged_preflight.enabled {
             gateways.push(harness.spawn_node_gateway_tls(node)?);
+            let listen =
+                SocketAddr::new(container_gateway_ip(&bootstrap_commands, node)?.into(), 53);
+            dns_roles.push(harness.spawn_node_dns_at(node, listen)?);
         } else {
             gateways.push(harness.spawn_node_gateway(node)?);
+            dns_roles.push(harness.spawn_node_dns(node)?);
         }
-        dns_roles.push(harness.spawn_node_dns(node)?);
     }
 
     let mut gateway_statuses = Vec::new();
@@ -176,6 +190,11 @@ pub(crate) fn run() -> Result<(), String> {
     };
     let acme_https_checks = if privileged_preflight.enabled {
         verify_pebble_https(&harness, &root, &gateway_statuses)?
+    } else {
+        Vec::new()
+    };
+    let container_dns_checks = if privileged_preflight.enabled {
+        verify_container_dns(&harness, &bootstrap_commands)?
     } else {
         Vec::new()
     };
@@ -224,6 +243,7 @@ pub(crate) fn run() -> Result<(), String> {
         runtime_placements,
         gateway_http_checks,
         acme_https_checks,
+        container_dns_checks,
         gateway_statuses,
         dns_statuses,
         elapsed_ms: started.elapsed().as_millis(),
@@ -241,9 +261,12 @@ pub(crate) fn run() -> Result<(), String> {
     if report.privileged_preflight.enabled && report.acme_https_checks.len() != 2 {
         return Err("three-node-parity-smoke did not verify Pebble HTTPS checks".to_string());
     }
+    if report.privileged_preflight.enabled && report.container_dns_checks.len() != 1 {
+        return Err("three-node-parity-smoke did not verify container service DNS".to_string());
+    }
     if report.privileged_preflight.enabled {
         eprintln!(
-            "PASS {SCENARIO} runtime placement and gateway HTTPS; later parity phases still pending"
+            "PASS {SCENARIO} runtime placement, gateway HTTPS, and container DNS; later parity phases still pending"
         );
     } else {
         eprintln!(
@@ -385,6 +408,43 @@ fn verify_pebble_https(
     .collect()
 }
 
+fn verify_container_dns(
+    harness: &ProductHarness,
+    bootstrap_commands: &[ProductCommandRecord],
+) -> Result<Vec<ContainerDnsEvidence>, String> {
+    let dns_server = container_gateway_ip(bootstrap_commands, "node-a")?.to_string();
+    let probe = harness.run_container_dns_client(
+        "ployz-mvp-node-a",
+        &dns_server,
+        "echo.service.example.test",
+        "http://echo.service.example.test:8080/",
+    )?;
+    if probe.body.trim() != "ok" {
+        return Err(format!(
+            "container DNS client reached echo but body was unexpected: {}",
+            probe.body
+        ));
+    }
+    let dns_answer = container_dns_answer(&probe.nslookup_stdout)?;
+    Ok(vec![ContainerDnsEvidence {
+        client_node: "node-a",
+        service: "echo",
+        dns_answer,
+        probe,
+    }])
+}
+
+fn container_dns_answer(nslookup_stdout: &str) -> Result<String, String> {
+    nslookup_stdout
+        .lines()
+        .filter_map(|line| line.split_once(':').map(|(_key, value)| value.trim()))
+        .find(|value| value.starts_with("10.210."))
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            format!("nslookup did not include a container subnet answer: {nslookup_stdout}")
+        })
+}
+
 fn role_status<'a>(
     statuses: &'a [NodeRoleStatus],
     node: &str,
@@ -393,6 +453,49 @@ fn role_status<'a>(
         .iter()
         .find(|status| status.node == node)
         .ok_or_else(|| format!("missing role status for {node}"))
+}
+
+fn container_gateway_ip(
+    bootstrap_commands: &[ProductCommandRecord],
+    node: &str,
+) -> Result<Ipv4Addr, String> {
+    for command in bootstrap_commands.iter().rev() {
+        let value =
+            serde_json::from_str::<serde_json::Value>(&command.stdout).map_err(|error| {
+                format!(
+                    "decode bootstrap stdout for container subnet: {error}; stdout={}",
+                    command.stdout
+                )
+            })?;
+        if value.get("node_id").and_then(serde_json::Value::as_str) != Some(node) {
+            continue;
+        }
+        let subnet = value
+            .pointer("/identity/container_subnet")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("bootstrap output missing container_subnet: {value}"))?;
+        return docker_gateway_ip(subnet);
+    }
+    Err(format!("missing bootstrap output for {node}"))
+}
+
+fn docker_gateway_ip(subnet: &str) -> Result<Ipv4Addr, String> {
+    let cidr = subnet
+        .split_once('/')
+        .map(|(addr, _prefix)| addr)
+        .ok_or_else(|| format!("container subnet missing prefix: {subnet}"))?;
+    let octets = cidr
+        .split('.')
+        .map(|octet| {
+            octet
+                .parse::<u8>()
+                .map_err(|error| format!("parse container subnet octet '{octet}': {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let [a, b, c, _d] = octets.as_slice() else {
+        return Err(format!("container subnet is not IPv4: {subnet}"));
+    };
+    Ok(Ipv4Addr::new(*a, *b, *c, 1))
 }
 
 fn parse_active_backends(stdout: &str) -> Result<Vec<String>, String> {
