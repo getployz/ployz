@@ -156,6 +156,10 @@ required node with real runtime backend evidence.
 **Goal:** verify every node gateway can serve routes for services placed on
 other nodes, including Pebble-issued HTTPS.
 
+**Status:** privileged U3 branch is wired into the installed-binary smoke. The
+current host still records the Linux/root/tooling preflight blockers before
+runtime placement, gateway HTTP, or Pebble HTTPS can execute.
+
 **Requirements:** R6, R7, R10, R11, R14.
 
 **Dependencies:** U2.
@@ -299,6 +303,18 @@ command output, scenario report field, or explicit host blocker.
     deploys `web`, `api`, and `echo` to `node-a`, `node-b`, and `node-c`, and
     rejects loopback Docker backends. On the current host that branch is blocked
     by the recorded Linux/root/tooling preflight.
+- U3 checkpoint:
+  - `cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e`
+  - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
+  - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
+  - `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`
+  - Evidence: the smoke report now carries `gateway_http_checks` and
+    `acme_https_checks`. In privileged mode it starts TLS listeners on every
+    gateway, verifies `web` through `node-b` and `node-c`, verifies `api`
+    through `node-a` and `node-c`, starts Pebble, issues certificates through
+    installed `mvp-node acme-issue`, and validates HTTPS with Pebble's issued
+    root. On the current host those checks remain blocked by the recorded
+    Linux/root/tooling preflight, so local reports keep both arrays empty.
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
 - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
@@ -324,8 +340,11 @@ Residual local Docker verification:
 - [x] `node-a`, `node-b`, and `node-c` are equal gateway/DNS/daemon nodes.
 - [ ] `web`, `api`, and `echo` are placed on separate required nodes. Product
   path is wired; passing evidence still requires a privileged Linux host.
-- Gateways on non-owner nodes serve remote services.
-- Pebble ACME issues certificates and HTTPS validates with Pebble root.
+- [ ] Gateways on non-owner nodes serve remote services. Product path is wired;
+  passing evidence still requires a privileged Linux host.
+- [ ] Pebble ACME issues certificates and HTTPS validates with Pebble root.
+  Product path is wired; passing evidence still requires a privileged Linux
+  host.
 - Container client resolves and curls `echo` by service DNS.
 - `api` update drains old backend and all gateways converge to v2.
 - Daemon restart does not stop gateway, DNS, or already-running containers.
@@ -333,10 +352,10 @@ Residual local Docker verification:
 
 ## Next Slice 7 Sub-Slice
 
-The next implementation pass should start with U3 once U2 is run on a
-privileged Linux host, or continue hardening U2 if that host exposes placement
-failures. U3 should add equal-node gateway HTTP/HTTPS and Pebble ACME evidence
-without folding service DNS or update/drain behavior into the same patch.
+The next implementation pass should start U4, container-facing service DNS, in
+the same privileged branch. Before claiming U2 or U3 complete, run the current
+smoke on a privileged Linux host and fix any placement, gateway, or Pebble
+failures surfaced there.
 
 ## Explicit Deferrals
 
