@@ -385,7 +385,26 @@ fn pid_is_zombie(pid: u32) -> bool {
         .is_some_and(|state| state == "Z")
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn pid_is_zombie(pid: u32) -> bool {
+    let Ok(output) = Command::new("ps")
+        .arg("-o")
+        .arg("stat=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim_start()
+        .starts_with('Z')
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn pid_is_zombie(_pid: u32) -> bool {
     false
 }

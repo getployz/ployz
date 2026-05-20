@@ -130,7 +130,7 @@ fn deploy_status(args: &[String]) -> NodeResult<String> {
 }
 
 fn gateway(args: &[String]) -> NodeResult<String> {
-    let parsed = ServingRoleArgs::parse(args)?;
+    let parsed = ServingRoleArgs::parse(args, ServingRoleCommand::Gateway)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .enable_io()
@@ -141,7 +141,7 @@ fn gateway(args: &[String]) -> NodeResult<String> {
 }
 
 fn dns(args: &[String]) -> NodeResult<String> {
-    let parsed = ServingRoleArgs::parse(args)?;
+    let parsed = ServingRoleArgs::parse(args, ServingRoleCommand::Dns)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .enable_io()
@@ -448,8 +448,15 @@ struct RuntimeHttpArgs {
 struct ServingRoleArgs {
     state_dir: PathBuf,
     listen: SocketAddr,
+    tls_listen: Option<SocketAddr>,
     control_socket: PathBuf,
     stale_after_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum ServingRoleCommand {
+    Gateway,
+    Dns,
 }
 
 #[derive(Clone)]
@@ -535,9 +542,10 @@ impl<'a> From<&'a DeployArgs> for DaemonDeployRequest<'a> {
 }
 
 impl ServingRoleArgs {
-    fn parse(args: &[String]) -> NodeResult<Self> {
+    fn parse(args: &[String], command: ServingRoleCommand) -> NodeResult<Self> {
         let mut state_dir = None;
         let mut listen = None;
+        let mut tls_listen = None;
         let mut control_socket = None;
         let mut stale_after_ms = None;
         let mut remaining = args.iter();
@@ -554,6 +562,18 @@ impl ServingRoleArgs {
                         return Err(NodeError::MissingFlagValue { flag: "--listen" });
                     };
                     listen = Some(value.parse::<SocketAddr>().map_err(|_| {
+                        NodeError::UnknownArgument {
+                            argument: value.clone(),
+                        }
+                    })?);
+                }
+                "--tls-listen" if matches!(command, ServingRoleCommand::Gateway) => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--tls-listen",
+                        });
+                    };
+                    tls_listen = Some(value.parse::<SocketAddr>().map_err(|_| {
                         NodeError::UnknownArgument {
                             argument: value.clone(),
                         }
@@ -590,6 +610,7 @@ impl ServingRoleArgs {
         Ok(Self {
             state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
             listen: listen.ok_or(NodeError::MissingFlagValue { flag: "--listen" })?,
+            tls_listen,
             control_socket: control_socket
                 .ok_or(NodeError::MissingFlagValue { flag: "--control" })?,
             stale_after_ms,
@@ -597,7 +618,10 @@ impl ServingRoleArgs {
     }
 
     fn into_options(self) -> ServingRoleOptions {
-        let options = ServingRoleOptions::new(self.state_dir, self.listen, self.control_socket);
+        let mut options = ServingRoleOptions::new(self.state_dir, self.listen, self.control_socket);
+        if let Some(tls_listen) = self.tls_listen {
+            options = options.with_tls_listen(tls_listen);
+        }
         match self.stale_after_ms {
             Some(stale_after_ms) => options.with_stale_after(Duration::from_millis(stale_after_ms)),
             None => options,
@@ -793,16 +817,15 @@ fn docker_runtime_backend(
     if let Some(command) = command {
         config = config.with_command(command.iter().cloned());
     }
-    let network = mvp_runtime::DockerBridgeNetwork::connect(mvp_runtime::DockerBridgeNetworkConfig::new(
-        format!("ployz-mvp-{}", state.node_id_str()),
-        state.container_subnet(),
-    ))
-    .map_err(|source| NodeError::RuntimeBackend { source })?;
-    let runtime = mvp_runtime::DockerRuntime::connect_with_container_network(
-        config,
-        Arc::new(network),
-    )
+    let network =
+        mvp_runtime::DockerBridgeNetwork::connect(mvp_runtime::DockerBridgeNetworkConfig::new(
+            format!("ployz-mvp-{}", state.node_id_str()),
+            state.container_subnet(),
+        ))
         .map_err(|source| NodeError::RuntimeBackend { source })?;
+    let runtime =
+        mvp_runtime::DockerRuntime::connect_with_container_network(config, Arc::new(network))
+            .map_err(|source| NodeError::RuntimeBackend { source })?;
     Ok(Some(Arc::new(runtime)))
 }
 
@@ -1053,7 +1076,7 @@ fn help() -> String {
         "  admit --state <dir> --request <json>",
         "  deploy (--state <dir> | --control <socket>) --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]",
         "  deploy-status --state <dir> [--deploy-id <id>]",
-        "  gateway --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
+        "  gateway --state <dir> --listen <addr> --control <socket> [--tls-listen <addr>] [--stale-after-ms <ms>]",
         "  dns --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
     ]
     .join("\n")

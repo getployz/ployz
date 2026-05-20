@@ -44,11 +44,12 @@ fn gateway_and_dns_roles_serve_snapshots_without_daemon() {
     let control_dir = temp.path().join("control");
     let gateway_control = control_dir.join("gateway.sock");
     let dns_control = control_dir.join("dns.sock");
-    let mut gateway = SpawnedRole::start(
+    let mut gateway = SpawnedRole::start_with_args(
         "gateway",
         temp.path(),
         "127.0.0.1:0",
         gateway_control.as_path(),
+        &["--tls-listen", "127.0.0.1:0"],
     );
     let mut dns = SpawnedRole::start("dns", temp.path(), "127.0.0.1:0", dns_control.as_path());
 
@@ -56,6 +57,12 @@ fn gateway_and_dns_roles_serve_snapshots_without_daemon() {
     let dns_status = wait_for_status(dns_control.as_path());
     assert_owner_only_control_socket(gateway_control.as_path());
     assert_owner_only_control_socket(dns_control.as_path());
+    assert!(gateway_status.tls_listen_addr.is_some());
+    assert_ne!(
+        gateway_status.tls_listen_addr,
+        Some(gateway_status.listen_addr)
+    );
+    assert_eq!(dns_status.tls_listen_addr, None);
 
     assert!(
         http_get(gateway_status.listen_addr, "web.example.test")
@@ -92,16 +99,27 @@ struct SpawnedRole {
 
 impl SpawnedRole {
     fn start(command: &str, state: &Path, listen: &str, control: &Path) -> Self {
-        let child = Command::new(mvp_node_binary())
+        Self::start_with_args(command, state, listen, control, &[])
+    }
+
+    fn start_with_args(
+        command: &str,
+        state: &Path,
+        listen: &str,
+        control: &Path,
+        extra_args: &[&str],
+    ) -> Self {
+        let mut process = Command::new(mvp_node_binary());
+        process
             .arg(command)
             .arg("--state")
             .arg(state)
             .arg("--listen")
             .arg(listen)
             .arg("--control")
-            .arg(control)
-            .spawn()
-            .expect("spawn serving role");
+            .arg(control);
+        process.args(extra_args);
+        let child = process.spawn().expect("spawn serving role");
         Self { child }
     }
 
