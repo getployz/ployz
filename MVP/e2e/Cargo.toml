@@ -21,10 +21,12 @@ mvp-acme-command = { path = "../acme-command" }
 mvp-lease = { path = "../lease", features = ["harness"] }
 mvp-machine = { path = "../machine" }
 mvp-mesh = { path = "../mesh" }
+mvp-node = { path = "../node" }
 mvp-p2panda-authz = { path = "../p2panda-authz" }
 mvp-p2panda-facts = { path = "../p2panda-facts" }
 mvp-p2panda-transport = { path = "../p2panda-transport", features = ["harness"] }
 mvp-projection = { path = "../projection" }
+mvp-runtime = { path = "../runtime", default-features = false }
 mvp-routing = { path = "../routing" }
 mvp-serving = { path = "../serving" }
 mvp-volume = { path = "../volume" }
@@ -32,5 +34,6 @@ p2panda-core = "0.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = "0.26"
 tokio-stream = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

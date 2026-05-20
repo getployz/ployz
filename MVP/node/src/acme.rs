@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ use tempfile::NamedTempFile;
 
 use crate::error::{NodeError, NodeResult};
 use crate::membership::now_ms;
+use crate::serving::{ServingRoleRequest, ServingRoleResponse, ServingRoleSuccess};
 use crate::state::{LoadedNodeState, load_node};
 
 const HTTP01_READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -37,6 +39,7 @@ pub struct AcmeIssueOptions {
     pub state_dir: PathBuf,
     pub hostname: String,
     pub gateway_url: String,
+    pub gateway_control_socket: Option<PathBuf>,
     pub issuer_holder: Option<String>,
     pub account_path: Option<PathBuf>,
 }
@@ -52,9 +55,16 @@ impl AcmeIssueOptions {
             state_dir: state_dir.into(),
             hostname: hostname.into(),
             gateway_url: gateway_url.into(),
+            gateway_control_socket: None,
             issuer_holder: None,
             account_path: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_gateway_control_socket(mut self, control_socket: impl Into<PathBuf>) -> Self {
+        self.gateway_control_socket = Some(control_socket.into());
+        self
     }
 
     #[must_use]
@@ -83,7 +93,13 @@ pub struct AcmeIssueReport {
 }
 
 pub async fn issue_product_certificate(options: AcmeIssueOptions) -> NodeResult<AcmeIssueReport> {
-    let config = AcmeIssuerConfig::from_env();
+    issue_product_certificate_with_config(options, AcmeIssuerConfig::from_env()).await
+}
+
+pub async fn issue_product_certificate_with_config(
+    options: AcmeIssueOptions,
+    config: AcmeIssuerConfig,
+) -> NodeResult<AcmeIssueReport> {
     let account_path = options
         .account_path
         .clone()
@@ -145,6 +161,9 @@ pub async fn issue_product_certificate_with_issuer(
             .map_err(|source| NodeError::Acme { source })?
     };
     project_store(&store, &state, &session)?;
+    if let Some(control_socket) = &options.gateway_control_socket {
+        reload_gateway(control_socket)?;
+    }
     let certificate = {
         let mut publisher = PandaAcmeHttp01Publisher::new(&mut adapter, &mut store);
         issuer
@@ -174,6 +193,55 @@ pub async fn issue_product_certificate_with_issuer(
     Ok(AcmeIssueReport {
         projected_certificates,
         ..report
+    })
+}
+
+fn reload_gateway(control_socket: &Path) -> NodeResult<()> {
+    match control_request(control_socket, &ServingRoleRequest::Reload)? {
+        ServingRoleResponse::Success(ServingRoleSuccess::Reloaded(_)) => Ok(()),
+        response => Err(NodeError::NodeAgentRpc {
+            message: format!("gateway reload before ACME validation failed: {response:?}"),
+        }),
+    }
+}
+
+fn control_request(
+    control_socket: &Path,
+    request: &ServingRoleRequest,
+) -> NodeResult<ServingRoleResponse> {
+    let bytes = serde_json::to_vec(request)
+        .map_err(|source| NodeError::EncodeServingRoleResponse { source })?;
+    let mut stream = std::os::unix::net::UnixStream::connect(control_socket).map_err(|source| {
+        NodeError::ServingControlSocket {
+            path: control_socket.to_path_buf(),
+            operation: "connect",
+            source,
+        }
+    })?;
+    stream
+        .write_all(&bytes)
+        .map_err(|source| NodeError::ServingControlSocket {
+            path: control_socket.to_path_buf(),
+            operation: "write reload request",
+            source,
+        })?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|source| NodeError::ServingControlSocket {
+            path: control_socket.to_path_buf(),
+            operation: "finish reload request",
+            source,
+        })?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|source| NodeError::ServingControlSocket {
+            path: control_socket.to_path_buf(),
+            operation: "read reload response",
+            source,
+        })?;
+    serde_json::from_slice(&response).map_err(|source| NodeError::NodeAgentRpc {
+        message: format!("decode gateway reload response: {source}"),
     })
 }
 

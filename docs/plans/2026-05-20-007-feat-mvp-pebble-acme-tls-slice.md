@@ -303,9 +303,15 @@ gateway, not a fake issuer.
 
 **Verification:**
 
-- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- pebble-acme-https-contract`
-- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-acme-http01-contract`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
+- Completed with a Docker-backed Pebble scenario that starts product deploy,
+  product gateway HTTP/TLS listeners, runs real `mvp-node` ACME issuance against
+  Pebble, reloads the gateway before validation, and verifies HTTPS with curl
+  against the issued Pebble CA and Pingora TLS listener.
+- Verified with
+  `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- pebble-acme-https-contract`.
+- Verified with
+  `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-acme-http01-contract`.
+- Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`.
 
 ### U6D. Final Gate
 
