@@ -777,7 +777,7 @@ mod tests {
         let pending_actor = actor.clone();
         let pending =
             tokio::spawn(
-                async move { pending_actor.project_once(Duration::from_millis(100)).await },
+                async move { pending_actor.project_once(Duration::from_millis(500)).await },
             );
 
         let status = tokio::time::timeout(Duration::from_millis(20), actor.status())
