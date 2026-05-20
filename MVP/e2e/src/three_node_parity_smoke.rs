@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::metrics::{reset_dir, scenario_dir, write_json};
 use crate::three_server_harness::{
@@ -14,8 +14,7 @@ const SCENARIO: &str = "three-node-parity-smoke";
 const NODES: &[&str] = &["node-a", "node-b", "node-c"];
 const DOCKER_IMAGE: &str = "busybox:latest";
 const DOCKER_SERVICE_PORT: u16 = 8080;
-const DOCKER_COMMAND: &str =
-    "mkdir -p /www && echo ok >/www/index.html && httpd -f -p 8080 -h /www";
+const DOCKER_COMMAND: &str = "mkdir -p /www && echo ok-$PLOYZ_SERVICE-$PLOYZ_REVISION >/www/index.html && httpd -f -p 8080 -h /www";
 
 #[derive(Debug, Serialize)]
 struct ThreeNodeParityReport {
@@ -33,6 +32,8 @@ struct ThreeNodeParityReport {
     gateway_http_checks: Vec<GatewayHttpEvidence>,
     acme_https_checks: Vec<GatewayHttpsEvidence>,
     container_dns_checks: Vec<ContainerDnsEvidence>,
+    update_drain_checks: Vec<UpdateDrainEvidence>,
+    daemon_restart_checks: Vec<DaemonRestartEvidence>,
     gateway_statuses: Vec<NodeRoleStatus>,
     dns_statuses: Vec<NodeRoleStatus>,
     elapsed_ms: u128,
@@ -89,6 +90,33 @@ struct ContainerDnsEvidence {
     probe: ContainerDnsClientProbe,
 }
 
+#[derive(Debug, Serialize)]
+struct UpdateDrainEvidence {
+    service: &'static str,
+    target_node: &'static str,
+    pre_update_checks: Vec<GatewayHttpEvidence>,
+    update_deploy: ProductCommandRecord,
+    update_deploy_status: ProductCommandRecord,
+    updated_active_backends: Vec<String>,
+    old_backends_to_drain: usize,
+    gateway_reloads: Vec<NodeRoleStatus>,
+    post_update_checks: Vec<GatewayHttpEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonRestartEvidence {
+    restarted_node: &'static str,
+    post_restart_status: ProductCommandRecord,
+    post_restart_checks: Vec<GatewayHttpEvidence>,
+    post_restart_container_dns: Vec<ContainerDnsEvidence>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeployResponse {
+    active_backends: Vec<String>,
+    old_backends: usize,
+}
+
 pub(crate) fn run() -> Result<(), String> {
     let started = Instant::now();
     let root = scenario_dir(SCENARIO);
@@ -128,19 +156,17 @@ pub(crate) fn run() -> Result<(), String> {
         admit_commands.push(harness.admit("node-a", &admission)?.record);
     }
 
-    let mut peer_daemons = Vec::new();
     let mut daemon_statuses = vec![founder_status];
-    for node in ["node-b", "node-c"] {
-        peer_daemons.push(spawn_parity_daemon(
-            &harness,
-            node,
-            privileged_preflight.enabled,
-        )?);
-        daemon_statuses.push(NodeCommandStatus {
-            node,
-            status: harness.wait_daemon_status(node)?,
-        });
-    }
+    let mut node_b_daemon = spawn_parity_daemon(&harness, "node-b", privileged_preflight.enabled)?;
+    daemon_statuses.push(NodeCommandStatus {
+        node: "node-b",
+        status: harness.wait_daemon_status("node-b")?,
+    });
+    let mut node_c_daemon = spawn_parity_daemon(&harness, "node-c", privileged_preflight.enabled)?;
+    daemon_statuses.push(NodeCommandStatus {
+        node: "node-c",
+        status: harness.wait_daemon_status("node-c")?,
+    });
 
     let runtime_placements = if privileged_preflight.enabled {
         deploy_runtime_workloads(&harness)?
@@ -148,12 +174,14 @@ pub(crate) fn run() -> Result<(), String> {
         Vec::new()
     };
 
-    let _ = founder_daemon.kill()?;
-    for mut daemon in peer_daemons {
-        let _ = daemon.kill()?;
-    }
-    for node in NODES {
-        bootstrap_commands.push(harness.bootstrap_node(node)?.record);
+    let daemons_stopped_before_roles = !privileged_preflight.enabled;
+    if daemons_stopped_before_roles {
+        let _ = founder_daemon.kill()?;
+        let _ = node_b_daemon.kill()?;
+        let _ = node_c_daemon.kill()?;
+        for node in NODES {
+            bootstrap_commands.push(harness.bootstrap_node(node)?.record);
+        }
     }
 
     let mut gateways = Vec::new();
@@ -198,6 +226,21 @@ pub(crate) fn run() -> Result<(), String> {
     } else {
         Vec::new()
     };
+    let update_drain_checks = if privileged_preflight.enabled {
+        vec![verify_update_drain(&harness, &gateway_statuses)?]
+    } else {
+        Vec::new()
+    };
+    let daemon_restart_checks = if privileged_preflight.enabled {
+        vec![verify_daemon_restart_survival(
+            &harness,
+            &gateway_statuses,
+            &bootstrap_commands,
+            &mut node_b_daemon,
+        )?]
+    } else {
+        Vec::new()
+    };
 
     for node in NODES {
         harness.shutdown_role(harness.role_control_socket(node, "gateway").as_path())?;
@@ -208,6 +251,11 @@ pub(crate) fn run() -> Result<(), String> {
     }
     for mut dns in dns_roles {
         dns.wait()?;
+    }
+    if !daemons_stopped_before_roles {
+        let _ = founder_daemon.kill()?;
+        let _ = node_b_daemon.kill()?;
+        let _ = node_c_daemon.kill()?;
     }
     if privileged_preflight.enabled {
         harness.cleanup_docker_runtime(NODES)?;
@@ -244,6 +292,8 @@ pub(crate) fn run() -> Result<(), String> {
         gateway_http_checks,
         acme_https_checks,
         container_dns_checks,
+        update_drain_checks,
+        daemon_restart_checks,
         gateway_statuses,
         dns_statuses,
         elapsed_ms: started.elapsed().as_millis(),
@@ -264,9 +314,15 @@ pub(crate) fn run() -> Result<(), String> {
     if report.privileged_preflight.enabled && report.container_dns_checks.len() != 1 {
         return Err("three-node-parity-smoke did not verify container service DNS".to_string());
     }
+    if report.privileged_preflight.enabled && report.update_drain_checks.len() != 1 {
+        return Err("three-node-parity-smoke did not verify update/drain".to_string());
+    }
+    if report.privileged_preflight.enabled && report.daemon_restart_checks.len() != 1 {
+        return Err("three-node-parity-smoke did not verify daemon restart survival".to_string());
+    }
     if report.privileged_preflight.enabled {
         eprintln!(
-            "PASS {SCENARIO} runtime placement, gateway HTTPS, and container DNS; later parity phases still pending"
+            "PASS {SCENARIO} runtime placement, gateway HTTPS, container DNS, update/drain, and daemon restart survival; later parity phases still pending"
         );
     } else {
         eprintln!(
@@ -419,7 +475,7 @@ fn verify_container_dns(
         "echo.service.example.test",
         "http://echo.service.example.test:8080/",
     )?;
-    if probe.body.trim() != "ok" {
+    if probe.body.trim() != "ok-echo-rev-1" {
         return Err(format!(
             "container DNS client reached echo but body was unexpected: {}",
             probe.body
@@ -432,6 +488,138 @@ fn verify_container_dns(
         dns_answer,
         probe,
     }])
+}
+
+fn verify_update_drain(
+    harness: &ProductHarness,
+    gateway_statuses: &[NodeRoleStatus],
+) -> Result<UpdateDrainEvidence, String> {
+    let pre_update_checks = verify_api_http_body(harness, gateway_statuses, "ok-api-rev-1")?;
+    let update_deploy = harness
+        .deploy_service_via_daemon(
+            "node-a",
+            "deploy-api-v2",
+            "node-b",
+            "api",
+            "rev-2",
+            "api.example.test",
+        )?
+        .record;
+    let response = parse_deploy_response(&update_deploy.stdout)?;
+    if response.old_backends == 0 {
+        return Err(format!(
+            "api rev-2 deploy did not report old backends to drain: {}",
+            update_deploy.stdout
+        ));
+    }
+    if response
+        .active_backends
+        .iter()
+        .all(|backend| !backend.contains("deploy-api-v2-api-rev-2"))
+    {
+        return Err(format!(
+            "api rev-2 deploy did not report the updated backend: {:?}",
+            response.active_backends
+        ));
+    }
+    let update_deploy_status = harness.deploy_status("node-a", "deploy-api-v2")?.record;
+    assert_deploy_status_complete(&update_deploy_status.stdout)?;
+    let gateway_reloads = reload_gateways(harness)?;
+    let post_update_checks = verify_api_http_body(harness, gateway_statuses, "ok-api-rev-2")?;
+
+    Ok(UpdateDrainEvidence {
+        service: "api",
+        target_node: "node-b",
+        pre_update_checks,
+        update_deploy,
+        update_deploy_status,
+        updated_active_backends: response.active_backends,
+        old_backends_to_drain: response.old_backends,
+        gateway_reloads,
+        post_update_checks,
+    })
+}
+
+fn verify_daemon_restart_survival(
+    harness: &ProductHarness,
+    gateway_statuses: &[NodeRoleStatus],
+    bootstrap_commands: &[ProductCommandRecord],
+    node_b_daemon: &mut crate::three_server_harness::ProductChild,
+) -> Result<DaemonRestartEvidence, String> {
+    let _ = node_b_daemon.kill()?;
+    *node_b_daemon = spawn_parity_daemon(harness, "node-b", true)?;
+    let post_restart_status = harness.wait_daemon_status("node-b")?;
+    let post_restart_checks = verify_api_http_body(harness, gateway_statuses, "ok-api-rev-2")?;
+    let post_restart_container_dns = verify_container_dns(harness, bootstrap_commands)?;
+
+    Ok(DaemonRestartEvidence {
+        restarted_node: "node-b",
+        post_restart_status,
+        post_restart_checks,
+        post_restart_container_dns,
+    })
+}
+
+fn verify_api_http_body(
+    harness: &ProductHarness,
+    gateway_statuses: &[NodeRoleStatus],
+    expected_body: &str,
+) -> Result<Vec<GatewayHttpEvidence>, String> {
+    ["node-a", "node-b", "node-c"]
+        .into_iter()
+        .map(|gateway_node| {
+            let gateway = role_status(gateway_statuses, gateway_node)?;
+            Ok(GatewayHttpEvidence {
+                service: "api",
+                gateway_node,
+                probe: harness.wait_http(
+                    gateway.status.listen_addr,
+                    "api.example.test",
+                    expected_body,
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn reload_gateways(harness: &ProductHarness) -> Result<Vec<NodeRoleStatus>, String> {
+    NODES
+        .iter()
+        .map(|node| {
+            Ok(NodeRoleStatus {
+                node: *node,
+                status: harness
+                    .reload_role(harness.role_control_socket(node, "gateway").as_path())?,
+            })
+        })
+        .collect()
+}
+
+fn parse_deploy_response(stdout: &str) -> Result<DeployResponse, String> {
+    serde_json::from_str(stdout)
+        .map_err(|error| format!("decode deploy response: {error}; stdout={stdout}"))
+}
+
+fn assert_deploy_status_complete(stdout: &str) -> Result<(), String> {
+    let value = serde_json::from_str::<serde_json::Value>(stdout)
+        .map_err(|error| format!("decode deploy status: {error}; stdout={stdout}"))?;
+    let phases = value
+        .get("statuses")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("deploy status missing statuses: {value}"))?;
+    if phases
+        .iter()
+        .any(|entry| entry.get("phase").and_then(serde_json::Value::as_str) == Some("failed"))
+    {
+        return Err(format!("deploy status contains failed phase: {value}"));
+    }
+    if phases
+        .iter()
+        .all(|entry| entry.get("phase").and_then(serde_json::Value::as_str) != Some("cleanup_done"))
+    {
+        return Err(format!("deploy status never reached cleanup_done: {value}"));
+    }
+    Ok(())
 }
 
 fn container_dns_answer(nslookup_stdout: &str) -> Result<String, String> {

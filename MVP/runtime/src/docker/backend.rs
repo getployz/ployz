@@ -197,6 +197,12 @@ impl DockerRuntime {
         let body = ContainerCreateBody {
             image: Some(self.config.image_for(spec)),
             cmd: self.config.command.clone(),
+            env: Some(vec![
+                format!("PLOYZ_INSTANCE_ID={}", spec.instance_id.as_str()),
+                format!("PLOYZ_SERVICE={}", spec.service.as_str()),
+                format!("PLOYZ_REVISION={}", spec.revision.as_str()),
+                format!("PLOYZ_NODE={}", self.config.node_id.as_str()),
+            ]),
             labels: Some(labels),
             host_config: Some(host_config),
             networking_config,
