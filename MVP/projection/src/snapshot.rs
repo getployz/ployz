@@ -329,7 +329,8 @@ fn gateway_operation_for_state(
     path: &Path,
 ) -> ProjectionResult<SnapshotOperation> {
     match gateway_snapshot_for_state(state)? {
-        Some(snapshot) => {
+        Some(mut snapshot) => {
+            preserve_existing_acme_state(&mut snapshot, state, path);
             SnapshotOperation::write(path, serde_json::to_vec(&snapshot)?, snapshot.revision)
         }
         None if state.statuses.is_empty() => Ok(SnapshotOperation::Remove {
@@ -337,6 +338,35 @@ fn gateway_operation_for_state(
         }),
         None => Ok(SnapshotOperation::Preserve),
     }
+}
+
+fn preserve_existing_acme_state(
+    snapshot: &mut GatewaySnapshotFile,
+    state: &ProjectionState,
+    path: &Path,
+) {
+    if (!snapshot.acme_http01.is_empty() && !snapshot.certificates.is_empty()) || !path.exists() {
+        return;
+    }
+    let Ok(existing) = load_gateway_snapshot(path, &state.island) else {
+        return;
+    };
+    if snapshot.acme_http01.is_empty()
+        && snapshot.certificates.is_empty()
+        && !existing.acme_http01.is_empty()
+    {
+        snapshot.acme_http01 = existing.acme_http01;
+    }
+    if snapshot.certificates.is_empty() && !existing.certificates.is_empty() {
+        snapshot.certificates = existing.certificates;
+    }
+    snapshot.revision = format!(
+        "gateway:{}:{}:acme:{}:certs:{}",
+        snapshot.gateway_commit_id,
+        snapshot.route_commit_id,
+        acme_revision(&snapshot.acme_http01),
+        certificate_revision(&snapshot.certificates)
+    );
 }
 
 fn dns_operation_for_state(

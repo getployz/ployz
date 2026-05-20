@@ -1,6 +1,8 @@
+use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +17,8 @@ const NODES: &[&str] = &["node-a", "node-b", "node-c"];
 const DOCKER_IMAGE: &str = "busybox:latest";
 const DOCKER_SERVICE_PORT: u16 = 8080;
 const DOCKER_COMMAND: &str = "mkdir -p /www && echo ok-$PLOYZ_SERVICE-$PLOYZ_REVISION >/www/index.html && httpd -f -p 8080 -h /www";
+const PROJECTION_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const PROJECTION_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Serialize)]
 struct ThreeNodeParityReport {
@@ -169,7 +173,9 @@ pub(crate) fn run() -> Result<(), String> {
     });
 
     let runtime_placements = if privileged_preflight.enabled {
-        deploy_runtime_workloads(&harness)?
+        let placements = deploy_runtime_workloads(&harness)?;
+        wait_gateway_route_projection(&harness, placements.len())?;
+        placements
     } else {
         Vec::new()
     };
@@ -515,15 +521,16 @@ fn verify_update_drain(
     if response
         .active_backends
         .iter()
-        .all(|backend| !backend.contains("deploy-api-v2-api-rev-2"))
+        .all(|backend| !backend.starts_with("node-b@10.210."))
     {
         return Err(format!(
-            "api rev-2 deploy did not report the updated backend: {:?}",
+            "api rev-2 deploy did not report a node-b container subnet backend: {:?}",
             response.active_backends
         ));
     }
     let update_deploy_status = harness.deploy_status("node-a", "deploy-api-v2")?.record;
     assert_deploy_status_complete(&update_deploy_status.stdout)?;
+    wait_gateway_api_update_projection(&harness)?;
     let gateway_reloads = reload_gateways(harness)?;
     let post_update_checks = verify_api_http_body(harness, gateway_statuses, "ok-api-rev-2")?;
 
@@ -593,6 +600,134 @@ fn reload_gateways(harness: &ProductHarness) -> Result<Vec<NodeRoleStatus>, Stri
             })
         })
         .collect()
+}
+
+fn wait_gateway_route_projection(
+    harness: &ProductHarness,
+    expected_routes: usize,
+) -> Result<(), String> {
+    let deadline = Instant::now() + PROJECTION_WAIT_TIMEOUT;
+    let mut last = Vec::new();
+    loop {
+        last.clear();
+        let mut ready = true;
+        for node in NODES {
+            let path = harness.node_dir(node).join("gateway.snapshot");
+            match gateway_route_count(&path) {
+                Ok(count) if count >= expected_routes => {
+                    last.push(format!("{node}={count}"));
+                }
+                Ok(count) => {
+                    ready = false;
+                    last.push(format!("{node}={count}"));
+                }
+                Err(error) => {
+                    ready = false;
+                    last.push(format!("{node}={error}"));
+                }
+            }
+        }
+        if ready {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "gateway projections did not reach {expected_routes} routes: {}",
+                last.join(", ")
+            ));
+        }
+        thread::sleep(PROJECTION_POLL);
+    }
+}
+
+fn wait_gateway_api_update_projection(harness: &ProductHarness) -> Result<(), String> {
+    let deadline = Instant::now() + PROJECTION_WAIT_TIMEOUT;
+    let mut last = Vec::new();
+    loop {
+        last.clear();
+        let mut ready = true;
+        for node in NODES {
+            let path = harness.node_dir(node).join("gateway.snapshot");
+            match api_update_snapshot_status(&path) {
+                Ok(()) => {
+                    last.push(format!("{node}=ready"));
+                }
+                Err(error) => {
+                    ready = false;
+                    last.push(format!("{node}={error}"));
+                }
+            }
+        }
+        if ready {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "gateway projections did not show api update/drain state: {}",
+                last.join(", ")
+            ));
+        }
+        thread::sleep(PROJECTION_POLL);
+    }
+}
+
+fn api_update_snapshot_status(path: &std::path::Path) -> Result<(), String> {
+    let snapshot =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&snapshot)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let gateway_commit_id = value
+        .get("gateway_commit_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let route_commit_id = value
+        .get("route_commit_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if gateway_commit_id != "deploy-api-v2-gateway" || route_commit_id != "deploy-api-v2-route" {
+        return Err(format!("revision={gateway_commit_id}/{route_commit_id}"));
+    }
+    let routes = value
+        .get("routes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "missing routes".to_string())?;
+    let api_route = routes
+        .iter()
+        .find(|route| route.get("route_id").and_then(serde_json::Value::as_str) == Some("api"))
+        .ok_or_else(|| "missing api route".to_string())?;
+    let has_active = endpoint_list_contains_node_subnet(api_route.get("backends"), "node-b");
+    let has_old =
+        endpoint_list_contains_node_subnet(api_route.get("old_backends_to_drain"), "node-b");
+    if !has_active || !has_old {
+        return Err(format!("api route active={has_active} old={has_old}"));
+    }
+    Ok(())
+}
+
+fn endpoint_list_contains_node_subnet(value: Option<&serde_json::Value>, node_id: &str) -> bool {
+    value
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|endpoints| {
+            endpoints.iter().any(|endpoint| {
+                endpoint.get("node_id").and_then(serde_json::Value::as_str) == Some(node_id)
+                    && endpoint
+                        .get("address")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|address| address.starts_with("10.210."))
+            })
+        })
+}
+
+fn gateway_route_count(path: &std::path::Path) -> Result<usize, String> {
+    let snapshot =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let value = serde_json::from_str::<serde_json::Value>(&snapshot)
+        .map_err(|error| format!("decode {}: {error}", path.display()))?;
+    value
+        .get("routes")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .ok_or_else(|| format!("{} missing routes array", path.display()))
 }
 
 fn parse_deploy_response(stdout: &str) -> Result<DeployResponse, String> {
@@ -739,7 +874,7 @@ fn missing_privileged_prerequisites() -> Vec<String> {
     if !is_root() {
         missing.push("root privileges".to_string());
     }
-    for command in ["docker", "ip", "iptables", "ployz-bpfctl"] {
+    for command in ["curl", "docker", "ip", "iptables", "ployz-bpfctl"] {
         if !command_available(command) {
             missing.push(format!("command `{command}`"));
         }

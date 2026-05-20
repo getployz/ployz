@@ -126,9 +126,19 @@ impl DaemonOptions {
 
     #[must_use]
     pub fn with_linux_wireguard(mut self, ifname: impl Into<String>) -> Self {
+        self = self.with_linux_wireguard_listen_port(ifname, 51820);
+        self
+    }
+
+    #[must_use]
+    pub fn with_linux_wireguard_listen_port(
+        mut self,
+        ifname: impl Into<String>,
+        listen_port: u16,
+    ) -> Self {
         self.wireguard = DaemonWireGuardMode::Linux {
             ifname: ifname.into(),
-            listen_port: 51820,
+            listen_port,
         };
         self
     }

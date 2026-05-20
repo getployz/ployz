@@ -280,9 +280,10 @@ impl<'a> Reducer<'a> {
         self.state.acme_http01 = self.project_acme_http01();
         self.state.certificates = self.project_certificates();
         self.record_lease_supersession();
-        if let Some(commit) = self.serving_head() {
-            self.state.gateway = Some(project_gateway_from_serving(&commit));
-            self.state.dns = Some(project_dns_from_serving(commit));
+        let serving_commits = self.serving_heads_by_route();
+        if !serving_commits.is_empty() {
+            self.state.gateway = Some(project_gateway_from_serving_commits(&serving_commits));
+            self.state.dns = Some(project_dns_from_serving_commits(serving_commits));
         } else {
             self.state.gateway = self.project_gateway();
             self.state.dns = self.project_dns();
@@ -687,47 +688,77 @@ impl<'a> Reducer<'a> {
         Some(selection.fact)
     }
 
-    fn serving_head(&mut self) -> Option<ServingCommitFact> {
-        let selection = select_head(
-            self.serving_commits.values(),
-            |fact| fact.epoch,
-            |fact| fact.serving_commit_id.as_str(),
-        )?;
-        self.ignore_many(ProjectionIgnoreReason::Superseded, selection.superseded);
-        Some(selection.fact)
+    fn serving_heads_by_route(&mut self) -> Vec<ServingCommitFact> {
+        let mut by_route = BTreeMap::new();
+        for commit in self.serving_commits.values() {
+            by_route
+                .entry(commit.fact.route_id.clone())
+                .or_insert_with(Vec::new)
+                .push(commit.clone());
+        }
+        by_route
+            .into_values()
+            .filter_map(|commits| {
+                let selection = select_head(
+                    commits.iter(),
+                    |fact| fact.epoch,
+                    |fact| fact.serving_commit_id.as_str(),
+                )?;
+                self.ignore_many(ProjectionIgnoreReason::Superseded, selection.superseded);
+                Some(selection.fact)
+            })
+            .collect()
     }
 }
 
-fn project_gateway_from_serving(commit: &ServingCommitFact) -> GatewayProjection {
+fn project_gateway_from_serving_commits(commits: &[ServingCommitFact]) -> GatewayProjection {
+    let head = serving_projection_head(commits);
+    let mut routes = commits
+        .iter()
+        .map(project_route_from_serving)
+        .collect::<Vec<_>>();
+    routes.sort();
+    GatewayProjection {
+        gateway_commit_id: head.gateway_commit_id.clone(),
+        route_commit_id: head.route_commit_id.clone(),
+        routes,
+    }
+}
+
+fn project_route_from_serving(commit: &ServingCommitFact) -> GatewayRouteProjection {
     let mut hostnames = commit.hostnames.clone();
     hostnames.sort();
     let mut backends = commit.backends.clone();
     backends.sort();
     let mut old_backends_to_drain = commit.old_backends_to_drain.clone();
     old_backends_to_drain.sort();
-    GatewayProjection {
-        gateway_commit_id: commit.gateway_commit_id.clone(),
-        route_commit_id: commit.route_commit_id.clone(),
-        routes: vec![GatewayRouteProjection {
-            route_id: commit.route_id.clone(),
-            hostnames,
-            backends,
-            old_backends_to_drain,
-        }],
+    GatewayRouteProjection {
+        route_id: commit.route_id.clone(),
+        hostnames,
+        backends,
+        old_backends_to_drain,
     }
 }
 
-fn project_dns_from_serving(commit: ServingCommitFact) -> DnsProjection {
-    let mut records = commit
-        .dns_records
+fn project_dns_from_serving_commits(commits: Vec<ServingCommitFact>) -> DnsProjection {
+    let dns_commit_id = serving_projection_head(&commits).dns_commit_id.clone();
+    let mut records = commits
         .into_iter()
+        .flat_map(|commit| commit.dns_records)
         .map(DnsRecordProjection::from)
         .collect::<Vec<_>>();
     records.sort();
     DnsProjection {
-        dns_commit_id: commit.dns_commit_id,
+        dns_commit_id,
         records,
     }
+}
+
+fn serving_projection_head(commits: &[ServingCommitFact]) -> &ServingCommitFact {
+    commits
+        .iter()
+        .max_by_key(|commit| (commit.epoch, commit.serving_commit_id.as_str()))
+        .expect("serving projection head requires at least one commit")
 }
 
 fn acme_key(id: &AcmeChallengeId) -> AcmeHttp01ChallengeKey {

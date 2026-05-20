@@ -224,7 +224,10 @@ fn daemon(args: &[String]) -> NodeResult<String> {
         options = options.with_control_socket(control_socket);
     }
     if let Some(ifname) = parsed.linux_wireguard_ifname {
-        options = options.with_linux_wireguard(ifname);
+        options = match parsed.linux_wireguard_listen_port {
+            Some(port) => options.with_linux_wireguard_listen_port(ifname, port),
+            None => options.with_linux_wireguard(ifname),
+        };
     }
     if let DeployRuntimeArgs::Docker {
         image,
@@ -625,6 +628,7 @@ struct DaemonArgs {
     run_for_ms: Option<u64>,
     control_socket: Option<PathBuf>,
     linux_wireguard_ifname: Option<String>,
+    linux_wireguard_listen_port: Option<u16>,
     runtime: DeployRuntimeArgs,
 }
 
@@ -1230,6 +1234,7 @@ impl DaemonArgs {
         let mut run_for_ms = None;
         let mut control_socket = None;
         let mut linux_wireguard_ifname = None;
+        let mut linux_wireguard_listen_port = None;
         let mut daemon_runtime = DeployRuntimeArgs::Process;
         let mut docker_image = None;
         let mut docker_service_port = None;
@@ -1271,6 +1276,21 @@ impl DaemonArgs {
                         });
                     };
                     linux_wireguard_ifname = Some(value.clone());
+                }
+                "--linux-wireguard-listen-port" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--linux-wireguard-listen-port",
+                        });
+                    };
+                    linux_wireguard_listen_port =
+                        Some(
+                            value
+                                .parse::<u16>()
+                                .map_err(|_| NodeError::UnknownArgument {
+                                    argument: value.clone(),
+                                })?,
+                        );
                 }
                 "--runtime" => {
                     let Some(value) = remaining.next() else {
@@ -1331,6 +1351,7 @@ impl DaemonArgs {
             run_for_ms,
             control_socket,
             linux_wireguard_ifname,
+            linux_wireguard_listen_port,
             runtime: match daemon_runtime {
                 DeployRuntimeArgs::Process => DeployRuntimeArgs::Process,
                 DeployRuntimeArgs::Docker { .. } => DeployRuntimeArgs::Docker {
@@ -1415,7 +1436,7 @@ fn help() -> String {
         "  init --state <dir> [--island <id>] [--node-id <id>]",
         "  bootstrap --state <dir> [--island <id>] [--node-id <id>]",
         "  status --state <dir>",
-        "  daemon --state <dir> [--run-for-ms <ms>] [--linux-wireguard-ifname <ifname>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]]",
+        "  daemon --state <dir> [--run-for-ms <ms>] [--linux-wireguard-ifname <ifname>] [--linux-wireguard-listen-port <port>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]]",
         "  invite --state <dir> [--ttl-ms <ms>]",
         "  join --state <dir> --token <json> [--node-id <id>]",
         "  admission --state <dir>",
@@ -1471,6 +1492,10 @@ mod tests {
             "60000".to_string(),
             "--control".to_string(),
             "daemon.sock".to_string(),
+            "--linux-wireguard-ifname".to_string(),
+            "ployz-node-a".to_string(),
+            "--linux-wireguard-listen-port".to_string(),
+            "51821".to_string(),
             "--runtime".to_string(),
             "docker".to_string(),
             "--image".to_string(),
@@ -1484,6 +1509,11 @@ mod tests {
 
         assert_eq!(parsed.state_dir, std::path::PathBuf::from("node-a"));
         assert_eq!(parsed.run_for_ms, Some(60_000));
+        assert_eq!(
+            parsed.linux_wireguard_ifname.as_deref(),
+            Some("ployz-node-a")
+        );
+        assert_eq!(parsed.linux_wireguard_listen_port, Some(51821));
         match parsed.runtime {
             DeployRuntimeArgs::Docker {
                 image,

@@ -424,6 +424,7 @@ impl AcmeIssuer for InstantAcmeIssuer {
         hostname: AcmeHostname,
         now_secs: u64,
     ) -> Result<StartedAcmeOrder, AcmeIssuanceError> {
+        install_rustls_crypto_provider();
         let account = load_or_create_account(
             account_store,
             &self.config,
@@ -500,6 +501,7 @@ impl AcmeIssuer for InstantAcmeIssuer {
         order_url: AcmeOrderUrl,
         now_secs: u64,
     ) -> Result<IssuedCertificate, AcmeIssuanceError> {
+        install_rustls_crypto_provider();
         order_url.ensure_same_origin_as_directory(&self.config.directory_url)?;
         let account = load_or_create_account(
             account_store,
@@ -582,6 +584,10 @@ impl AcmeIssuer for InstantAcmeIssuer {
             not_after_secs: None,
         })
     }
+}
+
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 pub fn contact_uris(contact_email: Option<&str>) -> Vec<String> {
