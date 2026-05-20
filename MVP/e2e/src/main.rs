@@ -134,9 +134,21 @@ mod projection_harness;
 mod scale;
 mod steady_state_serving_contract;
 #[cfg(unix)]
+mod three_node_parity_smoke;
+#[cfg(unix)]
 mod three_server_harness;
 #[cfg(unix)]
 mod three_server_product_contract;
+#[cfg(not(unix))]
+mod three_node_parity_smoke {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("three-node-parity-smoke uses Unix sockets in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
 #[cfg(not(unix))]
 mod three_server_product_contract {
     pub(crate) fn run() -> Result<(), String> {
@@ -289,6 +301,11 @@ const SCENARIOS: &[Scenario] = &[
     Scenario::new(
         "container-overlay-dns-smoke",
         container_overlay_dns_smoke::run,
+    ),
+    Scenario::with_cleanup(
+        "three-node-parity-smoke",
+        three_node_parity_smoke::run,
+        three_node_parity_smoke::cleanup_orphaned_children,
     ),
     Scenario::new("volume-transfer-contract", volume_transfer_contract::run),
     Scenario::new("scale", scale::run),

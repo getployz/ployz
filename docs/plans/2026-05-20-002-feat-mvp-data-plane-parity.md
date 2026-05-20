@@ -473,7 +473,8 @@ Acceptance:
 
 ### Slice 7: Three-Node Data-Plane Parity Smoke
 
-Status: next. Slice plan:
+Status: active. U1 installed-binary harness shell is complete on the current
+macOS/non-root host with explicit privileged blockers recorded. Slice plan:
 `docs/plans/2026-05-20-009-feat-mvp-three-node-parity-smoke-slice.md`.
 
 Goal: prove the full end-to-end product behavior on three equal Linux nodes.
