@@ -268,6 +268,11 @@ old-backend drain evidence, and post-restart responses.
 
 **Goal:** finish the top-level parity push with evidence mapped to R1-R14.
 
+**Status:** complete for the local documentation gate. The parent plan now has
+a requirement-by-requirement audit that separates local passing evidence from
+the privileged Linux data-plane blocker and names the next required evidence
+command before the parity push can be called complete.
+
 **Requirements:** R14, R15.
 
 **Dependencies:** U5.
@@ -394,14 +399,15 @@ Residual local Docker verification:
 - [ ] Daemon restart does not stop gateway, DNS, or already-running containers.
   Product path is wired; passing evidence still requires a privileged Linux
   host.
-- [ ] Parent plan final gate has a requirement audit for R1-R14.
+- [x] Parent plan final gate has a requirement audit for R1-R14.
 
 ## Next Slice 7 Sub-Slice
 
-The next implementation pass should start U6, final gate and requirement audit.
-Before claiming U2, U3, U4, or U5 complete, run the current smoke on a
-privileged Linux host and fix any placement, gateway, Pebble, container DNS,
-update/drain, or daemon restart failures surfaced there.
+The next implementation pass should run the current smoke on a privileged
+Linux host and fix any placement, gateway, Pebble, container DNS,
+update/drain, or daemon restart failures surfaced there. U6 has recorded the
+audit, but U2-U5 should not be marked passing until that privileged evidence
+exists.
 
 ## Explicit Deferrals
 
