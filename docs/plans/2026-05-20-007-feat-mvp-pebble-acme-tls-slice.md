@@ -28,15 +28,21 @@ Already present:
 - Hyper and Pingora HTTP gateway engines both serve HTTP-01 before route lookup.
 - The non-MVP codebase already has a working Pebble/challtestsrv E2E and
   `instant-acme` issuer implementation.
+- `mvp-acme` now has the issuer boundary and `InstantAcmeIssuer`.
+- `mvp-projection` now projects certificate activation facts into serving
+  snapshots.
+- `mvp-serving` now exposes projected serving certificates and Pingora can
+  terminate TLS on an optional TLS listener using those certificates.
 
 Missing:
 
-- MVP has no ACME issuer abstraction.
-- MVP has no ACME account credential persistence.
-- MVP has no order lifecycle or issued certificate model.
-- MVP has no projected certificate material for the serving snapshot.
-- Pingora is currently the default HTTP engine, but it does not yet serve TLS.
-- No MVP Pebble-backed E2E validates a cert against Pebble's root.
+- `mvp-node` does not yet expose a product command/role that runs issuance,
+  persists ACME account credentials, writes certificate activation facts, and
+  reloads serving snapshots.
+- `mvp-node gateway` does not yet expose a TLS listener flag even though
+  `mvp-serving` supports one.
+- No MVP Pebble-backed E2E validates a cert against Pebble's root through the
+  product binary.
 
 ## Reference Implementation To Port
 
@@ -152,6 +158,167 @@ Acceptance:
 - The issued certificate validates against Pebble's root.
 - The test fails if HTTP-01 is not visible through the node-local gateway.
 - The test fails if Pingora is still HTTP-only.
+
+## Remaining Execution Plan
+
+This is the concrete plan to finish the slice after Unit 5.
+
+### U6A. Product TLS Gateway Flag
+
+**Goal:** make the already-implemented Pingora TLS listener reachable through
+the `mvp-node gateway` command.
+
+**Files:**
+
+- `MVP/node/src/main.rs`
+- `MVP/node/src/serving.rs`
+- `MVP/node/tests/product_serving_roles.rs`
+- `MVP/README.md`
+
+**Approach:**
+
+- Add `--tls-listen <addr>` to `mvp-node gateway`.
+- Extend `ServingRoleOptions` with `tls_listen: Option<SocketAddr>`.
+- Pass the TLS listener into `GatewayOptions::with_tls_listener` only for the
+  gateway role.
+- Include `tls_listen_addr` in `ServingRoleProcessStatus` so tests and operators
+  can discover the bound TLS port when `127.0.0.1:0` is used.
+- Keep DNS role unchanged; reject or ignore no TLS option there by construction
+  because `--tls-listen` belongs only to the gateway command parser.
+
+**Test Scenarios:**
+
+- Gateway role started with `--tls-listen 127.0.0.1:0` reports both HTTP and TLS
+  listeners through the control socket.
+- Gateway role without `--tls-listen` preserves the current status JSON shape as
+  much as possible, with TLS represented as `null` if the field is added.
+- DNS role behavior and status remain unchanged.
+
+**Verification:**
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node product_serving_roles`
+- `cargo check --manifest-path MVP/Cargo.toml -p mvp-node`
+
+### U6B. Product ACME Issue Command
+
+**Goal:** add a product-facing command that performs real ACME issuance and
+publishes the certificate as durable MVP facts.
+
+**Files:**
+
+- `MVP/node/src/main.rs`
+- `MVP/node/src/acme.rs` or a focused module under `MVP/node/src/`
+- `MVP/node/src/error.rs`
+- `MVP/node/src/state.rs`
+- `MVP/node/Cargo.toml`
+- `MVP/acme-command/src/p2panda.rs` if the certificate activation writer belongs
+  beside existing ACME command adapters.
+- `MVP/acme-command/src/tests.rs`
+- `MVP/node/tests/product_acme.rs`
+
+**Approach:**
+
+- Add `mvp-node acme-issue --state <dir> --hostname <host> --gateway <url>
+  [--issuer-holder <id>] [--account-path <path>]`.
+- Load `AcmeIssuerConfig::from_env()` so Pebble uses
+  `PLOYZ_ACME_DIRECTORY_URL` and `PLOYZ_ACME_ROOT_CA_PATH`.
+- Persist account credentials under the node state directory unless
+  `--account-path` is provided. The account store should key records by
+  directory URL and serialize first-use creation locally.
+- Use `InstantAcmeIssuer` with a publisher backed by `PandaAcmeHttp01Publisher`.
+- Implement `AcmeHttp01ChallengeReadiness` by polling the supplied gateway URL
+  for each challenge token before `set_ready`.
+- After finalization, write `AcmeCertificateActivatedFact` through the canonical
+  p2panda fact store with the same authority/manual-admission rules used by
+  other product fact writers.
+- Return structured command output that includes hostname, order URL, issued-at,
+  not-before/not-after when present, and visible nodes at decision time.
+
+**Test Scenarios:**
+
+- Account credentials are created once and reused on the second issue attempt
+  for the same directory URL.
+- Malformed account credentials fail with a structured node error and do not
+  write certificate activation facts.
+- Challenge readiness timeout fails visibly and leaves no certificate activation
+  fact.
+- Certificate activation fact is written with the issued certificate material
+  and can be projected into the serving snapshot.
+- Token-scoped clear still leaves a newer in-flight token untouched.
+
+**Verification:**
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme-command`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node product_acme`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-projection -p mvp-serving`
+
+### U6C. Pebble HTTPS E2E
+
+**Goal:** prove the full product path against Pebble and the Pingora TLS
+gateway, not a fake issuer.
+
+**Files:**
+
+- `MVP/e2e/src/main.rs`
+- `MVP/e2e/src/pebble_acme_https_contract.rs`
+- `MVP/e2e/Cargo.toml`
+- `MVP/scripts/pebble-acme-https-smoke.sh` if shell orchestration is simpler
+  for Docker/Pebble setup
+- `packaging/e2e/pebble/pebble-config.json` as reference only unless an MVP-local
+  copy is needed
+
+**Approach:**
+
+- Reuse the non-MVP runner mechanics for Pebble and challtestsrv: start both
+  containers, mount `packaging/e2e/pebble`, and use Pebble's root CA for client
+  verification.
+- Start a product node with gateway HTTP and TLS listeners.
+- Deploy or otherwise publish a route for the ACME hostname to a trivial HTTP
+  backend.
+- Run `mvp-node acme-issue` against the HTTP gateway URL so HTTP-01 visibility
+  is proven through the product gateway before `set_ready`.
+- Project/reload serving snapshots after the certificate activation fact is
+  written.
+- Verify HTTPS using Pebble's root CA and SNI/Host matching the issued hostname.
+
+**Test Scenarios:**
+
+- Happy path issues a real Pebble certificate and `curl --cacert` against the
+  Pingora TLS listener returns the backend body.
+- The scenario fails before `set_ready` if the HTTP-01 token is not visible
+  through the gateway.
+- The scenario fails if the gateway has no TLS listener or does not serve the
+  projected certificate.
+- A second issuance run reuses the account record and rotates the active
+  certificate snapshot revision.
+
+**Verification:**
+
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- pebble-acme-https-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-acme-http01-contract`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
+
+### U6D. Final Gate
+
+**Goal:** make the whole ACME/TLS slice reviewable and complete.
+
+**Verification:**
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme-command`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-projection`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- p2panda-acme-http01-contract`
+- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- pebble-acme-https-contract`
+
+**Review Scope:**
+
+- Run a lightweight self-review for U6A if it stays parser/wiring only.
+- Run a real code review pass before committing U6B/U6C because they touch
+  durable account state, p2panda fact writes, ACME protocol flow, and E2E
+  orchestration.
 
 ## Test Plan
 
