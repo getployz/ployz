@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mvp_acme::AcmeKeyAuthorization;
-use mvp_projection::{DnsRecordProjection, GatewayRouteProjection};
+use mvp_projection::{DnsRecordProjection, GatewayRouteProjection, ServingCertificateProjection};
 use serde::{Deserialize, Serialize};
 
 use crate::{ServingActorHandle, ServingResult, ServingStatus};
@@ -134,6 +134,13 @@ impl WireServingState {
         token: impl Into<String>,
     ) -> ServingResult<Option<AcmeKeyAuthorization>> {
         self.serving.acme_http01_challenge(host, token).await
+    }
+
+    pub async fn certificate_for_host(
+        &self,
+        host: impl Into<String>,
+    ) -> ServingResult<Option<ServingCertificateProjection>> {
+        self.serving.certificate_for_host(host).await
     }
 
     pub async fn reload(&self) -> ServingResult<ServingStatus> {

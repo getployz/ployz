@@ -19,6 +19,9 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, timeout};
+use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 use crate::{
     GatewayEngineKind, GatewayOptions, ServingActorHandle, ServingError, ServingFailureKind,
@@ -192,6 +195,18 @@ fn acme_challenge(host: &str, token: &str, thumbprint: &str) -> AcmeHttp01Challe
         claim_hash: LeaseFact::Claimed(claim).content_hash(),
         published_at: LeaseTimestamp::from_secs(101),
         expires_at: future_lease_timestamp(),
+    }
+}
+
+fn serving_certificate(host: &str) -> ServingCertificateProjection {
+    ServingCertificateProjection {
+        hostname: AcmeHostname::parse(host).expect("hostname"),
+        order_url: AcmeOrderUrl::parse("https://pebble.test/order/1").expect("order url"),
+        fullchain_pem: TEST_CERT_PEM.to_string(),
+        private_key_pem: TEST_KEY_PEM.to_string(),
+        issued_at_secs: 10,
+        not_before_secs: Some(9),
+        not_after_secs: Some(90),
     }
 }
 
@@ -519,6 +534,51 @@ async fn gateway_default_pingora_engine_routes_to_selected_backend() {
     assert_eq!(gateway.engine(), GatewayEngineKind::Pingora);
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert!(response.contains("pingora-backend-1 /health"), "{response}");
+    assert_eq!(gateway.metrics().request_count, 1);
+    gateway.shutdown().await.expect("shutdown gateway");
+    backend.shutdown().await;
+}
+
+#[tokio::test]
+async fn gateway_default_pingora_engine_serves_https_with_projected_certificate() {
+    let backend = TestBackend::spawn("pingora-tls-backend-1").await;
+    let root = TempDir::new().expect("tempdir");
+    let mut gateway_snapshot = gateway_snapshot(
+        "prod",
+        "rev-1",
+        "web.example.test",
+        &backend.addr().to_string(),
+    );
+    gateway_snapshot
+        .certificates
+        .push(serving_certificate("web.example.test"));
+    write_snapshot_files(
+        &root,
+        &gateway_snapshot,
+        &dns_snapshot("prod", "rev-1", "web.example.test", "fd00::1"),
+    );
+    let actor = ServingActorHandle::spawn(prod(), snapshot_paths(&root), Duration::from_secs(60))
+        .expect("spawn serving actor");
+    let gateway = spawn_gateway(
+        GatewayOptions::new(loopback_any()).with_tls_listener(loopback_any()),
+        WireServingState::new(actor),
+    )
+    .await
+    .expect("spawn pingora gateway");
+
+    let response = https_get(
+        gateway.tls_listen_addr().expect("tls listener"),
+        "web.example.test",
+        "/secure",
+    )
+    .await;
+
+    assert_eq!(gateway.engine(), GatewayEngineKind::Pingora);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        response.contains("pingora-tls-backend-1 /secure"),
+        "{response}"
+    );
     assert_eq!(gateway.metrics().request_count, 1);
     gateway.shutdown().await.expect("shutdown gateway");
     backend.shutdown().await;
@@ -1133,6 +1193,35 @@ async fn http_request(addr: SocketAddr, request: &str) -> String {
     String::from_utf8(response).expect("utf8 response")
 }
 
+async fn https_get(addr: SocketAddr, host: &str, path: &str) -> String {
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let certificate =
+        CertificateDer::from_pem_slice(TEST_CERT_PEM.as_bytes()).expect("parse test root cert");
+    let mut roots = RootCertStore::empty();
+    roots.add(certificate).expect("add test root cert");
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(std::sync::Arc::new(config));
+    let stream = TcpStream::connect(addr).await.expect("connect tls gateway");
+    let server_name = ServerName::try_from(host.to_string()).expect("server name");
+    let mut stream = connector
+        .connect(server_name, stream)
+        .await
+        .expect("tls connect");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write tls request");
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        .await
+        .expect("read tls response timeout")
+        .expect("read tls response");
+    String::from_utf8(response).expect("utf8 tls response")
+}
+
 fn future_lease_timestamp() -> LeaseTimestamp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1140,6 +1229,56 @@ fn future_lease_timestamp() -> LeaseTimestamp {
         .as_secs();
     LeaseTimestamp::from_secs(now + 3600)
 }
+
+const TEST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDLzCCAhegAwIBAgIUXLw4089Ml+m0b3GABD+6Omp/ceEwDQYJKoZIhvcNAQEL
+BQAwGzEZMBcGA1UEAwwQd2ViLmV4YW1wbGUudGVzdDAeFw0yNjA1MjAwMzI0MDNa
+Fw0zNjA1MTcwMzI0MDNaMBsxGTAXBgNVBAMMEHdlYi5leGFtcGxlLnRlc3QwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCyFG9c7o252DticdEFCzIpCwWf
+QruCyLpacXnf/N80ox+ys8UKm+NS8LneVLkz+1gfZSwvtdtIWVrjVbkCV8h/piqj
+LSZ4AP9aTUA6IWC3xhBv0ZqXGe33jY4FBk0KuKTK/zXSnmXqJ0kSGaJLnum8pM+t
+hPq/lQ6oxe3PIpwsvoik7t9NLIzbflyOlw6v7qtKnbQtIB8qLDKB+EEWg/K7oRoY
+bT5+mKZLWp6DnsqcIFqpj40xJShSZ4U7dMw7S75BG4WA81I/MdMFZ9Jd4L4rsQe1
+jf2YW8PHwfjb12yDJDdjjn0b7D7288zSN5B3xtErxfLiWdDk6v0Te7bIJfIzAgMB
+AAGjazBpMBsGA1UdEQQUMBKCEHdlYi5leGFtcGxlLnRlc3QwCQYDVR0TBAIwADAL
+BgNVHQ8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwEwHQYDVR0OBBYEFLw+MwhL
+GccVdX/eLoYmGPT10IPwMA0GCSqGSIb3DQEBCwUAA4IBAQCkInx0tZhnxnP7wbKL
+u4Z6qVQxG4wMfkX3Ye0kqnotxGHCbxZAnBa0lGOld51yiLJah9l2YWesjf8jmsed
+BJxibnbPzWo2N9MRNDnCz/ReudgHwRhPSIg48TsRjBN7XteF68Fd7/xtOCt4MMa+
+QhF9//zmMSNa7J16w/t+I9vd6I+UXZOhLB8WasFg0ts/Vw+m1Vl2pQVnyTZiz0I4
+wXw6Cr8zmxdIbqeEyBQL4ip2jwrbTwBlNXPxJGObWiHRQpPfABlsNJTJq+dZSk66
+TrofbA3ds5W4K+KBitCVv2GILAQqm6Ltkw7y8bG6oYaE3V8G20vaIhaDYtpigXNO
+Nq/F
+-----END CERTIFICATE-----"#;
+
+const TEST_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCyFG9c7o252Dti
+cdEFCzIpCwWfQruCyLpacXnf/N80ox+ys8UKm+NS8LneVLkz+1gfZSwvtdtIWVrj
+VbkCV8h/piqjLSZ4AP9aTUA6IWC3xhBv0ZqXGe33jY4FBk0KuKTK/zXSnmXqJ0kS
+GaJLnum8pM+thPq/lQ6oxe3PIpwsvoik7t9NLIzbflyOlw6v7qtKnbQtIB8qLDKB
++EEWg/K7oRoYbT5+mKZLWp6DnsqcIFqpj40xJShSZ4U7dMw7S75BG4WA81I/MdMF
+Z9Jd4L4rsQe1jf2YW8PHwfjb12yDJDdjjn0b7D7288zSN5B3xtErxfLiWdDk6v0T
+e7bIJfIzAgMBAAECggEAHHFzzBsfhfSJ9P0K4/cC1FgPVihkJ3faKVdV87cXC6Lr
+uDD1zZj9OSJ7/Y1OENsaGyxKCiDOMoMbJ5O/O3w76QToayxrUuA4k6V3wbvSZT1R
+zhpjdQj436u7aFq2SXpueoHtiIOGRwfD/bZxxrROJF8KphjHAtH9smqoGN0v/Aal
+AEkwYMTtUkobouU6JJkWz126j7Hqrd9JmiajNVMUX8+Z557nJWuGxqlN0pNEj9IP
+tF7wfcvPn7+1Z9uM3yWdW2MB8I3U7/UCJu0w/Vxd5lIZdeD8AS65ELuPRh9asIKe
+cL7kep3ZzEevnIfwqM6pFLNjk/+PgICGSGN0S7QmEQKBgQDnxAyPFsMzHp6LjnC6
+wqOIYIfnw/pqQt6dUXktGsUtXSff+7sha4b0zxjvbmY++K4Lgmvm5ruyVsXQ1ctB
+f8f6pb3FGA2gz7su9dpaa4LCBGWH+ZZ9g2sc82xFuoRlcxdPl53g3JrOMCDFfuD/
+93rgzWzGgVdr17gBQPDqhaJjuwKBgQDEs08o+kIJ+PPr2GdKd3UiVSZO6DoFScwh
+4CbW1/mWZj46qTfOK7JI3XOzkcpseIsLzES77sqZWWvjk2FYcxy98wZchELgMVqg
+q8uW6UK7/OdyEmaRNItQru8bBR55xicAYfA0lMKfQ8rKHUa8kcI8ktYW0Lr2SaFD
+IYBnTwQ36QKBgAduFIz9yNI5uBF3RovmM4HqvlCiysNfU22tr/nPMuUKaH3Yvx4K
+KXBttzntyx9Xr5S04KqtWPUVrQ/N2s9Fvm59o8DOzZkLL9AIl7BwY+e+ZlbenIF3
+lhZ+g0kU+quZ7fRiQvBzgg78IgDS2Xm7QFg2nbcbbGcLql137IFIOXWDAoGAYTI5
+a4Y+G69o2KGWaLWeq9hnlZYrFXHh7NtWVdNjAW6EUXhMmxP8hQTop1LjM7Zc/vdw
+/2x/sEb/iPTKpWo8SaBNBGpWoXHB1qMNdwTMdRgDRdrR0+6i6LuIa1GcPZAstYOv
+rkvT398f1b+htIxR7pygLaX2vLylcwaa7HGfJAECgYEAprOMymUuZqdiwqdcdigv
+qeXsLviRBqjZALIPYFqSI/8pLHow3adt8Ky9snXxa9IHTdNrdA342jZ/MsDsQ3mE
+SseQNlXcQQmQYbFtLKt6bXpco9R+HrIkxcSq0+3UYop5RdfYnkm5yDnwiuoXlKVO
+lbSvEElFvEyGXOR0j9KuRdw=
+-----END PRIVATE KEY-----"#;
 
 async fn wait_for_tcp_bind(addr: SocketAddr) -> TcpListener {
     let deadline = Instant::now() + Duration::from_secs(2);

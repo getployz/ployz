@@ -20,6 +20,7 @@ impl Default for GatewayEngineKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayOptions {
     pub listen_addr: SocketAddr,
+    pub tls_listen_addr: Option<SocketAddr>,
     pub engine: GatewayEngineKind,
 }
 
@@ -28,6 +29,7 @@ impl GatewayOptions {
     pub fn new(listen_addr: SocketAddr) -> Self {
         Self {
             listen_addr,
+            tls_listen_addr: None,
             engine: GatewayEngineKind::default(),
         }
     }
@@ -35,6 +37,12 @@ impl GatewayOptions {
     #[must_use]
     pub fn with_engine(mut self, engine: GatewayEngineKind) -> Self {
         self.engine = engine;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tls_listener(mut self, listen_addr: SocketAddr) -> Self {
+        self.tls_listen_addr = Some(listen_addr);
         self
     }
 }
@@ -64,6 +72,14 @@ impl GatewayHandle {
     }
 
     #[must_use]
+    pub fn tls_listen_addr(&self) -> Option<SocketAddr> {
+        match &self.inner {
+            GatewayEngineHandle::Hyper(handle) => handle.tls_listen_addr(),
+            GatewayEngineHandle::Pingora(handle) => handle.tls_listen_addr(),
+        }
+    }
+
+    #[must_use]
     pub fn metrics(&self) -> WireRoleMetrics {
         match &self.inner {
             GatewayEngineHandle::Hyper(handle) => handle.metrics(),
@@ -85,6 +101,11 @@ pub async fn spawn_gateway(
 ) -> HttpGatewayResult<GatewayHandle> {
     match options.engine {
         GatewayEngineKind::Hyper => {
+            if options.tls_listen_addr.is_some() {
+                return Err(HttpGatewayError::TlsConfig(
+                    "TLS listener is only supported by the pingora gateway engine".to_string(),
+                ));
+            }
             let handle = spawn_http_gateway(options.listen_addr, state).await?;
             Ok(GatewayHandle {
                 engine: GatewayEngineKind::Hyper,
@@ -92,8 +113,12 @@ pub async fn spawn_gateway(
             })
         }
         GatewayEngineKind::Pingora => {
-            let handle =
-                crate::pingora_gateway::spawn_pingora_gateway(options.listen_addr, state).await?;
+            let handle = crate::pingora_gateway::spawn_pingora_gateway(
+                options.listen_addr,
+                options.tls_listen_addr,
+                state,
+            )
+            .await?;
             Ok(GatewayHandle {
                 engine: GatewayEngineKind::Pingora,
                 inner: GatewayEngineHandle::Pingora(handle),
@@ -115,6 +140,7 @@ mod tests {
         let options = GatewayOptions::new(listen_addr);
 
         assert_eq!(options.listen_addr, listen_addr);
+        assert_eq!(options.tls_listen_addr, None);
         assert_eq!(options.engine, GatewayEngineKind::Pingora);
     }
 }

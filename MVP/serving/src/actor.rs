@@ -8,7 +8,7 @@ use kameo::mailbox;
 use kameo::message::{Context, Message};
 use mvp_acme::AcmeKeyAuthorization;
 use mvp_bus::IslandId;
-use mvp_projection::{DnsRecordProjection, GatewayRouteProjection};
+use mvp_projection::{DnsRecordProjection, GatewayRouteProjection, ServingCertificateProjection};
 
 use crate::{
     ServingError, ServingFailure, ServingFreshness, ServingResult, ServingSnapshotBatch,
@@ -122,8 +122,7 @@ impl ServingActorHandle {
         name: impl Into<String>,
         record_type: impl Into<String>,
     ) -> ServingResult<Vec<DnsRecordProjection>> {
-        Ok(read_snapshots(&self.snapshots)
-            .service_dns_records(&name.into(), &record_type.into()))
+        Ok(read_snapshots(&self.snapshots).service_dns_records(&name.into(), &record_type.into()))
     }
 
     pub async fn acme_http01_challenge(
@@ -132,6 +131,13 @@ impl ServingActorHandle {
         token: impl Into<String>,
     ) -> ServingResult<Option<AcmeKeyAuthorization>> {
         read_snapshots(&self.snapshots).acme_http01_challenge(&host.into(), &token.into())
+    }
+
+    pub async fn certificate_for_host(
+        &self,
+        host: impl Into<String>,
+    ) -> ServingResult<Option<ServingCertificateProjection>> {
+        Ok(read_snapshots(&self.snapshots).certificate_for_host(&host.into()))
     }
 
     pub async fn reload(&self) -> ServingResult<ServingStatus> {

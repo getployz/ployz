@@ -43,10 +43,13 @@ pub enum HttpGatewayError {
     LocalAddr(std::io::Error),
     #[error("accept HTTP gateway connection: {0}")]
     Accept(std::io::Error),
+    #[error("configure HTTP gateway TLS: {0}")]
+    TlsConfig(String),
 }
 
 pub struct HttpGatewayHandle {
     pub(crate) listen_addr: SocketAddr,
+    pub(crate) tls_listen_addr: Option<SocketAddr>,
     pub(crate) shutdown: Option<oneshot::Sender<()>>,
     pub(crate) task: Option<JoinHandle<HttpGatewayResult<()>>>,
     pub(crate) metrics: WireMetricsRecorder,
@@ -56,6 +59,11 @@ impl HttpGatewayHandle {
     #[must_use]
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    #[must_use]
+    pub fn tls_listen_addr(&self) -> Option<SocketAddr> {
+        self.tls_listen_addr
     }
 
     #[must_use]
@@ -143,6 +151,7 @@ pub async fn spawn_http_gateway(
     });
     Ok(HttpGatewayHandle {
         listen_addr,
+        tls_listen_addr: None,
         shutdown: Some(shutdown_tx),
         task: Some(task),
         metrics,
