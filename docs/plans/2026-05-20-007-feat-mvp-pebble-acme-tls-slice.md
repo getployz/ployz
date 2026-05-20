@@ -196,8 +196,11 @@ the `mvp-node gateway` command.
 
 **Verification:**
 
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node product_serving_roles`
-- `cargo check --manifest-path MVP/Cargo.toml -p mvp-node`
+- Completed with `--tls-listen` wired through `mvp-node gateway`, control
+  socket status reporting `tls_listen_addr`, and DNS status remaining TLS-free.
+- Verified with
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-node --test product_serving_roles`.
+- Verified with `cargo check --manifest-path MVP/Cargo.toml -p mvp-node`.
 
 ### U6B. Product ACME Issue Command
 

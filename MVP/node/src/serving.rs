@@ -40,6 +40,7 @@ impl Display for ServingRoleKind {
 pub struct ServingRoleOptions {
     pub state_dir: PathBuf,
     pub listen: SocketAddr,
+    pub tls_listen: Option<SocketAddr>,
     pub control_socket: PathBuf,
     pub stale_after: Duration,
 }
@@ -54,9 +55,16 @@ impl ServingRoleOptions {
         Self {
             state_dir: state_dir.into(),
             listen,
+            tls_listen: None,
             control_socket: control_socket.into(),
             stale_after: Duration::from_secs(30),
         }
+    }
+
+    #[must_use]
+    pub fn with_tls_listen(mut self, tls_listen: SocketAddr) -> Self {
+        self.tls_listen = Some(tls_listen);
+        self
     }
 
     #[must_use]
@@ -94,6 +102,7 @@ pub enum ServingRoleSuccess {
 pub struct ServingRoleProcessStatus {
     pub kind: ServingRoleKind,
     pub listen_addr: SocketAddr,
+    pub tls_listen_addr: Option<SocketAddr>,
     pub serving: ServingRoleServingStatus,
     pub metrics: WireRoleMetrics,
 }
@@ -167,6 +176,13 @@ impl ServingWireHandle {
         }
     }
 
+    fn tls_listen_addr(&self) -> Option<SocketAddr> {
+        match self {
+            Self::Gateway(handle) => handle.tls_listen_addr(),
+            Self::Dns(_) => None,
+        }
+    }
+
     fn metrics(&self) -> WireRoleMetrics {
         match self {
             Self::Gateway(handle) => handle.metrics(),
@@ -223,11 +239,19 @@ async fn run_serving_role(kind: ServingRoleKind, options: ServingRoleOptions) ->
             .map_err(|source| NodeError::Serving { source })?;
     let wire = WireServingState::new(serving);
     let server = match kind {
-        ServingRoleKind::Gateway => ServingWireHandle::Gateway(
-            spawn_gateway(GatewayOptions::new(options.listen), wire.clone())
-                .await
-                .map_err(|source| NodeError::HttpGateway { source })?,
-        ),
+        ServingRoleKind::Gateway => {
+            let gateway_options = match options.tls_listen {
+                Some(tls_listen) => {
+                    GatewayOptions::new(options.listen).with_tls_listener(tls_listen)
+                }
+                None => GatewayOptions::new(options.listen),
+            };
+            ServingWireHandle::Gateway(
+                spawn_gateway(gateway_options, wire.clone())
+                    .await
+                    .map_err(|source| NodeError::HttpGateway { source })?,
+            )
+        }
         ServingRoleKind::Dns => ServingWireHandle::Dns(
             spawn_dns_server(options.listen, wire.clone())
                 .await
@@ -335,7 +359,7 @@ async fn status_response(
     state: &Mutex<ServingRoleState>,
     status_kind: ServingRoleStatusKind,
 ) -> ServingRoleResponse {
-    let (kind, wire, listen_addr, metrics) = {
+    let (kind, wire, listen_addr, tls_listen_addr, metrics) = {
         let state = state.lock().await;
         let Some(server) = &state.server else {
             return ServingRoleResponse::Failure(ServingRoleFailure::wire_unavailable(
@@ -346,6 +370,7 @@ async fn status_response(
             state.kind,
             state.wire.clone(),
             server.listen_addr(),
+            server.tls_listen_addr(),
             server.metrics(),
         )
     };
@@ -360,6 +385,7 @@ async fn status_response(
     let status = ServingRoleProcessStatus {
         kind,
         listen_addr,
+        tls_listen_addr,
         serving: role_serving_status(status),
         metrics,
     };
