@@ -246,6 +246,39 @@ impl ProductHarness {
         )
     }
 
+    pub(crate) fn spawn_docker_daemon(
+        &self,
+        node: &str,
+        run_for_ms: u64,
+        image: &str,
+        service_port: u16,
+        command: &str,
+    ) -> Result<ProductChild, String> {
+        let control_socket = self.daemon_control_socket(node);
+        self.spawn_node(
+            format!("daemon-{node}"),
+            [
+                "daemon".to_string(),
+                "--state".to_string(),
+                self.node_dir(node).display().to_string(),
+                "--run-for-ms".to_string(),
+                run_for_ms.to_string(),
+                "--control".to_string(),
+                control_socket.display().to_string(),
+                "--linux-wireguard-ifname".to_string(),
+                format!("ployz-{node}"),
+                "--runtime".to_string(),
+                "docker".to_string(),
+                "--image".to_string(),
+                image.to_string(),
+                "--service-port".to_string(),
+                service_port.to_string(),
+                "--container-command".to_string(),
+                command.to_string(),
+            ],
+        )
+    }
+
     pub(crate) fn wait_daemon_status(&self, node: &str) -> Result<ProductCommandRecord, String> {
         let socket = self.daemon_control_socket(node);
         let deadline = Instant::now() + ROLE_WAIT_TIMEOUT;
@@ -314,6 +347,33 @@ impl ProductHarness {
             target_node,
             "--service",
             "web",
+            "--revision",
+            revision,
+            "--hostname",
+            hostname,
+        ])
+    }
+
+    pub(crate) fn deploy_service_via_daemon(
+        &self,
+        coordinator_node: &str,
+        deploy_id: &str,
+        target_node: &str,
+        service: &str,
+        revision: &str,
+        hostname: &str,
+    ) -> Result<ProductCommandOutput, String> {
+        let socket = self.daemon_control_socket(coordinator_node);
+        self.node_command([
+            "deploy",
+            "--control",
+            socket.to_str().ok_or("daemon control path is not UTF-8")?,
+            "--deploy-id",
+            deploy_id,
+            "--target-node",
+            target_node,
+            "--service",
+            service,
             "--revision",
             revision,
             "--hostname",
@@ -489,6 +549,43 @@ impl ProductHarness {
         Ok(killed)
     }
 
+    pub(crate) fn cleanup_docker_runtime(&self, nodes: &[&str]) -> Result<(), String> {
+        for node in nodes {
+            let output = Command::new("docker")
+                .args([
+                    "ps",
+                    "-aq",
+                    "--filter",
+                    "label=dev.ployz.mvp.managed=true",
+                    "--filter",
+                    &format!("label=dev.ployz.mvp.node={node}"),
+                ])
+                .output()
+                .map_err(|error| format!("list Docker containers for {node}: {error}"))?;
+            if output.status.success() {
+                let containers = String::from_utf8_lossy(&output.stdout)
+                    .split_whitespace()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                if !containers.is_empty() {
+                    let status = Command::new("docker")
+                        .arg("rm")
+                        .arg("-f")
+                        .args(&containers)
+                        .status()
+                        .map_err(|error| format!("remove Docker containers for {node}: {error}"))?;
+                    if !status.success() {
+                        return Err(format!("docker rm failed for {node} with status {status}"));
+                    }
+                }
+            }
+            let _ = Command::new("docker")
+                .args(["network", "rm", &format!("ployz-mvp-{node}")])
+                .status();
+        }
+        Ok(())
+    }
+
     fn spawn_serving_role(
         &self,
         role: &str,
@@ -622,6 +719,8 @@ fn build_node_bin_if_needed() -> Result<(), String> {
         .arg(&manifest)
         .arg("-p")
         .arg("mvp-node")
+        .arg("--features")
+        .arg("docker-runtime,linux-wireguard")
         .status()
         .map_err(|error| format!("spawn cargo build for mvp-node: {error}"))?;
     if status.success() {

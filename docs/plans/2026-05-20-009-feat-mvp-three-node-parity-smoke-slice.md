@@ -118,6 +118,10 @@ setup and produce a report skeleton.
 **Goal:** deploy `web`, `api`, and `echo` through real runtime/overlay paths
 onto separate nodes.
 
+**Status:** Docker runtime placement path is wired through product daemon
+commands and the installed-binary smoke report. Local execution remains an
+explicit host-blocked skip on the current macOS/non-root host.
+
 **Requirements:** R3, R4, R9, R14.
 
 **Dependencies:** U1.
@@ -281,19 +285,45 @@ command output, scenario report field, or explicit host blocker.
     start daemon/gateway/DNS roles on `node-a`, `node-b`, and `node-c`, and
     record local host blockers: non-Linux, non-root, missing `ip`,
     `iptables`, and `ployz-bpfctl`.
+- U2 checkpoint:
+  - `cargo check --manifest-path MVP/Cargo.toml -p mvp-node`
+  - `cargo check --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime`
+  - `cargo check --manifest-path MVP/Cargo.toml -p mvp-node --features docker-runtime,linux-wireguard`
+  - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node daemon_args_accept_docker_runtime_surface -- --nocapture`
+  - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
+  - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
+  - Evidence: `mvp-node daemon` now accepts `--runtime docker --image
+    busybox:latest --service-port 8080 --container-command <cmd>`, the harness
+    installs a Docker-runtime and Linux-WireGuard-enabled `mvp-node`, and the
+    smoke contains a privileged branch that starts the Linux WireGuard backend,
+    deploys `web`, `api`, and `echo` to `node-a`, `node-b`, and `node-c`, and
+    rejects loopback Docker backends. On the current host that branch is blocked
+    by the recorded Linux/root/tooling preflight.
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
 - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-mesh --features linux-wireguard`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`
 - `cargo test --manifest-path MVP/Cargo.toml --workspace`
+
+Residual local Docker verification:
+
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime --features docker`
+  was attempted on 2026-05-20. It passed runtime unit tests,
+  `docker_bridge_network`, `docker_runtime_starts_lists_adopts_drains_and_stops_container`,
+  and `docker_runtime_removes_new_container_when_readiness_fails`, then failed
+  `docker_runtime_adopts_same_spec_and_recreates_changed_revision` with
+  `ReadinessTimeout` on `10.210.91.*:8080`. Rerunning that single test after
+  removing its stale test network reproduced the same readiness timeout on the
+  current Docker host. This is tracked as a host/runtime integration residual,
+  not as passing U2 evidence.
 
 ## Acceptance Checklist
 
 - [x] Smoke runs through installed `bin/mvp-node`.
 - [x] `node-a`, `node-b`, and `node-c` are equal gateway/DNS/daemon nodes.
-- `web`, `api`, and `echo` are placed on separate required nodes.
+- [ ] `web`, `api`, and `echo` are placed on separate required nodes. Product
+  path is wired; passing evidence still requires a privileged Linux host.
 - Gateways on non-owner nodes serve remote services.
 - Pebble ACME issues certificates and HTTPS validates with Pebble root.
 - Container client resolves and curls `echo` by service DNS.
@@ -303,11 +333,10 @@ command output, scenario report field, or explicit host blocker.
 
 ## Next Slice 7 Sub-Slice
 
-The next implementation pass should start with U2 and keep the report shape
-from U1. It should wire real Docker runtime and overlay placement for `web`,
-`api`, and `echo`, then leave U3-U5 to add gateway/ACME, container service DNS,
-and update/drain/restart evidence without mixing those concerns into the
-harness bootstrap shell.
+The next implementation pass should start with U3 once U2 is run on a
+privileged Linux host, or continue hardening U2 if that host exposes placement
+failures. U3 should add equal-node gateway HTTP/HTTPS and Pebble ACME evidence
+without folding service DNS or update/drain behavior into the same patch.
 
 ## Explicit Deferrals
 

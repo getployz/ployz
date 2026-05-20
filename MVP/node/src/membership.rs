@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
 use crate::error::{NodeError, NodeResult};
-use crate::node_agent::{node_agent_grant, node_agent_request_grant, register_node_agent_services};
+use crate::node_agent::{
+    node_agent_grant, node_agent_request_grant, register_node_agent_services_with_runtime,
+};
 use crate::node_agent_rpc::{
     handle_node_agent_rpc_requests, register_remote_node_agent_bridges_with_fact_node,
 };
@@ -101,6 +103,7 @@ pub struct DaemonOptions {
     pub import_idle: Duration,
     pub control_socket: Option<PathBuf>,
     pub wireguard: DaemonWireGuardMode,
+    pub runtime: DaemonRuntimeMode,
 }
 
 impl DaemonOptions {
@@ -111,6 +114,7 @@ impl DaemonOptions {
             import_idle: Duration::from_millis(50),
             control_socket: None,
             wireguard: DaemonWireGuardMode::Memory,
+            runtime: DaemonRuntimeMode::Process,
         }
     }
 
@@ -128,12 +132,37 @@ impl DaemonOptions {
         };
         self
     }
+
+    #[must_use]
+    pub fn with_docker_runtime(
+        mut self,
+        image: impl Into<String>,
+        service_port: u16,
+        command: Option<Vec<String>>,
+    ) -> Self {
+        self.runtime = DaemonRuntimeMode::Docker {
+            image: image.into(),
+            service_port,
+            command,
+        };
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonWireGuardMode {
     Memory,
     Linux { ifname: String, listen_port: u16 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonRuntimeMode {
+    Process,
+    Docker {
+        image: String,
+        service_port: u16,
+        command: Option<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,8 +342,14 @@ pub async fn run_daemon_once(
         PrincipalId::new(format!("node-agent-rpc:{}", state.node_id_str())),
         node_agent_request_grant(),
     );
-    let (_node_agent, node_agent_report) =
-        register_node_agent_services(&product_bus, &node_agent_session, &state).await?;
+    let node_agent_backend = create_runtime_backend(&state, &options)?;
+    let (_node_agent, node_agent_report) = register_node_agent_services_with_runtime(
+        &product_bus,
+        &node_agent_session,
+        &state,
+        node_agent_backend,
+    )
+    .await?;
     let (fact_node_inner, writer_session, author, authority) = spawn_fact_node(&state).await?;
     let fact_node = Arc::new(tokio::sync::Mutex::new(fact_node_inner));
     let ticket = ensure_node_ticket(&state)?;
@@ -390,6 +425,69 @@ fn wireguard_backend_name(mode: &DaemonWireGuardMode) -> String {
         DaemonWireGuardMode::Memory => "memory".to_string(),
         DaemonWireGuardMode::Linux { ifname, .. } => format!("linux:{ifname}"),
     }
+}
+
+fn create_runtime_backend(
+    state: &LoadedNodeState,
+    options: &DaemonOptions,
+) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
+    match &options.runtime {
+        DaemonRuntimeMode::Process => {
+            let program = std::env::current_exe().map_err(|source| NodeError::RuntimeBackend {
+                source: mvp_runtime::RuntimeError::CurrentExe { source },
+            })?;
+            Ok(Some(Arc::new(mvp_runtime::ProcessRuntime::managed_http(
+                state.paths().runtime_dir.clone(),
+                program,
+            ))))
+        }
+        DaemonRuntimeMode::Docker {
+            image,
+            service_port,
+            command,
+        } => create_docker_runtime_backend(state, image, *service_port, command.as_deref()),
+    }
+}
+
+#[cfg(feature = "docker-runtime")]
+fn create_docker_runtime_backend(
+    state: &LoadedNodeState,
+    image: &str,
+    service_port: u16,
+    command: Option<&[String]>,
+) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
+    let mut config = mvp_runtime::DockerRuntimeConfig::new(
+        state.node_id(),
+        state.paths().runtime_dir.clone(),
+        image,
+    )
+    .with_service_port(service_port)
+    .with_dns_server(state.container_subnet().docker_gateway_ip().to_string());
+    if let Some(command) = command {
+        config = config.with_command(command.iter().cloned());
+    }
+    let network =
+        mvp_runtime::DockerBridgeNetwork::connect(mvp_runtime::DockerBridgeNetworkConfig::new(
+            format!("ployz-mvp-{}", state.node_id_str()),
+            state.container_subnet(),
+        ))
+        .map_err(|source| NodeError::RuntimeBackend { source })?;
+    let runtime =
+        mvp_runtime::DockerRuntime::connect_with_container_network(config, Arc::new(network))
+            .map_err(|source| NodeError::RuntimeBackend { source })?;
+    Ok(Some(Arc::new(runtime)))
+}
+
+#[cfg(not(feature = "docker-runtime"))]
+fn create_docker_runtime_backend(
+    _state: &LoadedNodeState,
+    _image: &str,
+    _service_port: u16,
+    _command: Option<&[String]>,
+) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
+    Err(NodeError::CommandNotWired {
+        command: "daemon --runtime docker requires the docker-runtime feature".to_string(),
+    })
 }
 
 fn create_wireguard_backend(
