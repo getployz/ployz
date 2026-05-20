@@ -474,8 +474,9 @@ Acceptance:
 ### Slice 7: Three-Node Data-Plane Parity Smoke
 
 Status: active. U1 installed-binary harness shell is complete. U2 Docker
-runtime placement path is wired behind explicit privileged preflight and is
-locally verified to preserve blockers on the current macOS/non-root host. Slice plan:
+runtime placement path and U3 equal-node HTTP/HTTPS/Pebble paths are wired
+behind explicit privileged preflight and are locally verified to preserve
+blockers on the current macOS/non-root host. Slice plan:
 `docs/plans/2026-05-20-009-feat-mvp-three-node-parity-smoke-slice.md`.
 
 Goal: prove the full end-to-end product behavior on three equal Linux nodes.

@@ -47,6 +47,7 @@ pub(crate) struct ProductChild {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ServingRoleProbe {
     pub listen_addr: SocketAddr,
+    pub tls_listen_addr: Option<SocketAddr>,
     pub loaded_generation: String,
     pub loaded_gateway_revision: String,
     pub loaded_dns_revision: String,
@@ -65,6 +66,21 @@ pub(crate) struct DnsProbe {
     pub addr: SocketAddr,
     pub host: String,
     pub answer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct HttpsProbe {
+    pub addr: SocketAddr,
+    pub host: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PebbleAcme {
+    pub directory_url: String,
+    pub root_ca_path: PathBuf,
+    pub issued_root_ca_path: PathBuf,
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -409,6 +425,25 @@ impl ProductHarness {
         self.spawn_serving_role("gateway", node, self.role_control_socket(node, "gateway"))
     }
 
+    pub(crate) fn spawn_node_gateway_tls(&self, node: &str) -> Result<ProductChild, String> {
+        self.spawn_node(
+            format!("gateway-{node}"),
+            [
+                "gateway".to_string(),
+                "--state".to_string(),
+                self.node_dir(node).display().to_string(),
+                "--listen".to_string(),
+                "127.0.0.1:0".to_string(),
+                "--tls-listen".to_string(),
+                "127.0.0.1:0".to_string(),
+                "--control".to_string(),
+                self.role_control_socket(node, "gateway")
+                    .display()
+                    .to_string(),
+            ],
+        )
+    }
+
     pub(crate) fn spawn_node_dns(&self, node: &str) -> Result<ProductChild, String> {
         self.spawn_serving_role("dns", node, self.role_control_socket(node, "dns"))
     }
@@ -520,6 +555,71 @@ impl ProductHarness {
         }
     }
 
+    pub(crate) fn wait_https(
+        &self,
+        addr: SocketAddr,
+        host: &str,
+        root_ca: &Path,
+        expected: &str,
+    ) -> Result<HttpsProbe, String> {
+        let deadline = Instant::now() + HTTP_WAIT_TIMEOUT;
+        loop {
+            match curl_https(addr, host, root_ca) {
+                Ok(body) if body.contains(expected) => {
+                    return Ok(HttpsProbe {
+                        addr,
+                        host: host.to_string(),
+                        body,
+                    });
+                }
+                Ok(body) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!("HTTPS body did not contain '{expected}': {body}"));
+                    }
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        return Err(error);
+                    }
+                }
+            }
+            thread::sleep(POLL);
+        }
+    }
+
+    pub(crate) fn acme_issue_with_pebble(
+        &self,
+        node: &str,
+        hostname: &str,
+        gateway: SocketAddr,
+        gateway_control: &Path,
+        pebble: &PebbleAcme,
+    ) -> Result<ProductCommandOutput, String> {
+        self.node_command_with_env(
+            [
+                ("PLOYZ_ACME_DIRECTORY_URL", pebble.directory_url.as_str()),
+                (
+                    "PLOYZ_ACME_ROOT_CA_PATH",
+                    pebble
+                        .root_ca_path
+                        .to_str()
+                        .ok_or("Pebble root CA path is not UTF-8")?,
+                ),
+            ],
+            [
+                "acme-issue".to_string(),
+                "--state".to_string(),
+                self.node_dir(node).display().to_string(),
+                "--hostname".to_string(),
+                hostname.to_string(),
+                "--gateway".to_string(),
+                format!("http://{gateway}"),
+                "--gateway-control".to_string(),
+                gateway_control.display().to_string(),
+            ],
+        )
+    }
+
     pub(crate) fn cleanup_runtime_processes(&self, nodes: &[&str]) -> Result<usize, String> {
         let mut killed = 0;
         for node in nodes {
@@ -627,16 +727,36 @@ impl ProductHarness {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        self.node_command_with_env(std::iter::empty::<(&str, &str)>(), args)
+    }
+
+    fn node_command_with_env<I, S, E, K, V>(
+        &self,
+        envs: E,
+        args: I,
+    ) -> Result<ProductCommandOutput, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        E: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
         let args = args
             .into_iter()
             .map(|arg| arg.as_ref().to_string())
             .collect::<Vec<_>>();
         let redacted_args = redact_args(args.clone());
-        let mut child = Command::new(&self.node_bin)
+        let mut command = Command::new(&self.node_bin);
+        command
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in envs {
+            command.env(key.as_ref(), value.as_ref());
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| format!("spawn mvp-node: {error}; args={redacted_args:?}"))?;
         let deadline = Instant::now() + COMMAND_TIMEOUT;
@@ -698,6 +818,65 @@ impl Drop for ProductChild {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+    }
+}
+
+impl PebbleAcme {
+    pub(crate) fn start(output_root: &Path) -> Result<Self, String> {
+        docker_available_for_pebble()?;
+        let repo = std::env::current_dir().map_err(|error| error.to_string())?;
+        let pebble_dir = repo.join("packaging/e2e/pebble");
+        let port = free_loopback_port()?;
+        let management_port = free_loopback_port()?;
+        let output = Command::new("docker")
+            .arg("run")
+            .arg("-d")
+            .arg("--rm")
+            .arg("-p")
+            .arg(format!("127.0.0.1:{port}:14000"))
+            .arg("-p")
+            .arg(format!("127.0.0.1:{management_port}:15000"))
+            .arg("-e")
+            .arg("PEBBLE_VA_NOSLEEP=1")
+            .arg("-e")
+            .arg("PEBBLE_VA_ALWAYS_VALID=1")
+            .arg("-v")
+            .arg(format!("{}:/e2e-pebble:ro", pebble_dir.display()))
+            .arg("ghcr.io/letsencrypt/pebble:latest")
+            .arg("-config")
+            .arg("/e2e-pebble/pebble-config.json")
+            .arg("-strict=false")
+            .output()
+            .map_err(|error| format!("start Pebble container: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "docker run Pebble failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let directory_url = format!("https://127.0.0.1:{port}/dir");
+        let root_ca_path = pebble_dir.join("pebble.minica.pem");
+        wait_tcp(("127.0.0.1", port))?;
+        wait_https_directory(&directory_url, &root_ca_path)?;
+        let issued_root_ca_path = output_root.join("pebble-issued-root.pem");
+        fetch_issued_root_ca(management_port, &root_ca_path, &issued_root_ca_path)?;
+        Ok(Self {
+            directory_url,
+            root_ca_path,
+            issued_root_ca_path,
+            id,
+        })
+    }
+}
+
+impl Drop for PebbleAcme {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .arg("rm")
+            .arg("-f")
+            .arg(&self.id)
+            .output();
     }
 }
 
@@ -858,6 +1037,15 @@ fn parse_role_probe(response: serde_json::Value) -> Result<ServingRoleProbe, Str
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| format!("role response missing gateway revision: {response}"))?
         .to_string();
+    let tls_listen_addr = response
+        .pointer("/data/tls_listen_addr")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| {
+            value.parse::<SocketAddr>().map_err(|error| {
+                format!("parse role tls_listen_addr: {error}; response={response}")
+            })
+        })
+        .transpose()?;
     let loaded_generation = response
         .pointer("/data/serving/loaded_revisions/generation")
         .and_then(serde_json::Value::as_str)
@@ -875,6 +1063,7 @@ fn parse_role_probe(response: serde_json::Value) -> Result<ServingRoleProbe, Str
         .to_string();
     Ok(ServingRoleProbe {
         listen_addr,
+        tls_listen_addr,
         loaded_generation,
         loaded_gateway_revision,
         loaded_dns_revision,
@@ -896,6 +1085,106 @@ fn http_get(addr: SocketAddr, host: &str) -> Result<String, String> {
         .split_once("\r\n\r\n")
         .map(|(_headers, body)| body.to_string())
         .ok_or_else(|| format!("HTTP response missing body separator: {response}"))
+}
+
+fn curl_https(addr: SocketAddr, host: &str, root_ca: &Path) -> Result<String, String> {
+    let output = Command::new("curl")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--fail")
+        .arg("--cacert")
+        .arg(root_ca)
+        .arg("--resolve")
+        .arg(format!("{host}:{}:127.0.0.1", addr.port()))
+        .arg("--header")
+        .arg(format!("Host: {host}"))
+        .arg(format!("https://{host}:{}/", addr.port()))
+        .output()
+        .map_err(|error| format!("run curl HTTPS check: {error}"))?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout).map_err(|error| error.to_string());
+    }
+    Err(format!(
+        "curl HTTPS check failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+fn docker_available_for_pebble() -> Result<(), String> {
+    let status = Command::new("docker")
+        .arg("version")
+        .arg("--format")
+        .arg("{{.Server.Version}}")
+        .status()
+        .map_err(|error| format!("docker is required for Pebble: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("docker is required for Pebble and is not available".to_string())
+    }
+}
+
+fn free_loopback_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("bind free loopback port: {error}"))?;
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|error| error.to_string())
+}
+
+fn wait_tcp(addr: (&str, u16)) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if TcpStream::connect(addr).is_ok() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!("timed out waiting for {}:{}", addr.0, addr.1))
+}
+
+fn wait_https_directory(url: &str, root_ca: &Path) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        let status = Command::new("curl")
+            .arg("--silent")
+            .arg("--fail")
+            .arg("--cacert")
+            .arg(root_ca)
+            .arg(url)
+            .status();
+        if status.is_ok_and(|status| status.success()) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!("timed out waiting for Pebble directory {url}"))
+}
+
+fn fetch_issued_root_ca(
+    management_port: u16,
+    server_root_ca: &Path,
+    output_path: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let status = Command::new("curl")
+        .arg("--silent")
+        .arg("--fail")
+        .arg("--cacert")
+        .arg(server_root_ca)
+        .arg(format!("https://127.0.0.1:{management_port}/roots/0"))
+        .arg("--output")
+        .arg(output_path)
+        .status()
+        .map_err(|error| format!("fetch Pebble issued root CA: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("fetch Pebble issued root CA failed: {status}"))
+    }
 }
 
 fn dns_a_lookup(addr: SocketAddr, host: &str) -> Result<String, String> {

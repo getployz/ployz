@@ -4,7 +4,9 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::metrics::{reset_dir, scenario_dir, write_json};
-use crate::three_server_harness::{ProductCommandRecord, ProductHarness, ServingRoleProbe};
+use crate::three_server_harness::{
+    HttpProbe, HttpsProbe, PebbleAcme, ProductCommandRecord, ProductHarness, ServingRoleProbe,
+};
 
 const SCENARIO: &str = "three-node-parity-smoke";
 const NODES: &[&str] = &["node-a", "node-b", "node-c"];
@@ -26,6 +28,8 @@ struct ThreeNodeParityReport {
     admit_commands: Vec<ProductCommandRecord>,
     daemon_statuses: Vec<NodeCommandStatus>,
     runtime_placements: Vec<RuntimePlacementEvidence>,
+    gateway_http_checks: Vec<GatewayHttpEvidence>,
+    acme_https_checks: Vec<GatewayHttpsEvidence>,
     gateway_statuses: Vec<NodeRoleStatus>,
     dns_statuses: Vec<NodeRoleStatus>,
     elapsed_ms: u128,
@@ -57,6 +61,21 @@ struct RuntimePlacementEvidence {
     deploy: ProductCommandRecord,
     deploy_status: ProductCommandRecord,
     active_backends: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct GatewayHttpEvidence {
+    service: &'static str,
+    gateway_node: &'static str,
+    probe: HttpProbe,
+}
+
+#[derive(Debug, Serialize)]
+struct GatewayHttpsEvidence {
+    service: &'static str,
+    gateway_node: &'static str,
+    acme_issue: ProductCommandRecord,
+    probe: HttpsProbe,
 }
 
 pub(crate) fn run() -> Result<(), String> {
@@ -129,7 +148,11 @@ pub(crate) fn run() -> Result<(), String> {
     let mut gateways = Vec::new();
     let mut dns_roles = Vec::new();
     for node in NODES {
-        gateways.push(harness.spawn_node_gateway(node)?);
+        if privileged_preflight.enabled {
+            gateways.push(harness.spawn_node_gateway_tls(node)?);
+        } else {
+            gateways.push(harness.spawn_node_gateway(node)?);
+        }
         dns_roles.push(harness.spawn_node_dns(node)?);
     }
 
@@ -145,6 +168,17 @@ pub(crate) fn run() -> Result<(), String> {
             status: harness.wait_role(harness.role_control_socket(node, "dns").as_path())?,
         });
     }
+
+    let gateway_http_checks = if privileged_preflight.enabled {
+        verify_equal_node_http(&harness, &gateway_statuses)?
+    } else {
+        Vec::new()
+    };
+    let acme_https_checks = if privileged_preflight.enabled {
+        verify_pebble_https(&harness, &root, &gateway_statuses)?
+    } else {
+        Vec::new()
+    };
 
     for node in NODES {
         harness.shutdown_role(harness.role_control_socket(node, "gateway").as_path())?;
@@ -188,6 +222,8 @@ pub(crate) fn run() -> Result<(), String> {
         admit_commands,
         daemon_statuses,
         runtime_placements,
+        gateway_http_checks,
+        acme_https_checks,
         gateway_statuses,
         dns_statuses,
         elapsed_ms: started.elapsed().as_millis(),
@@ -197,8 +233,18 @@ pub(crate) fn run() -> Result<(), String> {
     if report.privileged_preflight.enabled && report.runtime_placements.len() != 3 {
         return Err("three-node-parity-smoke did not place all runtime workloads".to_string());
     }
+    if report.privileged_preflight.enabled && report.gateway_http_checks.len() != 4 {
+        return Err(
+            "three-node-parity-smoke did not verify all equal-node HTTP checks".to_string(),
+        );
+    }
+    if report.privileged_preflight.enabled && report.acme_https_checks.len() != 2 {
+        return Err("three-node-parity-smoke did not verify Pebble HTTPS checks".to_string());
+    }
     if report.privileged_preflight.enabled {
-        eprintln!("PASS {SCENARIO} runtime placement; later parity phases still pending");
+        eprintln!(
+            "PASS {SCENARIO} runtime placement and gateway HTTPS; later parity phases still pending"
+        );
     } else {
         eprintln!(
             "SKIP {SCENARIO} privileged workload phase skipped; report={}",
@@ -278,6 +324,75 @@ fn deploy_runtime_workloads(
         })
     })
     .collect()
+}
+
+fn verify_equal_node_http(
+    harness: &ProductHarness,
+    gateway_statuses: &[NodeRoleStatus],
+) -> Result<Vec<GatewayHttpEvidence>, String> {
+    [
+        ("web", "node-b", "web.example.test"),
+        ("web", "node-c", "web.example.test"),
+        ("api", "node-a", "api.example.test"),
+        ("api", "node-c", "api.example.test"),
+    ]
+    .into_iter()
+    .map(|(service, gateway_node, hostname)| {
+        let gateway = role_status(gateway_statuses, gateway_node)?;
+        Ok(GatewayHttpEvidence {
+            service,
+            gateway_node,
+            probe: harness.wait_http(gateway.status.listen_addr, hostname, "ok")?,
+        })
+    })
+    .collect()
+}
+
+fn verify_pebble_https(
+    harness: &ProductHarness,
+    root: &std::path::Path,
+    gateway_statuses: &[NodeRoleStatus],
+) -> Result<Vec<GatewayHttpsEvidence>, String> {
+    let pebble = PebbleAcme::start(root)?;
+    [
+        ("web", "node-b", "web.example.test"),
+        ("api", "node-c", "api.example.test"),
+    ]
+    .into_iter()
+    .map(|(service, gateway_node, hostname)| {
+        let gateway = role_status(gateway_statuses, gateway_node)?;
+        let tls_addr = gateway
+            .status
+            .tls_listen_addr
+            .ok_or_else(|| format!("gateway {gateway_node} did not expose TLS listener"))?;
+        let control = harness.role_control_socket(gateway_node, "gateway");
+        let acme_issue = harness
+            .acme_issue_with_pebble(
+                gateway_node,
+                hostname,
+                gateway.status.listen_addr,
+                control.as_path(),
+                &pebble,
+            )?
+            .record;
+        Ok(GatewayHttpsEvidence {
+            service,
+            gateway_node,
+            acme_issue,
+            probe: harness.wait_https(tls_addr, hostname, &pebble.issued_root_ca_path, "ok")?,
+        })
+    })
+    .collect()
+}
+
+fn role_status<'a>(
+    statuses: &'a [NodeRoleStatus],
+    node: &str,
+) -> Result<&'a NodeRoleStatus, String> {
+    statuses
+        .iter()
+        .find(|status| status.node == node)
+        .ok_or_else(|| format!("missing role status for {node}"))
 }
 
 fn parse_active_backends(stdout: &str) -> Result<Vec<String>, String> {
