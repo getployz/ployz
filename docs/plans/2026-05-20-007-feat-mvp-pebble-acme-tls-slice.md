@@ -251,10 +251,15 @@ publishes the certificate as durable MVP facts.
 
 **Verification:**
 
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme-command`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-node product_acme`
-- `cargo test --manifest-path MVP/Cargo.toml -p mvp-projection -p mvp-serving`
+- Completed with `mvp-node acme-issue`, node-local account persistence,
+  p2panda HTTP-01 publication/clear, gateway readiness polling, certificate
+  activation fact writing, and projection/snapshot refresh.
+- Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme`.
+- Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-acme-command`.
+- Verified with
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-node issue_writes_certificate_activation_into_serving_snapshot`.
+- Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-projection`.
+- Verified with `cargo test --manifest-path MVP/Cargo.toml -p mvp-serving`.
 
 ### U6C. Pebble HTTPS E2E
 

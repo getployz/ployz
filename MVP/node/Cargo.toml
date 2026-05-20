@@ -11,7 +11,10 @@ docker-runtime = ["mvp-runtime/docker"]
 linux-wireguard = ["mvp-mesh/linux-wireguard"]
 
 [dependencies]
+async-trait = "0.1"
 blake3 = "1"
+mvp-acme = { path = "../acme" }
+mvp-acme-command = { path = "../acme-command" }
 mvp-bus = { path = "../bus" }
 mvp-deploy = { path = "../deploy" }
 mvp-identity = { path = "../identity" }
@@ -22,6 +25,7 @@ mvp-projection = { path = "../projection" }
 mvp-runtime = { path = "../runtime", default-features = false }
 mvp-routing = { path = "../routing" }
 mvp-serving = { path = "../serving" }
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

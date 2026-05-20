@@ -1,3 +1,4 @@
+mod acme;
 mod config;
 mod deploy;
 mod error;
@@ -8,6 +9,10 @@ mod node_agent_rpc;
 mod serving;
 mod state;
 
+pub use acme::{
+    AcmeIssueOptions, AcmeIssueReport, issue_product_certificate,
+    issue_product_certificate_with_issuer,
+};
 pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
 pub use deploy::{
     ProductDeployOptions, ProductDeployReport, ProductDeployStatusReport, deploy_product_service,

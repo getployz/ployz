@@ -136,6 +136,8 @@ pub enum NodeError {
     Runtime { source: std::io::Error },
     #[error("deploy failed: {source}")]
     Deploy { source: mvp_deploy::DeployError },
+    #[error("ACME issuance failed: {source}")]
+    Acme { source: mvp_acme::AcmeIssuanceError },
     #[error("serving failed: {source}")]
     Serving { source: mvp_serving::ServingError },
     #[error("HTTP gateway failed: {source}")]

@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mvp_node::{
-    DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions, ServingRoleOptions,
-    admit_joiner, create_admission_request, create_invite, deploy_product_service,
-    deploy_product_service_with_runtime, init_node, join_from_token, load_node, now_ms,
-    read_product_deploy_status, run_daemon_once, run_dns_role, run_gateway_role,
+    AcmeIssueOptions, DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions,
+    ServingRoleOptions, admit_joiner, create_admission_request, create_invite,
+    deploy_product_service, deploy_product_service_with_runtime, init_node,
+    issue_product_certificate, join_from_token, load_node, now_ms, read_product_deploy_status,
+    run_daemon_once, run_dns_role, run_gateway_role,
 };
 use serde::Serialize;
 
@@ -43,6 +44,7 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "daemon-status" => daemon_status(rest),
         "deploy" => deploy(rest),
         "deploy-status" => deploy_status(rest),
+        "acme-issue" => acme_issue(rest),
         "runtime-http" => runtime_http(rest),
         "gateway" => gateway(rest),
         "dns" => dns(rest),
@@ -127,6 +129,17 @@ fn deploy_status(args: &[String]) -> NodeResult<String> {
     let report = read_product_deploy_status(parsed.state_dir, parsed.deploy_id)?;
     serde_json::to_string(&DeployStatusResponse::from(report))
         .map_err(|source| NodeError::EncodeNodeAgentRpc { source })
+}
+
+fn acme_issue(args: &[String]) -> NodeResult<String> {
+    let parsed = AcmeIssueArgs::parse(args)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .enable_io()
+        .build()
+        .map_err(|source| NodeError::Runtime { source })?;
+    let report = runtime.block_on(issue_product_certificate(parsed.into_options()))?;
+    serde_json::to_string(&report).map_err(|source| NodeError::EncodeNodeAgentRpc { source })
 }
 
 fn gateway(args: &[String]) -> NodeResult<String> {
@@ -453,6 +466,14 @@ struct ServingRoleArgs {
     stale_after_ms: Option<u64>,
 }
 
+struct AcmeIssueArgs {
+    state_dir: PathBuf,
+    hostname: String,
+    gateway_url: String,
+    issuer_holder: Option<String>,
+    account_path: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy)]
 enum ServingRoleCommand {
     Gateway,
@@ -626,6 +647,78 @@ impl ServingRoleArgs {
             Some(stale_after_ms) => options.with_stale_after(Duration::from_millis(stale_after_ms)),
             None => options,
         }
+    }
+}
+
+impl AcmeIssueArgs {
+    fn parse(args: &[String]) -> NodeResult<Self> {
+        let mut state_dir = None;
+        let mut hostname = None;
+        let mut gateway_url = None;
+        let mut issuer_holder = None;
+        let mut account_path = None;
+        let mut remaining = args.iter();
+        while let Some(argument) = remaining.next() {
+            match argument.as_str() {
+                "--state" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--state" });
+                    };
+                    state_dir = Some(PathBuf::from(value));
+                }
+                "--hostname" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--hostname" });
+                    };
+                    hostname = Some(value.clone());
+                }
+                "--gateway" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--gateway" });
+                    };
+                    gateway_url = Some(value.clone());
+                }
+                "--issuer-holder" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--issuer-holder",
+                        });
+                    };
+                    issuer_holder = Some(value.clone());
+                }
+                "--account-path" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--account-path",
+                        });
+                    };
+                    account_path = Some(PathBuf::from(value));
+                }
+                other => {
+                    return Err(NodeError::UnknownArgument {
+                        argument: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
+            hostname: hostname.ok_or(NodeError::MissingFlagValue { flag: "--hostname" })?,
+            gateway_url: gateway_url.ok_or(NodeError::MissingFlagValue { flag: "--gateway" })?,
+            issuer_holder,
+            account_path,
+        })
+    }
+
+    fn into_options(self) -> AcmeIssueOptions {
+        let mut options = AcmeIssueOptions::new(self.state_dir, self.hostname, self.gateway_url);
+        if let Some(issuer_holder) = self.issuer_holder {
+            options = options.with_issuer_holder(issuer_holder);
+        }
+        if let Some(account_path) = self.account_path {
+            options = options.with_account_path(account_path);
+        }
+        options
     }
 }
 
@@ -1076,6 +1169,7 @@ fn help() -> String {
         "  admit --state <dir> --request <json>",
         "  deploy (--state <dir> | --control <socket>) --target-node <id> [--deploy-id <id>] [--service <name>] [--revision <rev>] [--hostname <name>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]",
         "  deploy-status --state <dir> [--deploy-id <id>]",
+        "  acme-issue --state <dir> --hostname <host> --gateway <url> [--issuer-holder <id>] [--account-path <path>]",
         "  gateway --state <dir> --listen <addr> --control <socket> [--tls-listen <addr>] [--stale-after-ms <ms>]",
         "  dns --state <dir> --listen <addr> --control <socket> [--stale-after-ms <ms>]",
     ]
