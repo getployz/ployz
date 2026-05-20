@@ -14,6 +14,12 @@ pub enum NodeError {
     MissingFlagValue { flag: &'static str },
     #[error("unknown argument '{argument}'")]
     UnknownArgument { argument: String },
+    #[error("bootstrap requested {field} '{requested}' but existing node has '{existing}'")]
+    BootstrapConflict {
+        field: &'static str,
+        requested: String,
+        existing: String,
+    },
     #[error("command '{command}' is not wired yet")]
     CommandNotWired { command: String },
     #[error("decode invite token: {source}")]

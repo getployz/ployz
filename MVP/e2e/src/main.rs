@@ -21,7 +21,19 @@ mod environment_branch_promote_rollback_contract {
         Ok(())
     }
 }
+#[cfg(unix)]
+mod installed_bootstrap_contract;
 mod iroh_docs_contract;
+#[cfg(not(unix))]
+mod installed_bootstrap_contract {
+    pub(crate) fn run() -> Result<(), String> {
+        Err("installed-bootstrap-contract uses Unix sockets in the MVP harness".to_string())
+    }
+
+    pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
+        Ok(())
+    }
+}
 mod lease_acme_contract;
 #[cfg(unix)]
 mod machine_remove_contract;
@@ -268,6 +280,11 @@ const SCENARIOS: &[Scenario] = &[
         "three-server-product",
         three_server_product_contract::run,
         three_server_product_contract::cleanup_orphaned_children,
+    ),
+    Scenario::with_cleanup(
+        "installed-bootstrap-contract",
+        installed_bootstrap_contract::run,
+        installed_bootstrap_contract::cleanup_orphaned_children,
     ),
     Scenario::new(
         "container-overlay-dns-smoke",

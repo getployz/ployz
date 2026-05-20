@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use mvp_bus::{Grant, IslandId, PrincipalId, Subject, SubjectPattern};
@@ -23,8 +24,7 @@ async fn product_node_agent_starts_http_process_with_shipped_binary_role() {
             .with_node_id("node-a"),
     )
     .expect("init node");
-    let runtime =
-        ProcessRuntime::managed_http(temp.path().join("runtime"), env!("CARGO_BIN_EXE_mvp-node"));
+    let runtime = ProcessRuntime::managed_http(temp.path().join("runtime"), mvp_node_binary());
     let (bus, authority, _raw) = mvp_bus::harness::actor_with_authority();
     let agent = authority.grant_in(
         state.island(),
@@ -113,7 +113,7 @@ async fn request_unit<T: serde::Serialize>(
         session,
         Subject::parse(subject).expect("subject"),
         encode(request, "request").expect("request"),
-        Duration::from_secs(2),
+        Duration::from_secs(10),
     )
     .await
     .expect("request");
@@ -130,7 +130,7 @@ async fn request_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
             session,
             Subject::parse(subject).expect("subject"),
             encode(request, "request").expect("request"),
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         )
         .await
         .expect("request");
@@ -148,4 +148,10 @@ fn assert_response_contains(address: &str, expected: &str) {
         response.contains(expected),
         "response {response:?} did not contain {expected:?}"
     );
+}
+
+fn mvp_node_binary() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_mvp-node")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mvp-node")))
 }

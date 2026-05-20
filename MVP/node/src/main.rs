@@ -1,18 +1,24 @@
 use std::env;
+use std::fs;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mvp_bus::IslandId;
 use mvp_node::{
     AcmeIssueOptions, DaemonOptions, InitOptions, NodeError, NodeResult, ProductDeployOptions,
     ServingRoleOptions, admit_joiner, create_admission_request, create_invite,
     deploy_product_service, deploy_product_service_with_runtime, init_node,
     issue_product_certificate, join_from_token, load_node, now_ms, read_product_deploy_status,
     run_daemon_once, run_dns_role, run_gateway_role,
+};
+use mvp_projection::{
+    DnsProjection, GatewayProjection, ProjectionState, write_projection_snapshots,
+    write_serving_generation_manifest,
 };
 use serde::Serialize;
 
@@ -35,6 +41,7 @@ fn run(args: Vec<String>) -> NodeResult<String> {
     };
     match command.as_str() {
         "init" => init(rest),
+        "bootstrap" => bootstrap(rest),
         "status" => status(rest),
         "invite" => invite(rest),
         "join" => join(rest),
@@ -327,6 +334,91 @@ fn init(args: &[String]) -> NodeResult<String> {
     ))
 }
 
+fn bootstrap(args: &[String]) -> NodeResult<String> {
+    let parsed = ParsedArgs::parse(args)?;
+    let Some(state_dir) = parsed.state_dir else {
+        return Err(NodeError::MissingFlagValue { flag: "--state" });
+    };
+    let state = match load_node(&state_dir) {
+        Ok(state) => {
+            if let Some(island) = parsed.island.as_deref()
+                && state.island_id() != island
+            {
+                return Err(NodeError::BootstrapConflict {
+                    field: "island",
+                    requested: island.to_string(),
+                    existing: state.island_id().to_string(),
+                });
+            }
+            if let Some(node_id) = parsed.node_id.as_deref()
+                && state.node_id_str() != node_id
+            {
+                return Err(NodeError::BootstrapConflict {
+                    field: "node_id",
+                    requested: node_id.to_string(),
+                    existing: state.node_id_str().to_string(),
+                });
+            }
+            state
+        }
+        Err(NodeError::NotInitialized { .. }) => {
+            let mut options = InitOptions::new(&state_dir);
+            if let Some(island) = parsed.island {
+                options = options.with_island(island);
+            }
+            if let Some(node_id) = parsed.node_id {
+                options = options.with_node_id(node_id);
+            }
+            init_node(options)?
+        }
+        Err(error) => return Err(error),
+    };
+    ensure_bootstrap_dirs(state.paths())?;
+    ensure_bootstrap_snapshots(&state)?;
+    let response = BootstrapResponse::from_state(&state);
+    serde_json::to_string(&response).map_err(|source| NodeError::EncodeNodeAgentRpc { source })
+}
+
+fn ensure_bootstrap_dirs(paths: &mvp_node::NodePaths) -> NodeResult<()> {
+    for path in [
+        paths.runtime_dir.clone(),
+        paths.wireguard_dir.clone(),
+        paths.state_dir.join("control"),
+        paths.state_dir.join("acme"),
+    ] {
+        fs::create_dir_all(&path).map_err(|source| NodeError::CreateStateDir { path, source })?;
+    }
+    Ok(())
+}
+
+fn ensure_bootstrap_snapshots(state: &mvp_node::LoadedNodeState) -> NodeResult<()> {
+    if state.paths().gateway_snapshot.exists() && state.paths().dns_snapshot.exists() {
+        write_serving_generation_manifest(
+            &state.paths().gateway_snapshot,
+            &state.paths().dns_snapshot,
+        )
+        .map_err(|source| NodeError::Projection { source })?;
+        return Ok(());
+    }
+    let mut projection = ProjectionState::for_island(IslandId::new(state.island_id().to_string()));
+    projection.gateway = Some(GatewayProjection {
+        gateway_commit_id: "bootstrap-gateway-empty".to_string(),
+        route_commit_id: "bootstrap-route-empty".to_string(),
+        routes: Vec::new(),
+    });
+    projection.dns = Some(DnsProjection {
+        dns_commit_id: "bootstrap-dns-empty".to_string(),
+        records: Vec::new(),
+    });
+    write_projection_snapshots(
+        &projection,
+        &state.paths().gateway_snapshot,
+        &state.paths().dns_snapshot,
+    )
+    .map_err(|source| NodeError::Projection { source })?;
+    Ok(())
+}
+
 fn status(args: &[String]) -> NodeResult<String> {
     let state_dir = parse_state_dir_only(args)?;
     let state = load_node(state_dir)?;
@@ -340,6 +432,85 @@ fn status(args: &[String]) -> NodeResult<String> {
         state.paths().gateway_snapshot.display(),
         state.paths().dns_snapshot.display()
     ))
+}
+
+#[derive(Serialize)]
+struct BootstrapResponse {
+    status: &'static str,
+    node_id: String,
+    island: String,
+    principal: String,
+    paths: BootstrapPaths,
+    identity: BootstrapIdentity,
+    role_defaults: BootstrapRoleDefaults,
+}
+
+#[derive(Serialize)]
+struct BootstrapPaths {
+    state_dir: PathBuf,
+    fact_store: PathBuf,
+    projection_db: PathBuf,
+    gateway_snapshot: PathBuf,
+    dns_snapshot: PathBuf,
+    runtime_dir: PathBuf,
+    wireguard_dir: PathBuf,
+    wireguard_private_key: PathBuf,
+    acme_accounts: PathBuf,
+}
+
+#[derive(Serialize)]
+struct BootstrapIdentity {
+    p2panda_network_id_hex: String,
+    p2panda_topic_hex: String,
+    wireguard_public_key: String,
+    wireguard_overlay_ip: String,
+    container_subnet: String,
+}
+
+#[derive(Serialize)]
+struct BootstrapRoleDefaults {
+    daemon_control_socket: PathBuf,
+    gateway_control_socket: PathBuf,
+    dns_control_socket: PathBuf,
+}
+
+impl BootstrapResponse {
+    fn from_state(state: &mvp_node::LoadedNodeState) -> Self {
+        let paths = state.paths();
+        Self {
+            status: "bootstrapped",
+            node_id: state.node_id_str().to_string(),
+            island: state.island_id().to_string(),
+            principal: state.principal_id().to_string(),
+            paths: BootstrapPaths {
+                state_dir: paths.state_dir.clone(),
+                fact_store: paths.fact_store.clone(),
+                projection_db: paths.projection_db.clone(),
+                gateway_snapshot: paths.gateway_snapshot.clone(),
+                dns_snapshot: paths.dns_snapshot.clone(),
+                runtime_dir: paths.runtime_dir.clone(),
+                wireguard_dir: paths.wireguard_dir.clone(),
+                wireguard_private_key: paths.wireguard_private_key.clone(),
+                acme_accounts: paths.state_dir.join("acme-accounts.json"),
+            },
+            identity: BootstrapIdentity {
+                p2panda_network_id_hex: state.p2panda_network_id_hex().to_string(),
+                p2panda_topic_hex: state.p2panda_topic_hex().to_string(),
+                wireguard_public_key: state.wireguard_public_key().to_string(),
+                wireguard_overlay_ip: state.wireguard_overlay_ip().to_string(),
+                container_subnet: state.container_subnet().to_string(),
+            },
+            role_defaults: BootstrapRoleDefaults {
+                daemon_control_socket: role_socket(paths.state_dir.as_path(), "daemon"),
+                gateway_control_socket: role_socket(paths.state_dir.as_path(), "gateway"),
+                dns_control_socket: role_socket(paths.state_dir.as_path(), "dns"),
+            },
+        }
+    }
+}
+
+fn role_socket(state_dir: &Path, role: &str) -> PathBuf {
+    state_dir.join("control").join(format!("{role}.sock"))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1175,6 +1346,7 @@ fn help() -> String {
         "",
         "Commands:",
         "  init --state <dir> [--island <id>] [--node-id <id>]",
+        "  bootstrap --state <dir> [--island <id>] [--node-id <id>]",
         "  status --state <dir>",
         "  daemon --state <dir> [--run-for-ms <ms>] [--linux-wireguard-ifname <ifname>]",
         "  invite --state <dir> [--ttl-ms <ms>]",
@@ -1221,6 +1393,82 @@ mod tests {
 
         assert!(init.contains("initialized node=node-a island=prod"));
         assert!(status.contains("node=node-a island=prod principal=node:node-a"));
+    }
+
+    #[test]
+    fn bootstrap_is_idempotent_and_reports_product_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path().join("node-a");
+
+        let first = run(vec![
+            "bootstrap".to_string(),
+            "--state".to_string(),
+            state.display().to_string(),
+            "--island".to_string(),
+            "prod".to_string(),
+            "--node-id".to_string(),
+            "node-a".to_string(),
+        ])
+        .expect("bootstrap");
+        let second = run(vec![
+            "bootstrap".to_string(),
+            "--state".to_string(),
+            state.display().to_string(),
+            "--island".to_string(),
+            "prod".to_string(),
+            "--node-id".to_string(),
+            "node-a".to_string(),
+        ])
+        .expect("bootstrap again");
+        let first: serde_json::Value = serde_json::from_str(&first).expect("first json");
+        let second: serde_json::Value = serde_json::from_str(&second).expect("second json");
+
+        assert_eq!(first["status"], "bootstrapped");
+        assert_eq!(first["node_id"], "node-a");
+        assert_eq!(first["island"], "prod");
+        assert_eq!(first["identity"], second["identity"]);
+        assert!(state.join("runtime").is_dir());
+        assert!(state.join("control").is_dir());
+        assert!(state.join("wireguard").join("private.key").exists());
+        assert_eq!(
+            first["role_defaults"]["gateway_control_socket"],
+            serde_json::Value::String(
+                state
+                    .join("control")
+                    .join("gateway.sock")
+                    .display()
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn bootstrap_refuses_conflicting_existing_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path().join("node-a");
+        run(vec![
+            "bootstrap".to_string(),
+            "--state".to_string(),
+            state.display().to_string(),
+            "--island".to_string(),
+            "prod".to_string(),
+            "--node-id".to_string(),
+            "node-a".to_string(),
+        ])
+        .expect("bootstrap");
+
+        let error = run(vec![
+            "bootstrap".to_string(),
+            "--state".to_string(),
+            state.display().to_string(),
+            "--island".to_string(),
+            "prod".to_string(),
+            "--node-id".to_string(),
+            "node-b".to_string(),
+        ])
+        .expect_err("conflicting node id fails");
+
+        assert!(error.to_string().contains("existing node has 'node-a'"));
     }
 
     #[test]

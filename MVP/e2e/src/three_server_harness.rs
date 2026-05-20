@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -78,12 +79,47 @@ impl ProductHarness {
         Ok(Self { root, node_bin })
     }
 
+    pub(crate) fn install(root: impl Into<PathBuf>) -> Result<Self, String> {
+        let root = root.into();
+        build_node_bin_if_needed()?;
+        let source = resolve_node_bin()?;
+        let bin_dir = root.join("install").join("bin");
+        fs::create_dir_all(&bin_dir)
+            .map_err(|error| format!("create install bin dir '{}': {error}", bin_dir.display()))?;
+        let node_bin = bin_dir.join("mvp-node");
+        fs::copy(&source, &node_bin).map_err(|error| {
+            format!(
+                "install mvp-node from '{}' to '{}': {error}",
+                source.display(),
+                node_bin.display()
+            )
+        })?;
+        let mut permissions = fs::metadata(&node_bin)
+            .map_err(|error| format!("stat installed mvp-node '{}': {error}", node_bin.display()))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&node_bin, permissions).map_err(|error| {
+            format!("chmod installed mvp-node '{}': {error}", node_bin.display())
+        })?;
+        Ok(Self { root, node_bin })
+    }
+
+    pub(crate) fn node_bin(&self) -> &Path {
+        &self.node_bin
+    }
+
     pub(crate) fn node_dir(&self, node: &str) -> PathBuf {
         self.root.join("nodes").join(node)
     }
 
     pub(crate) fn control_socket(&self, role: &str) -> PathBuf {
         self.root.join("control").join(format!("{role}.sock"))
+    }
+
+    pub(crate) fn role_control_socket(&self, node: &str, role: &str) -> PathBuf {
+        self.root
+            .join("control")
+            .join(format!("{role}-{node}.sock"))
     }
 
     pub(crate) fn daemon_control_socket(&self, node: &str) -> PathBuf {
@@ -104,6 +140,24 @@ impl ProductHarness {
             "--node-id",
             node,
         ])
+    }
+
+    pub(crate) fn bootstrap_node(&self, node: &str) -> Result<ProductCommandOutput, String> {
+        self.node_command([
+            "bootstrap",
+            "--state",
+            self.node_dir(node)
+                .to_str()
+                .ok_or("node path is not UTF-8")?,
+            "--island",
+            "prod",
+            "--node-id",
+            node,
+        ])
+    }
+
+    pub(crate) fn help(&self) -> Result<ProductCommandOutput, String> {
+        self.node_command(["--help"])
     }
 
     pub(crate) fn invite(&self, node: &str) -> Result<String, String> {
@@ -289,6 +343,14 @@ impl ProductHarness {
 
     pub(crate) fn spawn_dns(&self, node: &str) -> Result<ProductChild, String> {
         self.spawn_serving_role("dns", node, self.control_socket("dns"))
+    }
+
+    pub(crate) fn spawn_node_gateway(&self, node: &str) -> Result<ProductChild, String> {
+        self.spawn_serving_role("gateway", node, self.role_control_socket(node, "gateway"))
+    }
+
+    pub(crate) fn spawn_node_dns(&self, node: &str) -> Result<ProductChild, String> {
+        self.spawn_serving_role("dns", node, self.role_control_socket(node, "dns"))
     }
 
     pub(crate) fn wait_role(&self, socket: &Path) -> Result<ServingRoleProbe, String> {
@@ -540,6 +602,35 @@ impl Drop for ProductChild {
             let _ = self.child.wait();
         }
     }
+}
+
+fn build_node_bin_if_needed() -> Result<(), String> {
+    if std::env::var_os("MVP_NODE_BIN").is_some() {
+        return Ok(());
+    }
+    let current =
+        std::env::current_exe().map_err(|error| format!("resolve current executable: {error}"))?;
+    let manifest = current
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(|root| root.join("Cargo.toml"))
+        .ok_or_else(|| format!("resolve MVP manifest from '{}'", current.display()))?;
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("-p")
+        .arg("mvp-node")
+        .status()
+        .map_err(|error| format!("spawn cargo build for mvp-node: {error}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "cargo build for mvp-node failed with status {status}; manifest={}",
+        manifest.display()
+    ))
 }
 
 fn command_output(
