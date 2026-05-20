@@ -8,6 +8,10 @@ use crate::three_server_harness::{ProductCommandRecord, ProductHarness, ServingR
 
 const SCENARIO: &str = "three-node-parity-smoke";
 const NODES: &[&str] = &["node-a", "node-b", "node-c"];
+const DOCKER_IMAGE: &str = "busybox:latest";
+const DOCKER_SERVICE_PORT: u16 = 8080;
+const DOCKER_COMMAND: &str =
+    "mkdir -p /www && echo ok >/www/index.html && httpd -f -p 8080 -h /www";
 
 #[derive(Debug, Serialize)]
 struct ThreeNodeParityReport {
@@ -21,6 +25,7 @@ struct ThreeNodeParityReport {
     join_commands: Vec<ProductCommandRecord>,
     admit_commands: Vec<ProductCommandRecord>,
     daemon_statuses: Vec<NodeCommandStatus>,
+    runtime_placements: Vec<RuntimePlacementEvidence>,
     gateway_statuses: Vec<NodeRoleStatus>,
     dns_statuses: Vec<NodeRoleStatus>,
     elapsed_ms: u128,
@@ -45,6 +50,15 @@ struct NodeRoleStatus {
     status: ServingRoleProbe,
 }
 
+#[derive(Debug, Serialize)]
+struct RuntimePlacementEvidence {
+    service: &'static str,
+    target_node: &'static str,
+    deploy: ProductCommandRecord,
+    deploy_status: ProductCommandRecord,
+    active_backends: Vec<String>,
+}
+
 pub(crate) fn run() -> Result<(), String> {
     let started = Instant::now();
     let root = scenario_dir(SCENARIO);
@@ -52,10 +66,23 @@ pub(crate) fn run() -> Result<(), String> {
     let harness = ProductHarness::install(&root)?;
     let installed_node_bin = harness.node_bin().display().to_string();
     let installed_help = harness.help()?.record;
+    let missing_prerequisites = missing_privileged_prerequisites();
+    let privileged_preflight = PrivilegedPreflight {
+        enabled: missing_prerequisites.is_empty(),
+        skipped_reason: if missing_prerequisites.is_empty() {
+            None
+        } else {
+            Some(
+                "privileged workload phase skipped because host prerequisites are missing"
+                    .to_string(),
+            )
+        },
+        missing_prerequisites,
+    };
 
     let mut bootstrap_commands = Vec::new();
     bootstrap_commands.push(harness.bootstrap_node("node-a")?.record);
-    let mut founder_daemon = harness.spawn_daemon("node-a", 60_000)?;
+    let mut founder_daemon = spawn_parity_daemon(&harness, "node-a", privileged_preflight.enabled)?;
     let founder_status = NodeCommandStatus {
         node: "node-a",
         status: harness.wait_daemon_status("node-a")?,
@@ -74,12 +101,22 @@ pub(crate) fn run() -> Result<(), String> {
     let mut peer_daemons = Vec::new();
     let mut daemon_statuses = vec![founder_status];
     for node in ["node-b", "node-c"] {
-        peer_daemons.push(harness.spawn_daemon(node, 60_000)?);
+        peer_daemons.push(spawn_parity_daemon(
+            &harness,
+            node,
+            privileged_preflight.enabled,
+        )?);
         daemon_statuses.push(NodeCommandStatus {
             node,
             status: harness.wait_daemon_status(node)?,
         });
     }
+
+    let runtime_placements = if privileged_preflight.enabled {
+        deploy_runtime_workloads(&harness)?
+    } else {
+        Vec::new()
+    };
 
     let _ = founder_daemon.kill()?;
     for mut daemon in peer_daemons {
@@ -119,6 +156,9 @@ pub(crate) fn run() -> Result<(), String> {
     for mut dns in dns_roles {
         dns.wait()?;
     }
+    if privileged_preflight.enabled {
+        harness.cleanup_docker_runtime(NODES)?;
+    }
     harness.cleanup_runtime_processes(NODES)?;
 
     assert_installed_command_records(
@@ -132,23 +172,13 @@ pub(crate) fn run() -> Result<(), String> {
     )?;
     assert_bootstrap_stdout(&bootstrap_commands)?;
 
-    let missing_prerequisites = missing_privileged_prerequisites();
-    let privileged_preflight = PrivilegedPreflight {
-        enabled: missing_prerequisites.is_empty(),
-        skipped_reason: if missing_prerequisites.is_empty() {
-            Some("privileged workload phase is not wired yet".to_string())
-        } else {
-            Some(
-                "privileged workload phase skipped because host prerequisites are missing"
-                    .to_string(),
-            )
-        },
-        missing_prerequisites,
-    };
-
     let report = ThreeNodeParityReport {
         scenario: SCENARIO,
-        stage: "installed-bootstrap-readiness",
+        stage: if runtime_placements.is_empty() {
+            "installed-bootstrap-readiness"
+        } else {
+            "docker-runtime-placement"
+        },
         installed_node_bin,
         nodes: NODES.to_vec(),
         privileged_preflight,
@@ -157,23 +187,111 @@ pub(crate) fn run() -> Result<(), String> {
         join_commands,
         admit_commands,
         daemon_statuses,
+        runtime_placements,
         gateway_statuses,
         dns_statuses,
         elapsed_ms: started.elapsed().as_millis(),
     };
     let json = write_json(&root.join("three-node-parity-smoke-report.json"), &report)?;
     println!("{json}");
+    if report.privileged_preflight.enabled && report.runtime_placements.len() != 3 {
+        return Err("three-node-parity-smoke did not place all runtime workloads".to_string());
+    }
     if report.privileged_preflight.enabled {
-        return Err(
-            "three-node-parity-smoke reached installed bootstrap readiness, but privileged workload parity is not wired yet"
-                .to_string(),
+        eprintln!("PASS {SCENARIO} runtime placement; later parity phases still pending");
+    } else {
+        eprintln!(
+            "SKIP {SCENARIO} privileged workload phase skipped; report={}",
+            root.join("three-node-parity-smoke-report.json").display()
         );
     }
-    eprintln!(
-        "SKIP {SCENARIO} privileged workload phase skipped; report={}",
-        root.join("three-node-parity-smoke-report.json").display()
-    );
     Ok(())
+}
+
+fn spawn_parity_daemon(
+    harness: &ProductHarness,
+    node: &str,
+    privileged_enabled: bool,
+) -> Result<crate::three_server_harness::ProductChild, String> {
+    if privileged_enabled {
+        return harness.spawn_docker_daemon(
+            node,
+            60_000,
+            DOCKER_IMAGE,
+            DOCKER_SERVICE_PORT,
+            DOCKER_COMMAND,
+        );
+    }
+    harness.spawn_daemon(node, 60_000)
+}
+
+fn deploy_runtime_workloads(
+    harness: &ProductHarness,
+) -> Result<Vec<RuntimePlacementEvidence>, String> {
+    [
+        ("web", "node-a", "deploy-web", "rev-1", "web.example.test"),
+        ("api", "node-b", "deploy-api", "rev-1", "api.example.test"),
+        (
+            "echo",
+            "node-c",
+            "deploy-echo",
+            "rev-1",
+            "echo.example.test",
+        ),
+    ]
+    .into_iter()
+    .map(|(service, target_node, deploy_id, revision, hostname)| {
+        let deploy = harness
+            .deploy_service_via_daemon(
+                "node-a",
+                deploy_id,
+                target_node,
+                service,
+                revision,
+                hostname,
+            )?
+            .record;
+        let active_backends = parse_active_backends(&deploy.stdout)?;
+        if active_backends
+            .iter()
+            .any(|backend| backend.starts_with(&format!("{target_node}@127.")))
+        {
+            return Err(format!(
+                "{service} deploy used loopback backend in Docker phase: {active_backends:?}"
+            ));
+        }
+        if active_backends
+            .iter()
+            .all(|backend| !backend.starts_with(&format!("{target_node}@10.210.")))
+        {
+            return Err(format!(
+                "{service} deploy did not report a container subnet backend: {active_backends:?}"
+            ));
+        }
+        let deploy_status = harness.deploy_status("node-a", deploy_id)?.record;
+        Ok(RuntimePlacementEvidence {
+            service,
+            target_node,
+            deploy,
+            deploy_status,
+            active_backends,
+        })
+    })
+    .collect()
+}
+
+fn parse_active_backends(stdout: &str) -> Result<Vec<String>, String> {
+    let value = serde_json::from_str::<serde_json::Value>(stdout)
+        .map_err(|error| format!("decode deploy response: {error}; stdout={stdout}"))?;
+    let backends = value
+        .get("active_backends")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("deploy response missing active_backends: {value}"))?;
+    Ok(backends
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .collect())
 }
 
 fn assert_installed_command_records<'a>(
@@ -220,6 +338,9 @@ fn missing_privileged_prerequisites() -> Vec<String> {
             missing.push(format!("command `{command}`"));
         }
     }
+    if command_available("docker") && !docker_daemon_available() {
+        missing.push("running Docker daemon".to_string());
+    }
     missing
 }
 
@@ -242,11 +363,21 @@ fn command_available(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn docker_daemon_available() -> bool {
+    Command::new("docker")
+        .arg("info")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 pub(crate) fn cleanup_orphaned_children() -> Result<(), String> {
     let root = scenario_dir(SCENARIO);
     if !root.exists() {
         return Ok(());
     }
-    ProductHarness::install(&root)?.cleanup_runtime_processes(NODES)?;
+    let harness = ProductHarness::install(&root)?;
+    let _ = harness.cleanup_docker_runtime(NODES);
+    harness.cleanup_runtime_processes(NODES)?;
     Ok(())
 }

@@ -226,6 +226,14 @@ fn daemon(args: &[String]) -> NodeResult<String> {
     if let Some(ifname) = parsed.linux_wireguard_ifname {
         options = options.with_linux_wireguard(ifname);
     }
+    if let DeployRuntimeArgs::Docker {
+        image,
+        service_port,
+        command,
+    } = parsed.runtime
+    {
+        options = options.with_docker_runtime(image, service_port, command);
+    }
     let report = runtime.block_on(run_daemon_once(parsed.state_dir, options))?;
     Ok(format!(
         "daemon node={} ticket={} imported_batches={} imported_operations={} node_agent_handlers={} wireguard_backend={} wireguard_applied_revision={}",
@@ -617,6 +625,7 @@ struct DaemonArgs {
     run_for_ms: Option<u64>,
     control_socket: Option<PathBuf>,
     linux_wireguard_ifname: Option<String>,
+    runtime: DeployRuntimeArgs,
 }
 
 struct AdmitArgs {
@@ -1014,12 +1023,7 @@ impl DeployArgs {
                             flag: "--container-command",
                         });
                     };
-                    docker_command = Some(
-                        value
-                            .split_whitespace()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>(),
-                    );
+                    docker_command = Some(container_shell_command(value));
                 }
                 other => {
                     return Err(NodeError::UnknownArgument {
@@ -1226,6 +1230,10 @@ impl DaemonArgs {
         let mut run_for_ms = None;
         let mut control_socket = None;
         let mut linux_wireguard_ifname = None;
+        let mut daemon_runtime = DeployRuntimeArgs::Process;
+        let mut docker_image = None;
+        let mut docker_service_port = None;
+        let mut docker_command = None;
         let mut remaining = args.iter();
         while let Some(argument) = remaining.next() {
             match argument.as_str() {
@@ -1264,6 +1272,53 @@ impl DaemonArgs {
                     };
                     linux_wireguard_ifname = Some(value.clone());
                 }
+                "--runtime" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--runtime" });
+                    };
+                    daemon_runtime = match value.as_str() {
+                        "process" => DeployRuntimeArgs::Process,
+                        "docker" => DeployRuntimeArgs::Docker {
+                            image: String::new(),
+                            service_port: 8080,
+                            command: None,
+                        },
+                        _ => {
+                            return Err(NodeError::UnknownArgument {
+                                argument: value.clone(),
+                            });
+                        }
+                    };
+                }
+                "--image" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue { flag: "--image" });
+                    };
+                    docker_image = Some(value.clone());
+                }
+                "--service-port" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--service-port",
+                        });
+                    };
+                    docker_service_port =
+                        Some(
+                            value
+                                .parse::<u16>()
+                                .map_err(|_| NodeError::UnknownArgument {
+                                    argument: value.clone(),
+                                })?,
+                        );
+                }
+                "--container-command" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--container-command",
+                        });
+                    };
+                    docker_command = Some(container_shell_command(value));
+                }
                 other => {
                     return Err(NodeError::UnknownArgument {
                         argument: other.to_string(),
@@ -1276,6 +1331,14 @@ impl DaemonArgs {
             run_for_ms,
             control_socket,
             linux_wireguard_ifname,
+            runtime: match daemon_runtime {
+                DeployRuntimeArgs::Process => DeployRuntimeArgs::Process,
+                DeployRuntimeArgs::Docker { .. } => DeployRuntimeArgs::Docker {
+                    image: docker_image.ok_or(NodeError::MissingFlagValue { flag: "--image" })?,
+                    service_port: docker_service_port.unwrap_or(8080),
+                    command: docker_command,
+                },
+            },
         })
     }
 }
@@ -1319,6 +1382,10 @@ impl ParsedArgs {
     }
 }
 
+fn container_shell_command(value: &str) -> Vec<String> {
+    vec!["sh".to_string(), "-c".to_string(), value.to_string()]
+}
+
 fn parse_state_dir_only(args: &[String]) -> NodeResult<PathBuf> {
     let mut state_dir = None;
     let mut remaining = args.iter();
@@ -1348,7 +1415,7 @@ fn help() -> String {
         "  init --state <dir> [--island <id>] [--node-id <id>]",
         "  bootstrap --state <dir> [--island <id>] [--node-id <id>]",
         "  status --state <dir>",
-        "  daemon --state <dir> [--run-for-ms <ms>] [--linux-wireguard-ifname <ifname>]",
+        "  daemon --state <dir> [--run-for-ms <ms>] [--linux-wireguard-ifname <ifname>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]]",
         "  invite --state <dir> [--ttl-ms <ms>]",
         "  join --state <dir> --token <json> [--node-id <id>]",
         "  admission --state <dir>",
@@ -1364,7 +1431,7 @@ fn help() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ParsedArgs, run};
+    use super::{DaemonArgs, DeployRuntimeArgs, ParsedArgs, run};
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
     use std::thread;
@@ -1393,6 +1460,49 @@ mod tests {
 
         assert!(init.contains("initialized node=node-a island=prod"));
         assert!(status.contains("node=node-a island=prod principal=node:node-a"));
+    }
+
+    #[test]
+    fn daemon_args_accept_docker_runtime_surface() {
+        let parsed = DaemonArgs::parse(&[
+            "--state".to_string(),
+            "node-a".to_string(),
+            "--run-for-ms".to_string(),
+            "60000".to_string(),
+            "--control".to_string(),
+            "daemon.sock".to_string(),
+            "--runtime".to_string(),
+            "docker".to_string(),
+            "--image".to_string(),
+            "busybox:latest".to_string(),
+            "--service-port".to_string(),
+            "8080".to_string(),
+            "--container-command".to_string(),
+            "mkdir -p /www && httpd -f -p 8080 -h /www".to_string(),
+        ])
+        .expect("parse daemon args");
+
+        assert_eq!(parsed.state_dir, std::path::PathBuf::from("node-a"));
+        assert_eq!(parsed.run_for_ms, Some(60_000));
+        match parsed.runtime {
+            DeployRuntimeArgs::Docker {
+                image,
+                service_port,
+                command,
+            } => {
+                assert_eq!(image, "busybox:latest");
+                assert_eq!(service_port, 8080);
+                assert_eq!(
+                    command,
+                    Some(vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "mkdir -p /www && httpd -f -p 8080 -h /www".to_string()
+                    ])
+                );
+            }
+            DeployRuntimeArgs::Process => panic!("expected docker runtime"),
+        }
     }
 
     #[test]
