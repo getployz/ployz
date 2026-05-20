@@ -273,6 +273,14 @@ command output, scenario report field, or explicit host blocker.
 
 ## Verification Gates
 
+- U1 checkpoint:
+  - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
+  - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
+  - Evidence: both commands reach `stage=installed-bootstrap-readiness`, run
+    commands through `target/mvp-e2e/three-node-parity-smoke/install/bin/mvp-node`,
+    start daemon/gateway/DNS roles on `node-a`, `node-b`, and `node-c`, and
+    record local host blockers: non-Linux, non-root, missing `ip`,
+    `iptables`, and `ployz-bpfctl`.
 - `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`
 - `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`
 - `cargo test --manifest-path MVP/Cargo.toml -p mvp-node`
@@ -283,8 +291,8 @@ command output, scenario report field, or explicit host blocker.
 
 ## Acceptance Checklist
 
-- Smoke runs through installed `bin/mvp-node`.
-- `node-a`, `node-b`, and `node-c` are equal gateway/DNS/daemon nodes.
+- [x] Smoke runs through installed `bin/mvp-node`.
+- [x] `node-a`, `node-b`, and `node-c` are equal gateway/DNS/daemon nodes.
 - `web`, `api`, and `echo` are placed on separate required nodes.
 - Gateways on non-owner nodes serve remote services.
 - Pebble ACME issues certificates and HTTPS validates with Pebble root.
@@ -292,6 +300,14 @@ command output, scenario report field, or explicit host blocker.
 - `api` update drains old backend and all gateways converge to v2.
 - Daemon restart does not stop gateway, DNS, or already-running containers.
 - Parent plan final gate has a requirement audit for R1-R14.
+
+## Next Slice 7 Sub-Slice
+
+The next implementation pass should start with U2 and keep the report shape
+from U1. It should wire real Docker runtime and overlay placement for `web`,
+`api`, and `echo`, then leave U3-U5 to add gateway/ACME, container service DNS,
+and update/drain/restart evidence without mixing those concerns into the
+harness bootstrap shell.
 
 ## Explicit Deferrals
 
