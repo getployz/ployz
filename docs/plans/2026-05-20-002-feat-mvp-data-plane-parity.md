@@ -532,6 +532,60 @@ Acceptance:
 - A completion audit maps every requirement R1-R14 to test output or concrete
   runtime evidence.
 
+## Completion Audit - 2026-05-20
+
+Final gate status: not passed on the current host. The product paths for Slice
+7 U2-U5 are wired into the installed-binary smoke, but the real data-plane
+assertions still require a privileged Linux host with Docker, `ip`,
+`iptables`, and `ployz-bpfctl`.
+
+- R1: Partially evidenced. The installed smoke starts daemon, gateway, and DNS
+  roles on `node-a`, `node-b`, and `node-c`; WireGuard/container runtime paths
+  are present in the privileged branch and blocked locally by preflight.
+- R2: Partially evidenced by Slice 2 backend tests and daemon flag wiring;
+  final restart/adoption proof remains blocked by privileged Linux execution.
+- R3: Product path wired. U2 deploys workloads through Docker runtime in the
+  privileged branch; local reports keep `runtime_placements` empty by explicit
+  preflight.
+- R4: Product path wired. Gateway HTTP/HTTPS checks require privileged overlay
+  routing and remain blocked locally.
+- R5: Product path wired. `container_dns_checks` require privileged Docker
+  bridge DNS and remain blocked locally.
+- R6: Product path wired and locally unit-tested in serving slices; final
+  equal-node Pingora proof remains blocked locally.
+- R7: Product path wired. U3 starts Pebble and validates HTTPS with Pebble root
+  in privileged mode; local reports keep `acme_https_checks` empty by
+  preflight.
+- R8: Passed locally for installed bootstrap. The smoke installs
+  `target/mvp-e2e/three-node-parity-smoke/install/bin/mvp-node`, runs all
+  commands through that binary, and bootstraps all three node dirs.
+- R9: Product path wired. The privileged branch deploys `web`, `api`, and
+  `echo` to required nodes and rejects loopback Docker backends; passing
+  evidence still requires the privileged host.
+- R10: Product path wired. U3 checks `web` through `node-b` and `node-c` in
+  privileged mode; locally blocked.
+- R11: Product path wired. U5 checks `api` through gateways, deploys
+  `deploy-api-v2`, records old-backend drain count and `cleanup_done`, reloads
+  gateways, and verifies `ok-api-rev-2`; locally blocked.
+- R12: Product path wired. U4 runs a one-shot BusyBox client on `node-a`'s
+  Docker network to resolve and curl `echo`; locally blocked.
+- R13: Product path wired. U5 restarts `node-b`'s daemon and rechecks gateway
+  plus container-DNS responses in privileged mode; locally blocked.
+- R14: Passed for local gates run during Slice 7 U5:
+  `cargo check --manifest-path MVP/Cargo.toml -p mvp-e2e`,
+  `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-node-parity-smoke`,
+  `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`,
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-runtime`, and
+  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e`.
+- R15: Passed for this slice. The U5 changes stay in the parity smoke and
+  Docker runtime backend env wiring; no production handler absorbed runtime,
+  networking, serving, ACME, install, and orchestration responsibilities.
+
+Next required evidence: run
+`MVP/scripts/three-server-smoke.sh three-node-parity-smoke` on a privileged
+Linux host and fix any U2-U5 failures it surfaces before marking this plan
+complete.
+
 ## Risks
 
 - Real WireGuard may need privileged test environments. If CI cannot provide
