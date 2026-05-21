@@ -352,14 +352,17 @@ U10 --> U11
   allowed IPs for per-node container subnets, installs Docker bridge overlay
   firewall exemptions, and verifies non-owner gateways serve both services
   across real container boundaries.
+- Service DNS slice: the Docker E2E smoke deploys `echo` to `node-c`, starts
+  DNS roles through installed `mvp-node` on all three E2E containers, and
+  verifies a client container on `node-a` resolves `echo.service.example.test`
+  through node-a's bridge DNS and curls the node-c backend across the overlay.
 
 ### Next Slice
 
-Add the service DNS slice: deploy `echo` to `node-c`, start DNS roles through
-installed `mvp-node` on all three E2E containers, and verify a client container
-associated with `node-a` resolves and curls `echo` on `node-c` through
-container-facing DNS and the overlay. This next slice is still not final
-parity: ACME, update/drain, and restart remain separate gates.
+Add the Pebble ACME/HTTPS slice: use the main E2E Pebble/challtestsrv setup,
+issue a certificate through installed `mvp-node`, reload gateway roles, and
+verify HTTPS through non-owner gateways with Pebble's root CA. This next slice
+is still not final parity: update/drain and restart remain separate gates.
 
 ### U1. Split The MVP CLI Binary By Command
 
