@@ -1,12 +1,13 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use mvp_node::{
-    NodeError, NodeResult, admit_joiner, create_admission_request, create_invite, join_from_token,
-    now_ms,
+    NodeError, NodeResult, P2pandaEndpointConfig, admit_joiner, create_admission_request,
+    create_invite, join_from_token_with_endpoint, now_ms,
 };
 
-use super::bootstrap::parse_state_dir_only;
+use super::bootstrap::{parse_socket_addr, parse_state_dir_only};
 
 pub(crate) fn admission(args: &[String]) -> NodeResult<String> {
     let state_dir = parse_state_dir_only(args)?;
@@ -33,7 +34,14 @@ pub(crate) fn invite(args: &[String]) -> NodeResult<String> {
 
 pub(crate) fn join(args: &[String]) -> NodeResult<String> {
     let parsed = JoinArgs::parse(args)?;
-    let state = join_from_token(parsed.state_dir, &parsed.token, parsed.node_id, now_ms())?;
+    let endpoint = parsed.p2panda_endpoint()?;
+    let state = join_from_token_with_endpoint(
+        parsed.state_dir,
+        &parsed.token,
+        parsed.node_id,
+        endpoint,
+        now_ms(),
+    )?;
     Ok(format!(
         "joined node={} island={} state={}",
         state.node_id_str(),
@@ -51,6 +59,8 @@ struct JoinArgs {
     state_dir: PathBuf,
     token: String,
     node_id: Option<String>,
+    p2panda_bind: Option<SocketAddr>,
+    p2panda_advertise: Option<SocketAddr>,
 }
 
 struct AdmitArgs {
@@ -103,6 +113,8 @@ impl JoinArgs {
         let mut state_dir = None;
         let mut token = None;
         let mut node_id = None;
+        let mut p2panda_bind = None;
+        let mut p2panda_advertise = None;
         let mut remaining = args.iter();
         while let Some(argument) = remaining.next() {
             match argument.as_str() {
@@ -124,6 +136,22 @@ impl JoinArgs {
                     };
                     node_id = Some(value.clone());
                 }
+                "--p2panda-bind" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--p2panda-bind",
+                        });
+                    };
+                    p2panda_bind = Some(parse_socket_addr("--p2panda-bind", value)?);
+                }
+                "--p2panda-advertise" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--p2panda-advertise",
+                        });
+                    };
+                    p2panda_advertise = Some(parse_socket_addr("--p2panda-advertise", value)?);
+                }
                 other => {
                     return Err(NodeError::UnknownArgument {
                         argument: other.to_string(),
@@ -135,7 +163,22 @@ impl JoinArgs {
             state_dir: state_dir.ok_or(NodeError::MissingFlagValue { flag: "--state" })?,
             token: token.ok_or(NodeError::MissingFlagValue { flag: "--token" })?,
             node_id,
+            p2panda_bind,
+            p2panda_advertise,
         })
+    }
+
+    fn p2panda_endpoint(&self) -> NodeResult<Option<P2pandaEndpointConfig>> {
+        match (self.p2panda_bind, self.p2panda_advertise) {
+            (None, None) => Ok(None),
+            (Some(bind), Some(advertise)) => Ok(Some(P2pandaEndpointConfig::new(bind, advertise))),
+            (None, Some(_)) => Err(NodeError::MissingFlagValue {
+                flag: "--p2panda-bind",
+            }),
+            (Some(_), None) => Err(NodeError::MissingFlagValue {
+                flag: "--p2panda-advertise",
+            }),
+        }
     }
 }
 

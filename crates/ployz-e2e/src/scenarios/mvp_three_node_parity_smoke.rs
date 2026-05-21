@@ -2,12 +2,15 @@ use crate::error::{Error, Result};
 use crate::runner::ScenarioRun;
 use serde::Serialize;
 
+mod commands;
+
 const NODES: &[&str] = &["founder", "peer", "edge"];
 
 #[derive(Debug, Serialize)]
 struct MvpParityPayloadReport {
     scenario: &'static str,
     nodes: Vec<MvpNodeInstallEvidence>,
+    bootstrap: Vec<commands::MvpBootstrapEvidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -27,11 +30,13 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             help_contains: "mvp-node <command> [options]",
         });
     }
+    let bootstrap = commands::bootstrap_cluster(run)?;
     write_report(
         run,
         &MvpParityPayloadReport {
             scenario: "mvp_three_node_parity_smoke",
             nodes,
+            bootstrap,
         },
     )
 }
