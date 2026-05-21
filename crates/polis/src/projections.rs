@@ -1,8 +1,6 @@
 //! Product-neutral projection substrate.
 
-use crate::Result;
 use crate::identity::SourceWatermark;
-use crate::records::AuthorizedRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionFreshness {
@@ -12,18 +10,6 @@ pub enum ProjectionFreshness {
         required: SourceWatermark,
     },
     Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionInput {
-    pub record: AuthorizedRecord,
-}
-
-impl ProjectionInput {
-    #[must_use]
-    pub fn new(record: AuthorizedRecord) -> Self {
-        Self { record }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,23 +28,6 @@ impl<View> ProjectionSnapshot<View> {
     pub fn is_fresh(&self) -> bool {
         matches!(self.freshness, ProjectionFreshness::Fresh(_))
     }
-}
-
-pub trait Reducer<View> {
-    fn reduce(&self, input: ProjectionInput) -> Result<View>;
-}
-
-pub trait ProjectionStore<View> {
-    fn read(&self) -> Result<ProjectionRead<View>>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectionRead<View> {
-    Found {
-        view: View,
-        freshness: ProjectionFreshness,
-    },
-    Missing,
 }
 
 #[cfg(test)]
