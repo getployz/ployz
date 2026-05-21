@@ -13,7 +13,9 @@ pub use acme::{
     AcmeIssueOptions, AcmeIssueReport, issue_product_certificate,
     issue_product_certificate_with_config, issue_product_certificate_with_issuer,
 };
-pub use config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
+pub use config::{
+    BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths, P2pandaEndpointConfig,
+};
 pub use deploy::{
     ProductDeployOptions, ProductDeployReport, ProductDeployStatusReport, deploy_product_service,
     deploy_product_service_with_process, deploy_product_service_with_runtime,
@@ -22,7 +24,8 @@ pub use deploy::{
 pub use error::{NodeError, NodeResult};
 pub use membership::{
     AdmissionReport, AdmissionRequest, DaemonOptions, DaemonReport, InviteToken, admit_joiner,
-    create_admission_request, create_invite, join_from_token, now_ms, run_daemon_once,
+    create_admission_request, create_invite, join_from_token, join_from_token_with_endpoint,
+    now_ms, run_daemon_once,
 };
 pub use networking::{
     HostNetworkingReport, apply_host_networking_snapshot, load_host_networking_snapshot,

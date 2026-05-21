@@ -291,6 +291,10 @@ mod tests {
             "prod".to_string(),
             "--node-id".to_string(),
             "node-a".to_string(),
+            "--p2panda-bind".to_string(),
+            "0.0.0.0:41001".to_string(),
+            "--p2panda-advertise".to_string(),
+            "172.18.0.11:41001".to_string(),
         ])
         .expect("parse args");
 
@@ -300,6 +304,11 @@ mod tests {
         );
         assert_eq!(parsed.island.as_deref(), Some("prod"));
         assert_eq!(parsed.node_id.as_deref(), Some("node-a"));
+        assert_eq!(parsed.p2panda_bind.expect("bind").to_string(), "0.0.0.0:41001");
+        assert_eq!(
+            parsed.p2panda_advertise.expect("advertise").to_string(),
+            "172.18.0.11:41001"
+        );
     }
 
     #[test]

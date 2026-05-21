@@ -10,7 +10,9 @@ use mvp_p2panda_transport::{PandaNetNetworkId, PandaNetNodeSeed, PandaNetTopic};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use crate::config::{BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths};
+use crate::config::{
+    BootstrapPeerConfig, InitOptions, JoinedInitOptions, NodePaths, P2pandaEndpointConfig,
+};
 use crate::error::{NodeError, NodeResult};
 
 const STATE_SCHEMA_VERSION: u32 = 1;
@@ -26,6 +28,8 @@ struct PersistedNodeState {
     pub p2panda_node_seed_hex: String,
     #[serde(default)]
     pub p2panda_port: Option<u16>,
+    #[serde(default)]
+    pub p2panda_endpoint: Option<P2pandaEndpointConfig>,
     pub p2panda_topic_hex: String,
     pub wg_public_key: String,
     pub wg_overlay_ip: String,
@@ -135,6 +139,14 @@ impl LoadedNodeState {
             .unwrap_or_else(|| stable_port(self.node_id_str()))
     }
 
+    #[must_use]
+    pub fn p2panda_endpoint(&self) -> P2pandaEndpointConfig {
+        self.persisted
+            .p2panda_endpoint
+            .clone()
+            .unwrap_or_else(|| P2pandaEndpointConfig::localhost(self.p2panda_port()))
+    }
+
     pub fn p2panda_topic(&self) -> NodeResult<PandaNetTopic> {
         PandaNetTopic::parse_hex(&self.persisted.p2panda_topic_hex)
             .map_err(|source| NodeError::InvalidTopic { source })
@@ -221,6 +233,7 @@ pub fn init_node(options: InitOptions) -> NodeResult<LoadedNodeState> {
         node_id: options.node_id,
         p2panda_network_id_hex: None,
         p2panda_topic_hex: None,
+        p2panda_endpoint: options.p2panda_endpoint,
         bootstrap_peers: Vec::new(),
         join_invite: None,
     };
@@ -234,6 +247,7 @@ pub fn init_joined_node(options: JoinedInitOptions) -> NodeResult<LoadedNodeStat
         node_id: Some(options.node_id),
         p2panda_network_id_hex: Some(options.p2panda_network_id_hex),
         p2panda_topic_hex: Some(options.p2panda_topic_hex),
+        p2panda_endpoint: options.p2panda_endpoint,
         bootstrap_peers: vec![options.bootstrap_peer],
         join_invite: Some(StoredJoinInvite {
             invite_id: options.invite_id,
@@ -250,6 +264,7 @@ struct NewNodeStateOptions {
     node_id: Option<String>,
     p2panda_network_id_hex: Option<String>,
     p2panda_topic_hex: Option<String>,
+    p2panda_endpoint: Option<P2pandaEndpointConfig>,
     bootstrap_peers: Vec<BootstrapPeerConfig>,
     join_invite: Option<StoredJoinInvite>,
 }
@@ -291,6 +306,9 @@ fn create_node_state(options: NewNodeStateOptions) -> NodeResult<LoadedNodeState
             .unwrap_or_else(|| stable_hex("network-id", &network_seed)),
         p2panda_node_seed_hex: stable_hex("node-seed", &node_seed),
         p2panda_port: Some(stable_port(&node_seed)),
+        p2panda_endpoint: options
+            .p2panda_endpoint
+            .or_else(|| Some(P2pandaEndpointConfig::localhost(stable_port(&node_seed)))),
         p2panda_topic_hex: options
             .p2panda_topic_hex
             .unwrap_or_else(|| stable_hex("topic", &topic_seed)),
@@ -626,9 +644,10 @@ fn stable_port(value: &str) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::fs;
 
-    use crate::{InitOptions, NodeError, init_node, load_node};
+    use crate::{InitOptions, NodeError, P2pandaEndpointConfig, init_node, load_node};
 
     #[test]
     fn init_persists_reopenable_node_identity_and_paths() {
@@ -682,6 +701,22 @@ mod tests {
         let error = init_node(InitOptions::new(&state_dir)).expect_err("second init fails");
 
         assert!(matches!(error, NodeError::AlreadyInitialized { path } if path == state_dir));
+    }
+
+    #[test]
+    fn init_persists_configured_p2panda_endpoint() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state_dir = temp.path().join("node-a");
+        let endpoint = P2pandaEndpointConfig::new(
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 41_001)),
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(172, 18, 0, 11), 41_001)),
+        );
+
+        init_node(InitOptions::new(&state_dir).with_p2panda_endpoint(endpoint.clone()))
+            .expect("init node");
+        let reopened = load_node(&state_dir).expect("reopen node");
+
+        assert_eq!(reopened.p2panda_endpoint(), endpoint);
     }
 
     #[test]

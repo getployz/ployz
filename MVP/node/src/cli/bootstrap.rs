@@ -1,8 +1,9 @@
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use mvp_bus::IslandId;
-use mvp_node::{InitOptions, NodeError, NodeResult, init_node, load_node};
+use mvp_node::{InitOptions, NodeError, NodeResult, P2pandaEndpointConfig, init_node, load_node};
 use mvp_projection::{
     DnsProjection, GatewayProjection, ProjectionState, write_projection_snapshots,
     write_serving_generation_manifest,
@@ -14,10 +15,13 @@ pub(crate) struct ParsedArgs {
     pub(crate) state_dir: Option<PathBuf>,
     pub(crate) island: Option<String>,
     pub(crate) node_id: Option<String>,
+    pub(crate) p2panda_bind: Option<SocketAddr>,
+    pub(crate) p2panda_advertise: Option<SocketAddr>,
 }
 
 pub(crate) fn init(args: &[String]) -> NodeResult<String> {
     let parsed = ParsedArgs::parse(args)?;
+    let endpoint = parsed.p2panda_endpoint()?;
     let Some(state_dir) = parsed.state_dir else {
         return Err(NodeError::MissingFlagValue { flag: "--state" });
     };
@@ -27,6 +31,9 @@ pub(crate) fn init(args: &[String]) -> NodeResult<String> {
     }
     if let Some(node_id) = parsed.node_id {
         options = options.with_node_id(node_id);
+    }
+    if let Some(endpoint) = endpoint {
+        options = options.with_p2panda_endpoint(endpoint);
     }
     let state = init_node(options)?;
     Ok(format!(
@@ -39,6 +46,7 @@ pub(crate) fn init(args: &[String]) -> NodeResult<String> {
 
 pub(crate) fn bootstrap(args: &[String]) -> NodeResult<String> {
     let parsed = ParsedArgs::parse(args)?;
+    let endpoint = parsed.p2panda_endpoint()?;
     let Some(state_dir) = parsed.state_dir else {
         return Err(NodeError::MissingFlagValue { flag: "--state" });
     };
@@ -62,6 +70,19 @@ pub(crate) fn bootstrap(args: &[String]) -> NodeResult<String> {
                     existing: state.node_id_str().to_string(),
                 });
             }
+            if let Some(ref endpoint) = endpoint
+                && state.p2panda_endpoint() != *endpoint
+            {
+                return Err(NodeError::BootstrapConflict {
+                    field: "p2panda_endpoint",
+                    requested: format!("bind={} advertise={}", endpoint.bind, endpoint.advertise),
+                    existing: format!(
+                        "bind={} advertise={}",
+                        state.p2panda_endpoint().bind,
+                        state.p2panda_endpoint().advertise
+                    ),
+                });
+            }
             state
         }
         Err(NodeError::NotInitialized { .. }) => {
@@ -71,6 +92,9 @@ pub(crate) fn bootstrap(args: &[String]) -> NodeResult<String> {
             }
             if let Some(node_id) = parsed.node_id {
                 options = options.with_node_id(node_id);
+            }
+            if let Some(endpoint) = endpoint {
+                options = options.with_p2panda_endpoint(endpoint);
             }
             init_node(options)?
         }
@@ -186,6 +210,8 @@ struct BootstrapPaths {
 struct BootstrapIdentity {
     p2panda_network_id_hex: String,
     p2panda_topic_hex: String,
+    p2panda_bind: SocketAddr,
+    p2panda_advertise: SocketAddr,
     wireguard_public_key: String,
     wireguard_overlay_ip: String,
     container_subnet: String,
@@ -220,6 +246,8 @@ impl BootstrapResponse {
             identity: BootstrapIdentity {
                 p2panda_network_id_hex: state.p2panda_network_id_hex().to_string(),
                 p2panda_topic_hex: state.p2panda_topic_hex().to_string(),
+                p2panda_bind: state.p2panda_endpoint().bind,
+                p2panda_advertise: state.p2panda_endpoint().advertise,
                 wireguard_public_key: state.wireguard_public_key().to_string(),
                 wireguard_overlay_ip: state.wireguard_overlay_ip().to_string(),
                 container_subnet: state.container_subnet().to_string(),
@@ -243,6 +271,8 @@ impl ParsedArgs {
             state_dir: None,
             island: None,
             node_id: None,
+            p2panda_bind: None,
+            p2panda_advertise: None,
         };
         let mut remaining = args.iter();
         while let Some(argument) = remaining.next() {
@@ -265,6 +295,23 @@ impl ParsedArgs {
                     };
                     parsed.node_id = Some(value.clone());
                 }
+                "--p2panda-bind" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--p2panda-bind",
+                        });
+                    };
+                    parsed.p2panda_bind = Some(parse_socket_addr("--p2panda-bind", value)?);
+                }
+                "--p2panda-advertise" => {
+                    let Some(value) = remaining.next() else {
+                        return Err(NodeError::MissingFlagValue {
+                            flag: "--p2panda-advertise",
+                        });
+                    };
+                    parsed.p2panda_advertise =
+                        Some(parse_socket_addr("--p2panda-advertise", value)?);
+                }
                 other => {
                     return Err(NodeError::UnknownArgument {
                         argument: other.to_string(),
@@ -274,4 +321,27 @@ impl ParsedArgs {
         }
         Ok(parsed)
     }
+
+    pub(crate) fn p2panda_endpoint(&self) -> NodeResult<Option<P2pandaEndpointConfig>> {
+        match (self.p2panda_bind, self.p2panda_advertise) {
+            (None, None) => Ok(None),
+            (Some(bind), Some(advertise)) => Ok(Some(P2pandaEndpointConfig::new(bind, advertise))),
+            (None, Some(_)) => Err(NodeError::MissingFlagValue {
+                flag: "--p2panda-bind",
+            }),
+            (Some(_), None) => Err(NodeError::MissingFlagValue {
+                flag: "--p2panda-advertise",
+            }),
+        }
+    }
+}
+
+pub(crate) fn parse_socket_addr(flag: &'static str, value: &str) -> NodeResult<SocketAddr> {
+    value.parse().map_err(
+        |error: std::net::AddrParseError| NodeError::InvalidFlagValue {
+            flag,
+            value: value.to_string(),
+            message: error.to_string(),
+        },
+    )
 }

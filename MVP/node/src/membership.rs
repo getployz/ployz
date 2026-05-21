@@ -1,4 +1,3 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,15 +14,15 @@ use mvp_p2panda_facts::{
     PandaTrustedAuthorKey, SharedPandaFactStore,
 };
 use mvp_p2panda_transport::{
-    PandaNetBindConfig, PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNodeConfig,
-    PandaNetNodeTicket, PandaNetTransportError,
+    PandaNetFactNode, PandaNetFactNodeConfig, PandaNetNodeConfig, PandaNetNodeTicket,
+    PandaNetTransportError,
 };
 use mvp_projection::{
     NodeJoinedFact, PeerAdmittedFact, ProjectionFactPayload, payload_matches_key,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::config::{BootstrapPeerConfig, JoinedInitOptions};
+use crate::config::{BootstrapPeerConfig, JoinedInitOptions, P2pandaEndpointConfig};
 use crate::error::{NodeError, NodeResult};
 use crate::node_agent::{
     node_agent_grant, node_agent_request_grant, register_node_agent_services_with_runtime,
@@ -213,6 +212,16 @@ pub fn join_from_token(
     node_id: Option<String>,
     now_ms: u64,
 ) -> NodeResult<LoadedNodeState> {
+    join_from_token_with_endpoint(state_dir, token, node_id, None, now_ms)
+}
+
+pub fn join_from_token_with_endpoint(
+    state_dir: impl Into<std::path::PathBuf>,
+    token: &str,
+    node_id: Option<String>,
+    p2panda_endpoint: Option<P2pandaEndpointConfig>,
+    now_ms: u64,
+) -> NodeResult<LoadedNodeState> {
     let token = InviteToken::decode(token)?;
     if now_ms >= token.expires_at_ms {
         return Err(NodeError::InviteExpired {
@@ -229,6 +238,7 @@ pub fn join_from_token(
         invite_expires_at_ms: token.expires_at_ms,
         p2panda_network_id_hex: token.p2panda_network_id_hex,
         p2panda_topic_hex: token.p2panda_topic_hex,
+        p2panda_endpoint,
         bootstrap_peer: BootstrapPeerConfig::new(
             token.bootstrap_node_id,
             token.bootstrap_principal_id,
@@ -729,7 +739,7 @@ fn product_fact_grant() -> Grant {
 fn ensure_node_ticket(state: &LoadedNodeState) -> NodeResult<String> {
     let ticket = PandaNetNodeTicket::from_socket_addr(
         state.p2panda_node_seed()?,
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, state.p2panda_port())),
+        state.p2panda_endpoint().advertise,
     )
     .map_err(|source| NodeError::InvalidBootstrapTicket { source })?
     .as_str()
@@ -815,7 +825,7 @@ pub(crate) async fn spawn_fact_node(
     let node_config = PandaNetNodeConfig::localhost(
         state.p2panda_network_id()?,
         state.p2panda_node_seed()?,
-        PandaNetBindConfig::localhost(state.p2panda_port(), state.p2panda_port()),
+        state.p2panda_endpoint().bind_config(),
         bootstrap_nodes,
     );
     let fact_node = PandaNetFactNode::spawn(PandaNetFactNodeConfig::new(

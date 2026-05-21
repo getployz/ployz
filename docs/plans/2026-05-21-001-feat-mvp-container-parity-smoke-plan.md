@@ -326,8 +326,34 @@ flowchart TB
     U8 --> U9
     U8 --> U10
     U9 --> U11
-    U10 --> U11
+U10 --> U11
 ```
+
+## Slice Progress
+
+### Completed Slices
+
+- Consolidation slice: split the MVP CLI, single-host harness, and single-host
+  smoke surfaces by concept. The single-host smoke remains lower-level
+  evidence only.
+- Payload/registration slice: installed `mvp-node` is part of the E2E payload,
+  and `mvp_three_node_parity_smoke` is registered as an opt-in three-container
+  scenario.
+- Bootstrap boundary slice: MVP node state now supports explicit p2panda
+  bind/advertise endpoints; the Docker E2E smoke bootstraps, joins, admits,
+  and status-checks three installed `mvp-node` binaries across three separate
+  E2E containers with non-localhost advertisements.
+
+### Next Slice
+
+Before adding role lifecycle and traffic probes, split the remaining
+`MVP/node/src/membership.rs` hotspot so daemon/fact-node plumbing and
+membership token/admission behavior have separate owners. Then extend
+`mvp_three_node_parity_smoke` to start the MVP daemon on all three containers
+through product commands, wait for cross-container p2panda fact convergence,
+and record daemon readiness evidence. This next slice is still not final
+parity: overlay HTTP, DNS, ACME, update/drain, and restart remain separate
+gates.
 
 ### U1. Split The MVP CLI Binary By Command
 

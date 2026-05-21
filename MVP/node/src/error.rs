@@ -12,6 +12,12 @@ pub enum NodeError {
     UnsupportedCommand { command: String },
     #[error("missing value for {flag}")]
     MissingFlagValue { flag: &'static str },
+    #[error("invalid value '{value}' for {flag}: {message}")]
+    InvalidFlagValue {
+        flag: &'static str,
+        value: String,
+        message: String,
+    },
     #[error("unknown argument '{argument}'")]
     UnknownArgument { argument: String },
     #[error("bootstrap requested {field} '{requested}' but existing node has '{existing}'")]
