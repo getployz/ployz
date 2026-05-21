@@ -1,7 +1,7 @@
 ---
 title: "goal: Make Polis and Ployz Rust-Idiomatic"
 type: refactor
-status: active
+status: completed
 date: 2026-05-21
 origin: goal
 depends_on:
@@ -144,7 +144,7 @@ Already improved in the current branch:
   transfer attempts and require fresh idempotency keys.
 - `just check` and clippy passed after those slices.
 
-Still weak:
+Deferred Residuals:
 
 - Failed/interrupted deploy retry after partial mutation does not resume work.
   Non-success replay is explicit and product-visible, but same-idempotency
