@@ -6,6 +6,7 @@ mod image_push_existing_image;
 mod local_build_image_availability;
 mod mesh_bootstrap_join_smoke;
 mod migrate_service_real_smoke;
+mod mvp_three_node_parity_smoke;
 mod node_restart_adopts_data_plane;
 mod volume_clone_branch_real_smoke;
 mod wireguard_partition_reconnect;
@@ -21,6 +22,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         Scenario::NodeRestartAdoptsDataPlane => node_restart_adopts_data_plane::run(run),
         Scenario::WireguardPartitionReconnect => wireguard_partition_reconnect::run(run),
         Scenario::DeployHttpAcmeGatewaySmoke => deploy_http_acme_gateway_smoke::run(run),
+        Scenario::MvpThreeNodeParitySmoke => mvp_three_node_parity_smoke::run(run),
         Scenario::DeployImageAvailability => deploy_image_availability::run(run),
         Scenario::LocalBuildImageAvailability => local_build_image_availability::run(run),
         Scenario::DockerBridgeForwardSmoke => docker_bridge_forward_smoke::run(run),

@@ -397,9 +397,10 @@ ln -sf /root/.local/bin/ployzctl /usr/local/bin/ployzctl
 ln -sf /root/.local/bin/ployzd /usr/local/bin/ployzd
 ln -sf /root/.local/bin/ployz-gateway /usr/local/bin/ployz-gateway
 ln -sf /root/.local/bin/ployz-dns /usr/local/bin/ployz-dns
+ln -sf /root/.local/bin/mvp-node /usr/local/bin/mvp-node
 ln -sf /root/.local/bin/nats-server /usr/local/bin/nats-server
 
-for binary in /root/.local/bin/ployzctl /root/.local/bin/ployzd /root/.local/bin/nats-server; do
+for binary in /root/.local/bin/ployzctl /root/.local/bin/ployzd /root/.local/bin/mvp-node /root/.local/bin/nats-server; do
   if [[ -x "${binary}" ]]; then
     sha256="$(sha256sum "${binary}" | awk '{print $1}')"
     echo "ployz-e2e binary: path=${binary} sha256=${sha256}"
