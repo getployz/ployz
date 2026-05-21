@@ -11,6 +11,7 @@ BUILD_PROFILE="${PLOYZ_PAYLOAD_BUILD_PROFILE:-release}"
 BUILD_INPUT_PATHS=(
   Cargo.toml
   Cargo.lock
+  MVP
   .nats-version
   ployz.sh
   crates
@@ -345,6 +346,7 @@ payload_is_fresh() {
   [[ -f "${OUTPUT_DIR}/bin/ployzd" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-gateway" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/ployz-dns" ]] || return 1
+  [[ -f "${OUTPUT_DIR}/bin/mvp-node" ]] || return 1
   [[ -f "${OUTPUT_DIR}/bin/nats-server" ]] || return 1
 
   metadata_fingerprint="$(metadata_value "${metadata_path}" BUILD_FINGERPRINT)"
@@ -428,6 +430,8 @@ build_binaries() {
       -p ployzctl \
       -p ployz-gateway \
       -p ployz-dns
+    cargo build --manifest-path "${REPO_DIR}/MVP/Cargo.toml" "${cargo_args[@]}" \
+      -p mvp-node --features docker-runtime,linux-wireguard
     return
   fi
 
@@ -436,6 +440,8 @@ build_binaries() {
     -p ployzd --bins \
     -p ployz-gateway \
     -p ployz-dns
+  cargo build --manifest-path "${REPO_DIR}/MVP/Cargo.toml" "${cargo_args[@]}" \
+    -p mvp-node --features docker-runtime,linux-wireguard
 }
 
 configure_host_payload_cache() {
@@ -542,6 +548,7 @@ copy_file "$(binary_build_dir)/ployzctl" "${tmp_output_dir}/bin/ployzctl" 0755
 copy_file "$(binary_build_dir)/ployzd" "${tmp_output_dir}/bin/ployzd" 0755
 copy_file "$(binary_build_dir)/ployz-gateway" "${tmp_output_dir}/bin/ployz-gateway" 0755
 copy_file "$(binary_build_dir)/ployz-dns" "${tmp_output_dir}/bin/ployz-dns" 0755
+copy_file "$(binary_build_dir)/mvp-node" "${tmp_output_dir}/bin/mvp-node" 0755
 copy_file "${REPO_DIR}/packaging/systemd/ployzd.service" "${tmp_output_dir}/assets/systemd/ployzd.service" 0644
 copy_file "${OUTPUT_DIR}/bin/nats-server" "${tmp_output_dir}/bin/nats-server" 0755
 

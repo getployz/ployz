@@ -583,6 +583,7 @@ install_payload() {
   required_payload_file "${payload_dir}" "bin/ployzd"
   required_payload_file "${payload_dir}" "bin/ployz-gateway"
   required_payload_file "${payload_dir}" "bin/ployz-dns"
+  required_payload_file "${payload_dir}" "bin/mvp-node"
   required_payload_file "${payload_dir}" "bin/nats-server"
   required_payload_file "${payload_dir}" "assets/systemd/ployzd.service"
 
@@ -602,6 +603,8 @@ install_payload() {
   install -m 0755 "${payload_dir}/bin/ployz-gateway" "${bin_dir}/ployz-gateway"
   info "ployz-dns     -> ${bin_dir}/ployz-dns"
   install -m 0755 "${payload_dir}/bin/ployz-dns" "${bin_dir}/ployz-dns"
+  info "mvp-node      -> ${bin_dir}/mvp-node"
+  install -m 0755 "${payload_dir}/bin/mvp-node" "${bin_dir}/mvp-node"
   info "nats-server   -> ${bin_dir}/nats-server"
   install -m 0755 "${payload_dir}/bin/nats-server" "${bin_dir}/nats-server"
 

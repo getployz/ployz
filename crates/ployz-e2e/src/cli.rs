@@ -65,6 +65,7 @@ pub(crate) enum Scenario {
     NodeRestartAdoptsDataPlane,
     WireguardPartitionReconnect,
     DeployHttpAcmeGatewaySmoke,
+    MvpThreeNodeParitySmoke,
     DockerBridgeForwardSmoke,
     ImagePushExistingImage,
     DeployImageAvailability,
@@ -109,6 +110,7 @@ impl Scenario {
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
+            | Self::MvpThreeNodeParitySmoke
             | Self::DockerBridgeForwardSmoke
             | Self::ImagePushExistingImage
             | Self::DeployImageAvailability
@@ -129,6 +131,7 @@ impl Scenario {
             | Self::NodeRestartAdoptsDataPlane
             | Self::WireguardPartitionReconnect
             | Self::DeployHttpAcmeGatewaySmoke
+            | Self::MvpThreeNodeParitySmoke
             | Self::ImagePushExistingImage
             | Self::DeployImageAvailability
             | Self::LocalBuildImageAvailability
@@ -143,6 +146,7 @@ impl Scenario {
     pub(crate) fn node_names(self) -> &'static [&'static str] {
         match self {
             Self::DockerBridgeForwardSmoke => &["founder"],
+            Self::MvpThreeNodeParitySmoke => &["founder", "peer", "edge"],
             Self::ImagePushExistingImage
             | Self::DeployImageAvailability
             | Self::LocalBuildImageAvailability => &["founder", "peer"],
@@ -163,6 +167,7 @@ impl Scenario {
             Self::NodeRestartAdoptsDataPlane => "node_restart_adopts_data_plane",
             Self::WireguardPartitionReconnect => "wireguard_partition_reconnect",
             Self::DeployHttpAcmeGatewaySmoke => "deploy_http_acme_gateway_smoke",
+            Self::MvpThreeNodeParitySmoke => "mvp_three_node_parity_smoke",
             Self::DockerBridgeForwardSmoke => "docker_bridge_forward_smoke",
             Self::ImagePushExistingImage => "image_push_existing_image",
             Self::DeployImageAvailability => "deploy_image_availability",
@@ -176,7 +181,7 @@ impl Scenario {
     #[must_use]
     pub(crate) fn runtime(self) -> &'static str {
         match self {
-            Self::DockerBridgeForwardSmoke => "docker",
+            Self::DockerBridgeForwardSmoke | Self::MvpThreeNodeParitySmoke => "docker",
             Self::VolumeCloneBranchRealSmoke => "host",
             Self::MeshBootstrapJoinSmoke
             | Self::NodeRestartAdoptsDataPlane
