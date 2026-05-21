@@ -13,6 +13,17 @@
 //! - secrets must never be rendered into logs, errors, status, or generic
 //!   operation evidence.
 
+pub mod acme;
+pub mod adapters;
+pub mod composition;
+pub mod deploy;
+pub mod error;
+pub mod projection;
+pub mod runtime;
+pub mod serving;
+
+pub use error::{Error, PrimitiveFailure, Result};
+
 #[cfg(test)]
 mod tests {
     #[test]
