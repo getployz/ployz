@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use mvp_bus::{BusSession, FactKey, FactPayload};
+use mvp_bus::{BusSession, FactKey, FactPayload, IslandId};
 use mvp_p2panda_facts::{
     PandaFactAuthor, PandaFactExtensions, PandaFactLogId, PandaFactOperation,
     PandaFactWriteOutcome, SharedPandaFactStore,
@@ -264,12 +264,11 @@ impl PandaNetFactNode {
         let operations = self.store.export_operations().await;
         let mut published = 0;
         for operation in operations {
-            let p2panda_operation =
-                operation
-                    .to_p2panda_operation()
-                    .map_err(|error| PandaNetTransportError::FactStore {
-                        message: error.to_string(),
-                    })?;
+            let p2panda_operation = operation.to_p2panda_operation().map_err(|error| {
+                PandaNetTransportError::FactStore {
+                    message: error.to_string(),
+                }
+            })?;
             let operation_hash = p2panda_operation.hash;
             if self.published_operation_hashes.contains(&operation_hash) {
                 continue;
@@ -285,6 +284,17 @@ impl PandaNetFactNode {
             published += 1;
         }
         Ok(published)
+    }
+
+    pub async fn rebuild_store_indexes(
+        &mut self,
+        islands: &[IslandId],
+    ) -> Result<(), PandaNetTransportError> {
+        self.store.rebuild_indexes(islands).await.map_err(|error| {
+            PandaNetTransportError::FactStore {
+                message: error.to_string(),
+            }
+        })
     }
 
     pub async fn publish_fact_payload(
@@ -436,12 +446,11 @@ impl PandaNetFactNode {
         &mut self,
         operation: &PandaFactOperation,
     ) -> Result<(), PandaNetTransportError> {
-        let p2panda_operation =
-            operation
-                .to_p2panda_operation()
-                .map_err(|error| PandaNetTransportError::FactStore {
-                    message: error.to_string(),
-                })?;
+        let p2panda_operation = operation.to_p2panda_operation().map_err(|error| {
+            PandaNetTransportError::FactStore {
+                message: error.to_string(),
+            }
+        })?;
         let operation_hash = p2panda_operation.hash;
         self.store
             .associate_transport_topic(self.topic.into_inner(), operation)

@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::{DAEMON_CONTROL, ISLAND, P2PANDA_PORT, STATE_DIR, shell_quote};
 
 const DAEMON_LOG: &str = "/tmp/mvp-node-daemon.log";
-const DAEMON_RUN_FOR_MS: u64 = 60_000;
+const DAEMON_RUN_FOR_MS: u64 = 600_000;
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(45);
 const RUNTIME_COMMAND: &str = "mkdir -p /www && echo ok-$PLOYZ_SERVICE-$PLOYZ_REVISION >/www/index.html && httpd -f -p 8080 -h /www";
 
@@ -90,6 +90,12 @@ pub(crate) fn start_cluster_daemons(run: &ScenarioRun) -> Result<Vec<MvpDaemonEv
         .iter()
         .map(|node| node.wait_daemon_ready(run))
         .collect()
+}
+
+pub(super) fn restart_peer_daemon(run: &ScenarioRun) -> Result<MvpDaemonEvidence> {
+    let peer = MvpE2eNode::new(run, "peer", "node-b")?;
+    peer.start_daemon(run)?;
+    peer.wait_restarted_daemon_ready(run)
 }
 
 struct MvpE2eNode {
@@ -209,6 +215,18 @@ impl MvpE2eNode {
     }
 
     fn wait_daemon_ready(&self, run: &ScenarioRun) -> Result<MvpDaemonEvidence> {
+        self.wait_daemon_status(run, DaemonReadiness::InitialConvergence)
+    }
+
+    fn wait_restarted_daemon_ready(&self, run: &ScenarioRun) -> Result<MvpDaemonEvidence> {
+        self.wait_daemon_status(run, DaemonReadiness::Restarted)
+    }
+
+    fn wait_daemon_status(
+        &self,
+        run: &ScenarioRun,
+        readiness: DaemonReadiness,
+    ) -> Result<MvpDaemonEvidence> {
         let mut last_output = String::new();
         let mut last_status = None;
         wait_until(DAEMON_READY_TIMEOUT, || {
@@ -230,7 +248,7 @@ impl MvpE2eNode {
             let ready = status.status == "ready"
                 && status.node == self.mvp_node_id
                 && status.node_agent_handlers > 0
-                && status.imported_operations > 0;
+                && readiness.accepts(&status);
             last_status = Some(status);
             Ok(ready)
         })
@@ -259,5 +277,20 @@ impl MvpE2eNode {
             imported_operations: status.imported_operations,
             node_agent_handlers: status.node_agent_handlers,
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DaemonReadiness {
+    InitialConvergence,
+    Restarted,
+}
+
+impl DaemonReadiness {
+    fn accepts(self, status: &DaemonStatusResponse) -> bool {
+        match self {
+            Self::InitialConvergence => status.imported_operations > 0,
+            Self::Restarted => status.imported_batches > 0,
+        }
     }
 }

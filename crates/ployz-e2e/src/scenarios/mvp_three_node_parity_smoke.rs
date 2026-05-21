@@ -17,6 +17,7 @@ struct MvpParityPayloadReport {
     container_dns: commands::MvpContainerDnsEvidence,
     acme_https: commands::MvpAcmeHttpsEvidence,
     update_drain: commands::MvpUpdateDrainEvidence,
+    daemon_restart: commands::MvpDaemonRestartEvidence,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +44,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     let container_dns = commands::verify_container_dns(run, &bootstrap)?;
     let acme_https = commands::verify_acme_https(run)?;
     let update_drain = commands::update_api_and_verify_drain(run)?;
+    let daemon_restart = commands::verify_daemon_restart_survival(run, &bootstrap)?;
     write_report(
         run,
         &MvpParityPayloadReport {
@@ -55,6 +57,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             container_dns,
             acme_https,
             update_drain,
+            daemon_restart,
         },
     )
 }

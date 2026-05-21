@@ -620,6 +620,10 @@ impl SharedPandaFactStore {
             .collect()
     }
 
+    pub async fn rebuild_indexes(&self, islands: &[IslandId]) -> Result<()> {
+        self.store.lock().await.rebuild_indexes(islands).await
+    }
+
     pub async fn associate_transport_topic(
         &self,
         topic: Topic,

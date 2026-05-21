@@ -141,6 +141,56 @@ async fn shared_store_preserves_author_and_replica_import_modes() {
 }
 
 #[tokio::test]
+async fn shared_sqlite_store_rebuilds_indexes_for_external_process_writes() {
+    let directory = tempdir().expect("create tempdir");
+    let path = directory.path().join("facts.sqlite");
+    let (bus, authority) = InMemoryBus::new_with_authority();
+    let writer = grant_prod(
+        &authority,
+        "writer",
+        Grant::empty()
+            .with_fact_write(pattern("/facts/>"))
+            .with_fact_read(pattern("/facts/>")),
+    );
+    let author = PandaFactAuthor::new(principal("writer"));
+    let shared = SharedPandaFactStore::new(
+        PandaFactStore::open_sqlite(
+            Arc::new(bus.clone()),
+            PandaSqliteOpenConfig::new(&path, vec![writer.island().clone()]),
+        )
+        .await
+        .expect("open long-lived sqlite store"),
+    );
+    shared
+        .trust_author_key(writer.island(), writer.principal().clone(), author.author_key())
+        .await
+        .expect("trust writer in long-lived store");
+
+    let mut external = PandaFactStore::open_sqlite(
+        Arc::new(bus),
+        PandaSqliteOpenConfig::new(&path, vec![writer.island().clone()]),
+    )
+    .await
+    .expect("open external sqlite store");
+    external
+        .write_fact_payload(
+            &writer,
+            &author,
+            key("/facts/acme/certificate/web/activated/1"),
+            FactPayload::from_static(b"certificate"),
+        )
+        .await
+        .expect("external process writes fact");
+
+    assert!(shared.export_operations().await.is_empty());
+    shared
+        .rebuild_indexes(&[writer.island().clone()])
+        .await
+        .expect("rebuild long-lived indexes");
+    assert_eq!(shared.export_operations().await.len(), 1);
+}
+
+#[tokio::test]
 async fn shared_store_keeps_original_p2panda_write_errors() {
     let (store, authority) = store_with_authority();
     let shared = SharedPandaFactStore::new(store);

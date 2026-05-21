@@ -1,5 +1,6 @@
 mod cluster;
 mod deploy;
+mod restart;
 mod serving;
 
 pub(crate) use cluster::start_cluster_daemons;
@@ -7,6 +8,7 @@ pub(crate) use cluster::{MvpBootstrapEvidence, MvpDaemonEvidence, bootstrap_clus
 pub(crate) use deploy::{
     MvpDeployEvidence, MvpUpdateDrainEvidence, deploy_web_api_and_echo, update_api_and_verify_drain,
 };
+pub(crate) use restart::{MvpDaemonRestartEvidence, verify_daemon_restart_survival};
 pub(crate) use serving::{
     MvpAcmeHttpsEvidence, MvpContainerDnsEvidence, MvpGatewayHttpEvidence, verify_acme_https,
     verify_container_dns, verify_gateway_http,
