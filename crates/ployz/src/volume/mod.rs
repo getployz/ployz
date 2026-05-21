@@ -108,9 +108,21 @@ pub struct SnapshotReceipt {
     pub source_watermark: SourceWatermark,
 }
 
+impl SnapshotReceipt {
+    fn has_expected_watermark(&self, plan: &VolumeTransferPlan) -> bool {
+        self.source_watermark == plan.expected_source_watermark
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalDeltaReceipt {
     pub source_watermark: SourceWatermark,
+}
+
+impl FinalDeltaReceipt {
+    fn has_expected_watermark(&self, plan: &VolumeTransferPlan) -> bool {
+        self.source_watermark == plan.expected_source_watermark
+    }
 }
 
 pub trait VolumeSourcePort {
@@ -139,6 +151,12 @@ pub struct ReceiveReceipt {
     pub target: VolumeOwner,
 }
 
+impl ReceiveReceipt {
+    fn matches_transfer(&self, snapshot: &SnapshotReceipt, plan: &VolumeTransferPlan) -> bool {
+        self.snapshot == snapshot.snapshot && self.target == plan.target
+    }
+}
+
 pub trait VolumeTargetPort {
     fn receive(
         &self,
@@ -155,6 +173,15 @@ pub struct OwnershipCommit {
     pub owner: VolumeOwner,
     pub epoch: OwnershipEpoch,
     pub source_watermark: SourceWatermark,
+}
+
+impl OwnershipCommit {
+    fn matches_plan(&self, plan: &VolumeTransferPlan) -> bool {
+        self.volume == plan.volume
+            && self.owner == plan.target
+            && self.epoch == plan.next_epoch
+            && self.source_watermark == plan.expected_source_watermark
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,19 +301,19 @@ where
         }
         self.ensure_current_claim(mutation, plan)?;
         let snapshot = self.source.snapshot(mutation, plan)?;
-        if snapshot.source_watermark != plan.expected_source_watermark {
+        if !snapshot.has_expected_watermark(plan) {
             return Err(VolumeFailure::SnapshotFailed);
         }
         self.ensure_current_claim(mutation, plan)?;
         let final_delta = self.source.final_delta(mutation, plan)?;
-        if final_delta.source_watermark != plan.expected_source_watermark {
+        if !final_delta.has_expected_watermark(plan) {
             return Err(VolumeFailure::SnapshotFailed);
         }
         self.ensure_current_claim(mutation, plan)?;
         let receive = self
             .target
             .receive(mutation, plan, &snapshot, &final_delta)?;
-        if receive.snapshot != snapshot.snapshot || receive.target != plan.target {
+        if !receive.matches_transfer(&snapshot, plan) {
             return Err(VolumeFailure::ReceiveFailed);
         }
         self.ensure_current_claim(mutation, plan)?;
@@ -308,11 +335,7 @@ where
         else {
             return Err(VolumeFailure::OwnershipCommitRejected);
         };
-        if ownership.volume != plan.volume
-            || ownership.owner != plan.target
-            || ownership.epoch != plan.next_epoch
-            || ownership.source_watermark != plan.expected_source_watermark
-        {
+        if !ownership.matches_plan(plan) {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
@@ -333,11 +356,7 @@ where
         if verified != ownership {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
-        if ownership.volume != plan.volume
-            || ownership.owner != plan.target
-            || ownership.epoch != plan.next_epoch
-            || ownership.source_watermark != plan.expected_source_watermark
-        {
+        if !ownership.matches_plan(plan) {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
@@ -408,5 +427,69 @@ mod tests {
     #[test]
     fn empty_volume_id_is_invalid_payload() {
         assert_eq!(VolumeId::parse(""), Err(VolumeFailure::InvalidPayload));
+    }
+
+    #[test]
+    fn ownership_commit_must_match_transfer_plan() {
+        let plan = plan();
+        let commit = OwnershipCommit {
+            volume: plan.volume.clone(),
+            owner: plan.target.clone(),
+            epoch: plan.next_epoch,
+            source_watermark: plan.expected_source_watermark,
+        };
+        let wrong_owner = OwnershipCommit {
+            owner: VolumeOwner::parse("node-c").expect("owner"),
+            ..commit.clone()
+        };
+
+        assert!(commit.matches_plan(&plan));
+        assert!(!wrong_owner.matches_plan(&plan));
+    }
+
+    #[test]
+    fn receipts_must_match_transfer_plan() {
+        let plan = plan();
+        let snapshot = SnapshotReceipt {
+            snapshot: VolumeSnapshotId::parse("snap-1").expect("snapshot"),
+            source_watermark: plan.expected_source_watermark,
+        };
+        let stale_snapshot = SnapshotReceipt {
+            source_watermark: SourceWatermark::new(4),
+            ..snapshot.clone()
+        };
+        let final_delta = FinalDeltaReceipt {
+            source_watermark: plan.expected_source_watermark,
+        };
+        let stale_final_delta = FinalDeltaReceipt {
+            source_watermark: SourceWatermark::new(4),
+        };
+        let receive = ReceiveReceipt {
+            snapshot: snapshot.snapshot.clone(),
+            target: plan.target.clone(),
+        };
+        let wrong_receive = ReceiveReceipt {
+            target: VolumeOwner::parse("node-c").expect("target"),
+            ..receive.clone()
+        };
+
+        assert!(snapshot.has_expected_watermark(&plan));
+        assert!(!stale_snapshot.has_expected_watermark(&plan));
+        assert!(final_delta.has_expected_watermark(&plan));
+        assert!(!stale_final_delta.has_expected_watermark(&plan));
+        assert!(receive.matches_transfer(&snapshot, &plan));
+        assert!(!wrong_receive.matches_transfer(&snapshot, &plan));
+    }
+
+    fn plan() -> VolumeTransferPlan {
+        VolumeTransferPlan {
+            volume: VolumeId::parse("data").expect("volume"),
+            source: VolumeOwner::parse("node-a").expect("source"),
+            target: VolumeOwner::parse("node-b").expect("target"),
+            expected_source_watermark: SourceWatermark::new(5),
+            next_epoch: OwnershipEpoch::new(2),
+            cleanup_artifact: CleanupArtifactId::parse("source-temp-data")
+                .expect("cleanup artifact"),
+        }
     }
 }
