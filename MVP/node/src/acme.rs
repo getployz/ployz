@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use mvp_acme::{
@@ -29,11 +29,15 @@ use tempfile::NamedTempFile;
 
 use crate::error::{NodeError, NodeResult};
 use crate::membership::now_ms;
-use crate::serving::{ServingRoleRequest, ServingRoleResponse, ServingRoleSuccess};
+use crate::serving::{
+    ServingRoleFailureKind, ServingRoleRequest, ServingRoleResponse, ServingRoleSuccess,
+};
 use crate::state::{LoadedNodeState, load_node};
 
 const HTTP01_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const HTTP01_READY_INTERVAL: Duration = Duration::from_millis(100);
+const GATEWAY_RELOAD_TIMEOUT: Duration = Duration::from_secs(15);
+const GATEWAY_RELOAD_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcmeIssueOptions {
@@ -201,11 +205,22 @@ pub async fn issue_product_certificate_with_issuer(
 }
 
 fn reload_gateway(control_socket: &Path) -> NodeResult<()> {
-    match control_request(control_socket, &ServingRoleRequest::Reload)? {
-        ServingRoleResponse::Success(ServingRoleSuccess::Reloaded(_)) => Ok(()),
-        response => Err(NodeError::NodeAgentRpc {
-            message: format!("gateway reload before ACME validation failed: {response:?}"),
-        }),
+    let deadline = Instant::now() + GATEWAY_RELOAD_TIMEOUT;
+    loop {
+        match control_request(control_socket, &ServingRoleRequest::Reload)? {
+            ServingRoleResponse::Success(ServingRoleSuccess::Reloaded(_)) => return Ok(()),
+            ServingRoleResponse::Failure(failure)
+                if failure.kind == ServingRoleFailureKind::ServingUnavailable
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(GATEWAY_RELOAD_INTERVAL);
+            }
+            response => {
+                return Err(NodeError::NodeAgentRpc {
+                    message: format!("gateway reload before ACME validation failed: {response:?}"),
+                });
+            }
+        }
     }
 }
 

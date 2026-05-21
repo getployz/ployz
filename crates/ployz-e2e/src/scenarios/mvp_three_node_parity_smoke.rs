@@ -15,6 +15,7 @@ struct MvpParityPayloadReport {
     deploys: Vec<commands::MvpDeployEvidence>,
     gateway_http: Vec<commands::MvpGatewayHttpEvidence>,
     container_dns: commands::MvpContainerDnsEvidence,
+    acme_https: commands::MvpAcmeHttpsEvidence,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +40,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     let deploys = commands::deploy_web_api_and_echo(run)?;
     let gateway_http = commands::verify_gateway_http(run)?;
     let container_dns = commands::verify_container_dns(run, &bootstrap)?;
+    let acme_https = commands::verify_acme_https(run)?;
     write_report(
         run,
         &MvpParityPayloadReport {
@@ -49,6 +51,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             deploys,
             gateway_http,
             container_dns,
+            acme_https,
         },
     )
 }

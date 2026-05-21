@@ -995,13 +995,9 @@ impl ScenarioRun {
             run_id,
         ];
 
-        if self.scenario == Scenario::DeployHttpAcmeGatewaySmoke {
+        for (key, value) in self.scenario.node_environment() {
             args.push("-e".to_string());
-            args.push("PLOYZ_ACME_DIRECTORY_URL=https://pebble:14000/dir".to_string());
-            args.push("-e".to_string());
-            args.push("PLOYZ_ACME_ROOT_CA_PATH=/e2e-pebble/pebble.minica.pem".to_string());
-            args.push("-e".to_string());
-            args.push("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR=0.0.0.0:443".to_string());
+            args.push(format!("{key}={value}"));
         }
 
         if self.zfs_mode != ZfsMode::Off {

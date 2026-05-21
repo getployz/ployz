@@ -1,12 +1,14 @@
 use crate::error::{Error, Result};
 use crate::runner::ScenarioRun;
 use crate::support::wait_until;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::cluster::MvpBootstrapEvidence;
 use super::{DATA_PLANE_WAIT_TIMEOUT, STATE_DIR, shell_quote};
 
-const GATEWAY_PORT: u16 = 8_088;
+const ACME_HTTPS_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+const GATEWAY_HTTP_PORT: u16 = 80;
+const GATEWAY_HTTPS_PORT: u16 = 443;
 const GATEWAY_CONTROL: &str = "/var/lib/ployz-mvp/node/control/gateway.sock";
 const GATEWAY_LOG: &str = "/tmp/mvp-node-gateway.log";
 const GATEWAY_SNAPSHOT: &str = "/var/lib/ployz-mvp/node/gateway.snapshot";
@@ -14,8 +16,12 @@ const DNS_CONTROL: &str = "/var/lib/ployz-mvp/node/control/dns.sock";
 const DNS_LOG: &str = "/tmp/mvp-node-dns.log";
 const CLIENT_IMAGE: &str = "ployz-e2e-preload/http-smoke:latest";
 const NODE_A_NETWORK: &str = "ployz-mvp-node-a";
+const WEB_HOSTNAME: &str = "web.example.test";
+const WEB_BODY: &str = "ok-web-rev-1";
 const ECHO_SERVICE_DNS: &str = "echo.service.example.test";
 const ECHO_SERVICE_URL: &str = "http://echo.service.example.test:8080/";
+const ACME_ACCOUNT_PATH: &str = "/var/lib/ployz-mvp/node/acme-accounts.json";
+const PEBBLE_ROOT_PATH: &str = "/tmp/ployz-mvp-pebble-root.pem";
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MvpGatewayHttpEvidence {
@@ -37,6 +43,28 @@ pub(crate) struct MvpContainerDnsEvidence {
     pub(crate) body: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MvpAcmeHttpsEvidence {
+    pub(crate) hostname: &'static str,
+    pub(crate) order_url: String,
+    pub(crate) projected_certificates: usize,
+    pub(crate) https_probes: Vec<MvpGatewayHttpsEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MvpGatewayHttpsEvidence {
+    pub(crate) gateway_node: &'static str,
+    pub(crate) hostname: &'static str,
+    pub(crate) expected_body: &'static str,
+    pub(crate) body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcmeIssueReport {
+    order_url: String,
+    projected_certificates: usize,
+}
+
 pub(crate) fn verify_gateway_http(run: &ScenarioRun) -> Result<Vec<MvpGatewayHttpEvidence>> {
     for node in ["founder", "peer", "edge"] {
         wait_gateway_snapshot_hosts(
@@ -47,8 +75,8 @@ pub(crate) fn verify_gateway_http(run: &ScenarioRun) -> Result<Vec<MvpGatewayHtt
         start_gateway(run, node)?;
     }
     [
-        ("web", "peer", "web.example.test", "ok-web-rev-1"),
-        ("web", "edge", "web.example.test", "ok-web-rev-1"),
+        ("web", "peer", WEB_HOSTNAME, WEB_BODY),
+        ("web", "edge", WEB_HOSTNAME, WEB_BODY),
         ("api", "founder", "api.example.test", "ok-api-rev-1"),
         ("api", "edge", "api.example.test", "ok-api-rev-1"),
     ]
@@ -108,6 +136,30 @@ pub(crate) fn verify_container_dns(
     })
 }
 
+pub(crate) fn verify_acme_https(run: &ScenarioRun) -> Result<MvpAcmeHttpsEvidence> {
+    run.start_pebble_for_http01("founder")?;
+    let issue = issue_certificate(run)?;
+    let https_probes = ["peer", "edge"]
+        .into_iter()
+        .map(|gateway_node| {
+            wait_gateway_snapshot_certificate(run, gateway_node, WEB_HOSTNAME)?;
+            let body = wait_gateway_https_body(run, gateway_node, WEB_HOSTNAME, WEB_BODY)?;
+            Ok(MvpGatewayHttpsEvidence {
+                gateway_node,
+                hostname: WEB_HOSTNAME,
+                expected_body: WEB_BODY,
+                body,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(MvpAcmeHttpsEvidence {
+        hostname: WEB_HOSTNAME,
+        order_url: issue.order_url,
+        projected_certificates: issue.projected_certificates,
+        https_probes,
+    })
+}
+
 #[derive(Clone, Copy)]
 struct DnsNode {
     harness_node: &'static str,
@@ -136,17 +188,40 @@ fn wait_gateway_snapshot_hosts(
     })
 }
 
+fn wait_gateway_snapshot_certificate(
+    run: &ScenarioRun,
+    node: &'static str,
+    hostname: &str,
+) -> Result<()> {
+    let mut last_output = String::new();
+    wait_until(ACME_HTTPS_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(node, &format!("cat {GATEWAY_SNAPSHOT}"))?;
+        last_output = output.combined();
+        if !output.status.success() {
+            return Ok(false);
+        }
+        Ok(snapshot_contains_certificate(&output.stdout, hostname))
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "gateway snapshot on {node} did not contain certificate for {hostname}: {error}\nlast output:\n{last_output}"
+        ))
+    })
+}
+
 fn start_gateway(run: &ScenarioRun, node: &'static str) -> Result<()> {
     run.ssh_expect_ok_name(
         node,
         &format!(
             "rm -f {control} {log}; \
-             nohup mvp-node gateway --state {state} --listen 0.0.0.0:{port} \
-             --control {control} > {log} 2>&1 < /dev/null & echo $! > /tmp/mvp-node-gateway.pid",
+             nohup mvp-node gateway --state {state} --listen 0.0.0.0:{http_port} \
+             --tls-listen 0.0.0.0:{https_port} --control {control} \
+             > {log} 2>&1 < /dev/null & echo $! > /tmp/mvp-node-gateway.pid",
             control = GATEWAY_CONTROL,
             log = GATEWAY_LOG,
             state = STATE_DIR,
-            port = GATEWAY_PORT
+            http_port = GATEWAY_HTTP_PORT,
+            https_port = GATEWAY_HTTPS_PORT
         ),
     )?;
     Ok(())
@@ -159,7 +234,7 @@ fn wait_gateway_body(
     expected_body: &'static str,
 ) -> Result<String> {
     let command = format!(
-        "curl -fsS -H {} http://127.0.0.1:{GATEWAY_PORT}/",
+        "curl -fsS -H {} http://127.0.0.1:{GATEWAY_HTTP_PORT}/",
         shell_quote(&format!("Host: {hostname}"))
     );
     let mut last_output = String::new();
@@ -173,6 +248,60 @@ fn wait_gateway_body(
     .map_err(|error| {
         Error::Message(format!(
             "gateway {gateway_node} did not serve {hostname} body {expected_body}: {error}\nlast output:\n{last_output}"
+        ))
+    })?;
+    Ok(body)
+}
+
+fn issue_certificate(run: &ScenarioRun) -> Result<AcmeIssueReport> {
+    let command = format!(
+        "PLOYZ_ACME_DIRECTORY_URL=https://pebble:14000/dir \
+         PLOYZ_ACME_ROOT_CA_PATH=/e2e-pebble/pebble.minica.pem \
+         mvp-node acme-issue --state {state} --hostname {hostname} \
+         --gateway http://127.0.0.1:{http_port} --gateway-control {control} \
+         --account-path {account_path}",
+        state = STATE_DIR,
+        hostname = shell_quote(WEB_HOSTNAME),
+        http_port = GATEWAY_HTTP_PORT,
+        control = GATEWAY_CONTROL,
+        account_path = ACME_ACCOUNT_PATH
+    );
+    let output = run.ssh_expect_ok_name("founder", &command)?;
+    serde_json::from_str::<AcmeIssueReport>(output.stdout.trim()).map_err(|error| {
+        Error::Message(format!(
+            "failed to decode mvp-node acme-issue report: {error}; output={}",
+            output.combined()
+        ))
+    })
+}
+
+fn wait_gateway_https_body(
+    run: &ScenarioRun,
+    gateway_node: &'static str,
+    hostname: &'static str,
+    expected_body: &'static str,
+) -> Result<String> {
+    let pebble_name = run.pebble_container_name();
+    let command = format!(
+        "curl -kfsS https://{pebble_name}:15000/roots/0 -o {root_path} && \
+         mvp-node serving-reload --control {control} >/tmp/mvp-serving-reload.json && \
+         curl -fsS --cacert {root_path} --resolve {hostname}:{https_port}:127.0.0.1 \
+         https://{hostname}/",
+        root_path = PEBBLE_ROOT_PATH,
+        control = GATEWAY_CONTROL,
+        https_port = GATEWAY_HTTPS_PORT
+    );
+    let mut last_output = String::new();
+    let mut body = String::new();
+    wait_until(ACME_HTTPS_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(gateway_node, &command)?;
+        last_output = output.combined();
+        body = output.stdout.trim().to_string();
+        Ok(output.status.success() && body == expected_body)
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "gateway {gateway_node} did not serve HTTPS for {hostname} body {expected_body}: {error}\nlast output:\n{last_output}"
         ))
     })?;
     Ok(body)
@@ -305,9 +434,29 @@ fn snapshot_contains_hosts(snapshot: &str, expected_hosts: &[&str]) -> bool {
     })
 }
 
+fn snapshot_contains_certificate(snapshot: &str, hostname: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(snapshot) else {
+        return false;
+    };
+    value
+        .get("certificates")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|certificate| {
+            certificate
+                .get("hostname")
+                .and_then(serde_json::Value::as_str)
+                == Some(hostname)
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{container_dns_answer, gateway_ip_from_subnet, snapshot_contains_hosts};
+    use super::{
+        container_dns_answer, gateway_ip_from_subnet, snapshot_contains_certificate,
+        snapshot_contains_hosts,
+    };
 
     #[test]
     fn snapshot_host_probe_requires_all_hosts() {
@@ -326,6 +475,18 @@ mod tests {
             snapshot,
             &["web.example.test", "echo.example.test"]
         ));
+    }
+
+    #[test]
+    fn snapshot_certificate_probe_requires_hostname() {
+        let snapshot = r#"{
+            "certificates": [
+                { "hostname": "web.example.test" }
+            ]
+        }"#;
+
+        assert!(snapshot_contains_certificate(snapshot, "web.example.test"));
+        assert!(!snapshot_contains_certificate(snapshot, "api.example.test"));
     }
 
     #[test]

@@ -356,13 +356,22 @@ U10 --> U11
   DNS roles through installed `mvp-node` on all three E2E containers, and
   verifies a client container on `node-a` resolves `echo.service.example.test`
   through node-a's bridge DNS and curls the node-c backend across the overlay.
+- Pebble ACME/HTTPS slice: the Docker E2E smoke reserves ports 80/443 for the
+  MVP gateway roles, starts Pebble/challtestsrv with the existing main E2E
+  substrate, issues a certificate for `web.example.test` through installed
+  `mvp-node acme-issue`, waits for certificate projection on non-owner
+  gateways, reloads gateway roles through the product serving control surface,
+  and verifies HTTPS through `peer` and `edge` with Pebble's root CA. The slice
+  also fixed the product transport path so externally written local fact-store
+  operations are advertised by the running daemon on its refresh cadence.
 
 ### Next Slice
 
-Add the Pebble ACME/HTTPS slice: use the main E2E Pebble/challtestsrv setup,
-issue a certificate through installed `mvp-node`, reload gateway roles, and
-verify HTTPS through non-owner gateways with Pebble's root CA. This next slice
-is still not final parity: update/drain and restart remain separate gates.
+Add the update/drain slice: update `api` from v1 to v2 through installed
+`mvp-node` product commands, require all gateways to converge to v2, and record
+old-backend drain/cleanup evidence from product-visible status. Keep daemon
+restart as a separate final behavior slice unless the update/drain work stays
+small enough to land without mixing responsibilities.
 
 ### U1. Split The MVP CLI Binary By Command
 

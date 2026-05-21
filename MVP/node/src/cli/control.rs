@@ -3,11 +3,33 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use mvp_node::{NodeError, NodeResult};
+use mvp_node::{
+    NodeError, NodeResult, ServingRoleRequest, ServingRoleResponse, ServingRoleSuccess,
+};
 
 pub(crate) fn daemon_status(args: &[String]) -> NodeResult<String> {
     let control_socket = parse_control_socket_only(args)?;
     daemon_control_request(control_socket, b"status\n").map(|response| response.trim().to_string())
+}
+
+pub(crate) fn serving_reload(args: &[String]) -> NodeResult<String> {
+    let control_socket = parse_control_socket_only(args)?;
+    let request = serde_json::to_vec(&ServingRoleRequest::Reload)
+        .map_err(|source| NodeError::EncodeServingRoleResponse { source })?;
+    let response = daemon_control_request(control_socket, &request)?;
+    let decoded = serde_json::from_str::<ServingRoleResponse>(&response).map_err(|source| {
+        NodeError::NodeAgentRpc {
+            message: format!("decode serving reload response: {source}"),
+        }
+    })?;
+    match decoded {
+        ServingRoleResponse::Success(ServingRoleSuccess::Reloaded(_)) => {
+            Ok(response.trim().to_string())
+        }
+        response => Err(NodeError::NodeAgentRpc {
+            message: format!("serving reload failed: {response:?}"),
+        }),
+    }
 }
 
 pub(crate) fn daemon_control_request(
