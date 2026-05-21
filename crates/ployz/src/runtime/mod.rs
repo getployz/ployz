@@ -2,15 +2,15 @@
 
 use std::time::SystemTime;
 
+use crate::deploy::MutationContext;
 use crate::error::RuntimeFailure;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkloadId(String);
 
 impl WorkloadId {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn parse(value: impl Into<String>) -> Result<Self, RuntimeFailure> {
+        parse_non_empty(value, Self)
     }
 }
 
@@ -18,9 +18,8 @@ impl WorkloadId {
 pub struct MachineId(String);
 
 impl MachineId {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn parse(value: impl Into<String>) -> Result<Self, RuntimeFailure> {
+        parse_non_empty(value, Self)
     }
 }
 
@@ -28,6 +27,7 @@ impl MachineId {
 pub struct RuntimeActivationRequest {
     pub workload: WorkloadId,
     pub machine: MachineId,
+    pub context: MutationContext,
     pub deadline: SystemTime,
 }
 
@@ -61,6 +61,17 @@ pub trait RuntimePort {
     ) -> Result<RuntimeActivationOutcome, RuntimeFailure>;
 }
 
+fn parse_non_empty<T>(
+    value: impl Into<String>,
+    build: impl FnOnce(String) -> T,
+) -> Result<T, RuntimeFailure> {
+    let value = value.into();
+    if value.trim().is_empty() {
+        return Err(RuntimeFailure::PayloadInvalid);
+    }
+    Ok(build(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +84,10 @@ mod tests {
             outcome,
             RuntimeActivationOutcome::Failed(RuntimeFailure::Timeout)
         ));
+    }
+
+    #[test]
+    fn empty_workload_id_is_payload_invalid() {
+        assert_eq!(WorkloadId::parse(""), Err(RuntimeFailure::PayloadInvalid));
     }
 }

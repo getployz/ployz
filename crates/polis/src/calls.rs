@@ -3,6 +3,8 @@
 use std::time::SystemTime;
 
 use crate::authority::AuthorityContext;
+use crate::claims::FenceToken;
+use crate::identity::PrincipalId;
 use crate::operations::{IdempotencyKey, OperationId};
 use crate::{Error, Result};
 
@@ -33,11 +35,13 @@ impl PayloadHash {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallEnvelope {
+    pub sender: PrincipalId,
     pub target: TargetId,
     pub operation: OperationId,
     pub idempotency: IdempotencyKey,
     pub payload_hash: PayloadHash,
     pub authority: AuthorityContext,
+    pub fence: Option<FenceToken>,
     pub deadline: SystemTime,
 }
 
@@ -120,11 +124,13 @@ mod tests {
         let principal = PrincipalId::parse("node-a").expect("principal");
         let scope = ScopeId::parse("cluster").expect("scope");
         CallEnvelope {
+            sender: principal.clone(),
             target: TargetId::parse("node-b").expect("target"),
             operation: OperationId::parse("op-1").expect("operation"),
             idempotency: IdempotencyKey::parse("call-1").expect("idempotency"),
             payload_hash: PayloadHash::new(payload_hash.to_vec()).expect("payload hash"),
             authority: AuthorityContext::new(principal, scope, GrantEpoch::new(1)),
+            fence: None,
             deadline: UNIX_EPOCH + Duration::from_secs(10),
         }
     }

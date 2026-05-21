@@ -2,6 +2,7 @@
 
 use std::time::SystemTime;
 
+use crate::deploy::MutationContext;
 use crate::error::CertificateFailure;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -103,6 +104,7 @@ pub enum CertificateStatus {
 pub trait CertificatePort {
     fn ensure_usable(
         &self,
+        context: &MutationContext,
         binding: &HttpsBinding,
         deadline: CertificateDeadline,
     ) -> Result<EnsureCertificateOutcome, CertificateFailure>;

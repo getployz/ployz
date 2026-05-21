@@ -8,9 +8,13 @@ use crate::error::{DeployFailure, PrimitiveFailure};
 pub struct PrincipalId(String);
 
 impl PrincipalId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, DeployFailure> {
+        parse_non_empty(value, Self)
+    }
+
     #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -18,9 +22,13 @@ impl PrincipalId {
 pub struct ScopeId(String);
 
 impl ScopeId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, DeployFailure> {
+        parse_non_empty(value, Self)
+    }
+
     #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -31,6 +39,11 @@ impl AuthorityEpoch {
     #[must_use]
     pub fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    #[must_use]
+    pub fn value(self) -> u64 {
+        self.0
     }
 }
 
@@ -60,9 +73,8 @@ pub trait AuthorityPort {
 pub struct OperationId(String);
 
 impl OperationId {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn parse(value: impl Into<String>) -> Result<Self, DeployFailure> {
+        parse_non_empty(value, Self)
     }
 }
 
@@ -70,10 +82,44 @@ impl OperationId {
 pub struct IdempotencyKey(String);
 
 impl IdempotencyKey {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn parse(value: impl Into<String>) -> Result<Self, DeployFailure> {
+        parse_non_empty(value, Self)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResourceId(String);
+
+impl ResourceId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, DeployFailure> {
+        parse_non_empty(value, Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FenceEpoch(u64);
+
+impl FenceEpoch {
+    #[must_use]
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FenceToken {
+    pub resource: ResourceId,
+    pub holder: PrincipalId,
+    pub epoch: FenceEpoch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationContext {
+    pub operation: OperationId,
+    pub idempotency: IdempotencyKey,
+    pub authority: AuthorityContext,
+    pub fence: Option<FenceToken>,
+    pub deadline: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +153,17 @@ pub trait OperationPort {
     ) -> Result<(), PrimitiveFailure>;
 }
 
+fn parse_non_empty<T>(
+    value: impl Into<String>,
+    build: impl FnOnce(String) -> T,
+) -> Result<T, DeployFailure> {
+    let value = value.into();
+    if value.trim().is_empty() {
+        return Err(DeployFailure::InvalidManifest);
+    }
+    Ok(build(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +173,10 @@ mod tests {
         let check = AuthorityCheck::Unknown;
 
         assert!(!matches!(check, AuthorityCheck::Allowed(_)));
+    }
+
+    #[test]
+    fn empty_operation_id_is_invalid_manifest() {
+        assert_eq!(OperationId::parse(""), Err(DeployFailure::InvalidManifest));
     }
 }
