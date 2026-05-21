@@ -11,7 +11,10 @@ use crate::domain::{
     CertificatePolicy, DomainAdd, DomainFailure, DomainName, DomainReadinessPort, DomainReady,
 };
 use crate::error::{DeployFailure, PrimitiveFailure};
-use crate::operation::{CommandBackend, CommandContext, CommandEnvelope};
+use crate::operation::{
+    AuthorityPort, CommandBackend, CommandContext, CommandEnvelope, CommandIssue, CommandIssuer,
+    CommandKind, CommandPayload, FingerprintedResource, MutationIntent,
+};
 use crate::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
     WorkloadId,
@@ -46,6 +49,50 @@ pub struct DeployOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployCommand {}
+
+impl DeployCommand {
+    pub fn issue<A>(
+        issuer: &CommandIssuer<A>,
+        command: CommandIssue,
+        request: &DeployRequest,
+    ) -> Result<CommandEnvelope<Self>, PrimitiveFailure>
+    where
+        A: AuthorityPort,
+    {
+        let mut payload = CommandPayload::new("ployz.deploy.https.v1");
+        payload.field("hostname", request.manifest.https.hostname.as_str());
+        payload.field("route", request.manifest.route.as_str());
+        payload.field("serving_target", request.manifest.serving_target.as_str());
+        payload.field_u64(
+            "serving_generation",
+            request.manifest.serving_generation.value(),
+        );
+        payload.field("workload", request.manifest.workload.as_str());
+        payload.field("machine", request.manifest.machine.as_str());
+        payload.field_time(
+            "minimum_certificate_valid_until",
+            request.manifest.minimum_certificate_valid_until,
+        );
+
+        issuer.issue(MutationIntent {
+            operation: command.operation,
+            idempotency: command.idempotency,
+            principal: command.principal,
+            scope: command.scope,
+            command: CommandKind::parse("deploy")?,
+            payload_hash: payload.finish_hash(),
+            resources: vec![
+                FingerprintedResource::parse(format!("route:{}", request.manifest.route.as_str()))?,
+                FingerprintedResource::parse(format!(
+                    "domain:{}",
+                    request.manifest.https.hostname.as_str()
+                ))?,
+            ],
+            submitted_fence: None,
+            deadline: command.deadline,
+        })
+    }
+}
 
 pub struct DeployEngine<D, R, S, O> {
     domains: D,
@@ -226,12 +273,79 @@ fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
 
 #[cfg(test)]
 mod tests {
-    use crate::operation::AuthorityDecision;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+    use crate::acme::{Hostname, HttpsBinding};
+    use crate::operation::{
+        AuthorityDecision, AuthorityEpoch, AuthorityPort, CommandIssuer, IdempotencyKey,
+        OperationId, PrincipalId, ScopeId,
+    };
 
     #[test]
     fn unknown_authority_is_not_allowed() {
         let check = AuthorityDecision::Unknown;
 
         assert_eq!(check.epoch(), None);
+    }
+
+    #[test]
+    fn deploy_command_issue_derives_fingerprint_from_request() {
+        let request = request();
+        let changed_route = DeployRequest {
+            manifest: DeployManifest {
+                route: RouteId::parse("route:admin").expect("route"),
+                ..request.manifest.clone()
+            },
+            ..request.clone()
+        };
+
+        let first = DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), &request)
+            .expect("first command");
+        let second =
+            DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), &changed_route)
+                .expect("second command");
+
+        assert_ne!(
+            first.fingerprint_for_test().payload_hash(),
+            second.fingerprint_for_test().payload_hash()
+        );
+    }
+
+    struct AllowAuthority;
+
+    impl AuthorityPort for AllowAuthority {
+        fn decide(
+            &self,
+            _principal: &PrincipalId,
+            _scope: &ScopeId,
+        ) -> Result<AuthorityDecision, PrimitiveFailure> {
+            Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
+        }
+    }
+
+    fn issue() -> CommandIssue {
+        CommandIssue {
+            operation: OperationId::parse("deploy-1").expect("operation"),
+            idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
+            principal: PrincipalId::parse("node-a").expect("principal"),
+            scope: ScopeId::parse("cluster").expect("scope"),
+            deadline: UNIX_EPOCH + Duration::from_secs(60),
+        }
+    }
+
+    fn request() -> DeployRequest {
+        DeployRequest {
+            manifest: DeployManifest {
+                https: HttpsBinding::new(Hostname::parse("app.example.com").expect("hostname")),
+                route: RouteId::parse("route:app").expect("route"),
+                serving_target: ServingTarget::parse("target:app").expect("target"),
+                serving_generation: ServingGeneration::new(4),
+                workload: WorkloadId::parse("workload:app").expect("workload"),
+                machine: MachineId::parse("machine:a").expect("machine"),
+                minimum_certificate_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
+            },
+            deadline: UNIX_EPOCH + Duration::from_secs(60),
+        }
     }
 }

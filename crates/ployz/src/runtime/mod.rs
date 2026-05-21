@@ -12,6 +12,11 @@ impl WorkloadId {
     pub fn parse(value: impl Into<String>) -> Result<Self, RuntimeFailure> {
         parse_non_empty(value, Self)
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,6 +25,11 @@ pub struct MachineId(String);
 impl MachineId {
     pub fn parse(value: impl Into<String>) -> Result<Self, RuntimeFailure> {
         parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

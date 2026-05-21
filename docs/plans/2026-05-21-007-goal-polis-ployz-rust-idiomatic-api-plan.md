@@ -96,6 +96,10 @@ Already improved in the current branch:
 - `CommandRunner` preserves the original product failure when best-effort
   failed-operation terminalization fails. Successful product work still
   requires a durable success marker.
+- Deploy and volume transfer now have product-owned command issue helpers that
+  derive command kind, payload hash, resources, and volume fence participation
+  from typed product requests. Generic `MutationIntent`, `CommandKind`, and
+  `FingerprintedResource` are no longer re-exported as normal product API.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -103,9 +107,10 @@ Still weak:
 - Command outcome/replay semantics still need a real slice. The final API roast
   found that all product errors currently close as terminal failed operations,
   making partial deploy failures unretryable with the same idempotency key.
-- Product APIs still require callers to pass generic `CommandEnvelope` plumbing
-  instead of issuing typed product commands that derive command kind, resources,
-  payload hash, and fence participation from product requests.
+- Product engines still accept `CommandEnvelope` parameters. This keeps
+  authorization and command orchestration separate for now, but the normal
+  caller path should go through product-owned `DeployCommand::issue` and
+  `VolumeTransferCommand::issue`.
 - A refreshed fence for the same logical command now requires a new
   idempotency key. That is safer than silently treating two fenced attempts as
   the same request, but product command issuers still need to make that policy
@@ -416,8 +421,9 @@ manually handling operation evidence.
 moved checkpoint byte encoding behind the Ployz command boundary, added
 success-only replay verification for volume, made submitted fences part of the
 operation fingerprint, and stopped failed-marker terminalization from masking
-the original product failure. Deploy retry after partial failure and product
-command issuance remain open.
+the original product failure. Deploy and volume command issuance now derives
+replay metadata from typed product requests. Deploy retry after partial failure
+and the remaining engine/envelope API shape remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.

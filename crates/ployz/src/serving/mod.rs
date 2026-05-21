@@ -11,6 +11,11 @@ impl RouteId {
     pub fn parse(value: impl Into<String>) -> Result<Self, ServingFailure> {
         parse_non_empty(value, Self)
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,6 +24,11 @@ pub struct ServingTarget(String);
 impl ServingTarget {
     pub fn parse(value: impl Into<String>) -> Result<Self, ServingFailure> {
         parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -79,6 +89,11 @@ impl ServingGeneration {
     #[must_use]
     pub fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    #[must_use]
+    pub fn value(self) -> u64 {
+        self.0
     }
 }
 

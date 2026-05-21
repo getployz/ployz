@@ -5,8 +5,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use ployz::error::{PrimitiveFailure, VolumeFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssuer,
-    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, MutationIntent, OperationId,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssue,
+    CommandIssuer, CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, OperationId,
     PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
 };
 use ployz::volume::{
@@ -201,26 +201,25 @@ impl polis::OperationBackend for FakeOperations {
 }
 
 fn command() -> CommandEnvelope<VolumeTransferCommand> {
-    CommandIssuer::new(AllowAuthority)
-        .issue::<VolumeTransferCommand>(MutationIntent {
+    let request = request();
+    VolumeTransferCommand::issue(
+        &CommandIssuer::new(AllowAuthority),
+        CommandIssue {
             operation: OperationId::parse("volume-transfer-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
             scope: ScopeId::parse("cluster").expect("scope"),
-            command: ployz::operation::CommandKind::parse("volume-transfer").expect("command"),
-            payload_hash: vec![1],
-            resources: vec![
-                ployz::operation::FingerprintedResource::parse("volume:data").expect("volume"),
-            ],
-            submitted_fence: Some(SubmittedFenceToken {
-                resource: ResourceId::parse("volume:data").expect("resource"),
-                holder: PrincipalId::parse("node-a").expect("holder"),
-                epoch: FenceEpoch::new(3).expect("fence epoch"),
-                claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
-            }),
             deadline: UNIX_EPOCH + Duration::from_secs(60),
-        })
-        .expect("command")
+        },
+        &request,
+        SubmittedFenceToken {
+            resource: ResourceId::parse("volume:data").expect("resource"),
+            holder: PrincipalId::parse("node-a").expect("holder"),
+            epoch: FenceEpoch::new(3).expect("fence epoch"),
+            claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
+        },
+    )
+    .expect("command")
 }
 
 struct AllowAuthority;

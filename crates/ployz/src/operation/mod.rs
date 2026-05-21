@@ -11,7 +11,8 @@ pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, Authori
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
 pub(crate) use command::CommandCheckpoint;
 pub use command::{CommandBackend, CommandContext, CommandEnvelope, CommandIssuer, CommandRunner};
-pub use context::{CommandKind, FingerprintedResource, MutationContext, MutationIntent};
+pub use context::{CommandIssue, MutationContext};
+pub(crate) use context::{CommandKind, CommandPayload, FingerprintedResource, MutationIntent};
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,
 };

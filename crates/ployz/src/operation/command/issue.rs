@@ -22,7 +22,10 @@ impl<A> CommandIssuer<A>
 where
     A: AuthorityPort,
 {
-    pub fn issue<C>(&self, intent: MutationIntent) -> Result<CommandEnvelope<C>, PrimitiveFailure> {
+    pub(crate) fn issue<C>(
+        &self,
+        intent: MutationIntent,
+    ) -> Result<CommandEnvelope<C>, PrimitiveFailure> {
         let epoch = match self
             .authority
             .decide(&intent.principal, &intent.scope)?
@@ -96,6 +99,12 @@ impl<C> CommandEnvelope<C> {
     #[must_use]
     pub fn context(&self) -> &MutationContext {
         &self.context
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn fingerprint_for_test(&self) -> &polis::RequestFingerprint {
+        self.operation_request.fingerprint()
     }
 }
 
