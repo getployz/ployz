@@ -25,15 +25,3 @@ pub mod serving;
 pub mod volume;
 
 pub use error::{Error, PrimitiveFailure, Result};
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn crate_starts_without_substrate_modules() {
-        let public_modules: [&str; 0] = [];
-
-        assert!(!public_modules.contains(&"p2panda"));
-        assert!(!public_modules.contains(&"iroh"));
-        assert!(!public_modules.contains(&"mvp"));
-    }
-}

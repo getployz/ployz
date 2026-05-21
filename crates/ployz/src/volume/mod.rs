@@ -214,6 +214,16 @@ pub enum CleanupStatus {
     Pending(CleanupArtifactId),
 }
 
+impl CleanupStatus {
+    #[must_use]
+    pub fn evidence_kind(&self) -> Option<EvidenceKind> {
+        match self {
+            Self::Done => None,
+            Self::Pending(_) => Some(EvidenceKind::Failure),
+        }
+    }
+}
+
 pub trait VolumeCleanupPort {
     fn cleanup_source_artifact(
         &self,
@@ -367,6 +377,13 @@ where
         if verified != ownership {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
+        if ownership.volume != plan.volume
+            || ownership.owner != plan.target
+            || ownership.epoch != plan.next_epoch
+            || ownership.source_watermark != plan.expected_source_watermark
+        {
+            return Err(VolumeFailure::OwnershipCommitRejected);
+        }
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
     }
 
@@ -383,6 +400,15 @@ where
             Ok(status) => status,
             Err(error) => CleanupStatus::Pending(error.artifact),
         };
+        if let Some(kind) = cleanup.evidence_kind() {
+            self.operations
+                .record_evidence(OperationEvidence {
+                    operation: context.operation.clone(),
+                    recorded_at: context.deadline,
+                    kind,
+                })
+                .map_err(map_primitive_to_volume)?;
+        }
         self.operations
             .terminalize(&context.operation, TerminalMarker::Succeeded)
             .map_err(map_primitive_to_volume)?;

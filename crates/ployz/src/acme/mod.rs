@@ -66,6 +66,7 @@ pub enum CertificateUnusableReason {
     UnsafeMaterial,
     Expired,
     KnownRevoked,
+    FreshnessUnknown,
     SafetyWindowTooShort,
     ServingMaterialUnavailable,
     ActivationRejected,
