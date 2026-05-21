@@ -10,11 +10,8 @@ use crate::acme::{
 use crate::domain::{
     CertificatePolicy, DomainAdd, DomainFailure, DomainName, DomainReadinessPort, DomainReady,
 };
-use crate::error::{DeployFailure, PrimitiveFailure};
-use crate::operation::{
-    AttemptBackend, AttemptContext, AttemptFailureDisposition, AttemptIssue, AttemptIssuer,
-    AttemptProductError, AttemptSpec, AuthorityPort, IssuedAttempt, MutationContext,
-};
+use crate::error::{DeployFailure, ServingFailure};
+use crate::operation::MutationContext;
 use crate::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
     RuntimeParticipantStatus, RuntimeParticipantVerification, RuntimePort, WorkloadId,
@@ -48,107 +45,223 @@ pub struct DeployOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployCommand {}
-
-pub struct IssuedDeployCommand {
-    envelope: IssuedAttempt<DeployCommand>,
-    request: DeployRequest,
+struct DeployDesiredState {
+    domain: DomainName,
+    certificate_policy: CertificatePolicy,
+    https: HttpsBinding,
+    route: RouteId,
+    serving_target: ServingTarget,
+    serving_generation: ServingGeneration,
+    workload: WorkloadId,
+    machine: MachineId,
 }
 
-impl DeployCommand {
-    pub fn issue<A>(
-        issuer: &AttemptIssuer<A>,
-        command: AttemptIssue,
-        request: DeployRequest,
-    ) -> Result<IssuedDeployCommand, PrimitiveFailure>
-    where
-        A: AuthorityPort,
-    {
-        let envelope = issuer.issue(command, deploy_attempt_spec(&request))?;
-        Ok(IssuedDeployCommand { envelope, request })
+impl DeployDesiredState {
+    fn from_request(request: &DeployRequest) -> Result<Self, DeployFailure> {
+        Ok(Self {
+            domain: DomainName::parse(request.manifest.https.hostname.as_str())
+                .map_err(map_domain_to_deploy)?,
+            certificate_policy: CertificatePolicy {
+                minimum_valid_until: request.manifest.minimum_certificate_valid_until,
+            },
+            https: request.manifest.https.clone(),
+            route: request.manifest.route.clone(),
+            serving_target: request.manifest.serving_target.clone(),
+            serving_generation: request.manifest.serving_generation,
+            workload: request.manifest.workload.clone(),
+            machine: request.manifest.machine.clone(),
+        })
+    }
+
+    #[must_use]
+    fn domain_request(&self) -> DomainAdd {
+        DomainAdd {
+            domain: self.domain.clone(),
+            certificate_policy: self.certificate_policy,
+        }
+    }
+
+    #[must_use]
+    fn domain_matches(&self, ready: &DomainReady) -> bool {
+        ready.domain() == &self.domain
+            && certificate_is_usable(
+                ready.certificate().certificate(),
+                &self.https,
+                self.certificate_policy.minimum_valid_until,
+            )
+    }
+
+    #[must_use]
+    fn runtime_receipt(&self, status: RuntimeParticipantStatus) -> Option<ParticipantReceipt> {
+        let RuntimeParticipantStatus::Active(receipt) = status else {
+            return None;
+        };
+        if receipt.workload == self.workload && receipt.machine == self.machine {
+            Some(receipt)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    fn serving_matches(&self, proof: &ServingActivationProof) -> bool {
+        proof.route() == &self.route
+            && proof.hostname() == &self.https.hostname
+            && proof.target() == &self.serving_target
+            && proof.generation() == self.serving_generation
     }
 }
 
-fn deploy_attempt_spec(request: &DeployRequest) -> AttemptSpec {
-    AttemptSpec::new("deploy", "ployz.deploy.https.v1")
-        .field("hostname", request.manifest.https.hostname.as_str())
-        .field("route", request.manifest.route.as_str())
-        .field("serving_target", request.manifest.serving_target.as_str())
-        .field_u64(
-            "serving_generation",
-            request.manifest.serving_generation.value(),
-        )
-        .field("workload", request.manifest.workload.as_str())
-        .field("machine", request.manifest.machine.as_str())
-        .field_time(
-            "minimum_certificate_valid_until",
-            request.manifest.minimum_certificate_valid_until,
-        )
-        .field_time("request_deadline", request.deadline)
-        .resource(format!("route:{}", request.manifest.route.as_str()))
-        .resource(format!(
-            "domain:{}",
-            request.manifest.https.hostname.as_str()
-        ))
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeployObservedState {
+    domain: Option<DomainReady>,
+    runtime: Option<ParticipantReceipt>,
+    serving: Option<ServingActivationProof>,
 }
 
-pub struct DeployEngine<D, R, S, O> {
-    domains: D,
-    runtime: R,
-    serving: S,
-    commands: O,
-}
-
-impl<D, R, S, O> DeployEngine<D, R, S, O> {
+impl DeployObservedState {
+    #[cfg(test)]
     #[must_use]
-    pub fn new(domains: D, runtime: R, serving: S, commands: O) -> Self {
+    fn new(
+        domain: Option<DomainReady>,
+        runtime: Option<ParticipantReceipt>,
+        serving: Option<ServingActivationProof>,
+    ) -> Self {
         Self {
-            domains,
+            domain,
             runtime,
             serving,
-            commands,
         }
     }
 }
 
-impl<D, R, S, O> DeployEngine<D, R, S, O>
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeployPlanStep {
+    AlreadyCurrent,
+    Apply,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeployPlan {
+    domain: DeployPlanStep,
+    runtime: DeployPlanStep,
+    serving: DeployPlanStep,
+}
+
+impl DeployPlan {
+    #[must_use]
+    fn diff(observed: &DeployObservedState, desired: &DeployDesiredState) -> Self {
+        let domain = match &observed.domain {
+            Some(ready) if desired.domain_matches(ready) => DeployPlanStep::AlreadyCurrent,
+            Some(_) | None => DeployPlanStep::Apply,
+        };
+        let runtime = match &observed.runtime {
+            Some(receipt)
+                if receipt.workload == desired.workload && receipt.machine == desired.machine =>
+            {
+                DeployPlanStep::AlreadyCurrent
+            }
+            Some(_) | None => DeployPlanStep::Apply,
+        };
+        let serving = match &observed.serving {
+            Some(proof) if desired.serving_matches(proof) => DeployPlanStep::AlreadyCurrent,
+            Some(_) | None => DeployPlanStep::Apply,
+        };
+        Self {
+            domain,
+            runtime,
+            serving,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn is_noop(self) -> bool {
+        matches!(self.domain, DeployPlanStep::AlreadyCurrent)
+            && matches!(self.runtime, DeployPlanStep::AlreadyCurrent)
+            && matches!(self.serving, DeployPlanStep::AlreadyCurrent)
+    }
+}
+
+pub struct DeployEngine<D, R, S> {
+    domains: D,
+    runtime: R,
+    serving: S,
+}
+
+impl<D, R, S> DeployEngine<D, R, S> {
+    #[must_use]
+    pub fn new(domains: D, runtime: R, serving: S) -> Self {
+        Self {
+            domains,
+            runtime,
+            serving,
+        }
+    }
+}
+
+impl<D, R, S> DeployEngine<D, R, S>
 where
     D: DomainReadinessPort,
     R: RuntimePort,
     S: ServingPort,
-    O: AttemptBackend,
 {
     pub fn deploy_https(
         &self,
-        command: IssuedDeployCommand,
+        context: &MutationContext,
+        request: DeployRequest,
     ) -> Result<DeployOutcome, DeployFailure> {
-        let IssuedDeployCommand { envelope, request } = command;
-        self.commands.run_with_replay_and_failure_disposition(
-            envelope,
-            AttemptFailureDisposition::Interrupted,
-            |context| {
-                let domain = self.ensure_domain_ready(context, &request)?;
-                let runtime = self.activate_runtime(context, &request)?;
-                let serving = self.commit_and_verify_serving(context, &request, &domain)?;
-
-                Ok(DeployOutcome {
-                    domain,
-                    runtime,
-                    serving,
-                })
-            },
-            |mutation| self.verify_replayed_success(mutation, &request),
-        )
+        let desired = DeployDesiredState::from_request(&request)?;
+        let observed = self.observe(context, &desired)?;
+        let plan = DeployPlan::diff(&observed, &desired);
+        self.execute_plan(context, &request, &desired, observed, plan)
     }
 
-    fn verify_replayed_success(
+    fn observe(
         &self,
-        mutation: &MutationContext,
+        context: &MutationContext,
+        desired: &DeployDesiredState,
+    ) -> Result<DeployObservedState, DeployFailure> {
+        let domain = self.observe_domain_ready(context, desired)?;
+        let runtime = self.observe_runtime(context, desired)?;
+        let serving = match &domain {
+            Some(ready) => self.observe_serving(desired, ready)?,
+            None => None,
+        };
+        Ok(DeployObservedState {
+            domain,
+            runtime,
+            serving,
+        })
+    }
+
+    fn execute_plan(
+        &self,
+        context: &MutationContext,
         request: &DeployRequest,
+        desired: &DeployDesiredState,
+        observed: DeployObservedState,
+        plan: DeployPlan,
     ) -> Result<DeployOutcome, DeployFailure> {
-        let domain = self.verify_domain_ready(mutation, request)?;
-        let runtime = self.verify_runtime(mutation, request)?;
-        let serving = self.verify_serving(request, &domain)?;
+        let domain = match plan.domain {
+            DeployPlanStep::AlreadyCurrent => observed
+                .domain
+                .ok_or(DeployFailure::DomainReadinessFailed)?,
+            DeployPlanStep::Apply => self.apply_domain_ready(context, desired)?,
+        };
+        let runtime = match plan.runtime {
+            DeployPlanStep::AlreadyCurrent => observed
+                .runtime
+                .ok_or(DeployFailure::RuntimeParticipantFailed)?,
+            DeployPlanStep::Apply => self.apply_runtime(context, request, desired)?,
+        };
+        let serving = match plan.serving {
+            DeployPlanStep::AlreadyCurrent => observed
+                .serving
+                .ok_or(DeployFailure::ServingActivationFailed)?,
+            DeployPlanStep::Apply => self.commit_and_verify_serving(context, desired, &domain)?,
+        };
+
         Ok(DeployOutcome {
             domain,
             runtime,
@@ -156,66 +269,59 @@ where
         })
     }
 
-    fn ensure_domain_ready(
+    fn observe_domain_ready(
         &self,
-        context: &AttemptContext<'_>,
-        request: &DeployRequest,
-    ) -> Result<DomainReady, DeployFailure> {
-        self.ready_domain(context.mutation(), request, |domains, mutation, request| {
-            domains.ensure_ready(mutation, request)
-        })
-    }
-
-    fn verify_domain_ready(
-        &self,
-        mutation: &MutationContext,
-        request: &DeployRequest,
-    ) -> Result<DomainReady, DeployFailure> {
-        self.ready_domain(mutation, request, |domains, mutation, request| {
-            domains.verify_ready(mutation, request)
-        })
-    }
-
-    fn ready_domain<F>(
-        &self,
-        mutation: &MutationContext,
-        request: &DeployRequest,
-        readiness: F,
-    ) -> Result<DomainReady, DeployFailure>
-    where
-        F: FnOnce(&D, &MutationContext, DomainAdd) -> Result<DomainReady, DomainFailure>,
-    {
-        let domain = DomainName::parse(request.manifest.https.hostname.as_str())
-            .map_err(map_domain_to_deploy)?;
-        let ready = readiness(
-            &self.domains,
-            mutation,
-            DomainAdd {
-                domain: domain.clone(),
-                certificate_policy: CertificatePolicy {
-                    minimum_valid_until: request.manifest.minimum_certificate_valid_until,
-                },
-            },
-        )
-        .map_err(map_domain_to_deploy)?;
-
-        if ready.domain() != &domain {
-            return Err(DeployFailure::DomainReadinessFailed);
+        context: &MutationContext,
+        desired: &DeployDesiredState,
+    ) -> Result<Option<DomainReady>, DeployFailure> {
+        match self.domains.verify_ready(context, desired.domain_request()) {
+            Ok(ready) if desired.domain_matches(&ready) => Ok(Some(ready)),
+            Ok(_) | Err(DomainFailure::UnknownReadiness) => Ok(None),
+            Err(error) => Err(map_domain_to_deploy(error)),
         }
-        Ok(ready)
     }
 
-    fn activate_runtime(
+    fn apply_domain_ready(
         &self,
-        context: &AttemptContext<'_>,
+        context: &MutationContext,
+        desired: &DeployDesiredState,
+    ) -> Result<DomainReady, DeployFailure> {
+        self.domains
+            .ensure_ready(context, desired.domain_request())
+            .map_err(map_domain_to_deploy)?;
+
+        self.observe_domain_ready(context, desired)?
+            .ok_or(DeployFailure::DomainReadinessFailed)
+    }
+
+    fn observe_runtime(
+        &self,
+        context: &MutationContext,
+        desired: &DeployDesiredState,
+    ) -> Result<Option<ParticipantReceipt>, DeployFailure> {
+        let status = self
+            .runtime
+            .verify_participant(RuntimeParticipantVerification {
+                workload: desired.workload.clone(),
+                machine: desired.machine.clone(),
+                context: context.clone(),
+            })
+            .map_err(|_| DeployFailure::RuntimeParticipantFailed)?;
+        Ok(desired.runtime_receipt(status))
+    }
+
+    fn apply_runtime(
+        &self,
+        context: &MutationContext,
         request: &DeployRequest,
+        desired: &DeployDesiredState,
     ) -> Result<ParticipantReceipt, DeployFailure> {
         let outcome = self
             .runtime
             .activate_participant(RuntimeActivationRequest {
                 workload: request.manifest.workload.clone(),
                 machine: request.manifest.machine.clone(),
-                context: context.mutation().clone(),
+                context: context.clone(),
                 deadline: request.deadline,
             })
             .map_err(|_| DeployFailure::RuntimeParticipantFailed)?;
@@ -229,83 +335,55 @@ where
             return Err(DeployFailure::RuntimeParticipantFailed);
         }
 
-        Ok(receipt)
+        self.observe_runtime(context, desired)?
+            .ok_or(DeployFailure::RuntimeParticipantFailed)
     }
 
-    fn verify_runtime(
+    fn observe_serving(
         &self,
-        mutation: &MutationContext,
-        request: &DeployRequest,
-    ) -> Result<ParticipantReceipt, DeployFailure> {
-        let status = self
-            .runtime
-            .verify_participant(RuntimeParticipantVerification {
-                workload: request.manifest.workload.clone(),
-                machine: request.manifest.machine.clone(),
-                context: mutation.clone(),
-            })
-            .map_err(|_| DeployFailure::RuntimeParticipantFailed)?;
-
-        let RuntimeParticipantStatus::Active(receipt) = status else {
-            return Err(DeployFailure::RuntimeParticipantFailed);
-        };
-        if receipt.workload != request.manifest.workload
-            || receipt.machine != request.manifest.machine
-        {
-            return Err(DeployFailure::RuntimeParticipantFailed);
+        desired: &DeployDesiredState,
+        ready: &DomainReady,
+    ) -> Result<Option<ServingActivationProof>, DeployFailure> {
+        let commit = ready.serving_commit(
+            desired.route.clone(),
+            desired.serving_target.clone(),
+            desired.serving_generation,
+        );
+        let activation = self
+            .serving
+            .activation_status(&commit)
+            .map_err(DeployFailure::ServingFailed)?;
+        match activation.try_acknowledge_commit(&commit) {
+            Ok(proof) if desired.serving_matches(&proof) => Ok(Some(proof)),
+            Ok(_) | Err(ServingFailure::LiveObservationUnknown) => Ok(None),
+            Err(error) => Err(DeployFailure::ServingFailed(error)),
         }
-
-        Ok(receipt)
     }
 
     fn commit_and_verify_serving(
         &self,
-        context: &AttemptContext<'_>,
-        request: &DeployRequest,
+        context: &MutationContext,
+        desired: &DeployDesiredState,
         ready: &DomainReady,
     ) -> Result<ServingActivationProof, DeployFailure> {
-        if ready.domain().as_str() != request.manifest.https.hostname.as_str() {
+        if !desired.domain_matches(ready) {
             return Err(DeployFailure::DomainReadinessFailed);
         }
         let commit = ready.serving_commit(
-            request.manifest.route.clone(),
-            request.manifest.serving_target.clone(),
-            request.manifest.serving_generation,
+            desired.route.clone(),
+            desired.serving_target.clone(),
+            desired.serving_generation,
         );
         self.serving
-            .commit_snapshot(context.mutation(), &commit)
+            .commit_snapshot(context, &commit)
             .map_err(DeployFailure::ServingFailed)?;
-        let checkpoint = commit.checkpoint();
 
         let activation = self
             .serving
-            .activation_status(&checkpoint)
+            .activation_status(&commit)
             .map_err(DeployFailure::ServingFailed)?;
         activation
-            .try_acknowledge(&checkpoint)
-            .map_err(DeployFailure::ServingFailed)
-    }
-
-    fn verify_serving(
-        &self,
-        request: &DeployRequest,
-        ready: &DomainReady,
-    ) -> Result<ServingActivationProof, DeployFailure> {
-        if ready.domain().as_str() != request.manifest.https.hostname.as_str() {
-            return Err(DeployFailure::DomainReadinessFailed);
-        }
-        let commit = ready.serving_commit(
-            request.manifest.route.clone(),
-            request.manifest.serving_target.clone(),
-            request.manifest.serving_generation,
-        );
-        let checkpoint = commit.checkpoint();
-        let activation = self
-            .serving
-            .activation_status(&checkpoint)
-            .map_err(DeployFailure::ServingFailed)?;
-        activation
-            .try_acknowledge(&checkpoint)
+            .try_acknowledge_commit(&commit)
             .map_err(DeployFailure::ServingFailed)
     }
 }
@@ -326,36 +404,6 @@ pub fn certificate_unusable_reason(
     minimum_valid_until: SystemTime,
 ) -> Option<CertificateUnusableReason> {
     acme_certificate_unusable_reason(certificate, binding, minimum_valid_until)
-}
-
-fn map_primitive_to_deploy(error: PrimitiveFailure) -> DeployFailure {
-    match error {
-        PrimitiveFailure::Unauthorized => DeployFailure::Unauthorized,
-        PrimitiveFailure::Conflict => DeployFailure::PreflightFailed,
-        PrimitiveFailure::Timeout => DeployFailure::Interrupted,
-        PrimitiveFailure::StaleFence => DeployFailure::ClaimRejected,
-        PrimitiveFailure::NoResponder => DeployFailure::RuntimeParticipantFailed,
-        PrimitiveFailure::FreshnessUnknown => DeployFailure::StaleEvidence,
-        PrimitiveFailure::MalformedPayload => DeployFailure::InvalidManifest,
-        PrimitiveFailure::TerminalAlreadyWritten => DeployFailure::StaleEvidence,
-        PrimitiveFailure::OperationAlreadySucceeded => DeployFailure::OperationAlreadySucceeded,
-        PrimitiveFailure::OperationInProgress => DeployFailure::OperationInProgress,
-        PrimitiveFailure::OperationAlreadyFailed => DeployFailure::OperationAlreadyFailed,
-        PrimitiveFailure::OperationInterrupted => DeployFailure::Interrupted,
-    }
-}
-
-impl AttemptProductError for DeployFailure {
-    fn from_primitive_failure(error: PrimitiveFailure) -> Self {
-        map_primitive_to_deploy(error)
-    }
-
-    fn terminalization_failed(product: Self, terminalization: PrimitiveFailure) -> Self {
-        Self::AttemptTerminalizationFailed {
-            product: Box::new(product),
-            terminalization,
-        }
-    }
 }
 
 fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
@@ -381,108 +429,118 @@ mod tests {
 
     use super::*;
     use crate::acme::{Hostname, HttpsBinding};
-    use crate::operation::{
-        AttemptIssuer, AuthorityDecision, AuthorityEpoch, AuthorityPort, IdempotencyKey,
-        OperationId, PrincipalId, ScopeId,
-    };
+    use crate::domain::{DomainReady, DomainServingActivation, UsableDomainCertificate};
+    use crate::serving::{ServingActivationObservation, ServingCommitRequest};
 
     #[test]
-    fn unknown_authority_is_not_allowed() {
-        let check = AuthorityDecision::Unknown;
-
-        assert_eq!(check.epoch(), None);
-    }
-
-    #[test]
-    fn deploy_maps_replay_states_to_visible_failures() {
-        assert_eq!(
-            map_primitive_to_deploy(PrimitiveFailure::OperationInProgress),
-            DeployFailure::OperationInProgress
-        );
-        assert_eq!(
-            map_primitive_to_deploy(PrimitiveFailure::OperationAlreadyFailed),
-            DeployFailure::OperationAlreadyFailed
-        );
-        assert_eq!(
-            map_primitive_to_deploy(PrimitiveFailure::OperationAlreadySucceeded),
-            DeployFailure::OperationAlreadySucceeded
-        );
-        assert_eq!(
-            map_primitive_to_deploy(PrimitiveFailure::OperationInterrupted),
-            DeployFailure::Interrupted
-        );
-    }
-
-    #[test]
-    fn deploy_command_issue_derives_fingerprint_from_request() {
+    fn desired_state_changes_with_deploy_material_inputs() {
         let request = request();
-        let changed_route = DeployRequest {
+        let desired = DeployDesiredState::from_request(&request).expect("desired");
+
+        for changed in [
+            DeployRequest {
+                manifest: DeployManifest {
+                    route: RouteId::parse("route:admin").expect("route"),
+                    ..request.manifest.clone()
+                },
+                ..request.clone()
+            },
+            DeployRequest {
+                manifest: DeployManifest {
+                    serving_target: ServingTarget::parse("target:admin").expect("target"),
+                    ..request.manifest.clone()
+                },
+                ..request.clone()
+            },
+            DeployRequest {
+                manifest: DeployManifest {
+                    serving_generation: ServingGeneration::new(5),
+                    ..request.manifest.clone()
+                },
+                ..request.clone()
+            },
+            DeployRequest {
+                manifest: DeployManifest {
+                    workload: WorkloadId::parse("workload:admin").expect("workload"),
+                    ..request.manifest.clone()
+                },
+                ..request.clone()
+            },
+            DeployRequest {
+                manifest: DeployManifest {
+                    machine: MachineId::parse("machine:b").expect("machine"),
+                    ..request.manifest.clone()
+                },
+                ..request.clone()
+            },
+            DeployRequest {
+                manifest: DeployManifest {
+                    minimum_certificate_valid_until: UNIX_EPOCH + Duration::from_secs(7_000),
+                    ..request.manifest.clone()
+                },
+                ..request.clone()
+            },
+        ] {
+            assert_ne!(
+                desired,
+                DeployDesiredState::from_request(&changed).expect("changed desired")
+            );
+        }
+    }
+
+    #[test]
+    fn empty_diff_is_a_noop() {
+        let request = request();
+        let desired = DeployDesiredState::from_request(&request).expect("desired");
+        let ready = ready_domain(&desired);
+        let proof = serving_proof(&desired, &ready);
+        let observed = DeployObservedState::new(Some(ready), Some(receipt(&desired)), Some(proof));
+
+        let plan = DeployPlan::diff(&observed, &desired);
+
+        assert!(plan.is_noop());
+        assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
+        assert_eq!(plan.runtime, DeployPlanStep::AlreadyCurrent);
+        assert_eq!(plan.serving, DeployPlanStep::AlreadyCurrent);
+    }
+
+    #[test]
+    fn diff_keeps_deploy_changes_local_to_changed_surfaces() {
+        let request = request();
+        let desired = DeployDesiredState::from_request(&request).expect("desired");
+        let ready = ready_domain(&desired);
+        let proof = serving_proof(&desired, &ready);
+        let observed =
+            DeployObservedState::new(Some(ready.clone()), Some(receipt(&desired)), Some(proof));
+
+        let route_change = DeployDesiredState::from_request(&DeployRequest {
             manifest: DeployManifest {
                 route: RouteId::parse("route:admin").expect("route"),
                 ..request.manifest.clone()
             },
             ..request.clone()
-        };
+        })
+        .expect("route desired");
+        let plan = DeployPlan::diff(&observed, &route_change);
+        assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
+        assert_eq!(plan.runtime, DeployPlanStep::AlreadyCurrent);
+        assert_eq!(plan.serving, DeployPlanStep::Apply);
 
-        let first = DeployCommand::issue(
-            &AttemptIssuer::new(AllowAuthority),
-            issue(),
-            request.clone(),
-        )
-        .expect("first command");
-        let second =
-            DeployCommand::issue(&AttemptIssuer::new(AllowAuthority), issue(), changed_route)
-                .expect("second command");
-
-        assert_ne!(
-            first.envelope.fingerprint_for_test().payload_hash(),
-            second.envelope.fingerprint_for_test().payload_hash()
+        let workload_change = DeployDesiredState::from_request(&DeployRequest {
+            manifest: DeployManifest {
+                workload: WorkloadId::parse("workload:admin").expect("workload"),
+                ..request.manifest
+            },
+            ..request
+        })
+        .expect("workload desired");
+        let plan = DeployPlan::diff(
+            &DeployObservedState::new(Some(ready), Some(receipt(&desired)), None),
+            &workload_change,
         );
-    }
-
-    #[test]
-    fn deploy_command_issue_includes_request_deadline_in_fingerprint() {
-        let request = request();
-        let changed_deadline = DeployRequest {
-            deadline: UNIX_EPOCH + Duration::from_secs(120),
-            ..request.clone()
-        };
-
-        let first = DeployCommand::issue(&AttemptIssuer::new(AllowAuthority), issue(), request)
-            .expect("first command");
-        let second = DeployCommand::issue(
-            &AttemptIssuer::new(AllowAuthority),
-            issue(),
-            changed_deadline,
-        )
-        .expect("second command");
-
-        assert_ne!(
-            first.envelope.fingerprint_for_test().payload_hash(),
-            second.envelope.fingerprint_for_test().payload_hash()
-        );
-    }
-
-    struct AllowAuthority;
-
-    impl AuthorityPort for AllowAuthority {
-        fn decide(
-            &self,
-            _principal: &PrincipalId,
-            _scope: &ScopeId,
-        ) -> Result<AuthorityDecision, PrimitiveFailure> {
-            Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
-        }
-    }
-
-    fn issue() -> AttemptIssue {
-        AttemptIssue {
-            operation: OperationId::parse("deploy-1").expect("operation"),
-            idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
-            principal: PrincipalId::parse("node-a").expect("principal"),
-            scope: ScopeId::parse("cluster").expect("scope"),
-            deadline: UNIX_EPOCH + Duration::from_secs(60),
-        }
+        assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
+        assert_eq!(plan.runtime, DeployPlanStep::Apply);
+        assert_eq!(plan.serving, DeployPlanStep::Apply);
     }
 
     fn request() -> DeployRequest {
@@ -497,6 +555,47 @@ mod tests {
                 minimum_certificate_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
             },
             deadline: UNIX_EPOCH + Duration::from_secs(60),
+        }
+    }
+
+    fn ready_domain(desired: &DeployDesiredState) -> DomainReady {
+        let certificate = CertificateUsability {
+            hostname: desired.https.hostname.clone(),
+            not_after: UNIX_EPOCH + Duration::from_secs(7_200),
+            activation: crate::acme::CertificateActivation::Acknowledged,
+            material: crate::acme::CertificateMaterialState::PresentProtected,
+            revocation: crate::acme::RevocationFreshness::KnownFresh,
+        };
+        DomainReady::new(
+            desired.domain.clone(),
+            UsableDomainCertificate::new(&desired.domain, certificate, desired.certificate_policy)
+                .expect("usable certificate"),
+            DomainServingActivation::active(desired.serving_generation),
+        )
+    }
+
+    fn serving_proof(desired: &DeployDesiredState, ready: &DomainReady) -> ServingActivationProof {
+        let commit = ServingCommitRequest::new(
+            desired.route.clone(),
+            ready.certificate().certificate().hostname.clone(),
+            desired.serving_target.clone(),
+            desired.serving_generation,
+        );
+        ServingActivationObservation::Acknowledged {
+            route: desired.route.clone(),
+            hostname: desired.https.hostname.clone(),
+            target: desired.serving_target.clone(),
+            generation: desired.serving_generation,
+        }
+        .try_acknowledge_commit(&commit)
+        .expect("serving proof")
+    }
+
+    fn receipt(desired: &DeployDesiredState) -> ParticipantReceipt {
+        ParticipantReceipt {
+            workload: desired.workload.clone(),
+            machine: desired.machine.clone(),
+            revision: crate::runtime::RuntimeRevision::new(3),
         }
     }
 }

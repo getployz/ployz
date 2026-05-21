@@ -47,12 +47,34 @@ impl MutationContext {
         authority_epoch: crate::operation::authority::AuthorityEpoch,
         submitted_fence: Option<SubmittedFenceToken>,
     ) -> Self {
-        Self::new(
+        Self::test_authorized(
             command.operation,
             command.idempotency,
-            AuthorityContext::new(command.principal, command.scope, authority_epoch),
+            command.principal,
+            command.scope,
+            authority_epoch,
             submitted_fence,
             command.deadline,
+        )
+    }
+
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_authorized(
+        operation: OperationId,
+        idempotency: IdempotencyKey,
+        principal: PrincipalId,
+        scope: ScopeId,
+        authority_epoch: crate::operation::authority::AuthorityEpoch,
+        submitted_fence: Option<SubmittedFenceToken>,
+        deadline: SystemTime,
+    ) -> Self {
+        Self::new(
+            operation,
+            idempotency,
+            AuthorityContext::new(principal, scope, authority_epoch),
+            submitted_fence,
+            deadline,
         )
     }
 
@@ -122,15 +144,6 @@ impl AttemptSpec {
     }
 
     #[must_use]
-    pub(crate) fn field_time(mut self, key: &'static str, value: SystemTime) -> Self {
-        self.fields.push(AttemptField {
-            key,
-            value: AttemptFieldValue::Time(value),
-        });
-        self
-    }
-
-    #[must_use]
     pub(crate) fn resource(mut self, resource: impl Into<String>) -> Self {
         self.resources.push(resource.into());
         self
@@ -158,7 +171,6 @@ impl AttemptSpec {
             builder = match field.value {
                 AttemptFieldValue::String(value) => builder.field(field.key, value),
                 AttemptFieldValue::U64(value) => builder.field_u64(field.key, value),
-                AttemptFieldValue::Time(value) => builder.field_time(field.key, value),
             };
         }
         for resource in self.resources {
@@ -182,7 +194,6 @@ struct AttemptField {
 enum AttemptFieldValue {
     String(String),
     U64(u64),
-    Time(SystemTime),
 }
 
 #[cfg(test)]

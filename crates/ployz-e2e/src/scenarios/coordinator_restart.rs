@@ -1,48 +1,51 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ployz::domain::DomainStatus;
 use ployz::error::DeployFailure;
 use ployz::error::ServingFailure;
 use ployz::serving::ServingActivationObservation;
 
 use super::https_deploy::{
-    FakeOperations, activation_for, command, engine, request, usable_certificate,
+    activation_for, deploy_context, engine_with_shared_state, receipt, request, runtime_for,
+    usable_certificate,
 };
 
 #[test]
-fn retry_after_serving_checkpoint_still_requires_activation_proof() {
-    let operations = FakeOperations::default();
-    let first_attempt = engine(
+fn retry_after_missing_serving_activation_observes_activation_proof() {
+    let status = Rc::new(RefCell::new(DomainStatus::Unknown));
+    let runtime = runtime_for(receipt());
+    let serving_commits = Rc::new(RefCell::new(0));
+    let first_deploy = engine_with_shared_state(
         usable_certificate(),
         ServingActivationObservation::Unknown,
-        operations.clone(),
         Rc::new(RefCell::new(Vec::new())),
+        status.clone(),
+        runtime.clone(),
+        serving_commits.clone(),
     );
 
     assert_eq!(
-        first_attempt.deploy_https(command()),
+        first_deploy.deploy_https(&deploy_context(), request()),
         Err(DeployFailure::ServingFailed(
             ServingFailure::LiveObservationUnknown
         ))
     );
-    assert_eq!(
-        operations.terminal.borrow().as_slice(),
-        [polis::TerminalMarker::Interrupted]
-    );
 
-    let second_attempt = engine(
+    let retry_contexts = Rc::new(RefCell::new(Vec::new()));
+    let retry_deploy = engine_with_shared_state(
         usable_certificate(),
         activation_for(&request()),
-        operations.clone(),
-        Rc::new(RefCell::new(Vec::new())),
+        retry_contexts.clone(),
+        status,
+        runtime.clone(),
+        serving_commits.clone(),
     );
 
-    assert_eq!(
-        second_attempt.deploy_https(command()),
-        Err(DeployFailure::Interrupted)
-    );
-    assert_eq!(
-        operations.terminal.borrow().as_slice(),
-        [polis::TerminalMarker::Interrupted]
-    );
+    retry_deploy
+        .deploy_https(&deploy_context(), request())
+        .expect("retry observes activation");
+    assert!(retry_contexts.borrow().is_empty());
+    assert_eq!(*runtime.activations.borrow(), 1);
+    assert_eq!(*serving_commits.borrow(), 1);
 }

@@ -166,6 +166,21 @@ impl ServingActivationProof {
     }
 
     #[must_use]
+    pub fn route(&self) -> &RouteId {
+        self.checkpoint.route()
+    }
+
+    #[must_use]
+    pub fn hostname(&self) -> &Hostname {
+        self.checkpoint.hostname()
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &ServingTarget {
+        self.checkpoint.target()
+    }
+
+    #[must_use]
     pub fn generation(&self) -> ServingGeneration {
         self.checkpoint.generation()
     }
@@ -184,6 +199,13 @@ pub enum ServingActivationObservation {
 }
 
 impl ServingActivationObservation {
+    pub(crate) fn try_acknowledge_commit(
+        &self,
+        request: &ServingCommitRequest,
+    ) -> Result<ServingActivationProof, ServingFailure> {
+        self.try_acknowledge(&request.checkpoint())
+    }
+
     pub(crate) fn try_acknowledge(
         &self,
         checkpoint: &ServingActivationCheckpoint,
@@ -220,7 +242,7 @@ pub trait ServingPort {
 
     fn activation_status(
         &self,
-        checkpoint: &ServingActivationCheckpoint,
+        request: &ServingCommitRequest,
     ) -> Result<ServingActivationObservation, ServingFailure>;
 }
 
