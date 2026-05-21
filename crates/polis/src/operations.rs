@@ -39,6 +39,7 @@ pub struct RequestFingerprint {
     command: CommandKind,
     payload_hash: Vec<u8>,
     resources: Vec<FingerprintedResource>,
+    submitted_fence: Option<Box<SubmittedFenceFingerprint>>,
     authority_epoch: GrantEpoch,
 }
 
@@ -49,6 +50,7 @@ impl RequestFingerprint {
         command: CommandKind,
         payload_hash: Vec<u8>,
         resources: Vec<FingerprintedResource>,
+        submitted_fence: Option<SubmittedFenceFingerprint>,
         authority_epoch: GrantEpoch,
     ) -> Result<Self> {
         if payload_hash.is_empty() || resources.is_empty() {
@@ -63,6 +65,7 @@ impl RequestFingerprint {
             command,
             payload_hash,
             resources,
+            submitted_fence: submitted_fence.map(Box::new),
             authority_epoch,
         })
     }
@@ -93,8 +96,66 @@ impl RequestFingerprint {
     }
 
     #[must_use]
+    pub fn submitted_fence(&self) -> Option<&SubmittedFenceFingerprint> {
+        self.submitted_fence.as_deref()
+    }
+
+    #[must_use]
     pub fn authority_epoch(&self) -> GrantEpoch {
         self.authority_epoch
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SubmittedFenceFingerprint {
+    resource: String,
+    holder: String,
+    epoch: u64,
+    claim_hash: Vec<u8>,
+}
+
+impl SubmittedFenceFingerprint {
+    pub fn new(
+        resource: impl Into<String>,
+        holder: impl Into<String>,
+        epoch: u64,
+        claim_hash: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        let resource = resource.into();
+        let holder = holder.into();
+        let claim_hash = claim_hash.into();
+        if resource.trim().is_empty() || holder.trim().is_empty() || claim_hash.is_empty() {
+            return Err(Error::MalformedPayload);
+        }
+        if epoch == 0 || epoch == u64::MAX {
+            return Err(Error::MalformedPayload);
+        }
+        Ok(Self {
+            resource,
+            holder,
+            epoch,
+            claim_hash,
+        })
+    }
+
+    #[must_use]
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+
+    #[must_use]
+    pub fn holder(&self) -> &str {
+        &self.holder
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    #[must_use]
+    pub fn claim_hash(&self) -> &[u8] {
+        &self.claim_hash
     }
 }
 
@@ -367,7 +428,16 @@ mod tests {
         }
     }
 
-    fn fingerprint(payload_hash: &[u8], authority_epoch: u64) -> RequestFingerprint {
+    fn fence(epoch: u64, claim_hash: &[u8]) -> SubmittedFenceFingerprint {
+        SubmittedFenceFingerprint::new("volume:data", "node-a", epoch, claim_hash.to_vec())
+            .expect("submitted fence fingerprint")
+    }
+
+    fn fingerprint(
+        payload_hash: &[u8],
+        authority_epoch: u64,
+        submitted_fence: Option<SubmittedFenceFingerprint>,
+    ) -> RequestFingerprint {
         RequestFingerprint::new(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
@@ -377,16 +447,25 @@ mod tests {
                 FingerprintedResource::parse("route:app").expect("route"),
                 FingerprintedResource::parse("cert:app.example.com").expect("cert"),
             ],
+            submitted_fence,
             GrantEpoch::new(authority_epoch),
         )
         .expect("fingerprint")
     }
 
     fn request(payload_hash: &[u8], authority_epoch: u64) -> OperationRequest {
+        request_with_fence(payload_hash, authority_epoch, None)
+    }
+
+    fn request_with_fence(
+        payload_hash: &[u8],
+        authority_epoch: u64,
+        submitted_fence: Option<SubmittedFenceFingerprint>,
+    ) -> OperationRequest {
         OperationRequest::new(
             OperationId::parse("op-1").expect("operation id"),
             IdempotencyKey::parse("deploy-1").expect("idempotency key"),
-            fingerprint(payload_hash, authority_epoch),
+            fingerprint(payload_hash, authority_epoch, submitted_fence),
             UNIX_EPOCH + Duration::from_secs(10),
         )
     }
@@ -419,6 +498,38 @@ mod tests {
 
         assert_eq!(
             start_or_replay(&store, request(&[1, 2, 3], 8)),
+            Err(Error::Conflict)
+        );
+    }
+
+    #[test]
+    fn same_payload_with_different_submitted_fence_conflicts() {
+        let store = MemoryOperationStore::new();
+        let _started = start_or_replay(
+            &store,
+            request_with_fence(&[1, 2, 3], 7, Some(fence(3, b"claim-hash-a"))),
+        )
+        .expect("started");
+
+        assert_eq!(
+            start_or_replay(
+                &store,
+                request_with_fence(&[1, 2, 3], 7, Some(fence(4, b"claim-hash-b"))),
+            ),
+            Err(Error::Conflict)
+        );
+    }
+
+    #[test]
+    fn same_payload_with_added_submitted_fence_conflicts() {
+        let store = MemoryOperationStore::new();
+        let _started = start_or_replay(&store, request(&[1, 2, 3], 7)).expect("started");
+
+        assert_eq!(
+            start_or_replay(
+                &store,
+                request_with_fence(&[1, 2, 3], 7, Some(fence(3, b"claim-hash-a"))),
+            ),
             Err(Error::Conflict)
         );
     }

@@ -48,12 +48,18 @@ where
             .map(|resource| resource.into_polis())
             .collect::<polis::Result<Vec<_>>>()
             .map_err(map_polis_to_primitive)?;
+        let submitted_fence_fingerprint = intent
+            .submitted_fence
+            .as_ref()
+            .map(crate::operation::SubmittedFenceToken::fingerprint)
+            .transpose()?;
         let fingerprint = polis::RequestFingerprint::new(
             actor,
             scope,
             command,
             intent.payload_hash,
             resources,
+            submitted_fence_fingerprint,
             polis::GrantEpoch::new(epoch.value()),
         )
         .map_err(map_polis_to_primitive)?;
@@ -99,27 +105,38 @@ mod tests {
 
     use super::*;
     use crate::operation::{
-        AuthorityDecision, AuthorityEpoch, CommandKind, FingerprintedResource, IdempotencyKey,
-        OperationId, PrincipalId, ScopeId,
+        AuthorityDecision, AuthorityEpoch, ClaimHash, CommandKind, FenceEpoch,
+        FingerprintedResource, IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId,
+        SubmittedFenceToken,
     };
 
     enum TestCommand {}
 
-    #[test]
-    fn command_issuer_builds_command_envelope_from_allowed_authority() {
-        struct AllowAuthority;
+    struct AllowAuthority;
 
-        impl AuthorityPort for AllowAuthority {
-            fn decide(
-                &self,
-                _principal: &PrincipalId,
-                _scope: &ScopeId,
-            ) -> Result<AuthorityDecision, PrimitiveFailure> {
-                Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
-            }
+    impl AuthorityPort for AllowAuthority {
+        fn decide(
+            &self,
+            _principal: &PrincipalId,
+            _scope: &ScopeId,
+        ) -> Result<AuthorityDecision, PrimitiveFailure> {
+            Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
         }
+    }
 
-        let envelope = CommandIssuer::new(AllowAuthority)
+    fn fence(epoch: u64, claim_hash: &str) -> SubmittedFenceToken {
+        SubmittedFenceToken {
+            resource: ResourceId::parse("resource:test").expect("resource"),
+            holder: PrincipalId::parse("node-a").expect("holder"),
+            epoch: FenceEpoch::new(epoch).expect("epoch"),
+            claim_hash: ClaimHash::parse(claim_hash).expect("claim hash"),
+        }
+    }
+
+    fn issue_for_fence(
+        submitted_fence: Option<SubmittedFenceToken>,
+    ) -> CommandEnvelope<TestCommand> {
+        CommandIssuer::new(AllowAuthority)
             .issue::<TestCommand>(MutationIntent {
                 operation: OperationId::parse("op-1").expect("operation"),
                 idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
@@ -128,14 +145,57 @@ mod tests {
                 command: CommandKind::parse("test").expect("command"),
                 payload_hash: vec![1],
                 resources: vec![FingerprintedResource::parse("resource:test").expect("resource")],
-                submitted_fence: None,
+                submitted_fence,
                 deadline: SystemTime::UNIX_EPOCH,
             })
-            .expect("envelope");
+            .expect("envelope")
+    }
+
+    #[test]
+    fn command_issuer_builds_command_envelope_from_allowed_authority() {
+        let envelope = issue_for_fence(None);
 
         assert_eq!(
             envelope.context().authority().epoch(),
             AuthorityEpoch::new(7)
+        );
+    }
+
+    #[test]
+    fn command_issuer_includes_submitted_fence_in_fingerprint() {
+        let envelope = issue_for_fence(Some(fence(3, "claim-hash-a")));
+
+        let fingerprint = envelope
+            .operation_request
+            .fingerprint()
+            .submitted_fence()
+            .expect("submitted fence");
+
+        assert_eq!(fingerprint.resource(), "resource:test");
+        assert_eq!(fingerprint.holder(), "node-a");
+        assert_eq!(fingerprint.epoch(), 3);
+        assert_eq!(fingerprint.claim_hash(), b"claim-hash-a");
+    }
+
+    #[test]
+    fn command_issuer_fingerprint_distinguishes_missing_and_submitted_fence() {
+        let without_fence = issue_for_fence(None);
+        let with_fence = issue_for_fence(Some(fence(3, "claim-hash-a")));
+
+        assert_ne!(
+            without_fence.operation_request.fingerprint(),
+            with_fence.operation_request.fingerprint()
+        );
+    }
+
+    #[test]
+    fn command_issuer_fingerprint_distinguishes_submitted_fences() {
+        let first = issue_for_fence(Some(fence(3, "claim-hash-a")));
+        let second = issue_for_fence(Some(fence(4, "claim-hash-b")));
+
+        assert_ne!(
+            first.operation_request.fingerprint(),
+            second.operation_request.fingerprint()
         );
     }
 }
