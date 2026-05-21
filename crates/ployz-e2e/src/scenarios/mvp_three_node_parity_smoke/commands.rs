@@ -1,10 +1,16 @@
 use crate::error::{Error, Result};
 use crate::runner::ScenarioRun;
+use crate::support::wait_until;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 const STATE_DIR: &str = "/var/lib/ployz-mvp/node";
+const DAEMON_CONTROL: &str = "/var/lib/ployz-mvp/node/control/daemon.sock";
+const DAEMON_LOG: &str = "/tmp/mvp-node-daemon.log";
 const ISLAND: &str = "prod";
 const P2PANDA_PORT: u16 = 41_001;
+const DAEMON_RUN_FOR_MS: u64 = 60_000;
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MvpBootstrapEvidence {
@@ -15,6 +21,16 @@ pub(crate) struct MvpBootstrapEvidence {
     pub(crate) p2panda_advertise: String,
     pub(crate) wireguard_overlay_ip: String,
     pub(crate) container_subnet: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MvpDaemonEvidence {
+    pub(crate) harness_node: &'static str,
+    pub(crate) mvp_node_id: &'static str,
+    pub(crate) pid: String,
+    pub(crate) imported_batches: u64,
+    pub(crate) imported_operations: u64,
+    pub(crate) node_agent_handlers: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +44,15 @@ struct BootstrapIdentity {
     p2panda_advertise: String,
     wireguard_overlay_ip: String,
     container_subnet: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonStatusResponse {
+    status: String,
+    node: String,
+    imported_batches: u64,
+    imported_operations: u64,
+    node_agent_handlers: usize,
 }
 
 pub(crate) fn bootstrap_cluster(run: &ScenarioRun) -> Result<Vec<MvpBootstrapEvidence>> {
@@ -51,6 +76,21 @@ pub(crate) fn bootstrap_cluster(run: &ScenarioRun) -> Result<Vec<MvpBootstrapEvi
     }
 
     Ok(evidence)
+}
+
+pub(crate) fn start_cluster_daemons(run: &ScenarioRun) -> Result<Vec<MvpDaemonEvidence>> {
+    let nodes = [
+        MvpE2eNode::new(run, "founder", "node-a")?,
+        MvpE2eNode::new(run, "peer", "node-b")?,
+        MvpE2eNode::new(run, "edge", "node-c")?,
+    ];
+    for node in &nodes {
+        node.start_daemon(run)?;
+    }
+    nodes
+        .iter()
+        .map(|node| node.wait_daemon_ready(run))
+        .collect()
 }
 
 struct MvpE2eNode {
@@ -146,6 +186,78 @@ impl MvpE2eNode {
             &format!("mvp-node status --state {STATE_DIR}"),
         )?;
         Ok(())
+    }
+
+    fn start_daemon(&self, run: &ScenarioRun) -> Result<()> {
+        run.ssh_expect_ok_name(
+            self.harness_node,
+            &format!(
+                "rm -f {control} {log}; \
+                 nohup mvp-node daemon --state {state} --run-for-ms {run_for_ms} \
+                 --control {control} --linux-wireguard-ifname ployz-mvp \
+                 --linux-wireguard-listen-port 51820 --runtime docker \
+                 --image ployz-e2e-preload/http-smoke:latest --service-port 8080 \
+                 > {log} 2>&1 < /dev/null & echo $! > /tmp/mvp-node-daemon.pid",
+                control = DAEMON_CONTROL,
+                log = DAEMON_LOG,
+                state = STATE_DIR,
+                run_for_ms = DAEMON_RUN_FOR_MS
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn wait_daemon_ready(&self, run: &ScenarioRun) -> Result<MvpDaemonEvidence> {
+        let mut last_output = String::new();
+        let mut last_status = None;
+        wait_until(DAEMON_READY_TIMEOUT, || {
+            let output = run.ssh_run_name(
+                self.harness_node,
+                &format!("mvp-node daemon-status --control {DAEMON_CONTROL}"),
+            )?;
+            last_output = output.combined();
+            if !output.status.success() {
+                return Ok(false);
+            }
+            let status: DaemonStatusResponse =
+                serde_json::from_str(output.stdout.trim()).map_err(|error| {
+                    Error::Message(format!(
+                        "decode daemon status on {}: {error}: {}",
+                        self.harness_node, output.stdout
+                    ))
+                })?;
+            let ready = status.status == "ready"
+                && status.node == self.mvp_node_id
+                && status.node_agent_handlers > 0
+                && status.imported_operations > 0;
+            last_status = Some(status);
+            Ok(ready)
+        })
+        .map_err(|error| {
+            Error::Message(format!(
+                "MVP daemon on {} did not become ready: {error}\nlast output:\n{}",
+                self.harness_node, last_output
+            ))
+        })?;
+        let status = last_status.ok_or_else(|| {
+            Error::Message(format!(
+                "MVP daemon on {} did not report status",
+                self.harness_node
+            ))
+        })?;
+        let pid = run
+            .ssh_expect_ok_name(self.harness_node, "cat /tmp/mvp-node-daemon.pid")?
+            .stdout
+            .trim()
+            .to_string();
+        Ok(MvpDaemonEvidence {
+            harness_node: self.harness_node,
+            mvp_node_id: self.mvp_node_id,
+            pid,
+            imported_batches: status.imported_batches,
+            imported_operations: status.imported_operations,
+            node_agent_handlers: status.node_agent_handlers,
+        })
     }
 }
 
