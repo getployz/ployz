@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     IrohEndpointId, MeshError, MeshNode, MeshResult, WireGuardAppliedSnapshot,
-    WireGuardOverlayCidr, WireGuardOverlayIp, WireGuardPublicKey,
+    WireGuardOverlayIp, WireGuardPublicKey, derive_container_subnet,
 };
 
 pub const FULL_MESH_NODE_LIMIT: usize = 32;
@@ -16,7 +16,7 @@ pub const FULL_MESH_NODE_LIMIT: usize = 32;
 pub struct WireGuardPeer {
     pub node_id: NodeId,
     pub public_key: WireGuardPublicKey,
-    pub allowed_ip: WireGuardOverlayCidr,
+    pub allowed_ips: Vec<String>,
     pub endpoint: IrohEndpointId,
 }
 
@@ -54,10 +54,14 @@ pub fn plan_full_mesh(
         let Ok(mesh_node) = MeshNode::from_projection(node) else {
             continue;
         };
+        let container_subnet = derive_container_subnet(&state.island, &mesh_node.node_id);
         peers.push(WireGuardPeer {
             node_id: mesh_node.node_id,
             public_key: mesh_node.wg_public_key,
-            allowed_ip: mesh_node.overlay_ip.allowed_ip_cidr(),
+            allowed_ips: vec![
+                mesh_node.overlay_ip.allowed_ip_cidr().to_string(),
+                container_subnet.wireguard_allowed_cidr(),
+            ],
             endpoint: mesh_node.iroh_endpoint_id,
         });
     }
@@ -125,7 +129,8 @@ mod tests {
         assert_eq!(plan.peers.len(), 2);
         assert_eq!(plan.peers[0].node_id, NodeId::new("node-0"));
         assert_eq!(plan.peers[1].node_id, NodeId::new("node-2"));
-        assert_eq!(plan.peers[0].allowed_ip.to_string(), "fd00::/128");
+        assert_eq!(plan.peers[0].allowed_ips[0], "fd00::/128");
+        assert!(plan.peers[0].allowed_ips[1].starts_with("10.210."));
     }
 
     #[test]

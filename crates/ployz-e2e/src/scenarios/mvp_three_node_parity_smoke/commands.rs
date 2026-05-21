@@ -11,6 +11,12 @@ const ISLAND: &str = "prod";
 const P2PANDA_PORT: u16 = 41_001;
 const DAEMON_RUN_FOR_MS: u64 = 60_000;
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(45);
+const DATA_PLANE_WAIT_TIMEOUT: Duration = Duration::from_secs(90);
+const GATEWAY_PORT: u16 = 8_088;
+const GATEWAY_CONTROL: &str = "/var/lib/ployz-mvp/node/control/gateway.sock";
+const GATEWAY_LOG: &str = "/tmp/mvp-node-gateway.log";
+const GATEWAY_SNAPSHOT: &str = "/var/lib/ployz-mvp/node/gateway.snapshot";
+const RUNTIME_COMMAND: &str = "mkdir -p /www && echo ok-$PLOYZ_SERVICE-$PLOYZ_REVISION >/www/index.html && httpd -f -p 8080 -h /www";
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MvpBootstrapEvidence {
@@ -33,6 +39,24 @@ pub(crate) struct MvpDaemonEvidence {
     pub(crate) node_agent_handlers: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MvpDeployEvidence {
+    pub(crate) service: &'static str,
+    pub(crate) target_node: &'static str,
+    pub(crate) deploy_id: &'static str,
+    pub(crate) hostname: &'static str,
+    pub(crate) active_backends: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MvpGatewayHttpEvidence {
+    pub(crate) service: &'static str,
+    pub(crate) gateway_node: &'static str,
+    pub(crate) hostname: &'static str,
+    pub(crate) expected_body: &'static str,
+    pub(crate) body: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct BootstrapResponse {
     identity: BootstrapIdentity,
@@ -53,6 +77,11 @@ struct DaemonStatusResponse {
     imported_batches: u64,
     imported_operations: u64,
     node_agent_handlers: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeployResponse {
+    active_backends: Vec<String>,
 }
 
 pub(crate) fn bootstrap_cluster(run: &ScenarioRun) -> Result<Vec<MvpBootstrapEvidence>> {
@@ -91,6 +120,126 @@ pub(crate) fn start_cluster_daemons(run: &ScenarioRun) -> Result<Vec<MvpDaemonEv
         .iter()
         .map(|node| node.wait_daemon_ready(run))
         .collect()
+}
+
+pub(crate) fn deploy_web_and_api(run: &ScenarioRun) -> Result<Vec<MvpDeployEvidence>> {
+    [
+        ("web", "node-a", "deploy-web", "web.example.test"),
+        ("api", "node-b", "deploy-api", "api.example.test"),
+    ]
+    .into_iter()
+    .map(|(service, target_node, deploy_id, hostname)| {
+        let output = run.ssh_expect_ok_name(
+            "founder",
+            &format!(
+                "mvp-node deploy --control {DAEMON_CONTROL} --target-node {target_node} \
+                 --deploy-id {deploy_id} --service {service} --revision rev-1 --hostname {hostname}"
+            ),
+        )?;
+        let response: DeployResponse =
+            serde_json::from_str(output.stdout.trim()).map_err(|error| {
+                Error::Message(format!(
+                    "decode MVP deploy response for {service}: {error}: {}",
+                    output.stdout
+                ))
+            })?;
+        if response
+            .active_backends
+            .iter()
+            .any(|backend| backend.starts_with(&format!("{target_node}@127.")))
+        {
+            return Err(Error::Message(format!(
+                "{service} deploy reported loopback backend: {:?}",
+                response.active_backends
+            )));
+        }
+        if response
+            .active_backends
+            .iter()
+            .all(|backend| !backend.starts_with(&format!("{target_node}@10.210.")))
+        {
+            return Err(Error::Message(format!(
+                "{service} deploy did not report a container-subnet backend: {:?}",
+                response.active_backends
+            )));
+        }
+        Ok(MvpDeployEvidence {
+            service,
+            target_node,
+            deploy_id,
+            hostname,
+            active_backends: response.active_backends,
+        })
+    })
+    .collect()
+}
+
+pub(crate) fn verify_gateway_http(run: &ScenarioRun) -> Result<Vec<MvpGatewayHttpEvidence>> {
+    for node in ["founder", "peer", "edge"] {
+        wait_gateway_snapshot_hosts(run, node, &["web.example.test", "api.example.test"])?;
+        start_gateway(run, node)?;
+    }
+    [
+        ("web", "peer", "web.example.test", "ok-web-rev-1"),
+        ("web", "edge", "web.example.test", "ok-web-rev-1"),
+        ("api", "founder", "api.example.test", "ok-api-rev-1"),
+        ("api", "edge", "api.example.test", "ok-api-rev-1"),
+    ]
+    .into_iter()
+    .map(|(service, gateway_node, hostname, expected_body)| {
+        let body = wait_gateway_body(run, gateway_node, hostname, expected_body)?;
+        Ok(MvpGatewayHttpEvidence {
+            service,
+            gateway_node,
+            hostname,
+            expected_body,
+            body,
+        })
+    })
+    .collect()
+}
+
+fn wait_gateway_snapshot_hosts(
+    run: &ScenarioRun,
+    node: &'static str,
+    expected_hosts: &[&str],
+) -> Result<()> {
+    let mut last_output = String::new();
+    wait_until(DATA_PLANE_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(node, &format!("cat {GATEWAY_SNAPSHOT}"))?;
+        last_output = output.combined();
+        if !output.status.success() {
+            return Ok(false);
+        }
+        Ok(snapshot_contains_hosts(&output.stdout, expected_hosts))
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "gateway snapshot on {node} did not contain hosts {:?}: {error}\nlast output:\n{last_output}",
+            expected_hosts
+        ))
+    })
+}
+
+fn snapshot_contains_hosts(snapshot: &str, expected_hosts: &[&str]) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(snapshot) else {
+        return false;
+    };
+    expected_hosts.iter().all(|expected| {
+        value
+            .get("routes")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|route| {
+                route
+                    .get("hostnames")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .any(|host| host.as_str() == Some(*expected))
+    })
 }
 
 struct MvpE2eNode {
@@ -197,11 +346,13 @@ impl MvpE2eNode {
                  --control {control} --linux-wireguard-ifname ployz-mvp \
                  --linux-wireguard-listen-port 51820 --runtime docker \
                  --image ployz-e2e-preload/http-smoke:latest --service-port 8080 \
+                 --container-command {runtime_command} \
                  > {log} 2>&1 < /dev/null & echo $! > /tmp/mvp-node-daemon.pid",
                 control = DAEMON_CONTROL,
                 log = DAEMON_LOG,
                 state = STATE_DIR,
-                run_for_ms = DAEMON_RUN_FOR_MS
+                run_for_ms = DAEMON_RUN_FOR_MS,
+                runtime_command = shell_quote(RUNTIME_COMMAND)
             ),
         )?;
         Ok(())
@@ -261,16 +412,77 @@ impl MvpE2eNode {
     }
 }
 
+fn start_gateway(run: &ScenarioRun, node: &'static str) -> Result<()> {
+    run.ssh_expect_ok_name(
+        node,
+        &format!(
+            "rm -f {control} {log}; \
+             nohup mvp-node gateway --state {state} --listen 0.0.0.0:{port} \
+             --control {control} > {log} 2>&1 < /dev/null & echo $! > /tmp/mvp-node-gateway.pid",
+            control = GATEWAY_CONTROL,
+            log = GATEWAY_LOG,
+            state = STATE_DIR,
+            port = GATEWAY_PORT
+        ),
+    )?;
+    Ok(())
+}
+
+fn wait_gateway_body(
+    run: &ScenarioRun,
+    gateway_node: &'static str,
+    hostname: &'static str,
+    expected_body: &'static str,
+) -> Result<String> {
+    let command = format!(
+        "curl -fsS -H {} http://127.0.0.1:{GATEWAY_PORT}/",
+        shell_quote(&format!("Host: {hostname}"))
+    );
+    let mut last_output = String::new();
+    let mut body = String::new();
+    wait_until(DATA_PLANE_WAIT_TIMEOUT, || {
+        let output = run.ssh_run_name(gateway_node, &command)?;
+        last_output = output.combined();
+        body = output.stdout.trim().to_string();
+        Ok(output.status.success() && body == expected_body)
+    })
+    .map_err(|error| {
+        Error::Message(format!(
+            "gateway {gateway_node} did not serve {hostname} body {expected_body}: {error}\nlast output:\n{last_output}"
+        ))
+    })?;
+    Ok(body)
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use super::{shell_quote, snapshot_contains_hosts};
 
     #[test]
     fn shell_quote_preserves_single_quotes() {
         assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
+    }
+
+    #[test]
+    fn snapshot_host_probe_requires_all_hosts() {
+        let snapshot = r#"{
+            "routes": [
+                { "hostnames": ["web.example.test"] },
+                { "hostnames": ["api.example.test"] }
+            ]
+        }"#;
+
+        assert!(snapshot_contains_hosts(
+            snapshot,
+            &["web.example.test", "api.example.test"]
+        ));
+        assert!(!snapshot_contains_hosts(
+            snapshot,
+            &["web.example.test", "echo.example.test"]
+        ));
     }
 }

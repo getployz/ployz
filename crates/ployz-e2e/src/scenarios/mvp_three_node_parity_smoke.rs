@@ -12,6 +12,8 @@ struct MvpParityPayloadReport {
     nodes: Vec<MvpNodeInstallEvidence>,
     bootstrap: Vec<commands::MvpBootstrapEvidence>,
     daemons: Vec<commands::MvpDaemonEvidence>,
+    deploys: Vec<commands::MvpDeployEvidence>,
+    gateway_http: Vec<commands::MvpGatewayHttpEvidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +35,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     }
     let bootstrap = commands::bootstrap_cluster(run)?;
     let daemons = commands::start_cluster_daemons(run)?;
+    let deploys = commands::deploy_web_and_api(run)?;
+    let gateway_http = commands::verify_gateway_http(run)?;
     write_report(
         run,
         &MvpParityPayloadReport {
@@ -40,6 +44,8 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             nodes,
             bootstrap,
             daemons,
+            deploys,
+            gateway_http,
         },
     )
 }

@@ -16,6 +16,11 @@ const CONTAINER_SUBNET_COUNT: u32 = 1 << (CONTAINER_SUBNET_PREFIX_LEN - cluster_
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContainerSubnet(Ipv4Net);
 
+#[must_use]
+pub fn container_cluster_cidr() -> &'static str {
+    CONTAINER_CLUSTER
+}
+
 impl ContainerSubnet {
     pub fn new(value: Ipv4Net) -> MeshResult<Self> {
         if value.prefix_len() != CONTAINER_SUBNET_PREFIX_LEN {

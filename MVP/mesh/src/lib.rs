@@ -12,7 +12,8 @@ mod wireguard_linux;
 
 pub use actor::{WireGuardActorHandle, WireGuardActorStatus};
 pub use container::{
-    ContainerIp, ContainerSubnet, derive_container_subnet, derive_container_subnet_plan,
+    ContainerIp, ContainerSubnet, container_cluster_cidr, derive_container_subnet,
+    derive_container_subnet_plan,
 };
 pub use domain::{
     IrohEndpointId, MachineInvite, MeshNode, WireGuardOverlayCidr, WireGuardOverlayIp,
