@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ployz::error::DeployFailure;
-use ployz::operation::TerminalMarker;
 use ployz::serving::{ServingActivationObservation, ServingGeneration};
 
 use super::https_deploy::{FakeOperations, command, engine, request, usable_certificate};
@@ -23,7 +22,7 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
     );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
-        [TerminalMarker::Failed(Vec::new())]
+        [polis::TerminalMarker::Failed(Vec::new())]
     );
 
     let second_attempt = engine(
@@ -41,8 +40,8 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
     assert_eq!(
         operations.terminal.borrow().as_slice(),
         [
-            TerminalMarker::Failed(Vec::new()),
-            TerminalMarker::Succeeded
+            polis::TerminalMarker::Failed(Vec::new()),
+            polis::TerminalMarker::Succeeded
         ]
     );
 }
