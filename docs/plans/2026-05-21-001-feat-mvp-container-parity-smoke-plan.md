@@ -343,16 +343,17 @@ U10 --> U11
   bind/advertise endpoints; the Docker E2E smoke bootstraps, joins, admits,
   and status-checks three installed `mvp-node` binaries across three separate
   E2E containers with non-localhost advertisements.
+- Daemon convergence slice: split membership types out of the
+  `MVP/node/src/membership.rs` hotspot, then extended the Docker E2E smoke to
+  start MVP daemons on all three containers and require remote p2panda import
+  evidence from every node before passing.
 
 ### Next Slice
 
-Before adding role lifecycle and traffic probes, split the remaining
-`MVP/node/src/membership.rs` hotspot so daemon/fact-node plumbing and
-membership token/admission behavior have separate owners. Then extend
-`mvp_three_node_parity_smoke` to start the MVP daemon on all three containers
-through product commands, wait for cross-container p2panda fact convergence,
-and record daemon readiness evidence. This next slice is still not final
-parity: overlay HTTP, DNS, ACME, update/drain, and restart remain separate
+Add the first real data-plane probe slice: deploy `web` to `node-a` and `api`
+to `node-b` through daemon control from the Docker E2E scenario, then verify
+non-owner gateway-to-backend HTTP crosses container boundaries. This next slice
+is still not final parity: DNS, ACME, update/drain, and restart remain separate
 gates.
 
 ### U1. Split The MVP CLI Binary By Command

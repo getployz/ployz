@@ -11,6 +11,7 @@ struct MvpParityPayloadReport {
     scenario: &'static str,
     nodes: Vec<MvpNodeInstallEvidence>,
     bootstrap: Vec<commands::MvpBootstrapEvidence>,
+    daemons: Vec<commands::MvpDaemonEvidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,12 +32,14 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
         });
     }
     let bootstrap = commands::bootstrap_cluster(run)?;
+    let daemons = commands::start_cluster_daemons(run)?;
     write_report(
         run,
         &MvpParityPayloadReport {
             scenario: "mvp_three_node_parity_smoke",
             nodes,
             bootstrap,
+            daemons,
         },
     )
 }
