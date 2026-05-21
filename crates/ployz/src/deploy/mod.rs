@@ -12,8 +12,9 @@ use crate::domain::{
 };
 use crate::error::{DeployFailure, PrimitiveFailure};
 use crate::operation::{
-    AuthorityPort, CommandBackend, CommandContext, CommandEnvelope, CommandIssue, CommandIssuer,
-    CommandKind, CommandPayload, FingerprintedResource, MutationContext, MutationIntent,
+    AuthorityPort, CommandBackend, CommandContext, CommandEnvelope, CommandFailureDisposition,
+    CommandIssue, CommandIssuer, CommandKind, CommandPayload, FingerprintedResource,
+    MutationContext, MutationIntent,
 };
 use crate::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
@@ -132,9 +133,10 @@ where
         command: IssuedDeployCommand,
     ) -> Result<DeployOutcome, DeployFailure> {
         let IssuedDeployCommand { envelope, request } = command;
-        self.commands.run_with_replay(
+        self.commands.run_with_replay_and_failure_disposition(
             envelope,
             map_primitive_to_deploy,
+            CommandFailureDisposition::Interrupted,
             |context| {
                 let domain = self.ensure_domain_ready(context, &request)?;
                 let runtime = self.activate_runtime(context, &request)?;
@@ -346,9 +348,11 @@ fn map_primitive_to_deploy(error: PrimitiveFailure) -> DeployFailure {
         PrimitiveFailure::NoResponder => DeployFailure::RuntimeParticipantFailed,
         PrimitiveFailure::FreshnessUnknown => DeployFailure::StaleEvidence,
         PrimitiveFailure::MalformedPayload => DeployFailure::InvalidManifest,
-        PrimitiveFailure::TerminalAlreadyWritten | PrimitiveFailure::ReplayUnavailable => {
-            DeployFailure::StaleEvidence
-        }
+        PrimitiveFailure::TerminalAlreadyWritten => DeployFailure::StaleEvidence,
+        PrimitiveFailure::OperationAlreadySucceeded => DeployFailure::OperationAlreadySucceeded,
+        PrimitiveFailure::OperationInProgress => DeployFailure::OperationInProgress,
+        PrimitiveFailure::OperationAlreadyFailed => DeployFailure::OperationAlreadyFailed,
+        PrimitiveFailure::OperationInterrupted => DeployFailure::Interrupted,
     }
 }
 
@@ -385,6 +389,26 @@ mod tests {
         let check = AuthorityDecision::Unknown;
 
         assert_eq!(check.epoch(), None);
+    }
+
+    #[test]
+    fn deploy_maps_replay_states_to_visible_failures() {
+        assert_eq!(
+            map_primitive_to_deploy(PrimitiveFailure::OperationInProgress),
+            DeployFailure::OperationInProgress
+        );
+        assert_eq!(
+            map_primitive_to_deploy(PrimitiveFailure::OperationAlreadyFailed),
+            DeployFailure::OperationAlreadyFailed
+        );
+        assert_eq!(
+            map_primitive_to_deploy(PrimitiveFailure::OperationAlreadySucceeded),
+            DeployFailure::OperationAlreadySucceeded
+        );
+        assert_eq!(
+            map_primitive_to_deploy(PrimitiveFailure::OperationInterrupted),
+            DeployFailure::Interrupted
+        );
     }
 
     #[test]

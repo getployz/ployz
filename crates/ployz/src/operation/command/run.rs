@@ -1,6 +1,8 @@
 use std::time::SystemTime;
 
-use polis::{EvidenceKind, OperationBackend, OperationEvidence, TerminalMarker};
+use polis::{
+    EvidenceKind, OperationBackend, OperationEvidence, OperationReplayStatus, TerminalMarker,
+};
 
 use crate::error::PrimitiveFailure;
 use crate::operation::command::issue::CommandEnvelope;
@@ -95,7 +97,11 @@ impl CheckpointField {
     }
 }
 
-pub trait CommandBackend {
+mod sealed {
+    pub trait Sealed {}
+}
+
+pub trait CommandBackend: sealed::Sealed {
     fn run<C, T, E, F>(
         &self,
         envelope: CommandEnvelope<C>,
@@ -115,6 +121,34 @@ pub trait CommandBackend {
     where
         F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
         R: FnOnce(&MutationContext) -> Result<T, E>;
+
+    fn run_with_replay_and_failure_disposition<C, T, E, F, R>(
+        &self,
+        envelope: CommandEnvelope<C>,
+        map_primitive: fn(PrimitiveFailure) -> E,
+        failure_disposition: CommandFailureDisposition,
+        work: F,
+        verify_replayed_success: R,
+    ) -> Result<T, E>
+    where
+        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        R: FnOnce(&MutationContext) -> Result<T, E>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandFailureDisposition {
+    Failed,
+    Interrupted,
+}
+
+impl CommandFailureDisposition {
+    #[must_use]
+    fn terminal_marker(self) -> TerminalMarker {
+        match self {
+            Self::Failed => TerminalMarker::Failed(Vec::new()),
+            Self::Interrupted => TerminalMarker::Interrupted,
+        }
+    }
 }
 
 pub struct CommandRunner<O> {
@@ -142,7 +176,7 @@ where
         F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
     {
         self.run_with_replay(envelope, map_primitive, work, |_replay| {
-            Err(map_primitive(PrimitiveFailure::ReplayUnavailable))
+            Err(map_primitive(PrimitiveFailure::OperationAlreadySucceeded))
         })
     }
 
@@ -157,6 +191,27 @@ where
         F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
         R: FnOnce(&MutationContext) -> Result<T, E>,
     {
+        self.run_with_replay_and_failure_disposition(
+            envelope,
+            map_primitive,
+            CommandFailureDisposition::Failed,
+            work,
+            verify_replayed_success,
+        )
+    }
+
+    fn run_with_replay_and_failure_disposition<C, T, E, F, R>(
+        &self,
+        envelope: CommandEnvelope<C>,
+        map_primitive: fn(PrimitiveFailure) -> E,
+        failure_disposition: CommandFailureDisposition,
+        work: F,
+        verify_replayed_success: R,
+    ) -> Result<T, E>
+    where
+        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        R: FnOnce(&MutationContext) -> Result<T, E>,
+    {
         let mutation = envelope.context().clone();
         let start = polis::start_or_replay(&self.operations, envelope.operation_request)
             .map_err(map_polis_to_primitive)
@@ -164,12 +219,18 @@ where
 
         let operation = match start {
             polis::OperationStart::Started(operation) => operation,
-            polis::OperationStart::Replayed(replay) => {
-                if replay.terminal() == Some(&TerminalMarker::Succeeded) {
-                    return verify_replayed_success(&mutation);
+            polis::OperationStart::Replayed(replay) => match replay.status() {
+                OperationReplayStatus::Succeeded => return verify_replayed_success(&mutation),
+                OperationReplayStatus::Open => {
+                    return Err(map_primitive(PrimitiveFailure::OperationInProgress));
                 }
-                return Err(map_primitive(PrimitiveFailure::ReplayUnavailable));
-            }
+                OperationReplayStatus::Failed(_) => {
+                    return Err(map_primitive(PrimitiveFailure::OperationAlreadyFailed));
+                }
+                OperationReplayStatus::Interrupted => {
+                    return Err(map_primitive(PrimitiveFailure::OperationInterrupted));
+                }
+            },
         };
 
         let context = CommandContext::new(mutation, operation, &self.operations);
@@ -189,13 +250,15 @@ where
                 let _record_failed = polis::close(
                     &self.operations,
                     context.operation,
-                    TerminalMarker::Failed(Vec::new()),
+                    failure_disposition.terminal_marker(),
                 );
                 Err(error)
             }
         }
     }
 }
+
+impl<O> sealed::Sealed for CommandRunner<O> where O: OperationBackend {}
 
 fn record_operation(
     operations: &dyn OperationBackend,
@@ -319,7 +382,7 @@ mod tests {
             |_context| panic!("replayed commands should not run product work"),
         );
 
-        assert_eq!(result, Err(PrimitiveFailure::ReplayUnavailable));
+        assert_eq!(result, Err(PrimitiveFailure::OperationInProgress));
         assert!(operations.evidence.borrow().is_empty());
         assert!(operations.terminal.borrow().is_empty());
     }
@@ -350,11 +413,17 @@ mod tests {
     }
 
     #[test]
-    fn command_runner_non_success_replay_never_calls_product_verifier() {
-        for terminal in [
-            None,
-            Some(TerminalMarker::Failed(Vec::new())),
-            Some(TerminalMarker::Interrupted),
+    fn command_runner_non_success_replay_returns_explicit_state_without_verifying() {
+        for (terminal, expected) in [
+            (None, PrimitiveFailure::OperationInProgress),
+            (
+                Some(TerminalMarker::Failed(Vec::new())),
+                PrimitiveFailure::OperationAlreadyFailed,
+            ),
+            (
+                Some(TerminalMarker::Interrupted),
+                PrimitiveFailure::OperationInterrupted,
+            ),
         ] {
             let operations = FakeOperations {
                 replay: Some(terminal),
@@ -371,7 +440,7 @@ mod tests {
                 |_mutation| panic!("only terminal success replay should verify"),
             );
 
-            assert_eq!(result, Err(PrimitiveFailure::ReplayUnavailable));
+            assert_eq!(result, Err(expected));
             assert!(operations.evidence.borrow().is_empty());
             assert!(operations.terminal.borrow().is_empty());
         }
@@ -396,6 +465,28 @@ mod tests {
             [TerminalMarker::Failed(Vec::new())]
         );
         assert!(operations.evidence.borrow().is_empty());
+    }
+
+    #[test]
+    fn command_runner_can_terminalize_failure_as_interrupted() {
+        let operations = FakeOperations::default();
+        let runner = CommandRunner::new(operations.clone());
+
+        let envelope: CommandEnvelope<TestCommand> =
+            CommandEnvelope::new(context(), operation_request());
+        let result = runner.run_with_replay_and_failure_disposition(
+            envelope,
+            |failure| failure,
+            CommandFailureDisposition::Interrupted,
+            |_context| Err::<(), _>(PrimitiveFailure::Timeout),
+            |_mutation| panic!("fresh work should not replay"),
+        );
+
+        assert_eq!(result, Err(PrimitiveFailure::Timeout));
+        assert_eq!(
+            operations.terminal.borrow().as_slice(),
+            [TerminalMarker::Interrupted]
+        );
     }
 
     #[test]

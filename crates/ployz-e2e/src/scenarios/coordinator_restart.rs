@@ -27,7 +27,7 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
     );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
-        [polis::TerminalMarker::Failed(Vec::new())]
+        [polis::TerminalMarker::Interrupted]
     );
 
     let second_attempt = engine(
@@ -37,14 +37,12 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
         Rc::new(RefCell::new(Vec::new())),
     );
 
-    second_attempt
-        .deploy_https(command())
-        .expect("retry verifies activation before success");
+    assert_eq!(
+        second_attempt.deploy_https(command()),
+        Err(DeployFailure::Interrupted)
+    );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
-        [
-            polis::TerminalMarker::Failed(Vec::new()),
-            polis::TerminalMarker::Succeeded
-        ]
+        [polis::TerminalMarker::Interrupted]
     );
 }

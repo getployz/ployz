@@ -189,7 +189,16 @@ impl ServingPort for FakeServing {
 pub(super) struct FakeOperations {
     pub(super) evidence: Rc<RefCell<Vec<OperationEvidence>>>,
     pub(super) terminal: Rc<RefCell<Vec<TerminalMarker>>>,
-    pub(super) replay: Rc<RefCell<Option<Option<TerminalMarker>>>>,
+    started: Rc<
+        RefCell<
+            Vec<(
+                polis::IdempotencyKey,
+                polis::OperationId,
+                polis::RequestFingerprint,
+            )>,
+        >,
+    >,
+    terminal_by_operation: Rc<RefCell<Vec<(polis::OperationId, TerminalMarker)>>>,
 }
 
 impl polis::OperationBackend for FakeOperations {
@@ -197,12 +206,31 @@ impl polis::OperationBackend for FakeOperations {
         &self,
         request: &polis::OperationRequest,
     ) -> polis::Result<polis::BackendOperationStart> {
-        if let Some(terminal) = self.replay.borrow().clone() {
+        if let Some((_, operation, fingerprint)) = self
+            .started
+            .borrow()
+            .iter()
+            .find(|(idempotency, _, _)| idempotency == request.idempotency())
+        {
+            if fingerprint != request.fingerprint() {
+                return Err(polis::Error::Conflict);
+            }
+            let terminal = self
+                .terminal_by_operation
+                .borrow()
+                .iter()
+                .find(|(terminal_operation, _)| terminal_operation == operation)
+                .map(|(_, terminal)| terminal.clone());
             return Ok(polis::BackendOperationStart::Replayed {
-                operation: request.operation().clone(),
+                operation: operation.clone(),
                 terminal,
             });
         }
+        self.started.borrow_mut().push((
+            request.idempotency().clone(),
+            request.operation().clone(),
+            request.fingerprint().clone(),
+        ));
         Ok(polis::BackendOperationStart::Started)
     }
 
@@ -217,9 +245,12 @@ impl polis::OperationBackend for FakeOperations {
 
     fn close(
         &self,
-        _operation: &polis::OperationId,
+        operation: &polis::OperationId,
         marker: polis::TerminalMarker,
     ) -> polis::Result<()> {
+        self.terminal_by_operation
+            .borrow_mut()
+            .push((operation.clone(), marker.clone()));
         self.terminal.borrow_mut().push(marker);
         Ok(())
     }
@@ -460,7 +491,49 @@ fn serving_commit_without_activation_is_not_success() {
     );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
-        [TerminalMarker::Failed(Vec::new())]
+        [TerminalMarker::Interrupted]
+    );
+}
+
+#[test]
+fn terminal_interrupted_replay_is_visible_without_mutation() {
+    let operations = FakeOperations::default();
+    let first = engine(
+        usable_certificate(),
+        ServingActivationObservation::Unknown,
+        operations.clone(),
+        Rc::new(RefCell::new(Vec::new())),
+    );
+    assert_eq!(
+        first.deploy_https(command()),
+        Err(DeployFailure::ServingFailed(
+            ServingFailure::LiveObservationUnknown
+        ))
+    );
+
+    let contexts = Rc::new(RefCell::new(Vec::new()));
+    let runtime = runtime_for(receipt());
+    let serving_commits = Rc::new(RefCell::new(0));
+    let deploy = engine_with_shared_state(
+        usable_certificate(),
+        activation_for(&request()),
+        operations.clone(),
+        contexts.clone(),
+        Rc::new(RefCell::new(DomainStatus::Unknown)),
+        runtime.clone(),
+        serving_commits.clone(),
+    );
+
+    assert_eq!(
+        deploy.deploy_https(command()),
+        Err(DeployFailure::Interrupted)
+    );
+    assert!(contexts.borrow().is_empty());
+    assert_eq!(*runtime.activations.borrow(), 0);
+    assert_eq!(*serving_commits.borrow(), 0);
+    assert_eq!(
+        operations.terminal.borrow().as_slice(),
+        [TerminalMarker::Interrupted]
     );
 }
 
@@ -482,7 +555,6 @@ fn terminal_success_replay_verifies_deploy_without_mutation() {
     );
 
     let _first = deploy.deploy_https(command()).expect("initial deploy");
-    *operations.replay.borrow_mut() = Some(Some(TerminalMarker::Succeeded));
     contexts.borrow_mut().clear();
 
     let replayed = deploy.deploy_https(command()).expect("replayed deploy");
@@ -512,7 +584,6 @@ fn terminal_success_replay_rejects_missing_runtime_participant() {
         Rc::new(RefCell::new(0)),
     );
     first.deploy_https(command()).expect("initial deploy");
-    *operations.replay.borrow_mut() = Some(Some(TerminalMarker::Succeeded));
 
     let replay = engine_with_shared_state(
         usable_certificate(),

@@ -28,8 +28,8 @@ pub use identity::{PrincipalId, ScopeId, SourceWatermark};
 pub use operations::{
     BackendOperationStart, CommandKind, EvidenceKind, FingerprintedResource, IdempotencyKey,
     OpenOperation, OperationBackend, OperationEvidence, OperationId, OperationReplay,
-    OperationRequest, OperationStart, RequestFingerprint, SubmittedFenceFingerprint,
-    TerminalMarker, close, record, start_or_replay,
+    OperationReplayStatus, OperationRequest, OperationStart, RequestFingerprint,
+    SubmittedFenceFingerprint, TerminalMarker, close, record, start_or_replay,
 };
 
 #[cfg(test)]

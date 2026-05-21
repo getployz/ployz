@@ -116,26 +116,44 @@ Already improved in the current branch:
 - A zero-context full API roast after the issued-command slice confirmed that
   command issuing and command running are split in the right direction, while
   flagging domain adapter constructibility, deploy deadline identity, and
-  non-success replay/outcome policy as the remaining blockers.
+  non-success replay/outcome policy as the next blockers to address.
+- Operation replay state is now explicit. Polis exposes replay status as open,
+  succeeded, failed, or interrupted. Ployz maps those to structured primitive
+  failures instead of collapsing every non-success replay into
+  `ReplayUnavailable`.
+- Fresh command failures can now be terminalized as either failed or
+  interrupted. Deploy and volume transfer use interrupted disposition because
+  once product work begins their failures may represent unknown partial
+  mutation rather than a clean durable rejection.
+- Deploy and volume product errors now keep replay lifecycle states visible:
+  already-succeeded, in-progress, already-failed, and interrupted retries do
+  not collapse into generic stale evidence or ownership rejection.
+- HTTPS deploy E2E now uses a stateful operation fake that enforces
+  idempotency/fingerprint replay semantics, so same-idempotency retry after an
+  interrupted terminal marker is tested as an interrupted replay rather than a
+  fresh start.
+- `CommandBackend` is sealed to the Ployz operation boundary. Product modules
+  can use it, but external code cannot implement a backend that bypasses the
+  lifecycle and failure-disposition rules.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
-- Failed/interrupted deploy retry after partial mutation remains the main
-  unresolved API issue. Non-success replay still returns `ReplayUnavailable`;
-  changing that needs an explicit product outcome policy for failed,
-  interrupted, and open operation states rather than a small deploy patch.
-- The low-level operation boundary still exposes `CommandEnvelope` because
-  `CommandBackend` and `CommandRunner` are public operation primitives. Product
-  deploy and volume APIs no longer expose it directly.
+- Failed/interrupted deploy retry after partial mutation does not resume work.
+  Non-success replay is explicit and product-visible, but same-idempotency
+  resume still requires a later typed receipt/checkpoint design before it is
+  safe to rerun mutating phases.
+- The low-level operation boundary still exposes `CommandEnvelope` because the
+  command runner API is public. Product deploy and volume APIs no longer expose
+  it directly, and `CommandBackend` implementation is sealed.
 - A refreshed fence for the same logical command now requires a new
   idempotency key. That is safer than silently treating two fenced attempts as
   the same request, but product command issuers still need to make that policy
   obvious at their API boundary.
-- Failed-operation terminalization remains best-effort. If recording the
-  failed marker fails, the operator still sees the product failure, but the
-  operation may remain open until the broader replay/outcome slice gives that
-  lifecycle failure a better status surface.
+- Failure terminalization remains best-effort. If recording the failed or
+  interrupted marker fails, the operator still sees the product failure, but
+  the operation may remain open until a broader operation health surface gives
+  that lifecycle failure a better audience.
 - There is not yet a real claim backend/acquisition adapter. The current code
   has the intended proof shape, but production claim acquisition still needs a
   concrete adapter that returns Polis guards instead of test-support minting.
@@ -240,8 +258,8 @@ mean it came from the boundary that can prove it.
 
 ### S1. Polis-Backed Operation Boundary
 
-**Status:** Completed for the current MVP slice except product replay
-verification, which is deferred to S5.
+**Status:** Completed for the current MVP slice. Terminal-success replay
+verification and explicit non-success replay states are covered in S5.
 
 **Goal:** Stop duplicating operation lifecycle concepts in Ployz. Make Ployz
 `CommandRunner` a product facade over Polis operation lifecycle values.
@@ -263,16 +281,16 @@ verification, which is deferred to S5.
   state come from Polis `OpenOperation<C>`.
 - Make `CommandRunner` own request fingerprinting, `start_or_replay`, replay
   handling, and consuming operation closure.
-- Replays currently return `ReplayUnavailable` without appending a second
-  terminal marker. Returning a previous closed command or invoking a product
-  verifier is deferred to S5.
+- Replays return structured state without appending a second terminal marker.
+  Terminal success can invoke a product verifier; open, failed, and interrupted
+  replay are visible non-success states.
 - Preserve Ployz error mapping and product evidence encoding at the adapter
   boundary.
 
 **Tests:**
 
-- Same idempotency and fingerprint replays return `ReplayUnavailable` for now
-  without rerunning product work or writing a second terminal marker.
+- Same idempotency and fingerprint replays do not rerun product work or write a
+  second terminal marker.
 - Same idempotency with different fingerprint conflicts.
 - Success/failure closure consumes the open command.
 - Product modules cannot append evidence after closure.
@@ -444,7 +462,8 @@ the original product failure. Deploy and volume command issuance now derives
 replay metadata from typed product requests, and deploy terminal-success replay
 now verifies product state without mutation. Product engines accept issued
 command tokens that carry their fingerprinted request. Failed/interrupted
-deploy retry after partial failure remains open.
+deploy replay is now explicit and non-mutating, but same-idempotency resume
+after partial failure remains open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.
@@ -468,6 +487,8 @@ encodes safe evidence into Polis records and owns replay behavior.
 - Make operation replay consult product verifiers before returning success.
   Product verifiers are invoked only for terminal-success replay; pending,
   failed, and interrupted replay cannot become success.
+- Map open, failed, and interrupted replay to distinct primitive failures, and
+  allow fresh command work to mark uncertain partial failure as interrupted.
 - Keep evidence writes at the command boundary; do not reintroduce manual
   evidence bookkeeping into deploy, domain, or volume product code.
 
@@ -476,7 +497,8 @@ encodes safe evidence into Polis records and owns replay behavior.
 - Evidence rendering cannot include private key material.
 - Product modules do not construct raw `Vec<u8>` checkpoint payloads.
 - Duplicate evidence is idempotent where product verifier confirms success.
-- Non-terminal or failed replay does not call product verifiers.
+- Open, failed, or interrupted replay does not call product verifiers and does
+  not rerun product work.
 - Conflict evidence does not become success.
 
 **Completion Gate:**
