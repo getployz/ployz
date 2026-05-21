@@ -2,8 +2,8 @@
 
 use std::time::SystemTime;
 
-use crate::deploy::MutationContext;
 use crate::error::RuntimeFailure;
+use crate::operation::MutationContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkloadId(String);

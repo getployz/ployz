@@ -1,7 +1,9 @@
 //! Volume transfer product ports.
 
-use crate::deploy::{EvidenceKind, MutationContext, OperationEvidence, OperationPort};
 use crate::error::{PrimitiveFailure, VolumeFailure};
+use crate::operation::{
+    EvidenceKind, MutationContext, OperationEvidence, OperationPort, TerminalMarker,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VolumeId(String);
@@ -66,6 +68,46 @@ pub struct VolumeTransferPlan {
     pub target: VolumeOwner,
     pub expected_source_watermark: SourceWatermark,
     pub next_epoch: OwnershipEpoch,
+    pub cleanup_artifact: CleanupArtifactId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeTransferRequest {
+    pub context: MutationContext,
+    pub plan: VolumeTransferPlan,
+    pub mode: VolumeTransferMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VolumeTransferMode {
+    Start,
+    ResumeAfterOwnershipCheckpoint(VolumeTransferFingerprint),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeTransferFingerprint {
+    operation: crate::operation::OperationId,
+    idempotency: crate::operation::IdempotencyKey,
+    volume: VolumeId,
+    source: VolumeOwner,
+    target: VolumeOwner,
+    expected_source_watermark: SourceWatermark,
+    next_epoch: OwnershipEpoch,
+}
+
+impl VolumeTransferFingerprint {
+    #[must_use]
+    pub fn new(context: &MutationContext, plan: &VolumeTransferPlan) -> Self {
+        Self {
+            operation: context.operation.clone(),
+            idempotency: context.idempotency.clone(),
+            volume: plan.volume.clone(),
+            source: plan.source.clone(),
+            target: plan.target.clone(),
+            expected_source_watermark: plan.expected_source_watermark,
+            next_epoch: plan.next_epoch,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +219,19 @@ pub trait VolumeCleanupPort {
         &self,
         context: &MutationContext,
         commit: &OwnershipCommit,
-    ) -> Result<CleanupStatus, VolumeFailure>;
+        artifact: &CleanupArtifactId,
+    ) -> Result<CleanupStatus, VolumeCleanupFailure>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeCleanupFailure {
+    pub artifact: CleanupArtifactId,
+    pub reason: CleanupFailureReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupFailureReason {
+    DeleteFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,27 +277,48 @@ where
         context: &MutationContext,
         plan: &VolumeTransferPlan,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        match self.claims.check_transfer_claim(context, plan)? {
-            VolumeClaimCheck::Current => {}
-            VolumeClaimCheck::Missing | VolumeClaimCheck::Stale => {
-                return Err(VolumeFailure::StaleFence);
+        self.transfer_request(VolumeTransferRequest {
+            context: context.clone(),
+            plan: plan.clone(),
+            mode: VolumeTransferMode::Start,
+        })
+    }
+
+    pub fn transfer_request(
+        &self,
+        request: VolumeTransferRequest,
+    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
+        let context = &request.context;
+        let plan = &request.plan;
+        if let VolumeTransferMode::ResumeAfterOwnershipCheckpoint(fingerprint) = &request.mode {
+            if fingerprint != &VolumeTransferFingerprint::new(context, plan) {
+                return Err(VolumeFailure::OwnershipCommitRejected);
             }
+            return self.finish_verified_transfer(context, plan);
         }
 
+        self.ensure_current_claim(context, plan)?;
         if self.source.stop_writes(context, plan)? != SourceWriteStatus::Stopped {
             return Err(VolumeFailure::SourceWriteStillOpen);
         }
+        self.ensure_current_claim(context, plan)?;
         let snapshot = self.source.snapshot(context, plan)?;
         if snapshot.source_watermark != plan.expected_source_watermark {
             return Err(VolumeFailure::SnapshotFailed);
         }
+        self.ensure_current_claim(context, plan)?;
         let final_delta = self.source.final_delta(context, plan)?;
         if final_delta.source_watermark != plan.expected_source_watermark {
             return Err(VolumeFailure::SnapshotFailed);
         }
+        self.ensure_current_claim(context, plan)?;
         let receive = self
             .target
             .receive(context, plan, &snapshot, &final_delta)?;
+        if receive.snapshot != snapshot.snapshot || receive.target != plan.target {
+            return Err(VolumeFailure::ReceiveFailed);
+        }
+        self.ensure_current_claim(context, plan)?;
         let ownership = self.ownership.commit_ownership(context, plan, &receive)?;
 
         self.operations
@@ -254,6 +329,36 @@ where
             })
             .map_err(map_primitive_to_volume)?;
 
+        self.finish_transfer(context, plan, ownership)
+    }
+
+    fn finish_verified_transfer(
+        &self,
+        context: &MutationContext,
+        plan: &VolumeTransferPlan,
+    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
+        self.ensure_current_claim(context, plan)?;
+        let OwnershipVerification::Verified(ownership) =
+            self.ownership.verify_ownership(context, plan)?
+        else {
+            return Err(VolumeFailure::OwnershipCommitRejected);
+        };
+        if ownership.volume != plan.volume
+            || ownership.owner != plan.target
+            || ownership.epoch != plan.next_epoch
+            || ownership.source_watermark != plan.expected_source_watermark
+        {
+            return Err(VolumeFailure::OwnershipCommitRejected);
+        }
+        self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
+    }
+
+    fn finish_transfer(
+        &self,
+        context: &MutationContext,
+        plan: &VolumeTransferPlan,
+        ownership: OwnershipCommit,
+    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
         let OwnershipVerification::Verified(verified) =
             self.ownership.verify_ownership(context, plan)?
         else {
@@ -262,16 +367,38 @@ where
         if verified != ownership {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
+        self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
+    }
 
-        let cleanup = match self.cleanup.cleanup_source_artifact(context, &ownership) {
+    fn finish_cleanup(
+        &self,
+        context: &MutationContext,
+        ownership: OwnershipCommit,
+        artifact: &CleanupArtifactId,
+    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
+        let cleanup = match self
+            .cleanup
+            .cleanup_source_artifact(context, &ownership, artifact)
+        {
             Ok(status) => status,
-            Err(VolumeFailure::CleanupFailed) => {
-                CleanupStatus::Pending(CleanupArtifactId::parse("source-cleanup-pending")?)
-            }
-            Err(error) => return Err(error),
+            Err(error) => CleanupStatus::Pending(error.artifact),
         };
+        self.operations
+            .terminalize(&context.operation, TerminalMarker::Succeeded)
+            .map_err(map_primitive_to_volume)?;
 
         Ok(VolumeTransferOutcome { ownership, cleanup })
+    }
+
+    fn ensure_current_claim(
+        &self,
+        context: &MutationContext,
+        plan: &VolumeTransferPlan,
+    ) -> Result<(), VolumeFailure> {
+        match self.claims.check_transfer_claim(context, plan)? {
+            VolumeClaimCheck::Current => Ok(()),
+            VolumeClaimCheck::Missing | VolumeClaimCheck::Stale => Err(VolumeFailure::StaleFence),
+        }
     }
 }
 

@@ -3,11 +3,11 @@ use std::time::{Duration, UNIX_EPOCH};
 use ployz::acme::{
     ChallengeOwnership, ChallengeOwnershipPort, ChallengeSlot, Hostname, HttpsBinding,
 };
-use ployz::deploy::{
+use ployz::error::CertificateFailure;
+use ployz::operation::{
     AuthorityContext, AuthorityEpoch, FenceEpoch, FenceToken, IdempotencyKey, MutationContext,
     OperationId, PrincipalId, ResourceId, ScopeId,
 };
-use ployz::error::CertificateFailure;
 
 struct ClaimingAcme;
 

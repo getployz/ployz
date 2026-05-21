@@ -18,6 +18,7 @@ pub mod adapters;
 pub mod composition;
 pub mod deploy;
 pub mod error;
+pub mod operation;
 pub mod projection;
 pub mod runtime;
 pub mod serving;
