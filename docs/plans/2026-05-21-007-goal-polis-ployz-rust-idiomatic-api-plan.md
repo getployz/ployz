@@ -100,13 +100,17 @@ Already improved in the current branch:
   derive command kind, payload hash, resources, and volume fence participation
   from typed product requests. Generic `MutationIntent`, `CommandKind`, and
   `FingerprintedResource` are no longer re-exported as normal product API.
+- Deploy terminal-success replay now verifies the existing domain ready record,
+  runtime participant, and serving activation without rerunning mutating deploy
+  work.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
-- Command outcome/replay semantics still need a real slice. The final API roast
-  found that all product errors currently close as terminal failed operations,
-  making partial deploy failures unretryable with the same idempotency key.
+- Failed/interrupted deploy retry after partial mutation remains unresolved.
+  Non-success replay still returns `ReplayUnavailable`; changing that needs an
+  explicit failure classification or idempotency policy rather than a small
+  deploy patch.
 - Product engines still accept `CommandEnvelope` parameters. This keeps
   authorization and command orchestration separate for now, but the normal
   caller path should go through product-owned `DeployCommand::issue` and
@@ -422,8 +426,9 @@ moved checkpoint byte encoding behind the Ployz command boundary, added
 success-only replay verification for volume, made submitted fences part of the
 operation fingerprint, and stopped failed-marker terminalization from masking
 the original product failure. Deploy and volume command issuance now derives
-replay metadata from typed product requests. Deploy retry after partial failure
-and the remaining engine/envelope API shape remain open.
+replay metadata from typed product requests, and deploy terminal-success replay
+now verifies product state without mutation. Failed/interrupted deploy retry
+after partial failure and the remaining engine/envelope API shape remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.

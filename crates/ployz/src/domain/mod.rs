@@ -338,6 +338,12 @@ pub trait DomainReadinessPort {
         context: &MutationContext,
         request: DomainAdd,
     ) -> Result<DomainReady, DomainFailure>;
+
+    fn verify_ready(
+        &self,
+        context: &MutationContext,
+        request: DomainAdd,
+    ) -> Result<DomainReady, DomainFailure>;
 }
 
 pub struct DomainReadinessService<C, T, S, R> {
@@ -373,6 +379,14 @@ where
     ) -> Result<DomainReady, DomainFailure> {
         self.ensure_ready(context, request)
     }
+
+    fn verify_ready(
+        &self,
+        context: &MutationContext,
+        request: DomainAdd,
+    ) -> Result<DomainReady, DomainFailure> {
+        self.verify_ready(context, request)
+    }
 }
 
 impl<C, T, S, R> DomainReadinessService<C, T, S, R>
@@ -394,6 +408,15 @@ where
                 .record_failed(context, &domain, failure.clone())?;
         }
         result
+    }
+
+    pub fn verify_ready(
+        &self,
+        context: &MutationContext,
+        request: DomainAdd,
+    ) -> Result<DomainReady, DomainFailure> {
+        self.try_reuse_ready(context, &request)?
+            .ok_or(DomainFailure::UnknownReadiness)
     }
 
     fn try_ensure_ready(
@@ -607,6 +630,57 @@ mod tests {
         );
 
         assert_eq!(domains.ensure_ready(&context(), add()), Ok(ready));
+        assert!(records.recorded.borrow().is_empty());
+        assert_eq!(*claims.count.borrow(), 0);
+    }
+
+    #[test]
+    fn verify_ready_reuses_existing_ready_without_fresh_mutations() {
+        let ready = DomainReady::new(
+            domain(),
+            UsableDomainCertificate::new(
+                &domain(),
+                certificate(),
+                CertificatePolicy {
+                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("usable certificate"),
+            DomainServingActivation::active(ServingGeneration::new(7)),
+        );
+        let records = FakeRecords::with_status(DomainStatus::Ready(ready.record()));
+        let claims = CountingClaims::default();
+        let domains = DomainReadinessService::new(
+            claims.clone(),
+            FakeCertificates {
+                certificate: certificate(),
+            },
+            FakeServing::success(),
+            records.clone(),
+        );
+
+        assert_eq!(domains.verify_ready(&context(), add()), Ok(ready));
+        assert!(records.recorded.borrow().is_empty());
+        assert_eq!(*claims.count.borrow(), 0);
+    }
+
+    #[test]
+    fn verify_ready_does_not_take_fresh_readiness_path() {
+        let records = FakeRecords::default();
+        let claims = CountingClaims::default();
+        let domains = DomainReadinessService::new(
+            claims.clone(),
+            FakeCertificates {
+                certificate: certificate(),
+            },
+            FakeServing::success(),
+            records.clone(),
+        );
+
+        assert_eq!(
+            domains.verify_ready(&context(), add()),
+            Err(DomainFailure::UnknownReadiness)
+        );
         assert!(records.recorded.borrow().is_empty());
         assert_eq!(*claims.count.borrow(), 0);
     }

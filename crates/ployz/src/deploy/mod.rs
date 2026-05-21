@@ -13,11 +13,11 @@ use crate::domain::{
 use crate::error::{DeployFailure, PrimitiveFailure};
 use crate::operation::{
     AuthorityPort, CommandBackend, CommandContext, CommandEnvelope, CommandIssue, CommandIssuer,
-    CommandKind, CommandPayload, FingerprintedResource, MutationIntent,
+    CommandKind, CommandPayload, FingerprintedResource, MutationContext, MutationIntent,
 };
 use crate::runtime::{
-    MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
-    WorkloadId,
+    MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
+    RuntimeParticipantStatus, RuntimeParticipantVerification, RuntimePort, WorkloadId,
 };
 use crate::serving::{
     RouteId, ServingActivationProof, ServingGeneration, ServingPort, ServingTarget,
@@ -125,8 +125,10 @@ where
         command: CommandEnvelope<DeployCommand>,
         request: DeployRequest,
     ) -> Result<DeployOutcome, DeployFailure> {
-        self.commands
-            .run(command, map_primitive_to_deploy, |context| {
+        self.commands.run_with_replay(
+            command,
+            map_primitive_to_deploy,
+            |context| {
                 let domain = self.ensure_domain_ready(context, &request)?;
                 let runtime = self.activate_runtime(context, &request)?;
                 let serving = self.commit_and_verify_serving(context, &request, &domain)?;
@@ -136,7 +138,24 @@ where
                     runtime,
                     serving,
                 })
-            })
+            },
+            |mutation| self.verify_replayed_success(mutation, &request),
+        )
+    }
+
+    fn verify_replayed_success(
+        &self,
+        mutation: &MutationContext,
+        request: &DeployRequest,
+    ) -> Result<DeployOutcome, DeployFailure> {
+        let domain = self.verify_domain_ready(mutation, request)?;
+        let runtime = self.verify_runtime(mutation, request)?;
+        let serving = self.verify_serving(request, &domain)?;
+        Ok(DeployOutcome {
+            domain,
+            runtime,
+            serving,
+        })
     }
 
     fn ensure_domain_ready(
@@ -144,20 +163,43 @@ where
         context: &CommandContext<'_>,
         request: &DeployRequest,
     ) -> Result<DomainReady, DeployFailure> {
+        self.ready_domain(context.mutation(), request, |domains, mutation, request| {
+            domains.ensure_ready(mutation, request)
+        })
+    }
+
+    fn verify_domain_ready(
+        &self,
+        mutation: &MutationContext,
+        request: &DeployRequest,
+    ) -> Result<DomainReady, DeployFailure> {
+        self.ready_domain(mutation, request, |domains, mutation, request| {
+            domains.verify_ready(mutation, request)
+        })
+    }
+
+    fn ready_domain<F>(
+        &self,
+        mutation: &MutationContext,
+        request: &DeployRequest,
+        readiness: F,
+    ) -> Result<DomainReady, DeployFailure>
+    where
+        F: FnOnce(&D, &MutationContext, DomainAdd) -> Result<DomainReady, DomainFailure>,
+    {
         let domain = DomainName::parse(request.manifest.https.hostname.as_str())
             .map_err(map_domain_to_deploy)?;
-        let ready = self
-            .domains
-            .ensure_ready(
-                context.mutation(),
-                DomainAdd {
-                    domain: domain.clone(),
-                    certificate_policy: CertificatePolicy {
-                        minimum_valid_until: request.manifest.minimum_certificate_valid_until,
-                    },
+        let ready = readiness(
+            &self.domains,
+            mutation,
+            DomainAdd {
+                domain: domain.clone(),
+                certificate_policy: CertificatePolicy {
+                    minimum_valid_until: request.manifest.minimum_certificate_valid_until,
                 },
-            )
-            .map_err(map_domain_to_deploy)?;
+            },
+        )
+        .map_err(map_domain_to_deploy)?;
 
         if ready.domain() != &domain {
             return Err(DeployFailure::DomainReadinessFailed);
@@ -192,6 +234,32 @@ where
         Ok(receipt)
     }
 
+    fn verify_runtime(
+        &self,
+        mutation: &MutationContext,
+        request: &DeployRequest,
+    ) -> Result<ParticipantReceipt, DeployFailure> {
+        let status = self
+            .runtime
+            .verify_participant(RuntimeParticipantVerification {
+                workload: request.manifest.workload.clone(),
+                machine: request.manifest.machine.clone(),
+                context: mutation.clone(),
+            })
+            .map_err(|_| DeployFailure::RuntimeParticipantFailed)?;
+
+        let RuntimeParticipantStatus::Active(receipt) = status else {
+            return Err(DeployFailure::RuntimeParticipantFailed);
+        };
+        if receipt.workload != request.manifest.workload
+            || receipt.machine != request.manifest.machine
+        {
+            return Err(DeployFailure::RuntimeParticipantFailed);
+        }
+
+        Ok(receipt)
+    }
+
     fn commit_and_verify_serving(
         &self,
         context: &CommandContext<'_>,
@@ -211,6 +279,29 @@ where
             .map_err(DeployFailure::ServingFailed)?;
         let checkpoint = commit.checkpoint();
 
+        let activation = self
+            .serving
+            .activation_status(&checkpoint)
+            .map_err(DeployFailure::ServingFailed)?;
+        activation
+            .try_acknowledge(&checkpoint)
+            .map_err(DeployFailure::ServingFailed)
+    }
+
+    fn verify_serving(
+        &self,
+        request: &DeployRequest,
+        ready: &DomainReady,
+    ) -> Result<ServingActivationProof, DeployFailure> {
+        if ready.domain().as_str() != request.manifest.https.hostname.as_str() {
+            return Err(DeployFailure::DomainReadinessFailed);
+        }
+        let commit = ready.serving_commit(
+            request.manifest.route.clone(),
+            request.manifest.serving_target.clone(),
+            request.manifest.serving_generation,
+        );
+        let checkpoint = commit.checkpoint();
         let activation = self
             .serving
             .activation_status(&checkpoint)

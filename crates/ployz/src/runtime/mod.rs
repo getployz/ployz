@@ -48,6 +48,20 @@ pub struct ParticipantReceipt {
     pub revision: RuntimeRevision,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeParticipantVerification {
+    pub workload: WorkloadId,
+    pub machine: MachineId,
+    pub context: MutationContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeParticipantStatus {
+    Active(ParticipantReceipt),
+    Missing,
+    Mismatch,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RuntimeRevision(u64);
 
@@ -69,6 +83,11 @@ pub trait RuntimePort {
         &self,
         request: RuntimeActivationRequest,
     ) -> Result<RuntimeActivationOutcome, RuntimeFailure>;
+
+    fn verify_participant(
+        &self,
+        request: RuntimeParticipantVerification,
+    ) -> Result<RuntimeParticipantStatus, RuntimeFailure>;
 }
 
 fn parse_non_empty<T>(
