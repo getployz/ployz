@@ -49,7 +49,8 @@ The MVP works, but product code still reaches into signed fact import, projectio
 - Certificate renewal primitives or maintenance roles.
 - A generic workflow engine on top of Polis operation evidence.
 - Full workload migration/cutover as a product primitive. This plan proves the supporting volume-transfer boundary; migration can build on it later.
-- A broad distributed worker queue. This plan only needs minimal cleanup obligation records if HTTPS deploy or volume transfer creates residual artifacts.
+- A broad distributed worker queue. This plan keeps cleanup obligation markers in operation records; a separate `polis::work` module can wait until multiple current consumers need independent claiming/listing semantics.
+- Materializing broad Ployz `machine` and `environment` modules. Ployz still owns those domains, but this proof only creates modules used by HTTPS deploy, ACME ownership, serving/runtime, volume transfer, and projection.
 
 ### Outside this product's identity
 
@@ -105,9 +106,10 @@ The MVP works, but product code still reaches into signed fact import, projectio
 | Claims are advisory until Ployz fences a mutation | Polis can issue claim/epoch/fence evidence. Ployz resources reject stale tokens at concrete mutation boundaries. |
 | Ordinary Ployz code uses Ployz-owned ports | Direct Polis imports belong in adapter/composition modules. Product feature modules should read as product orchestration, not framework choreography. |
 | Serving commit is a checkpoint, not success | HTTPS deploy success still requires product verification of certificate usability, serving projection catch-up, serving-role acknowledgement, and live TLS proof where applicable. |
-| Cleanup stays product-owned | Ployz defines cleanup safety and residual state. Polis may store and claim cleanup obligations only when created by foreground Ployz operations. |
+| Cleanup stays product-owned | Ployz defines cleanup safety and residual state. Polis operation records may carry cleanup obligation markers, but this plan does not introduce an independent work queue. |
 | p2panda and iroh stay behind contracts | Ployz should see authorized product payloads, proof metadata, typed ports, and observations, not p2panda candidate status or iroh transport nouns. |
 | Status separates truth from observation | Product status must separate committed records, projection freshness, live checks, and unknown/degraded health. |
+| Unknown revocation freshness is not deploy-success | Deploy fails if revocation freshness is unknown. Last-good serving may continue only within explicit local validity bounds and must report degraded/unknown freshness. |
 
 ---
 
@@ -128,7 +130,6 @@ Ployz feature modules should depend on Ployz-owned domain ports. Direct use of P
 | `polis::operations` | Operation id, request fingerprint, append-only evidence, opaque checkpoint receipts, owner deadline, single terminal marker | Product phase taxonomy, workflow transitions, rollback policy |
 | `polis::claims` | Claim specs, TTL, epoch, fencing token, renewal, release, stale-token helpers | Strict lock guarantees or product mutation authority |
 | `polis::calls` | Bounded typed request/reply, no-responder, deadlines, idempotency envelope | Self-target behavior, public command routing, product RPC protocol |
-| `polis::work` | Minimal claimable cleanup obligation records, only when created by Ployz foreground operations | Distributed workflow queue, placement, deploy advancement, cert issuance |
 | `polis::error` | Primitive error categories: unauthorized, conflict, timeout, stale fence, no responder, freshness unknown | Product-facing deploy, ACME, volume, machine, or environment errors |
 
 ### Ployz Modules
@@ -140,8 +141,6 @@ Ployz feature modules should depend on Ployz-owned domain ports. Direct use of P
 | `ployz::serving` | Route/serving meaning, last-good state, gateway/DNS activation, cert-backed validity bounds | Record/projection/call adapters |
 | `ployz::runtime` | Runtime participant side effects, instance identity, live health observation, backend adapter seam | Call and claim adapters |
 | `ployz::volume` | Clone, transfer, ownership, source write fence, lineage, source cleanup | Claim, operation, call, and cleanup adapters |
-| `ployz::machine` | Machine lifecycle, roles, drain/removal semantics, storage trust, local-vs-remote mutation choice | Authority/call/claim adapters |
-| `ployz::environment` | Branch, promote, rollback, serving head decisions, product result semantics | Ployz serving/volume plus record/projection adapters |
 | `ployz::projection` | Product payloads, reducers, typed product views, snapshot interpretation | Authorized record/projection substrate |
 
 ### Authorization Handoff
@@ -152,6 +151,8 @@ Ployz feature modules should depend on Ployz-owned domain ports. Direct use of P
 | Ployz command API | Authorize product command semantics and choose the product resources being affected. |
 | Polis authority/records/calls | Enforce grant/import/call authority for the scope and record/call being attempted. |
 | Ployz result mapper | Convert primitive failures into product errors without leaking Polis grant internals to users. |
+
+`AuthorityContext` is the handoff object for this plan. It carries principal, scope, grant/dependency epoch, and projection watermark through Ployz ports, operation fingerprints, record appends, and peer-call envelopes. This keeps authorization evidence consistent without exposing p2panda author keys or iroh endpoint ids as product nouns.
 
 ---
 
@@ -165,6 +166,7 @@ Ployz feature modules should depend on Ployz-owned domain ports. Direct use of P
 - Minimum operation evidence: operation id, actor/scope, request fingerprint, idempotency key, opaque evidence/checkpoint receipt, owner deadline, terminal marker, and optional cleanup obligation marker.
 - HTTPS deploy proof path: use the Pebble ACME HTTPS path plus product command/API smoke coverage, not library-only tests.
 - Second-domain proof: ACME ownership and volume transfer after HTTPS deploy proves the boundary. Full workload migration is follow-up.
+- Certificate revocation/freshness behavior: deploy treats unknown revocation freshness as failure; last-good serving may continue only within explicit local validity bounds and reports degraded/unknown freshness.
 
 ### Deferred to Implementation
 
@@ -172,7 +174,7 @@ Ployz feature modules should depend on Ployz-owned domain ports. Direct use of P
 - Exact record serialization format.
 - Final physical placement of old flat MVP crates.
 - Exact E2E command spelling for the product smoke.
-- Local cert-backed serving behavior when revocation freshness is unknown but last-good material is locally unexpired: implementation must choose explicit terminal behavior among serve last-good, serve degraded, refuse route, or fail readiness.
+- Exact certificate-status backing source for revocation/freshness evidence. U6 must define a fakeable Ployz ACME/serving status port before enforcing the behavior.
 
 ---
 
@@ -193,7 +195,6 @@ MVP/
       operations.rs
       claims.rs
       calls.rs
-      work.rs
       error.rs
   ployz/
     Cargo.toml
@@ -204,8 +205,6 @@ MVP/
       serving/mod.rs
       runtime/mod.rs
       volume/mod.rs
-      machine/mod.rs
-      environment/mod.rs
       projection/mod.rs
 ```
 
@@ -248,6 +247,10 @@ Polis does not define a shared product lifecycle. It provides append-only record
 | Owner deadline | In-progress operations may become stale for takeover/resume; Ployz decides whether to resume, fail, or show operator action needed. |
 | Terminal marker | Only one terminal marker is allowed. Cleanup obligation lifecycle does not rewrite the product operation result. |
 | Peer mutation receipt | A mutating receiver records the outcome before replying so retries after lost replies return the same receipt or a structured conflict. |
+
+### Ployz Verifier Contract
+
+Ployz verifiers are product-owned. Each verifier consumes a request fingerprint, authority context, required projection/source watermarks, opaque checkpoint receipt, and any live proof needed by the domain. The output is one of: verified, stale evidence, rejected, or operator action needed. Polis only stores the verifier reference and receipt.
 
 ### Fenced Mutation Points
 
@@ -312,6 +315,8 @@ flowchart TB
 
 **Files:**
 - Modify: `MVP/Cargo.toml`
+- Modify: `MVP/architecture.md`
+- Modify: `MVP/primitive-decisions.md`
 - Create: `MVP/polis/Cargo.toml`
 - Create: `MVP/polis/src/lib.rs`
 - Create: `MVP/polis/src/identity.rs`
@@ -321,7 +326,6 @@ flowchart TB
 - Create: `MVP/polis/src/operations.rs`
 - Create: `MVP/polis/src/claims.rs`
 - Create: `MVP/polis/src/calls.rs`
-- Create: `MVP/polis/src/work.rs`
 - Create: `MVP/polis/src/error.rs`
 - Create: `MVP/ployz/Cargo.toml`
 - Create: `MVP/ployz/src/lib.rs`
@@ -330,8 +334,6 @@ flowchart TB
 - Create: `MVP/ployz/src/serving/mod.rs`
 - Create: `MVP/ployz/src/runtime/mod.rs`
 - Create: `MVP/ployz/src/volume/mod.rs`
-- Create: `MVP/ployz/src/machine/mod.rs`
-- Create: `MVP/ployz/src/environment/mod.rs`
 - Create: `MVP/ployz/src/projection/mod.rs`
 - Test: `MVP/polis/src/lib.rs`
 - Test: `MVP/ployz/src/lib.rs`
@@ -339,6 +341,8 @@ flowchart TB
 **Approach:**
 - Add compile-light crates and module docs only.
 - Make `MVP/ployz` depend on `MVP/polis`; keep `MVP/polis` independent of Ployz product crates.
+- Add an ownership map for existing MVP crates: Ployz product-owned, Polis substrate, adapter/composition-only, or legacy-to-remove.
+- Add an early dependency gate that prevents product imports in Polis and raw substrate imports in product feature modules outside named adapters.
 - Keep behavior moves out of this unit.
 
 **Test scenarios:**
@@ -361,13 +365,13 @@ flowchart TB
 
 **Files:**
 - Modify: `MVP/ployz/src/lib.rs`
+- Modify: `MVP/ployz/Cargo.toml`
+- Modify: `MVP/node/Cargo.toml`
 - Modify: `MVP/ployz/src/deploy/mod.rs`
 - Modify: `MVP/ployz/src/acme/mod.rs`
 - Modify: `MVP/ployz/src/serving/mod.rs`
 - Modify: `MVP/ployz/src/runtime/mod.rs`
 - Modify: `MVP/ployz/src/volume/mod.rs`
-- Modify: `MVP/ployz/src/machine/mod.rs`
-- Modify: `MVP/ployz/src/environment/mod.rs`
 - Modify: `MVP/ployz/src/projection/mod.rs`
 - Modify: `MVP/node/src/deploy.rs`
 - Modify: `MVP/node/src/acme.rs`
@@ -380,9 +384,10 @@ flowchart TB
 
 **Approach:**
 - Start as facades/adapters over existing crates where useful.
-- Define product ports for deploy, ACME, serving, runtime, volume, machine, environment, and projection.
+- Define product ports for deploy, ACME, serving, runtime, volume, and projection. Machine/environment ownership remains documented but not materialized unless this proof needs it.
 - Separate product status into committed truth, projection freshness, live observation, and unknown/degraded health.
-- Keep node/control code thin: it authenticates/routs requests and delegates product behavior to Ployz.
+- Keep node/control code thin: it authenticates/routes requests and delegates product behavior to Ployz.
+- Wire `MVP/node/Cargo.toml` to `mvp-ployz` and `MVP/ployz/Cargo.toml` to the existing crates it wraps. Existing product crates should not import `mvp-ployz`; they either stay below the facade or move into it to avoid Cargo cycles.
 
 **Execution note:** Characterize current deploy, ACME, serving, runtime, and volume status before changing call sites.
 
@@ -396,6 +401,7 @@ flowchart TB
 - Covers AE5. Error path: operation evidence is visible as evidence, not committed truth, until a Ployz verifier accepts it.
 - Covers AE7. Integration: serving/runtime status can report last-good state with stale or unknown projection/live health after coordinator loss.
 - Happy path: node deploy/control entry points route through Ployz product ports and preserve existing visible results.
+- Error path: unauthenticated actors, actors without resource grants, wrong scope/resource set, and unauthorized HTTPS binding/cert activation fail before preflight, claim, record append, peer call, or runtime side effect.
 - Error path: live probe failure annotates live observation failure without rewriting durable truth.
 
 **Verification:**
@@ -418,7 +424,9 @@ flowchart TB
 - Modify: `MVP/polis/src/records.rs`
 - Modify: `MVP/polis/src/projections.rs`
 - Modify: `MVP/polis/src/error.rs`
+- Modify: `MVP/ployz/Cargo.toml`
 - Modify: `MVP/ployz/src/projection/mod.rs`
+- Modify: `MVP/projection/Cargo.toml`
 - Modify: `MVP/projection/src/source.rs`
 - Modify: `MVP/projection/src/reducer.rs`
 - Modify: `MVP/p2panda-facts/src/derived_index.rs`
@@ -434,6 +442,7 @@ flowchart TB
 **Approach:**
 - Polis records expose authorized product payloads plus opaque proof metadata: principal, scope, grant epoch/dependency, source watermark, reducer/schema version, and rejection reason.
 - Ployz projection owns product fact families, reducers, serving/cert/machine/environment views, and status labels.
+- Split order matters: do not make `mvp-polis` depend on `mvp-projection` while `mvp-projection` still imports ACME/product types. Move product projection models/reducers behind `mvp-ployz` first, or keep Polis on a smaller substrate interface until that dependency is gone.
 - p2panda author keys and iroh endpoint IDs bind to principals through proof metadata; they are not product API nouns.
 - Snapshot/rebuild behavior must be deterministic across revocation, sync ordering permutations, and baseline restore.
 
@@ -454,32 +463,28 @@ flowchart TB
 
 ### U4. Add Minimal Operation Records and Claims
 
-**Goal:** Provide the small operation and claim primitives Ployz needs for HTTPS deploy, ACME ownership, and volume transfer.
+**Goal:** Provide the small operation and claim primitives Ployz needs for the HTTPS deploy proof, without starting the ACME/volume second-domain proof yet.
 
-**Requirements:** R18-R19, R21, R25, R30, R33-R34, AE4, AE5
+**Requirements:** R18-R19, R21, R25, R33-R34, AE4, AE5
 
 **Dependencies:** U2, U3
 
 **Files:**
 - Modify: `MVP/polis/src/operations.rs`
 - Modify: `MVP/polis/src/claims.rs`
-- Modify: `MVP/polis/src/work.rs`
 - Modify: `MVP/polis/src/error.rs`
 - Modify: `MVP/commands/src/lib.rs`
 - Modify: `MVP/lease/src/lib.rs`
-- Modify: `MVP/acme-command/src/lib.rs`
-- Modify: `MVP/volume/src/command.rs`
 - Test: `MVP/commands/src/lib.rs`
 - Test: `MVP/lease/src/lib.rs`
-- Test: `MVP/e2e/src/lease_acme_contract.rs`
-- Test: `MVP/e2e/src/volume_transfer_contract.rs`
 
 **Approach:**
 - Polis operation records store identity, request fingerprint, append-only evidence, opaque checkpoint receipts, owner deadline, and one terminal marker.
 - Same idempotency key with a different request fingerprint returns a structured conflict.
 - A checkpoint receipt is not truth until a Ployz verifier accepts it.
 - Claims include resource id, holder, epoch, TTL, renewal, release, and fencing token.
-- `polis::work` stays minimal: cleanup obligation records only when a foreground Ployz operation creates residual artifacts. It does not run deploy phases.
+- Cleanup obligation markers live on operation records in this plan. They are not a separate worker or queue abstraction.
+- Add a side-effect audit for HTTPS-deploy-protected resources before behavior moves: every challenge write/clear, cert activation/material write, serving commit/reload, and runtime start/stop/drain path must be identified and given a fencing hook before mutation.
 
 **Execution note:** Implement idempotency, terminal-marker, and stale-fence behavior test-first.
 
@@ -487,10 +492,9 @@ flowchart TB
 - `MVP/commands/src/lib.rs`
 - `MVP/design-notes/phased-command.md`
 - `MVP/lease/src/lib.rs`
-- `MVP/volume/src/command.rs`
 
 **Test scenarios:**
-- Covers AE4. Error path: stale token rejects ACME or volume mutation before side effects.
+- Covers AE4. Error path: stale token rejects a protected mutation before side effects.
 - Covers AE5. Error path: replay sees a checkpoint receipt, Ployz verifier rejects the domain invariant, and the operation does not resume from the receipt as truth.
 - Happy path: same idempotency key and same request fingerprint returns the existing operation record.
 - Edge case: same idempotency key with different actor, scope, command kind, normalized payload, resource set, or authority epoch returns conflict.
@@ -518,14 +522,14 @@ flowchart TB
 - Modify: `MVP/bus/src/message.rs`
 - Modify: `MVP/bus/src/memory.rs`
 - Modify: `MVP/node/src/node_agent_rpc.rs`
-- Modify: `MVP/p2panda-transport/src/fact_node.rs`
 - Test: `MVP/e2e/src/bus_contract.rs`
-- Test: `MVP/e2e/src/bridge_contract.rs`
-- Test: `MVP/e2e/src/p2panda_net_fact_node_contract.rs`
+- Test: `MVP/e2e/src/deploy_restart_recovery_contract.rs`
+- Test: `MVP/e2e/src/steady_state_serving_contract.rs`
 - Test: `MVP/node/src/node_agent_rpc.rs`
 
 **Approach:**
-- Define a bounded call envelope around target, operation id, scope, actor, deadline, idempotency key, and optional fence context.
+- Define a bounded call envelope around target, operation id, authority context, deadline, idempotency key, and optional fence context.
+- Bind sender identity to an authenticated peer/principal, authorize operation/scope/resource before mutation, and reject replayed or mismatched mutating envelopes.
 - Mutating receivers durably record outcome before replying; retry after a dropped reply returns the same receipt or conflict.
 - Preserve no-responder as a foreground failure.
 - Keep local self-target behavior in Ployz runtime/machine/deploy code.
@@ -543,6 +547,7 @@ flowchart TB
 - Covers AE1. Error path: cert material distribution or serving/runtime activation has no responder and deploy receives a structured failure before success.
 - Covers AE4. Error path: mutating peer request with stale fencing token rejects before runtime/serving/volume state changes.
 - Covers AE7. Integration: runtime port adopts or observes already-running workloads after coordinator loss or machine restart.
+- Error path: revocation or grant change between preflight and peer mutation causes the receiver to reject the call before side effects.
 - Edge case: receiver mutates successfully but reply is lost; retry returns same durable receipt.
 - Error path: timeout, payload validation failure, and unauthorized scope produce distinct primitive errors that Ployz maps to product failures.
 
@@ -574,6 +579,8 @@ flowchart TB
 - Modify: `MVP/serving/src/actor.rs`
 - Modify: `MVP/serving/src/model.rs`
 - Modify: `MVP/routing/src/lib.rs`
+- Modify: `MVP/ployz/Cargo.toml`
+- Modify: `MVP/node/Cargo.toml`
 - Test: `MVP/e2e/src/pebble_acme_https_contract.rs`
 - Test: `MVP/e2e/src/p2panda_acme_http01_contract.rs`
 - Test: `MVP/e2e/src/deploy_restart_recovery_contract.rs`
@@ -585,7 +592,9 @@ flowchart TB
 **Approach:**
 - Ployz deploy owns the sequence: resolve manifest, preflight, claim route/hostname/cert/serving resources, ensure usable cert, start/update runtime, commit serving checkpoint, verify activation, record result.
 - Certificate usability has typed outcomes: usable, unusable with reasons, unknown freshness with bounds.
-- Usability checks include exact hostname, chain parse, key presence, expiry, minimum remaining lifetime, known revocation, material distribution, serving activation acknowledgement, and private-key redaction from evidence/errors/logs.
+- Define a fakeable certificate-status port owned by Ployz ACME/serving. It supplies expiry, activation, known-revoked, unknown-freshness, and evidence freshness inputs to deploy.
+- Usability checks include exact hostname, chain parse, key presence, expiry, minimum remaining lifetime, known revocation, revocation freshness, material distribution, serving activation acknowledgement, and private-key safety.
+- Private keys must be stored with restricted local permissions, moved only through authenticated/encrypted peer paths, and never serialized into generic evidence, status, errors, or logs.
 - Serving commit is the durable checkpoint; final success still requires cert and serving verification.
 - If the coordinator disappears, operation status may be stale-in-progress until Ployz resumes, fails, or asks for operator action.
 - Cleanup obligations created by the serving checkpoint are recorded with the checkpoint or with artifact ownership markers so crashes do not orphan residual work.
@@ -603,8 +612,9 @@ flowchart TB
 **Test scenarios:**
 - Covers AE1. Happy path: HTTPS deploy with no usable cert obtains or activates one, commits serving state, verifies activation, and returns success evidence.
 - Covers AE1. Error path: issuance, validation, material distribution, activation, or minimum-lifetime check fails and deploy returns visible failure.
-- Covers AE2. Error path: cert below safety window or known-revoked at activation fails deploy and exposes reason.
-- Covers AE2. Error path: private key material does not appear in operation evidence, product status, errors, or logs.
+- Covers AE2. Error path: cert below safety window fails deploy and exposes expiry/freshness reason.
+- R10/R26. Error path: known-revoked at activation or unknown revocation freshness fails deploy and exposes reason.
+- R10. Error path: private key material does not appear in operation evidence, product status, errors, or logs; local storage permissions and peer distribution requirements are enforced.
 - Covers AE4. Error path: stale token rejects challenge write/clear, cert activation, serving commit, or serving reload before side effects.
 - Covers AE5. Error path: crash after evidence or checkpoint resumes only after Ployz verifier confirms cert/serving invariants.
 - Covers AE7. Integration: serving and runtime remain observable/adoptable after coordinator loss or restart.
@@ -685,6 +695,8 @@ flowchart TB
 - Test: `MVP/e2e/src/three_server_product_contract.rs`
 - Test: `MVP/e2e/src/pebble_acme_https_contract.rs`
 - Test: `MVP/e2e/src/volume_transfer_contract.rs`
+- Test: `MVP/e2e/src/deploy_restart_recovery_contract.rs`
+- Test: `MVP/e2e/src/steady_state_serving_contract.rs`
 
 **Approach:**
 - Document Polis as an internal support framework and Ployz as the product orchestration layer.
