@@ -24,10 +24,11 @@ pub use claims::{
 pub use error::{Error, Result};
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};
 pub use operations::{
-    BackendOperationStart, CommandKind, EvidenceKind, FingerprintedResource, IdempotencyKey,
-    OpenOperation, OperationBackend, OperationEvidence, OperationId, OperationReplay,
-    OperationReplayStatus, OperationRequest, OperationStart, RequestFingerprint,
-    SubmittedFenceFingerprint, TerminalMarker, close, record, start_or_replay,
+    AttemptReplay, AttemptRequest, AttemptStart, AttemptTerminal, BackendOperationStart,
+    CommandKind, EvidenceKind, FingerprintedResource, IdempotencyKey, OpenAttempt, OpenOperation,
+    OperationBackend, OperationEvidence, OperationId, OperationReplay, OperationReplayStatus,
+    OperationRequest, OperationStart, RequestFingerprint, RequestFingerprintBuilder,
+    SubmittedFenceFingerprint, TerminalMarker, begin_attempt, close, record, start_or_replay,
 };
 
 #[cfg(test)]

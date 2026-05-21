@@ -1,10 +1,12 @@
 //! Operation evidence and idempotency primitives.
 
-use std::time::SystemTime;
+use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::authority::GrantEpoch;
 use crate::identity::{PrincipalId, ScopeId};
 use crate::{Error, Result};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OperationId(String);
@@ -38,12 +40,24 @@ pub struct RequestFingerprint {
     scope: ScopeId,
     command: CommandKind,
     payload_hash: Vec<u8>,
+    request_hash: Vec<u8>,
     resources: Vec<FingerprintedResource>,
     submitted_fence: Option<Box<SubmittedFenceFingerprint>>,
     authority_epoch: GrantEpoch,
 }
 
 impl RequestFingerprint {
+    #[must_use]
+    pub fn builder(
+        actor: PrincipalId,
+        scope: ScopeId,
+        command: CommandKind,
+        schema: impl Into<String>,
+        authority_epoch: GrantEpoch,
+    ) -> RequestFingerprintBuilder {
+        RequestFingerprintBuilder::new(actor, scope, command, schema, authority_epoch)
+    }
+
     pub fn new(
         actor: PrincipalId,
         scope: ScopeId,
@@ -59,11 +73,21 @@ impl RequestFingerprint {
         let mut resources = resources;
         resources.sort();
         resources.dedup();
+        let request_hash = canonical_request_digest(
+            &actor,
+            &scope,
+            &command,
+            &payload_hash,
+            &resources,
+            submitted_fence.as_ref(),
+            authority_epoch,
+        );
         Ok(Self {
             actor,
             scope,
             command,
             payload_hash,
+            request_hash,
             resources,
             submitted_fence: submitted_fence.map(Box::new),
             authority_epoch,
@@ -91,6 +115,11 @@ impl RequestFingerprint {
     }
 
     #[must_use]
+    pub fn request_hash(&self) -> &[u8] {
+        &self.request_hash
+    }
+
+    #[must_use]
     pub fn resources(&self) -> &[FingerprintedResource] {
         &self.resources
     }
@@ -106,25 +135,125 @@ impl RequestFingerprint {
     }
 }
 
+pub struct RequestFingerprintBuilder {
+    actor: PrincipalId,
+    scope: ScopeId,
+    command: CommandKind,
+    schema: String,
+    fields: Vec<FingerprintField>,
+    resources: Vec<FingerprintedResource>,
+    submitted_fence: Option<SubmittedFenceFingerprint>,
+    authority_epoch: GrantEpoch,
+}
+
+impl RequestFingerprintBuilder {
+    #[must_use]
+    fn new(
+        actor: PrincipalId,
+        scope: ScopeId,
+        command: CommandKind,
+        schema: impl Into<String>,
+        authority_epoch: GrantEpoch,
+    ) -> Self {
+        Self {
+            actor,
+            scope,
+            command,
+            schema: schema.into(),
+            fields: Vec::new(),
+            resources: Vec::new(),
+            submitted_fence: None,
+            authority_epoch,
+        }
+    }
+
+    #[must_use]
+    pub fn field(mut self, key: &'static str, value: impl AsRef<str>) -> Self {
+        self.fields.push(FingerprintField {
+            key,
+            value: FingerprintValue::String(value.as_ref().to_owned()),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn field_u64(mut self, key: &'static str, value: u64) -> Self {
+        self.fields.push(FingerprintField {
+            key,
+            value: FingerprintValue::U64(value),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn field_time(mut self, key: &'static str, value: SystemTime) -> Self {
+        self.fields.push(FingerprintField {
+            key,
+            value: FingerprintValue::Time(value),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn resource(mut self, resource: FingerprintedResource) -> Self {
+        self.resources.push(resource);
+        self
+    }
+
+    #[must_use]
+    pub fn submitted_fence(mut self, fence: SubmittedFenceFingerprint) -> Self {
+        self.submitted_fence = Some(fence);
+        self
+    }
+
+    pub fn finish(self) -> Result<RequestFingerprint> {
+        if self.schema.trim().is_empty() || self.fields.is_empty() || self.resources.is_empty() {
+            return Err(Error::MalformedPayload);
+        }
+
+        let payload_hash = canonical_payload_digest(&self.schema, self.fields)?;
+        RequestFingerprint::new(
+            self.actor,
+            self.scope,
+            self.command,
+            payload_hash,
+            self.resources,
+            self.submitted_fence,
+            self.authority_epoch,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FingerprintField {
+    key: &'static str,
+    value: FingerprintValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FingerprintValue {
+    String(String),
+    U64(u64),
+    Time(SystemTime),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubmittedFenceFingerprint {
-    resource: String,
-    holder: String,
+    resource: FingerprintedResource,
+    holder: PrincipalId,
     epoch: u64,
     claim_hash: Vec<u8>,
 }
 
 impl SubmittedFenceFingerprint {
     pub fn new(
-        resource: impl Into<String>,
-        holder: impl Into<String>,
+        resource: FingerprintedResource,
+        holder: PrincipalId,
         epoch: u64,
         claim_hash: impl Into<Vec<u8>>,
     ) -> Result<Self> {
-        let resource = resource.into();
-        let holder = holder.into();
         let claim_hash = claim_hash.into();
-        if resource.trim().is_empty() || holder.trim().is_empty() || claim_hash.is_empty() {
+        if claim_hash.is_empty() {
             return Err(Error::MalformedPayload);
         }
         if epoch == 0 || epoch == u64::MAX {
@@ -138,14 +267,25 @@ impl SubmittedFenceFingerprint {
         })
     }
 
+    pub fn parse(
+        resource: impl Into<String>,
+        holder: impl Into<String>,
+        epoch: u64,
+        claim_hash: impl Into<Vec<u8>>,
+    ) -> Result<Self> {
+        let resource = FingerprintedResource::parse(resource)?;
+        let holder = PrincipalId::parse(holder)?;
+        Self::new(resource, holder, epoch, claim_hash)
+    }
+
     #[must_use]
     pub fn resource(&self) -> &str {
-        &self.resource
+        self.resource.as_str()
     }
 
     #[must_use]
     pub fn holder(&self) -> &str {
-        &self.holder
+        self.holder.as_str()
     }
 
     #[must_use]
@@ -166,6 +306,11 @@ impl CommandKind {
     pub fn parse(value: impl Into<String>) -> Result<Self> {
         parse_non_empty(value, Self)
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -174,6 +319,11 @@ pub struct FingerprintedResource(String);
 impl FingerprintedResource {
     pub fn parse(value: impl Into<String>) -> Result<Self> {
         parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -223,9 +373,115 @@ impl OperationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptRequest {
+    operation: OperationId,
+    idempotency: IdempotencyKey,
+    fingerprint: RequestFingerprint,
+    owner_deadline: SystemTime,
+}
+
+impl AttemptRequest {
+    #[must_use]
+    pub fn new(
+        operation: OperationId,
+        idempotency: IdempotencyKey,
+        fingerprint: RequestFingerprint,
+        owner_deadline: SystemTime,
+    ) -> Self {
+        Self {
+            operation,
+            idempotency,
+            fingerprint,
+            owner_deadline,
+        }
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        &self.fingerprint
+    }
+
+    #[must_use]
+    pub fn owner_deadline(&self) -> SystemTime {
+        self.owner_deadline
+    }
+
+    #[must_use]
+    fn as_operation_request(&self) -> OperationRequest {
+        OperationRequest::new(
+            self.operation.clone(),
+            self.idempotency.clone(),
+            self.fingerprint.clone(),
+            self.owner_deadline,
+        )
+    }
+}
+
+impl From<OperationRequest> for AttemptRequest {
+    fn from(request: OperationRequest) -> Self {
+        Self::new(
+            request.operation,
+            request.idempotency,
+            request.fingerprint,
+            request.owner_deadline,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationStart {
     Started(OpenOperation),
     Replayed(OperationReplay),
+}
+
+pub enum AttemptStart<'a> {
+    Started(OpenAttempt<'a>),
+    Replayed(AttemptReplay),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptReplay {
+    Open {
+        operation: OperationId,
+    },
+    Succeeded {
+        operation: OperationId,
+    },
+    Failed {
+        operation: OperationId,
+        payload: Vec<u8>,
+    },
+    Interrupted {
+        operation: OperationId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptTerminal {
+    Succeeded,
+    Failed(Vec<u8>),
+    Interrupted,
+}
+
+impl AttemptTerminal {
+    #[must_use]
+    fn marker(self) -> TerminalMarker {
+        match self {
+            Self::Succeeded => TerminalMarker::Succeeded,
+            Self::Failed(payload) => TerminalMarker::Failed(payload),
+            Self::Interrupted => TerminalMarker::Interrupted,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +525,74 @@ impl OpenOperation {
     #[must_use]
     pub fn fingerprint(&self) -> &RequestFingerprint {
         &self.fingerprint
+    }
+}
+
+pub struct OpenAttempt<'a> {
+    operation: OperationId,
+    idempotency: IdempotencyKey,
+    fingerprint: RequestFingerprint,
+    backend: &'a dyn OperationBackend,
+    terminalized: bool,
+}
+
+impl<'a> OpenAttempt<'a> {
+    #[must_use]
+    fn from_request(request: &OperationRequest, backend: &'a dyn OperationBackend) -> Self {
+        Self {
+            operation: request.operation.clone(),
+            idempotency: request.idempotency.clone(),
+            fingerprint: request.fingerprint.clone(),
+            backend,
+            terminalized: false,
+        }
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        &self.fingerprint
+    }
+
+    pub fn record(&self, evidence: OperationEvidence) -> Result<()> {
+        self.backend.record(&self.operation, evidence)
+    }
+
+    pub fn succeeded(self) -> Result<()> {
+        self.terminalize(AttemptTerminal::Succeeded)
+    }
+
+    pub fn failed(self, payload: Vec<u8>) -> Result<()> {
+        self.terminalize(AttemptTerminal::Failed(payload))
+    }
+
+    pub fn interrupted(self) -> Result<()> {
+        self.terminalize(AttemptTerminal::Interrupted)
+    }
+
+    pub fn terminalize(mut self, terminal: AttemptTerminal) -> Result<()> {
+        self.terminalized = true;
+        self.backend.close(&self.operation, terminal.marker())
+    }
+}
+
+impl Drop for OpenAttempt<'_> {
+    fn drop(&mut self) {
+        if self.terminalized {
+            return;
+        }
+        let _ = self
+            .backend
+            .close(&self.operation, TerminalMarker::Interrupted);
     }
 }
 
@@ -366,6 +690,29 @@ pub fn start_or_replay(
     }
 }
 
+pub fn begin_attempt<'a>(
+    backend: &'a dyn OperationBackend,
+    request: impl Into<AttemptRequest>,
+) -> Result<AttemptStart<'a>> {
+    let request = request.into();
+    let operation_request = request.as_operation_request();
+    match backend.start_or_replay(&operation_request)? {
+        BackendOperationStart::Started => Ok(AttemptStart::Started(OpenAttempt::from_request(
+            &operation_request,
+            backend,
+        ))),
+        BackendOperationStart::Replayed {
+            operation,
+            terminal,
+        } => Ok(AttemptStart::Replayed(match terminal {
+            Some(TerminalMarker::Succeeded) => AttemptReplay::Succeeded { operation },
+            Some(TerminalMarker::Failed(payload)) => AttemptReplay::Failed { operation, payload },
+            Some(TerminalMarker::Interrupted) => AttemptReplay::Interrupted { operation },
+            None => AttemptReplay::Open { operation },
+        })),
+    }
+}
+
 pub fn record(
     backend: &dyn OperationBackend,
     operation: &OpenOperation,
@@ -380,6 +727,92 @@ pub fn close(
     marker: TerminalMarker,
 ) -> Result<()> {
     backend.close(operation.operation(), marker)
+}
+
+fn canonical_payload_digest(schema: &str, mut fields: Vec<FingerprintField>) -> Result<Vec<u8>> {
+    fields.sort_by_key(|field| field.key);
+    let mut seen = BTreeSet::new();
+    let mut hasher = Sha256::new();
+    write_component(&mut hasher, "schema");
+    write_component(&mut hasher, schema);
+    for field in &fields {
+        if !seen.insert(field.key) {
+            return Err(Error::MalformedPayload);
+        }
+        write_component(&mut hasher, field.key);
+        match &field.value {
+            FingerprintValue::String(value) => {
+                write_component(&mut hasher, "string");
+                write_component(&mut hasher, value);
+            }
+            FingerprintValue::U64(value) => {
+                write_component(&mut hasher, "u64");
+                hasher.update(value.to_be_bytes());
+            }
+            FingerprintValue::Time(value) => {
+                write_component(&mut hasher, "time");
+                write_time(&mut hasher, *value);
+            }
+        }
+    }
+    Ok(hasher.finalize().to_vec())
+}
+
+fn canonical_request_digest(
+    actor: &PrincipalId,
+    scope: &ScopeId,
+    command: &CommandKind,
+    payload_hash: &[u8],
+    resources: &[FingerprintedResource],
+    submitted_fence: Option<&SubmittedFenceFingerprint>,
+    authority_epoch: GrantEpoch,
+) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    write_component(&mut hasher, "polis.request.v1");
+    write_component(&mut hasher, actor.as_str());
+    write_component(&mut hasher, scope.as_str());
+    write_component(&mut hasher, command.as_str());
+    write_bytes(&mut hasher, payload_hash);
+    for resource in resources {
+        write_component(&mut hasher, resource.as_str());
+    }
+    match submitted_fence {
+        Some(fence) => {
+            write_component(&mut hasher, "submitted-fence");
+            write_component(&mut hasher, fence.resource());
+            write_component(&mut hasher, fence.holder());
+            hasher.update(fence.epoch().to_be_bytes());
+            write_bytes(&mut hasher, fence.claim_hash());
+        }
+        None => write_component(&mut hasher, "no-submitted-fence"),
+    }
+    hasher.update(authority_epoch.value().to_be_bytes());
+    hasher.finalize().to_vec()
+}
+
+fn write_component(hasher: &mut Sha256, value: &str) {
+    write_bytes(hasher, value.as_bytes());
+}
+
+fn write_bytes(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update(value.len().to_be_bytes());
+    hasher.update(value);
+}
+
+fn write_time(hasher: &mut Sha256, value: SystemTime) {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            write_component(hasher, "after");
+            hasher.update(duration.as_secs().to_be_bytes());
+            hasher.update(duration.subsec_nanos().to_be_bytes());
+        }
+        Err(error) => {
+            let duration = error.duration();
+            write_component(hasher, "before");
+            hasher.update(duration.as_secs().to_be_bytes());
+            hasher.update(duration.subsec_nanos().to_be_bytes());
+        }
+    }
 }
 
 fn parse_non_empty<T>(value: impl Into<String>, build: impl FnOnce(String) -> T) -> Result<T> {
@@ -447,7 +880,7 @@ mod tests {
     }
 
     fn fence(epoch: u64, claim_hash: &[u8]) -> SubmittedFenceFingerprint {
-        SubmittedFenceFingerprint::new("volume:data", "node-a", epoch, claim_hash.to_vec())
+        SubmittedFenceFingerprint::parse("volume:data", "node-a", epoch, claim_hash.to_vec())
             .expect("submitted fence fingerprint")
     }
 
@@ -480,9 +913,25 @@ mod tests {
         authority_epoch: u64,
         submitted_fence: Option<SubmittedFenceFingerprint>,
     ) -> OperationRequest {
+        request_for(
+            "op-1",
+            "deploy-1",
+            payload_hash,
+            authority_epoch,
+            submitted_fence,
+        )
+    }
+
+    fn request_for(
+        operation: &str,
+        idempotency: &str,
+        payload_hash: &[u8],
+        authority_epoch: u64,
+        submitted_fence: Option<SubmittedFenceFingerprint>,
+    ) -> OperationRequest {
         OperationRequest::new(
-            OperationId::parse("op-1").expect("operation id"),
-            IdempotencyKey::parse("deploy-1").expect("idempotency key"),
+            OperationId::parse(operation).expect("operation id"),
+            IdempotencyKey::parse(idempotency).expect("idempotency key"),
             fingerprint(payload_hash, authority_epoch, submitted_fence),
             UNIX_EPOCH + Duration::from_secs(10),
         )
@@ -594,5 +1043,152 @@ mod tests {
             close(&store, open, TerminalMarker::Succeeded),
             Err(Error::TerminalAlreadyWritten)
         );
+    }
+
+    #[test]
+    fn attempt_success_consumes_and_terminalizes_once() {
+        let store = MemoryOperationStore::new();
+        let AttemptStart::Started(attempt) =
+            begin_attempt(&store, request(&[1, 2, 3], 7)).expect("started")
+        else {
+            panic!("expected started attempt");
+        };
+
+        attempt.succeeded().expect("succeeded");
+
+        assert_eq!(
+            store
+                .terminal
+                .borrow()
+                .get(&OperationId::parse("op-1").expect("operation"))
+                .cloned(),
+            Some(TerminalMarker::Succeeded)
+        );
+    }
+
+    #[test]
+    fn dropping_open_attempt_marks_interrupted() {
+        let store = MemoryOperationStore::new();
+        {
+            let AttemptStart::Started(_attempt) =
+                begin_attempt(&store, request(&[1, 2, 3], 7)).expect("started")
+            else {
+                panic!("expected started attempt");
+            };
+        }
+
+        assert_eq!(
+            store
+                .terminal
+                .borrow()
+                .get(&OperationId::parse("op-1").expect("operation"))
+                .cloned(),
+            Some(TerminalMarker::Interrupted)
+        );
+    }
+
+    #[test]
+    fn explicit_attempt_terminalization_failure_is_returned() {
+        let store = MemoryOperationStore::new();
+        let request = request_for(
+            "op-terminal-fails",
+            "idem-terminal-fails",
+            &[1, 2, 3],
+            7,
+            None,
+        );
+        let AttemptStart::Started(attempt) = begin_attempt(&store, request).expect("started")
+        else {
+            panic!("expected started attempt");
+        };
+        store.terminal.borrow_mut().insert(
+            OperationId::parse("op-terminal-fails").expect("operation"),
+            TerminalMarker::Interrupted,
+        );
+
+        assert_eq!(attempt.succeeded(), Err(Error::TerminalAlreadyWritten));
+    }
+
+    #[test]
+    fn fingerprint_builder_uses_canonical_digest_for_fields_resources_and_fence() {
+        let first = RequestFingerprint::builder(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+            CommandKind::parse("deploy").expect("command"),
+            "ployz.deploy.https.v1",
+            GrantEpoch::new(7),
+        )
+        .field("hostname", "app.example.com")
+        .field_u64("generation", 11)
+        .field_time("deadline", UNIX_EPOCH + Duration::from_secs(10))
+        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .submitted_fence(fence(3, b"claim-hash-a"))
+        .finish()
+        .expect("fingerprint");
+
+        let second = RequestFingerprint::builder(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+            CommandKind::parse("deploy").expect("command"),
+            "ployz.deploy.https.v1",
+            GrantEpoch::new(7),
+        )
+        .field("hostname", "app.example.com")
+        .field_u64("generation", 12)
+        .field_time("deadline", UNIX_EPOCH + Duration::from_secs(10))
+        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .submitted_fence(fence(3, b"claim-hash-a"))
+        .finish()
+        .expect("fingerprint");
+
+        assert_ne!(first.payload_hash(), second.payload_hash());
+    }
+
+    #[test]
+    fn fingerprint_builder_is_stable_across_field_order() {
+        let first = RequestFingerprint::builder(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+            CommandKind::parse("deploy").expect("command"),
+            "ployz.deploy.https.v1",
+            GrantEpoch::new(7),
+        )
+        .field("hostname", "app.example.com")
+        .field_u64("generation", 11)
+        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .finish()
+        .expect("fingerprint");
+
+        let second = RequestFingerprint::builder(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+            CommandKind::parse("deploy").expect("command"),
+            "ployz.deploy.https.v1",
+            GrantEpoch::new(7),
+        )
+        .field_u64("generation", 11)
+        .field("hostname", "app.example.com")
+        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .finish()
+        .expect("fingerprint");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn fingerprint_builder_rejects_duplicate_fields() {
+        let result = RequestFingerprint::builder(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+            CommandKind::parse("deploy").expect("command"),
+            "ployz.deploy.https.v1",
+            GrantEpoch::new(7),
+        )
+        .field("hostname", "app.example.com")
+        .field("hostname", "other.example.com")
+        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .finish();
+
+        assert_eq!(result, Err(Error::MalformedPayload));
     }
 }
