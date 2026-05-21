@@ -14,6 +14,7 @@ struct MvpParityPayloadReport {
     daemons: Vec<commands::MvpDaemonEvidence>,
     deploys: Vec<commands::MvpDeployEvidence>,
     gateway_http: Vec<commands::MvpGatewayHttpEvidence>,
+    container_dns: commands::MvpContainerDnsEvidence,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,8 +36,9 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
     }
     let bootstrap = commands::bootstrap_cluster(run)?;
     let daemons = commands::start_cluster_daemons(run)?;
-    let deploys = commands::deploy_web_and_api(run)?;
+    let deploys = commands::deploy_web_api_and_echo(run)?;
     let gateway_http = commands::verify_gateway_http(run)?;
+    let container_dns = commands::verify_container_dns(run, &bootstrap)?;
     write_report(
         run,
         &MvpParityPayloadReport {
@@ -46,6 +48,7 @@ pub(crate) fn run(run: &ScenarioRun) -> Result<()> {
             daemons,
             deploys,
             gateway_http,
+            container_dns,
         },
     )
 }
