@@ -34,12 +34,12 @@ impl IdempotencyKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestFingerprint {
-    pub actor: PrincipalId,
-    pub scope: ScopeId,
-    pub command: CommandKind,
-    pub payload_hash: Vec<u8>,
-    pub resources: Vec<FingerprintedResource>,
-    pub authority_epoch: GrantEpoch,
+    actor: PrincipalId,
+    scope: ScopeId,
+    command: CommandKind,
+    payload_hash: Vec<u8>,
+    resources: Vec<FingerprintedResource>,
+    authority_epoch: GrantEpoch,
 }
 
 impl RequestFingerprint {
@@ -66,6 +66,36 @@ impl RequestFingerprint {
             authority_epoch,
         })
     }
+
+    #[must_use]
+    pub fn actor(&self) -> &PrincipalId {
+        &self.actor
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> &ScopeId {
+        &self.scope
+    }
+
+    #[must_use]
+    pub fn command(&self) -> &CommandKind {
+        &self.command
+    }
+
+    #[must_use]
+    pub fn payload_hash(&self) -> &[u8] {
+        &self.payload_hash
+    }
+
+    #[must_use]
+    pub fn resources(&self) -> &[FingerprintedResource] {
+        &self.resources
+    }
+
+    #[must_use]
+    pub fn authority_epoch(&self) -> GrantEpoch {
+        self.authority_epoch
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,55 +118,122 @@ impl FingerprintedResource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationRequest {
-    pub operation: OperationId,
-    pub idempotency: IdempotencyKey,
-    pub fingerprint: RequestFingerprint,
-    pub owner_deadline: SystemTime,
+    operation: OperationId,
+    idempotency: IdempotencyKey,
+    fingerprint: RequestFingerprint,
+    owner_deadline: SystemTime,
+}
+
+impl OperationRequest {
+    #[must_use]
+    pub fn new(
+        operation: OperationId,
+        idempotency: IdempotencyKey,
+        fingerprint: RequestFingerprint,
+        owner_deadline: SystemTime,
+    ) -> Self {
+        Self {
+            operation,
+            idempotency,
+            fingerprint,
+            owner_deadline,
+        }
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        &self.fingerprint
+    }
+
+    #[must_use]
+    pub fn owner_deadline(&self) -> SystemTime {
+        self.owner_deadline
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationStart {
-    Started(OperationRecord),
-    Replayed(OperationRecord),
+    Started(OpenOperation),
+    Replayed(OperationReplay),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationRecord {
-    pub operation: OperationId,
-    pub idempotency: IdempotencyKey,
-    pub fingerprint: RequestFingerprint,
-    pub owner_deadline: SystemTime,
-    pub evidence: Vec<OperationEvidence>,
-    pub terminal: Option<TerminalMarker>,
+pub enum BackendOperationStart {
+    Started,
+    /// Existing operation found by a trusted durable backend after validating
+    /// the idempotency key and request fingerprint.
+    Replayed {
+        operation: OperationId,
+        terminal: Option<TerminalMarker>,
+    },
 }
 
-impl OperationRecord {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenOperation {
+    operation: OperationId,
+    idempotency: IdempotencyKey,
+    fingerprint: RequestFingerprint,
+}
+
+impl OpenOperation {
     #[must_use]
-    pub fn start(request: OperationRequest) -> Self {
+    fn from_request(request: &OperationRequest) -> Self {
         Self {
-            operation: request.operation,
-            idempotency: request.idempotency,
-            fingerprint: request.fingerprint,
-            owner_deadline: request.owner_deadline,
-            evidence: Vec::new(),
-            terminal: None,
+            operation: request.operation.clone(),
+            idempotency: request.idempotency.clone(),
+            fingerprint: request.fingerprint.clone(),
         }
     }
 
-    pub fn append_evidence(&mut self, evidence: OperationEvidence) -> Result<()> {
-        if self.terminal.is_some() {
-            return Err(Error::TerminalAlreadyWritten);
-        }
-        self.evidence.push(evidence);
-        Ok(())
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
     }
 
-    pub fn terminalize(&mut self, marker: TerminalMarker) -> Result<()> {
-        if self.terminal.is_some() {
-            return Err(Error::TerminalAlreadyWritten);
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        &self.fingerprint
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationReplay {
+    operation: OperationId,
+    terminal: Option<TerminalMarker>,
+}
+
+impl OperationReplay {
+    #[must_use]
+    fn from_backend(operation: OperationId, terminal: Option<TerminalMarker>) -> Self {
+        Self {
+            operation,
+            terminal,
         }
-        self.terminal = Some(marker);
-        Ok(())
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn terminal(&self) -> Option<&TerminalMarker> {
+        self.terminal.as_ref()
     }
 }
 
@@ -160,16 +257,50 @@ pub enum TerminalMarker {
     Interrupted,
 }
 
-pub trait OperationStore {
-    fn start_or_replay(&mut self, request: OperationRequest) -> Result<OperationStart>;
+/// Trusted durable operation state.
+///
+/// Implementations must validate idempotency keys against the full request
+/// fingerprint before returning a replay decision. Polis uses that backend
+/// decision to mint the lifecycle proof values exposed to callers.
+pub trait OperationBackend {
+    fn start_or_replay(&self, request: &OperationRequest) -> Result<BackendOperationStart>;
 
-    fn append_evidence(
-        &mut self,
-        operation: &OperationId,
-        evidence: OperationEvidence,
-    ) -> Result<()>;
+    fn record(&self, operation: &OperationId, evidence: OperationEvidence) -> Result<()>;
 
-    fn terminalize(&mut self, operation: &OperationId, marker: TerminalMarker) -> Result<()>;
+    fn close(&self, operation: &OperationId, marker: TerminalMarker) -> Result<()>;
+}
+
+pub fn start_or_replay(
+    backend: &dyn OperationBackend,
+    request: OperationRequest,
+) -> Result<OperationStart> {
+    match backend.start_or_replay(&request)? {
+        BackendOperationStart::Started => Ok(OperationStart::Started(OpenOperation::from_request(
+            &request,
+        ))),
+        BackendOperationStart::Replayed {
+            operation,
+            terminal,
+        } => Ok(OperationStart::Replayed(OperationReplay::from_backend(
+            operation, terminal,
+        ))),
+    }
+}
+
+pub fn record(
+    backend: &dyn OperationBackend,
+    operation: &OpenOperation,
+    evidence: OperationEvidence,
+) -> Result<()> {
+    backend.record(operation.operation(), evidence)
+}
+
+pub fn close(
+    backend: &dyn OperationBackend,
+    operation: OpenOperation,
+    marker: TerminalMarker,
+) -> Result<()> {
+    backend.close(operation.operation(), marker)
 }
 
 fn parse_non_empty<T>(value: impl Into<String>, build: impl FnOnce(String) -> T) -> Result<T> {
@@ -182,61 +313,57 @@ fn parse_non_empty<T>(value: impl Into<String>, build: impl FnOnce(String) -> T)
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::*;
 
     struct MemoryOperationStore {
-        by_idempotency: BTreeMap<IdempotencyKey, OperationRecord>,
+        by_idempotency: RefCell<BTreeMap<IdempotencyKey, OpenOperation>>,
+        terminal: RefCell<BTreeMap<OperationId, TerminalMarker>>,
     }
 
     impl MemoryOperationStore {
         fn new() -> Self {
             Self {
-                by_idempotency: BTreeMap::new(),
+                by_idempotency: RefCell::new(BTreeMap::new()),
+                terminal: RefCell::new(BTreeMap::new()),
             }
         }
     }
 
-    impl OperationStore for MemoryOperationStore {
-        fn start_or_replay(&mut self, request: OperationRequest) -> Result<OperationStart> {
-            if let Some(existing) = self.by_idempotency.get(&request.idempotency) {
-                if existing.fingerprint != request.fingerprint {
+    impl OperationBackend for MemoryOperationStore {
+        fn start_or_replay(&self, request: &OperationRequest) -> Result<BackendOperationStart> {
+            let by_idempotency = self.by_idempotency.borrow();
+            if let Some(existing) = by_idempotency.get(request.idempotency()) {
+                if existing.fingerprint() != request.fingerprint() {
                     return Err(Error::Conflict);
                 }
-                return Ok(OperationStart::Replayed(existing.clone()));
+                return Ok(BackendOperationStart::Replayed {
+                    operation: existing.operation().clone(),
+                    terminal: self.terminal.borrow().get(existing.operation()).cloned(),
+                });
             }
-            let record = OperationRecord::start(request);
+            drop(by_idempotency);
+            let record = OpenOperation::from_request(request);
             self.by_idempotency
-                .insert(record.idempotency.clone(), record.clone());
-            Ok(OperationStart::Started(record))
+                .borrow_mut()
+                .insert(record.idempotency().clone(), record.clone());
+            Ok(BackendOperationStart::Started)
         }
 
-        fn append_evidence(
-            &mut self,
-            operation: &OperationId,
-            evidence: OperationEvidence,
-        ) -> Result<()> {
-            let Some(record) = self
-                .by_idempotency
-                .values_mut()
-                .find(|record| &record.operation == operation)
-            else {
-                return Err(Error::Conflict);
-            };
-            record.append_evidence(evidence)
+        fn record(&self, _operation: &OperationId, _evidence: OperationEvidence) -> Result<()> {
+            Ok(())
         }
 
-        fn terminalize(&mut self, operation: &OperationId, marker: TerminalMarker) -> Result<()> {
-            let Some(record) = self
-                .by_idempotency
-                .values_mut()
-                .find(|record| &record.operation == operation)
-            else {
-                return Err(Error::Conflict);
-            };
-            record.terminalize(marker)
+        fn close(&self, operation: &OperationId, marker: TerminalMarker) -> Result<()> {
+            let mut terminal = self.terminal.borrow_mut();
+            if terminal.contains_key(operation) {
+                return Err(Error::TerminalAlreadyWritten);
+            }
+            terminal.insert(operation.clone(), marker);
+            Ok(())
         }
     }
 
@@ -256,63 +383,59 @@ mod tests {
     }
 
     fn request(payload_hash: &[u8], authority_epoch: u64) -> OperationRequest {
-        OperationRequest {
-            operation: OperationId::parse("op-1").expect("operation id"),
-            idempotency: IdempotencyKey::parse("deploy-1").expect("idempotency key"),
-            fingerprint: fingerprint(payload_hash, authority_epoch),
-            owner_deadline: UNIX_EPOCH + Duration::from_secs(10),
-        }
+        OperationRequest::new(
+            OperationId::parse("op-1").expect("operation id"),
+            IdempotencyKey::parse("deploy-1").expect("idempotency key"),
+            fingerprint(payload_hash, authority_epoch),
+            UNIX_EPOCH + Duration::from_secs(10),
+        )
     }
 
     #[test]
     fn same_idempotency_and_fingerprint_replays_record() {
-        let mut store = MemoryOperationStore::new();
-        let _started = store
-            .start_or_replay(request(&[1, 2, 3], 7))
-            .expect("started");
+        let store = MemoryOperationStore::new();
+        let _started = start_or_replay(&store, request(&[1, 2, 3], 7)).expect("started");
 
-        let replayed = store
-            .start_or_replay(request(&[1, 2, 3], 7))
-            .expect("replayed");
+        let replayed = start_or_replay(&store, request(&[1, 2, 3], 7)).expect("replayed");
 
         assert!(matches!(replayed, OperationStart::Replayed(_)));
     }
 
     #[test]
     fn same_idempotency_with_different_fingerprint_conflicts() {
-        let mut store = MemoryOperationStore::new();
-        let _started = store
-            .start_or_replay(request(&[1, 2, 3], 7))
-            .expect("started");
+        let store = MemoryOperationStore::new();
+        let _started = start_or_replay(&store, request(&[1, 2, 3], 7)).expect("started");
 
         assert_eq!(
-            store.start_or_replay(request(&[9], 7)),
+            start_or_replay(&store, request(&[9], 7)),
             Err(Error::Conflict)
         );
     }
 
     #[test]
     fn same_payload_with_different_authority_epoch_conflicts() {
-        let mut store = MemoryOperationStore::new();
-        let _started = store
-            .start_or_replay(request(&[1, 2, 3], 7))
-            .expect("started");
+        let store = MemoryOperationStore::new();
+        let _started = start_or_replay(&store, request(&[1, 2, 3], 7)).expect("started");
 
         assert_eq!(
-            store.start_or_replay(request(&[1, 2, 3], 8)),
+            start_or_replay(&store, request(&[1, 2, 3], 8)),
             Err(Error::Conflict)
         );
     }
 
     #[test]
-    fn second_terminal_marker_is_rejected() {
-        let mut record = OperationRecord::start(request(&[1], 7));
-        record
-            .terminalize(TerminalMarker::Succeeded)
-            .expect("terminal marker");
+    fn closing_an_operation_twice_is_rejected() {
+        let store = MemoryOperationStore::new();
+        let OperationStart::Started(open) =
+            start_or_replay(&store, request(&[1, 2, 3], 7)).expect("started")
+        else {
+            panic!("expected started operation");
+        };
+
+        close(&store, open.clone(), TerminalMarker::Succeeded).expect("closed");
 
         assert_eq!(
-            record.terminalize(TerminalMarker::Interrupted),
+            close(&store, open, TerminalMarker::Succeeded),
             Err(Error::TerminalAlreadyWritten)
         );
     }

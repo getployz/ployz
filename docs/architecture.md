@@ -96,9 +96,9 @@ managed infrastructure whose identity has drifted.
 
 The active root workspace separates the product from the support framework:
 
-- **Ployz** owns product orchestration: deploys, HTTPS bindings, certificate
-  usability, serving state, runtime participants, volume transfer, cleanup
-  status, and operator-facing failures.
+- **Ployz** owns product orchestration: deploys, domain HTTPS readiness,
+  certificate usability, serving state, runtime participants, volume transfer,
+  cleanup status, and operator-facing failures.
 - **Polis** owns product-neutral support primitives: typed identity,
   authority, authorized records, projection substrate, operation evidence,
   advisory claims, fencing tokens, and bounded mutation receipts.
@@ -107,6 +107,22 @@ Polis is internal infrastructure. Operators should see Ployz terms and Ployz
 errors, not Polis terminology. Ployz feature modules use product-owned ports;
 only adapters and composition code translate those ports onto Polis
 primitives.
+
+Polis APIs should be shaped as typed capabilities, not framework nouns. Holding
+a Polis-derived value should prove something and permit a narrower next action:
+an authorized actor can start a scoped operation, an open operation can record
+evidence or close, a claim guard can be presented at one protected resource, a
+receipt can be replay-verified, and a projection snapshot carries explicit
+freshness. Product modules should consume Ployz-facing capability values and
+typed ports; they should not manually juggle generic evidence, terminal markers,
+raw claim records, or opaque evidence bytes.
+
+Polis primitives must be grounded in the legacy MVP pressure map before they
+become architecture. See
+`docs/architecture/polis-mvp-extraction-map.md`. The map ties proposed
+capabilities back to concrete `legacy/mvp` cases such as ACME challenge leases,
+volume transfer post-call checks, deploy restart recovery, and projection
+key/payload validation.
 
 The boundary is considered healthy when a product operation can read as product
 code:
@@ -118,9 +134,15 @@ code:
 5. verify the domain invariant before reporting success,
 6. expose cleanup or unknown freshness as product status.
 
-The first root proof uses deploy with an HTTPS binding. Deploy must synchronously
-ensure a usable certificate, activate runtime participants, commit serving
-state, verify serving activation, and fail visibly when any proof is missing.
+The first root proof uses deploy with an HTTPS binding. Deploy must
+synchronously ensure domain HTTPS readiness, activate runtime participants,
+commit serving state, verify serving activation, and fail visibly when any
+proof is missing. Domain readiness is also a standalone product primitive:
+`ployz domain add <hostname>` validates the hostname, obtains or activates
+usable TLS material, verifies serving activation, and records a ready status
+that deploy can reuse. DNS mismatch preflight is intentionally deferred until
+the DNS probe and ingress ownership model are planned explicitly.
+
 The second proof uses ACME ownership and volume transfer to show the same
 support primitives can serve unlike domains without moving ACME or volume
 concepts into Polis.
@@ -201,6 +223,8 @@ Code is organized by domain, not by adapter pattern.
   and memory/NATS implementations.
 - **coordination**: leases, participant commands, explicit foreground
   coordination, and failure reporting.
+- **domain**: HTTPS readiness, certificate usability, serving activation, and
+  operator-facing domain status.
 - **deploy**: preview, placement, participant probing, apply, commit, cleanup,
   and deploy lifecycle facts.
 - **runtime**: local container/process operations through narrow backend

@@ -1,6 +1,6 @@
 //! Authorized record substrate.
 
-use crate::authority::{AuthorityContext, GrantEpoch};
+use crate::authority::{Authorized, GrantEpoch};
 use crate::identity::{PrincipalId, ScopeId, SourceWatermark};
 use crate::{Error, Result};
 
@@ -49,40 +49,89 @@ impl SchemaVersion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofMetadata {
-    pub principal: PrincipalId,
-    pub scope: ScopeId,
-    pub grant_epoch: GrantEpoch,
-    pub source_watermark: SourceWatermark,
-    pub schema_version: SchemaVersion,
+    principal: PrincipalId,
+    scope: ScopeId,
+    grant_epoch: GrantEpoch,
+    source_watermark: SourceWatermark,
+    schema_version: SchemaVersion,
 }
 
 impl ProofMetadata {
     #[must_use]
     pub fn new(
-        authority: AuthorityContext,
+        authority: &Authorized,
         source_watermark: SourceWatermark,
         schema_version: SchemaVersion,
     ) -> Self {
+        let context = authority.context();
         Self {
-            principal: authority.principal,
-            scope: authority.scope,
-            grant_epoch: authority.epoch,
+            principal: context.principal().clone(),
+            scope: context.scope().clone(),
+            grant_epoch: context.epoch(),
             source_watermark,
             schema_version,
         }
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> &ScopeId {
+        &self.scope
+    }
+
+    #[must_use]
+    pub fn grant_epoch(&self) -> GrantEpoch {
+        self.grant_epoch
+    }
+
+    #[must_use]
+    pub fn source_watermark(&self) -> SourceWatermark {
+        self.source_watermark
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedRecord {
-    pub payload: Bytes,
-    pub proof: ProofMetadata,
+    payload: Bytes,
+    proof: ProofMetadata,
 }
 
 impl AuthorizedRecord {
+    pub fn new(
+        payload: Bytes,
+        authority: &Authorized,
+        source_watermark: SourceWatermark,
+        schema_version: SchemaVersion,
+    ) -> Result<Self> {
+        if payload.is_empty() {
+            return Err(Error::MalformedPayload);
+        }
+        let proof = ProofMetadata::new(authority, source_watermark, schema_version);
+        Ok(Self { payload, proof })
+    }
+
     #[must_use]
-    pub fn new(payload: Bytes, proof: ProofMetadata) -> Self {
-        Self { payload, proof }
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    #[must_use]
+    pub fn into_payload(self) -> Bytes {
+        self.payload
+    }
+
+    #[must_use]
+    pub fn proof(&self) -> &ProofMetadata {
+        &self.proof
     }
 }
 
@@ -93,7 +142,7 @@ pub trait RecordAuthorizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::{AuthorityContext, GrantEpoch};
+    use crate::authority::{AuthorityContext, Authorized, GrantEpoch};
 
     #[test]
     fn empty_payload_is_rejected_before_authorization() {
@@ -112,9 +161,15 @@ mod tests {
         let principal = PrincipalId::parse("node-a").expect("principal");
         let scope = ScopeId::parse("cluster").expect("scope");
         let authority = AuthorityContext::new(principal, scope, GrantEpoch::new(3));
-        let proof = ProofMetadata::new(authority, SourceWatermark::new(9), SchemaVersion::new(1));
-        let record = AuthorizedRecord::new(vec![1, 2, 3], proof);
+        let authorized = Authorized::new(authority);
+        let record = AuthorizedRecord::new(
+            vec![1, 2, 3],
+            &authorized,
+            SourceWatermark::new(9),
+            SchemaVersion::new(1),
+        )
+        .expect("record");
 
-        assert_eq!(record.proof.grant_epoch, GrantEpoch::new(3));
+        assert_eq!(record.proof().grant_epoch(), GrantEpoch::new(3));
     }
 }

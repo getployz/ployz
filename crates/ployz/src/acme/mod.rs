@@ -113,6 +113,43 @@ pub trait CertificatePort {
     fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure>;
 }
 
+#[must_use]
+pub fn certificate_is_usable(
+    certificate: &CertificateUsability,
+    binding: &HttpsBinding,
+    minimum_valid_until: SystemTime,
+) -> bool {
+    certificate_unusable_reason(certificate, binding, minimum_valid_until).is_none()
+}
+
+#[must_use]
+pub fn certificate_unusable_reason(
+    certificate: &CertificateUsability,
+    binding: &HttpsBinding,
+    minimum_valid_until: SystemTime,
+) -> Option<CertificateUnusableReason> {
+    if certificate.hostname != binding.hostname {
+        return Some(CertificateUnusableReason::HostnameMismatch);
+    }
+    if certificate.activation != CertificateActivation::Acknowledged {
+        return Some(CertificateUnusableReason::ActivationRejected);
+    }
+    if certificate.material != CertificateMaterialState::PresentProtected {
+        return Some(CertificateUnusableReason::UnsafeMaterial);
+    }
+    match certificate.revocation {
+        RevocationFreshness::KnownFresh => {}
+        RevocationFreshness::KnownRevoked => {
+            return Some(CertificateUnusableReason::KnownRevoked);
+        }
+        RevocationFreshness::Unknown => return Some(CertificateUnusableReason::FreshnessUnknown),
+    }
+    if certificate.not_after < minimum_valid_until {
+        return Some(CertificateUnusableReason::SafetyWindowTooShort);
+    }
+    None
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChallengeSlot(String);
 

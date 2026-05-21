@@ -17,6 +17,7 @@ pub mod acme;
 pub mod adapters;
 pub mod composition;
 pub mod deploy;
+pub mod domain;
 pub mod error;
 pub mod operation;
 pub mod projection;

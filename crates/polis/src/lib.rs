@@ -20,9 +20,18 @@ pub mod operations;
 pub mod projections;
 pub mod records;
 
-pub use authority::{AuthorityContext, AuthorityDecision, GrantEpoch};
+pub use authority::{Authority, AuthorityDecision, AuthorityService, Authorized, GrantEpoch};
+pub use claims::{
+    ClaimEpoch, ClaimGuard, ClaimHash, ClaimLease, FenceCheck, FenceToken, HolderId, ResourceId,
+};
 pub use error::{Error, Result};
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};
+pub use operations::{
+    BackendOperationStart, CommandKind, EvidenceKind, FingerprintedResource, IdempotencyKey,
+    OpenOperation, OperationBackend, OperationEvidence, OperationId, OperationReplay,
+    OperationRequest, OperationStart, RequestFingerprint, TerminalMarker, close, record,
+    start_or_replay,
+};
 
 #[cfg(test)]
 mod tests {

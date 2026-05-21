@@ -5,16 +5,18 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use ployz::error::{PrimitiveFailure, VolumeFailure};
 use ployz::operation::{
-    AuthorityContext, AuthorityEpoch, EvidenceKind, FenceEpoch, FenceToken, IdempotencyKey,
-    MutationContext, OperationEvidence, OperationId, OperationPort, PrincipalId, ResourceId,
-    ScopeId, TerminalMarker,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, BackendOperationId, BackendOperationStart,
+    ClaimHash, CommandEnvelope, CommandIssuer, CommandRunner, EvidenceKind, FenceEpoch,
+    IdempotencyKey, MutationContext, MutationIntent, OperationBackend, OperationEvidence,
+    OperationId, OperationRequest, OperationResult, PrincipalId, ResourceId, ScopeId,
+    SubmittedFenceToken, TerminalMarker,
 };
 use ployz::volume::{
     CleanupFailureReason, CleanupStatus, FinalDeltaReceipt, OwnershipCommit, OwnershipEpoch,
     OwnershipVerification, ReceiveReceipt, SnapshotReceipt, SourceWatermark, SourceWriteStatus,
     VolumeClaimCheck, VolumeClaimPort, VolumeCleanupFailure, VolumeCleanupPort, VolumeId,
     VolumeOwner, VolumeOwnershipPort, VolumeSnapshotId, VolumeSourcePort, VolumeTargetPort,
-    VolumeTransferEngine, VolumeTransferFingerprint, VolumeTransferMode, VolumeTransferPlan,
+    VolumeTransferCommand, VolumeTransferEngine, VolumeTransferMode, VolumeTransferPlan,
     VolumeTransferRequest,
 };
 
@@ -154,37 +156,65 @@ struct FakeOperations {
     terminal: Rc<RefCell<Vec<TerminalMarker>>>,
 }
 
-impl OperationPort for FakeOperations {
-    fn record_evidence(&self, evidence: OperationEvidence) -> Result<(), PrimitiveFailure> {
+impl OperationBackend for FakeOperations {
+    fn start_or_replay(
+        &self,
+        _request: &OperationRequest,
+    ) -> OperationResult<BackendOperationStart> {
+        Ok(BackendOperationStart::Started)
+    }
+
+    fn record(
+        &self,
+        _operation: &BackendOperationId,
+        evidence: OperationEvidence,
+    ) -> OperationResult<()> {
         self.evidence.borrow_mut().push(evidence.kind);
         Ok(())
     }
 
-    fn terminalize(
+    fn close(
         &self,
-        _operation: &OperationId,
+        _operation: &BackendOperationId,
         marker: TerminalMarker,
-    ) -> Result<(), PrimitiveFailure> {
+    ) -> OperationResult<()> {
         self.terminal.borrow_mut().push(marker);
         Ok(())
     }
 }
 
-fn context() -> MutationContext {
-    MutationContext {
-        operation: OperationId::parse("volume-transfer-1").expect("operation"),
-        idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
-        authority: AuthorityContext {
+fn command() -> CommandEnvelope<VolumeTransferCommand> {
+    CommandIssuer::new(AllowAuthority)
+        .issue::<VolumeTransferCommand>(MutationIntent {
+            operation: OperationId::parse("volume-transfer-1").expect("operation"),
+            idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
             scope: ScopeId::parse("cluster").expect("scope"),
-            epoch: AuthorityEpoch::new(7),
-        },
-        fence: Some(FenceToken {
-            resource: ResourceId::parse("volume:data").expect("resource"),
-            holder: PrincipalId::parse("node-a").expect("holder"),
-            epoch: FenceEpoch::new(3),
-        }),
-        deadline: UNIX_EPOCH + Duration::from_secs(60),
+            command: ployz::operation::CommandKind::parse("volume-transfer").expect("command"),
+            payload_hash: vec![1],
+            resources: vec![
+                ployz::operation::FingerprintedResource::parse("volume:data").expect("volume"),
+            ],
+            submitted_fence: Some(SubmittedFenceToken {
+                resource: ResourceId::parse("volume:data").expect("resource"),
+                holder: PrincipalId::parse("node-a").expect("holder"),
+                epoch: FenceEpoch::new(3).expect("fence epoch"),
+                claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
+            }),
+            deadline: UNIX_EPOCH + Duration::from_secs(60),
+        })
+        .expect("command")
+}
+
+struct AllowAuthority;
+
+impl AuthorityPort for AllowAuthority {
+    fn decide(
+        &self,
+        _principal: &PrincipalId,
+        _scope: &ScopeId,
+    ) -> Result<AuthorityDecision, PrimitiveFailure> {
+        Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
     }
 }
 
@@ -200,6 +230,10 @@ fn plan() -> VolumeTransferPlan {
     }
 }
 
+fn request(mode: VolumeTransferMode) -> VolumeTransferRequest {
+    VolumeTransferRequest { plan: plan(), mode }
+}
+
 fn engine(
     claims: Vec<VolumeClaimCheck>,
     mutations: Rc<RefCell<Vec<&'static str>>>,
@@ -211,7 +245,7 @@ fn engine(
     FakeTarget,
     FakeOwnership,
     FakeCleanup,
-    FakeOperations,
+    CommandRunner<FakeOperations>,
 > {
     VolumeTransferEngine::new(
         FakeClaims {
@@ -229,7 +263,7 @@ fn engine(
             commit: None,
         },
         FakeCleanup { result: cleanup },
-        FakeOperations::default(),
+        CommandRunner::new(FakeOperations::default()),
     )
 }
 
@@ -244,7 +278,7 @@ fn stale_claim_rejects_before_source_mutation() {
     );
 
     assert_eq!(
-        transfer.transfer(&context(), &plan()),
+        transfer.transfer(command(), request(VolumeTransferMode::Start)),
         Err(VolumeFailure::StaleFence)
     );
     assert!(mutations.borrow().is_empty());
@@ -296,7 +330,7 @@ fn stale_claim_rejects_before_each_later_mutation() {
         );
 
         assert_eq!(
-            transfer.transfer(&context(), &plan()),
+            transfer.transfer(command(), request(VolumeTransferMode::Start)),
             Err(VolumeFailure::StaleFence)
         );
         assert_eq!(mutations.borrow().as_slice(), expected_mutations.as_slice());
@@ -317,7 +351,7 @@ fn cleanup_failure_remains_visible_without_rewriting_ownership() {
     );
 
     let outcome = transfer
-        .transfer(&context(), &plan())
+        .transfer(command(), request(VolumeTransferMode::Start))
         .expect("ownership committed");
 
     assert_eq!(
@@ -328,7 +362,7 @@ fn cleanup_failure_remains_visible_without_rewriting_ownership() {
 }
 
 #[test]
-fn cleanup_pending_records_failure_evidence_before_terminal_success() {
+fn cleanup_pending_records_checkpoint_before_terminal_success() {
     let operations = FakeOperations::default();
     let transfer = VolumeTransferEngine::new(
         FakeClaims {
@@ -360,17 +394,22 @@ fn cleanup_pending_records_failure_evidence_before_terminal_success() {
                 reason: CleanupFailureReason::DeleteFailed,
             }),
         },
-        operations.clone(),
+        CommandRunner::new(operations.clone()),
     );
 
     let outcome = transfer
-        .transfer(&context(), &plan())
+        .transfer(command(), request(VolumeTransferMode::Start))
         .expect("ownership committed");
 
     assert!(matches!(outcome.cleanup, CleanupStatus::Pending(_)));
     assert_eq!(
         operations.evidence.borrow().as_slice(),
-        [EvidenceKind::Checkpoint, EvidenceKind::Failure]
+        [
+            EvidenceKind::Observation(vec![]),
+            EvidenceKind::Checkpoint(vec![]),
+            EvidenceKind::Checkpoint(vec![]),
+            EvidenceKind::Checkpoint(vec![])
+        ]
     );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
@@ -405,11 +444,11 @@ fn receive_receipt_must_match_snapshot_and_target_before_ownership_commit() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        FakeOperations::default(),
+        CommandRunner::new(FakeOperations::default()),
     );
 
     assert_eq!(
-        transfer.transfer(&context(), &plan()),
+        transfer.transfer(command(), request(VolumeTransferMode::Start)),
         Err(VolumeFailure::ReceiveFailed)
     );
 }
@@ -450,11 +489,11 @@ fn committed_ownership_must_match_transfer_plan() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        FakeOperations::default(),
+        CommandRunner::new(FakeOperations::default()),
     );
 
     assert_eq!(
-        transfer.transfer(&context(), &plan()),
+        transfer.transfer(command(), request(VolumeTransferMode::Start)),
         Err(VolumeFailure::OwnershipCommitRejected)
     );
 }
@@ -478,7 +517,7 @@ fn retry_after_ownership_checkpoint_requires_verified_ownership() {
         Ok(CleanupStatus::Done),
     );
     assert_eq!(
-        first_attempt.transfer(&context(), &plan()),
+        first_attempt.transfer(command(), request(VolumeTransferMode::Start)),
         Err(VolumeFailure::OwnershipCommitRejected)
     );
 
@@ -490,13 +529,10 @@ fn retry_after_ownership_checkpoint_requires_verified_ownership() {
         Ok(CleanupStatus::Done),
     );
     second_attempt
-        .transfer_request(VolumeTransferRequest {
-            context: context(),
-            plan: plan(),
-            mode: VolumeTransferMode::ResumeAfterOwnershipCheckpoint(
-                VolumeTransferFingerprint::new(&context(), &plan()),
-            ),
-        })
+        .transfer(
+            command(),
+            request(VolumeTransferMode::VerifyCommittedOwnership),
+        )
         .expect("verified ownership resumes success");
     assert!(retry_mutations.borrow().is_empty());
 }
