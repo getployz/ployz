@@ -1,7 +1,7 @@
 //! Internal distributed-control support primitives for Ployz.
 //!
-//! Polis owns product-neutral mechanics such as identity, authority, records,
-//! projections, operation evidence, and claims. It must not know
+//! Polis owns product-neutral mechanics such as identity, authority, operation
+//! evidence, and claims. It must not know
 //! Ployz product domains such as deploys, certificates, routes, runtime
 //! participants, or volumes.
 //!
@@ -16,8 +16,6 @@ pub mod claims;
 pub mod error;
 pub mod identity;
 pub mod operations;
-pub mod projections;
-pub mod records;
 
 pub use authority::{Authority, AuthorityDecision, AuthorityService, Authorized, GrantEpoch};
 pub use claims::{
@@ -36,15 +34,7 @@ pub use operations::{
 mod tests {
     #[test]
     fn crate_has_no_product_modules() {
-        let public_modules = [
-            "authority",
-            "claims",
-            "error",
-            "identity",
-            "operations",
-            "projections",
-            "records",
-        ];
+        let public_modules = ["authority", "claims", "error", "identity", "operations"];
 
         assert!(!public_modules.contains(&"deploy"));
         assert!(!public_modules.contains(&"acme"));

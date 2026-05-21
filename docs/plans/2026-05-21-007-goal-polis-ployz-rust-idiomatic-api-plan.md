@@ -135,6 +135,9 @@ Already improved in the current branch:
 - `CommandBackend` is sealed to the Ployz operation boundary. Product modules
   can use it, but external code cannot implement a backend that bypasses the
   lifecycle and failure-disposition rules.
+- Unused public `polis::records` and `polis::projections` modules were deleted.
+  Record append and projection freshness values should return only with a real
+  Ployz append/read path, not as speculative public substrate.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -157,11 +160,6 @@ Still weak:
 - There is not yet a real claim backend/acquisition adapter. The current code
   has the intended proof shape, but production claim acquisition still needs a
   concrete adapter that returns Polis guards instead of test-support minting.
-- Polis still exports public `records` and `projections` capability modules
-  that are not consumed by the current Ployz product surface. They are grounded
-  in the legacy extraction map, but remain at risk of reading as speculative
-  framework nouns until a real read/append path consumes them or they are
-  trimmed.
 
 ## Requirements
 
@@ -543,26 +541,29 @@ defaulting back to bytes and generic `polis::Error`.
 
 ### S7. Projection/Record Append Outcome Shape
 
-**Status:** Simplification slice completed for unused public Polis surfaces.
-Unused public Ployz projection wrappers were also removed. Append/read outcomes
-remain deferred until a real projection or append store exists in the root
-rewrite.
+**Status:** Simplification slice completed for unused public Polis/Ployz
+projection and record surfaces. Append/read outcomes remain deferred until a
+real projection or append store exists in the root rewrite.
 
 **Goal:** Model append outcomes and projection snapshots in a way that supports
 MVP duplicate/conflict/freshness behavior.
 
 **Modify:**
 
-- `crates/polis/src/records.rs`
-- `crates/polis/src/projections.rs`
+- future `crates/polis/src/records.rs`, only when a product append/read path
+  needs it
+- future `crates/polis/src/projections.rs`, only when a product read path needs
+  it
 - future Ployz product projection module, only when a read path needs it
 - product adapters that append or read records
 
 **Work:**
 
-- Introduce clear inserted/already-present/conflict outcomes where missing.
+- Reintroduce clear inserted/already-present/conflict outcomes only with the
+  product caller that needs them.
 - Keep product payload enums and reducers in Ployz.
-- Ensure projection freshness is explicit at the Ployz boundary.
+- Ensure projection freshness is explicit at the Ployz boundary when a read path
+  exists.
 - Do not publish generic reducer/store traits before a production adapter needs
   them.
 - Do not publish Ployz projection ports before a product read path needs them.
