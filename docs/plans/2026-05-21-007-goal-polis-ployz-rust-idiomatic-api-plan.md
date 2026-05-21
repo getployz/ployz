@@ -62,14 +62,20 @@ Already improved in the current branch:
 - Command checkpoint byte encoding is centralized in the command boundary.
   Product modules describe checkpoint names and fields; they do not construct
   opaque evidence bytes directly.
+- `CommandRunner` can route terminal-success replay through a product verifier
+  without rerunning product work or writing another terminal marker. Non-success
+  replay remains unavailable.
+- Volume transfer replay is no longer a public request mode. Terminal-success
+  replay verifies committed ownership and cleanup status through product ports.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
 - Some capability values outside the completed operation/domain slices still
   need proof-constructor review.
-- `CommandRunner` still returns `ReplayUnavailable`; product verifier replay
-  remains future work for deploy and volume.
+- Deploy still uses conservative replay behavior; replay verification should
+  wait for a product-owned observational verifier that can mint a `DeployOutcome`
+  without activating runtime or serving state.
 - `CommandContext<C>` does not yet expose ergonomic claim, receipt, projection,
   or replay-verifier helpers, so product modules still pass raw context to
   every port.
@@ -364,7 +370,7 @@ manually handling operation evidence.
 
 - Stale claim rejects before source mutation and before later mutation.
 - Forged receive does not commit ownership.
-- Retry after ownership checkpoint requires verified ownership.
+- Terminal-success replay verifies committed ownership without source mutation.
 - Cleanup failure remains visible without rewriting ownership.
 - No `record_evidence` or `terminalize` calls remain in volume product code.
 
@@ -375,9 +381,10 @@ manually handling operation evidence.
 
 ### S5. Command Summary, Evidence Encoding, And Replay Boundary
 
-**Status:** In progress. The first narrow slice removed generic empty evidence
-and moved checkpoint byte encoding behind the Ployz command boundary. Replay
-verification and typed command summaries remain open.
+**Status:** In progress. Narrow slices have removed generic empty evidence,
+moved checkpoint byte encoding behind the Ployz command boundary, and added
+success-only replay verification for volume. Deploy replay verification and
+typed command summaries remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.
@@ -399,6 +406,8 @@ encodes safe evidence into Polis records and owns replay behavior.
   E2E tests should assert product outcomes and checkpoint occurrence/order, not
   private encoding bytes.
 - Make operation replay consult product verifiers before returning success.
+  Product verifiers are invoked only for terminal-success replay; pending,
+  failed, and interrupted replay cannot become success.
 - Keep evidence writes at the command boundary; do not reintroduce manual
   evidence bookkeeping into deploy, domain, or volume product code.
 
@@ -407,6 +416,7 @@ encodes safe evidence into Polis records and owns replay behavior.
 - Evidence rendering cannot include private key material.
 - Product modules do not construct raw `Vec<u8>` checkpoint payloads.
 - Duplicate evidence is idempotent where product verifier confirms success.
+- Non-terminal or failed replay does not call product verifiers.
 - Conflict evidence does not become success.
 
 **Completion Gate:**
