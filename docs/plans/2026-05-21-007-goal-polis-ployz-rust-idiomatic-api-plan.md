@@ -57,18 +57,22 @@ Already improved in the current branch:
   deploy carries `ServingActivationProof` in the outcome.
 - E2E-only proof minting uses an explicit `test-support` feature where external
   fakes need to construct product proof values.
+- `CommandRunner` no longer records empty generic observation, checkpoint, or
+  failure evidence. Product modules must opt into meaningful checkpoints.
+- Command checkpoint byte encoding is centralized in the command boundary.
+  Product modules describe checkpoint names and fields; they do not construct
+  opaque evidence bytes directly.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
 - Some capability values outside the completed operation/domain slices still
   need proof-constructor review.
-- `CommandRunner` still records empty generic evidence and returns
-  `ReplayUnavailable`; product verifier replay remains future work for deploy
-  and volume.
+- `CommandRunner` still returns `ReplayUnavailable`; product verifier replay
+  remains future work for deploy and volume.
 - `CommandContext<C>` does not yet expose ergonomic claim, receipt, projection,
-  or checkpoint helpers, so product modules still pass raw context to every
-  port.
+  or replay-verifier helpers, so product modules still pass raw context to
+  every port.
 - `DomainReadinessService` is better, but the happy path still has status
   writes and port sequencing in one service instead of a crisp command/service
   boundary.
@@ -371,7 +375,9 @@ manually handling operation evidence.
 
 ### S5. Command Summary, Evidence Encoding, And Replay Boundary
 
-**Status:** Next likely code slice.
+**Status:** In progress. The first narrow slice removed generic empty evidence
+and moved checkpoint byte encoding behind the Ployz command boundary. Replay
+verification and typed command summaries remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.
@@ -389,6 +395,9 @@ encodes safe evidence into Polis records and owns replay behavior.
 
 - Define typed command summaries where needed.
 - Keep private key material and unsafe payloads out of generic evidence.
+- Keep exact checkpoint byte-format tests inside the command boundary; product
+  E2E tests should assert product outcomes and checkpoint occurrence/order, not
+  private encoding bytes.
 - Make operation replay consult product verifiers before returning success.
 - Keep evidence writes at the command boundary; do not reintroduce manual
   evidence bookkeeping into deploy, domain, or volume product code.
@@ -396,6 +405,7 @@ encodes safe evidence into Polis records and owns replay behavior.
 **Tests:**
 
 - Evidence rendering cannot include private key material.
+- Product modules do not construct raw `Vec<u8>` checkpoint payloads.
 - Duplicate evidence is idempotent where product verifier confirms success.
 - Conflict evidence does not become success.
 

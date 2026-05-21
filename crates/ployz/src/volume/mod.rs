@@ -270,37 +270,20 @@ enum VolumeCheckpoint<'a> {
     CleanupPending(&'a CleanupArtifactId),
 }
 
-impl CommandCheckpoint for VolumeCheckpoint<'_> {
-    fn encode_checkpoint(&self) -> Vec<u8> {
+impl VolumeCheckpoint<'_> {
+    fn command_checkpoint(&self) -> CommandCheckpoint {
         match self {
             Self::OwnershipCommitted(commit) => {
-                let mut payload = b"volume.ownership_committed;".to_vec();
-                encode_field(&mut payload, "volume", commit.volume.as_str());
-                encode_field(&mut payload, "owner", commit.owner.as_str());
-                encode_field(&mut payload, "epoch", &commit.epoch.value().to_string());
-                encode_field(
-                    &mut payload,
-                    "watermark",
-                    &commit.source_watermark.value().to_string(),
-                );
-                payload
+                CommandCheckpoint::new("volume.ownership_committed")
+                    .field("volume", commit.volume.as_str())
+                    .field("owner", commit.owner.as_str())
+                    .field("epoch", commit.epoch.value().to_string())
+                    .field("watermark", commit.source_watermark.value().to_string())
             }
-            Self::CleanupPending(artifact) => {
-                let mut payload = b"volume.cleanup_pending;".to_vec();
-                encode_field(&mut payload, "artifact", artifact.as_str());
-                payload
-            }
+            Self::CleanupPending(artifact) => CommandCheckpoint::new("volume.cleanup_pending")
+                .field("artifact", artifact.as_str()),
         }
     }
-}
-
-fn encode_field(payload: &mut Vec<u8>, key: &str, value: &str) {
-    payload.extend_from_slice(key.as_bytes());
-    payload.push(b'=');
-    payload.extend_from_slice(value.len().to_string().as_bytes());
-    payload.push(b':');
-    payload.extend_from_slice(value.as_bytes());
-    payload.push(b';');
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,7 +386,7 @@ where
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
         context
-            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership))
+            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership).command_checkpoint())
             .map_err(map_primitive_to_volume)?;
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
     }
@@ -427,7 +410,7 @@ where
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
         context
-            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership))
+            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership).command_checkpoint())
             .map_err(map_primitive_to_volume)?;
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
     }
@@ -448,7 +431,7 @@ where
             };
         if let CleanupStatus::Pending(pending_artifact) = &cleanup {
             context
-                .checkpoint(VolumeCheckpoint::CleanupPending(pending_artifact))
+                .checkpoint(VolumeCheckpoint::CleanupPending(pending_artifact).command_checkpoint())
                 .map_err(map_primitive_to_volume)?;
         }
 
@@ -499,21 +482,6 @@ mod tests {
     #[test]
     fn empty_volume_id_is_invalid_payload() {
         assert_eq!(VolumeId::parse(""), Err(VolumeFailure::InvalidPayload));
-    }
-
-    #[test]
-    fn checkpoint_payload_fields_are_length_prefixed() {
-        let checkpoint = VolumeCheckpoint::OwnershipCommitted(&OwnershipCommit {
-            volume: VolumeId::parse("db;owner=wrong").expect("volume"),
-            owner: VolumeOwner::parse("node=b").expect("owner"),
-            epoch: OwnershipEpoch::new(2),
-            source_watermark: SourceWatermark::new(5),
-        });
-
-        assert_eq!(
-            checkpoint.encode_checkpoint(),
-            b"volume.ownership_committed;volume=14:db;owner=wrong;owner=6:node=b;epoch=1:2;watermark=1:5;".to_vec()
-        );
     }
 
     #[test]
