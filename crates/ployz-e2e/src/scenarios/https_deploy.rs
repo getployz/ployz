@@ -17,11 +17,9 @@ use ployz::domain::{
 };
 use ployz::error::{DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, BackendOperationId, BackendOperationStart,
-    ClaimHash, CommandEnvelope, CommandIssuer, CommandRunner, EvidenceKind, FenceEpoch,
-    IdempotencyKey, MutationContext, MutationIntent, OperationBackend, OperationEvidence,
-    OperationId, OperationRequest, OperationResult, PrincipalId, ScopeId, TerminalMarker,
-    TypedResourceId,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssuer,
+    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, MutationIntent, OperationId,
+    PrincipalId, ScopeId, TypedResourceId,
 };
 use ployz::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
@@ -31,6 +29,7 @@ use ployz::serving::{
     RouteId, ServingActivationObservation, ServingCommitReceipt, ServingGeneration, ServingPort,
     ServingSnapshot, ServingTarget,
 };
+use polis::{EvidenceKind, OperationEvidence, TerminalMarker};
 
 type FakeDomainReadiness =
     DomainReadinessService<FakeDomains, FakeDomains, FakeDomains, FakeDomains>;
@@ -174,28 +173,28 @@ pub(super) struct FakeOperations {
     pub(super) terminal: Rc<RefCell<Vec<TerminalMarker>>>,
 }
 
-impl OperationBackend for FakeOperations {
+impl polis::OperationBackend for FakeOperations {
     fn start_or_replay(
         &self,
-        _request: &OperationRequest,
-    ) -> OperationResult<BackendOperationStart> {
-        Ok(BackendOperationStart::Started)
+        _request: &polis::OperationRequest,
+    ) -> polis::Result<polis::BackendOperationStart> {
+        Ok(polis::BackendOperationStart::Started)
     }
 
     fn record(
         &self,
-        _operation: &BackendOperationId,
-        evidence: OperationEvidence,
-    ) -> OperationResult<()> {
+        _operation: &polis::OperationId,
+        evidence: polis::OperationEvidence,
+    ) -> polis::Result<()> {
         self.evidence.borrow_mut().push(evidence);
         Ok(())
     }
 
     fn close(
         &self,
-        _operation: &BackendOperationId,
-        marker: TerminalMarker,
-    ) -> OperationResult<()> {
+        _operation: &polis::OperationId,
+        marker: polis::TerminalMarker,
+    ) -> polis::Result<()> {
         self.terminal.borrow_mut().push(marker);
         Ok(())
     }

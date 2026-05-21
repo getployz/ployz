@@ -14,9 +14,3 @@ pub use context::{CommandKind, FingerprintedResource, MutationContext, MutationI
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,
 };
-pub use polis::{
-    BackendOperationStart, EvidenceKind, OperationBackend, OperationEvidence,
-    OperationId as BackendOperationId, OperationRequest, TerminalMarker,
-};
-
-pub type OperationResult<T> = polis::Result<T>;

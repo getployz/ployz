@@ -5,11 +5,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use ployz::error::{PrimitiveFailure, VolumeFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, BackendOperationId, BackendOperationStart,
-    ClaimHash, CommandEnvelope, CommandIssuer, CommandRunner, EvidenceKind, FenceEpoch,
-    IdempotencyKey, MutationContext, MutationIntent, OperationBackend, OperationEvidence,
-    OperationId, OperationRequest, OperationResult, PrincipalId, ResourceId, ScopeId,
-    SubmittedFenceToken, TerminalMarker,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssuer,
+    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, MutationIntent, OperationId,
+    PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
 };
 use ployz::volume::{
     CleanupFailureReason, CleanupStatus, FinalDeltaReceipt, OwnershipCommit, OwnershipEpoch,
@@ -19,6 +17,7 @@ use ployz::volume::{
     VolumeTransferCommand, VolumeTransferEngine, VolumeTransferMode, VolumeTransferPlan,
     VolumeTransferRequest,
 };
+use polis::{EvidenceKind, TerminalMarker};
 
 #[derive(Clone)]
 struct FakeClaims {
@@ -156,28 +155,28 @@ struct FakeOperations {
     terminal: Rc<RefCell<Vec<TerminalMarker>>>,
 }
 
-impl OperationBackend for FakeOperations {
+impl polis::OperationBackend for FakeOperations {
     fn start_or_replay(
         &self,
-        _request: &OperationRequest,
-    ) -> OperationResult<BackendOperationStart> {
-        Ok(BackendOperationStart::Started)
+        _request: &polis::OperationRequest,
+    ) -> polis::Result<polis::BackendOperationStart> {
+        Ok(polis::BackendOperationStart::Started)
     }
 
     fn record(
         &self,
-        _operation: &BackendOperationId,
-        evidence: OperationEvidence,
-    ) -> OperationResult<()> {
+        _operation: &polis::OperationId,
+        evidence: polis::OperationEvidence,
+    ) -> polis::Result<()> {
         self.evidence.borrow_mut().push(evidence.kind);
         Ok(())
     }
 
     fn close(
         &self,
-        _operation: &BackendOperationId,
-        marker: TerminalMarker,
-    ) -> OperationResult<()> {
+        _operation: &polis::OperationId,
+        marker: polis::TerminalMarker,
+    ) -> polis::Result<()> {
         self.terminal.borrow_mut().push(marker);
         Ok(())
     }
