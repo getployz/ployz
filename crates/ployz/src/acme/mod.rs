@@ -112,6 +112,33 @@ pub trait CertificatePort {
     fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChallengeSlot(String);
+
+impl ChallengeSlot {
+    pub fn parse(value: impl Into<String>) -> std::result::Result<Self, CertificateFailure> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(CertificateFailure::UnauthorizedBinding);
+        }
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChallengeOwnership {
+    Owned { slot: ChallengeSlot },
+    Rejected(CertificateFailure),
+}
+
+pub trait ChallengeOwnershipPort {
+    fn claim_challenge(
+        &self,
+        context: &MutationContext,
+        binding: &HttpsBinding,
+    ) -> Result<ChallengeOwnership, CertificateFailure>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +159,13 @@ mod tests {
             outcome,
             EnsureCertificateOutcome::Unusable(CertificateUnusableReason::Missing)
         ));
+    }
+
+    #[test]
+    fn empty_challenge_slot_is_rejected() {
+        assert_eq!(
+            ChallengeSlot::parse(""),
+            Err(CertificateFailure::UnauthorizedBinding)
+        );
     }
 }
