@@ -296,6 +296,24 @@ impl OperationReplay {
     pub fn terminal(&self) -> Option<&TerminalMarker> {
         self.terminal.as_ref()
     }
+
+    #[must_use]
+    pub fn status(&self) -> OperationReplayStatus<'_> {
+        match self.terminal.as_ref() {
+            Some(TerminalMarker::Succeeded) => OperationReplayStatus::Succeeded,
+            Some(TerminalMarker::Failed(payload)) => OperationReplayStatus::Failed(payload),
+            Some(TerminalMarker::Interrupted) => OperationReplayStatus::Interrupted,
+            None => OperationReplayStatus::Open,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationReplayStatus<'a> {
+    Open,
+    Succeeded,
+    Failed(&'a [u8]),
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,6 +496,33 @@ mod tests {
         let replayed = start_or_replay(&store, request(&[1, 2, 3], 7)).expect("replayed");
 
         assert!(matches!(replayed, OperationStart::Replayed(_)));
+    }
+
+    #[test]
+    fn replay_status_makes_open_and_terminal_states_explicit() {
+        let operation = OperationId::parse("op-1").expect("operation");
+
+        assert_eq!(
+            OperationReplay::from_backend(operation.clone(), None).status(),
+            OperationReplayStatus::Open
+        );
+        assert_eq!(
+            OperationReplay::from_backend(operation.clone(), Some(TerminalMarker::Succeeded))
+                .status(),
+            OperationReplayStatus::Succeeded
+        );
+        assert_eq!(
+            OperationReplay::from_backend(
+                operation.clone(),
+                Some(TerminalMarker::Failed(b"failed".to_vec())),
+            )
+            .status(),
+            OperationReplayStatus::Failed(b"failed")
+        );
+        assert_eq!(
+            OperationReplay::from_backend(operation, Some(TerminalMarker::Interrupted)).status(),
+            OperationReplayStatus::Interrupted
+        );
     }
 
     #[test]

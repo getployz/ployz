@@ -3,8 +3,8 @@
 use crate::error::{PrimitiveFailure, VolumeFailure};
 use crate::operation::{
     AuthorityPort, CommandBackend, CommandCheckpoint, CommandContext, CommandEnvelope,
-    CommandIssue, CommandIssuer, CommandKind, CommandPayload, FingerprintedResource,
-    MutationContext, MutationIntent, ResourceId, SubmittedFenceToken,
+    CommandFailureDisposition, CommandIssue, CommandIssuer, CommandKind, CommandPayload,
+    FingerprintedResource, MutationContext, MutationIntent, ResourceId, SubmittedFenceToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -378,9 +378,10 @@ where
         command: IssuedVolumeTransferCommand,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
         let IssuedVolumeTransferCommand { envelope, request } = command;
-        self.commands.run_with_replay(
+        self.commands.run_with_replay_and_failure_disposition(
             envelope,
             map_primitive_to_volume,
+            CommandFailureDisposition::Interrupted,
             |context| self.transfer_scoped(context, &request.plan),
             |mutation| self.verify_replayed_success(mutation, &request.plan),
         )
@@ -511,8 +512,11 @@ fn map_primitive_to_volume(error: PrimitiveFailure) -> VolumeFailure {
         | PrimitiveFailure::Timeout
         | PrimitiveFailure::NoResponder
         | PrimitiveFailure::FreshnessUnknown
-        | PrimitiveFailure::TerminalAlreadyWritten
-        | PrimitiveFailure::ReplayUnavailable => VolumeFailure::OwnershipCommitRejected,
+        | PrimitiveFailure::TerminalAlreadyWritten => VolumeFailure::OwnershipCommitRejected,
+        PrimitiveFailure::OperationAlreadySucceeded => VolumeFailure::OperationAlreadySucceeded,
+        PrimitiveFailure::OperationInProgress => VolumeFailure::OperationInProgress,
+        PrimitiveFailure::OperationAlreadyFailed => VolumeFailure::OperationAlreadyFailed,
+        PrimitiveFailure::OperationInterrupted => VolumeFailure::Interrupted,
     }
 }
 
@@ -538,6 +542,26 @@ mod tests {
     #[test]
     fn empty_volume_id_is_invalid_payload() {
         assert_eq!(VolumeId::parse(""), Err(VolumeFailure::InvalidPayload));
+    }
+
+    #[test]
+    fn volume_maps_replay_states_to_visible_failures() {
+        assert_eq!(
+            map_primitive_to_volume(PrimitiveFailure::OperationInProgress),
+            VolumeFailure::OperationInProgress
+        );
+        assert_eq!(
+            map_primitive_to_volume(PrimitiveFailure::OperationAlreadyFailed),
+            VolumeFailure::OperationAlreadyFailed
+        );
+        assert_eq!(
+            map_primitive_to_volume(PrimitiveFailure::OperationAlreadySucceeded),
+            VolumeFailure::OperationAlreadySucceeded
+        );
+        assert_eq!(
+            map_primitive_to_volume(PrimitiveFailure::OperationInterrupted),
+            VolumeFailure::Interrupted
+        );
     }
 
     #[test]

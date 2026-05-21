@@ -544,6 +544,45 @@ fn terminal_success_replay_verifies_ownership_without_mutation() {
 }
 
 #[test]
+fn terminal_interrupted_replay_does_not_run_volume_recovery_work() {
+    let replay_mutations = Rc::new(RefCell::new(Vec::new()));
+    let replay_operations = FakeOperations {
+        replay: Some(Some(TerminalMarker::Interrupted)),
+        ..FakeOperations::default()
+    };
+    let second_attempt = VolumeTransferEngine::new(
+        FakeClaims {
+            checks: Rc::new(RefCell::new(VecDeque::new())),
+        },
+        FakeSource {
+            mutations: replay_mutations.clone(),
+        },
+        FakeTarget {
+            receive: ReceiveReceipt {
+                snapshot: VolumeSnapshotId::parse("snap-1").expect("snapshot"),
+                target: VolumeOwner::parse("node-b").expect("target"),
+            },
+        },
+        FakeOwnership {
+            verifications: Rc::new(RefCell::new(VecDeque::new())),
+            commit: None,
+        },
+        FakeCleanup {
+            result: Ok(CleanupStatus::Done),
+        },
+        CommandRunner::new(replay_operations.clone()),
+    );
+
+    assert_eq!(
+        second_attempt.transfer(command()),
+        Err(VolumeFailure::Interrupted)
+    );
+    assert!(replay_mutations.borrow().is_empty());
+    assert!(replay_operations.evidence.borrow().is_empty());
+    assert!(replay_operations.terminal.borrow().is_empty());
+}
+
+#[test]
 fn idempotent_replay_does_not_run_volume_recovery_work() {
     let operations = FakeOperations {
         replay: Some(None),
@@ -585,7 +624,7 @@ fn idempotent_replay_does_not_run_volume_recovery_work() {
 
     assert_eq!(
         transfer.transfer(command()),
-        Err(VolumeFailure::OwnershipCommitRejected)
+        Err(VolumeFailure::OperationInProgress)
     );
     assert!(mutations.borrow().is_empty());
     assert!(operations.evidence.borrow().is_empty());

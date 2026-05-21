@@ -50,6 +50,12 @@ pub enum DeployFailure {
     ServingFailed(ServingFailure),
     #[error("operation evidence is stale")]
     StaleEvidence,
+    #[error("operation already succeeded")]
+    OperationAlreadySucceeded,
+    #[error("operation is still in progress")]
+    OperationInProgress,
+    #[error("operation already failed")]
+    OperationAlreadyFailed,
     #[error("cleanup is pending")]
     CleanupPending,
     #[error("operation was interrupted")]
@@ -126,6 +132,14 @@ pub enum VolumeFailure {
     OwnershipCommitRejected,
     #[error("cleanup failed")]
     CleanupFailed,
+    #[error("operation already succeeded")]
+    OperationAlreadySucceeded,
+    #[error("operation is still in progress")]
+    OperationInProgress,
+    #[error("operation already failed")]
+    OperationAlreadyFailed,
+    #[error("operation was interrupted")]
+    Interrupted,
     #[error("payload is invalid")]
     InvalidPayload,
 }
@@ -148,6 +162,12 @@ pub enum PrimitiveFailure {
     MalformedPayload,
     #[error("terminal marker already exists")]
     TerminalAlreadyWritten,
-    #[error("operation replay requires a product verifier")]
-    ReplayUnavailable,
+    #[error("operation already succeeded")]
+    OperationAlreadySucceeded,
+    #[error("operation is still in progress")]
+    OperationInProgress,
+    #[error("operation already failed")]
+    OperationAlreadyFailed,
+    #[error("operation was interrupted")]
+    OperationInterrupted,
 }
