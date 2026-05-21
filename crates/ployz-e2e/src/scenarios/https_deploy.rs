@@ -18,8 +18,8 @@ use ployz::domain::{
 };
 use ployz::error::{DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssue, CommandIssuer,
-    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId, ScopeId,
+    AttemptIssue, AttemptIssuer, AttemptLog, AuthorityDecision, AuthorityEpoch, AuthorityPort,
+    ClaimHash, FenceEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId, ScopeId,
     TypedResourceId,
 };
 use ployz::runtime::{
@@ -293,8 +293,8 @@ pub(super) fn activation_for(request: &DeployRequest) -> ServingActivationObserv
 
 pub(super) fn command() -> IssuedDeployCommand {
     DeployCommand::issue(
-        &CommandIssuer::new(AllowAuthority),
-        CommandIssue {
+        &AttemptIssuer::new(AllowAuthority),
+        AttemptIssue {
             operation: OperationId::parse("deploy-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
@@ -323,7 +323,7 @@ pub(super) fn engine(
     activation: ServingActivationObservation,
     operations: FakeOperations,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
-) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, AttemptLog<FakeOperations>> {
     engine_with_shared_state(
         certificate,
         activation,
@@ -341,7 +341,7 @@ fn engine_with_runtime(
     activation: ServingActivationObservation,
     operations: FakeOperations,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
-) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, AttemptLog<FakeOperations>> {
     let runtime = FakeRuntime {
         outcome: runtime,
         status: RuntimeParticipantStatus::Active(receipt()),
@@ -367,7 +367,7 @@ fn engine_with_shared_state(
     status: Rc<RefCell<DomainStatus>>,
     runtime: FakeRuntime,
     serving_commits: Rc<RefCell<usize>>,
-) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, AttemptLog<FakeOperations>> {
     let domains = FakeDomains {
         certificate,
         contexts,
@@ -380,7 +380,7 @@ fn engine_with_shared_state(
             activation,
             commits: serving_commits,
         },
-        CommandRunner::new(operations),
+        AttemptLog::new(operations),
     )
 }
 

@@ -10,11 +10,12 @@ mod polis_boundary;
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
 pub use command::{
-    CommandBackend, CommandContext, CommandFailureDisposition, CommandIssuer, CommandRunner,
+    AttemptBackend, AttemptContext, AttemptFailureDisposition, AttemptIssuer, AttemptLog,
+    AttemptProductError,
 };
-pub(crate) use command::{CommandCheckpoint, CommandEnvelope};
-pub use context::{CommandIssue, MutationContext};
-pub(crate) use context::{CommandKind, CommandPayload, FingerprintedResource, MutationIntent};
+pub(crate) use command::{AttemptCheckpoint, IssuedAttempt};
+pub(crate) use context::AttemptSpec;
+pub use context::{AttemptIssue, MutationContext};
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,
 };

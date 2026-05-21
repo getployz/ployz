@@ -1,39 +1,11 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use crate::operation::authority::AuthorityContext;
 use crate::operation::claims::SubmittedFenceToken;
-use crate::operation::identity::{
-    IdempotencyKey, OperationId, PrincipalId, ScopeId, parse_non_empty,
-};
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CommandKind(String);
-
-impl CommandKind {
-    pub fn parse(value: impl Into<String>) -> Result<Self, crate::error::PrimitiveFailure> {
-        parse_non_empty(value, Self)
-    }
-
-    pub(crate) fn into_polis(self) -> polis::Result<polis::CommandKind> {
-        polis::CommandKind::parse(self.0)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FingerprintedResource(String);
-
-impl FingerprintedResource {
-    pub fn parse(value: impl Into<String>) -> Result<Self, crate::error::PrimitiveFailure> {
-        parse_non_empty(value, Self)
-    }
-
-    pub(crate) fn into_polis(self) -> polis::Result<polis::FingerprintedResource> {
-        polis::FingerprintedResource::parse(self.0)
-    }
-}
+use crate::operation::identity::{IdempotencyKey, OperationId, PrincipalId, ScopeId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandIssue {
+pub struct AttemptIssue {
     pub operation: OperationId,
     pub idempotency: IdempotencyKey,
     pub principal: PrincipalId,
@@ -71,7 +43,7 @@ impl MutationContext {
     #[cfg(feature = "test-support")]
     #[must_use]
     pub fn test_new(
-        command: CommandIssue,
+        command: AttemptIssue,
         authority_epoch: crate::operation::authority::AuthorityEpoch,
         submitted_fence: Option<SubmittedFenceToken>,
     ) -> Self {
@@ -111,105 +83,123 @@ impl MutationContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MutationIntent {
-    pub operation: OperationId,
-    pub idempotency: IdempotencyKey,
-    pub principal: PrincipalId,
-    pub scope: ScopeId,
-    pub command: CommandKind,
-    pub payload_hash: Vec<u8>,
-    pub resources: Vec<FingerprintedResource>,
-    pub submitted_fence: Option<SubmittedFenceToken>,
-    pub deadline: SystemTime,
+pub(crate) struct AttemptSpec {
+    command: &'static str,
+    schema: &'static str,
+    fields: Vec<AttemptField>,
+    resources: Vec<String>,
+    submitted_fence: Option<SubmittedFenceToken>,
 }
 
-pub(crate) struct CommandPayload {
-    bytes: Vec<u8>,
-}
-
-impl CommandPayload {
+impl AttemptSpec {
     #[must_use]
-    pub(crate) fn new(version: &'static str) -> Self {
-        let mut payload = Self { bytes: Vec::new() };
-        payload.field("version", version);
-        payload
-    }
-
-    pub(crate) fn field(&mut self, key: &'static str, value: impl AsRef<str>) {
-        let value = value.as_ref();
-        self.bytes.extend_from_slice(key.as_bytes());
-        self.bytes.push(b'=');
-        self.bytes
-            .extend_from_slice(value.len().to_string().as_bytes());
-        self.bytes.push(b':');
-        self.bytes.extend_from_slice(value.as_bytes());
-        self.bytes.push(b';');
-    }
-
-    pub(crate) fn field_u64(&mut self, key: &'static str, value: u64) {
-        self.field(key, value.to_string());
-    }
-
-    pub(crate) fn field_time(&mut self, key: &'static str, value: SystemTime) {
-        match value.duration_since(UNIX_EPOCH) {
-            Ok(duration) => self.field(
-                key,
-                format!("after:{}:{}", duration.as_secs(), duration.subsec_nanos()),
-            ),
-            Err(error) => {
-                let duration = error.duration();
-                self.field(
-                    key,
-                    format!("before:{}:{}", duration.as_secs(), duration.subsec_nanos()),
-                );
-            }
+    pub(crate) fn new(command: &'static str, schema: &'static str) -> Self {
+        Self {
+            command,
+            schema,
+            fields: Vec::new(),
+            resources: Vec::new(),
+            submitted_fence: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn finish_hash(self) -> Vec<u8> {
-        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-        const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-        let mut hash = OFFSET;
-        for byte in self.bytes {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash.to_be_bytes().to_vec()
+    pub(crate) fn field(mut self, key: &'static str, value: impl AsRef<str>) -> Self {
+        self.fields.push(AttemptField {
+            key,
+            value: AttemptFieldValue::String(value.as_ref().to_owned()),
+        });
+        self
     }
+
+    #[must_use]
+    pub(crate) fn field_u64(mut self, key: &'static str, value: u64) -> Self {
+        self.fields.push(AttemptField {
+            key,
+            value: AttemptFieldValue::U64(value),
+        });
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn field_time(mut self, key: &'static str, value: SystemTime) -> Self {
+        self.fields.push(AttemptField {
+            key,
+            value: AttemptFieldValue::Time(value),
+        });
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn resource(mut self, resource: impl Into<String>) -> Self {
+        self.resources.push(resource.into());
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn submitted_fence(mut self, fence: SubmittedFenceToken) -> Self {
+        self.submitted_fence = Some(fence);
+        self
+    }
+
+    pub(crate) fn into_fingerprint_builder(
+        self,
+        actor: polis::PrincipalId,
+        scope: polis::ScopeId,
+        authority_epoch: polis::GrantEpoch,
+    ) -> polis::Result<(
+        polis::RequestFingerprintBuilder,
+        Option<SubmittedFenceToken>,
+    )> {
+        let command = polis::CommandKind::parse(self.command)?;
+        let mut builder =
+            polis::RequestFingerprint::builder(actor, scope, command, self.schema, authority_epoch);
+        for field in self.fields {
+            builder = match field.value {
+                AttemptFieldValue::String(value) => builder.field(field.key, value),
+                AttemptFieldValue::U64(value) => builder.field_u64(field.key, value),
+                AttemptFieldValue::Time(value) => builder.field_time(field.key, value),
+            };
+        }
+        for resource in self.resources {
+            builder = builder.resource(polis::FingerprintedResource::parse(resource)?);
+        }
+        if let Some(fence) = &self.submitted_fence {
+            builder =
+                builder.submitted_fence(fence.fingerprint().map_err(|_| polis::Error::StaleFence)?);
+        }
+        Ok((builder, self.submitted_fence))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttemptField {
+    key: &'static str,
+    value: AttemptFieldValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttemptFieldValue {
+    String(String),
+    U64(u64),
+    Time(SystemTime),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::PrimitiveFailure;
 
     #[test]
-    fn empty_command_kind_is_malformed_payload() {
-        assert_eq!(
-            CommandKind::parse(" "),
-            Err(PrimitiveFailure::MalformedPayload)
-        );
-    }
+    fn attempt_spec_rejects_empty_command_at_fingerprint_boundary() {
+        let result = AttemptSpec::new(" ", "test.v1")
+            .field("field", "value")
+            .resource("resource:test")
+            .into_fingerprint_builder(
+                polis::PrincipalId::parse("node-a").expect("principal"),
+                polis::ScopeId::parse("cluster").expect("scope"),
+                polis::GrantEpoch::new(7),
+            );
 
-    #[test]
-    fn empty_fingerprinted_resource_is_malformed_payload() {
-        assert_eq!(
-            FingerprintedResource::parse(" "),
-            Err(PrimitiveFailure::MalformedPayload)
-        );
-    }
-
-    #[test]
-    fn command_payload_hash_is_length_prefixed_and_stable() {
-        let mut first = CommandPayload::new("test.v1");
-        first.field("field", "a;b");
-
-        let mut second = CommandPayload::new("test.v1");
-        second.field("field", "a");
-        second.field("b", "");
-
-        assert_ne!(first.finish_hash(), second.finish_hash());
+        assert!(matches!(result, Err(polis::Error::MalformedPayload)));
     }
 }

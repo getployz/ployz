@@ -1,6 +1,8 @@
 mod issue;
 mod run;
 
-pub use issue::{CommandEnvelope, CommandIssuer};
-pub(crate) use run::CommandCheckpoint;
-pub use run::{CommandBackend, CommandContext, CommandFailureDisposition, CommandRunner};
+pub use issue::{AttemptIssuer, IssuedAttempt};
+pub(crate) use run::AttemptCheckpoint;
+pub use run::{
+    AttemptBackend, AttemptContext, AttemptFailureDisposition, AttemptLog, AttemptProductError,
+};

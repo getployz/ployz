@@ -5,7 +5,7 @@ use ployz::acme::{
 };
 use ployz::error::CertificateFailure;
 use ployz::operation::{
-    AuthorityEpoch, ClaimHash, CommandIssue, FenceEpoch, IdempotencyKey, MutationContext,
+    AttemptIssue, AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, MutationContext,
     OperationId, PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
 };
 
@@ -53,7 +53,7 @@ fn context(fence: FenceInput) -> MutationContext {
         }),
     };
     MutationContext::test_new(
-        CommandIssue {
+        AttemptIssue {
             operation: OperationId::parse("acme-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-acme-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),

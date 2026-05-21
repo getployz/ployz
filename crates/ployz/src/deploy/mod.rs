@@ -12,9 +12,8 @@ use crate::domain::{
 };
 use crate::error::{DeployFailure, PrimitiveFailure};
 use crate::operation::{
-    AuthorityPort, CommandBackend, CommandContext, CommandEnvelope, CommandFailureDisposition,
-    CommandIssue, CommandIssuer, CommandKind, CommandPayload, FingerprintedResource,
-    MutationContext, MutationIntent,
+    AttemptBackend, AttemptContext, AttemptFailureDisposition, AttemptIssue, AttemptIssuer,
+    AttemptProductError, AttemptSpec, AuthorityPort, IssuedAttempt, MutationContext,
 };
 use crate::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
@@ -52,54 +51,45 @@ pub struct DeployOutcome {
 pub enum DeployCommand {}
 
 pub struct IssuedDeployCommand {
-    envelope: CommandEnvelope<DeployCommand>,
+    envelope: IssuedAttempt<DeployCommand>,
     request: DeployRequest,
 }
 
 impl DeployCommand {
     pub fn issue<A>(
-        issuer: &CommandIssuer<A>,
-        command: CommandIssue,
+        issuer: &AttemptIssuer<A>,
+        command: AttemptIssue,
         request: DeployRequest,
     ) -> Result<IssuedDeployCommand, PrimitiveFailure>
     where
         A: AuthorityPort,
     {
-        let mut payload = CommandPayload::new("ployz.deploy.https.v1");
-        payload.field("hostname", request.manifest.https.hostname.as_str());
-        payload.field("route", request.manifest.route.as_str());
-        payload.field("serving_target", request.manifest.serving_target.as_str());
-        payload.field_u64(
-            "serving_generation",
-            request.manifest.serving_generation.value(),
-        );
-        payload.field("workload", request.manifest.workload.as_str());
-        payload.field("machine", request.manifest.machine.as_str());
-        payload.field_time(
-            "minimum_certificate_valid_until",
-            request.manifest.minimum_certificate_valid_until,
-        );
-        payload.field_time("request_deadline", request.deadline);
-
-        let envelope = issuer.issue(MutationIntent {
-            operation: command.operation,
-            idempotency: command.idempotency,
-            principal: command.principal,
-            scope: command.scope,
-            command: CommandKind::parse("deploy")?,
-            payload_hash: payload.finish_hash(),
-            resources: vec![
-                FingerprintedResource::parse(format!("route:{}", request.manifest.route.as_str()))?,
-                FingerprintedResource::parse(format!(
-                    "domain:{}",
-                    request.manifest.https.hostname.as_str()
-                ))?,
-            ],
-            submitted_fence: None,
-            deadline: command.deadline,
-        })?;
+        let envelope = issuer.issue(command, deploy_attempt_spec(&request))?;
         Ok(IssuedDeployCommand { envelope, request })
     }
+}
+
+fn deploy_attempt_spec(request: &DeployRequest) -> AttemptSpec {
+    AttemptSpec::new("deploy", "ployz.deploy.https.v1")
+        .field("hostname", request.manifest.https.hostname.as_str())
+        .field("route", request.manifest.route.as_str())
+        .field("serving_target", request.manifest.serving_target.as_str())
+        .field_u64(
+            "serving_generation",
+            request.manifest.serving_generation.value(),
+        )
+        .field("workload", request.manifest.workload.as_str())
+        .field("machine", request.manifest.machine.as_str())
+        .field_time(
+            "minimum_certificate_valid_until",
+            request.manifest.minimum_certificate_valid_until,
+        )
+        .field_time("request_deadline", request.deadline)
+        .resource(format!("route:{}", request.manifest.route.as_str()))
+        .resource(format!(
+            "domain:{}",
+            request.manifest.https.hostname.as_str()
+        ))
 }
 
 pub struct DeployEngine<D, R, S, O> {
@@ -126,7 +116,7 @@ where
     D: DomainReadinessPort,
     R: RuntimePort,
     S: ServingPort,
-    O: CommandBackend,
+    O: AttemptBackend,
 {
     pub fn deploy_https(
         &self,
@@ -135,8 +125,7 @@ where
         let IssuedDeployCommand { envelope, request } = command;
         self.commands.run_with_replay_and_failure_disposition(
             envelope,
-            map_primitive_to_deploy,
-            CommandFailureDisposition::Interrupted,
+            AttemptFailureDisposition::Interrupted,
             |context| {
                 let domain = self.ensure_domain_ready(context, &request)?;
                 let runtime = self.activate_runtime(context, &request)?;
@@ -169,7 +158,7 @@ where
 
     fn ensure_domain_ready(
         &self,
-        context: &CommandContext<'_>,
+        context: &AttemptContext<'_>,
         request: &DeployRequest,
     ) -> Result<DomainReady, DeployFailure> {
         self.ready_domain(context.mutation(), request, |domains, mutation, request| {
@@ -218,7 +207,7 @@ where
 
     fn activate_runtime(
         &self,
-        context: &CommandContext<'_>,
+        context: &AttemptContext<'_>,
         request: &DeployRequest,
     ) -> Result<ParticipantReceipt, DeployFailure> {
         let outcome = self
@@ -271,7 +260,7 @@ where
 
     fn commit_and_verify_serving(
         &self,
-        context: &CommandContext<'_>,
+        context: &AttemptContext<'_>,
         request: &DeployRequest,
         ready: &DomainReady,
     ) -> Result<ServingActivationProof, DeployFailure> {
@@ -356,6 +345,19 @@ fn map_primitive_to_deploy(error: PrimitiveFailure) -> DeployFailure {
     }
 }
 
+impl AttemptProductError for DeployFailure {
+    fn from_primitive_failure(error: PrimitiveFailure) -> Self {
+        map_primitive_to_deploy(error)
+    }
+
+    fn terminalization_failed(product: Self, terminalization: PrimitiveFailure) -> Self {
+        Self::AttemptTerminalizationFailed {
+            product: Box::new(product),
+            terminalization,
+        }
+    }
+}
+
 fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
     match error {
         DomainFailure::InvalidDomain => DeployFailure::InvalidManifest,
@@ -380,7 +382,7 @@ mod tests {
     use super::*;
     use crate::acme::{Hostname, HttpsBinding};
     use crate::operation::{
-        AuthorityDecision, AuthorityEpoch, AuthorityPort, CommandIssuer, IdempotencyKey,
+        AttemptIssuer, AuthorityDecision, AuthorityEpoch, AuthorityPort, IdempotencyKey,
         OperationId, PrincipalId, ScopeId,
     };
 
@@ -423,13 +425,13 @@ mod tests {
         };
 
         let first = DeployCommand::issue(
-            &CommandIssuer::new(AllowAuthority),
+            &AttemptIssuer::new(AllowAuthority),
             issue(),
             request.clone(),
         )
         .expect("first command");
         let second =
-            DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), changed_route)
+            DeployCommand::issue(&AttemptIssuer::new(AllowAuthority), issue(), changed_route)
                 .expect("second command");
 
         assert_ne!(
@@ -446,10 +448,10 @@ mod tests {
             ..request.clone()
         };
 
-        let first = DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), request)
+        let first = DeployCommand::issue(&AttemptIssuer::new(AllowAuthority), issue(), request)
             .expect("first command");
         let second = DeployCommand::issue(
-            &CommandIssuer::new(AllowAuthority),
+            &AttemptIssuer::new(AllowAuthority),
             issue(),
             changed_deadline,
         )
@@ -473,8 +475,8 @@ mod tests {
         }
     }
 
-    fn issue() -> CommandIssue {
-        CommandIssue {
+    fn issue() -> AttemptIssue {
+        AttemptIssue {
             operation: OperationId::parse("deploy-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),

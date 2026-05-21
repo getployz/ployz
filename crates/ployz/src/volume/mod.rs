@@ -2,9 +2,9 @@
 
 use crate::error::{PrimitiveFailure, VolumeFailure};
 use crate::operation::{
-    AuthorityPort, CommandBackend, CommandCheckpoint, CommandContext, CommandEnvelope,
-    CommandFailureDisposition, CommandIssue, CommandIssuer, CommandKind, CommandPayload,
-    FingerprintedResource, MutationContext, MutationIntent, ResourceId, SubmittedFenceToken,
+    AttemptBackend, AttemptCheckpoint, AttemptContext, AttemptFailureDisposition, AttemptIssue,
+    AttemptIssuer, AttemptProductError, AttemptSpec, AuthorityPort, IssuedAttempt, MutationContext,
+    ResourceId, SubmittedFenceToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -231,7 +231,38 @@ pub trait VolumeOwnershipPort {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupStatus {
     Done,
-    Pending(CleanupArtifactId),
+    Pending(CleanupPending),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupPending {
+    artifact: CleanupArtifactId,
+    reason: Option<CleanupFailureReason>,
+}
+
+impl CleanupPending {
+    #[must_use]
+    pub fn new(artifact: CleanupArtifactId, reason: Option<CleanupFailureReason>) -> Self {
+        Self { artifact, reason }
+    }
+
+    #[must_use]
+    pub fn from_failure(failure: VolumeCleanupFailure) -> Self {
+        Self {
+            artifact: failure.artifact,
+            reason: Some(failure.reason),
+        }
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> &CleanupArtifactId {
+        &self.artifact
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> Option<&CleanupFailureReason> {
+        self.reason.as_ref()
+    }
 }
 
 pub trait VolumeCleanupPort {
@@ -269,21 +300,36 @@ pub struct VolumeTransferOutcome {
 
 enum VolumeCheckpoint<'a> {
     OwnershipCommitted(&'a OwnershipCommit),
-    CleanupPending(&'a CleanupArtifactId),
+    CleanupPending(&'a CleanupPending),
 }
 
 impl VolumeCheckpoint<'_> {
-    fn command_checkpoint(&self) -> CommandCheckpoint {
+    fn command_checkpoint(&self) -> AttemptCheckpoint {
         match self {
             Self::OwnershipCommitted(commit) => {
-                CommandCheckpoint::new("volume.ownership_committed")
+                AttemptCheckpoint::new("volume.ownership_committed")
                     .field("volume", commit.volume.as_str())
                     .field("owner", commit.owner.as_str())
                     .field("epoch", commit.epoch.value().to_string())
                     .field("watermark", commit.source_watermark.value().to_string())
             }
-            Self::CleanupPending(artifact) => CommandCheckpoint::new("volume.cleanup_pending")
-                .field("artifact", artifact.as_str()),
+            Self::CleanupPending(pending) => AttemptCheckpoint::new("volume.cleanup_pending")
+                .field("artifact", pending.artifact().as_str())
+                .field(
+                    "reason",
+                    pending
+                        .reason()
+                        .map_or("unknown", CleanupFailureReason::as_str),
+                ),
+        }
+    }
+}
+
+impl CleanupFailureReason {
+    #[must_use]
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::DeleteFailed => "delete_failed",
         }
     }
 }
@@ -292,7 +338,7 @@ impl VolumeCheckpoint<'_> {
 pub enum VolumeTransferCommand {}
 
 pub struct IssuedVolumeTransferCommand {
-    envelope: CommandEnvelope<VolumeTransferCommand>,
+    envelope: IssuedAttempt<VolumeTransferCommand>,
     request: VolumeTransferRequest,
 }
 
@@ -303,8 +349,8 @@ impl VolumeTransferCommand {
     /// or refreshing the fence is a new transfer attempt and must use a fresh
     /// idempotency key.
     pub fn issue<A>(
-        issuer: &CommandIssuer<A>,
-        command: CommandIssue,
+        issuer: &AttemptIssuer<A>,
+        command: AttemptIssue,
         request: VolumeTransferRequest,
         submitted_fence: SubmittedFenceToken,
     ) -> Result<IssuedVolumeTransferCommand, PrimitiveFailure>
@@ -317,33 +363,30 @@ impl VolumeTransferCommand {
             return Err(PrimitiveFailure::StaleFence);
         }
 
-        let mut payload = CommandPayload::new("ployz.volume.transfer.v1");
-        payload.field("volume", request.plan.volume.as_str());
-        payload.field("source", request.plan.source.as_str());
-        payload.field("target", request.plan.target.as_str());
-        payload.field_u64(
-            "expected_source_watermark",
-            request.plan.expected_source_watermark.value(),
-        );
-        payload.field_u64("next_epoch", request.plan.next_epoch.value());
-        payload.field("cleanup_artifact", request.plan.cleanup_artifact.as_str());
-
-        let envelope = issuer.issue(MutationIntent {
-            operation: command.operation,
-            idempotency: command.idempotency,
-            principal: command.principal,
-            scope: command.scope,
-            command: CommandKind::parse("volume-transfer")?,
-            payload_hash: payload.finish_hash(),
-            resources: vec![FingerprintedResource::parse(format!(
-                "volume:{}",
-                request.plan.volume.as_str()
-            ))?],
-            submitted_fence: Some(submitted_fence),
-            deadline: command.deadline,
-        })?;
+        let envelope = issuer.issue(
+            command,
+            volume_transfer_attempt_spec(&request, submitted_fence),
+        )?;
         Ok(IssuedVolumeTransferCommand { envelope, request })
     }
+}
+
+fn volume_transfer_attempt_spec(
+    request: &VolumeTransferRequest,
+    submitted_fence: SubmittedFenceToken,
+) -> AttemptSpec {
+    AttemptSpec::new("volume-transfer", "ployz.volume.transfer.v1")
+        .field("volume", request.plan.volume.as_str())
+        .field("source", request.plan.source.as_str())
+        .field("target", request.plan.target.as_str())
+        .field_u64(
+            "expected_source_watermark",
+            request.plan.expected_source_watermark.value(),
+        )
+        .field_u64("next_epoch", request.plan.next_epoch.value())
+        .field("cleanup_artifact", request.plan.cleanup_artifact.as_str())
+        .resource(format!("volume:{}", request.plan.volume.as_str()))
+        .submitted_fence(submitted_fence)
 }
 
 pub struct VolumeTransferEngine<G, S, T, W, C, O> {
@@ -376,7 +419,7 @@ where
     T: VolumeTargetPort,
     W: VolumeOwnershipPort,
     C: VolumeCleanupPort,
-    O: CommandBackend,
+    O: AttemptBackend,
 {
     pub fn transfer(
         &self,
@@ -385,8 +428,7 @@ where
         let IssuedVolumeTransferCommand { envelope, request } = command;
         self.commands.run_with_replay_and_failure_disposition(
             envelope,
-            map_primitive_to_volume,
-            CommandFailureDisposition::Interrupted,
+            AttemptFailureDisposition::Interrupted,
             |context| self.transfer_scoped(context, &request.plan),
             |mutation| self.verify_replayed_success(mutation, &request.plan),
         )
@@ -394,7 +436,7 @@ where
 
     fn transfer_scoped(
         &self,
-        context: &CommandContext<'_>,
+        context: &AttemptContext<'_>,
         plan: &VolumeTransferPlan,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
         let mutation = context.mutation();
@@ -439,7 +481,7 @@ where
 
     fn finish_transfer(
         &self,
-        context: &CommandContext<'_>,
+        context: &AttemptContext<'_>,
         plan: &VolumeTransferPlan,
         ownership: OwnershipCommit,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
@@ -459,7 +501,7 @@ where
 
     fn finish_cleanup(
         &self,
-        context: &CommandContext<'_>,
+        context: &AttemptContext<'_>,
         ownership: OwnershipCommit,
         artifact: &CleanupArtifactId,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
@@ -469,11 +511,11 @@ where
                 .cleanup_source_artifact(context.mutation(), &ownership, artifact)
             {
                 Ok(status) => status,
-                Err(error) => CleanupStatus::Pending(error.artifact),
+                Err(error) => CleanupStatus::Pending(CleanupPending::from_failure(error)),
             };
-        if let CleanupStatus::Pending(pending_artifact) = &cleanup {
+        if let CleanupStatus::Pending(pending) = &cleanup {
             context
-                .checkpoint(VolumeCheckpoint::CleanupPending(pending_artifact).command_checkpoint())
+                .checkpoint(VolumeCheckpoint::CleanupPending(pending).command_checkpoint())
                 .map_err(map_primitive_to_volume)?;
         }
 
@@ -525,6 +567,19 @@ fn map_primitive_to_volume(error: PrimitiveFailure) -> VolumeFailure {
     }
 }
 
+impl AttemptProductError for VolumeFailure {
+    fn from_primitive_failure(error: PrimitiveFailure) -> Self {
+        map_primitive_to_volume(error)
+    }
+
+    fn terminalization_failed(product: Self, terminalization: PrimitiveFailure) -> Self {
+        Self::AttemptTerminalizationFailed {
+            product: Box::new(product),
+            terminalization,
+        }
+    }
+}
+
 fn parse_non_empty<T>(
     value: impl Into<String>,
     build: impl FnOnce(String) -> T,
@@ -540,7 +595,7 @@ fn parse_non_empty<T>(
 mod tests {
     use super::*;
     use crate::operation::{
-        AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssuer, FenceEpoch,
+        AttemptIssuer, AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, FenceEpoch,
         IdempotencyKey, OperationId, PrincipalId, ScopeId,
     };
 
@@ -632,14 +687,14 @@ mod tests {
         };
 
         let first = VolumeTransferCommand::issue(
-            &CommandIssuer::new(AllowAuthority),
+            &AttemptIssuer::new(AllowAuthority),
             issue(),
             request.clone(),
             fence("volume:data"),
         )
         .expect("first command");
         let second = VolumeTransferCommand::issue(
-            &CommandIssuer::new(AllowAuthority),
+            &AttemptIssuer::new(AllowAuthority),
             issue(),
             changed_target,
             fence("volume:data"),
@@ -655,7 +710,7 @@ mod tests {
     #[test]
     fn volume_transfer_command_issue_rejects_fence_for_wrong_volume() {
         let result = VolumeTransferCommand::issue(
-            &CommandIssuer::new(AllowAuthority),
+            &AttemptIssuer::new(AllowAuthority),
             issue(),
             VolumeTransferRequest { plan: plan() },
             fence("volume:other"),
@@ -676,8 +731,8 @@ mod tests {
         }
     }
 
-    fn issue() -> CommandIssue {
-        CommandIssue {
+    fn issue() -> AttemptIssue {
+        AttemptIssue {
             operation: OperationId::parse("volume-transfer-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),

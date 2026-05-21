@@ -5,17 +5,17 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use ployz::error::{PrimitiveFailure, VolumeFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssue, CommandIssuer,
-    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId,
-    ResourceId, ScopeId, SubmittedFenceToken,
+    AttemptIssue, AttemptIssuer, AttemptLog, AuthorityDecision, AuthorityEpoch, AuthorityPort,
+    ClaimHash, FenceEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId, ResourceId,
+    ScopeId, SubmittedFenceToken,
 };
 use ployz::volume::{
-    CleanupFailureReason, CleanupStatus, FinalDeltaReceipt, IssuedVolumeTransferCommand,
-    OwnershipCommit, OwnershipEpoch, OwnershipVerification, ReceiveReceipt, SnapshotReceipt,
-    SourceWatermark, SourceWriteStatus, VolumeClaimCheck, VolumeClaimPort, VolumeCleanupFailure,
-    VolumeCleanupPort, VolumeId, VolumeOwner, VolumeOwnershipPort, VolumeSnapshotId,
-    VolumeSourcePort, VolumeTargetPort, VolumeTransferCommand, VolumeTransferEngine,
-    VolumeTransferPlan, VolumeTransferRequest,
+    CleanupFailureReason, CleanupPending, CleanupStatus, FinalDeltaReceipt,
+    IssuedVolumeTransferCommand, OwnershipCommit, OwnershipEpoch, OwnershipVerification,
+    ReceiveReceipt, SnapshotReceipt, SourceWatermark, SourceWriteStatus, VolumeClaimCheck,
+    VolumeClaimPort, VolumeCleanupFailure, VolumeCleanupPort, VolumeId, VolumeOwner,
+    VolumeOwnershipPort, VolumeSnapshotId, VolumeSourcePort, VolumeTargetPort,
+    VolumeTransferCommand, VolumeTransferEngine, VolumeTransferPlan, VolumeTransferRequest,
 };
 use polis::{EvidenceKind, TerminalMarker};
 
@@ -156,7 +156,7 @@ impl VolumeCleanupPort for FakeCleanup {
     ) -> Result<CleanupStatus, VolumeFailure> {
         match self.result.clone() {
             Ok(status) => Ok(status),
-            Err(error) => Ok(CleanupStatus::Pending(error.artifact)),
+            Err(error) => Ok(CleanupStatus::Pending(CleanupPending::from_failure(error))),
         }
     }
 }
@@ -203,8 +203,8 @@ impl polis::OperationBackend for FakeOperations {
 
 fn command() -> IssuedVolumeTransferCommand {
     VolumeTransferCommand::issue(
-        &CommandIssuer::new(AllowAuthority),
-        CommandIssue {
+        &AttemptIssuer::new(AllowAuthority),
+        AttemptIssue {
             operation: OperationId::parse("volume-transfer-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
@@ -261,7 +261,7 @@ fn engine(
     FakeTarget,
     FakeOwnership,
     FakeCleanup,
-    CommandRunner<FakeOperations>,
+    AttemptLog<FakeOperations>,
 > {
     VolumeTransferEngine::new(
         FakeClaims {
@@ -279,7 +279,7 @@ fn engine(
             commit: None,
         },
         FakeCleanup { result: cleanup },
-        CommandRunner::new(FakeOperations::default()),
+        AttemptLog::new(FakeOperations::default()),
     )
 }
 
@@ -366,7 +366,10 @@ fn cleanup_failure_remains_visible_without_rewriting_ownership() {
         outcome.ownership.owner,
         VolumeOwner::parse("node-b").expect("target")
     );
-    assert!(matches!(outcome.cleanup, CleanupStatus::Pending(_)));
+    let CleanupStatus::Pending(pending) = outcome.cleanup else {
+        panic!("cleanup should be pending");
+    };
+    assert_eq!(pending.reason(), Some(&CleanupFailureReason::DeleteFailed));
 }
 
 #[test]
@@ -402,7 +405,7 @@ fn cleanup_pending_records_checkpoint_before_terminal_success() {
                 reason: CleanupFailureReason::DeleteFailed,
             }),
         },
-        CommandRunner::new(operations.clone()),
+        AttemptLog::new(operations.clone()),
     );
 
     let outcome = transfer.transfer(command()).expect("ownership committed");
@@ -442,7 +445,7 @@ fn receive_receipt_must_match_snapshot_and_target_before_ownership_commit() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(FakeOperations::default()),
+        AttemptLog::new(FakeOperations::default()),
     );
 
     assert_eq!(
@@ -488,7 +491,7 @@ fn committed_ownership_must_match_transfer_plan() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(operations.clone()),
+        AttemptLog::new(operations.clone()),
     );
 
     assert_eq!(
@@ -532,7 +535,7 @@ fn terminal_success_replay_verifies_ownership_without_mutation() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(replay_operations.clone()),
+        AttemptLog::new(replay_operations.clone()),
     );
     let outcome = second_attempt
         .transfer(command())
@@ -570,7 +573,7 @@ fn terminal_interrupted_replay_does_not_run_volume_recovery_work() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(replay_operations.clone()),
+        AttemptLog::new(replay_operations.clone()),
     );
 
     assert_eq!(
@@ -619,7 +622,7 @@ fn idempotent_replay_does_not_run_volume_recovery_work() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(operations.clone()),
+        AttemptLog::new(operations.clone()),
     );
 
     assert_eq!(
