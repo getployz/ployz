@@ -25,6 +25,12 @@ Default `just e2e` runs:
 | `deploy_http_acme_gateway_smoke` | Deploy, runtime container, gateway, ACME challenge propagation, and HTTPS serving. |
 | `docker_bridge_forward_smoke` | Docker runtime bridge forwarding to NATS over the overlay bridge. |
 
+Named final gates that are intentionally opt-in:
+
+| Scenario | Boundary protected |
+| --- | --- |
+| `mvp_three_node_parity_smoke` | Final MVP data-plane parity: three privileged Docker E2E node containers, installed `mvp-node`, real WireGuard, Docker runtime workloads, gateway HTTP/HTTPS, Pebble ACME, container service DNS, update/drain, and daemon restart survival. |
+
 With `--zfs real`, the suite also runs:
 
 | Scenario | Boundary protected |

@@ -1,7 +1,7 @@
 ---
 title: MVP Consolidated Real-Boundary Data-Plane Parity Smoke
 type: feat
-status: active
+status: complete
 date: 2026-05-21
 origin: user parity smoke correction
 parent_plan: docs/plans/2026-05-20-002-feat-mvp-data-plane-parity.md
@@ -379,12 +379,12 @@ U10 --> U11
   re-probes founder/peer/edge traffic without replacing the surviving runtime
   container.
 
-### Next Slice
+### Final Cleanup
 
-Final docs/gate cleanup: update final parity wording so the Docker E2E
-`mvp_three_node_parity_smoke` is the completion gate, keep the single-host MVP
-smoke framed as lower-level evidence, and run the final verification set before
-claiming parity complete.
+Complete. The parent parity plan and `docs/testing/e2e.md` name Docker E2E
+`mvp_three_node_parity_smoke` as the final parity gate. The single-host
+`MVP/e2e` smoke now prints that it is lower-level single-host evidence and
+points to the Docker E2E gate for final multi-container parity.
 
 ### U1. Split The MVP CLI Binary By Command
 
@@ -999,6 +999,21 @@ report rendering, or scenario orchestration, split it before adding more code.
 - Keep the final report path and scenario command in the completion evidence.
 - If CI cannot run the final privileged scenario, record the exact local runner
   command and environment prerequisites as the required release gate.
+
+## Completion Evidence
+
+- Final gate command:
+  `cargo run -p ployz-e2e -- --scenario mvp_three_node_parity_smoke --fail-fast`
+- Latest passing run id:
+  `mvp_three_node_parity_smoke-1779330489-810f142f-2ed6-4d25-ac0c-ab064f25f2c0`
+- Focused support gates:
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts shared_sqlite_store_rebuilds_indexes_for_external_process_writes -- --nocapture`,
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport -p mvp-node -- --nocapture`,
+  and `cargo test -p ployz-e2e mvp_three_node_parity_smoke -- --nocapture`.
+- Documentation/code cleanup gate:
+  the single-host `MVP/e2e` smoke is explicitly framed as lower-level evidence,
+  while `docs/testing/e2e.md` and the parent plan name the Docker E2E scenario
+  as the final parity gate.
 
 ---
 
