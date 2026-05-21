@@ -12,8 +12,10 @@
 //! - external I/O must be deadline-bounded by the adapter using the primitive.
 
 pub mod authority;
+pub mod claims;
 pub mod error;
 pub mod identity;
+pub mod operations;
 pub mod projections;
 pub mod records;
 
@@ -25,7 +27,15 @@ pub use identity::{PrincipalId, ScopeId, SourceWatermark};
 mod tests {
     #[test]
     fn crate_has_no_product_modules() {
-        let public_modules = ["authority", "error", "identity", "projections", "records"];
+        let public_modules = [
+            "authority",
+            "claims",
+            "error",
+            "identity",
+            "operations",
+            "projections",
+            "records",
+        ];
 
         assert!(!public_modules.contains(&"deploy"));
         assert!(!public_modules.contains(&"acme"));
