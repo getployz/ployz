@@ -19,8 +19,9 @@ Remaining findings are intentionally not auto-fixed in this plan:
   `polis::calls`, and the unused public projection/record extension traits
   (`RecordAuthorizer`, `Reducer`, and `ProjectionStore`) and their unused
   `RawRecord` / `RecordSource` support types were deleted in the Polis API
-  simplification slice. Reintroduce bounded call receipts or projection store
-  seams only from a real product caller.
+  simplification slice. The unused Ployz projection module was deleted for the
+  same reason. Reintroduce bounded call receipts or projection store seams only
+  from a real product caller.
 - The active `crates/ployz-e2e` crate is in-process product acceptance, not a
   real daemon/substrate E2E harness. A future runner should be added only when
   real process, runtime, gateway, ACME, network, or volume substrate boundaries

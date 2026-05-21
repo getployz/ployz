@@ -84,6 +84,9 @@ Already improved in the current branch:
   `RecordAuthorizer`, along with their unused `RawRecord` / `RecordSource`
   support types. Polis keeps the capability values currently used by Ployz
   adapters instead of exposing speculative framework seams.
+- The unused public Ployz projection module and Polis-to-product record adapter
+  helper were removed. Product projection APIs should come back from a real
+  deploy/domain/volume read path, not from an unused generic module.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -478,7 +481,8 @@ defaulting back to bytes and generic `polis::Error`.
 ### S7. Projection/Record Append Outcome Shape
 
 **Status:** Simplification slice completed for unused public Polis surfaces.
-Append outcomes remain deferred until a real append store exists in the root
+Unused public Ployz projection wrappers were also removed. Append/read outcomes
+remain deferred until a real projection or append store exists in the root
 rewrite.
 
 **Goal:** Model append outcomes and projection snapshots in a way that supports
@@ -488,7 +492,7 @@ MVP duplicate/conflict/freshness behavior.
 
 - `crates/polis/src/records.rs`
 - `crates/polis/src/projections.rs`
-- `crates/ployz/src/projection.rs`
+- future Ployz product projection module, only when a read path needs it
 - product adapters that append or read records
 
 **Work:**
@@ -498,6 +502,7 @@ MVP duplicate/conflict/freshness behavior.
 - Ensure projection freshness is explicit at the Ployz boundary.
 - Do not publish generic reducer/store traits before a production adapter needs
   them.
+- Do not publish Ployz projection ports before a product read path needs them.
 
 **Tests:**
 
