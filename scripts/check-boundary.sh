@@ -30,6 +30,7 @@ if find crates/ployz/src -type f -name '*.rs' \
   ! -path 'crates/ployz/src/adapters/*' \
   ! -path 'crates/ployz/src/composition.rs' \
   ! -path 'crates/ployz/src/operation.rs' \
+  ! -path 'crates/ployz/src/operation/*' \
   -print0 | xargs -0 grep -nE '\b(use +)?(polis|p2panda|iroh)(::|\s+as\s+|\s*\{)|\bextern +crate +(polis|p2panda|iroh)\b|::mvp_' ; then
   echo "ployz feature modules must not import polis, p2panda, iroh, or legacy mvp symbols" >&2
   exit 1
@@ -39,6 +40,7 @@ if find crates/ployz/src -type f -name '*.rs' \
   ! -path 'crates/ployz/src/adapters/*' \
   ! -path 'crates/ployz/src/composition.rs' \
   ! -path 'crates/ployz/src/operation.rs' \
+  ! -path 'crates/ployz/src/operation/*' \
   -print0 | xargs -0 grep -nE '\b(RawRecord|AuthorizedRecord|ProjectionInput|RecordSource|ProofMetadata|CandidateStatus|candidate_status)\b' ; then
   echo "ployz feature modules must not mention raw substrate record/projection internals" >&2
   exit 1
