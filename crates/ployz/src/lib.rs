@@ -21,6 +21,7 @@ pub mod error;
 pub mod projection;
 pub mod runtime;
 pub mod serving;
+pub mod volume;
 
 pub use error::{Error, PrimitiveFailure, Result};
 

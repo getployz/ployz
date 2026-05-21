@@ -18,6 +18,9 @@ pub enum Error {
     #[error("runtime operation failed: {0}")]
     Runtime(#[from] RuntimeFailure),
 
+    #[error("volume operation failed: {0}")]
+    Volume(#[from] VolumeFailure),
+
     #[error("projection operation failed: {0}")]
     Projection(#[from] ProjectionFailure),
 
@@ -101,6 +104,26 @@ pub enum RuntimeFailure {
     LostReplyConflict,
     #[error("backend failed")]
     BackendFailed,
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum VolumeFailure {
+    #[error("source is not the current owner")]
+    SourceNotOwner,
+    #[error("fencing token is stale")]
+    StaleFence,
+    #[error("source writes are still open")]
+    SourceWriteStillOpen,
+    #[error("snapshot failed")]
+    SnapshotFailed,
+    #[error("receive failed")]
+    ReceiveFailed,
+    #[error("ownership commit was rejected")]
+    OwnershipCommitRejected,
+    #[error("cleanup failed")]
+    CleanupFailed,
+    #[error("payload is invalid")]
+    InvalidPayload,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
