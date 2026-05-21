@@ -13,7 +13,7 @@ use ployz::domain::{
     DomainStatusPort, UsableDomainCertificate,
 };
 use ployz::operation::{
-    AuthorityEpoch, ClaimHash, CommandIssue, FenceEpoch, IdempotencyKey, MutationContext,
+    AttemptIssue, AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, MutationContext,
     OperationId, PrincipalId, ScopeId,
 };
 use ployz::serving::ServingGeneration;
@@ -146,7 +146,7 @@ impl DomainStatusPort for FakeStatus {
 
 fn context() -> MutationContext {
     MutationContext::test_new(
-        CommandIssue {
+        AttemptIssue {
             operation: OperationId::parse("domain-add-1").expect("operation"),
             idempotency: IdempotencyKey::parse("domain-add-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),

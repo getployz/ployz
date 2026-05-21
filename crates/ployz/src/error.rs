@@ -60,6 +60,11 @@ pub enum DeployFailure {
     CleanupPending,
     #[error("operation was interrupted")]
     Interrupted,
+    #[error("attempt terminalization failed after product failure")]
+    AttemptTerminalizationFailed {
+        product: Box<DeployFailure>,
+        terminalization: PrimitiveFailure,
+    },
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -142,6 +147,11 @@ pub enum VolumeFailure {
     Interrupted,
     #[error("payload is invalid")]
     InvalidPayload,
+    #[error("attempt terminalization failed after product failure")]
+    AttemptTerminalizationFailed {
+        product: Box<VolumeFailure>,
+        terminalization: PrimitiveFailure,
+    },
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]

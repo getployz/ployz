@@ -1,32 +1,21 @@
 use std::time::SystemTime;
 
-use polis::{
-    EvidenceKind, OperationBackend, OperationEvidence, OperationReplayStatus, TerminalMarker,
-};
+use polis::{AttemptReplay, EvidenceKind, OperationBackend, OperationEvidence};
 
 use crate::error::PrimitiveFailure;
-use crate::operation::command::issue::CommandEnvelope;
+use crate::operation::command::issue::IssuedAttempt;
 use crate::operation::context::MutationContext;
 use crate::operation::polis_boundary::map_polis_to_primitive;
 
-pub struct CommandContext<'a> {
+pub struct AttemptContext<'a> {
     mutation: MutationContext,
-    operation: polis::OpenOperation,
-    operations: &'a dyn OperationBackend,
+    attempt: polis::OpenAttempt<'a>,
 }
 
-impl<'a> CommandContext<'a> {
+impl<'a> AttemptContext<'a> {
     #[must_use]
-    pub(crate) fn new(
-        mutation: MutationContext,
-        operation: polis::OpenOperation,
-        operations: &'a dyn OperationBackend,
-    ) -> Self {
-        Self {
-            mutation,
-            operation,
-            operations,
-        }
+    pub(crate) fn new(mutation: MutationContext, attempt: polis::OpenAttempt<'a>) -> Self {
+        Self { mutation, attempt }
     }
 
     #[must_use]
@@ -34,23 +23,28 @@ impl<'a> CommandContext<'a> {
         &self.mutation
     }
 
-    pub(crate) fn checkpoint(&self, checkpoint: CommandCheckpoint) -> Result<(), PrimitiveFailure> {
-        record_operation(
-            self.operations,
-            &self.operation,
-            EvidenceKind::Checkpoint(checkpoint.encode()),
-        )
-        .map_err(map_polis_to_primitive)
+    pub(crate) fn checkpoint(&self, checkpoint: AttemptCheckpoint) -> Result<(), PrimitiveFailure> {
+        self.attempt
+            .record(OperationEvidence {
+                recorded_at: SystemTime::now(),
+                kind: EvidenceKind::Checkpoint(checkpoint.encode()),
+            })
+            .map_err(map_polis_to_primitive)
+    }
+
+    #[must_use]
+    fn into_attempt(self) -> polis::OpenAttempt<'a> {
+        self.attempt
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandCheckpoint {
+pub(crate) struct AttemptCheckpoint {
     name: &'static str,
     fields: Vec<CheckpointField>,
 }
 
-impl CommandCheckpoint {
+impl AttemptCheckpoint {
     #[must_use]
     pub(crate) fn new(name: &'static str) -> Self {
         Self {
@@ -101,100 +95,108 @@ mod sealed {
     pub trait Sealed {}
 }
 
-pub trait CommandBackend: sealed::Sealed {
-    fn run<C, T, E, F>(
-        &self,
-        envelope: CommandEnvelope<C>,
-        map_primitive: fn(PrimitiveFailure) -> E,
-        work: F,
-    ) -> Result<T, E>
+pub trait AttemptBackend: sealed::Sealed {
+    fn run<C, T, E, F>(&self, envelope: IssuedAttempt<C>, work: F) -> Result<T, E>
     where
-        F: FnOnce(&CommandContext<'_>) -> Result<T, E>;
+        E: AttemptProductError,
+        F: FnOnce(&AttemptContext<'_>) -> Result<T, E>;
 
     fn run_with_replay<C, T, E, F, R>(
         &self,
-        envelope: CommandEnvelope<C>,
-        map_primitive: fn(PrimitiveFailure) -> E,
+        envelope: IssuedAttempt<C>,
         work: F,
         verify_replayed_success: R,
     ) -> Result<T, E>
     where
-        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        E: AttemptProductError,
+        F: FnOnce(&AttemptContext<'_>) -> Result<T, E>,
         R: FnOnce(&MutationContext) -> Result<T, E>;
 
     fn run_with_replay_and_failure_disposition<C, T, E, F, R>(
         &self,
-        envelope: CommandEnvelope<C>,
-        map_primitive: fn(PrimitiveFailure) -> E,
-        failure_disposition: CommandFailureDisposition,
+        envelope: IssuedAttempt<C>,
+        failure_disposition: AttemptFailureDisposition,
         work: F,
         verify_replayed_success: R,
     ) -> Result<T, E>
     where
-        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        E: AttemptProductError,
+        F: FnOnce(&AttemptContext<'_>) -> Result<T, E>,
         R: FnOnce(&MutationContext) -> Result<T, E>;
 }
 
+pub trait AttemptProductError: Sized {
+    fn from_primitive_failure(error: PrimitiveFailure) -> Self;
+
+    fn terminalization_failed(product: Self, terminalization: PrimitiveFailure) -> Self;
+}
+
+impl AttemptProductError for PrimitiveFailure {
+    fn from_primitive_failure(error: PrimitiveFailure) -> Self {
+        error
+    }
+
+    fn terminalization_failed(_product: Self, terminalization: PrimitiveFailure) -> Self {
+        terminalization
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandFailureDisposition {
+pub enum AttemptFailureDisposition {
     Failed,
     Interrupted,
 }
 
-impl CommandFailureDisposition {
-    #[must_use]
-    fn terminal_marker(self) -> TerminalMarker {
+impl AttemptFailureDisposition {
+    fn terminalize(self, attempt: polis::OpenAttempt<'_>) -> polis::Result<()> {
         match self {
-            Self::Failed => TerminalMarker::Failed(Vec::new()),
-            Self::Interrupted => TerminalMarker::Interrupted,
+            Self::Failed => attempt.failed(Vec::new()),
+            Self::Interrupted => attempt.interrupted(),
         }
     }
 }
 
-pub struct CommandRunner<O> {
+pub struct AttemptLog<O> {
     operations: O,
 }
 
-impl<O> CommandRunner<O> {
+impl<O> AttemptLog<O> {
     #[must_use]
     pub fn new(operations: O) -> Self {
         Self { operations }
     }
 }
 
-impl<O> CommandBackend for CommandRunner<O>
+impl<O> AttemptBackend for AttemptLog<O>
 where
     O: OperationBackend,
 {
-    fn run<C, T, E, F>(
-        &self,
-        envelope: CommandEnvelope<C>,
-        map_primitive: fn(PrimitiveFailure) -> E,
-        work: F,
-    ) -> Result<T, E>
+    fn run<C, T, E, F>(&self, envelope: IssuedAttempt<C>, work: F) -> Result<T, E>
     where
-        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        E: AttemptProductError,
+        F: FnOnce(&AttemptContext<'_>) -> Result<T, E>,
     {
-        self.run_with_replay(envelope, map_primitive, work, |_replay| {
-            Err(map_primitive(PrimitiveFailure::OperationAlreadySucceeded))
+        self.run_with_replay(envelope, work, |_replay| {
+            Err(E::from_primitive_failure(
+                PrimitiveFailure::OperationAlreadySucceeded,
+            ))
         })
     }
 
     fn run_with_replay<C, T, E, F, R>(
         &self,
-        envelope: CommandEnvelope<C>,
-        map_primitive: fn(PrimitiveFailure) -> E,
+        envelope: IssuedAttempt<C>,
         work: F,
         verify_replayed_success: R,
     ) -> Result<T, E>
     where
-        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        E: AttemptProductError,
+        F: FnOnce(&AttemptContext<'_>) -> Result<T, E>,
         R: FnOnce(&MutationContext) -> Result<T, E>,
     {
         self.run_with_replay_and_failure_disposition(
             envelope,
-            map_primitive,
-            CommandFailureDisposition::Failed,
+            AttemptFailureDisposition::Failed,
             work,
             verify_replayed_success,
         )
@@ -202,78 +204,66 @@ where
 
     fn run_with_replay_and_failure_disposition<C, T, E, F, R>(
         &self,
-        envelope: CommandEnvelope<C>,
-        map_primitive: fn(PrimitiveFailure) -> E,
-        failure_disposition: CommandFailureDisposition,
+        envelope: IssuedAttempt<C>,
+        failure_disposition: AttemptFailureDisposition,
         work: F,
         verify_replayed_success: R,
     ) -> Result<T, E>
     where
-        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        E: AttemptProductError,
+        F: FnOnce(&AttemptContext<'_>) -> Result<T, E>,
         R: FnOnce(&MutationContext) -> Result<T, E>,
     {
         let mutation = envelope.context().clone();
-        let start = polis::start_or_replay(&self.operations, envelope.operation_request)
+        let start = polis::begin_attempt(&self.operations, envelope.operation_request)
             .map_err(map_polis_to_primitive)
-            .map_err(&map_primitive)?;
+            .map_err(E::from_primitive_failure)?;
 
-        let operation = match start {
-            polis::OperationStart::Started(operation) => operation,
-            polis::OperationStart::Replayed(replay) => match replay.status() {
-                OperationReplayStatus::Succeeded => return verify_replayed_success(&mutation),
-                OperationReplayStatus::Open => {
-                    return Err(map_primitive(PrimitiveFailure::OperationInProgress));
+        let attempt = match start {
+            polis::AttemptStart::Started(attempt) => attempt,
+            polis::AttemptStart::Replayed(replay) => match replay {
+                AttemptReplay::Succeeded { .. } => return verify_replayed_success(&mutation),
+                AttemptReplay::Open { .. } => {
+                    return Err(E::from_primitive_failure(
+                        PrimitiveFailure::OperationInProgress,
+                    ));
                 }
-                OperationReplayStatus::Failed(_) => {
-                    return Err(map_primitive(PrimitiveFailure::OperationAlreadyFailed));
+                AttemptReplay::Failed { .. } => {
+                    return Err(E::from_primitive_failure(
+                        PrimitiveFailure::OperationAlreadyFailed,
+                    ));
                 }
-                OperationReplayStatus::Interrupted => {
-                    return Err(map_primitive(PrimitiveFailure::OperationInterrupted));
+                AttemptReplay::Interrupted { .. } => {
+                    return Err(E::from_primitive_failure(
+                        PrimitiveFailure::OperationInterrupted,
+                    ));
                 }
             },
         };
 
-        let context = CommandContext::new(mutation, operation, &self.operations);
+        let context = AttemptContext::new(mutation, attempt);
 
         match work(&context) {
             Ok(value) => {
-                polis::close(
-                    &self.operations,
-                    context.operation,
-                    TerminalMarker::Succeeded,
-                )
-                .map_err(map_polis_to_primitive)
-                .map_err(map_primitive)?;
+                context
+                    .into_attempt()
+                    .succeeded()
+                    .map_err(map_polis_to_primitive)
+                    .map_err(E::from_primitive_failure)?;
                 Ok(value)
             }
-            Err(error) => {
-                let _record_failed = polis::close(
-                    &self.operations,
-                    context.operation,
-                    failure_disposition.terminal_marker(),
-                );
-                Err(error)
-            }
+            Err(error) => match failure_disposition.terminalize(context.into_attempt()) {
+                Ok(()) => Err(error),
+                Err(terminalization) => Err(E::terminalization_failed(
+                    error,
+                    map_polis_to_primitive(terminalization),
+                )),
+            },
         }
     }
 }
 
-impl<O> sealed::Sealed for CommandRunner<O> where O: OperationBackend {}
-
-fn record_operation(
-    operations: &dyn OperationBackend,
-    operation: &polis::OpenOperation,
-    kind: EvidenceKind,
-) -> polis::Result<()> {
-    polis::record(
-        operations,
-        operation,
-        OperationEvidence {
-            recorded_at: SystemTime::now(),
-            kind,
-        },
-    )
-}
+impl<O> sealed::Sealed for AttemptLog<O> where O: OperationBackend {}
 
 #[cfg(test)]
 mod tests {
@@ -282,7 +272,7 @@ mod tests {
 
     use polis::{
         BackendOperationStart, CommandKind, FingerprintedResource,
-        OperationId as BackendOperationId, OperationRequest,
+        OperationId as BackendOperationId, OperationRequest, TerminalMarker,
     };
 
     use super::*;
@@ -342,21 +332,17 @@ mod tests {
     #[test]
     fn command_runner_terminalizes_success_once() {
         let operations = FakeOperations::default();
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
-        let result = runner.run(
-            envelope,
-            |failure| failure,
-            |context| {
-                assert_eq!(
-                    context.mutation().authority().epoch(),
-                    AuthorityEpoch::new(1)
-                );
-                Ok::<_, PrimitiveFailure>(7)
-            },
-        );
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
+        let result = runner.run(envelope, |context| {
+            assert_eq!(
+                context.mutation().authority().epoch(),
+                AuthorityEpoch::new(1)
+            );
+            Ok::<_, PrimitiveFailure>(7)
+        });
 
         assert_eq!(result, Ok(7));
         assert_eq!(
@@ -372,15 +358,13 @@ mod tests {
             replay: Some(None),
             ..FakeOperations::default()
         };
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
-        let result: Result<(), PrimitiveFailure> = runner.run(
-            envelope,
-            |failure| failure,
-            |_context| panic!("replayed commands should not run product work"),
-        );
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
+        let result: Result<(), PrimitiveFailure> = runner.run(envelope, |_context| {
+            panic!("replayed commands should not run product work")
+        });
 
         assert_eq!(result, Err(PrimitiveFailure::OperationInProgress));
         assert!(operations.evidence.borrow().is_empty());
@@ -393,13 +377,12 @@ mod tests {
             replay: Some(Some(TerminalMarker::Succeeded)),
             ..FakeOperations::default()
         };
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
         let result = runner.run_with_replay(
             envelope,
-            |failure| failure,
             |_context| panic!("replayed commands should not run product work"),
             |mutation| {
                 assert_eq!(mutation.authority().epoch(), AuthorityEpoch::new(1));
@@ -429,13 +412,12 @@ mod tests {
                 replay: Some(terminal),
                 ..FakeOperations::default()
             };
-            let runner = CommandRunner::new(operations.clone());
-            let envelope: CommandEnvelope<TestCommand> =
-                CommandEnvelope::new(context(), operation_request());
+            let runner = AttemptLog::new(operations.clone());
+            let envelope: IssuedAttempt<TestCommand> =
+                IssuedAttempt::new(context(), operation_request());
 
             let result: Result<(), PrimitiveFailure> = runner.run_with_replay(
                 envelope,
-                |failure| failure,
                 |_context| panic!("replayed commands should not run product work"),
                 |_mutation| panic!("only terminal success replay should verify"),
             );
@@ -449,15 +431,13 @@ mod tests {
     #[test]
     fn command_runner_terminalizes_failure_once() {
         let operations = FakeOperations::default();
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
-        let result = runner.run(
-            envelope,
-            |failure| failure,
-            |_context| Err::<(), _>(PrimitiveFailure::Conflict),
-        );
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
+        let result = runner.run(envelope, |_context| {
+            Err::<(), _>(PrimitiveFailure::Conflict)
+        });
 
         assert_eq!(result, Err(PrimitiveFailure::Conflict));
         assert_eq!(
@@ -470,14 +450,13 @@ mod tests {
     #[test]
     fn command_runner_can_terminalize_failure_as_interrupted() {
         let operations = FakeOperations::default();
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
         let result = runner.run_with_replay_and_failure_disposition(
             envelope,
-            |failure| failure,
-            CommandFailureDisposition::Interrupted,
+            AttemptFailureDisposition::Interrupted,
             |_context| Err::<(), _>(PrimitiveFailure::Timeout),
             |_mutation| panic!("fresh work should not replay"),
         );
@@ -490,22 +469,20 @@ mod tests {
     }
 
     #[test]
-    fn command_runner_preserves_product_failure_when_failed_close_fails() {
+    fn attempt_log_returns_terminalization_failure_when_failed_close_fails() {
         let operations = FakeOperations {
             close_error: Some(polis::Error::TerminalAlreadyWritten),
             ..FakeOperations::default()
         };
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
-        let result = runner.run(
-            envelope,
-            |failure| failure,
-            |_context| Err::<(), _>(PrimitiveFailure::Conflict),
-        );
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
+        let result = runner.run(envelope, |_context| {
+            Err::<(), _>(PrimitiveFailure::Conflict)
+        });
 
-        assert_eq!(result, Err(PrimitiveFailure::Conflict));
+        assert_eq!(result, Err(PrimitiveFailure::TerminalAlreadyWritten));
         assert_eq!(
             operations.terminal.borrow().as_slice(),
             [TerminalMarker::Failed(Vec::new())]
@@ -518,15 +495,11 @@ mod tests {
             close_error: Some(polis::Error::TerminalAlreadyWritten),
             ..FakeOperations::default()
         };
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
-        let result = runner.run(
-            envelope,
-            |failure| failure,
-            |_context| Ok::<_, PrimitiveFailure>(7),
-        );
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
+        let result = runner.run(envelope, |_context| Ok::<_, PrimitiveFailure>(7));
 
         assert_eq!(result, Err(PrimitiveFailure::TerminalAlreadyWritten));
         assert_eq!(
@@ -538,18 +511,14 @@ mod tests {
     #[test]
     fn command_context_records_explicit_checkpoints_only() {
         let operations = FakeOperations::default();
-        let runner = CommandRunner::new(operations.clone());
+        let runner = AttemptLog::new(operations.clone());
 
-        let envelope: CommandEnvelope<TestCommand> =
-            CommandEnvelope::new(context(), operation_request());
-        let result = runner.run(
-            envelope,
-            |failure| failure,
-            |context| {
-                context.checkpoint(CommandCheckpoint::new("test.progress"))?;
-                Ok::<_, PrimitiveFailure>(())
-            },
-        );
+        let envelope: IssuedAttempt<TestCommand> =
+            IssuedAttempt::new(context(), operation_request());
+        let result = runner.run(envelope, |context| {
+            context.checkpoint(AttemptCheckpoint::new("test.progress"))?;
+            Ok::<_, PrimitiveFailure>(())
+        });
 
         assert_eq!(result, Ok(()));
         assert_eq!(
@@ -560,7 +529,7 @@ mod tests {
 
     #[test]
     fn command_checkpoint_encodes_fields_with_lengths() {
-        let checkpoint = CommandCheckpoint::new("test.progress")
+        let checkpoint = AttemptCheckpoint::new("test.progress")
             .field("resource", "db;owner=wrong")
             .field("holder", "node=b");
 

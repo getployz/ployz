@@ -1,97 +1,82 @@
 use std::marker::PhantomData;
 
-use polis::OperationRequest;
+use polis::AttemptRequest;
 
 use crate::error::PrimitiveFailure;
 use crate::operation::authority::{AuthorityContext, AuthorityPort};
-use crate::operation::context::{MutationContext, MutationIntent};
+use crate::operation::context::{AttemptIssue, AttemptSpec, MutationContext};
 use crate::operation::polis_boundary::map_polis_to_primitive;
 
-pub struct CommandIssuer<A> {
+pub struct AttemptIssuer<A> {
     authority: A,
 }
 
-impl<A> CommandIssuer<A> {
+impl<A> AttemptIssuer<A> {
     #[must_use]
     pub fn new(authority: A) -> Self {
         Self { authority }
     }
 }
 
-impl<A> CommandIssuer<A>
+impl<A> AttemptIssuer<A>
 where
     A: AuthorityPort,
 {
     pub(crate) fn issue<C>(
         &self,
-        intent: MutationIntent,
-    ) -> Result<CommandEnvelope<C>, PrimitiveFailure> {
+        issue: AttemptIssue,
+        spec: AttemptSpec,
+    ) -> Result<IssuedAttempt<C>, PrimitiveFailure> {
         let epoch = match self
             .authority
-            .decide(&intent.principal, &intent.scope)?
+            .decide(&issue.principal, &issue.scope)?
             .epoch()
         {
             Some(epoch) => epoch,
             None => return Err(PrimitiveFailure::Unauthorized),
         };
         let operation =
-            polis::OperationId::parse(intent.operation.as_str()).map_err(map_polis_to_primitive)?;
-        let idempotency = polis::IdempotencyKey::parse(intent.idempotency.as_str())
+            polis::OperationId::parse(issue.operation.as_str()).map_err(map_polis_to_primitive)?;
+        let idempotency = polis::IdempotencyKey::parse(issue.idempotency.as_str())
             .map_err(map_polis_to_primitive)?;
         let actor =
-            polis::PrincipalId::parse(intent.principal.as_str()).map_err(map_polis_to_primitive)?;
-        let scope = polis::ScopeId::parse(intent.scope.as_str()).map_err(map_polis_to_primitive)?;
-        let command = intent
-            .command
-            .into_polis()
+            polis::PrincipalId::parse(issue.principal.as_str()).map_err(map_polis_to_primitive)?;
+        let scope = polis::ScopeId::parse(issue.scope.as_str()).map_err(map_polis_to_primitive)?;
+        let (fingerprint_builder, submitted_fence) = spec
+            .into_fingerprint_builder(actor, scope, polis::GrantEpoch::new(epoch.value()))
             .map_err(map_polis_to_primitive)?;
-        let resources = intent
-            .resources
-            .into_iter()
-            .map(|resource| resource.into_polis())
-            .collect::<polis::Result<Vec<_>>>()
+        let fingerprint = fingerprint_builder
+            .finish()
             .map_err(map_polis_to_primitive)?;
-        let submitted_fence_fingerprint = intent
-            .submitted_fence
-            .as_ref()
-            .map(crate::operation::SubmittedFenceToken::fingerprint)
-            .transpose()?;
-        let fingerprint = polis::RequestFingerprint::new(
-            actor,
-            scope,
-            command,
-            intent.payload_hash,
-            resources,
-            submitted_fence_fingerprint,
-            polis::GrantEpoch::new(epoch.value()),
-        )
-        .map_err(map_polis_to_primitive)?;
         let operation_request =
-            OperationRequest::new(operation, idempotency, fingerprint, intent.deadline);
+            AttemptRequest::new(operation, idempotency, fingerprint, issue.deadline);
         let context = MutationContext::new(
-            intent.operation,
-            intent.idempotency,
-            AuthorityContext::new(intent.principal, intent.scope, epoch),
-            intent.submitted_fence,
-            intent.deadline,
+            issue.operation,
+            issue.idempotency,
+            AuthorityContext::new(issue.principal, issue.scope, epoch),
+            submitted_fence,
+            issue.deadline,
         );
-        Ok(CommandEnvelope::new(context, operation_request))
+        Ok(IssuedAttempt::new(context, operation_request))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandEnvelope<C = ()> {
+pub struct IssuedAttempt<C = ()> {
     pub(super) context: MutationContext,
-    pub(super) operation_request: OperationRequest,
+    pub(super) operation_request: AttemptRequest,
     _command: PhantomData<fn() -> C>,
 }
 
-impl<C> CommandEnvelope<C> {
+impl<C> IssuedAttempt<C> {
     #[must_use]
-    pub(crate) fn new(context: MutationContext, operation_request: OperationRequest) -> Self {
+    pub(crate) fn new(
+        context: MutationContext,
+        operation_request: impl Into<AttemptRequest>,
+    ) -> Self {
         Self {
             context,
-            operation_request,
+            operation_request: operation_request.into(),
             _command: PhantomData,
         }
     }
@@ -114,9 +99,8 @@ mod tests {
 
     use super::*;
     use crate::operation::{
-        AuthorityDecision, AuthorityEpoch, ClaimHash, CommandKind, FenceEpoch,
-        FingerprintedResource, IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId,
-        SubmittedFenceToken,
+        AuthorityDecision, AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, OperationId,
+        PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
     };
 
     enum TestCommand {}
@@ -142,21 +126,24 @@ mod tests {
         }
     }
 
-    fn issue_for_fence(
-        submitted_fence: Option<SubmittedFenceToken>,
-    ) -> CommandEnvelope<TestCommand> {
-        CommandIssuer::new(AllowAuthority)
-            .issue::<TestCommand>(MutationIntent {
-                operation: OperationId::parse("op-1").expect("operation"),
-                idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
-                principal: PrincipalId::parse("node-a").expect("principal"),
-                scope: ScopeId::parse("cluster").expect("scope"),
-                command: CommandKind::parse("test").expect("command"),
-                payload_hash: vec![1],
-                resources: vec![FingerprintedResource::parse("resource:test").expect("resource")],
-                submitted_fence,
-                deadline: SystemTime::UNIX_EPOCH,
-            })
+    fn issue_for_fence(submitted_fence: Option<SubmittedFenceToken>) -> IssuedAttempt<TestCommand> {
+        let mut spec = AttemptSpec::new("test", "test.v1")
+            .field("payload", "value")
+            .resource("resource:test");
+        if let Some(fence) = submitted_fence {
+            spec = spec.submitted_fence(fence);
+        }
+        AttemptIssuer::new(AllowAuthority)
+            .issue::<TestCommand>(
+                AttemptIssue {
+                    operation: OperationId::parse("op-1").expect("operation"),
+                    idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
+                    principal: PrincipalId::parse("node-a").expect("principal"),
+                    scope: ScopeId::parse("cluster").expect("scope"),
+                    deadline: SystemTime::UNIX_EPOCH,
+                },
+                spec,
+            )
             .expect("envelope")
     }
 
