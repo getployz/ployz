@@ -51,12 +51,11 @@ pub struct CertificatePolicy {
     pub minimum_valid_until: SystemTime,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainStatus {
     Ready(DomainReadyRecord),
     Pending(DomainPendingReason),
     Failed(DomainFailure),
-    #[default]
     Unknown,
 }
 
@@ -945,10 +944,16 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct FakeRecords {
         status: Rc<RefCell<DomainStatus>>,
         recorded: Rc<RefCell<Vec<DomainStatus>>>,
+    }
+
+    impl Default for FakeRecords {
+        fn default() -> Self {
+            Self::with_status(DomainStatus::Unknown)
+        }
     }
 
     impl FakeRecords {

@@ -88,10 +88,19 @@ impl DomainServingPort for FakeServing {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct FakeStatus {
     current: Rc<RefCell<DomainStatus>>,
     recorded: Rc<RefCell<Vec<DomainStatus>>>,
+}
+
+impl Default for FakeStatus {
+    fn default() -> Self {
+        Self {
+            current: Rc::new(RefCell::new(DomainStatus::Unknown)),
+            recorded: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
 }
 
 impl DomainStatusPort for FakeStatus {

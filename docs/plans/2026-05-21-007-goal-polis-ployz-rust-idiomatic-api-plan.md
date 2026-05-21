@@ -87,21 +87,25 @@ Already improved in the current branch:
 - The unused public Ployz projection module and Polis-to-product record adapter
   helper were removed. Product projection APIs should come back from a real
   deploy/domain/volume read path, not from an unused generic module.
+- `DomainStatus` no longer implements `Default`; tests and fakes initialize
+  `DomainStatus::Unknown` explicitly so uncertainty is visible at construction
+  sites.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
-- Some capability values outside the completed operation/domain slices still
-  need proof-constructor review.
-- Deploy still uses conservative replay behavior; replay verification should
-  wait for a product-owned observational verifier that can mint a `DeployOutcome`
-  without activating runtime or serving state.
-- `CommandContext<C>` does not yet expose ergonomic claim, receipt, projection,
-  or replay-verifier helpers, so product modules still pass raw context to
-  every port.
-- `DomainReadinessService` is smaller, but deploy replay still needs a
-  product-owned observational verifier before it can safely return success on
-  replay.
+- Command outcome/replay semantics still need a real slice. The final API roast
+  found that all product errors currently close as terminal failed operations,
+  making partial deploy failures unretryable with the same idempotency key.
+- Product APIs still require callers to pass generic `CommandEnvelope` plumbing
+  instead of issuing typed product commands that derive command kind, resources,
+  payload hash, and fence participation from product requests.
+- `MutationIntent.submitted_fence` is not included in the operation
+  fingerprint. The next command-issuance slice must either include it in the
+  fingerprint or remove it from generic command intent and make product command
+  issuers own the digest.
+- Failure recording can still mask the product failure that the operator needs
+  to see when status writes or terminalization fail.
 - `DomainServingActivation` still uses a crate-local constructor plus
   `test-support` constructor; this is acceptable for current fakes but should
   be revisited when a real serving adapter exists.
@@ -402,8 +406,9 @@ manually handling operation evidence.
 
 **Status:** In progress. Narrow slices have removed generic empty evidence,
 moved checkpoint byte encoding behind the Ployz command boundary, and added
-success-only replay verification for volume. Deploy replay verification and
-typed command summaries remain open.
+success-only replay verification for volume. Deploy retry after partial failure,
+product command issuance, fence-aware fingerprinting, and failure-recording
+semantics remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.
