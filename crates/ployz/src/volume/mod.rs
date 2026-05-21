@@ -1,7 +1,9 @@
 //! Volume transfer product ports.
 
 use crate::error::{PrimitiveFailure, VolumeFailure};
-use crate::operation::{CommandBackend, CommandContext, CommandEnvelope, MutationContext};
+use crate::operation::{
+    CommandBackend, CommandCheckpoint, CommandContext, CommandEnvelope, MutationContext,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VolumeId(String);
@@ -9,6 +11,11 @@ pub struct VolumeId(String);
 impl VolumeId {
     pub fn parse(value: impl Into<String>) -> Result<Self, VolumeFailure> {
         parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -18,6 +25,11 @@ pub struct VolumeOwner(String);
 impl VolumeOwner {
     pub fn parse(value: impl Into<String>) -> Result<Self, VolumeFailure> {
         parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -37,6 +49,11 @@ impl CleanupArtifactId {
     pub fn parse(value: impl Into<String>) -> Result<Self, VolumeFailure> {
         parse_non_empty(value, Self)
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -47,6 +64,11 @@ impl OwnershipEpoch {
     pub fn new(value: u64) -> Self {
         Self(value)
     }
+
+    #[must_use]
+    pub fn value(self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,6 +78,11 @@ impl SourceWatermark {
     #[must_use]
     pub fn new(value: u64) -> Self {
         Self(value)
+    }
+
+    #[must_use]
+    pub fn value(self) -> u64 {
+        self.0
     }
 }
 
@@ -238,6 +265,44 @@ pub struct VolumeTransferOutcome {
     pub cleanup: CleanupStatus,
 }
 
+enum VolumeCheckpoint<'a> {
+    OwnershipCommitted(&'a OwnershipCommit),
+    CleanupPending(&'a CleanupArtifactId),
+}
+
+impl CommandCheckpoint for VolumeCheckpoint<'_> {
+    fn encode_checkpoint(&self) -> Vec<u8> {
+        match self {
+            Self::OwnershipCommitted(commit) => {
+                let mut payload = b"volume.ownership_committed;".to_vec();
+                encode_field(&mut payload, "volume", commit.volume.as_str());
+                encode_field(&mut payload, "owner", commit.owner.as_str());
+                encode_field(&mut payload, "epoch", &commit.epoch.value().to_string());
+                encode_field(
+                    &mut payload,
+                    "watermark",
+                    &commit.source_watermark.value().to_string(),
+                );
+                payload
+            }
+            Self::CleanupPending(artifact) => {
+                let mut payload = b"volume.cleanup_pending;".to_vec();
+                encode_field(&mut payload, "artifact", artifact.as_str());
+                payload
+            }
+        }
+    }
+}
+
+fn encode_field(payload: &mut Vec<u8>, key: &str, value: &str) {
+    payload.extend_from_slice(key.as_bytes());
+    payload.push(b'=');
+    payload.extend_from_slice(value.len().to_string().as_bytes());
+    payload.push(b':');
+    payload.extend_from_slice(value.as_bytes());
+    payload.push(b';');
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolumeTransferCommand {}
 
@@ -319,7 +384,6 @@ where
         self.ensure_current_claim(mutation, plan)?;
         let ownership = self.ownership.commit_ownership(mutation, plan, &receive)?;
 
-        context.checkpoint().map_err(map_primitive_to_volume)?;
         self.finish_transfer(context, plan, ownership)
     }
 
@@ -338,6 +402,9 @@ where
         if !ownership.matches_plan(plan) {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
+        context
+            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership))
+            .map_err(map_primitive_to_volume)?;
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
     }
 
@@ -359,6 +426,9 @@ where
         if !ownership.matches_plan(plan) {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
+        context
+            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership))
+            .map_err(map_primitive_to_volume)?;
         self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
     }
 
@@ -376,8 +446,10 @@ where
                 Ok(status) => status,
                 Err(error) => CleanupStatus::Pending(error.artifact),
             };
-        if matches!(cleanup, CleanupStatus::Pending(_)) {
-            context.checkpoint().map_err(map_primitive_to_volume)?;
+        if let CleanupStatus::Pending(pending_artifact) = &cleanup {
+            context
+                .checkpoint(VolumeCheckpoint::CleanupPending(pending_artifact))
+                .map_err(map_primitive_to_volume)?;
         }
 
         Ok(VolumeTransferOutcome { ownership, cleanup })
@@ -427,6 +499,21 @@ mod tests {
     #[test]
     fn empty_volume_id_is_invalid_payload() {
         assert_eq!(VolumeId::parse(""), Err(VolumeFailure::InvalidPayload));
+    }
+
+    #[test]
+    fn checkpoint_payload_fields_are_length_prefixed() {
+        let checkpoint = VolumeCheckpoint::OwnershipCommitted(&OwnershipCommit {
+            volume: VolumeId::parse("db;owner=wrong").expect("volume"),
+            owner: VolumeOwner::parse("node=b").expect("owner"),
+            epoch: OwnershipEpoch::new(2),
+            source_watermark: SourceWatermark::new(5),
+        });
+
+        assert_eq!(
+            checkpoint.encode_checkpoint(),
+            b"volume.ownership_committed;volume=14:db;owner=wrong;owner=6:node=b;epoch=1:2;watermark=1:5;".to_vec()
+        );
     }
 
     #[test]
