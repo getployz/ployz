@@ -214,6 +214,21 @@ pub struct DomainClaimObservation {
     pub expires_at: SystemTime,
 }
 
+impl DomainClaimObservation {
+    fn try_into_claim_for(self, domain: DomainName) -> Result<DomainClaim, DomainFailure> {
+        DomainClaim::new(
+            domain,
+            ClaimGuard::new(
+                self.resource,
+                self.holder,
+                self.epoch,
+                self.claim_hash,
+                self.expires_at,
+            ),
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainServingReadiness {
     Active(DomainServingActivation),
@@ -391,16 +406,7 @@ where
         let claim_observation =
             self.claims
                 .claim_domain(context, domain_resource(&domain)?, &domain)?;
-        let claim = DomainClaim::new(
-            domain.clone(),
-            ClaimGuard::new(
-                claim_observation.resource,
-                claim_observation.holder,
-                claim_observation.epoch,
-                claim_observation.claim_hash,
-                claim_observation.expires_at,
-            ),
-        )?;
+        let claim = claim_observation.try_into_claim_for(domain.clone())?;
         let certificate = self.certificates.ensure_usable_certificate(
             context,
             &claim,
