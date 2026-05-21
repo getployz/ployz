@@ -103,6 +103,9 @@ Already improved in the current branch:
 - Deploy terminal-success replay now verifies the existing domain ready record,
   runtime participant, and serving activation without rerunning mutating deploy
   work.
+- Deploy and volume engines now accept issued product command tokens that own
+  the request they fingerprinted, so callers cannot issue a command for one
+  product request and execute another under the same operation fingerprint.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -111,10 +114,9 @@ Still weak:
   Non-success replay still returns `ReplayUnavailable`; changing that needs an
   explicit failure classification or idempotency policy rather than a small
   deploy patch.
-- Product engines still accept `CommandEnvelope` parameters. This keeps
-  authorization and command orchestration separate for now, but the normal
-  caller path should go through product-owned `DeployCommand::issue` and
-  `VolumeTransferCommand::issue`.
+- The low-level operation boundary still exposes `CommandEnvelope` because
+  `CommandBackend` and `CommandRunner` are public operation primitives. Product
+  deploy and volume APIs no longer expose it directly.
 - A refreshed fence for the same logical command now requires a new
   idempotency key. That is safer than silently treating two fenced attempts as
   the same request, but product command issuers still need to make that policy
@@ -427,8 +429,9 @@ success-only replay verification for volume, made submitted fences part of the
 operation fingerprint, and stopped failed-marker terminalization from masking
 the original product failure. Deploy and volume command issuance now derives
 replay metadata from typed product requests, and deploy terminal-success replay
-now verifies product state without mutation. Failed/interrupted deploy retry
-after partial failure and the remaining engine/envelope API shape remain open.
+now verifies product state without mutation. Product engines accept issued
+command tokens that carry their fingerprinted request. Failed/interrupted
+deploy retry after partial failure remains open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.

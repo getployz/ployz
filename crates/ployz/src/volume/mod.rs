@@ -291,13 +291,18 @@ impl VolumeCheckpoint<'_> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolumeTransferCommand {}
 
+pub struct IssuedVolumeTransferCommand {
+    envelope: CommandEnvelope<VolumeTransferCommand>,
+    request: VolumeTransferRequest,
+}
+
 impl VolumeTransferCommand {
     pub fn issue<A>(
         issuer: &CommandIssuer<A>,
         command: CommandIssue,
-        request: &VolumeTransferRequest,
+        request: VolumeTransferRequest,
         submitted_fence: SubmittedFenceToken,
-    ) -> Result<CommandEnvelope<Self>, PrimitiveFailure>
+    ) -> Result<IssuedVolumeTransferCommand, PrimitiveFailure>
     where
         A: AuthorityPort,
     {
@@ -318,7 +323,7 @@ impl VolumeTransferCommand {
         payload.field_u64("next_epoch", request.plan.next_epoch.value());
         payload.field("cleanup_artifact", request.plan.cleanup_artifact.as_str());
 
-        issuer.issue(MutationIntent {
+        let envelope = issuer.issue(MutationIntent {
             operation: command.operation,
             idempotency: command.idempotency,
             principal: command.principal,
@@ -331,7 +336,8 @@ impl VolumeTransferCommand {
             ))?],
             submitted_fence: Some(submitted_fence),
             deadline: command.deadline,
-        })
+        })?;
+        Ok(IssuedVolumeTransferCommand { envelope, request })
     }
 }
 
@@ -369,11 +375,11 @@ where
 {
     pub fn transfer(
         &self,
-        command: CommandEnvelope<VolumeTransferCommand>,
-        request: VolumeTransferRequest,
+        command: IssuedVolumeTransferCommand,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
+        let IssuedVolumeTransferCommand { envelope, request } = command;
         self.commands.run_with_replay(
-            command,
+            envelope,
             map_primitive_to_volume,
             |context| self.transfer_scoped(context, &request.plan),
             |mutation| self.verify_replayed_success(mutation, &request.plan),
@@ -599,21 +605,21 @@ mod tests {
         let first = VolumeTransferCommand::issue(
             &CommandIssuer::new(AllowAuthority),
             issue(),
-            &request,
+            request.clone(),
             fence("volume:data"),
         )
         .expect("first command");
         let second = VolumeTransferCommand::issue(
             &CommandIssuer::new(AllowAuthority),
             issue(),
-            &changed_target,
+            changed_target,
             fence("volume:data"),
         )
         .expect("second command");
 
         assert_ne!(
-            first.fingerprint_for_test().payload_hash(),
-            second.fingerprint_for_test().payload_hash()
+            first.envelope.fingerprint_for_test().payload_hash(),
+            second.envelope.fingerprint_for_test().payload_hash()
         );
     }
 
@@ -622,7 +628,7 @@ mod tests {
         let result = VolumeTransferCommand::issue(
             &CommandIssuer::new(AllowAuthority),
             issue(),
-            &VolumeTransferRequest { plan: plan() },
+            VolumeTransferRequest { plan: plan() },
             fence("volume:other"),
         );
 
