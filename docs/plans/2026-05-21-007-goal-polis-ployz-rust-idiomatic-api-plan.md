@@ -79,6 +79,11 @@ Already improved in the current branch:
 - Raw claim-proof minting is gated behind explicit `test-support` APIs for E2E
   fakes and crate-local tests. Normal product construction flows through
   acquired guards.
+- Unused public Polis projection/record extension traits were removed:
+  `ProjectionInput`, `Reducer`, `ProjectionStore`, `ProjectionRead`, and
+  `RecordAuthorizer`, along with their unused `RawRecord` / `RecordSource`
+  support types. Polis keeps the capability values currently used by Ployz
+  adapters instead of exposing speculative framework seams.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -472,6 +477,10 @@ defaulting back to bytes and generic `polis::Error`.
 
 ### S7. Projection/Record Append Outcome Shape
 
+**Status:** Simplification slice completed for unused public Polis surfaces.
+Append outcomes remain deferred until a real append store exists in the root
+rewrite.
+
 **Goal:** Model append outcomes and projection snapshots in a way that supports
 MVP duplicate/conflict/freshness behavior.
 
@@ -487,6 +496,8 @@ MVP duplicate/conflict/freshness behavior.
 - Introduce clear inserted/already-present/conflict outcomes where missing.
 - Keep product payload enums and reducers in Ployz.
 - Ensure projection freshness is explicit at the Ployz boundary.
+- Do not publish generic reducer/store traits before a production adapter needs
+  them.
 
 **Tests:**
 

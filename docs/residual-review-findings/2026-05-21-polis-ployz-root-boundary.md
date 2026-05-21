@@ -15,12 +15,12 @@ unknown, stricter boundary regexes, clippy cleanliness, and clearer
 
 Remaining findings are intentionally not auto-fixed in this plan:
 
-- Polis traits such as `RecordAuthorizer`, `Reducer`, and `ProjectionStore`
-  are public before production adapters exist. They are acceptable for the
-  current proof, but the next real adapter slice should either use them directly
-  or narrow/delete unsupported extension points. The unused speculative
-  `MutationReceiptStore` surface was removed with `polis::calls`; reintroduce
-  bounded call receipts only from a real product caller.
+- The unused speculative `MutationReceiptStore` surface was removed with
+  `polis::calls`, and the unused public projection/record extension traits
+  (`RecordAuthorizer`, `Reducer`, and `ProjectionStore`) and their unused
+  `RawRecord` / `RecordSource` support types were deleted in the Polis API
+  simplification slice. Reintroduce bounded call receipts or projection store
+  seams only from a real product caller.
 - The active `crates/ployz-e2e` crate is in-process product acceptance, not a
   real daemon/substrate E2E harness. A future runner should be added only when
   real process, runtime, gateway, ACME, network, or volume substrate boundaries

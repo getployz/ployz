@@ -6,32 +6,6 @@ use crate::{Error, Result};
 
 pub type Bytes = Vec<u8>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawRecord {
-    pub source: RecordSource,
-    pub payload: Bytes,
-    pub watermark: SourceWatermark,
-}
-
-impl RawRecord {
-    pub fn new(source: RecordSource, payload: Bytes, watermark: SourceWatermark) -> Result<Self> {
-        if payload.is_empty() {
-            return Err(Error::MalformedPayload);
-        }
-        Ok(Self {
-            source,
-            payload,
-            watermark,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordSource {
-    pub principal: PrincipalId,
-    pub scope: ScopeId,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SchemaVersion(u16);
 
@@ -135,26 +109,10 @@ impl AuthorizedRecord {
     }
 }
 
-pub trait RecordAuthorizer {
-    fn authorize(&self, raw: RawRecord) -> Result<AuthorizedRecord>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::authority::{AuthorityContext, Authorized, GrantEpoch};
-
-    #[test]
-    fn empty_payload_is_rejected_before_authorization() {
-        let principal = PrincipalId::parse("node-a").expect("principal");
-        let scope = ScopeId::parse("cluster").expect("scope");
-        let source = RecordSource { principal, scope };
-
-        assert_eq!(
-            RawRecord::new(source, Vec::new(), SourceWatermark::new(1)),
-            Err(Error::MalformedPayload)
-        );
-    }
 
     #[test]
     fn authorized_record_carries_proof_metadata() {
@@ -171,5 +129,23 @@ mod tests {
         .expect("record");
 
         assert_eq!(record.proof().grant_epoch(), GrantEpoch::new(3));
+    }
+
+    #[test]
+    fn authorized_record_rejects_empty_payload() {
+        let principal = PrincipalId::parse("node-a").expect("principal");
+        let scope = ScopeId::parse("cluster").expect("scope");
+        let authority = AuthorityContext::new(principal, scope, GrantEpoch::new(3));
+        let authorized = Authorized::new(authority);
+
+        assert_eq!(
+            AuthorizedRecord::new(
+                Vec::new(),
+                &authorized,
+                SourceWatermark::new(9),
+                SchemaVersion::new(1),
+            ),
+            Err(Error::MalformedPayload)
+        );
     }
 }
