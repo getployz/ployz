@@ -3,22 +3,24 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use ployz::deploy::{
+use ployz::error::{PrimitiveFailure, VolumeFailure};
+use ployz::operation::{
     AuthorityContext, AuthorityEpoch, EvidenceKind, FenceEpoch, FenceToken, IdempotencyKey,
     MutationContext, OperationEvidence, OperationId, OperationPort, PrincipalId, ResourceId,
     ScopeId, TerminalMarker,
 };
-use ployz::error::{PrimitiveFailure, VolumeFailure};
 use ployz::volume::{
-    CleanupStatus, FinalDeltaReceipt, OwnershipCommit, OwnershipEpoch, OwnershipVerification,
-    ReceiveReceipt, SnapshotReceipt, SourceWatermark, SourceWriteStatus, VolumeClaimCheck,
-    VolumeClaimPort, VolumeCleanupPort, VolumeId, VolumeOwner, VolumeOwnershipPort,
-    VolumeSnapshotId, VolumeSourcePort, VolumeTargetPort, VolumeTransferEngine, VolumeTransferPlan,
+    CleanupFailureReason, CleanupStatus, FinalDeltaReceipt, OwnershipCommit, OwnershipEpoch,
+    OwnershipVerification, ReceiveReceipt, SnapshotReceipt, SourceWatermark, SourceWriteStatus,
+    VolumeClaimCheck, VolumeClaimPort, VolumeCleanupFailure, VolumeCleanupPort, VolumeId,
+    VolumeOwner, VolumeOwnershipPort, VolumeSnapshotId, VolumeSourcePort, VolumeTargetPort,
+    VolumeTransferEngine, VolumeTransferFingerprint, VolumeTransferMode, VolumeTransferPlan,
+    VolumeTransferRequest,
 };
 
 #[derive(Clone)]
 struct FakeClaims {
-    check: VolumeClaimCheck,
+    checks: Rc<RefCell<VecDeque<VolumeClaimCheck>>>,
 }
 
 impl VolumeClaimPort for FakeClaims {
@@ -27,7 +29,11 @@ impl VolumeClaimPort for FakeClaims {
         _context: &MutationContext,
         _plan: &VolumeTransferPlan,
     ) -> Result<VolumeClaimCheck, VolumeFailure> {
-        Ok(self.check.clone())
+        Ok(self
+            .checks
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(VolumeClaimCheck::Current))
     }
 }
 
@@ -71,20 +77,19 @@ impl VolumeSourcePort for FakeSource {
 }
 
 #[derive(Clone)]
-struct FakeTarget;
+struct FakeTarget {
+    receive: ReceiveReceipt,
+}
 
 impl VolumeTargetPort for FakeTarget {
     fn receive(
         &self,
         _context: &MutationContext,
         _plan: &VolumeTransferPlan,
-        snapshot: &SnapshotReceipt,
+        _snapshot: &SnapshotReceipt,
         _final_delta: &FinalDeltaReceipt,
     ) -> Result<ReceiveReceipt, VolumeFailure> {
-        Ok(ReceiveReceipt {
-            snapshot: snapshot.snapshot.clone(),
-            target: VolumeOwner::parse("node-b").expect("target"),
-        })
+        Ok(self.receive.clone())
     }
 }
 
@@ -129,7 +134,7 @@ impl VolumeOwnershipPort for FakeOwnership {
 
 #[derive(Clone)]
 struct FakeCleanup {
-    result: Result<CleanupStatus, VolumeFailure>,
+    result: Result<CleanupStatus, VolumeCleanupFailure>,
 }
 
 impl VolumeCleanupPort for FakeCleanup {
@@ -137,13 +142,16 @@ impl VolumeCleanupPort for FakeCleanup {
         &self,
         _context: &MutationContext,
         _commit: &OwnershipCommit,
-    ) -> Result<CleanupStatus, VolumeFailure> {
+        _artifact: &ployz::volume::CleanupArtifactId,
+    ) -> Result<CleanupStatus, VolumeCleanupFailure> {
         self.result.clone()
     }
 }
 
 #[derive(Clone, Default)]
-struct FakeOperations;
+struct FakeOperations {
+    terminal: Rc<RefCell<Vec<TerminalMarker>>>,
+}
 
 impl OperationPort for FakeOperations {
     fn record_evidence(&self, evidence: OperationEvidence) -> Result<(), PrimitiveFailure> {
@@ -154,8 +162,9 @@ impl OperationPort for FakeOperations {
     fn terminalize(
         &self,
         _operation: &OperationId,
-        _marker: TerminalMarker,
+        marker: TerminalMarker,
     ) -> Result<(), PrimitiveFailure> {
+        self.terminal.borrow_mut().push(marker);
         Ok(())
     }
 }
@@ -185,14 +194,16 @@ fn plan() -> VolumeTransferPlan {
         target: VolumeOwner::parse("node-b").expect("target"),
         expected_source_watermark: SourceWatermark::new(5),
         next_epoch: OwnershipEpoch::new(2),
+        cleanup_artifact: ployz::volume::CleanupArtifactId::parse("source-temp-data")
+            .expect("cleanup artifact"),
     }
 }
 
 fn engine(
-    claim: VolumeClaimCheck,
+    claims: Vec<VolumeClaimCheck>,
     mutations: Rc<RefCell<Vec<&'static str>>>,
     verifications: Rc<RefCell<VecDeque<OwnershipVerification>>>,
-    cleanup: Result<CleanupStatus, VolumeFailure>,
+    cleanup: Result<CleanupStatus, VolumeCleanupFailure>,
 ) -> VolumeTransferEngine<
     FakeClaims,
     FakeSource,
@@ -202,12 +213,19 @@ fn engine(
     FakeOperations,
 > {
     VolumeTransferEngine::new(
-        FakeClaims { check: claim },
+        FakeClaims {
+            checks: Rc::new(RefCell::new(VecDeque::from(claims))),
+        },
         FakeSource { mutations },
-        FakeTarget,
+        FakeTarget {
+            receive: ReceiveReceipt {
+                snapshot: VolumeSnapshotId::parse("snap-1").expect("snapshot"),
+                target: VolumeOwner::parse("node-b").expect("target"),
+            },
+        },
         FakeOwnership { verifications },
         FakeCleanup { result: cleanup },
-        FakeOperations,
+        FakeOperations::default(),
     )
 }
 
@@ -215,7 +233,7 @@ fn engine(
 fn stale_claim_rejects_before_source_mutation() {
     let mutations = Rc::new(RefCell::new(Vec::new()));
     let transfer = engine(
-        VolumeClaimCheck::Stale,
+        vec![VolumeClaimCheck::Stale],
         mutations.clone(),
         Rc::new(RefCell::new(VecDeque::new())),
         Ok(CleanupStatus::Done),
@@ -229,12 +247,33 @@ fn stale_claim_rejects_before_source_mutation() {
 }
 
 #[test]
+fn stale_claim_rejects_before_each_later_mutation() {
+    let mutations = Rc::new(RefCell::new(Vec::new()));
+    let transfer = engine(
+        vec![VolumeClaimCheck::Current, VolumeClaimCheck::Stale],
+        mutations.clone(),
+        Rc::new(RefCell::new(VecDeque::new())),
+        Ok(CleanupStatus::Done),
+    );
+
+    assert_eq!(
+        transfer.transfer(&context(), &plan()),
+        Err(VolumeFailure::StaleFence)
+    );
+    assert_eq!(mutations.borrow().as_slice(), ["stop_writes"]);
+}
+
+#[test]
 fn cleanup_failure_remains_visible_without_rewriting_ownership() {
     let transfer = engine(
-        VolumeClaimCheck::Current,
+        vec![VolumeClaimCheck::Current; 5],
         Rc::new(RefCell::new(Vec::new())),
         Rc::new(RefCell::new(VecDeque::new())),
-        Err(VolumeFailure::CleanupFailed),
+        Err(VolumeCleanupFailure {
+            artifact: ployz::volume::CleanupArtifactId::parse("source-temp-data")
+                .expect("cleanup artifact"),
+            reason: CleanupFailureReason::DeleteFailed,
+        }),
     );
 
     let outcome = transfer
@@ -246,6 +285,41 @@ fn cleanup_failure_remains_visible_without_rewriting_ownership() {
         VolumeOwner::parse("node-b").expect("target")
     );
     assert!(matches!(outcome.cleanup, CleanupStatus::Pending(_)));
+}
+
+#[test]
+fn receive_receipt_must_match_snapshot_and_target_before_ownership_commit() {
+    let transfer = VolumeTransferEngine::new(
+        FakeClaims {
+            checks: Rc::new(RefCell::new(VecDeque::from(vec![
+                VolumeClaimCheck::Current,
+                VolumeClaimCheck::Current,
+                VolumeClaimCheck::Current,
+                VolumeClaimCheck::Current,
+            ]))),
+        },
+        FakeSource {
+            mutations: Rc::new(RefCell::new(Vec::new())),
+        },
+        FakeTarget {
+            receive: ReceiveReceipt {
+                snapshot: VolumeSnapshotId::parse("wrong-snap").expect("snapshot"),
+                target: VolumeOwner::parse("node-b").expect("target"),
+            },
+        },
+        FakeOwnership {
+            verifications: Rc::new(RefCell::new(VecDeque::new())),
+        },
+        FakeCleanup {
+            result: Ok(CleanupStatus::Done),
+        },
+        FakeOperations::default(),
+    );
+
+    assert_eq!(
+        transfer.transfer(&context(), &plan()),
+        Err(VolumeFailure::ReceiveFailed)
+    );
 }
 
 #[test]
@@ -261,7 +335,7 @@ fn retry_after_ownership_checkpoint_requires_verified_ownership() {
     ])));
 
     let first_attempt = engine(
-        VolumeClaimCheck::Current,
+        vec![VolumeClaimCheck::Current; 5],
         Rc::new(RefCell::new(Vec::new())),
         verifications.clone(),
         Ok(CleanupStatus::Done),
@@ -271,13 +345,21 @@ fn retry_after_ownership_checkpoint_requires_verified_ownership() {
         Err(VolumeFailure::OwnershipCommitRejected)
     );
 
+    let retry_mutations = Rc::new(RefCell::new(Vec::new()));
     let second_attempt = engine(
-        VolumeClaimCheck::Current,
-        Rc::new(RefCell::new(Vec::new())),
+        vec![VolumeClaimCheck::Current],
+        retry_mutations.clone(),
         verifications,
         Ok(CleanupStatus::Done),
     );
     second_attempt
-        .transfer(&context(), &plan())
+        .transfer_request(VolumeTransferRequest {
+            context: context(),
+            plan: plan(),
+            mode: VolumeTransferMode::ResumeAfterOwnershipCheckpoint(
+                VolumeTransferFingerprint::new(&context(), &plan()),
+            ),
+        })
         .expect("verified ownership resumes success");
+    assert!(retry_mutations.borrow().is_empty());
 }

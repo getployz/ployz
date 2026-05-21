@@ -4,7 +4,8 @@
 //! to assemble concrete adapters and pass them into product orchestration.
 
 use crate::acme::CertificatePort;
-use crate::deploy::{AuthorityPort, OperationPort};
+use crate::error::DeployFailure;
+use crate::operation::{AuthorityPort, OperationPort};
 use crate::projection::ProjectionPort;
 use crate::runtime::RuntimePort;
 use crate::serving::ServingPort;
@@ -21,7 +22,7 @@ pub struct FirstProofPorts<A, C, O, P, R, S, View> {
 
 impl<A, C, O, P, R, S, View> FirstProofPorts<A, C, O, P, R, S, View>
 where
-    A: AuthorityPort,
+    A: AuthorityPort<DeployFailure>,
     C: CertificatePort,
     O: OperationPort,
     P: ProjectionPort<View>,

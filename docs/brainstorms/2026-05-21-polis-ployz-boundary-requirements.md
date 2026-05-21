@@ -349,6 +349,24 @@ architectural work.
   product boundary, repo-split timing, lease semantics, cert usability rules, or
   deploy/certificate behavior.
 
+## Root Proof Status
+
+The root workspace now proves the boundary through `crates/polis`,
+`crates/ployz`, and `crates/ployz-e2e`:
+
+- `crates/polis` contains only product-neutral identity, authority, records,
+  projection substrate, operation evidence, claims, and bounded call receipts.
+- `crates/ployz` contains product modules for deploy, ACME, serving, runtime,
+  projection, and volume transfer.
+- `crates/ployz-e2e` exercises product surfaces for HTTPS deploy, coordinator
+  restart after serving checkpoint, ACME ownership, and volume transfer.
+- `scripts/check-boundary.sh` rejects Polis imports from Ployz feature modules,
+  Ployz imports from Polis, active `legacy/` workspace packages, and raw
+  substrate record/projection terms outside adapters.
+
+Extraction is still deferred. The proof shows dependency direction and semantic
+reuse, but the crates are still intentionally small and internal.
+
 ---
 
 ## Scope Boundaries

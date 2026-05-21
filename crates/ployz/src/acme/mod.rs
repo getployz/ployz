@@ -2,8 +2,8 @@
 
 use std::time::SystemTime;
 
-use crate::deploy::MutationContext;
 use crate::error::CertificateFailure;
+use crate::operation::MutationContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hostname(String);

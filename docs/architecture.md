@@ -92,6 +92,39 @@ managed infrastructure whose identity has drifted.
 
 ## System Boundaries
 
+### Polis And Ployz
+
+The active root workspace separates the product from the support framework:
+
+- **Ployz** owns product orchestration: deploys, HTTPS bindings, certificate
+  usability, serving state, runtime participants, volume transfer, cleanup
+  status, and operator-facing failures.
+- **Polis** owns product-neutral support primitives: typed identity,
+  authority, authorized records, projection substrate, operation evidence,
+  advisory claims, fencing tokens, and bounded mutation receipts.
+
+Polis is internal infrastructure. Operators should see Ployz terms and Ployz
+errors, not Polis terminology. Ployz feature modules use product-owned ports;
+only adapters and composition code translate those ports onto Polis
+primitives.
+
+The boundary is considered healthy when a product operation can read as product
+code:
+
+1. build a product request and mutation context,
+2. fail preconditions before side effects,
+3. enforce stale-fence rejection at the protected resource,
+4. record generic evidence without treating it as product truth,
+5. verify the domain invariant before reporting success,
+6. expose cleanup or unknown freshness as product status.
+
+The first root proof uses deploy with an HTTPS binding. Deploy must synchronously
+ensure a usable certificate, activate runtime participants, commit serving
+state, verify serving activation, and fail visibly when any proof is missing.
+The second proof uses ACME ownership and volume transfer to show the same
+support primitives can serve unlike domains without moving ACME or volume
+concepts into Polis.
+
 ### Operator Surfaces
 
 The CLI, SDK, API, cloud UI, and agents are all consumers of the same

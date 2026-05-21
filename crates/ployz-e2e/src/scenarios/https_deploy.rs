@@ -7,13 +7,13 @@ use ployz::acme::{
     CertificateStatus, CertificateUsability, EnsureCertificateOutcome, Hostname, HttpsBinding,
     RevocationFreshness,
 };
-use ployz::deploy::{
-    AuthorityContext, AuthorityEpoch, DeployEngine, DeployManifest, DeployRequest, EvidenceKind,
-    IdempotencyKey, MutationContext, OperationEvidence, OperationId, OperationPort, PrincipalId,
-    ScopeId, TerminalMarker,
-};
+use ployz::deploy::{DeployEngine, DeployManifest, DeployRequest};
 use ployz::error::{
     CertificateFailure, DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure,
+};
+use ployz::operation::{
+    AuthorityContext, AuthorityEpoch, EvidenceKind, IdempotencyKey, MutationContext,
+    OperationEvidence, OperationId, OperationPort, PrincipalId, ScopeId, TerminalMarker,
 };
 use ployz::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
