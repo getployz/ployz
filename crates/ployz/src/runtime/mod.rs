@@ -1,5 +1,7 @@
 //! Runtime participant product ports.
 
+use std::time::SystemTime;
+
 use crate::error::RuntimeFailure;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,6 +28,7 @@ impl MachineId {
 pub struct RuntimeActivationRequest {
     pub workload: WorkloadId,
     pub machine: MachineId,
+    pub deadline: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
