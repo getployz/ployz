@@ -12,6 +12,7 @@
 //! - external I/O must be deadline-bounded by the adapter using the primitive.
 
 pub mod authority;
+pub mod calls;
 pub mod claims;
 pub mod error;
 pub mod identity;
@@ -29,6 +30,7 @@ mod tests {
     fn crate_has_no_product_modules() {
         let public_modules = [
             "authority",
+            "calls",
             "claims",
             "error",
             "identity",
