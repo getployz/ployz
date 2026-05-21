@@ -42,12 +42,29 @@ impl ServingGeneration {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServingCheckpoint {
+    generation: ServingGeneration,
+}
+
+impl ServingCheckpoint {
+    #[must_use]
+    pub(crate) fn new(generation: ServingGeneration) -> Self {
+        Self { generation }
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> ServingGeneration {
+        self.generation
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingCommitReceipt {
     pub generation: ServingGeneration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServingActivationStatus {
-    Acknowledged(ServingCheckpoint),
+pub enum ServingActivationObservation {
+    Acknowledged { generation: ServingGeneration },
     Failed(ServingFailure),
     Unknown,
 }
@@ -57,12 +74,12 @@ pub trait ServingPort {
         &self,
         context: &MutationContext,
         snapshot: ServingSnapshot,
-    ) -> Result<ServingCheckpoint, ServingFailure>;
+    ) -> Result<ServingCommitReceipt, ServingFailure>;
 
     fn activation_status(
         &self,
         target: &ServingTarget,
-    ) -> Result<ServingActivationStatus, ServingFailure>;
+    ) -> Result<ServingActivationObservation, ServingFailure>;
 }
 
 fn parse_non_empty<T>(
@@ -82,12 +99,15 @@ mod tests {
 
     #[test]
     fn committed_snapshot_is_not_activation() {
-        let checkpoint = ServingCheckpoint {
-            generation: ServingGeneration::new(7),
-        };
-        let status = ServingActivationStatus::Unknown;
+        let checkpoint = ServingCheckpoint::new(ServingGeneration::new(7));
+        let status = ServingActivationObservation::Unknown;
 
-        assert_ne!(status, ServingActivationStatus::Acknowledged(checkpoint));
+        assert_ne!(
+            status,
+            ServingActivationObservation::Acknowledged {
+                generation: checkpoint.generation()
+            }
+        );
     }
 
     #[test]

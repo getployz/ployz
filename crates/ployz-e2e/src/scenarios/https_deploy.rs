@@ -3,46 +3,128 @@ use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use ployz::acme::{
-    CertificateActivation, CertificateDeadline, CertificateMaterialState, CertificatePort,
-    CertificateStatus, CertificateUsability, EnsureCertificateOutcome, Hostname, HttpsBinding,
+    CertificateActivation, CertificateMaterialState, CertificateUsability, Hostname, HttpsBinding,
     RevocationFreshness,
 };
-use ployz::deploy::{DeployEngine, DeployManifest, DeployRequest};
-use ployz::error::{
-    CertificateFailure, DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure,
+use ployz::deploy::{
+    DeployCommand, DeployEngine, DeployManifest, DeployRequest, certificate_unusable_reason,
 };
+use ployz::domain::{
+    CertificatePolicy, DomainCertificatePort, DomainClaim, DomainClaimObservation, DomainClaimPort,
+    DomainFailure, DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord,
+    DomainResource, DomainServingActivation, DomainServingPort, DomainServingReadiness,
+    DomainStatus, DomainStatusPort, UsableDomainCertificate,
+};
+use ployz::error::{DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure};
 use ployz::operation::{
-    AuthorityContext, AuthorityEpoch, EvidenceKind, IdempotencyKey, MutationContext,
-    OperationEvidence, OperationId, OperationPort, PrincipalId, ScopeId, TerminalMarker,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, BackendOperationId, BackendOperationStart,
+    ClaimHash, CommandEnvelope, CommandIssuer, CommandRunner, EvidenceKind, FenceEpoch,
+    IdempotencyKey, MutationContext, MutationIntent, OperationBackend, OperationEvidence,
+    OperationId, OperationRequest, OperationResult, PrincipalId, ScopeId, TerminalMarker,
+    TypedResourceId,
 };
 use ployz::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
     RuntimeRevision, WorkloadId,
 };
 use ployz::serving::{
-    RouteId, ServingActivationStatus, ServingCheckpoint, ServingGeneration, ServingPort,
+    RouteId, ServingActivationObservation, ServingCommitReceipt, ServingGeneration, ServingPort,
     ServingSnapshot, ServingTarget,
 };
 
+type FakeDomainReadiness =
+    DomainReadinessService<FakeDomains, FakeDomains, FakeDomains, FakeDomains>;
+
 #[derive(Clone)]
-pub(super) struct FakeCertificates {
-    outcome: EnsureCertificateOutcome,
+pub(super) struct FakeDomains {
+    certificate: CertificateUsability,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
 }
 
-impl CertificatePort for FakeCertificates {
-    fn ensure_usable(
+impl DomainClaimPort for FakeDomains {
+    fn claim_domain(
         &self,
         context: &MutationContext,
-        _binding: &HttpsBinding,
-        _deadline: CertificateDeadline,
-    ) -> Result<EnsureCertificateOutcome, CertificateFailure> {
+        resource: TypedResourceId<DomainResource>,
+        _domain: &DomainName,
+    ) -> Result<DomainClaimObservation, DomainFailure> {
         self.contexts.borrow_mut().push(context.clone());
-        Ok(self.outcome.clone())
+        Ok(DomainClaimObservation {
+            resource,
+            holder: PrincipalId::parse("node-a").expect("holder"),
+            epoch: FenceEpoch::new(1).expect("fence epoch"),
+            claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
+            expires_at: UNIX_EPOCH + Duration::from_secs(60),
+        })
+    }
+}
+
+impl DomainCertificatePort for FakeDomains {
+    fn ensure_usable_certificate(
+        &self,
+        _context: &MutationContext,
+        _claim: &DomainClaim,
+        domain: &DomainName,
+        policy: CertificatePolicy,
+    ) -> Result<CertificateUsability, DomainFailure> {
+        UsableDomainCertificate::new(domain, self.certificate.clone(), policy)?;
+        Ok(self.certificate.clone())
+    }
+}
+
+impl DomainServingPort for FakeDomains {
+    fn activate_certificate(
+        &self,
+        _context: &MutationContext,
+        _claim: &DomainClaim,
+        _domain: &DomainName,
+        _certificate: &UsableDomainCertificate,
+    ) -> Result<DomainServingActivation, DomainFailure> {
+        Ok(DomainServingActivation::active(ServingGeneration::new(11)))
     }
 
-    fn status(&self, _binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure> {
-        Ok(CertificateStatus::Unknown)
+    fn verify_certificate_activation(
+        &self,
+        _context: &MutationContext,
+        _domain: &DomainName,
+        _certificate: &UsableDomainCertificate,
+        serving_generation: ServingGeneration,
+    ) -> Result<DomainServingReadiness, DomainFailure> {
+        Ok(DomainServingReadiness::Active(
+            DomainServingActivation::active(serving_generation),
+        ))
+    }
+}
+
+impl DomainStatusPort for FakeDomains {
+    fn status(&self, _domain: &DomainName) -> Result<DomainStatus, DomainFailure> {
+        Ok(DomainStatus::Unknown)
+    }
+
+    fn record_pending(
+        &self,
+        _context: &MutationContext,
+        _domain: &DomainName,
+        _reason: DomainPendingReason,
+    ) -> Result<(), DomainFailure> {
+        Ok(())
+    }
+
+    fn record_ready(
+        &self,
+        _context: &MutationContext,
+        _ready: DomainReadyRecord,
+    ) -> Result<(), DomainFailure> {
+        Ok(())
+    }
+
+    fn record_failed(
+        &self,
+        _context: &MutationContext,
+        _domain: &DomainName,
+        _failure: DomainFailure,
+    ) -> Result<(), DomainFailure> {
+        Ok(())
     }
 }
 
@@ -56,14 +138,14 @@ impl RuntimePort for FakeRuntime {
         &self,
         request: RuntimeActivationRequest,
     ) -> Result<RuntimeActivationOutcome, RuntimeFailure> {
-        assert_eq!(request.context.authority.epoch, AuthorityEpoch::new(7));
+        assert_eq!(request.context.authority().epoch(), AuthorityEpoch::new(7));
         Ok(self.outcome.clone())
     }
 }
 
 #[derive(Clone)]
 pub(super) struct FakeServing {
-    activation: ServingActivationStatus,
+    activation: ServingActivationObservation,
 }
 
 impl ServingPort for FakeServing {
@@ -71,9 +153,9 @@ impl ServingPort for FakeServing {
         &self,
         context: &MutationContext,
         snapshot: ServingSnapshot,
-    ) -> Result<ServingCheckpoint, ServingFailure> {
-        assert_eq!(context.authority.epoch, AuthorityEpoch::new(7));
-        Ok(ServingCheckpoint {
+    ) -> Result<ServingCommitReceipt, ServingFailure> {
+        assert_eq!(context.authority().epoch(), AuthorityEpoch::new(7));
+        Ok(ServingCommitReceipt {
             generation: snapshot.generation,
         })
     }
@@ -81,7 +163,7 @@ impl ServingPort for FakeServing {
     fn activation_status(
         &self,
         _target: &ServingTarget,
-    ) -> Result<ServingActivationStatus, ServingFailure> {
+    ) -> Result<ServingActivationObservation, ServingFailure> {
         Ok(self.activation.clone())
     }
 }
@@ -92,17 +174,28 @@ pub(super) struct FakeOperations {
     pub(super) terminal: Rc<RefCell<Vec<TerminalMarker>>>,
 }
 
-impl OperationPort for FakeOperations {
-    fn record_evidence(&self, evidence: OperationEvidence) -> Result<(), PrimitiveFailure> {
+impl OperationBackend for FakeOperations {
+    fn start_or_replay(
+        &self,
+        _request: &OperationRequest,
+    ) -> OperationResult<BackendOperationStart> {
+        Ok(BackendOperationStart::Started)
+    }
+
+    fn record(
+        &self,
+        _operation: &BackendOperationId,
+        evidence: OperationEvidence,
+    ) -> OperationResult<()> {
         self.evidence.borrow_mut().push(evidence);
         Ok(())
     }
 
-    fn terminalize(
+    fn close(
         &self,
-        _operation: &OperationId,
+        _operation: &BackendOperationId,
         marker: TerminalMarker,
-    ) -> Result<(), PrimitiveFailure> {
+    ) -> OperationResult<()> {
         self.terminal.borrow_mut().push(marker);
         Ok(())
     }
@@ -121,14 +214,6 @@ pub(super) fn usable_certificate() -> CertificateUsability {
 pub(super) fn request() -> DeployRequest {
     let hostname = Hostname::parse("app.example.com").expect("hostname");
     DeployRequest {
-        operation: OperationId::parse("deploy-1").expect("operation"),
-        idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
-        authority: AuthorityContext {
-            principal: PrincipalId::parse("node-a").expect("principal"),
-            scope: ScopeId::parse("cluster").expect("scope"),
-            epoch: AuthorityEpoch::new(7),
-        },
-        fence: None,
         manifest: DeployManifest {
             https: HttpsBinding::new(hostname),
             route: RouteId::parse("route-app").expect("route"),
@@ -142,17 +227,48 @@ pub(super) fn request() -> DeployRequest {
     }
 }
 
+pub(super) fn command() -> CommandEnvelope<DeployCommand> {
+    CommandIssuer::new(AllowAuthority)
+        .issue::<DeployCommand>(MutationIntent {
+            operation: OperationId::parse("deploy-1").expect("operation"),
+            idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
+            principal: PrincipalId::parse("node-a").expect("principal"),
+            scope: ScopeId::parse("cluster").expect("scope"),
+            command: ployz::operation::CommandKind::parse("deploy").expect("command"),
+            payload_hash: vec![1],
+            resources: vec![
+                ployz::operation::FingerprintedResource::parse("route:app").expect("route"),
+            ],
+            submitted_fence: None,
+            deadline: UNIX_EPOCH + Duration::from_secs(60),
+        })
+        .expect("command")
+}
+
+struct AllowAuthority;
+
+impl AuthorityPort for AllowAuthority {
+    fn decide(
+        &self,
+        _principal: &PrincipalId,
+        _scope: &ScopeId,
+    ) -> Result<AuthorityDecision, PrimitiveFailure> {
+        Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
+    }
+}
+
 pub(super) fn engine(
     certificate: CertificateUsability,
-    activation: ServingActivationStatus,
+    activation: ServingActivationObservation,
     operations: FakeOperations,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
-) -> DeployEngine<FakeCertificates, FakeRuntime, FakeServing, FakeOperations> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
+    let domains = FakeDomains {
+        certificate,
+        contexts,
+    };
     DeployEngine::new(
-        FakeCertificates {
-            outcome: EnsureCertificateOutcome::Usable(certificate),
-            contexts,
-        },
+        DomainReadinessService::new(domains.clone(), domains.clone(), domains.clone(), domains),
         FakeRuntime {
             outcome: RuntimeActivationOutcome::Activated(ParticipantReceipt {
                 workload: WorkloadId::parse("workload-app").expect("workload"),
@@ -161,25 +277,26 @@ pub(super) fn engine(
             }),
         },
         FakeServing { activation },
-        operations,
+        CommandRunner::new(operations),
     )
 }
 
 fn engine_with_runtime(
     certificate: CertificateUsability,
     runtime: RuntimeActivationOutcome,
-    activation: ServingActivationStatus,
+    activation: ServingActivationObservation,
     operations: FakeOperations,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
-) -> DeployEngine<FakeCertificates, FakeRuntime, FakeServing, FakeOperations> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
+    let domains = FakeDomains {
+        certificate,
+        contexts,
+    };
     DeployEngine::new(
-        FakeCertificates {
-            outcome: EnsureCertificateOutcome::Usable(certificate),
-            contexts,
-        },
+        DomainReadinessService::new(domains.clone(), domains.clone(), domains.clone(), domains),
         FakeRuntime { outcome: runtime },
         FakeServing { activation },
-        operations,
+        CommandRunner::new(operations),
     )
 }
 
@@ -189,17 +306,20 @@ fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
     let contexts = Rc::new(RefCell::new(Vec::new()));
     let deploy = engine(
         usable_certificate(),
-        ServingActivationStatus::Acknowledged(ServingCheckpoint {
+        ServingActivationObservation::Acknowledged {
             generation: ServingGeneration::new(11),
-        }),
+        },
         operations.clone(),
         contexts.clone(),
     );
 
-    let outcome = deploy.deploy_https(request()).expect("deploy success");
+    let outcome = deploy
+        .deploy_https(command(), request())
+        .expect("deploy success");
 
+    assert_eq!(outcome.domain.domain().as_str(), "app.example.com");
     assert_eq!(outcome.runtime.revision, RuntimeRevision::new(3));
-    assert_eq!(outcome.serving.generation, ServingGeneration::new(11));
+    assert_eq!(outcome.serving.generation(), ServingGeneration::new(11));
     assert_eq!(contexts.borrow().len(), 1);
     assert!(matches!(
         operations.terminal.borrow().as_slice(),
@@ -210,7 +330,7 @@ fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
             .evidence
             .borrow()
             .iter()
-            .any(|evidence| evidence.kind == EvidenceKind::Checkpoint)
+            .any(|evidence| matches!(evidence.kind, EvidenceKind::Checkpoint(_)))
     );
 }
 
@@ -239,7 +359,7 @@ fn certificate_usability_reasons_keep_unknown_distinct() {
 
     for (certificate, reason) in cases {
         assert_eq!(
-            ployz::deploy::certificate_unusable_reason(
+            certificate_unusable_reason(
                 &certificate,
                 &binding,
                 UNIX_EPOCH + Duration::from_secs(3_600)
@@ -251,14 +371,14 @@ fn certificate_usability_reasons_keep_unknown_distinct() {
     for certificate in [unknown, revoked, short_lived] {
         let deploy = engine(
             certificate,
-            ServingActivationStatus::Acknowledged(ServingCheckpoint {
+            ServingActivationObservation::Acknowledged {
                 generation: ServingGeneration::new(11),
-            }),
+            },
             FakeOperations::default(),
             Rc::new(RefCell::new(Vec::new())),
         );
         assert_eq!(
-            deploy.deploy_https(request()),
+            deploy.deploy_https(command(), request()),
             Err(DeployFailure::CertificateUnusable)
         );
     }
@@ -269,16 +389,19 @@ fn serving_commit_without_activation_is_not_success() {
     let operations = FakeOperations::default();
     let deploy = engine(
         usable_certificate(),
-        ServingActivationStatus::Unknown,
+        ServingActivationObservation::Unknown,
         operations.clone(),
         Rc::new(RefCell::new(Vec::new())),
     );
 
     assert_eq!(
-        deploy.deploy_https(request()),
+        deploy.deploy_https(command(), request()),
         Err(DeployFailure::ServingActivationFailed)
     );
-    assert!(operations.terminal.borrow().is_empty());
+    assert_eq!(
+        operations.terminal.borrow().as_slice(),
+        [TerminalMarker::Failed(Vec::new())]
+    );
 }
 
 #[test]
@@ -286,18 +409,20 @@ fn operation_evidence_does_not_render_private_key_material() {
     let operations = FakeOperations::default();
     let deploy = engine(
         usable_certificate(),
-        ServingActivationStatus::Acknowledged(ServingCheckpoint {
+        ServingActivationObservation::Acknowledged {
             generation: ServingGeneration::new(11),
-        }),
+        },
         operations.clone(),
         Rc::new(RefCell::new(Vec::new())),
     );
 
-    let _outcome = deploy.deploy_https(request()).expect("deploy success");
+    let _outcome = deploy
+        .deploy_https(command(), request())
+        .expect("deploy success");
 
     assert!(operations.evidence.borrow().iter().all(|evidence| matches!(
         evidence.kind,
-        EvidenceKind::Checkpoint | EvidenceKind::Observation | EvidenceKind::Failure
+        EvidenceKind::Checkpoint(_) | EvidenceKind::Observation(_) | EvidenceKind::Failure(_)
     )));
 }
 
@@ -311,15 +436,15 @@ fn runtime_receipt_must_match_requested_participant() {
             machine: MachineId::parse("machine-a").expect("machine"),
             revision: RuntimeRevision::new(3),
         }),
-        ServingActivationStatus::Acknowledged(ServingCheckpoint {
+        ServingActivationObservation::Acknowledged {
             generation: ServingGeneration::new(11),
-        }),
+        },
         operations,
         Rc::new(RefCell::new(Vec::new())),
     );
 
     assert_eq!(
-        deploy.deploy_https(request()),
+        deploy.deploy_https(command(), request()),
         Err(DeployFailure::RuntimeParticipantFailed)
     );
 }

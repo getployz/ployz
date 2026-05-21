@@ -9,6 +9,9 @@ pub enum Error {
     #[error("deploy failed: {0}")]
     Deploy(#[from] DeployFailure),
 
+    #[error("domain operation failed: {0}")]
+    Domain(#[from] crate::domain::DomainFailure),
+
     #[error("certificate operation failed: {0}")]
     Certificate(#[from] CertificateFailure),
 
@@ -40,6 +43,8 @@ pub enum DeployFailure {
     ClaimRejected,
     #[error("certificate is unusable")]
     CertificateUnusable,
+    #[error("domain readiness failed")]
+    DomainReadinessFailed,
     #[error("runtime participant failed")]
     RuntimeParticipantFailed,
     #[error("serving activation failed")]
@@ -156,4 +161,6 @@ pub enum PrimitiveFailure {
     MalformedPayload,
     #[error("terminal marker already exists")]
     TerminalAlreadyWritten,
+    #[error("operation replay requires a product verifier")]
+    ReplayUnavailable,
 }

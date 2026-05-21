@@ -3,7 +3,7 @@
 use crate::error::PrimitiveFailure;
 use crate::error::ProjectionFailure;
 use crate::projection::{
-    ProductGrantEpoch, ProductPrincipalId, ProductProofMetadata, ProductRecordEnvelope,
+    ProductGrantEpoch, ProductPrincipalId, ProductRecordEnvelope, ProductRecordMetadata,
     ProductScopeId, SourceWatermark,
 };
 
@@ -24,16 +24,15 @@ pub fn map_polis_error(error: polis::Error) -> PrimitiveFailure {
 pub fn product_record_from_polis(
     record: polis::records::AuthorizedRecord,
 ) -> Result<ProductRecordEnvelope, ProjectionFailure> {
-    Ok(ProductRecordEnvelope {
-        payload: record.payload,
-        proof: ProductProofMetadata {
-            principal: ProductPrincipalId::parse(record.proof.principal.as_str())?,
-            scope: ProductScopeId::parse(record.proof.scope.as_str())?,
-            grant_epoch: ProductGrantEpoch::new(record.proof.grant_epoch.value()),
-            source_watermark: SourceWatermark::new(record.proof.source_watermark.value()),
-            schema_version: record.proof.schema_version.value(),
-        },
-    })
+    let proof = record.proof();
+    let metadata = ProductRecordMetadata::new(
+        ProductPrincipalId::parse(proof.principal().as_str())?,
+        ProductScopeId::parse(proof.scope().as_str())?,
+        ProductGrantEpoch::new(proof.grant_epoch().value()),
+        SourceWatermark::new(proof.source_watermark().value()),
+        proof.schema_version().value(),
+    );
+    Ok(ProductRecordEnvelope::new(record.into_payload(), metadata))
 }
 
 #[cfg(test)]
@@ -50,18 +49,33 @@ mod tests {
 
     #[test]
     fn maps_authorized_record_without_product_imports_in_polis() {
+        struct AllowAuthority;
+
+        impl polis::Authority for AllowAuthority {
+            fn decide(
+                &self,
+                _principal: &polis::PrincipalId,
+                _scope: &polis::ScopeId,
+            ) -> polis::AuthorityDecision {
+                polis::AuthorityDecision::allowed(polis::GrantEpoch::new(2))
+            }
+        }
+
         let principal = polis::PrincipalId::parse("node-a").expect("principal");
         let scope = polis::ScopeId::parse("cluster").expect("scope");
-        let authority = polis::AuthorityContext::new(principal, scope, polis::GrantEpoch::new(2));
-        let proof = polis::records::ProofMetadata::new(
-            authority,
+        let authority = polis::AuthorityService::new(AllowAuthority)
+            .authorize::<()>(principal, scope)
+            .expect("authorized");
+        let record = polis::records::AuthorizedRecord::new(
+            vec![1, 2, 3],
+            &authority,
             polis::SourceWatermark::new(5),
             polis::records::SchemaVersion::new(1),
-        );
-        let record = polis::records::AuthorizedRecord::new(vec![1, 2, 3], proof);
+        )
+        .expect("record");
 
         let product_record = product_record_from_polis(record).expect("product record");
 
-        assert_eq!(product_record.proof.grant_epoch.value(), 2);
+        assert_eq!(product_record.metadata().grant_epoch().value(), 2);
     }
 }

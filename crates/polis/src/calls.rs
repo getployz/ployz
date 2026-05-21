@@ -2,8 +2,8 @@
 
 use std::time::SystemTime;
 
-use crate::authority::AuthorityContext;
-use crate::claims::FenceToken;
+use crate::authority::Authorized;
+use crate::claims::ClaimGuard;
 use crate::identity::PrincipalId;
 use crate::operations::{IdempotencyKey, OperationId};
 use crate::{Error, Result};
@@ -34,34 +34,173 @@ impl PayloadHash {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallIntent {
+    sender: PrincipalId,
+    target: TargetId,
+    operation: OperationId,
+    idempotency: IdempotencyKey,
+    payload_hash: PayloadHash,
+    deadline: SystemTime,
+}
+
+impl CallIntent {
+    #[must_use]
+    pub fn new(
+        sender: PrincipalId,
+        target: TargetId,
+        operation: OperationId,
+        idempotency: IdempotencyKey,
+        payload_hash: PayloadHash,
+        deadline: SystemTime,
+    ) -> Self {
+        Self {
+            sender,
+            target,
+            operation,
+            idempotency,
+            payload_hash,
+            deadline,
+        }
+    }
+
+    #[must_use]
+    pub fn sender(&self) -> &PrincipalId {
+        &self.sender
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &TargetId {
+        &self.target
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub fn payload_hash(&self) -> &PayloadHash {
+        &self.payload_hash
+    }
+
+    #[must_use]
+    pub fn deadline(&self) -> SystemTime {
+        self.deadline
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallEnvelope {
-    pub sender: PrincipalId,
-    pub target: TargetId,
-    pub operation: OperationId,
-    pub idempotency: IdempotencyKey,
-    pub payload_hash: PayloadHash,
-    pub authority: AuthorityContext,
-    pub fence: Option<FenceToken>,
-    pub deadline: SystemTime,
+    intent: CallIntent,
+    authority: Authorized,
+    fence: Option<ClaimGuard>,
+}
+
+impl CallEnvelope {
+    pub fn try_new(
+        intent: CallIntent,
+        authority: Authorized,
+        fence: Option<ClaimGuard>,
+    ) -> Result<Self> {
+        if intent.sender() != authority.context().principal() {
+            return Err(Error::Unauthorized);
+        }
+        Ok(Self {
+            intent,
+            authority,
+            fence,
+        })
+    }
+
+    #[must_use]
+    pub fn sender(&self) -> &PrincipalId {
+        self.intent.sender()
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &TargetId {
+        self.intent.target()
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        self.intent.operation()
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        self.intent.idempotency()
+    }
+
+    #[must_use]
+    pub fn payload_hash(&self) -> &PayloadHash {
+        self.intent.payload_hash()
+    }
+
+    #[must_use]
+    pub fn authority(&self) -> &Authorized {
+        &self.authority
+    }
+
+    #[must_use]
+    pub fn fence(&self) -> Option<&ClaimGuard> {
+        self.fence.as_ref()
+    }
+
+    #[must_use]
+    pub fn deadline(&self) -> SystemTime {
+        self.intent.deadline()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallReply {
-    Success(Vec<u8>),
-    Failure(Error),
+pub enum CallReply<T = Vec<u8>, E = Error> {
+    Success(T),
+    Failure(E),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MutationReceipt {
-    pub envelope: CallEnvelope,
-    pub reply: CallReply,
-    pub recorded_at: SystemTime,
+pub struct MutationReceipt<T = Vec<u8>, E = Error> {
+    envelope: CallEnvelope,
+    reply: CallReply<T, E>,
+    recorded_at: SystemTime,
+}
+
+impl<T, E> MutationReceipt<T, E> {
+    #[must_use]
+    pub fn new(envelope: CallEnvelope, reply: CallReply<T, E>, recorded_at: SystemTime) -> Self {
+        Self {
+            envelope,
+            reply,
+            recorded_at,
+        }
+    }
+
+    #[must_use]
+    pub fn envelope(&self) -> &CallEnvelope {
+        &self.envelope
+    }
+
+    #[must_use]
+    pub fn reply(&self) -> &CallReply<T, E> {
+        &self.reply
+    }
+
+    #[must_use]
+    pub fn recorded_at(&self) -> SystemTime {
+        self.recorded_at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReceiptWrite {
-    Recorded(MutationReceipt),
-    Replayed(MutationReceipt),
+pub enum ReceiptWrite<T = Vec<u8>, E = Error> {
+    Recorded(MutationReceipt<T, E>),
+    Replayed(MutationReceipt<T, E>),
 }
 
 pub trait MutationReceiptStore {
@@ -87,9 +226,9 @@ mod tests {
     impl ReceiptLookupKey {
         fn from_envelope(envelope: &CallEnvelope) -> Self {
             Self {
-                target: envelope.target.clone(),
-                operation: envelope.operation.clone(),
-                idempotency: envelope.idempotency.clone(),
+                target: envelope.target().clone(),
+                operation: envelope.operation().clone(),
+                idempotency: envelope.idempotency().clone(),
             }
         }
     }
@@ -113,7 +252,7 @@ mod tests {
                 self.receipts.insert(key, receipt.clone());
                 return Ok(ReceiptWrite::Recorded(receipt));
             };
-            if existing.envelope.payload_hash != receipt.envelope.payload_hash {
+            if existing.envelope().payload_hash() != receipt.envelope().payload_hash() {
                 return Err(Error::Conflict);
             }
             Ok(ReceiptWrite::Replayed(existing.clone()))
@@ -123,24 +262,52 @@ mod tests {
     fn envelope(payload_hash: &[u8]) -> CallEnvelope {
         let principal = PrincipalId::parse("node-a").expect("principal");
         let scope = ScopeId::parse("cluster").expect("scope");
-        CallEnvelope {
-            sender: principal.clone(),
-            target: TargetId::parse("node-b").expect("target"),
-            operation: OperationId::parse("op-1").expect("operation"),
-            idempotency: IdempotencyKey::parse("call-1").expect("idempotency"),
-            payload_hash: PayloadHash::new(payload_hash.to_vec()).expect("payload hash"),
-            authority: AuthorityContext::new(principal, scope, GrantEpoch::new(1)),
-            fence: None,
-            deadline: UNIX_EPOCH + Duration::from_secs(10),
-        }
+        let authority = Authorized::new(AuthorityContext::new(
+            principal.clone(),
+            scope,
+            GrantEpoch::new(1),
+        ));
+        let intent = CallIntent::new(
+            principal,
+            TargetId::parse("node-b").expect("target"),
+            OperationId::parse("op-1").expect("operation"),
+            IdempotencyKey::parse("call-1").expect("idempotency"),
+            PayloadHash::new(payload_hash.to_vec()).expect("payload hash"),
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+        CallEnvelope::try_new(intent, authority, None).expect("envelope")
+    }
+
+    #[test]
+    fn call_envelope_rejects_sender_authority_mismatch() {
+        let sender = PrincipalId::parse("node-a").expect("sender");
+        let authority_principal = PrincipalId::parse("node-b").expect("authority principal");
+        let authority = Authorized::new(AuthorityContext::new(
+            authority_principal,
+            ScopeId::parse("cluster").expect("scope"),
+            GrantEpoch::new(1),
+        ));
+        let intent = CallIntent::new(
+            sender,
+            TargetId::parse("node-c").expect("target"),
+            OperationId::parse("op-1").expect("operation"),
+            IdempotencyKey::parse("call-1").expect("idempotency"),
+            PayloadHash::new(vec![1]).expect("payload hash"),
+            UNIX_EPOCH + Duration::from_secs(10),
+        );
+
+        assert_eq!(
+            CallEnvelope::try_new(intent, authority, None),
+            Err(Error::Unauthorized)
+        );
     }
 
     fn receipt(payload_hash: &[u8], reply: CallReply) -> MutationReceipt {
-        MutationReceipt {
-            envelope: envelope(payload_hash),
+        MutationReceipt::new(
+            envelope(payload_hash),
             reply,
-            recorded_at: UNIX_EPOCH + Duration::from_secs(1),
-        }
+            UNIX_EPOCH + Duration::from_secs(1),
+        )
     }
 
     #[test]
@@ -180,6 +347,32 @@ mod tests {
         let ReceiptWrite::Replayed(receipt) = replayed else {
             panic!("expected replayed receipt");
         };
-        assert_eq!(receipt.reply, CallReply::Failure(Error::StaleFence));
+        assert_eq!(receipt.reply(), &CallReply::Failure(Error::StaleFence));
+    }
+
+    #[test]
+    fn typed_mutation_receipt_preserves_failure_type() {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum DomainReply {
+            Ready,
+        }
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum DomainFailure {
+            CertificateUnusable,
+        }
+
+        let receipt = MutationReceipt::new(
+            envelope(&[1]),
+            CallReply::<DomainReply, DomainFailure>::Failure(DomainFailure::CertificateUnusable),
+            UNIX_EPOCH + Duration::from_secs(1),
+        );
+
+        assert!(matches!(
+            receipt.reply(),
+            CallReply::Failure(DomainFailure::CertificateUnusable)
+        ));
+
+        let success = CallReply::<DomainReply, DomainFailure>::Success(DomainReply::Ready);
+        assert!(matches!(success, CallReply::Success(DomainReply::Ready)));
     }
 }

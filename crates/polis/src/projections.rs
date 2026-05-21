@@ -26,6 +26,24 @@ impl ProjectionInput {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionSnapshot<View> {
+    pub view: View,
+    pub freshness: ProjectionFreshness,
+}
+
+impl<View> ProjectionSnapshot<View> {
+    #[must_use]
+    pub fn new(view: View, freshness: ProjectionFreshness) -> Self {
+        Self { view, freshness }
+    }
+
+    #[must_use]
+    pub fn is_fresh(&self) -> bool {
+        matches!(self.freshness, ProjectionFreshness::Fresh(_))
+    }
+}
+
 pub trait Reducer<View> {
     fn reduce(&self, input: ProjectionInput) -> Result<View>;
 }
@@ -52,5 +70,12 @@ mod tests {
         let freshness = ProjectionFreshness::Unknown;
 
         assert!(!matches!(freshness, ProjectionFreshness::Fresh(_)));
+    }
+
+    #[test]
+    fn projection_snapshot_preserves_unknown_freshness() {
+        let snapshot = ProjectionSnapshot::new("routes", ProjectionFreshness::Unknown);
+
+        assert!(!snapshot.is_fresh());
     }
 }

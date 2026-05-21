@@ -3,21 +3,21 @@
 use std::time::SystemTime;
 
 use crate::acme::{
-    CertificateActivation, CertificateDeadline, CertificateMaterialState, CertificatePort,
-    CertificateUnusableReason, CertificateUsability, EnsureCertificateOutcome, HttpsBinding,
-    RevocationFreshness,
+    CertificateUnusableReason, CertificateUsability, HttpsBinding,
+    certificate_is_usable as acme_certificate_is_usable,
+    certificate_unusable_reason as acme_certificate_unusable_reason,
+};
+use crate::domain::{
+    CertificatePolicy, DomainAdd, DomainFailure, DomainName, DomainReadinessPort, DomainReady,
 };
 use crate::error::{DeployFailure, PrimitiveFailure};
-use crate::operation::{
-    AuthorityContext, EvidenceKind, FenceToken, IdempotencyKey, MutationContext, OperationEvidence,
-    OperationId, OperationPort, TerminalMarker,
-};
+use crate::operation::{CommandBackend, CommandContext, CommandEnvelope};
 use crate::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
     WorkloadId,
 };
 use crate::serving::{
-    RouteId, ServingActivationStatus, ServingCheckpoint, ServingGeneration, ServingPort,
+    RouteId, ServingActivationObservation, ServingCheckpoint, ServingGeneration, ServingPort,
     ServingSnapshot, ServingTarget,
 };
 
@@ -34,110 +34,94 @@ pub struct DeployManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployRequest {
-    pub operation: OperationId,
-    pub idempotency: IdempotencyKey,
-    pub authority: AuthorityContext,
-    pub fence: Option<FenceToken>,
     pub manifest: DeployManifest,
     pub deadline: SystemTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployOutcome {
-    pub certificate: CertificateUsability,
+    pub domain: DomainReady,
     pub runtime: ParticipantReceipt,
     pub serving: ServingCheckpoint,
 }
 
-pub struct DeployEngine<C, R, S, O> {
-    certificates: C,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployCommand {}
+
+pub struct DeployEngine<D, R, S, O> {
+    domains: D,
     runtime: R,
     serving: S,
-    operations: O,
+    commands: O,
 }
 
-impl<C, R, S, O> DeployEngine<C, R, S, O> {
+impl<D, R, S, O> DeployEngine<D, R, S, O> {
     #[must_use]
-    pub fn new(certificates: C, runtime: R, serving: S, operations: O) -> Self {
+    pub fn new(domains: D, runtime: R, serving: S, commands: O) -> Self {
         Self {
-            certificates,
+            domains,
             runtime,
             serving,
-            operations,
+            commands,
         }
     }
 }
 
-impl<C, R, S, O> DeployEngine<C, R, S, O>
+impl<D, R, S, O> DeployEngine<D, R, S, O>
 where
-    C: CertificatePort,
+    D: DomainReadinessPort,
     R: RuntimePort,
     S: ServingPort,
-    O: OperationPort,
+    O: CommandBackend,
 {
-    pub fn deploy_https(&self, request: DeployRequest) -> Result<DeployOutcome, DeployFailure> {
-        let context = MutationContext {
-            operation: request.operation.clone(),
-            idempotency: request.idempotency.clone(),
-            authority: request.authority.clone(),
-            fence: request.fence.clone(),
-            deadline: request.deadline,
-        };
+    pub fn deploy_https(
+        &self,
+        command: CommandEnvelope<DeployCommand>,
+        request: DeployRequest,
+    ) -> Result<DeployOutcome, DeployFailure> {
+        self.commands
+            .run(command, map_primitive_to_deploy, |context| {
+                let domain = self.ensure_domain_ready(context, &request)?;
+                let runtime = self.activate_runtime(context, &request)?;
+                let serving = self.commit_and_verify_serving(context, &request, &domain)?;
 
-        self.record_evidence(&context.operation, EvidenceKind::Observation)?;
-        let certificate = self.ensure_certificate(&context, &request)?;
-        self.record_evidence(&context.operation, EvidenceKind::Checkpoint)?;
-        let runtime = self.activate_runtime(&context, &request)?;
-        self.record_evidence(&context.operation, EvidenceKind::Checkpoint)?;
-        let serving = self.commit_and_verify_serving(&context, &request)?;
-
-        self.operations
-            .terminalize(&context.operation, TerminalMarker::Succeeded)
-            .map_err(map_primitive_to_deploy)?;
-
-        Ok(DeployOutcome {
-            certificate,
-            runtime,
-            serving,
-        })
+                Ok(DeployOutcome {
+                    domain,
+                    runtime,
+                    serving,
+                })
+            })
     }
 
-    fn ensure_certificate(
+    fn ensure_domain_ready(
         &self,
-        context: &MutationContext,
+        context: &CommandContext<'_>,
         request: &DeployRequest,
-    ) -> Result<CertificateUsability, DeployFailure> {
-        let outcome = self
-            .certificates
-            .ensure_usable(
-                context,
-                &request.manifest.https,
-                CertificateDeadline {
-                    expires_at: request.deadline,
+    ) -> Result<DomainReady, DeployFailure> {
+        let domain = DomainName::parse(request.manifest.https.hostname.as_str())
+            .map_err(map_domain_to_deploy)?;
+        let ready = self
+            .domains
+            .ensure_ready(
+                context.mutation(),
+                DomainAdd {
+                    domain: domain.clone(),
+                    certificate_policy: CertificatePolicy {
+                        minimum_valid_until: request.manifest.minimum_certificate_valid_until,
+                    },
                 },
             )
-            .map_err(|_| DeployFailure::CertificateUnusable)?;
+            .map_err(map_domain_to_deploy)?;
 
-        let EnsureCertificateOutcome::Usable(certificate) = outcome else {
-            return Err(DeployFailure::CertificateUnusable);
-        };
-
-        if certificate_unusable_reason(
-            &certificate,
-            &request.manifest.https,
-            request.manifest.minimum_certificate_valid_until,
-        )
-        .is_some()
-        {
-            return Err(DeployFailure::CertificateUnusable);
+        if ready.domain() != &domain {
+            return Err(DeployFailure::DomainReadinessFailed);
         }
-
-        Ok(certificate)
+        Ok(ready)
     }
 
     fn activate_runtime(
         &self,
-        context: &MutationContext,
+        context: &CommandContext<'_>,
         request: &DeployRequest,
     ) -> Result<ParticipantReceipt, DeployFailure> {
         let outcome = self
@@ -145,7 +129,7 @@ where
             .activate_participant(RuntimeActivationRequest {
                 workload: request.manifest.workload.clone(),
                 machine: request.manifest.machine.clone(),
-                context: context.clone(),
+                context: context.mutation().clone(),
                 deadline: request.deadline,
             })
             .map_err(|_| DeployFailure::RuntimeParticipantFailed)?;
@@ -164,46 +148,39 @@ where
 
     fn commit_and_verify_serving(
         &self,
-        context: &MutationContext,
+        context: &CommandContext<'_>,
         request: &DeployRequest,
+        ready: &DomainReady,
     ) -> Result<ServingCheckpoint, DeployFailure> {
+        if ready.domain().as_str() != request.manifest.https.hostname.as_str() {
+            return Err(DeployFailure::DomainReadinessFailed);
+        }
         let snapshot = ServingSnapshot {
             route: request.manifest.route.clone(),
             hostname: request.manifest.https.hostname.clone(),
             target: request.manifest.serving_target.clone(),
             generation: request.manifest.serving_generation,
         };
-        let checkpoint = self
+        let commit = self
             .serving
-            .commit_snapshot(context, snapshot)
+            .commit_snapshot(context.mutation(), snapshot)
             .map_err(|_| DeployFailure::ServingActivationFailed)?;
+        let checkpoint = ServingCheckpoint::new(commit.generation);
 
         match self
             .serving
             .activation_status(&request.manifest.serving_target)
             .map_err(|_| DeployFailure::ServingActivationFailed)?
         {
-            ServingActivationStatus::Acknowledged(activated) if activated == checkpoint => {
+            ServingActivationObservation::Acknowledged { generation }
+                if generation == checkpoint.generation() =>
+            {
                 Ok(checkpoint)
             }
-            ServingActivationStatus::Acknowledged(_)
-            | ServingActivationStatus::Failed(_)
-            | ServingActivationStatus::Unknown => Err(DeployFailure::ServingActivationFailed),
+            ServingActivationObservation::Acknowledged { .. }
+            | ServingActivationObservation::Failed(_)
+            | ServingActivationObservation::Unknown => Err(DeployFailure::ServingActivationFailed),
         }
-    }
-
-    fn record_evidence(
-        &self,
-        operation: &OperationId,
-        kind: EvidenceKind,
-    ) -> Result<(), DeployFailure> {
-        self.operations
-            .record_evidence(OperationEvidence {
-                operation: operation.clone(),
-                recorded_at: SystemTime::now(),
-                kind,
-            })
-            .map_err(map_primitive_to_deploy)
     }
 }
 
@@ -213,7 +190,7 @@ pub fn certificate_is_usable(
     binding: &HttpsBinding,
     minimum_valid_until: SystemTime,
 ) -> bool {
-    certificate_unusable_reason(certificate, binding, minimum_valid_until).is_none()
+    acme_certificate_is_usable(certificate, binding, minimum_valid_until)
 }
 
 #[must_use]
@@ -222,24 +199,7 @@ pub fn certificate_unusable_reason(
     binding: &HttpsBinding,
     minimum_valid_until: SystemTime,
 ) -> Option<CertificateUnusableReason> {
-    if certificate.hostname != binding.hostname {
-        return Some(CertificateUnusableReason::HostnameMismatch);
-    }
-    if certificate.activation != CertificateActivation::Acknowledged {
-        return Some(CertificateUnusableReason::ActivationRejected);
-    }
-    if certificate.material != CertificateMaterialState::PresentProtected {
-        return Some(CertificateUnusableReason::UnsafeMaterial);
-    }
-    match certificate.revocation {
-        RevocationFreshness::KnownFresh => {}
-        RevocationFreshness::KnownRevoked => return Some(CertificateUnusableReason::KnownRevoked),
-        RevocationFreshness::Unknown => return Some(CertificateUnusableReason::FreshnessUnknown),
-    }
-    if certificate.not_after < minimum_valid_until {
-        return Some(CertificateUnusableReason::SafetyWindowTooShort);
-    }
-    None
+    acme_certificate_unusable_reason(certificate, binding, minimum_valid_until)
 }
 
 fn map_primitive_to_deploy(error: PrimitiveFailure) -> DeployFailure {
@@ -251,18 +211,38 @@ fn map_primitive_to_deploy(error: PrimitiveFailure) -> DeployFailure {
         PrimitiveFailure::NoResponder => DeployFailure::RuntimeParticipantFailed,
         PrimitiveFailure::FreshnessUnknown => DeployFailure::StaleEvidence,
         PrimitiveFailure::MalformedPayload => DeployFailure::InvalidManifest,
-        PrimitiveFailure::TerminalAlreadyWritten => DeployFailure::StaleEvidence,
+        PrimitiveFailure::TerminalAlreadyWritten | PrimitiveFailure::ReplayUnavailable => {
+            DeployFailure::StaleEvidence
+        }
+    }
+}
+
+fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
+    match error {
+        DomainFailure::InvalidDomain => DeployFailure::InvalidManifest,
+        DomainFailure::ClaimRejected
+        | DomainFailure::ClaimResourceMismatch
+        | DomainFailure::StaleClaim => DeployFailure::ClaimRejected,
+        DomainFailure::CertificateUnusable(_) | DomainFailure::CertificateFailed(_) => {
+            DeployFailure::CertificateUnusable
+        }
+        DomainFailure::ServingActivationFailed | DomainFailure::ServingFailed(_) => {
+            DeployFailure::ServingActivationFailed
+        }
+        DomainFailure::StatusUnavailable | DomainFailure::UnknownReadiness => {
+            DeployFailure::DomainReadinessFailed
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::operation::AuthorityCheck;
+    use crate::operation::AuthorityDecision;
 
     #[test]
     fn unknown_authority_is_not_allowed() {
-        let check = AuthorityCheck::Unknown;
+        let check = AuthorityDecision::Unknown;
 
-        assert!(!matches!(check, AuthorityCheck::Allowed(_)));
+        assert_eq!(check.epoch(), None);
     }
 }

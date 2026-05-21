@@ -50,17 +50,83 @@ pub trait ProjectionPort<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductRecordEnvelope {
-    pub payload: Vec<u8>,
-    pub proof: ProductProofMetadata,
+    payload: Vec<u8>,
+    metadata: ProductRecordMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProductProofMetadata {
-    pub principal: ProductPrincipalId,
-    pub scope: ProductScopeId,
-    pub grant_epoch: ProductGrantEpoch,
-    pub source_watermark: SourceWatermark,
-    pub schema_version: u16,
+pub struct ProductRecordMetadata {
+    principal: ProductPrincipalId,
+    scope: ProductScopeId,
+    grant_epoch: ProductGrantEpoch,
+    source_watermark: SourceWatermark,
+    schema_version: u16,
+}
+
+impl ProductRecordEnvelope {
+    #[must_use]
+    pub(crate) fn new(payload: Vec<u8>, metadata: ProductRecordMetadata) -> Self {
+        Self { payload, metadata }
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    #[must_use]
+    pub fn into_payload(self) -> Vec<u8> {
+        self.payload
+    }
+
+    #[must_use]
+    pub fn metadata(&self) -> &ProductRecordMetadata {
+        &self.metadata
+    }
+}
+
+impl ProductRecordMetadata {
+    #[must_use]
+    pub(crate) fn new(
+        principal: ProductPrincipalId,
+        scope: ProductScopeId,
+        grant_epoch: ProductGrantEpoch,
+        source_watermark: SourceWatermark,
+        schema_version: u16,
+    ) -> Self {
+        Self {
+            principal,
+            scope,
+            grant_epoch,
+            source_watermark,
+            schema_version,
+        }
+    }
+
+    #[must_use]
+    pub fn principal(&self) -> &ProductPrincipalId {
+        &self.principal
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> &ProductScopeId {
+        &self.scope
+    }
+
+    #[must_use]
+    pub fn grant_epoch(&self) -> ProductGrantEpoch {
+        self.grant_epoch
+    }
+
+    #[must_use]
+    pub fn source_watermark(&self) -> SourceWatermark {
+        self.source_watermark
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> u16 {
+        self.schema_version
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -124,19 +190,22 @@ mod tests {
 
     #[test]
     fn product_record_envelope_keeps_proof_metadata() {
-        let record = ProductRecordEnvelope {
-            payload: vec![1, 2, 3],
-            proof: ProductProofMetadata {
-                principal: ProductPrincipalId::parse("node-a").expect("principal"),
-                scope: ProductScopeId::parse("cluster").expect("scope"),
-                grant_epoch: ProductGrantEpoch::new(7),
-                source_watermark: SourceWatermark::new(9),
-                schema_version: 1,
-            },
-        };
+        let record = ProductRecordEnvelope::new(
+            vec![1, 2, 3],
+            ProductRecordMetadata::new(
+                ProductPrincipalId::parse("node-a").expect("principal"),
+                ProductScopeId::parse("cluster").expect("scope"),
+                ProductGrantEpoch::new(7),
+                SourceWatermark::new(9),
+                1,
+            ),
+        );
 
-        assert_eq!(record.proof.source_watermark, SourceWatermark::new(9));
-        assert_eq!(record.proof.grant_epoch.value(), 7);
+        assert_eq!(
+            record.metadata().source_watermark(),
+            SourceWatermark::new(9)
+        );
+        assert_eq!(record.metadata().grant_epoch().value(), 7);
     }
 
     #[test]
