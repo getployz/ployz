@@ -2,10 +2,12 @@
 members = [
     "crates/polis",
     "crates/ployz",
+    "crates/ployz-e2e",
 ]
 default-members = [
     "crates/polis",
     "crates/ployz",
+    "crates/ployz-e2e",
 ]
 resolver = "3"
 
