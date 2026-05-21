@@ -24,9 +24,6 @@ pub enum Error {
     #[error("volume operation failed: {0}")]
     Volume(#[from] VolumeFailure),
 
-    #[error("projection operation failed: {0}")]
-    Projection(#[from] ProjectionFailure),
-
     #[error("primitive operation failed: {0}")]
     Primitive(#[from] PrimitiveFailure),
 }
@@ -131,18 +128,6 @@ pub enum VolumeFailure {
     CleanupFailed,
     #[error("payload is invalid")]
     InvalidPayload,
-}
-
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum ProjectionFailure {
-    #[error("view is missing")]
-    MissingView,
-    #[error("view is stale")]
-    StaleView,
-    #[error("payload is invalid")]
-    InvalidPayload,
-    #[error("authority proof is unknown")]
-    UnknownAuthority,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]

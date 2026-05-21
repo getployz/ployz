@@ -20,7 +20,6 @@ pub mod deploy;
 pub mod domain;
 pub mod error;
 pub mod operation;
-pub mod projection;
 pub mod runtime;
 pub mod serving;
 pub mod volume;
