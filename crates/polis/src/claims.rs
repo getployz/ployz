@@ -77,6 +77,11 @@ impl HolderId {
         }
         Ok(Self(value))
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,6 +93,11 @@ impl ClaimEpoch {
             return Err(Error::MalformedPayload);
         }
         Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn value(self) -> u64 {
+        self.0
     }
 }
 
@@ -102,6 +112,11 @@ impl ClaimHash {
         }
         Ok(Self(value))
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,9 +129,9 @@ pub struct ClaimLease<R = ()> {
 }
 
 impl<R> ClaimLease<R> {
-    #[cfg(test)]
     #[must_use]
-    fn new(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_new(
         resource: ResourceId<R>,
         holder: HolderId,
         epoch: ClaimEpoch,
@@ -224,6 +239,11 @@ impl<R> FenceToken<R> {
     pub fn epoch(&self) -> ClaimEpoch {
         self.epoch
     }
+
+    #[must_use]
+    pub fn claim_hash(&self) -> &ClaimHash {
+        &self.claim_hash
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +291,7 @@ mod tests {
     use super::*;
 
     fn lease() -> ClaimLease {
-        ClaimLease::new(
+        ClaimLease::test_new(
             ResourceId::parse("cert:example.com").expect("resource"),
             HolderId::parse("node-a").expect("holder"),
             ClaimEpoch::new(3).expect("epoch"),
@@ -379,7 +399,7 @@ mod tests {
     fn lease_produces_typed_claim_guard() {
         enum DomainResource {}
 
-        let lease = ClaimLease::new(
+        let lease = ClaimLease::test_new(
             ResourceId::<DomainResource>::parse("domain:app.example.com").expect("resource"),
             HolderId::parse("node-a").expect("holder"),
             ClaimEpoch::new(3).expect("epoch"),

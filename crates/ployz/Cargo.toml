@@ -6,11 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-polis.workspace = true
+polis = { workspace = true }
 thiserror.workspace = true
 
+[dev-dependencies]
+polis = { workspace = true, features = ["test-support"] }
+
 [features]
-test-support = []
+test-support = ["polis/test-support"]
 
 [lints]
 workspace = true

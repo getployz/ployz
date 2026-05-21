@@ -88,6 +88,7 @@ pub struct ServingCheckpoint {
 }
 
 impl ServingCheckpoint {
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub(crate) fn new(generation: ServingGeneration) -> Self {
         Self { generation }

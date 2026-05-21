@@ -2,6 +2,8 @@ use std::time::SystemTime;
 
 use crate::error::PrimitiveFailure;
 use crate::operation::identity::{PrincipalId, ResourceId, TypedResourceId, parse_non_empty};
+#[cfg(any(test, feature = "test-support"))]
+use crate::operation::polis_boundary::map_polis_to_primitive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FenceEpoch(u64);
@@ -12,6 +14,11 @@ impl FenceEpoch {
             return Err(PrimitiveFailure::MalformedPayload);
         }
         Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn value(self) -> u64 {
+        self.0
     }
 }
 
@@ -40,28 +47,33 @@ pub struct SubmittedFenceToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimGuard<R> {
     resource: TypedResourceId<R>,
-    holder: PrincipalId,
-    epoch: FenceEpoch,
-    claim_hash: ClaimHash,
-    expires_at: SystemTime,
+    proof: polis::ClaimGuard<R>,
 }
 
 impl<R> ClaimGuard<R> {
-    #[must_use]
-    pub(crate) fn new(
+    pub fn from_acquired(proof: polis::ClaimGuard<R>) -> Result<Self, PrimitiveFailure> {
+        Ok(Self {
+            resource: TypedResourceId::parse(proof.resource().as_str())?,
+            proof,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_new(
         resource: TypedResourceId<R>,
         holder: PrincipalId,
         epoch: FenceEpoch,
         claim_hash: ClaimHash,
         expires_at: SystemTime,
-    ) -> Self {
-        Self {
-            resource,
-            holder,
-            epoch,
-            claim_hash,
+    ) -> Result<Self, PrimitiveFailure> {
+        let lease = polis::ClaimLease::test_new(
+            polis::ResourceId::parse(resource.as_str()).map_err(map_polis_to_primitive)?,
+            polis::HolderId::parse(holder.as_str()).map_err(map_polis_to_primitive)?,
+            polis::ClaimEpoch::new(epoch.value()).map_err(map_polis_to_primitive)?,
+            polis::ClaimHash::parse(claim_hash.as_str()).map_err(map_polis_to_primitive)?,
             expires_at,
-        }
+        );
+        Self::from_acquired(lease.guard())
     }
 
     #[must_use]
@@ -70,23 +82,14 @@ impl<R> ClaimGuard<R> {
     }
 
     #[must_use]
-    pub fn holder(&self) -> &PrincipalId {
-        &self.holder
-    }
-
-    #[must_use]
-    pub fn epoch(&self) -> FenceEpoch {
-        self.epoch
-    }
-
-    #[must_use]
-    pub fn claim_hash(&self) -> &ClaimHash {
-        &self.claim_hash
-    }
-
-    #[must_use]
     pub fn expires_at(&self) -> SystemTime {
-        self.expires_at
+        self.proof.expires_at()
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn proof(&self) -> &polis::ClaimGuard<R> {
+        &self.proof
     }
 }
 
@@ -101,5 +104,25 @@ mod tests {
             FenceEpoch::new(u64::MAX),
             Err(PrimitiveFailure::MalformedPayload)
         );
+    }
+
+    #[test]
+    fn claim_guard_wraps_polis_claim_proof() {
+        enum TestResource {}
+
+        let guard = ClaimGuard::test_new(
+            TypedResourceId::<TestResource>::parse("domain:example.com").expect("resource"),
+            PrincipalId::parse("node-a").expect("holder"),
+            FenceEpoch::new(2).expect("epoch"),
+            ClaimHash::parse("claim-hash").expect("hash"),
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("guard");
+
+        assert_eq!(guard.resource().as_str(), "domain:example.com");
+        assert_eq!(guard.proof().resource().as_str(), "domain:example.com");
+        assert_eq!(guard.proof().fence().holder().as_str(), "node-a");
+        assert_eq!(guard.proof().fence().epoch().value(), 2);
+        assert_eq!(guard.proof().fence().claim_hash().as_str(), "claim-hash");
     }
 }
