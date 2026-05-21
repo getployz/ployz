@@ -14,8 +14,10 @@ serving, certificates, and environment lifecycle.
 
 Polis should own only the reusable distributed control-plane capabilities that
 let those product primitives stay small, visible, and command-shaped. The
-boundary must first prove itself inside `MVP/`. Separate `polis` and `ployz`
-repositories come later, after the boundary is already clear.
+boundary must first prove itself in a fresh root workspace. The previous MVP
+and root implementations live under `legacy/` as reference material. Separate
+`polis` and `ployz` repositories come later, after the boundary is already
+clear.
 
 In this document, "Polis" does not imply a public brand, SDK, or repo split. It
 is an internal framework boundary until extraction gates are met.
@@ -38,8 +40,9 @@ should be Polis capabilities.
 
 The goal is not to support hypothetical backends or turn Ployz into a generic
 platform builder. The goal is to create a cleaner internal boundary first. If
-the boundary proves itself inside `MVP/`, a later repo split into `polis` and
-`ployz` should be packaging and ownership work rather than architectural work.
+the boundary proves itself in the root workspace, a later repo split into
+`polis` and `ployz` should be packaging and ownership work rather than
+architectural work.
 
 ---
 
@@ -92,9 +95,9 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
   - **Covered by:** R1, R2, R9, R10, R11, R12, R13, R20, R21, R23,
     R28
 
-- F2. First boundary proof inside `MVP/`
-  - **Trigger:** The MVP starts extracting Polis-shaped capabilities from
-    product code.
+- F2. First boundary proof in the root workspace
+  - **Trigger:** The rewrite starts extracting Polis-shaped capabilities from
+    product code while using `legacy/` as reference material.
   - **Actors:** A1, A2
   - **Steps:** The first slice separates product-neutral projection substrate
     from Ployz-owned product projection models and reducers, then applies the
@@ -116,11 +119,11 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
   - **Covered by:** R18, R19, R30, R31
 
 - F4. Boundary earns repo extraction
-  - **Trigger:** MVP crates have been reorganized so framework crates no longer
+  - **Trigger:** Root crates have been organized so framework crates no longer
     import Ployz product crates and at least two domains use the same Polis
     capability cleanly.
   - **Actors:** A1, A2
-  - **Steps:** The MVP proves clean dependency direction, validates product
+  - **Steps:** The root workspace proves clean dependency direction, validates product
     behavior through the new boundary, and only then considers moving Polis into
     its own repository.
   - **Outcome:** Repo splitting becomes packaging and ownership work, not a
@@ -149,8 +152,8 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
 
 ### First Boundary Proof
 
-- R6. The first migration phase must prove dependency direction inside `MVP/`
-  before moving code into separate repositories.
+- R6. The first migration phase must prove dependency direction in the fresh
+  root workspace before moving code into separate repositories.
 - R7. The first proof must split projection into product-neutral substrate and
   Ployz-owned projection modules:
   - Polis owns candidate status, fact source/read APIs, reducer traits,
@@ -310,7 +313,7 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
   verifier confirms the domain invariant and idempotency scope it claims.
 
 - AE6. **Covers R6, R7, R17, R24, R27.** Given the projection boundary is
-  extracted inside `MVP/`, when framework crates compile, they do not import
+  extracted in the root workspace, when framework crates compile, they do not import
   ACME, certificate, deploy, serving, routing, machine, volume, or environment
   product modules; Ployz product code sees typed views and ports, not raw
   candidates or candidate statuses.
@@ -352,7 +355,9 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
 
 ### Required for the First Proof
 
-- Keep the work inside `MVP/`.
+- Keep active implementation work in the root workspace.
+- Treat `legacy/` as reference material unless a later plan explicitly copies a
+  behavior into the new root crates.
 - Split projection substrate from Ployz product projections.
 - Ensure deploy with HTTPS binding either creates/activates a usable certificate
   and commits serving state or fails visibly.
@@ -397,8 +402,8 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
   foundation that lets orchestration code be organized, authorized, and
   observable without making Ployz generic.
 - Keep Polis internal until it earns extraction: Clean dependency direction and
-  semantic reuse inside `MVP/` are the first meaningful milestones. Separate
-  repositories come after the boundary earns it.
+  semantic reuse in the root workspace are the first meaningful milestones.
+  Separate repositories come after the boundary earns it.
 - Treat Polis like a framework, not a backend abstraction: The design should
   start from the Ployz code we want to write and provide capabilities that make
   that code simple.
@@ -417,7 +422,8 @@ the boundary proves itself inside `MVP/`, a later repo split into `polis` and
 
 ## Dependencies / Assumptions
 
-- The active implementation target remains `MVP/` until the boundary is proven.
+- The active implementation target is the fresh root workspace. `legacy/mvp/`
+  and `legacy/crates/` remain reference implementations.
 - iroh/p2panda remains the active transport and signed-state direction.
 - The existing MVP product constraints still apply: explicit commands, visible
   failures, no hidden reconciliation for mutations, and data-plane continuity
