@@ -17,8 +17,7 @@ use crate::runtime::{
     WorkloadId,
 };
 use crate::serving::{
-    RouteId, ServingActivationObservation, ServingCheckpoint, ServingGeneration, ServingPort,
-    ServingSnapshot, ServingTarget,
+    RouteId, ServingActivationProof, ServingGeneration, ServingPort, ServingTarget,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +41,7 @@ pub struct DeployRequest {
 pub struct DeployOutcome {
     pub domain: DomainReady,
     pub runtime: ParticipantReceipt,
-    pub serving: ServingCheckpoint,
+    pub serving: ServingActivationProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,36 +150,27 @@ where
         context: &CommandContext<'_>,
         request: &DeployRequest,
         ready: &DomainReady,
-    ) -> Result<ServingCheckpoint, DeployFailure> {
+    ) -> Result<ServingActivationProof, DeployFailure> {
         if ready.domain().as_str() != request.manifest.https.hostname.as_str() {
             return Err(DeployFailure::DomainReadinessFailed);
         }
-        let snapshot = ServingSnapshot {
-            route: request.manifest.route.clone(),
-            hostname: request.manifest.https.hostname.clone(),
-            target: request.manifest.serving_target.clone(),
-            generation: request.manifest.serving_generation,
-        };
-        let commit = self
-            .serving
-            .commit_snapshot(context.mutation(), snapshot)
-            .map_err(|_| DeployFailure::ServingActivationFailed)?;
-        let checkpoint = ServingCheckpoint::new(commit.generation);
+        let commit = ready.serving_commit(
+            request.manifest.route.clone(),
+            request.manifest.serving_target.clone(),
+            request.manifest.serving_generation,
+        );
+        self.serving
+            .commit_snapshot(context.mutation(), &commit)
+            .map_err(DeployFailure::ServingFailed)?;
+        let checkpoint = commit.checkpoint();
 
-        match self
+        let activation = self
             .serving
-            .activation_status(&request.manifest.serving_target)
-            .map_err(|_| DeployFailure::ServingActivationFailed)?
-        {
-            ServingActivationObservation::Acknowledged { generation }
-                if generation == checkpoint.generation() =>
-            {
-                Ok(checkpoint)
-            }
-            ServingActivationObservation::Acknowledged { .. }
-            | ServingActivationObservation::Failed(_)
-            | ServingActivationObservation::Unknown => Err(DeployFailure::ServingActivationFailed),
-        }
+            .activation_status(&checkpoint)
+            .map_err(DeployFailure::ServingFailed)?;
+        activation
+            .try_acknowledge(&checkpoint)
+            .map_err(DeployFailure::ServingFailed)
     }
 }
 
@@ -226,9 +216,8 @@ fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
         DomainFailure::CertificateUnusable(_) | DomainFailure::CertificateFailed(_) => {
             DeployFailure::CertificateUnusable
         }
-        DomainFailure::ServingActivationFailed | DomainFailure::ServingFailed(_) => {
-            DeployFailure::ServingActivationFailed
-        }
+        DomainFailure::ServingActivationFailed => DeployFailure::ServingActivationFailed,
+        DomainFailure::ServingFailed(error) => DeployFailure::ServingFailed(error),
         DomainFailure::StatusUnavailable | DomainFailure::UnknownReadiness => {
             DeployFailure::DomainReadinessFailed
         }
