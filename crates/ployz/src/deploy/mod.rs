@@ -50,12 +50,17 @@ pub struct DeployOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployCommand {}
 
+pub struct IssuedDeployCommand {
+    envelope: CommandEnvelope<DeployCommand>,
+    request: DeployRequest,
+}
+
 impl DeployCommand {
     pub fn issue<A>(
         issuer: &CommandIssuer<A>,
         command: CommandIssue,
-        request: &DeployRequest,
-    ) -> Result<CommandEnvelope<Self>, PrimitiveFailure>
+        request: DeployRequest,
+    ) -> Result<IssuedDeployCommand, PrimitiveFailure>
     where
         A: AuthorityPort,
     {
@@ -74,7 +79,7 @@ impl DeployCommand {
             request.manifest.minimum_certificate_valid_until,
         );
 
-        issuer.issue(MutationIntent {
+        let envelope = issuer.issue(MutationIntent {
             operation: command.operation,
             idempotency: command.idempotency,
             principal: command.principal,
@@ -90,7 +95,8 @@ impl DeployCommand {
             ],
             submitted_fence: None,
             deadline: command.deadline,
-        })
+        })?;
+        Ok(IssuedDeployCommand { envelope, request })
     }
 }
 
@@ -122,11 +128,11 @@ where
 {
     pub fn deploy_https(
         &self,
-        command: CommandEnvelope<DeployCommand>,
-        request: DeployRequest,
+        command: IssuedDeployCommand,
     ) -> Result<DeployOutcome, DeployFailure> {
+        let IssuedDeployCommand { envelope, request } = command;
         self.commands.run_with_replay(
-            command,
+            envelope,
             map_primitive_to_deploy,
             |context| {
                 let domain = self.ensure_domain_ready(context, &request)?;
@@ -391,15 +397,19 @@ mod tests {
             ..request.clone()
         };
 
-        let first = DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), &request)
-            .expect("first command");
+        let first = DeployCommand::issue(
+            &CommandIssuer::new(AllowAuthority),
+            issue(),
+            request.clone(),
+        )
+        .expect("first command");
         let second =
-            DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), &changed_route)
+            DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), changed_route)
                 .expect("second command");
 
         assert_ne!(
-            first.fingerprint_for_test().payload_hash(),
-            second.fingerprint_for_test().payload_hash()
+            first.envelope.fingerprint_for_test().payload_hash(),
+            second.envelope.fingerprint_for_test().payload_hash()
         );
     }
 

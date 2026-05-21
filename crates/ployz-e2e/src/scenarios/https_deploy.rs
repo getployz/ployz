@@ -7,7 +7,8 @@ use ployz::acme::{
     RevocationFreshness,
 };
 use ployz::deploy::{
-    DeployCommand, DeployEngine, DeployManifest, DeployRequest, certificate_unusable_reason,
+    DeployCommand, DeployEngine, DeployManifest, DeployRequest, IssuedDeployCommand,
+    certificate_unusable_reason,
 };
 use ployz::domain::{
     CertificatePolicy, DomainCertificatePort, DomainClaim, DomainClaimPort, DomainFailure,
@@ -17,9 +18,9 @@ use ployz::domain::{
 };
 use ployz::error::{DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssue,
-    CommandIssuer, CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, OperationId,
-    PrincipalId, ScopeId, TypedResourceId,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssue, CommandIssuer,
+    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId, ScopeId,
+    TypedResourceId,
 };
 use ployz::runtime::{
     MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
@@ -259,7 +260,7 @@ pub(super) fn activation_for(request: &DeployRequest) -> ServingActivationObserv
     }
 }
 
-pub(super) fn command() -> CommandEnvelope<DeployCommand> {
+pub(super) fn command() -> IssuedDeployCommand {
     DeployCommand::issue(
         &CommandIssuer::new(AllowAuthority),
         CommandIssue {
@@ -269,7 +270,7 @@ pub(super) fn command() -> CommandEnvelope<DeployCommand> {
             scope: ScopeId::parse("cluster").expect("scope"),
             deadline: UNIX_EPOCH + Duration::from_secs(60),
         },
-        &request(),
+        request(),
     )
     .expect("command")
 }
@@ -380,9 +381,7 @@ fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
         contexts.clone(),
     );
 
-    let outcome = deploy
-        .deploy_https(command(), request())
-        .expect("deploy success");
+    let outcome = deploy.deploy_https(command()).expect("deploy success");
 
     assert_eq!(outcome.domain.domain().as_str(), "app.example.com");
     assert_eq!(outcome.runtime.revision, RuntimeRevision::new(3));
@@ -437,7 +436,7 @@ fn certificate_usability_reasons_keep_unknown_distinct() {
             Rc::new(RefCell::new(Vec::new())),
         );
         assert_eq!(
-            deploy.deploy_https(command(), request()),
+            deploy.deploy_https(command()),
             Err(DeployFailure::CertificateUnusable)
         );
     }
@@ -454,7 +453,7 @@ fn serving_commit_without_activation_is_not_success() {
     );
 
     assert_eq!(
-        deploy.deploy_https(command(), request()),
+        deploy.deploy_https(command()),
         Err(DeployFailure::ServingFailed(
             ServingFailure::LiveObservationUnknown
         ))
@@ -482,15 +481,11 @@ fn terminal_success_replay_verifies_deploy_without_mutation() {
         serving_commits.clone(),
     );
 
-    let _first = deploy
-        .deploy_https(command(), request())
-        .expect("initial deploy");
+    let _first = deploy.deploy_https(command()).expect("initial deploy");
     *operations.replay.borrow_mut() = Some(Some(TerminalMarker::Succeeded));
     contexts.borrow_mut().clear();
 
-    let replayed = deploy
-        .deploy_https(command(), request())
-        .expect("replayed deploy");
+    let replayed = deploy.deploy_https(command()).expect("replayed deploy");
 
     assert_eq!(replayed.runtime.revision, RuntimeRevision::new(3));
     assert!(contexts.borrow().is_empty());
@@ -516,9 +511,7 @@ fn terminal_success_replay_rejects_missing_runtime_participant() {
         runtime_for(receipt()),
         Rc::new(RefCell::new(0)),
     );
-    first
-        .deploy_https(command(), request())
-        .expect("initial deploy");
+    first.deploy_https(command()).expect("initial deploy");
     *operations.replay.borrow_mut() = Some(Some(TerminalMarker::Succeeded));
 
     let replay = engine_with_shared_state(
@@ -537,7 +530,7 @@ fn terminal_success_replay_rejects_missing_runtime_participant() {
     );
 
     assert_eq!(
-        replay.deploy_https(command(), request()),
+        replay.deploy_https(command()),
         Err(DeployFailure::RuntimeParticipantFailed)
     );
 }
@@ -552,9 +545,7 @@ fn operation_evidence_does_not_render_private_key_material() {
         Rc::new(RefCell::new(Vec::new())),
     );
 
-    let _outcome = deploy
-        .deploy_https(command(), request())
-        .expect("deploy success");
+    let _outcome = deploy.deploy_https(command()).expect("deploy success");
 
     assert!(operations.evidence.borrow().is_empty());
 }
@@ -575,7 +566,7 @@ fn runtime_receipt_must_match_requested_participant() {
     );
 
     assert_eq!(
-        deploy.deploy_https(command(), request()),
+        deploy.deploy_https(command()),
         Err(DeployFailure::RuntimeParticipantFailed)
     );
 }
@@ -596,7 +587,7 @@ fn serving_activation_must_match_committed_route_identity() {
     );
 
     assert_eq!(
-        deploy.deploy_https(command(), request()),
+        deploy.deploy_https(command()),
         Err(DeployFailure::ServingFailed(
             ServingFailure::LiveObservationUnknown
         ))

@@ -20,7 +20,7 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
     );
 
     assert_eq!(
-        first_attempt.deploy_https(command(), request()),
+        first_attempt.deploy_https(command()),
         Err(DeployFailure::ServingFailed(
             ServingFailure::LiveObservationUnknown
         ))
@@ -38,7 +38,7 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
     );
 
     second_attempt
-        .deploy_https(command(), request())
+        .deploy_https(command())
         .expect("retry verifies activation before success");
     assert_eq!(
         operations.terminal.borrow().as_slice(),
