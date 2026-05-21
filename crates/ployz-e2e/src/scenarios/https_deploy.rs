@@ -65,9 +65,8 @@ impl DomainCertificatePort for FakeDomains {
         _claim: &DomainClaim,
         domain: &DomainName,
         policy: CertificatePolicy,
-    ) -> Result<CertificateUsability, DomainFailure> {
-        UsableDomainCertificate::new(domain, self.certificate.clone(), policy)?;
-        Ok(self.certificate.clone())
+    ) -> Result<UsableDomainCertificate, DomainFailure> {
+        UsableDomainCertificate::new(domain, self.certificate.clone(), policy)
     }
 }
 
