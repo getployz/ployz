@@ -11,12 +11,12 @@ use super::daemon_control::DaemonControlRuntime;
 use super::{
     DaemonOptions, apply_peer_admissions, ensure_remote_bridges_registered,
     handle_node_agent_rpc_requests, is_recoverable_stream_error, publish_admitted_peers,
-    publish_self_join,
+    publish_self_join, wireguard_endpoint_id,
 };
 use crate::error::{NodeError, NodeResult};
 use crate::node_agent_rpc::RemoteNodeAgentBridgeSet;
 use crate::state::LoadedNodeState;
-use mvp_mesh::{WireGuardActorHandle, WireGuardAppliedSnapshot, plan_full_mesh};
+use mvp_mesh::{MeshError, WireGuardActorHandle, WireGuardAppliedSnapshot, plan_full_mesh};
 
 pub(super) struct DaemonRuntime {
     pub(super) state: LoadedNodeState,
@@ -100,6 +100,7 @@ impl DaemonRuntime {
                 &self.state,
                 &self.writer_session,
                 &self.author,
+                &wireguard_endpoint_id(&self.state, &self.options.wireguard),
             )
             .await?;
         }
@@ -184,8 +185,13 @@ impl DaemonRuntime {
             .map(|node| node.epoch)
             .max()
             .unwrap_or(0);
-        let plan = plan_full_mesh(&report.state, &current_state.node_id(), revision)
-            .map_err(|source| NodeError::Mesh { source })?;
+        let plan = match plan_full_mesh(&report.state, &current_state.node_id(), revision) {
+            Ok(plan) => plan,
+            Err(MeshError::LocalNodeNotLive { node_id }) if node_id == current_state.node_id() => {
+                return Ok(());
+            }
+            Err(source) => return Err(NodeError::Mesh { source }),
+        };
         let snapshot = WireGuardAppliedSnapshot::from_plan(current_state.island(), plan);
         self.wireguard
             .apply(snapshot)

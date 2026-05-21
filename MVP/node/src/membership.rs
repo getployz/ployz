@@ -235,7 +235,15 @@ pub async fn run_daemon_once(
     write_node_ticket(&state, &ticket)?;
     {
         let mut fact_node = fact_node.lock().await;
-        publish_self_join(&mut fact_node, &state, &writer_session, &author).await?;
+        let wireguard_endpoint = wireguard_endpoint_id(&state, &options.wireguard);
+        publish_self_join(
+            &mut fact_node,
+            &state,
+            &writer_session,
+            &author,
+            &wireguard_endpoint,
+        )
+        .await?;
         publish_admitted_peers(&mut fact_node, &state, &writer_session, &author).await?;
     }
     let remote_bridges = register_remote_node_agent_bridges_with_fact_node(
@@ -324,7 +332,13 @@ fn create_runtime_backend(
             image,
             service_port,
             command,
-        } => create_docker_runtime_backend(state, image, *service_port, command.as_deref()),
+        } => create_docker_runtime_backend(
+            state,
+            image,
+            *service_port,
+            command.as_deref(),
+            &options.wireguard,
+        ),
     }
 }
 
@@ -334,6 +348,7 @@ fn create_docker_runtime_backend(
     image: &str,
     service_port: u16,
     command: Option<&[String]>,
+    wireguard: &DaemonWireGuardMode,
 ) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
     let mut config = mvp_runtime::DockerRuntimeConfig::new(
         state.node_id(),
@@ -345,11 +360,16 @@ fn create_docker_runtime_backend(
     if let Some(command) = command {
         config = config.with_command(command.iter().cloned());
     }
-    let network =
-        mvp_runtime::DockerBridgeNetwork::connect(mvp_runtime::DockerBridgeNetworkConfig::new(
-            format!("ployz-mvp-{}", state.node_id_str()),
-            state.container_subnet(),
-        ))
+    let mut network_config = mvp_runtime::DockerBridgeNetworkConfig::new(
+        format!("ployz-mvp-{}", state.node_id_str()),
+        state.container_subnet(),
+    );
+    if let DaemonWireGuardMode::Linux { ifname, .. } = wireguard {
+        network_config = network_config.with_overlay_ifname(ifname);
+    }
+    let network = mvp_runtime::DockerBridgeNetwork::connect(network_config)
+        .map_err(|source| NodeError::RuntimeBackend { source })?;
+    mvp_runtime::ContainerNetworkBackend::ensure(&network)
         .map_err(|source| NodeError::RuntimeBackend { source })?;
     let runtime =
         mvp_runtime::DockerRuntime::connect_with_container_network(config, Arc::new(network))
@@ -363,6 +383,7 @@ fn create_docker_runtime_backend(
     _image: &str,
     _service_port: u16,
     _command: Option<&[String]>,
+    _wireguard: &DaemonWireGuardMode,
 ) -> NodeResult<Option<Arc<dyn mvp_runtime::RuntimeBackend>>> {
     Err(NodeError::CommandNotWired {
         command: "daemon --runtime docker requires the docker-runtime feature".to_string(),
@@ -703,6 +724,7 @@ pub(super) async fn publish_self_join(
     state: &LoadedNodeState,
     session: &mvp_bus::BusSession,
     author: &PandaFactAuthor,
+    wireguard_endpoint: &IrohEndpointId,
 ) -> NodeResult<()> {
     let fact_key =
         joined_fact_key(&state.node_id(), 1).map_err(|source| NodeError::Mesh { source })?;
@@ -710,7 +732,7 @@ pub(super) async fn publish_self_join(
         node_id: state.node_id(),
         epoch: 1,
         overlay_ip: state.wireguard_overlay_ip().to_string(),
-        iroh_endpoint_id: IrohEndpointId::new(state.node_id_str()).to_string(),
+        iroh_endpoint_id: wireguard_endpoint.to_string(),
         wg_public_key: WireGuardPublicKey::new(state.wireguard_public_key()).to_string(),
     })
     .to_fact_bytes()
@@ -726,6 +748,20 @@ pub(super) async fn publish_self_join(
         .await
         .map_err(|source| NodeError::Transport { source })?;
     Ok(())
+}
+
+pub(super) fn wireguard_endpoint_id(
+    state: &LoadedNodeState,
+    mode: &DaemonWireGuardMode,
+) -> IrohEndpointId {
+    match mode {
+        DaemonWireGuardMode::Linux { listen_port, .. } => {
+            let mut endpoint = state.p2panda_endpoint().advertise;
+            endpoint.set_port(*listen_port);
+            IrohEndpointId::new(endpoint.to_string())
+        }
+        DaemonWireGuardMode::Memory => IrohEndpointId::new(state.node_id_str()),
+    }
 }
 
 pub fn now_ms() -> u64 {

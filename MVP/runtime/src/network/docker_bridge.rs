@@ -8,6 +8,8 @@ use bollard::models::{
     NetworkCreateRequest, NetworkDisconnectRequest,
 };
 use mvp_mesh::{ContainerIp, ContainerSubnet};
+#[cfg(target_os = "linux")]
+use std::process::Command;
 
 use crate::{
     ContainerNetworkAttachment, ContainerNetworkBackend, ContainerNetworkState, RuntimeError,
@@ -19,6 +21,7 @@ pub struct DockerBridgeNetworkConfig {
     pub name: String,
     pub subnet: ContainerSubnet,
     pub mtu: u16,
+    pub overlay_ifname: Option<String>,
 }
 
 impl DockerBridgeNetworkConfig {
@@ -28,12 +31,19 @@ impl DockerBridgeNetworkConfig {
             name: stable_network_name(name),
             subnet,
             mtu: 1420,
+            overlay_ifname: None,
         }
     }
 
     #[must_use]
     pub fn with_mtu(mut self, mtu: u16) -> Self {
         self.mtu = mtu;
+        self
+    }
+
+    #[must_use]
+    pub fn with_overlay_ifname(mut self, ifname: impl Into<String>) -> Self {
+        self.overlay_ifname = Some(ifname.into());
         self
     }
 }
@@ -110,7 +120,9 @@ impl DockerBridgeNetwork {
                 });
             }
         }
-        self.inspect_state().await
+        let state = self.inspect_state().await?;
+        self.ensure_overlay_firewall_rules(&state).await?;
+        Ok(state)
     }
 
     async fn create_network(&self) -> RuntimeResult<()> {
@@ -153,6 +165,22 @@ impl DockerBridgeNetwork {
             self.config.subnet,
             bridge_ifname,
         ))
+    }
+
+    async fn ensure_overlay_firewall_rules(
+        &self,
+        state: &ContainerNetworkState,
+    ) -> RuntimeResult<()> {
+        let Some(overlay_ifname) = self.config.overlay_ifname.as_deref() else {
+            return Ok(());
+        };
+        let Some(bridge_ifname) = state.bridge_ifname.as_deref() else {
+            return Err(RuntimeError::DockerOperation {
+                operation: "docker bridge firewall",
+                message: format!("network '{}' has no bridge interface", self.config.name),
+            });
+        };
+        install_overlay_firewall_rules(self.config.subnet, bridge_ifname, overlay_ifname)
     }
 
     async fn connect_container(
@@ -326,6 +354,93 @@ fn bridge_ifname_from_network_id(id: &str) -> String {
     format!("br-{}", &id[..prefix_len])
 }
 
+#[cfg(target_os = "linux")]
+fn install_overlay_firewall_rules(
+    subnet: ContainerSubnet,
+    bridge_ifname: &str,
+    overlay_ifname: &str,
+) -> RuntimeResult<()> {
+    let subnet = subnet.to_string();
+    ensure_iptables_rule(
+        "raw",
+        "PREROUTING",
+        &["-i", overlay_ifname, "-d", &subnet, "-j", "ACCEPT"],
+    )?;
+    ensure_iptables_rule(
+        "filter",
+        "FORWARD",
+        &[
+            "-i",
+            overlay_ifname,
+            "-o",
+            bridge_ifname,
+            "-d",
+            &subnet,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    ensure_iptables_rule(
+        "filter",
+        "FORWARD",
+        &[
+            "-i",
+            bridge_ifname,
+            "-o",
+            overlay_ifname,
+            "-s",
+            &subnet,
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    ensure_iptables_rule(
+        "nat",
+        "POSTROUTING",
+        &["-s", &subnet, "-o", overlay_ifname, "-j", "ACCEPT"],
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_overlay_firewall_rules(
+    _subnet: ContainerSubnet,
+    _bridge_ifname: &str,
+    _overlay_ifname: &str,
+) -> RuntimeResult<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_iptables_rule(table: &str, chain: &str, rule: &[&str]) -> RuntimeResult<()> {
+    let mut check_args = vec!["-w", "-t", table, "-C", chain];
+    check_args.extend_from_slice(rule);
+    if run_iptables(&check_args)?.success() {
+        return Ok(());
+    }
+
+    let mut insert_args = vec!["-w", "-t", table, "-I", chain, "1"];
+    insert_args.extend_from_slice(rule);
+    if run_iptables(&insert_args)?.success() {
+        return Ok(());
+    }
+
+    Err(RuntimeError::DockerOperation {
+        operation: "iptables insert",
+        message: format!("{table} {chain} {}", rule.join(" ")),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn run_iptables(args: &[&str]) -> RuntimeResult<std::process::ExitStatus> {
+    Command::new("iptables")
+        .args(args)
+        .status()
+        .map_err(|source| RuntimeError::DockerOperation {
+            operation: "iptables",
+            message: source.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use mvp_mesh::ContainerSubnet;
@@ -342,6 +457,11 @@ mod tests {
         assert_eq!(config.subnet.docker_ipam_subnet(), "10.210.8.0/24");
         assert_eq!(config.subnet.docker_gateway_ip().to_string(), "10.210.8.1");
         assert_eq!(config.mtu, 1300);
+        assert_eq!(config.overlay_ifname.as_deref(), None);
+        assert_eq!(
+            config.with_overlay_ifname("ployz-mvp").overlay_ifname.as_deref(),
+            Some("ployz-mvp")
+        );
     }
 
     #[test]

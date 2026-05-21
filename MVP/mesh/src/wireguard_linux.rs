@@ -12,7 +12,8 @@ use mvp_bus::IslandId;
 
 use crate::{
     MeshError, MeshResult, WireGuardAppliedSnapshot, WireGuardBackend, WireGuardPeer,
-    WireGuardPrivateKey, WireGuardSnapshotPaths, load_applied_snapshot, write_applied_snapshot,
+    WireGuardPrivateKey, WireGuardSnapshotPaths, container_cluster_cidr, derive_container_subnet,
+    load_applied_snapshot, write_applied_snapshot,
 };
 
 const DEFAULT_LISTEN_PORT: u16 = 51820;
@@ -102,7 +103,11 @@ impl LinuxWireGuardBackend {
                     message: source.to_string(),
                 })
         })?;
-        add_route(&self.config.ifname, "fd00::/8")
+        add_route(&self.config.ifname, "fd00::/8")?;
+        let source = derive_container_subnet(&self.config.island, &snapshot.local_node_id)
+            .docker_gateway_ip()
+            .to_string();
+        add_route_with_source(&self.config.ifname, container_cluster_cidr(), &source)
     }
 
     fn reconcile_peers(&self, peers: &[WireGuardPeer]) -> MeshResult<()> {
@@ -164,28 +169,41 @@ impl WireGuardBackend for LinuxWireGuardBackend {
 
 fn peer_to_wg_peer(peer: &WireGuardPeer) -> MeshResult<Peer> {
     let mut wg_peer = Peer::new(Key::new(peer.public_key.to_bytes()?));
-    wg_peer.allowed_ips =
-        vec![
-            peer.allowed_ip
-                .to_string()
+    wg_peer.allowed_ips = peer
+        .allowed_ips
+        .iter()
+        .map(|allowed_ip| {
+            allowed_ip
                 .parse::<IpAddrMask>()
                 .map_err(|source| MeshError::Backend {
                     operation: "parse peer allowed ip",
                     message: source.to_string(),
-                })?,
-        ];
+                })
+        })
+        .collect::<MeshResult<Vec<_>>>()?;
     wg_peer.endpoint = peer.endpoint.as_str().parse::<SocketAddr>().ok();
     wg_peer.persistent_keepalive_interval = Some(PERSISTENT_KEEPALIVE_SECS);
     Ok(wg_peer)
 }
 
 fn add_route(ifname: &str, cidr: &str) -> MeshResult<()> {
+    add_route_args(ifname, cidr, None)
+}
+
+fn add_route_with_source(ifname: &str, cidr: &str, source: &str) -> MeshResult<()> {
+    add_route_args(ifname, cidr, Some(source))
+}
+
+fn add_route_args(ifname: &str, cidr: &str, source: Option<&str>) -> MeshResult<()> {
     let is_v6 = cidr.contains(':');
     let mut args = Vec::new();
     if is_v6 {
         args.push("-6");
     }
     args.extend(["route", "replace", cidr, "dev", ifname]);
+    if let Some(source) = source {
+        args.extend(["src", source]);
+    }
 
     let output = Command::new("ip")
         .args(&args)
@@ -217,13 +235,18 @@ mod tests {
         let peer = WireGuardPeer {
             node_id: NodeId::new("node-b"),
             public_key: private_key.public_key(),
-            allowed_ip: WireGuardOverlayIp::new("fd00::2".parse().expect("ip")).allowed_ip_cidr(),
+            allowed_ips: vec![
+                WireGuardOverlayIp::new("fd00::2".parse().expect("ip"))
+                    .allowed_ip_cidr()
+                    .to_string(),
+                "10.210.90.0/24".to_string(),
+            ],
             endpoint: IrohEndpointId::new("127.0.0.1:51820"),
         };
 
         let converted = peer_to_wg_peer(&peer).expect("peer converts");
 
-        assert_eq!(converted.allowed_ips.len(), 1);
+        assert_eq!(converted.allowed_ips.len(), 2);
         assert_eq!(
             converted.endpoint.map(|endpoint| endpoint.to_string()),
             Some("127.0.0.1:51820".to_string())
@@ -236,7 +259,11 @@ mod tests {
         let peer = WireGuardPeer {
             node_id: NodeId::new("node-b"),
             public_key: private_key.public_key(),
-            allowed_ip: WireGuardOverlayIp::new("fd00::2".parse().expect("ip")).allowed_ip_cidr(),
+            allowed_ips: vec![
+                WireGuardOverlayIp::new("fd00::2".parse().expect("ip"))
+                    .allowed_ip_cidr()
+                    .to_string(),
+            ],
             endpoint: IrohEndpointId::new("iroh-node-b"),
         };
 

@@ -347,14 +347,19 @@ U10 --> U11
   `MVP/node/src/membership.rs` hotspot, then extended the Docker E2E smoke to
   start MVP daemons on all three containers and require remote p2panda import
   evidence from every node before passing.
+- Cross-boundary HTTP slice: the Docker E2E smoke deploys `web` to `node-a`
+  and `api` to `node-b` through daemon control, configures WireGuard peer
+  allowed IPs for per-node container subnets, installs Docker bridge overlay
+  firewall exemptions, and verifies non-owner gateways serve both services
+  across real container boundaries.
 
 ### Next Slice
 
-Add the first real data-plane probe slice: deploy `web` to `node-a` and `api`
-to `node-b` through daemon control from the Docker E2E scenario, then verify
-non-owner gateway-to-backend HTTP crosses container boundaries. This next slice
-is still not final parity: DNS, ACME, update/drain, and restart remain separate
-gates.
+Add the service DNS slice: deploy `echo` to `node-c`, start DNS roles through
+installed `mvp-node` on all three E2E containers, and verify a client container
+associated with `node-a` resolves and curls `echo` on `node-c` through
+container-facing DNS and the overlay. This next slice is still not final
+parity: ACME, update/drain, and restart remain separate gates.
 
 ### U1. Split The MVP CLI Binary By Command
 
