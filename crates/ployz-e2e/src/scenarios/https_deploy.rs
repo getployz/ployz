@@ -22,8 +22,9 @@ use ployz::operation::{
     PrincipalId, ScopeId, TypedResourceId,
 };
 use ployz::runtime::{
-    MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest, RuntimePort,
-    RuntimeRevision, WorkloadId,
+    MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
+    RuntimeParticipantStatus, RuntimeParticipantVerification, RuntimePort, RuntimeRevision,
+    WorkloadId,
 };
 use ployz::serving::{
     RouteId, ServingActivationCheckpoint, ServingActivationObservation, ServingCommitRequest,
@@ -38,6 +39,7 @@ type FakeDomainReadiness =
 pub(super) struct FakeDomains {
     certificate: CertificateUsability,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
+    status: Rc<RefCell<DomainStatus>>,
 }
 
 impl DomainClaimPort for FakeDomains {
@@ -96,23 +98,25 @@ impl DomainServingPort for FakeDomains {
 
 impl DomainStatusPort for FakeDomains {
     fn status(&self, _domain: &DomainName) -> Result<DomainStatus, DomainFailure> {
-        Ok(DomainStatus::Unknown)
+        Ok(self.status.borrow().clone())
     }
 
     fn record_pending(
         &self,
         _context: &MutationContext,
         _domain: &DomainName,
-        _reason: DomainPendingReason,
+        reason: DomainPendingReason,
     ) -> Result<(), DomainFailure> {
+        *self.status.borrow_mut() = DomainStatus::Pending(reason);
         Ok(())
     }
 
     fn record_ready(
         &self,
         _context: &MutationContext,
-        _ready: DomainReadyRecord,
+        ready: DomainReadyRecord,
     ) -> Result<(), DomainFailure> {
+        *self.status.borrow_mut() = DomainStatus::Ready(ready);
         Ok(())
     }
 
@@ -120,8 +124,9 @@ impl DomainStatusPort for FakeDomains {
         &self,
         _context: &MutationContext,
         _domain: &DomainName,
-        _failure: DomainFailure,
+        failure: DomainFailure,
     ) -> Result<(), DomainFailure> {
+        *self.status.borrow_mut() = DomainStatus::Failed(failure);
         Ok(())
     }
 }
@@ -129,6 +134,9 @@ impl DomainStatusPort for FakeDomains {
 #[derive(Clone)]
 pub(super) struct FakeRuntime {
     outcome: RuntimeActivationOutcome,
+    status: RuntimeParticipantStatus,
+    activations: Rc<RefCell<usize>>,
+    verifications: Rc<RefCell<usize>>,
 }
 
 impl RuntimePort for FakeRuntime {
@@ -136,14 +144,25 @@ impl RuntimePort for FakeRuntime {
         &self,
         request: RuntimeActivationRequest,
     ) -> Result<RuntimeActivationOutcome, RuntimeFailure> {
+        *self.activations.borrow_mut() += 1;
         assert_eq!(request.context.authority().epoch(), AuthorityEpoch::new(7));
         Ok(self.outcome.clone())
+    }
+
+    fn verify_participant(
+        &self,
+        request: RuntimeParticipantVerification,
+    ) -> Result<RuntimeParticipantStatus, RuntimeFailure> {
+        *self.verifications.borrow_mut() += 1;
+        assert_eq!(request.context.authority().epoch(), AuthorityEpoch::new(7));
+        Ok(self.status.clone())
     }
 }
 
 #[derive(Clone)]
 pub(super) struct FakeServing {
     activation: ServingActivationObservation,
+    commits: Rc<RefCell<usize>>,
 }
 
 impl ServingPort for FakeServing {
@@ -152,6 +171,7 @@ impl ServingPort for FakeServing {
         context: &MutationContext,
         _request: &ServingCommitRequest,
     ) -> Result<(), ServingFailure> {
+        *self.commits.borrow_mut() += 1;
         assert_eq!(context.authority().epoch(), AuthorityEpoch::new(7));
         Ok(())
     }
@@ -168,13 +188,20 @@ impl ServingPort for FakeServing {
 pub(super) struct FakeOperations {
     pub(super) evidence: Rc<RefCell<Vec<OperationEvidence>>>,
     pub(super) terminal: Rc<RefCell<Vec<TerminalMarker>>>,
+    pub(super) replay: Rc<RefCell<Option<Option<TerminalMarker>>>>,
 }
 
 impl polis::OperationBackend for FakeOperations {
     fn start_or_replay(
         &self,
-        _request: &polis::OperationRequest,
+        request: &polis::OperationRequest,
     ) -> polis::Result<polis::BackendOperationStart> {
+        if let Some(terminal) = self.replay.borrow().clone() {
+            return Ok(polis::BackendOperationStart::Replayed {
+                operation: request.operation().clone(),
+                terminal,
+            });
+        }
         Ok(polis::BackendOperationStart::Started)
     }
 
@@ -265,21 +292,14 @@ pub(super) fn engine(
     operations: FakeOperations,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
 ) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
-    let domains = FakeDomains {
+    engine_with_shared_state(
         certificate,
+        activation,
+        operations,
         contexts,
-    };
-    DeployEngine::new(
-        DomainReadinessService::new(domains.clone(), domains.clone(), domains.clone(), domains),
-        FakeRuntime {
-            outcome: RuntimeActivationOutcome::Activated(ParticipantReceipt {
-                workload: WorkloadId::parse("workload-app").expect("workload"),
-                machine: MachineId::parse("machine-a").expect("machine"),
-                revision: RuntimeRevision::new(3),
-            }),
-        },
-        FakeServing { activation },
-        CommandRunner::new(operations),
+        Rc::new(RefCell::new(DomainStatus::Unknown)),
+        runtime_for(receipt()),
+        Rc::new(RefCell::new(0)),
     )
 }
 
@@ -290,16 +310,63 @@ fn engine_with_runtime(
     operations: FakeOperations,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
 ) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
+    let runtime = FakeRuntime {
+        outcome: runtime,
+        status: RuntimeParticipantStatus::Active(receipt()),
+        activations: Rc::new(RefCell::new(0)),
+        verifications: Rc::new(RefCell::new(0)),
+    };
+    engine_with_shared_state(
+        certificate,
+        activation,
+        operations,
+        contexts,
+        Rc::new(RefCell::new(DomainStatus::Unknown)),
+        runtime,
+        Rc::new(RefCell::new(0)),
+    )
+}
+
+fn engine_with_shared_state(
+    certificate: CertificateUsability,
+    activation: ServingActivationObservation,
+    operations: FakeOperations,
+    contexts: Rc<RefCell<Vec<MutationContext>>>,
+    status: Rc<RefCell<DomainStatus>>,
+    runtime: FakeRuntime,
+    serving_commits: Rc<RefCell<usize>>,
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, CommandRunner<FakeOperations>> {
     let domains = FakeDomains {
         certificate,
         contexts,
+        status,
     };
     DeployEngine::new(
         DomainReadinessService::new(domains.clone(), domains.clone(), domains.clone(), domains),
-        FakeRuntime { outcome: runtime },
-        FakeServing { activation },
+        runtime,
+        FakeServing {
+            activation,
+            commits: serving_commits,
+        },
         CommandRunner::new(operations),
     )
+}
+
+fn runtime_for(receipt: ParticipantReceipt) -> FakeRuntime {
+    FakeRuntime {
+        outcome: RuntimeActivationOutcome::Activated(receipt.clone()),
+        status: RuntimeParticipantStatus::Active(receipt),
+        activations: Rc::new(RefCell::new(0)),
+        verifications: Rc::new(RefCell::new(0)),
+    }
+}
+
+fn receipt() -> ParticipantReceipt {
+    ParticipantReceipt {
+        workload: WorkloadId::parse("workload-app").expect("workload"),
+        machine: MachineId::parse("machine-a").expect("machine"),
+        revision: RuntimeRevision::new(3),
+    }
 }
 
 #[test]
@@ -395,6 +462,83 @@ fn serving_commit_without_activation_is_not_success() {
     assert_eq!(
         operations.terminal.borrow().as_slice(),
         [TerminalMarker::Failed(Vec::new())]
+    );
+}
+
+#[test]
+fn terminal_success_replay_verifies_deploy_without_mutation() {
+    let operations = FakeOperations::default();
+    let contexts = Rc::new(RefCell::new(Vec::new()));
+    let status = Rc::new(RefCell::new(DomainStatus::Unknown));
+    let runtime = runtime_for(receipt());
+    let serving_commits = Rc::new(RefCell::new(0));
+    let deploy = engine_with_shared_state(
+        usable_certificate(),
+        activation_for(&request()),
+        operations.clone(),
+        contexts.clone(),
+        status,
+        runtime.clone(),
+        serving_commits.clone(),
+    );
+
+    let _first = deploy
+        .deploy_https(command(), request())
+        .expect("initial deploy");
+    *operations.replay.borrow_mut() = Some(Some(TerminalMarker::Succeeded));
+    contexts.borrow_mut().clear();
+
+    let replayed = deploy
+        .deploy_https(command(), request())
+        .expect("replayed deploy");
+
+    assert_eq!(replayed.runtime.revision, RuntimeRevision::new(3));
+    assert!(contexts.borrow().is_empty());
+    assert_eq!(*runtime.activations.borrow(), 1);
+    assert_eq!(*runtime.verifications.borrow(), 1);
+    assert_eq!(*serving_commits.borrow(), 1);
+    assert_eq!(
+        operations.terminal.borrow().as_slice(),
+        [TerminalMarker::Succeeded]
+    );
+}
+
+#[test]
+fn terminal_success_replay_rejects_missing_runtime_participant() {
+    let operations = FakeOperations::default();
+    let status = Rc::new(RefCell::new(DomainStatus::Unknown));
+    let first = engine_with_shared_state(
+        usable_certificate(),
+        activation_for(&request()),
+        operations.clone(),
+        Rc::new(RefCell::new(Vec::new())),
+        status.clone(),
+        runtime_for(receipt()),
+        Rc::new(RefCell::new(0)),
+    );
+    first
+        .deploy_https(command(), request())
+        .expect("initial deploy");
+    *operations.replay.borrow_mut() = Some(Some(TerminalMarker::Succeeded));
+
+    let replay = engine_with_shared_state(
+        usable_certificate(),
+        activation_for(&request()),
+        operations.clone(),
+        Rc::new(RefCell::new(Vec::new())),
+        status,
+        FakeRuntime {
+            outcome: RuntimeActivationOutcome::Activated(receipt()),
+            status: RuntimeParticipantStatus::Missing,
+            activations: Rc::new(RefCell::new(0)),
+            verifications: Rc::new(RefCell::new(0)),
+        },
+        Rc::new(RefCell::new(0)),
+    );
+
+    assert_eq!(
+        replay.deploy_https(command(), request()),
+        Err(DeployFailure::RuntimeParticipantFailed)
     );
 }
 
