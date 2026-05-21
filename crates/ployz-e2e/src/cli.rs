@@ -253,4 +253,16 @@ mod tests {
             Scenario::default_order(ZfsMode::Off)
         );
     }
+
+    #[test]
+    fn mvp_parity_smoke_is_three_node_docker_final_gate() {
+        assert_eq!(
+            Scenario::MvpThreeNodeParitySmoke.node_names(),
+            &["founder", "peer", "edge"]
+        );
+        assert_eq!(Scenario::MvpThreeNodeParitySmoke.runtime(), "docker");
+        assert!(
+            !Scenario::default_order(ZfsMode::Off).contains(&Scenario::MvpThreeNodeParitySmoke)
+        );
+    }
 }

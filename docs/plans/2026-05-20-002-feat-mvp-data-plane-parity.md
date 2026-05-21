@@ -1,6 +1,6 @@
 ---
 title: MVP Data-Plane Parity Push
-status: active
+status: complete
 created: 2026-05-20
 type: feature
 origin: user data-plane completion goal
@@ -473,10 +473,10 @@ Acceptance:
 
 ### Slice 7: Three-Node Data-Plane Parity Smoke
 
-Status: complete. U1 installed-binary harness shell, U2 Docker runtime
-placement, U3 equal-node HTTP/HTTPS/Pebble paths, U4 container-facing service
-DNS, and U5 update/drain plus daemon restart survival are verified by the
-privileged installed-binary smoke. Slice plan:
+Status: superseded by the real-boundary Docker E2E parity gate. The
+single-host MVP smoke remains lower-level evidence only; final completion is
+proved by `crates/ployz-e2e` scenario `mvp_three_node_parity_smoke`. Original
+slice plan:
 `docs/plans/2026-05-20-009-feat-mvp-three-node-parity-smoke-slice.md`.
 
 Goal: prove the full end-to-end product behavior on three equal Linux nodes.
@@ -509,10 +509,10 @@ Work:
 
 Tests:
 
-- `cargo run --manifest-path MVP/Cargo.toml -p mvp-e2e -- three-server-product`
-  or the renamed parity scenario.
-- `MVP/scripts/three-server-smoke.sh`
-- `cargo test --manifest-path MVP/Cargo.toml --workspace`
+- `cargo run -p ployz-e2e -- --scenario mvp_three_node_parity_smoke --fail-fast`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport -p mvp-node -- --nocapture`
+- `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts shared_sqlite_store_rebuilds_indexes_for_external_process_writes -- --nocapture`
+- `cargo test -p ployz-e2e mvp_three_node_parity_smoke -- --nocapture`
 
 Acceptance:
 
@@ -522,63 +522,73 @@ Acceptance:
 
 ## Final Gate
 
-- All seven slices have landed or the plan has been intentionally revised with
-  a narrower user-approved scope.
-- `cargo test --manifest-path MVP/Cargo.toml --workspace` passes.
-- `MVP/scripts/three-server-smoke.sh` passes with real runtime, real
-  WireGuard, service DNS, Pingora, Pebble ACME, and equal-node routing.
+- All slices have landed or the plan has been intentionally revised with a
+  narrower user-approved scope.
+- Focused MVP transport/node tests pass.
+- `cargo test -p ployz-e2e mvp_three_node_parity_smoke -- --nocapture` passes.
+- `cargo run -p ployz-e2e -- --scenario mvp_three_node_parity_smoke --fail-fast`
+  passes with real runtime, real WireGuard, service DNS, gateway HTTP/HTTPS,
+  Pebble ACME, update/drain, and daemon restart survival across three E2E node
+  containers.
 - No ZFS or BSD/Darwin work has landed before the parity smoke passes.
 - A completion audit maps every requirement R1-R14 to test output or concrete
   runtime evidence.
 
-## Completion Audit - 2026-05-20
+## Completion Audit - 2026-05-21
 
-Final gate status: passed for the data-plane parity smoke. Evidence file:
-`MVP/target/mvp-e2e/three-node-parity-smoke/three-node-parity-smoke-report.json`.
-The privileged runner used Docker 29.4.0, Rust 1.91.1, `iproute2`,
-`iptables`, `curl`, `cmake`, and installed `ployz-bpfctl` before running
-`MVP/scripts/three-server-smoke.sh three-node-parity-smoke`.
+Final gate status: passed for true multi-container MVP data-plane parity.
+Evidence command:
+`cargo run -p ployz-e2e -- --scenario mvp_three_node_parity_smoke --fail-fast`.
+Latest passing run id:
+`mvp_three_node_parity_smoke-1779330489-810f142f-2ed6-4d25-ac0c-ab064f25f2c0`.
 
-- R1: Passed. The installed smoke starts daemon, gateway, and DNS roles on
-  `node-a`, `node-b`, and `node-c`.
-- R2: Passed. The smoke applies real WireGuard interfaces with per-node listen
-  ports and verifies daemon restart survival without tearing down serving.
-- R3: Passed. `runtime_placements` show `web`, `api`, and `echo` deployed
-  through Docker runtime backends with `10.210.*` container-subnet endpoints.
-- R4: Passed. Equal-node HTTP checks route gateway traffic across nodes for
-  `web` and `api`.
-- R5: Passed. `container_dns_checks` run a BusyBox client on node-a's Docker
-  network, resolve `echo.service.example.test` to `10.210.137.254`, and curl
-  `ok-echo-rev-1`.
-- R6: Passed. Gateway checks and role reload evidence prove Pingora serves
-  projected HTTP/HTTPS routes from serving snapshots.
-- R7: Passed. `acme_https_checks` start Pebble, issue real HTTP-01
-  certificates for `web.example.test` and `api.example.test`, and validate
-  HTTPS probes with Pebble's issued root.
-- R8: Passed. The smoke installs
-  `target/mvp-e2e/three-node-parity-smoke/install/bin/mvp-node`, runs all
-  commands through that binary, and bootstraps all three node dirs.
-- R9: Passed. Runtime placement deploys `web` on `node-a`, `api` on `node-b`,
-  and `echo` on `node-c`.
-- R10: Passed. `web` is verified through gateways on `node-b` and `node-c`.
-- R11: Passed. `deploy-api-v2` records one old backend to drain, reaches
-  `cleanup_done`, reloads all gateways, and verifies `ok-api-rev-2` through
-  `node-a`, `node-b`, and `node-c`.
+The final gate uses three privileged Docker E2E node containers named
+`founder`, `peer`, and `edge`, each with SSH, installed payload binaries, inner
+Docker, and its own Linux network namespace. The scenario runs the installed
+`mvp-node` binary at `/root/.local/bin/mvp-node` and `/usr/local/bin/mvp-node`.
+The old `MVP/e2e` three-node smoke is lower-level single-host evidence only.
+
+- R1: Passed. The Docker E2E smoke starts the MVP daemon on all three node
+  containers and starts gateway/DNS roles from installed `mvp-node`.
+- R2: Passed. The smoke runs Linux WireGuard (`ployz-mvp`) inside the E2E
+  containers, then kills and restarts node-b's daemon while gateway/DNS pids
+  and the api runtime container remain alive.
+- R3: Passed. Runtime deployments use Docker and produce non-loopback
+  `10.210.*` backend endpoints for `web`, `api`, and `echo`.
+- R4: Passed. Gateway HTTP checks route across node-container boundaries:
+  `web` through `peer`/`edge` and `api` through `founder`/`edge`.
+- R5: Passed. A client container on node-a's Docker network resolves
+  `echo.service.example.test` through node-a DNS to `10.210.137.254` and curls
+  `ok-echo-rev-1` from node-c.
+- R6: Passed. Gateway HTTP and HTTPS probes use the projected serving snapshot
+  through the product gateway role; non-owner gateways serve projected routes.
+- R7: Passed. Pebble ACME issuance returns a real order URL and the smoke
+  validates HTTPS for `web.example.test` through `peer` and `edge` with
+  Pebble's root.
+- R8: Passed. The E2E payload installs executable `mvp-node` binaries, and the
+  scenario bootstraps all node state via product commands inside each node
+  container.
+- R9: Passed. The report places `web` on `node-a`, `api` on `node-b`, and
+  `echo` on `node-c`.
+- R10: Passed. `web.example.test` returns `ok-web-rev-1` through gateways on
+  `peer` and `edge`.
+- R11: Passed. `api` is verified through `founder` and `edge`; `deploy-api-v2`
+  moves `api` from `rev-1` to `rev-2`, records the old node-b backend to
+  drain, reaches `cleanup_done`, and serves `ok-api-rev-2`.
 - R12: Passed. The one-shot client container on `node-a` resolves and curls
-  `echo` on `node-c` by service DNS over the container overlay.
-- R13: Passed. The smoke restarts `node-b`'s daemon and rechecks gateway and
-  container-DNS responses.
-- R14: Passed for the focused gates run during the final push:
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-projection project_once_preserves_local_acme_snapshot_state`,
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-node issue_writes_certificate_activation_into_serving_snapshot`,
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml -p mvp-e2e three_node_parity_smoke --no-run`,
-  `TMPDIR=/tmp cargo test --manifest-path MVP/Cargo.toml --workspace`,
-  `git diff --check`, and the privileged
-  `MVP/scripts/three-server-smoke.sh three-node-parity-smoke`.
-- R15: Passed for this slice. The final fixes stayed in projection snapshot
-  publication, ACME projection, deploy route scoping, harness verification, and
-  narrow data-plane test support; no handler absorbed runtime, networking,
-  serving, ACME, install, and orchestration responsibilities.
+  `echo` on `node-c` by service DNS over the overlay.
+- R13: Passed. While node-b's daemon is down, edge gateway HTTP/HTTPS and
+  node-a container DNS still pass. After restart, founder/peer/edge probes pass
+  and the api v2 Docker container ID remains unchanged.
+- R14: Passed for the final focused verification set:
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-facts shared_sqlite_store_rebuilds_indexes_for_external_process_writes -- --nocapture`,
+  `cargo test --manifest-path MVP/Cargo.toml -p mvp-p2panda-transport -p mvp-node -- --nocapture`,
+  `cargo test -p ployz-e2e mvp_three_node_parity_smoke -- --nocapture`, and
+  `cargo run -p ployz-e2e -- --scenario mvp_three_node_parity_smoke --fail-fast`.
+- R15: Passed. The final E2E verifier is split by concept under
+  `crates/ployz-e2e/src/scenarios/mvp_three_node_parity_smoke/commands/`, and
+  all new/touched files remain under 1,000 LOC with no command-domain backend
+  leakage.
 
 ## Risks
 

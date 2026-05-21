@@ -168,7 +168,7 @@ pub(crate) fn run() -> Result<(), String> {
         return Err("three-node-parity-smoke did not verify daemon restart survival".to_string());
     }
     eprintln!(
-        "PASS {SCENARIO} runtime placement, gateway HTTPS, container DNS, update/drain, and daemon restart survival; cross-container host-boundary parity still pending"
+        "PASS {SCENARIO} lower-level single-host runtime placement, gateway HTTPS, container DNS, update/drain, and daemon restart survival; final multi-container parity gate is crates/ployz-e2e mvp_three_node_parity_smoke"
     );
     Ok(())
 }
