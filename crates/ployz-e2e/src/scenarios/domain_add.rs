@@ -9,13 +9,12 @@ use ployz::acme::{
 use ployz::domain::{
     CertificatePolicy, DomainAdd, DomainCertificatePort, DomainClaim, DomainClaimPort,
     DomainFailure, DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord,
-    DomainResource, DomainServingActivation, DomainServingPort, DomainServingReadiness,
-    DomainStatus, DomainStatusPort, UsableDomainCertificate,
+    DomainServingActivation, DomainServingPort, DomainServingReadiness, DomainStatus,
+    DomainStatusPort, UsableDomainCertificate,
 };
 use ployz::operation::{
     AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssuer, FenceEpoch,
     IdempotencyKey, MutationContext, MutationIntent, OperationId, PrincipalId, ScopeId,
-    TypedResourceId,
 };
 use ployz::serving::ServingGeneration;
 
@@ -28,13 +27,13 @@ impl DomainClaimPort for FakeClaims {
     fn claim_domain(
         &self,
         _context: &MutationContext,
-        resource: TypedResourceId<DomainResource>,
         domain: &DomainName,
     ) -> Result<DomainClaim, DomainFailure> {
+        let resource = format!("domain:{}", domain.as_str());
         self.claims.borrow_mut().push(resource.as_str().to_owned());
         DomainClaim::test_new(
             domain.clone(),
-            resource,
+            ployz::operation::TypedResourceId::parse(resource).expect("resource"),
             PrincipalId::parse("node-a").expect("holder"),
             FenceEpoch::new(1).expect("fence epoch"),
             ClaimHash::parse("claim-hash-a").expect("claim hash"),

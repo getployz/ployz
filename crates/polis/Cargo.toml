@@ -8,5 +8,8 @@ license.workspace = true
 [dependencies]
 thiserror.workspace = true
 
+[features]
+test-support = []
+
 [lints]
 workspace = true

@@ -11,7 +11,7 @@ use ployz::deploy::{
 };
 use ployz::domain::{
     CertificatePolicy, DomainCertificatePort, DomainClaim, DomainClaimPort, DomainFailure,
-    DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord, DomainResource,
+    DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord,
     DomainServingActivation, DomainServingPort, DomainServingReadiness, DomainStatus,
     DomainStatusPort, UsableDomainCertificate,
 };
@@ -44,13 +44,12 @@ impl DomainClaimPort for FakeDomains {
     fn claim_domain(
         &self,
         context: &MutationContext,
-        resource: TypedResourceId<DomainResource>,
         domain: &DomainName,
     ) -> Result<DomainClaim, DomainFailure> {
         self.contexts.borrow_mut().push(context.clone());
         DomainClaim::test_new(
             domain.clone(),
-            resource,
+            TypedResourceId::parse(format!("domain:{}", domain.as_str())).expect("resource"),
             PrincipalId::parse("node-a").expect("holder"),
             FenceEpoch::new(1).expect("fence epoch"),
             ClaimHash::parse("claim-hash-a").expect("claim hash"),

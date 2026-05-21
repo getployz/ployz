@@ -72,6 +72,13 @@ Already improved in the current branch:
   is split into reuse and fresh-readiness transitions.
 - The unused public `polis::calls` module was removed. Bounded call receipt
   APIs should be reintroduced only when a real Ployz operation needs them.
+- Ployz claim guards now wrap Polis claim guards instead of duplicating holder,
+  epoch, hash, expiry, and resource proof fields. Domain claim acquisition
+  accepts a domain and returns a product `DomainClaim`; the service no longer
+  passes raw claim resources through its fresh path.
+- Raw claim-proof minting is gated behind explicit `test-support` APIs for E2E
+  fakes and crate-local tests. Normal product construction flows through
+  acquired guards.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -90,10 +97,9 @@ Still weak:
 - `DomainServingActivation` still uses a crate-local constructor plus
   `test-support` constructor; this is acceptable for current fakes but should
   be revisited when a real serving adapter exists.
-- Ployz still mirrors some Polis claim/fence concepts in
-  `crates/ployz/src/operation/claims.rs`. A bounded follow-up should collapse
-  the Ployz-facing wrappers onto Polis-backed claim capabilities without
-  importing Polis directly into product modules.
+- There is not yet a real claim backend/acquisition adapter. The current code
+  has the intended proof shape, but production claim acquisition still needs a
+  concrete adapter that returns Polis guards instead of test-support minting.
 
 ## Requirements
 
@@ -298,11 +304,12 @@ deploy carry the HTTPS readiness and serving activation proofs it relies on.
 
 ### S3. Polis-Backed Claims With Product Wrappers
 
-**Status:** Narrow primitive slice completed. Polis claim/fence values now carry
-`ClaimHash`, reject reserved epochs, and ACME challenge ownership tests require
-resource, holder, epoch, and claim hash to match. Full lease backend,
-renewal/release semantics, and broader Ployz claim wrapper cleanup remain
-deferred.
+**Status:** Completed for the current MVP slice. Polis claim/fence values carry
+`ClaimHash`, reject reserved epochs, and mint typed guards. Ployz
+`ClaimGuard<R>` now wraps a Polis guard instead of mirroring proof fields, and
+`DomainClaim` is built from an acquired guard. Full lease backend,
+renewal/release semantics, and submitted-fence validation beyond the current
+request envelope remain deferred.
 
 **Goal:** Make claim guards preserve MVP lease realities and flow through
 product wrappers.
