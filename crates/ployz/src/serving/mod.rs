@@ -1,15 +1,15 @@
 //! Serving product ports.
 
 use crate::acme::Hostname;
+use crate::deploy::MutationContext;
 use crate::error::ServingFailure;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RouteId(String);
 
 impl RouteId {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn parse(value: impl Into<String>) -> Result<Self, ServingFailure> {
+        parse_non_empty(value, Self)
     }
 }
 
@@ -17,9 +17,8 @@ impl RouteId {
 pub struct ServingTarget(String);
 
 impl ServingTarget {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn parse(value: impl Into<String>) -> Result<Self, ServingFailure> {
+        parse_non_empty(value, Self)
     }
 }
 
@@ -56,6 +55,7 @@ pub enum ServingActivationStatus {
 pub trait ServingPort {
     fn commit_snapshot(
         &self,
+        context: &MutationContext,
         snapshot: ServingSnapshot,
     ) -> Result<ServingCheckpoint, ServingFailure>;
 
@@ -63,6 +63,17 @@ pub trait ServingPort {
         &self,
         target: &ServingTarget,
     ) -> Result<ServingActivationStatus, ServingFailure>;
+}
+
+fn parse_non_empty<T>(
+    value: impl Into<String>,
+    build: impl FnOnce(String) -> T,
+) -> Result<T, ServingFailure> {
+    let value = value.into();
+    if value.trim().is_empty() {
+        return Err(ServingFailure::SnapshotRejected);
+    }
+    Ok(build(value))
 }
 
 #[cfg(test)]
@@ -77,5 +88,10 @@ mod tests {
         let status = ServingActivationStatus::Unknown;
 
         assert_ne!(status, ServingActivationStatus::Acknowledged(checkpoint));
+    }
+
+    #[test]
+    fn empty_route_id_is_rejected() {
+        assert_eq!(RouteId::parse(""), Err(ServingFailure::SnapshotRejected));
     }
 }

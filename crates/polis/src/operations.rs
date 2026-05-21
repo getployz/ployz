@@ -2,6 +2,8 @@
 
 use std::time::SystemTime;
 
+use crate::authority::GrantEpoch;
+use crate::identity::{PrincipalId, ScopeId};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,15 +34,55 @@ impl IdempotencyKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestFingerprint {
-    bytes: Vec<u8>,
+    pub actor: PrincipalId,
+    pub scope: ScopeId,
+    pub command: CommandKind,
+    pub payload_hash: Vec<u8>,
+    pub resources: Vec<FingerprintedResource>,
+    pub authority_epoch: GrantEpoch,
 }
 
 impl RequestFingerprint {
-    pub fn new(bytes: Vec<u8>) -> Result<Self> {
-        if bytes.is_empty() {
+    pub fn new(
+        actor: PrincipalId,
+        scope: ScopeId,
+        command: CommandKind,
+        payload_hash: Vec<u8>,
+        resources: Vec<FingerprintedResource>,
+        authority_epoch: GrantEpoch,
+    ) -> Result<Self> {
+        if payload_hash.is_empty() || resources.is_empty() {
             return Err(Error::MalformedPayload);
         }
-        Ok(Self { bytes })
+        let mut resources = resources;
+        resources.sort();
+        resources.dedup();
+        Ok(Self {
+            actor,
+            scope,
+            command,
+            payload_hash,
+            resources,
+            authority_epoch,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommandKind(String);
+
+impl CommandKind {
+    pub fn parse(value: impl Into<String>) -> Result<Self> {
+        parse_non_empty(value, Self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FingerprintedResource(String);
+
+impl FingerprintedResource {
+    pub fn parse(value: impl Into<String>) -> Result<Self> {
+        parse_non_empty(value, Self)
     }
 }
 
@@ -144,6 +186,14 @@ pub trait OperationStore {
     fn terminalize(&mut self, operation: &OperationId, marker: TerminalMarker) -> Result<()>;
 }
 
+fn parse_non_empty<T>(value: impl Into<String>, build: impl FnOnce(String) -> T) -> Result<T> {
+    let value = value.into();
+    if value.trim().is_empty() {
+        return Err(Error::MalformedPayload);
+    }
+    Ok(build(value))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -204,11 +254,26 @@ mod tests {
         }
     }
 
-    fn request(fingerprint: &[u8]) -> OperationRequest {
+    fn fingerprint(payload_hash: &[u8], authority_epoch: u64) -> RequestFingerprint {
+        RequestFingerprint::new(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+            CommandKind::parse("deploy").expect("command"),
+            payload_hash.to_vec(),
+            vec![
+                FingerprintedResource::parse("route:app").expect("route"),
+                FingerprintedResource::parse("cert:app.example.com").expect("cert"),
+            ],
+            GrantEpoch::new(authority_epoch),
+        )
+        .expect("fingerprint")
+    }
+
+    fn request(payload_hash: &[u8], authority_epoch: u64) -> OperationRequest {
         OperationRequest {
             operation: OperationId::parse("op-1").expect("operation id"),
             idempotency: IdempotencyKey::parse("deploy-1").expect("idempotency key"),
-            fingerprint: RequestFingerprint::new(fingerprint.to_vec()).expect("fingerprint"),
+            fingerprint: fingerprint(payload_hash, authority_epoch),
             owner_deadline: UNIX_EPOCH + Duration::from_secs(10),
         }
     }
@@ -216,10 +281,12 @@ mod tests {
     #[test]
     fn same_idempotency_and_fingerprint_replays_record() {
         let mut store = MemoryOperationStore::new();
-        let _started = store.start_or_replay(request(&[1, 2, 3])).expect("started");
+        let _started = store
+            .start_or_replay(request(&[1, 2, 3], 7))
+            .expect("started");
 
         let replayed = store
-            .start_or_replay(request(&[1, 2, 3]))
+            .start_or_replay(request(&[1, 2, 3], 7))
             .expect("replayed");
 
         assert!(matches!(replayed, OperationStart::Replayed(_)));
@@ -228,14 +295,32 @@ mod tests {
     #[test]
     fn same_idempotency_with_different_fingerprint_conflicts() {
         let mut store = MemoryOperationStore::new();
-        let _started = store.start_or_replay(request(&[1, 2, 3])).expect("started");
+        let _started = store
+            .start_or_replay(request(&[1, 2, 3], 7))
+            .expect("started");
 
-        assert_eq!(store.start_or_replay(request(&[9])), Err(Error::Conflict));
+        assert_eq!(
+            store.start_or_replay(request(&[9], 7)),
+            Err(Error::Conflict)
+        );
+    }
+
+    #[test]
+    fn same_payload_with_different_authority_epoch_conflicts() {
+        let mut store = MemoryOperationStore::new();
+        let _started = store
+            .start_or_replay(request(&[1, 2, 3], 7))
+            .expect("started");
+
+        assert_eq!(
+            store.start_or_replay(request(&[1, 2, 3], 8)),
+            Err(Error::Conflict)
+        );
     }
 
     #[test]
     fn second_terminal_marker_is_rejected() {
-        let mut record = OperationRecord::start(request(&[1]));
+        let mut record = OperationRecord::start(request(&[1], 7));
         record
             .terminalize(TerminalMarker::Succeeded)
             .expect("terminal marker");

@@ -21,7 +21,7 @@ if bad:
     sys.exit(1)
 PY
 
-if grep -R --include='*.rs' -nE '\buse +ployz::|\bextern +crate +ployz\b' crates/polis; then
+if grep -R --include='*.rs' -nE '\b(use +)?ployz::|\bextern +crate +ployz\b' crates/polis; then
   echo "polis must not import ployz" >&2
   exit 1
 fi
@@ -29,7 +29,7 @@ fi
 if find crates/ployz/src -type f -name '*.rs' \
   ! -path 'crates/ployz/src/adapters/*' \
   ! -path 'crates/ployz/src/composition.rs' \
-  -print0 | xargs -0 grep -nE '\buse +(polis|p2panda|iroh)::|\bextern +crate +(polis|p2panda|iroh)\b|::mvp_' ; then
+  -print0 | xargs -0 grep -nE '\b(use +)?(polis|p2panda|iroh)::|\bextern +crate +(polis|p2panda|iroh)\b|::mvp_' ; then
   echo "ployz feature modules must not import polis, p2panda, iroh, or legacy mvp symbols" >&2
   exit 1
 fi

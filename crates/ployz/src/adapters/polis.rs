@@ -1,7 +1,11 @@
 //! Polis adapter helpers for Ployz composition code.
 
 use crate::error::PrimitiveFailure;
-use crate::projection::{ProductProofMetadata, ProductRecordEnvelope, SourceWatermark};
+use crate::error::ProjectionFailure;
+use crate::projection::{
+    ProductGrantEpoch, ProductPrincipalId, ProductProofMetadata, ProductRecordEnvelope,
+    ProductScopeId, SourceWatermark,
+};
 
 pub fn map_polis_error(error: polis::Error) -> PrimitiveFailure {
     match error {
@@ -18,17 +22,17 @@ pub fn map_polis_error(error: polis::Error) -> PrimitiveFailure {
 
 pub fn product_record_from_polis(
     record: polis::records::AuthorizedRecord,
-) -> ProductRecordEnvelope {
-    ProductRecordEnvelope {
+) -> Result<ProductRecordEnvelope, ProjectionFailure> {
+    Ok(ProductRecordEnvelope {
         payload: record.payload,
         proof: ProductProofMetadata {
-            principal: record.proof.principal.as_str().to_string(),
-            scope: record.proof.scope.as_str().to_string(),
-            grant_epoch: record.proof.grant_epoch.value(),
+            principal: ProductPrincipalId::parse(record.proof.principal.as_str())?,
+            scope: ProductScopeId::parse(record.proof.scope.as_str())?,
+            grant_epoch: ProductGrantEpoch::new(record.proof.grant_epoch.value()),
             source_watermark: SourceWatermark::new(record.proof.source_watermark.value()),
             schema_version: record.proof.schema_version.value(),
         },
-    }
+    })
 }
 
 #[cfg(test)]
@@ -55,8 +59,8 @@ mod tests {
         );
         let record = polis::records::AuthorizedRecord::new(vec![1, 2, 3], proof);
 
-        let product_record = product_record_from_polis(record);
+        let product_record = product_record_from_polis(record).expect("product record");
 
-        assert_eq!(product_record.proof.grant_epoch, 2);
+        assert_eq!(product_record.proof.grant_epoch.value(), 2);
     }
 }
