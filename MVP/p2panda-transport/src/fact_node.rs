@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -47,6 +47,7 @@ pub struct PandaNetFactNode {
     publish_stream: Option<PandaNetFactSyncHandle>,
     pending_imports: VecDeque<Operation<PandaFactExtensions>>,
     replay_cache: PandaNetReplayCache,
+    published_operation_hashes: HashSet<Hash>,
     stats: PandaNetFactNodeStats,
     max_fact_operation_bytes: usize,
     max_pending_imports: usize,
@@ -209,6 +210,7 @@ impl PandaNetFactNode {
             publish_stream: None,
             pending_imports: VecDeque::new(),
             replay_cache: PandaNetReplayCache::new(DEFAULT_REPLAY_CACHE_CAPACITY),
+            published_operation_hashes: HashSet::new(),
             stats: PandaNetFactNodeStats::new(),
             max_fact_operation_bytes: config.max_fact_operation_bytes,
             max_pending_imports: config.max_pending_imports,
@@ -256,6 +258,33 @@ impl PandaNetFactNode {
     pub async fn refresh_publish_stream(&mut self) -> Result<(), PandaNetTransportError> {
         drop(self.publish_stream.take());
         self.ensure_publish_stream().await
+    }
+
+    pub async fn publish_stored_operations(&mut self) -> Result<usize, PandaNetTransportError> {
+        let operations = self.store.export_operations().await;
+        let mut published = 0;
+        for operation in operations {
+            let p2panda_operation =
+                operation
+                    .to_p2panda_operation()
+                    .map_err(|error| PandaNetTransportError::FactStore {
+                        message: error.to_string(),
+                    })?;
+            let operation_hash = p2panda_operation.hash;
+            if self.published_operation_hashes.contains(&operation_hash) {
+                continue;
+            }
+            self.store
+                .associate_transport_topic(self.topic.into_inner(), &operation)
+                .await
+                .map_err(|error| PandaNetTransportError::FactStore {
+                    message: error.to_string(),
+                })?;
+            self.publish_p2panda_operation(p2panda_operation).await?;
+            self.published_operation_hashes.insert(operation_hash);
+            published += 1;
+        }
+        Ok(published)
     }
 
     pub async fn publish_fact_payload(
@@ -407,18 +436,22 @@ impl PandaNetFactNode {
         &mut self,
         operation: &PandaFactOperation,
     ) -> Result<(), PandaNetTransportError> {
+        let p2panda_operation =
+            operation
+                .to_p2panda_operation()
+                .map_err(|error| PandaNetTransportError::FactStore {
+                    message: error.to_string(),
+                })?;
+        let operation_hash = p2panda_operation.hash;
         self.store
             .associate_transport_topic(self.topic.into_inner(), operation)
             .await
             .map_err(|error| PandaNetTransportError::FactStore {
                 message: error.to_string(),
             })?;
-        self.publish_p2panda_operation(operation.to_p2panda_operation().map_err(|error| {
-            PandaNetTransportError::FactStore {
-                message: error.to_string(),
-            }
-        })?)
-        .await
+        self.publish_p2panda_operation(p2panda_operation).await?;
+        self.published_operation_hashes.insert(operation_hash);
+        Ok(())
     }
 
     async fn publish_p2panda_operation(

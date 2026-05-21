@@ -210,6 +210,10 @@ impl DaemonRuntime {
     async fn refresh_stream(&self, last_stream_refresh: &mut Instant) -> NodeResult<()> {
         let mut fact_node = self.fact_node.lock().await;
         fact_node
+            .publish_stored_operations()
+            .await
+            .map_err(|source| NodeError::Transport { source })?;
+        fact_node
             .refresh_stream()
             .await
             .map_err(|source| NodeError::Transport { source })?;

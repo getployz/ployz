@@ -194,6 +194,31 @@ impl Scenario {
             | Self::MigrateServiceRealSmoke => "host",
         }
     }
+
+    #[must_use]
+    pub(crate) fn node_environment(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::DeployHttpAcmeGatewaySmoke => &[
+                ("PLOYZ_ACME_DIRECTORY_URL", "https://pebble:14000/dir"),
+                ("PLOYZ_ACME_ROOT_CA_PATH", "/e2e-pebble/pebble.minica.pem"),
+                ("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR", "0.0.0.0:443"),
+            ],
+            Self::MvpThreeNodeParitySmoke => &[
+                ("PLOYZ_GATEWAY_LISTEN_ADDR", "127.0.0.1:18080"),
+                ("PLOYZ_GATEWAY_HTTPS_LISTEN_ADDR", "127.0.0.1:18443"),
+            ],
+            Self::MeshBootstrapJoinSmoke
+            | Self::NodeRestartAdoptsDataPlane
+            | Self::WireguardPartitionReconnect
+            | Self::DockerBridgeForwardSmoke
+            | Self::ImagePushExistingImage
+            | Self::DeployImageAvailability
+            | Self::LocalBuildImageAvailability
+            | Self::DrainAwareRedeployRealSmoke
+            | Self::MigrateServiceRealSmoke
+            | Self::VolumeCloneBranchRealSmoke => &[],
+        }
+    }
 }
 
 #[cfg(test)]

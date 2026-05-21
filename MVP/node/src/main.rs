@@ -32,6 +32,7 @@ fn run(args: Vec<String>) -> NodeResult<String> {
         "admit" => cli::membership::admit(rest),
         "daemon" => cli::daemon::daemon(rest),
         "daemon-status" => cli::control::daemon_status(rest),
+        "serving-reload" => cli::control::serving_reload(rest),
         "deploy" => cli::deploy::deploy(rest),
         "deploy-status" => cli::deploy::deploy_status(rest),
         "acme-issue" => cli::serving::acme_issue(rest),
@@ -54,6 +55,7 @@ fn help() -> String {
         "  bootstrap --state <dir> [--island <id>] [--node-id <id>]",
         "  status --state <dir>",
         "  daemon --state <dir> [--run-for-ms <ms>] [--linux-wireguard-ifname <ifname>] [--linux-wireguard-listen-port <port>] [--runtime process|docker --image <ref> [--service-port <port>] [--container-command <cmd>]]",
+        "  serving-reload --control <socket>",
         "  invite --state <dir> [--ttl-ms <ms>]",
         "  join --state <dir> --token <json> [--node-id <id>]",
         "  admission --state <dir>",
@@ -358,5 +360,33 @@ mod tests {
             mvp_node::NodeError::NodeAgentRpc { message }
                 if message.contains("unexpected status 'ready'")
         ));
+    }
+
+    #[test]
+    fn serving_reload_round_trips_control_socket() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join("gateway.sock");
+        let listener = UnixListener::bind(socket.as_path()).expect("bind listener");
+        let server = thread::spawn(move || {
+            let (mut stream, _addr) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).expect("read request");
+            assert_eq!(request, br#""reload""#);
+            stream
+                .write_all(
+                    br#"{"status":"success","data":{"event":"reloaded","kind":"Gateway","listen_addr":"127.0.0.1:8080","tls_listen_addr":null,"serving":{"loaded_revisions":{"generation":"gen","gateway":"gw","dns":"dns"},"loaded_at_ms":1,"snapshot_age_ms":0,"freshness":"Fresh","acme_http01_challenge_count":0,"reload_attempts":1,"last_reload_attempt_at_ms":1,"last_reload_success_at_ms":1,"last_failure":null},"metrics":{"request_count":0,"malformed_dns_count":0,"backend_failure_count":0,"latency_samples_us":[]}}}"#,
+                )
+                .expect("write response");
+        });
+
+        let output = run(vec![
+            "serving-reload".to_string(),
+            "--control".to_string(),
+            socket.display().to_string(),
+        ])
+        .expect("serving reload");
+        server.join().expect("server thread");
+
+        assert!(output.contains(r#""event":"reloaded""#));
     }
 }
