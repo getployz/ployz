@@ -10,13 +10,13 @@ mod polis_boundary;
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
 pub use command::{CommandBackend, CommandContext, CommandEnvelope, CommandIssuer, CommandRunner};
-pub use context::{MutationContext, MutationIntent};
+pub use context::{CommandKind, FingerprintedResource, MutationContext, MutationIntent};
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,
 };
 pub use polis::{
-    BackendOperationStart, CommandKind, EvidenceKind, FingerprintedResource, OperationBackend,
-    OperationEvidence, OperationId as BackendOperationId, OperationRequest, TerminalMarker,
+    BackendOperationStart, EvidenceKind, OperationBackend, OperationEvidence,
+    OperationId as BackendOperationId, OperationRequest, TerminalMarker,
 };
 
 pub type OperationResult<T> = polis::Result<T>;

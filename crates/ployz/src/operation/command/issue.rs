@@ -38,12 +38,22 @@ where
         let actor =
             polis::PrincipalId::parse(intent.principal.as_str()).map_err(map_polis_to_primitive)?;
         let scope = polis::ScopeId::parse(intent.scope.as_str()).map_err(map_polis_to_primitive)?;
+        let command = intent
+            .command
+            .into_polis()
+            .map_err(map_polis_to_primitive)?;
+        let resources = intent
+            .resources
+            .into_iter()
+            .map(|resource| resource.into_polis())
+            .collect::<polis::Result<Vec<_>>>()
+            .map_err(map_polis_to_primitive)?;
         let fingerprint = polis::RequestFingerprint::new(
             actor,
             scope,
-            intent.command,
+            command,
             intent.payload_hash,
-            intent.resources,
+            resources,
             polis::GrantEpoch::new(epoch.value()),
         )
         .map_err(map_polis_to_primitive)?;
@@ -87,11 +97,10 @@ impl<C> CommandEnvelope<C> {
 mod tests {
     use std::time::SystemTime;
 
-    use polis::{CommandKind, FingerprintedResource};
-
     use super::*;
     use crate::operation::{
-        AuthorityDecision, AuthorityEpoch, IdempotencyKey, OperationId, PrincipalId, ScopeId,
+        AuthorityDecision, AuthorityEpoch, CommandKind, FingerprintedResource, IdempotencyKey,
+        OperationId, PrincipalId, ScopeId,
     };
 
     enum TestCommand {}
