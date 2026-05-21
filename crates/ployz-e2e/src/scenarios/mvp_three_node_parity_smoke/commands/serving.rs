@@ -18,6 +18,7 @@ const CLIENT_IMAGE: &str = "ployz-e2e-preload/http-smoke:latest";
 const NODE_A_NETWORK: &str = "ployz-mvp-node-a";
 const WEB_HOSTNAME: &str = "web.example.test";
 const WEB_BODY: &str = "ok-web-rev-1";
+pub(super) const API_HOSTNAME: &str = "api.example.test";
 const ECHO_SERVICE_DNS: &str = "echo.service.example.test";
 const ECHO_SERVICE_URL: &str = "http://echo.service.example.test:8080/";
 const ACME_ACCOUNT_PATH: &str = "/var/lib/ployz-mvp/node/acme-accounts.json";
@@ -77,8 +78,8 @@ pub(crate) fn verify_gateway_http(run: &ScenarioRun) -> Result<Vec<MvpGatewayHtt
     [
         ("web", "peer", WEB_HOSTNAME, WEB_BODY),
         ("web", "edge", WEB_HOSTNAME, WEB_BODY),
-        ("api", "founder", "api.example.test", "ok-api-rev-1"),
-        ("api", "edge", "api.example.test", "ok-api-rev-1"),
+        ("api", "founder", API_HOSTNAME, "ok-api-rev-1"),
+        ("api", "edge", API_HOSTNAME, "ok-api-rev-1"),
     ]
     .into_iter()
     .map(|(service, gateway_node, hostname, expected_body)| {
@@ -209,6 +210,14 @@ fn wait_gateway_snapshot_certificate(
     })
 }
 
+pub(super) fn reload_gateway(run: &ScenarioRun, node: &'static str) -> Result<()> {
+    run.ssh_expect_ok_name(
+        node,
+        &format!("mvp-node serving-reload --control {GATEWAY_CONTROL}"),
+    )?;
+    Ok(())
+}
+
 fn start_gateway(run: &ScenarioRun, node: &'static str) -> Result<()> {
     run.ssh_expect_ok_name(
         node,
@@ -227,7 +236,7 @@ fn start_gateway(run: &ScenarioRun, node: &'static str) -> Result<()> {
     Ok(())
 }
 
-fn wait_gateway_body(
+pub(super) fn wait_gateway_body(
     run: &ScenarioRun,
     gateway_node: &'static str,
     hostname: &'static str,

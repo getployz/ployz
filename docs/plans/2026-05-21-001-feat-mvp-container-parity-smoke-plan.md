@@ -364,14 +364,18 @@ U10 --> U11
   and verifies HTTPS through `peer` and `edge` with Pebble's root CA. The slice
   also fixed the product transport path so externally written local fact-store
   operations are advertised by the running daemon on its refresh cadence.
+- Update/drain slice: the Docker E2E smoke updates `api` from `rev-1` to
+  `rev-2` through installed `mvp-node` and the daemon control socket, records
+  the old node-b backend reported for drain, verifies deploy status reaches
+  `cleanup_done`, reloads gateways through the product serving control surface,
+  and verifies founder/edge gateways serve `ok-api-rev-2`.
 
 ### Next Slice
 
-Add the update/drain slice: update `api` from v1 to v2 through installed
-`mvp-node` product commands, require all gateways to converge to v2, and record
-old-backend drain/cleanup evidence from product-visible status. Keep daemon
-restart as a separate final behavior slice unless the update/drain work stays
-small enough to land without mixing responsibilities.
+Add the daemon restart survival slice: restart one MVP daemon while gateway,
+DNS, and runtime containers continue running, then re-probe cross-node HTTP,
+HTTPS, and container DNS from the existing roles. Keep final docs/gate cleanup
+separate unless the restart slice remains small.
 
 ### U1. Split The MVP CLI Binary By Command
 

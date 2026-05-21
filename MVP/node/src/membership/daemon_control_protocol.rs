@@ -47,6 +47,7 @@ struct DaemonDeployResponse {
     deploy_id: String,
     active_backends: Vec<String>,
     old_backends: usize,
+    old_backends_to_drain: Vec<String>,
     visible_nodes: usize,
     host_network_backends: usize,
 }
@@ -100,6 +101,11 @@ impl From<crate::ProductDeployReport> for DaemonDeployResponse {
                 .map(|backend| format!("{}@{}", backend.node_id, backend.address))
                 .collect(),
             old_backends: report.old_backends_to_drain.len(),
+            old_backends_to_drain: report
+                .old_backends_to_drain
+                .into_iter()
+                .map(|backend| format!("{}@{}", backend.node_id, backend.address))
+                .collect(),
             visible_nodes: report.visible_nodes,
             host_network_backends: report.host_network_backends,
         }
