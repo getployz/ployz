@@ -26,8 +26,8 @@ use ployz::runtime::{
     RuntimeRevision, WorkloadId,
 };
 use ployz::serving::{
-    RouteId, ServingActivationObservation, ServingCommitReceipt, ServingGeneration, ServingPort,
-    ServingSnapshot, ServingTarget,
+    RouteId, ServingActivationCheckpoint, ServingActivationObservation, ServingCommitRequest,
+    ServingGeneration, ServingPort, ServingTarget,
 };
 use polis::{EvidenceKind, OperationEvidence, TerminalMarker};
 
@@ -78,7 +78,9 @@ impl DomainServingPort for FakeDomains {
         _domain: &DomainName,
         _certificate: &UsableDomainCertificate,
     ) -> Result<DomainServingActivation, DomainFailure> {
-        Ok(DomainServingActivation::active(ServingGeneration::new(11)))
+        Ok(DomainServingActivation::test_active(
+            ServingGeneration::new(11),
+        ))
     }
 
     fn verify_certificate_activation(
@@ -89,7 +91,7 @@ impl DomainServingPort for FakeDomains {
         serving_generation: ServingGeneration,
     ) -> Result<DomainServingReadiness, DomainFailure> {
         Ok(DomainServingReadiness::Active(
-            DomainServingActivation::active(serving_generation),
+            DomainServingActivation::test_active(serving_generation),
         ))
     }
 }
@@ -150,17 +152,15 @@ impl ServingPort for FakeServing {
     fn commit_snapshot(
         &self,
         context: &MutationContext,
-        snapshot: ServingSnapshot,
-    ) -> Result<ServingCommitReceipt, ServingFailure> {
+        _request: &ServingCommitRequest,
+    ) -> Result<(), ServingFailure> {
         assert_eq!(context.authority().epoch(), AuthorityEpoch::new(7));
-        Ok(ServingCommitReceipt {
-            generation: snapshot.generation,
-        })
+        Ok(())
     }
 
     fn activation_status(
         &self,
-        _target: &ServingTarget,
+        _checkpoint: &ServingActivationCheckpoint,
     ) -> Result<ServingActivationObservation, ServingFailure> {
         Ok(self.activation.clone())
     }
@@ -222,6 +222,15 @@ pub(super) fn request() -> DeployRequest {
             minimum_certificate_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
         },
         deadline: UNIX_EPOCH + Duration::from_secs(60),
+    }
+}
+
+pub(super) fn activation_for(request: &DeployRequest) -> ServingActivationObservation {
+    ServingActivationObservation::Acknowledged {
+        route: request.manifest.route.clone(),
+        hostname: request.manifest.https.hostname.clone(),
+        target: request.manifest.serving_target.clone(),
+        generation: request.manifest.serving_generation,
     }
 }
 
@@ -304,9 +313,7 @@ fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
     let contexts = Rc::new(RefCell::new(Vec::new()));
     let deploy = engine(
         usable_certificate(),
-        ServingActivationObservation::Acknowledged {
-            generation: ServingGeneration::new(11),
-        },
+        activation_for(&request()),
         operations.clone(),
         contexts.clone(),
     );
@@ -369,9 +376,7 @@ fn certificate_usability_reasons_keep_unknown_distinct() {
     for certificate in [unknown, revoked, short_lived] {
         let deploy = engine(
             certificate,
-            ServingActivationObservation::Acknowledged {
-                generation: ServingGeneration::new(11),
-            },
+            activation_for(&request()),
             FakeOperations::default(),
             Rc::new(RefCell::new(Vec::new())),
         );
@@ -394,7 +399,9 @@ fn serving_commit_without_activation_is_not_success() {
 
     assert_eq!(
         deploy.deploy_https(command(), request()),
-        Err(DeployFailure::ServingActivationFailed)
+        Err(DeployFailure::ServingFailed(
+            ServingFailure::LiveObservationUnknown
+        ))
     );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
@@ -407,9 +414,7 @@ fn operation_evidence_does_not_render_private_key_material() {
     let operations = FakeOperations::default();
     let deploy = engine(
         usable_certificate(),
-        ServingActivationObservation::Acknowledged {
-            generation: ServingGeneration::new(11),
-        },
+        activation_for(&request()),
         operations.clone(),
         Rc::new(RefCell::new(Vec::new())),
     );
@@ -434,7 +439,26 @@ fn runtime_receipt_must_match_requested_participant() {
             machine: MachineId::parse("machine-a").expect("machine"),
             revision: RuntimeRevision::new(3),
         }),
+        activation_for(&request()),
+        operations,
+        Rc::new(RefCell::new(Vec::new())),
+    );
+
+    assert_eq!(
+        deploy.deploy_https(command(), request()),
+        Err(DeployFailure::RuntimeParticipantFailed)
+    );
+}
+
+#[test]
+fn serving_activation_must_match_committed_route_identity() {
+    let operations = FakeOperations::default();
+    let deploy = engine(
+        usable_certificate(),
         ServingActivationObservation::Acknowledged {
+            route: RouteId::parse("other-route").expect("route"),
+            hostname: Hostname::parse("app.example.com").expect("hostname"),
+            target: ServingTarget::parse("gateway-a").expect("target"),
             generation: ServingGeneration::new(11),
         },
         operations,
@@ -443,6 +467,8 @@ fn runtime_receipt_must_match_requested_participant() {
 
     assert_eq!(
         deploy.deploy_https(command(), request()),
-        Err(DeployFailure::RuntimeParticipantFailed)
+        Err(DeployFailure::ServingFailed(
+            ServingFailure::LiveObservationUnknown
+        ))
     );
 }

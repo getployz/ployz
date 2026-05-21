@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 polis.workspace = true
-ployz = { path = "../ployz" }
+ployz = { path = "../ployz", features = ["test-support"] }
 
 [lints]
 workspace = true

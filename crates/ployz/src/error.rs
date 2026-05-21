@@ -49,6 +49,8 @@ pub enum DeployFailure {
     RuntimeParticipantFailed,
     #[error("serving activation failed")]
     ServingActivationFailed,
+    #[error("serving operation failed: {0}")]
+    ServingFailed(ServingFailure),
     #[error("operation evidence is stale")]
     StaleEvidence,
     #[error("cleanup is pending")]

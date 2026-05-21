@@ -10,7 +10,9 @@ use crate::acme::{
 };
 use crate::error::{CertificateFailure, ServingFailure};
 use crate::operation::{ClaimGuard, MutationContext, TypedResourceId};
-use crate::serving::{ServingCheckpoint, ServingGeneration};
+use crate::serving::{
+    RouteId, ServingCheckpoint, ServingCommitRequest, ServingGeneration, ServingTarget,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DomainName(String);
@@ -106,6 +108,21 @@ impl DomainReady {
             serving_generation: self.serving.checkpoint().generation(),
         }
     }
+
+    #[must_use]
+    pub fn serving_commit(
+        &self,
+        route: RouteId,
+        target: ServingTarget,
+        generation: ServingGeneration,
+    ) -> ServingCommitRequest {
+        ServingCommitRequest::new(
+            route,
+            self.certificate.certificate().hostname.clone(),
+            target,
+            generation,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,10 +183,16 @@ pub struct DomainServingActivation {
 
 impl DomainServingActivation {
     #[must_use]
-    pub fn active(generation: ServingGeneration) -> Self {
+    pub(crate) fn active(generation: ServingGeneration) -> Self {
         Self {
             checkpoint: ServingCheckpoint::new(generation),
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_active(generation: ServingGeneration) -> Self {
+        Self::active(generation)
     }
 
     #[must_use]

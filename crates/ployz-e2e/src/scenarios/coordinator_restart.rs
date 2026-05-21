@@ -2,9 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ployz::error::DeployFailure;
-use ployz::serving::{ServingActivationObservation, ServingGeneration};
+use ployz::error::ServingFailure;
+use ployz::serving::ServingActivationObservation;
 
-use super::https_deploy::{FakeOperations, command, engine, request, usable_certificate};
+use super::https_deploy::{
+    FakeOperations, activation_for, command, engine, request, usable_certificate,
+};
 
 #[test]
 fn retry_after_serving_checkpoint_still_requires_activation_proof() {
@@ -18,7 +21,9 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
 
     assert_eq!(
         first_attempt.deploy_https(command(), request()),
-        Err(DeployFailure::ServingActivationFailed)
+        Err(DeployFailure::ServingFailed(
+            ServingFailure::LiveObservationUnknown
+        ))
     );
     assert_eq!(
         operations.terminal.borrow().as_slice(),
@@ -27,9 +32,7 @@ fn retry_after_serving_checkpoint_still_requires_activation_proof() {
 
     let second_attempt = engine(
         usable_certificate(),
-        ServingActivationObservation::Acknowledged {
-            generation: ServingGeneration::new(11),
-        },
+        activation_for(&request()),
         operations.clone(),
         Rc::new(RefCell::new(Vec::new())),
     );
