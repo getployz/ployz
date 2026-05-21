@@ -1,10 +1,46 @@
 use std::time::SystemTime;
 
-use polis::{CommandKind, FingerprintedResource};
-
 use crate::operation::authority::AuthorityContext;
 use crate::operation::claims::SubmittedFenceToken;
-use crate::operation::identity::{IdempotencyKey, OperationId, PrincipalId, ScopeId};
+use crate::operation::identity::{
+    IdempotencyKey, OperationId, PrincipalId, ScopeId, parse_non_empty,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommandKind(String);
+
+impl CommandKind {
+    pub fn parse(value: impl Into<String>) -> Result<Self, crate::error::PrimitiveFailure> {
+        parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_polis(self) -> polis::Result<polis::CommandKind> {
+        polis::CommandKind::parse(self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FingerprintedResource(String);
+
+impl FingerprintedResource {
+    pub fn parse(value: impl Into<String>) -> Result<Self, crate::error::PrimitiveFailure> {
+        parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_polis(self) -> polis::Result<polis::FingerprintedResource> {
+        polis::FingerprintedResource::parse(self.0)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationContext {
@@ -70,4 +106,26 @@ pub struct MutationIntent {
     pub resources: Vec<FingerprintedResource>,
     pub submitted_fence: Option<SubmittedFenceToken>,
     pub deadline: SystemTime,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::PrimitiveFailure;
+
+    #[test]
+    fn empty_command_kind_is_malformed_payload() {
+        assert_eq!(
+            CommandKind::parse(" "),
+            Err(PrimitiveFailure::MalformedPayload)
+        );
+    }
+
+    #[test]
+    fn empty_fingerprinted_resource_is_malformed_payload() {
+        assert_eq!(
+            FingerprintedResource::parse(" "),
+            Err(PrimitiveFailure::MalformedPayload)
+        );
+    }
 }
