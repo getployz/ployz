@@ -116,6 +116,13 @@ pub(crate) fn verify_container_dns(
         wait_gateway_snapshot_hosts(run, node.harness_node, &["echo.example.test"])?;
         start_dns(run, bootstrap, node)?;
     }
+    probe_container_dns(run, bootstrap)
+}
+
+pub(super) fn probe_container_dns(
+    run: &ScenarioRun,
+    bootstrap: &[MvpBootstrapEvidence],
+) -> Result<MvpContainerDnsEvidence> {
     let dns_server = gateway_ip_for_node(bootstrap, "node-a")?;
     let nslookup_stdout =
         run_client_container_probe(run, &dns_server, &["nslookup", ECHO_SERVICE_DNS])?;
@@ -137,21 +144,26 @@ pub(crate) fn verify_container_dns(
     })
 }
 
+pub(super) fn probe_web_https(
+    run: &ScenarioRun,
+    gateway_node: &'static str,
+) -> Result<MvpGatewayHttpsEvidence> {
+    wait_gateway_snapshot_certificate(run, gateway_node, WEB_HOSTNAME)?;
+    let body = wait_gateway_https_body(run, gateway_node, WEB_HOSTNAME, WEB_BODY)?;
+    Ok(MvpGatewayHttpsEvidence {
+        gateway_node,
+        hostname: WEB_HOSTNAME,
+        expected_body: WEB_BODY,
+        body,
+    })
+}
+
 pub(crate) fn verify_acme_https(run: &ScenarioRun) -> Result<MvpAcmeHttpsEvidence> {
     run.start_pebble_for_http01("founder")?;
     let issue = issue_certificate(run)?;
     let https_probes = ["peer", "edge"]
         .into_iter()
-        .map(|gateway_node| {
-            wait_gateway_snapshot_certificate(run, gateway_node, WEB_HOSTNAME)?;
-            let body = wait_gateway_https_body(run, gateway_node, WEB_HOSTNAME, WEB_BODY)?;
-            Ok(MvpGatewayHttpsEvidence {
-                gateway_node,
-                hostname: WEB_HOSTNAME,
-                expected_body: WEB_BODY,
-                body,
-            })
-        })
+        .map(|gateway_node| probe_web_https(run, gateway_node))
         .collect::<Result<Vec<_>>>()?;
     Ok(MvpAcmeHttpsEvidence {
         hostname: WEB_HOSTNAME,

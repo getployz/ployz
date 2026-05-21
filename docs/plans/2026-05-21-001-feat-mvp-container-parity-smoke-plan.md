@@ -363,19 +363,28 @@ U10 --> U11
   gateways, reloads gateway roles through the product serving control surface,
   and verifies HTTPS through `peer` and `edge` with Pebble's root CA. The slice
   also fixed the product transport path so externally written local fact-store
-  operations are advertised by the running daemon on its refresh cadence.
+  operations are advertised by the running daemon on its refresh cadence; the
+  final restart slice tightened this by rebuilding long-lived SQLite store
+  indexes before publishing so facts written by separate product CLI processes
+  are not missed.
 - Update/drain slice: the Docker E2E smoke updates `api` from `rev-1` to
   `rev-2` through installed `mvp-node` and the daemon control socket, records
   the old node-b backend reported for drain, verifies deploy status reaches
   `cleanup_done`, reloads gateways through the product serving control surface,
   and verifies founder/edge gateways serve `ok-api-rev-2`.
+- Daemon restart survival slice: the Docker E2E smoke stops the node-b MVP
+  daemon, proves the node-b gateway process, DNS process, and `api` rev-2
+  runtime container remain alive, verifies edge gateway HTTP/HTTPS and node-a
+  container DNS while node-b's daemon is down, restarts node-b's daemon, and
+  re-probes founder/peer/edge traffic without replacing the surviving runtime
+  container.
 
 ### Next Slice
 
-Add the daemon restart survival slice: restart one MVP daemon while gateway,
-DNS, and runtime containers continue running, then re-probe cross-node HTTP,
-HTTPS, and container DNS from the existing roles. Keep final docs/gate cleanup
-separate unless the restart slice remains small.
+Final docs/gate cleanup: update final parity wording so the Docker E2E
+`mvp_three_node_parity_smoke` is the completion gate, keep the single-host MVP
+smoke framed as lower-level evidence, and run the final verification set before
+claiming parity complete.
 
 ### U1. Split The MVP CLI Binary By Command
 
