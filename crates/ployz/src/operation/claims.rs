@@ -46,8 +46,9 @@ pub struct SubmittedFenceToken {
 impl SubmittedFenceToken {
     pub(crate) fn fingerprint(&self) -> Result<polis::SubmittedFenceFingerprint, PrimitiveFailure> {
         polis::SubmittedFenceFingerprint::new(
-            self.resource.as_str(),
-            self.holder.as_str(),
+            polis::FingerprintedResource::parse(self.resource.as_str())
+                .map_err(map_polis_to_primitive)?,
+            polis::PrincipalId::parse(self.holder.as_str()).map_err(map_polis_to_primitive)?,
             self.epoch.value(),
             self.claim_hash.as_str().as_bytes().to_vec(),
         )
