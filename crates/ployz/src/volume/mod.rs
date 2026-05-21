@@ -297,6 +297,11 @@ pub struct IssuedVolumeTransferCommand {
 }
 
 impl VolumeTransferCommand {
+    /// Issues a transfer attempt for the submitted fence.
+    ///
+    /// The submitted fence participates in the command fingerprint. Reacquiring
+    /// or refreshing the fence is a new transfer attempt and must use a fresh
+    /// idempotency key.
     pub fn issue<A>(
         issuer: &CommandIssuer<A>,
         command: CommandIssue,
