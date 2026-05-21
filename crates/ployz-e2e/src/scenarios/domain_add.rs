@@ -13,8 +13,8 @@ use ployz::domain::{
     DomainStatusPort, UsableDomainCertificate,
 };
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssuer, FenceEpoch,
-    IdempotencyKey, MutationContext, MutationIntent, OperationId, PrincipalId, ScopeId,
+    AuthorityEpoch, ClaimHash, CommandIssue, FenceEpoch, IdempotencyKey, MutationContext,
+    OperationId, PrincipalId, ScopeId,
 };
 use ployz::serving::ServingGeneration;
 
@@ -145,36 +145,17 @@ impl DomainStatusPort for FakeStatus {
 }
 
 fn context() -> MutationContext {
-    CommandIssuer::new(AllowAuthority)
-        .issue::<()>(MutationIntent {
+    MutationContext::test_new(
+        CommandIssue {
             operation: OperationId::parse("domain-add-1").expect("operation"),
             idempotency: IdempotencyKey::parse("domain-add-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
             scope: ScopeId::parse("cluster").expect("scope"),
-            command: ployz::operation::CommandKind::parse("domain-add").expect("command"),
-            payload_hash: vec![1],
-            resources: vec![
-                ployz::operation::FingerprintedResource::parse("domain:app.example.com")
-                    .expect("domain"),
-            ],
-            submitted_fence: None,
             deadline: UNIX_EPOCH + Duration::from_secs(60),
-        })
-        .expect("command")
-        .context()
-        .clone()
-}
-
-struct AllowAuthority;
-
-impl AuthorityPort for AllowAuthority {
-    fn decide(
-        &self,
-        _principal: &PrincipalId,
-        _scope: &ScopeId,
-    ) -> Result<AuthorityDecision, ployz::PrimitiveFailure> {
-        Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
-    }
+        },
+        AuthorityEpoch::new(7),
+        None,
+    )
 }
 
 fn request() -> DomainAdd {

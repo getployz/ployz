@@ -17,8 +17,8 @@ use ployz::domain::{
 };
 use ployz::error::{DeployFailure, PrimitiveFailure, RuntimeFailure, ServingFailure};
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssuer,
-    CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, MutationIntent, OperationId,
+    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandEnvelope, CommandIssue,
+    CommandIssuer, CommandRunner, FenceEpoch, IdempotencyKey, MutationContext, OperationId,
     PrincipalId, ScopeId, TypedResourceId,
 };
 use ployz::runtime::{
@@ -233,21 +233,18 @@ pub(super) fn activation_for(request: &DeployRequest) -> ServingActivationObserv
 }
 
 pub(super) fn command() -> CommandEnvelope<DeployCommand> {
-    CommandIssuer::new(AllowAuthority)
-        .issue::<DeployCommand>(MutationIntent {
+    DeployCommand::issue(
+        &CommandIssuer::new(AllowAuthority),
+        CommandIssue {
             operation: OperationId::parse("deploy-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
             scope: ScopeId::parse("cluster").expect("scope"),
-            command: ployz::operation::CommandKind::parse("deploy").expect("command"),
-            payload_hash: vec![1],
-            resources: vec![
-                ployz::operation::FingerprintedResource::parse("route:app").expect("route"),
-            ],
-            submitted_fence: None,
             deadline: UNIX_EPOCH + Duration::from_secs(60),
-        })
-        .expect("command")
+        },
+        &request(),
+    )
+    .expect("command")
 }
 
 struct AllowAuthority;

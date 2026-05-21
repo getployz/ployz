@@ -2,7 +2,9 @@
 
 use crate::error::{PrimitiveFailure, VolumeFailure};
 use crate::operation::{
-    CommandBackend, CommandCheckpoint, CommandContext, CommandEnvelope, MutationContext,
+    AuthorityPort, CommandBackend, CommandCheckpoint, CommandContext, CommandEnvelope,
+    CommandIssue, CommandIssuer, CommandKind, CommandPayload, FingerprintedResource,
+    MutationContext, MutationIntent, ResourceId, SubmittedFenceToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -289,6 +291,50 @@ impl VolumeCheckpoint<'_> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolumeTransferCommand {}
 
+impl VolumeTransferCommand {
+    pub fn issue<A>(
+        issuer: &CommandIssuer<A>,
+        command: CommandIssue,
+        request: &VolumeTransferRequest,
+        submitted_fence: SubmittedFenceToken,
+    ) -> Result<CommandEnvelope<Self>, PrimitiveFailure>
+    where
+        A: AuthorityPort,
+    {
+        let expected_resource =
+            ResourceId::parse(format!("volume:{}", request.plan.volume.as_str()))?;
+        if submitted_fence.resource != expected_resource {
+            return Err(PrimitiveFailure::StaleFence);
+        }
+
+        let mut payload = CommandPayload::new("ployz.volume.transfer.v1");
+        payload.field("volume", request.plan.volume.as_str());
+        payload.field("source", request.plan.source.as_str());
+        payload.field("target", request.plan.target.as_str());
+        payload.field_u64(
+            "expected_source_watermark",
+            request.plan.expected_source_watermark.value(),
+        );
+        payload.field_u64("next_epoch", request.plan.next_epoch.value());
+        payload.field("cleanup_artifact", request.plan.cleanup_artifact.as_str());
+
+        issuer.issue(MutationIntent {
+            operation: command.operation,
+            idempotency: command.idempotency,
+            principal: command.principal,
+            scope: command.scope,
+            command: CommandKind::parse("volume-transfer")?,
+            payload_hash: payload.finish_hash(),
+            resources: vec![FingerprintedResource::parse(format!(
+                "volume:{}",
+                request.plan.volume.as_str()
+            ))?],
+            submitted_fence: Some(submitted_fence),
+            deadline: command.deadline,
+        })
+    }
+}
+
 pub struct VolumeTransferEngine<G, S, T, W, C, O> {
     claims: G,
     source: S,
@@ -478,6 +524,10 @@ fn parse_non_empty<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation::{
+        AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssuer, FenceEpoch,
+        IdempotencyKey, OperationId, PrincipalId, ScopeId,
+    };
 
     #[test]
     fn empty_volume_id_is_invalid_payload() {
@@ -534,6 +584,80 @@ mod tests {
         assert!(!stale_final_delta.has_expected_watermark(&plan));
         assert!(receive.matches_transfer(&snapshot, &plan));
         assert!(!wrong_receive.matches_transfer(&snapshot, &plan));
+    }
+
+    #[test]
+    fn volume_transfer_command_issue_derives_payload_from_plan() {
+        let request = VolumeTransferRequest { plan: plan() };
+        let changed_target = VolumeTransferRequest {
+            plan: VolumeTransferPlan {
+                target: VolumeOwner::parse("node-c").expect("target"),
+                ..request.plan.clone()
+            },
+        };
+
+        let first = VolumeTransferCommand::issue(
+            &CommandIssuer::new(AllowAuthority),
+            issue(),
+            &request,
+            fence("volume:data"),
+        )
+        .expect("first command");
+        let second = VolumeTransferCommand::issue(
+            &CommandIssuer::new(AllowAuthority),
+            issue(),
+            &changed_target,
+            fence("volume:data"),
+        )
+        .expect("second command");
+
+        assert_ne!(
+            first.fingerprint_for_test().payload_hash(),
+            second.fingerprint_for_test().payload_hash()
+        );
+    }
+
+    #[test]
+    fn volume_transfer_command_issue_rejects_fence_for_wrong_volume() {
+        let result = VolumeTransferCommand::issue(
+            &CommandIssuer::new(AllowAuthority),
+            issue(),
+            &VolumeTransferRequest { plan: plan() },
+            fence("volume:other"),
+        );
+
+        assert!(matches!(result, Err(PrimitiveFailure::StaleFence)));
+    }
+
+    struct AllowAuthority;
+
+    impl AuthorityPort for AllowAuthority {
+        fn decide(
+            &self,
+            _principal: &PrincipalId,
+            _scope: &ScopeId,
+        ) -> Result<AuthorityDecision, PrimitiveFailure> {
+            Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
+        }
+    }
+
+    fn issue() -> CommandIssue {
+        CommandIssue {
+            operation: OperationId::parse("volume-transfer-1").expect("operation"),
+            idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
+            principal: PrincipalId::parse("node-a").expect("principal"),
+            scope: ScopeId::parse("cluster").expect("scope"),
+            deadline: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn fence(resource: &str) -> SubmittedFenceToken {
+        SubmittedFenceToken {
+            resource: ResourceId::parse(resource).expect("resource"),
+            holder: PrincipalId::parse("node-a").expect("holder"),
+            epoch: FenceEpoch::new(3).expect("fence epoch"),
+            claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
+        }
     }
 
     fn plan() -> VolumeTransferPlan {

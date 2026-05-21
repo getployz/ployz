@@ -5,9 +5,8 @@ use ployz::acme::{
 };
 use ployz::error::CertificateFailure;
 use ployz::operation::{
-    AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssuer, FenceEpoch,
-    IdempotencyKey, MutationContext, MutationIntent, OperationId, PrincipalId, ResourceId, ScopeId,
-    SubmittedFenceToken,
+    AuthorityEpoch, ClaimHash, CommandIssue, FenceEpoch, IdempotencyKey, MutationContext,
+    OperationId, PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
 };
 
 struct ClaimingAcme;
@@ -53,24 +52,17 @@ fn context(fence: FenceInput) -> MutationContext {
             claim_hash: ClaimHash::parse(claim_hash).expect("claim hash"),
         }),
     };
-    CommandIssuer::new(AllowAuthority)
-        .issue::<()>(MutationIntent {
+    MutationContext::test_new(
+        CommandIssue {
             operation: OperationId::parse("acme-1").expect("operation"),
             idempotency: IdempotencyKey::parse("idem-acme-1").expect("idempotency"),
             principal: PrincipalId::parse("node-a").expect("principal"),
             scope: ScopeId::parse("cluster").expect("scope"),
-            command: ployz::operation::CommandKind::parse("acme-ownership").expect("command"),
-            payload_hash: vec![1],
-            resources: vec![
-                ployz::operation::FingerprintedResource::parse("cert:app.example.com")
-                    .expect("cert"),
-            ],
-            submitted_fence,
             deadline: UNIX_EPOCH + Duration::from_secs(60),
-        })
-        .expect("command")
-        .context()
-        .clone()
+        },
+        AuthorityEpoch::new(7),
+        submitted_fence,
+    )
 }
 
 enum FenceInput {
@@ -81,18 +73,6 @@ enum FenceInput {
         epoch: u64,
         claim_hash: &'static str,
     },
-}
-
-struct AllowAuthority;
-
-impl AuthorityPort for AllowAuthority {
-    fn decide(
-        &self,
-        _principal: &PrincipalId,
-        _scope: &ScopeId,
-    ) -> Result<AuthorityDecision, ployz::PrimitiveFailure> {
-        Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
-    }
 }
 
 #[test]
