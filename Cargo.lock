@@ -11,6 +11,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-e2e"
+version = "0.1.0"
+dependencies = [
+ "ployz",
+]
+
+[[package]]
 name = "polis"
 version = "0.1.0"
 dependencies = [

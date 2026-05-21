@@ -1,0 +1,3 @@
+mod scenarios;
+
+fn main() {}
