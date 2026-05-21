@@ -7,10 +7,10 @@ use ployz::acme::{
     CertificateUsability, Hostname, RevocationFreshness,
 };
 use ployz::domain::{
-    CertificatePolicy, DomainAdd, DomainCertificatePort, DomainClaim, DomainClaimObservation,
-    DomainClaimPort, DomainFailure, DomainName, DomainPendingReason, DomainReadinessService,
-    DomainReadyRecord, DomainResource, DomainServingActivation, DomainServingPort,
-    DomainServingReadiness, DomainStatus, DomainStatusPort, UsableDomainCertificate,
+    CertificatePolicy, DomainAdd, DomainCertificatePort, DomainClaim, DomainClaimPort,
+    DomainFailure, DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord,
+    DomainResource, DomainServingActivation, DomainServingPort, DomainServingReadiness,
+    DomainStatus, DomainStatusPort, UsableDomainCertificate,
 };
 use ployz::operation::{
     AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, CommandIssuer, FenceEpoch,
@@ -29,16 +29,17 @@ impl DomainClaimPort for FakeClaims {
         &self,
         _context: &MutationContext,
         resource: TypedResourceId<DomainResource>,
-        _domain: &DomainName,
-    ) -> Result<DomainClaimObservation, DomainFailure> {
+        domain: &DomainName,
+    ) -> Result<DomainClaim, DomainFailure> {
         self.claims.borrow_mut().push(resource.as_str().to_owned());
-        Ok(DomainClaimObservation {
+        DomainClaim::test_new(
+            domain.clone(),
             resource,
-            holder: PrincipalId::parse("node-a").expect("holder"),
-            epoch: FenceEpoch::new(1).expect("fence epoch"),
-            claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
-            expires_at: UNIX_EPOCH + Duration::from_secs(60),
-        })
+            PrincipalId::parse("node-a").expect("holder"),
+            FenceEpoch::new(1).expect("fence epoch"),
+            ClaimHash::parse("claim-hash-a").expect("claim hash"),
+            UNIX_EPOCH + Duration::from_secs(60),
+        )
     }
 }
 
@@ -51,11 +52,10 @@ impl DomainCertificatePort for FakeCertificates {
     fn ensure_usable_certificate(
         &self,
         _context: &MutationContext,
-        _claim: &DomainClaim,
-        domain: &DomainName,
+        claim: &DomainClaim,
         policy: CertificatePolicy,
     ) -> Result<UsableDomainCertificate, DomainFailure> {
-        UsableDomainCertificate::new(domain, self.certificate.clone(), policy)
+        UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)
     }
 }
 
@@ -70,7 +70,6 @@ impl DomainServingPort for FakeServing {
         &self,
         _context: &MutationContext,
         _claim: &DomainClaim,
-        _domain: &DomainName,
         _certificate: &UsableDomainCertificate,
     ) -> Result<DomainServingActivation, DomainFailure> {
         self.outcome.clone()
