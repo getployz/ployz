@@ -67,6 +67,9 @@ Already improved in the current branch:
   replay remains unavailable.
 - Volume transfer replay is no longer a public request mode. Terminal-success
   replay verifies committed ownership and cleanup status through product ports.
+- Domain readiness no longer exposes raw `DomainClaimObservation` fields.
+  Fresh readiness ports receive a `DomainClaim` product proof, and the service
+  is split into reuse and fresh-readiness transitions.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -79,9 +82,9 @@ Still weak:
 - `CommandContext<C>` does not yet expose ergonomic claim, receipt, projection,
   or replay-verifier helpers, so product modules still pass raw context to
   every port.
-- `DomainReadinessService` is better, but the happy path still has status
-  writes and port sequencing in one service instead of a crisp command/service
-  boundary.
+- `DomainReadinessService` is smaller, but deploy replay still needs a
+  product-owned observational verifier before it can safely return success on
+  replay.
 - `DomainServingActivation` still uses a crate-local constructor plus
   `test-support` constructor; this is acceptable for current fakes but should
   be revisited when a real serving adapter exists.
@@ -322,8 +325,7 @@ product wrappers.
 - Remove Ployz duplicate claim primitives where Polis owns the same proof.
 - Keep `DomainClaim` and ACME/domain product wrappers as the Ployz-facing API.
 - Change domain claim acquisition so the port returns a product `DomainClaim`
-  or a clearly named claim receipt instead of raw fields assembled by
-  `DomainReadinessService`.
+  instead of raw fields assembled by `DomainReadinessService`.
 - Extend or replace `SubmittedFenceToken` so ACME ownership is not granted by
   mere presence of `{ resource, holder, epoch }`; it must carry the claim hash
   or a Polis-backed fence token.

@@ -9,7 +9,9 @@ use crate::acme::{
     certificate_unusable_reason,
 };
 use crate::error::{CertificateFailure, ServingFailure};
-use crate::operation::{ClaimGuard, MutationContext, TypedResourceId};
+use crate::operation::{
+    ClaimGuard, ClaimHash, FenceEpoch, MutationContext, PrincipalId, TypedResourceId,
+};
 use crate::serving::{
     RouteId, ServingCheckpoint, ServingCommitRequest, ServingGeneration, ServingTarget,
 };
@@ -213,42 +215,35 @@ pub struct DomainClaim {
 impl DomainClaim {
     pub(crate) fn new(
         domain: DomainName,
-        guard: ClaimGuard<DomainResource>,
+        resource: TypedResourceId<DomainResource>,
+        holder: PrincipalId,
+        epoch: FenceEpoch,
+        claim_hash: ClaimHash,
+        expires_at: SystemTime,
     ) -> Result<Self, DomainFailure> {
         let expected = domain_resource(&domain)?;
+        let guard = ClaimGuard::new(resource, holder, epoch, claim_hash, expires_at);
         if guard.resource() != &expected {
             return Err(DomainFailure::ClaimResourceMismatch);
         }
         Ok(Self { domain, guard })
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn test_new(
+        domain: DomainName,
+        resource: TypedResourceId<DomainResource>,
+        holder: PrincipalId,
+        epoch: FenceEpoch,
+        claim_hash: ClaimHash,
+        expires_at: SystemTime,
+    ) -> Result<Self, DomainFailure> {
+        Self::new(domain, resource, holder, epoch, claim_hash, expires_at)
+    }
+
     #[must_use]
     pub fn domain(&self) -> &DomainName {
         &self.domain
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainClaimObservation {
-    pub resource: TypedResourceId<DomainResource>,
-    pub holder: crate::operation::PrincipalId,
-    pub epoch: crate::operation::FenceEpoch,
-    pub claim_hash: crate::operation::ClaimHash,
-    pub expires_at: SystemTime,
-}
-
-impl DomainClaimObservation {
-    fn try_into_claim_for(self, domain: DomainName) -> Result<DomainClaim, DomainFailure> {
-        DomainClaim::new(
-            domain,
-            ClaimGuard::new(
-                self.resource,
-                self.holder,
-                self.epoch,
-                self.claim_hash,
-                self.expires_at,
-            ),
-        )
     }
 }
 
@@ -288,7 +283,7 @@ pub trait DomainClaimPort {
         context: &MutationContext,
         resource: TypedResourceId<DomainResource>,
         domain: &DomainName,
-    ) -> Result<DomainClaimObservation, DomainFailure>;
+    ) -> Result<DomainClaim, DomainFailure>;
 }
 
 pub trait DomainCertificatePort {
@@ -296,7 +291,6 @@ pub trait DomainCertificatePort {
         &self,
         context: &MutationContext,
         claim: &DomainClaim,
-        domain: &DomainName,
         policy: CertificatePolicy,
     ) -> Result<UsableDomainCertificate, DomainFailure>;
 }
@@ -306,7 +300,6 @@ pub trait DomainServingPort {
         &self,
         context: &MutationContext,
         claim: &DomainClaim,
-        domain: &DomainName,
         certificate: &UsableDomainCertificate,
     ) -> Result<DomainServingActivation, DomainFailure>;
 
@@ -412,12 +405,29 @@ where
         context: &MutationContext,
         request: DomainAdd,
     ) -> Result<DomainReady, DomainFailure> {
-        if let DomainStatus::Ready(record) = self.records.status(&request.domain)?
-            && let Some(ready) = self.try_upgrade_ready_record(context, &record, &request)?
-        {
+        if let Some(ready) = self.try_reuse_ready(context, &request)? {
             return Ok(ready);
         }
 
+        self.ensure_fresh_ready(context, request)
+    }
+
+    fn try_reuse_ready(
+        &self,
+        context: &MutationContext,
+        request: &DomainAdd,
+    ) -> Result<Option<DomainReady>, DomainFailure> {
+        let DomainStatus::Ready(record) = self.records.status(&request.domain)? else {
+            return Ok(None);
+        };
+        self.try_upgrade_ready_record(context, &record, request)
+    }
+
+    fn ensure_fresh_ready(
+        &self,
+        context: &MutationContext,
+        request: DomainAdd,
+    ) -> Result<DomainReady, DomainFailure> {
         self.records.record_pending(
             context,
             &request.domain,
@@ -426,25 +436,21 @@ where
 
         let domain = request.domain;
         let certificate_policy = request.certificate_policy;
-        let claim_observation =
-            self.claims
-                .claim_domain(context, domain_resource(&domain)?, &domain)?;
-        let claim = claim_observation.try_into_claim_for(domain.clone())?;
-        let certificate = self.certificates.ensure_usable_certificate(
-            context,
-            &claim,
-            claim.domain(),
-            certificate_policy,
-        )?;
+        let claim = self
+            .claims
+            .claim_domain(context, domain_resource(&domain)?, &domain)?;
+        let certificate =
+            self.certificates
+                .ensure_usable_certificate(context, &claim, certificate_policy)?;
 
         self.records.record_pending(
             context,
             claim.domain(),
             DomainPendingReason::ServingActivation,
         )?;
-        let serving =
-            self.serving
-                .activate_certificate(context, &claim, claim.domain(), &certificate)?;
+        let serving = self
+            .serving
+            .activate_certificate(context, &claim, &certificate)?;
         let ready = DomainReady::new(domain, certificate, serving);
 
         self.records.record_ready(context, ready.record())?;
@@ -823,25 +829,16 @@ mod tests {
         }
     }
 
-    fn guard(resource: TypedResourceId<DomainResource>) -> ClaimGuard<DomainResource> {
-        ClaimGuard::new(
+    fn claim(resource: TypedResourceId<DomainResource>, domain: DomainName) -> DomainClaim {
+        DomainClaim::new(
+            domain,
             resource,
             PrincipalId::parse("node-a").expect("holder"),
             FenceEpoch::new(1).expect("fence epoch"),
             crate::operation::ClaimHash::parse("claim-hash-a").expect("claim hash"),
             UNIX_EPOCH + Duration::from_secs(60),
         )
-    }
-
-    fn claim_observation(resource: TypedResourceId<DomainResource>) -> DomainClaimObservation {
-        let guard = guard(resource.clone());
-        DomainClaimObservation {
-            resource,
-            holder: guard.holder().clone(),
-            epoch: guard.epoch(),
-            claim_hash: guard.claim_hash().clone(),
-            expires_at: guard.expires_at(),
-        }
+        .expect("domain claim")
     }
 
     #[derive(Clone, Copy)]
@@ -852,9 +849,9 @@ mod tests {
             &self,
             _context: &MutationContext,
             resource: TypedResourceId<DomainResource>,
-            _domain: &DomainName,
-        ) -> Result<DomainClaimObservation, DomainFailure> {
-            Ok(claim_observation(resource))
+            domain: &DomainName,
+        ) -> Result<DomainClaim, DomainFailure> {
+            Ok(claim(resource, domain.clone()))
         }
     }
 
@@ -866,11 +863,16 @@ mod tests {
             &self,
             _context: &MutationContext,
             _resource: TypedResourceId<DomainResource>,
-            _domain: &DomainName,
-        ) -> Result<DomainClaimObservation, DomainFailure> {
-            Ok(claim_observation(
+            domain: &DomainName,
+        ) -> Result<DomainClaim, DomainFailure> {
+            DomainClaim::new(
+                domain.clone(),
                 TypedResourceId::parse("domain:other.example.com").expect("resource"),
-            ))
+                PrincipalId::parse("node-a").expect("holder"),
+                FenceEpoch::new(1).expect("fence epoch"),
+                crate::operation::ClaimHash::parse("claim-hash-a").expect("claim hash"),
+                UNIX_EPOCH + Duration::from_secs(60),
+            )
         }
     }
 
@@ -884,10 +886,10 @@ mod tests {
             &self,
             _context: &MutationContext,
             resource: TypedResourceId<DomainResource>,
-            _domain: &DomainName,
-        ) -> Result<DomainClaimObservation, DomainFailure> {
+            domain: &DomainName,
+        ) -> Result<DomainClaim, DomainFailure> {
             *self.count.borrow_mut() += 1;
-            Ok(claim_observation(resource))
+            Ok(claim(resource, domain.clone()))
         }
     }
 
@@ -900,11 +902,10 @@ mod tests {
         fn ensure_usable_certificate(
             &self,
             _context: &MutationContext,
-            _claim: &DomainClaim,
-            domain: &DomainName,
+            claim: &DomainClaim,
             policy: CertificatePolicy,
         ) -> Result<UsableDomainCertificate, DomainFailure> {
-            UsableDomainCertificate::new(domain, self.certificate.clone(), policy)
+            UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)
         }
     }
 
@@ -930,7 +931,6 @@ mod tests {
             &self,
             _context: &MutationContext,
             _claim: &DomainClaim,
-            _domain: &DomainName,
             _certificate: &UsableDomainCertificate,
         ) -> Result<DomainServingActivation, DomainFailure> {
             self.outcome.clone()
