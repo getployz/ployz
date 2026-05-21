@@ -270,7 +270,7 @@ pub trait DomainCertificatePort {
         claim: &DomainClaim,
         domain: &DomainName,
         policy: CertificatePolicy,
-    ) -> Result<CertificateUsability, DomainFailure>;
+    ) -> Result<UsableDomainCertificate, DomainFailure>;
 }
 
 pub trait DomainServingPort {
@@ -411,15 +411,10 @@ where
                 claim_observation.expires_at,
             ),
         )?;
-        let certificate_observation = self.certificates.ensure_usable_certificate(
+        let certificate = self.certificates.ensure_usable_certificate(
             context,
             &claim,
             claim.domain(),
-            certificate_policy,
-        )?;
-        let certificate = UsableDomainCertificate::new(
-            claim.domain(),
-            certificate_observation,
             certificate_policy,
         )?;
 
@@ -889,9 +884,8 @@ mod tests {
             _claim: &DomainClaim,
             domain: &DomainName,
             policy: CertificatePolicy,
-        ) -> Result<CertificateUsability, DomainFailure> {
-            UsableDomainCertificate::new(domain, self.certificate.clone(), policy)?;
-            Ok(self.certificate.clone())
+        ) -> Result<UsableDomainCertificate, DomainFailure> {
+            UsableDomainCertificate::new(domain, self.certificate.clone(), policy)
         }
     }
 
