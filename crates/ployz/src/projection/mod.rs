@@ -49,6 +49,25 @@ pub trait ProjectionPort<T> {
     fn read_view(&self, key: &ProductViewKey) -> Result<ProjectionRead<T>, ProjectionFailure>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductRecordEnvelope {
+    pub payload: Vec<u8>,
+    pub proof: ProductProofMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductProofMetadata {
+    pub principal: String,
+    pub scope: String,
+    pub grant_epoch: u64,
+    pub source_watermark: SourceWatermark,
+    pub schema_version: u16,
+}
+
+pub trait ProductRecordDecoder<T> {
+    fn decode(&self, record: ProductRecordEnvelope) -> Result<T, ProjectionFailure>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,5 +77,21 @@ mod tests {
         let freshness = ProjectionFreshness::Unknown;
 
         assert!(!matches!(freshness, ProjectionFreshness::Fresh(_)));
+    }
+
+    #[test]
+    fn product_record_envelope_keeps_proof_metadata() {
+        let record = ProductRecordEnvelope {
+            payload: vec![1, 2, 3],
+            proof: ProductProofMetadata {
+                principal: "node-a".to_string(),
+                scope: "cluster".to_string(),
+                grant_epoch: 7,
+                source_watermark: SourceWatermark::new(9),
+                schema_version: 1,
+            },
+        };
+
+        assert_eq!(record.proof.source_watermark, SourceWatermark::new(9));
     }
 }
