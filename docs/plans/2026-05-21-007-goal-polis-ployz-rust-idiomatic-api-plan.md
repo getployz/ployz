@@ -106,14 +106,25 @@ Already improved in the current branch:
 - Deploy and volume engines now accept issued product command tokens that own
   the request they fingerprinted, so callers cannot issue a command for one
   product request and execute another under the same operation fingerprint.
+- Domain adapter traits are now implementable by real external adapters:
+  `DomainReadyRecord` has a validating public constructor,
+  `DomainServingActivation` can be minted from an active serving generation,
+  and `DomainClaim` exposes its product-safe guard/submitted fence capability.
+- Deploy command fingerprinting now includes the behavior-affecting
+  `DeployRequest` deadline because runtime activation uses that deadline during
+  product work.
+- A zero-context full API roast after the issued-command slice confirmed that
+  command issuing and command running are split in the right direction, while
+  flagging domain adapter constructibility, deploy deadline identity, and
+  non-success replay/outcome policy as the remaining blockers.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
-- Failed/interrupted deploy retry after partial mutation remains unresolved.
-  Non-success replay still returns `ReplayUnavailable`; changing that needs an
-  explicit failure classification or idempotency policy rather than a small
-  deploy patch.
+- Failed/interrupted deploy retry after partial mutation remains the main
+  unresolved API issue. Non-success replay still returns `ReplayUnavailable`;
+  changing that needs an explicit product outcome policy for failed,
+  interrupted, and open operation states rather than a small deploy patch.
 - The low-level operation boundary still exposes `CommandEnvelope` because
   `CommandBackend` and `CommandRunner` are public operation primitives. Product
   deploy and volume APIs no longer expose it directly.
@@ -125,12 +136,14 @@ Still weak:
   failed marker fails, the operator still sees the product failure, but the
   operation may remain open until the broader replay/outcome slice gives that
   lifecycle failure a better status surface.
-- `DomainServingActivation` still uses a crate-local constructor plus
-  `test-support` constructor; this is acceptable for current fakes but should
-  be revisited when a real serving adapter exists.
 - There is not yet a real claim backend/acquisition adapter. The current code
   has the intended proof shape, but production claim acquisition still needs a
   concrete adapter that returns Polis guards instead of test-support minting.
+- Polis still exports public `records` and `projections` capability modules
+  that are not consumed by the current Ployz product surface. They are grounded
+  in the legacy extraction map, but remain at risk of reading as speculative
+  framework nouns until a real read/append path consumes them or they are
+  trimmed.
 
 ## Requirements
 

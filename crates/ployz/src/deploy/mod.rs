@@ -78,6 +78,7 @@ impl DeployCommand {
             "minimum_certificate_valid_until",
             request.manifest.minimum_certificate_valid_until,
         );
+        payload.field_time("request_deadline", request.deadline);
 
         let envelope = issuer.issue(MutationIntent {
             operation: command.operation,
@@ -406,6 +407,29 @@ mod tests {
         let second =
             DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), changed_route)
                 .expect("second command");
+
+        assert_ne!(
+            first.envelope.fingerprint_for_test().payload_hash(),
+            second.envelope.fingerprint_for_test().payload_hash()
+        );
+    }
+
+    #[test]
+    fn deploy_command_issue_includes_request_deadline_in_fingerprint() {
+        let request = request();
+        let changed_deadline = DeployRequest {
+            deadline: UNIX_EPOCH + Duration::from_secs(120),
+            ..request.clone()
+        };
+
+        let first = DeployCommand::issue(&CommandIssuer::new(AllowAuthority), issue(), request)
+            .expect("first command");
+        let second = DeployCommand::issue(
+            &CommandIssuer::new(AllowAuthority),
+            issue(),
+            changed_deadline,
+        )
+        .expect("second command");
 
         assert_ne!(
             first.envelope.fingerprint_for_test().payload_hash(),

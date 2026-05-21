@@ -103,11 +103,12 @@ impl DomainReady {
 
     #[must_use]
     pub fn record(&self) -> DomainReadyRecord {
-        DomainReadyRecord {
-            domain: self.domain.clone(),
-            certificate: self.certificate.certificate().clone(),
-            serving_generation: self.serving.checkpoint().generation(),
-        }
+        DomainReadyRecord::new(
+            self.domain.clone(),
+            self.certificate.certificate().clone(),
+            self.serving.checkpoint().generation(),
+        )
+        .expect("ready domain and certificate already matched")
     }
 
     #[must_use]
@@ -134,6 +135,23 @@ pub struct DomainReadyRecord {
 }
 
 impl DomainReadyRecord {
+    pub fn new(
+        domain: DomainName,
+        certificate: CertificateUsability,
+        serving_generation: ServingGeneration,
+    ) -> Result<Self, DomainFailure> {
+        if certificate.hostname.as_str() != domain.as_str() {
+            return Err(DomainFailure::CertificateUnusable(
+                CertificateUnusableReason::HostnameMismatch,
+            ));
+        }
+        Ok(Self {
+            domain,
+            certificate,
+            serving_generation,
+        })
+    }
+
     #[must_use]
     pub fn domain(&self) -> &DomainName {
         &self.domain
@@ -183,9 +201,8 @@ pub struct DomainServingActivation {
 }
 
 impl DomainServingActivation {
-    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn active(generation: ServingGeneration) -> Self {
+    pub fn active(generation: ServingGeneration) -> Self {
         Self {
             checkpoint: ServingCheckpoint::new(generation),
         }
@@ -241,6 +258,11 @@ impl DomainClaim {
     #[must_use]
     pub fn domain(&self) -> &DomainName {
         &self.domain
+    }
+
+    #[must_use]
+    pub fn submitted_fence(&self) -> &crate::operation::SubmittedFenceToken {
+        self.guard.submitted_fence()
     }
 }
 
@@ -761,11 +783,8 @@ mod tests {
     fn stale_stored_ready_certificate_takes_fresh_certificate_path() {
         let mut stale_certificate = certificate();
         stale_certificate.not_after = UNIX_EPOCH + Duration::from_secs(30);
-        let ready = DomainReadyRecord {
-            domain: domain(),
-            certificate: stale_certificate,
-            serving_generation: ServingGeneration::new(7),
-        };
+        let ready = DomainReadyRecord::new(domain(), stale_certificate, ServingGeneration::new(7))
+            .expect("stored ready record");
         let records = FakeRecords::with_status(DomainStatus::Ready(ready));
         let claims = CountingClaims::default();
         let domains = DomainReadinessService::new(
@@ -786,6 +805,33 @@ mod tests {
             ServingGeneration::new(7)
         );
         assert_eq!(*claims.count.borrow(), 1);
+    }
+
+    #[test]
+    fn ready_record_rejects_mismatched_certificate_hostname() {
+        let result = DomainReadyRecord::new(
+            domain(),
+            certificate_for("other.example.com"),
+            ServingGeneration::new(7),
+        );
+
+        assert_eq!(
+            result,
+            Err(DomainFailure::CertificateUnusable(
+                CertificateUnusableReason::HostnameMismatch
+            ))
+        );
+    }
+
+    #[test]
+    fn domain_claim_exposes_submitted_fence_capability() {
+        let claim = claim(domain_resource(&domain()).expect("resource"), domain());
+        let fence = claim.submitted_fence();
+
+        assert_eq!(fence.resource.as_str(), "domain:app.example.com");
+        assert_eq!(fence.holder.as_str(), "node-a");
+        assert_eq!(fence.epoch.value(), 1);
+        assert_eq!(fence.claim_hash.as_str(), "claim-hash-a");
     }
 
     #[test]
@@ -888,8 +934,12 @@ mod tests {
     }
 
     fn certificate() -> CertificateUsability {
+        certificate_for("app.example.com")
+    }
+
+    fn certificate_for(hostname: &str) -> CertificateUsability {
         CertificateUsability {
-            hostname: Hostname::parse("app.example.com").expect("hostname"),
+            hostname: Hostname::parse(hostname).expect("hostname"),
             not_after: UNIX_EPOCH + Duration::from_secs(7_200),
             activation: CertificateActivation::Acknowledged,
             material: CertificateMaterialState::PresentProtected,
