@@ -42,30 +42,49 @@ Already improved in the current branch:
   serving activation verification.
 - Deploy carries `DomainReady` through `DeployOutcome` instead of downgrading
   HTTPS readiness to raw certificate material.
+- Ployz operation code is split by lifecycle responsibility under
+  `crates/ployz/src/operation/`: command issuing, command running, authority,
+  claims, identity, and the Polis boundary are separate modules.
+- `crates/ployz/src/operation/` is an explicitly named boundary module that may
+  translate to and from Polis types. Ordinary product modules still must not
+  import Polis directly.
+- Command issuing and running are intentionally separate. Issuing builds a
+  command envelope from product identity, fingerprint resources, authority, and
+  idempotency. Running owns the operation lifecycle and terminalization.
+- Serving commit for HTTPS deploy is now proof-backed. `DomainReady` mints a
+  `ServingCommitRequest`; serving commit returns `Result<(), ServingFailure)`;
+  activation is checked against a full `ServingActivationCheckpoint`; and
+  deploy carries `ServingActivationProof` in the outcome.
+- E2E-only proof minting uses an explicit `test-support` feature where external
+  fakes need to construct product proof values.
 - `just check` and clippy passed after those slices.
 
 Still weak:
 
 - Some capability values outside the completed operation/domain slices still
   need proof-constructor review.
-- `crates/ployz/src/operation.rs` still has ergonomic debt around command
-  fingerprint construction and low-level backend re-exports.
+- `CommandRunner` still records empty generic evidence and returns
+  `ReplayUnavailable`; product verifier replay remains future work for deploy
+  and volume.
 - `CommandContext<C>` does not yet expose ergonomic claim, receipt, projection,
   or checkpoint helpers, so product modules still pass raw context to every
   port.
 - `DomainReadinessService` is better, but the happy path still has status
   writes and port sequencing in one service instead of a crisp command/service
   boundary.
-- `ServingPort::commit_snapshot` still accepts a plain `ServingSnapshot`; deploy
-  references `DomainReady` by checking the hostname before commit, but the proof
-  dependency is not encoded in the serving API yet.
-- Operation replay still returns `ReplayUnavailable`; product verifier replay
-  remains future work for deploy and volume.
+- `DomainServingActivation` still uses a crate-local constructor plus
+  `test-support` constructor; this is acceptable for current fakes but should
+  be revisited when a real serving adapter exists.
+- `crates/polis/src/calls.rs` and `crates/polis/src/claims.rs` are still larger
+  than expected for foundational primitives. Their public APIs need a final pass
+  to separate real generic capability mechanics from accidental product-shaped
+  growth.
 
 ## Requirements
 
 - R1. Ployz product modules must not import `polis` directly. Only adapters,
-  composition, and explicitly named boundary modules may import Polis.
+  composition, and explicitly named boundary modules may import Polis. In the
+  current shape, `crates/ployz/src/operation/` is the named operation boundary.
 - R2. Ployz feature modules must not call `record_evidence`, `terminalize`, or
   raw operation-store APIs.
 - R3. Ployz product code should use product proof values: `DomainClaim`,
@@ -156,8 +175,8 @@ mean it came from the boundary that can prove it.
 
 ### S1. Polis-Backed Operation Boundary
 
-**Status:** Completed for the current MVP slice. Product replay outcomes remain
-deferred.
+**Status:** Completed for the current MVP slice except product replay
+verification, which is deferred to S5.
 
 **Goal:** Stop duplicating operation lifecycle concepts in Ployz. Make Ployz
 `CommandRunner` a product facade over Polis operation lifecycle values.
@@ -165,7 +184,7 @@ deferred.
 **Modify:**
 
 - `crates/polis/src/operations.rs`
-- `crates/ployz/src/operation.rs`
+- `crates/ployz/src/operation/`
 - `crates/ployz/src/adapters/polis.rs`
 - e2e fakes that implement operation persistence
 
@@ -179,14 +198,16 @@ deferred.
   state come from Polis `OpenOperation<C>`.
 - Make `CommandRunner` own request fingerprinting, `start_or_replay`, replay
   handling, and consuming operation closure.
-- Replays must return a previous closed command or invoke a product verifier;
-  they must not append a second terminal marker for the same operation.
+- Replays currently return `ReplayUnavailable` without appending a second
+  terminal marker. Returning a previous closed command or invoking a product
+  verifier is deferred to S5.
 - Preserve Ployz error mapping and product evidence encoding at the adapter
   boundary.
 
 **Tests:**
 
-- Same idempotency and fingerprint replays.
+- Same idempotency and fingerprint replays return `ReplayUnavailable` for now
+  without rerunning product work or writing a second terminal marker.
 - Same idempotency with different fingerprint conflicts.
 - Success/failure closure consumes the open command.
 - Product modules cannot append evidence after closure.
@@ -194,25 +215,27 @@ deferred.
 
 **Completion Gate:**
 
-- `crates/ployz/src/operation.rs` has no duplicate operation state machine that
+- `crates/ployz/src/operation/` has no duplicate operation state machine that
   competes with `crates/polis/src/operations.rs`.
 - Product modules still do not import `polis`.
 
-### S2. Domain Ready Reuse And Deploy Proof Carrying
+### S2. Domain Ready Reuse, Deploy Proof Carrying, And Serving Activation
 
-**Status:** Completed. Residual serving API proof-dependency tightening is
-deferred to a later simplification/serving slice.
+**Status:** Completed for the current MVP slice.
 
 **Goal:** Stop treating stored domain ready status as a live proof, and make
-deploy carry the HTTPS readiness proof it relies on.
+deploy carry the HTTPS readiness and serving activation proofs it relies on.
 
 **Modify:**
 
 - `crates/ployz/src/domain/mod.rs`
 - `crates/ployz/src/deploy/mod.rs`
+- `crates/ployz/src/serving/mod.rs`
 - `crates/ployz-e2e/src/scenarios/domain_add.rs`
 - `crates/ployz-e2e/src/scenarios/https_deploy.rs`
 - `crates/ployz-e2e/src/scenarios/coordinator_restart.rs`
+- `crates/ployz/Cargo.toml`
+- `crates/ployz-e2e/Cargo.toml`
 
 **Work:**
 
@@ -222,6 +245,17 @@ deploy carry the HTTPS readiness proof it relies on.
   `DomainReady`, or return a stored record that must be upgraded by a verifier.
 - Make deploy keep `DomainReady` or a narrower `HttpsReadinessProof` through
   serving commit and `DeployOutcome`.
+- Make serving commit proof-backed: callers cannot build a public raw serving
+  snapshot for HTTPS deploy; `DomainReady` produces a `ServingCommitRequest`
+  and activation verification mints `ServingActivationProof`.
+- For deploy serving commit, make activation verification compare the complete
+  route, hostname, target, and generation identity, not generation alone.
+- Domain readiness reuse still persists only domain, certificate, and serving
+  generation, then revalidates through `DomainServingPort`; carrying full route
+  activation identity through `DomainReadyRecord` is not part of the current
+  MVP slice.
+- Keep proof-minting constructors crate-visible or behind explicit test-support
+  APIs.
 - Preserve typed domain failure detail where deploy can use it; do not flatten
   all certificate/readiness failures into one generic variant if the caller can
   branch on them.
@@ -233,12 +267,19 @@ deploy carry the HTTPS readiness proof it relies on.
 - Deploy outcome carries the domain/HTTPS readiness proof.
 - Serving commit consumes or references the readiness proof for the hostname it
   publishes.
+- Wrong-route or wrong-host activation observation does not become deploy
+  success.
+- Serving activation observation returns a proof value on success, not a
+  boolean that product code may ignore.
 - Retry after checkpoint verifies readiness before success.
 
 **Completion Gate:**
 
 - The happy path reads as HTTPS readiness proof -> runtime activation -> serving
   commit, not certificate preflight plus unrelated route write.
+- A zero-context reviewer can no longer block the slice on public serving
+  snapshot construction, public commit receipt construction, target-only
+  activation lookup, or boolean activation proof checks.
 
 ### S3. Polis-Backed Claims With Product Wrappers
 
@@ -254,7 +295,7 @@ product wrappers.
 **Modify:**
 
 - `crates/polis/src/claims.rs`
-- `crates/ployz/src/operation.rs`
+- `crates/ployz/src/operation/`
 - `crates/ployz/src/domain/mod.rs`
 - `crates/ployz/src/acme/mod.rs`
 - `crates/ployz-e2e/src/scenarios/acme_ownership.rs`
@@ -303,7 +344,7 @@ manually handling operation evidence.
 **Modify:**
 
 - `crates/ployz/src/volume/mod.rs`
-- `crates/ployz/src/operation.rs`
+- `crates/ployz/src/operation/`
 - `crates/ployz-e2e/src/scenarios/volume_transfer.rs`
 
 **Work:**
@@ -328,14 +369,16 @@ manually handling operation evidence.
 - Volume reads as a product operation, not a framework transaction.
 - Volume still preserves the post-call invariant checks from `legacy/mvp`.
 
-### S5. Product Evidence Encoding Boundary
+### S5. Command Summary, Evidence Encoding, And Replay Boundary
 
-**Goal:** Product modules produce typed evidence; adapters encode it into Polis
-records.
+**Status:** Next likely code slice.
+
+**Goal:** Product modules return typed summaries/proofs; the command boundary
+encodes safe evidence into Polis records and owns replay behavior.
 
 **Modify:**
 
-- `crates/ployz/src/operation.rs`
+- `crates/ployz/src/operation/`
 - `crates/ployz/src/deploy/mod.rs`
 - `crates/ployz/src/domain/mod.rs`
 - `crates/ployz/src/volume/mod.rs`
@@ -344,9 +387,11 @@ records.
 
 **Work:**
 
-- Define product evidence enums or typed summaries where needed.
+- Define typed command summaries where needed.
 - Keep private key material and unsafe payloads out of generic evidence.
 - Make operation replay consult product verifiers before returning success.
+- Keep evidence writes at the command boundary; do not reintroduce manual
+  evidence bookkeeping into deploy, domain, or volume product code.
 
 **Tests:**
 
@@ -356,7 +401,8 @@ records.
 
 **Completion Gate:**
 
-- Product modules do not build opaque bytes directly.
+- Product modules do not build opaque bytes or generic evidence records
+  directly.
 - Operation evidence is useful but not treated as product truth.
 
 ### S6. Typed Receipt Store Boundary
@@ -460,9 +506,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 Boundary checks:
 
 ```sh
-rg "use polis|polis::" crates/ployz/src --glob '!adapters/**' --glob '!composition.rs'
+rg "use polis|polis::" crates/ployz/src --glob '!crates/ployz/src/adapters/**' --glob '!crates/ployz/src/composition.rs' --glob '!crates/ployz/src/operation/**'
 rg "record_evidence|terminalize" crates/ployz/src/domain crates/ployz/src/deploy crates/ployz/src/volume
-rg "claim\\..*domain|domain.*==.*claim" crates/ployz/src/domain
+rg "claim\\..*==|==.*claim\\." crates/ployz/src/domain
 ```
 
 ## Done
