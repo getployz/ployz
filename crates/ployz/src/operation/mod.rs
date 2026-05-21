@@ -9,6 +9,7 @@ mod polis_boundary;
 
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
+pub(crate) use command::CommandCheckpoint;
 pub use command::{CommandBackend, CommandContext, CommandEnvelope, CommandIssuer, CommandRunner};
 pub use context::{CommandKind, FingerprintedResource, MutationContext, MutationIntent};
 pub use identity::{

@@ -153,13 +153,20 @@ impl VolumeCleanupPort for FakeCleanup {
 struct FakeOperations {
     evidence: Rc<RefCell<Vec<EvidenceKind>>>,
     terminal: Rc<RefCell<Vec<TerminalMarker>>>,
+    replay: bool,
 }
 
 impl polis::OperationBackend for FakeOperations {
     fn start_or_replay(
         &self,
-        _request: &polis::OperationRequest,
+        request: &polis::OperationRequest,
     ) -> polis::Result<polis::BackendOperationStart> {
+        if self.replay {
+            return Ok(polis::BackendOperationStart::Replayed {
+                operation: request.operation().clone(),
+                terminal: None,
+            });
+        }
         Ok(polis::BackendOperationStart::Started)
     }
 
@@ -388,7 +395,7 @@ fn cleanup_pending_records_checkpoint_before_terminal_success() {
         },
         FakeCleanup {
             result: Err(VolumeCleanupFailure {
-                artifact: ployz::volume::CleanupArtifactId::parse("source-temp-data")
+                artifact: ployz::volume::CleanupArtifactId::parse("actual-temp-data")
                     .expect("cleanup artifact"),
                 reason: CleanupFailureReason::DeleteFailed,
             }),
@@ -404,10 +411,13 @@ fn cleanup_pending_records_checkpoint_before_terminal_success() {
     assert_eq!(
         operations.evidence.borrow().as_slice(),
         [
-            EvidenceKind::Observation(vec![]),
-            EvidenceKind::Checkpoint(vec![]),
-            EvidenceKind::Checkpoint(vec![]),
-            EvidenceKind::Checkpoint(vec![])
+            EvidenceKind::Checkpoint(
+                b"volume.ownership_committed;volume=4:data;owner=6:node-b;epoch=1:2;watermark=1:5;"
+                    .to_vec()
+            ),
+            EvidenceKind::Checkpoint(
+                b"volume.cleanup_pending;artifact=16:actual-temp-data;".to_vec()
+            )
         ]
     );
     assert_eq!(
@@ -460,6 +470,7 @@ fn committed_ownership_must_match_transfer_plan() {
         epoch: OwnershipEpoch::new(2),
         source_watermark: SourceWatermark::new(5),
     };
+    let operations = FakeOperations::default();
     let transfer = VolumeTransferEngine::new(
         FakeClaims {
             checks: Rc::new(RefCell::new(VecDeque::from(vec![
@@ -488,17 +499,18 @@ fn committed_ownership_must_match_transfer_plan() {
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(FakeOperations::default()),
+        CommandRunner::new(operations.clone()),
     );
 
     assert_eq!(
         transfer.transfer(command(), request(VolumeTransferMode::Start)),
         Err(VolumeFailure::OwnershipCommitRejected)
     );
+    assert!(operations.evidence.borrow().is_empty());
 }
 
 #[test]
-fn retry_after_ownership_checkpoint_requires_verified_ownership() {
+fn explicit_recovery_command_requires_verified_ownership() {
     let verifications = Rc::new(RefCell::new(VecDeque::from([
         OwnershipVerification::Missing,
         OwnershipVerification::Verified(OwnershipCommit {
@@ -521,11 +533,31 @@ fn retry_after_ownership_checkpoint_requires_verified_ownership() {
     );
 
     let retry_mutations = Rc::new(RefCell::new(Vec::new()));
-    let second_attempt = engine(
-        vec![VolumeClaimCheck::Current, VolumeClaimCheck::Current],
-        retry_mutations.clone(),
-        verifications,
-        Ok(CleanupStatus::Done),
+    let retry_operations = FakeOperations::default();
+    let second_attempt = VolumeTransferEngine::new(
+        FakeClaims {
+            checks: Rc::new(RefCell::new(VecDeque::from(vec![
+                VolumeClaimCheck::Current,
+                VolumeClaimCheck::Current,
+            ]))),
+        },
+        FakeSource {
+            mutations: retry_mutations.clone(),
+        },
+        FakeTarget {
+            receive: ReceiveReceipt {
+                snapshot: VolumeSnapshotId::parse("snap-1").expect("snapshot"),
+                target: VolumeOwner::parse("node-b").expect("target"),
+            },
+        },
+        FakeOwnership {
+            verifications,
+            commit: None,
+        },
+        FakeCleanup {
+            result: Ok(CleanupStatus::Done),
+        },
+        CommandRunner::new(retry_operations.clone()),
     );
     second_attempt
         .transfer(
@@ -534,4 +566,63 @@ fn retry_after_ownership_checkpoint_requires_verified_ownership() {
         )
         .expect("verified ownership resumes success");
     assert!(retry_mutations.borrow().is_empty());
+    assert_eq!(
+        retry_operations.evidence.borrow().as_slice(),
+        [EvidenceKind::Checkpoint(
+            b"volume.ownership_committed;volume=4:data;owner=6:node-b;epoch=1:2;watermark=1:5;"
+                .to_vec()
+        )]
+    );
+}
+
+#[test]
+fn idempotent_replay_does_not_run_volume_recovery_work() {
+    let operations = FakeOperations {
+        replay: true,
+        ..FakeOperations::default()
+    };
+    let mutations = Rc::new(RefCell::new(Vec::new()));
+    let transfer = VolumeTransferEngine::new(
+        FakeClaims {
+            checks: Rc::new(RefCell::new(VecDeque::from(vec![
+                VolumeClaimCheck::Current,
+                VolumeClaimCheck::Current,
+            ]))),
+        },
+        FakeSource {
+            mutations: mutations.clone(),
+        },
+        FakeTarget {
+            receive: ReceiveReceipt {
+                snapshot: VolumeSnapshotId::parse("snap-1").expect("snapshot"),
+                target: VolumeOwner::parse("node-b").expect("target"),
+            },
+        },
+        FakeOwnership {
+            verifications: Rc::new(RefCell::new(VecDeque::from([
+                OwnershipVerification::Verified(OwnershipCommit {
+                    volume: VolumeId::parse("data").expect("volume"),
+                    owner: VolumeOwner::parse("node-b").expect("owner"),
+                    epoch: OwnershipEpoch::new(2),
+                    source_watermark: SourceWatermark::new(5),
+                }),
+            ]))),
+            commit: None,
+        },
+        FakeCleanup {
+            result: Ok(CleanupStatus::Done),
+        },
+        CommandRunner::new(operations.clone()),
+    );
+
+    assert_eq!(
+        transfer.transfer(
+            command(),
+            request(VolumeTransferMode::VerifyCommittedOwnership),
+        ),
+        Err(VolumeFailure::OwnershipCommitRejected)
+    );
+    assert!(mutations.borrow().is_empty());
+    assert!(operations.evidence.borrow().is_empty());
+    assert!(operations.terminal.borrow().is_empty());
 }

@@ -32,14 +32,21 @@ impl<'a> CommandContext<'a> {
         &self.mutation
     }
 
-    pub fn checkpoint(&self) -> Result<(), PrimitiveFailure> {
+    pub(crate) fn checkpoint(
+        &self,
+        checkpoint: impl CommandCheckpoint,
+    ) -> Result<(), PrimitiveFailure> {
         record_operation(
             self.operations,
             &self.operation,
-            EvidenceKind::Checkpoint(Vec::new()),
+            EvidenceKind::Checkpoint(checkpoint.encode_checkpoint()),
         )
         .map_err(map_polis_to_primitive)
     }
+}
+
+pub(crate) trait CommandCheckpoint {
+    fn encode_checkpoint(&self) -> Vec<u8>;
 }
 
 pub trait CommandBackend {
@@ -86,19 +93,10 @@ where
             return Err(map_primitive(PrimitiveFailure::ReplayUnavailable));
         };
 
-        record_operation(
-            &self.operations,
-            &operation,
-            EvidenceKind::Observation(Vec::new()),
-        )
-        .map_err(map_polis_to_primitive)
-        .map_err(&map_primitive)?;
-
         let context = CommandContext::new(mutation, operation, &self.operations);
 
         match work(&context) {
             Ok(value) => {
-                context.checkpoint().map_err(&map_primitive)?;
                 polis::close(
                     &self.operations,
                     context.operation,
@@ -109,13 +107,6 @@ where
                 Ok(value)
             }
             Err(error) => {
-                record_operation(
-                    &self.operations,
-                    &context.operation,
-                    EvidenceKind::Failure(Vec::new()),
-                )
-                .map_err(map_polis_to_primitive)
-                .map_err(&map_primitive)?;
                 polis::close(
                     &self.operations,
                     context.operation,
@@ -204,6 +195,18 @@ mod tests {
 
     enum TestCommand {}
 
+    enum TestCheckpoint {
+        Progress,
+    }
+
+    impl CommandCheckpoint for TestCheckpoint {
+        fn encode_checkpoint(&self) -> Vec<u8> {
+            match self {
+                Self::Progress => b"test.progress".to_vec(),
+            }
+        }
+    }
+
     #[test]
     fn command_runner_terminalizes_success_once() {
         let operations = FakeOperations::default();
@@ -228,6 +231,7 @@ mod tests {
             operations.terminal.borrow().as_slice(),
             [TerminalMarker::Succeeded]
         );
+        assert!(operations.evidence.borrow().is_empty());
     }
 
     #[test]
@@ -268,6 +272,30 @@ mod tests {
         assert_eq!(
             operations.terminal.borrow().as_slice(),
             [TerminalMarker::Failed(Vec::new())]
+        );
+        assert!(operations.evidence.borrow().is_empty());
+    }
+
+    #[test]
+    fn command_context_records_explicit_checkpoints_only() {
+        let operations = FakeOperations::default();
+        let runner = CommandRunner::new(operations.clone());
+
+        let envelope: CommandEnvelope<TestCommand> =
+            CommandEnvelope::new(context(), operation_request());
+        let result = runner.run(
+            envelope,
+            |failure| failure,
+            |context| {
+                context.checkpoint(TestCheckpoint::Progress)?;
+                Ok::<_, PrimitiveFailure>(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            operations.evidence.borrow().as_slice(),
+            [EvidenceKind::Checkpoint(b"test.progress".to_vec())]
         );
     }
 

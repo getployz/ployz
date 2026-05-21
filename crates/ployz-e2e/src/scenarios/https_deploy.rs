@@ -29,7 +29,7 @@ use ployz::serving::{
     RouteId, ServingActivationCheckpoint, ServingActivationObservation, ServingCommitRequest,
     ServingGeneration, ServingPort, ServingTarget,
 };
-use polis::{EvidenceKind, OperationEvidence, TerminalMarker};
+use polis::{OperationEvidence, TerminalMarker};
 
 type FakeDomainReadiness =
     DomainReadinessService<FakeDomains, FakeDomains, FakeDomains, FakeDomains>;
@@ -330,13 +330,7 @@ fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
         operations.terminal.borrow().as_slice(),
         [TerminalMarker::Succeeded]
     ));
-    assert!(
-        operations
-            .evidence
-            .borrow()
-            .iter()
-            .any(|evidence| matches!(evidence.kind, EvidenceKind::Checkpoint(_)))
-    );
+    assert!(operations.evidence.borrow().is_empty());
 }
 
 #[test]
@@ -423,10 +417,7 @@ fn operation_evidence_does_not_render_private_key_material() {
         .deploy_https(command(), request())
         .expect("deploy success");
 
-    assert!(operations.evidence.borrow().iter().all(|evidence| matches!(
-        evidence.kind,
-        EvidenceKind::Checkpoint(_) | EvidenceKind::Observation(_) | EvidenceKind::Failure(_)
-    )));
+    assert!(operations.evidence.borrow().is_empty());
 }
 
 #[test]
