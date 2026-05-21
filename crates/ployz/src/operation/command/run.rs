@@ -186,13 +186,11 @@ where
                 Ok(value)
             }
             Err(error) => {
-                polis::close(
+                let _record_failed = polis::close(
                     &self.operations,
                     context.operation,
                     TerminalMarker::Failed(Vec::new()),
-                )
-                .map_err(map_polis_to_primitive)
-                .map_err(map_primitive)?;
+                );
                 Err(error)
             }
         }
@@ -235,6 +233,7 @@ mod tests {
         terminal: Rc<RefCell<Vec<TerminalMarker>>>,
         operation: Rc<RefCell<Vec<BackendOperationId>>>,
         replay: Option<Option<TerminalMarker>>,
+        close_error: Option<polis::Error>,
     }
 
     impl OperationBackend for FakeOperations {
@@ -268,6 +267,9 @@ mod tests {
         ) -> polis::Result<()> {
             self.operation.borrow_mut().push(operation.clone());
             self.terminal.borrow_mut().push(marker);
+            if let Some(error) = &self.close_error {
+                return Err(error.clone());
+            }
             Ok(())
         }
     }
@@ -394,6 +396,52 @@ mod tests {
             [TerminalMarker::Failed(Vec::new())]
         );
         assert!(operations.evidence.borrow().is_empty());
+    }
+
+    #[test]
+    fn command_runner_preserves_product_failure_when_failed_close_fails() {
+        let operations = FakeOperations {
+            close_error: Some(polis::Error::TerminalAlreadyWritten),
+            ..FakeOperations::default()
+        };
+        let runner = CommandRunner::new(operations.clone());
+
+        let envelope: CommandEnvelope<TestCommand> =
+            CommandEnvelope::new(context(), operation_request());
+        let result = runner.run(
+            envelope,
+            |failure| failure,
+            |_context| Err::<(), _>(PrimitiveFailure::Conflict),
+        );
+
+        assert_eq!(result, Err(PrimitiveFailure::Conflict));
+        assert_eq!(
+            operations.terminal.borrow().as_slice(),
+            [TerminalMarker::Failed(Vec::new())]
+        );
+    }
+
+    #[test]
+    fn command_runner_returns_success_close_failure_when_work_succeeds() {
+        let operations = FakeOperations {
+            close_error: Some(polis::Error::TerminalAlreadyWritten),
+            ..FakeOperations::default()
+        };
+        let runner = CommandRunner::new(operations.clone());
+
+        let envelope: CommandEnvelope<TestCommand> =
+            CommandEnvelope::new(context(), operation_request());
+        let result = runner.run(
+            envelope,
+            |failure| failure,
+            |_context| Ok::<_, PrimitiveFailure>(7),
+        );
+
+        assert_eq!(result, Err(PrimitiveFailure::TerminalAlreadyWritten));
+        assert_eq!(
+            operations.terminal.borrow().as_slice(),
+            [TerminalMarker::Succeeded]
+        );
     }
 
     #[test]
