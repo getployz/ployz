@@ -151,20 +151,6 @@ pub enum EvidenceKind {
     Checkpoint(Vec<u8>),
     Observation(Vec<u8>),
     Failure(Vec<u8>),
-    CleanupObligation(CleanupObligation),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CleanupObligation {
-    pub artifact_id: String,
-    pub owner: CleanupOwner,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CleanupOwner {
-    CommandResume,
-    OperatorCommand,
-    SupervisedRole(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

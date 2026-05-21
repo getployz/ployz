@@ -7,6 +7,7 @@ use crate::projection::{
     ProductScopeId, SourceWatermark,
 };
 
+#[must_use]
 pub fn map_polis_error(error: polis::Error) -> PrimitiveFailure {
     match error {
         polis::Error::Unauthorized => PrimitiveFailure::Unauthorized,

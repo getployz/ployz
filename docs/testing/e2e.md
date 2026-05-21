@@ -1,5 +1,17 @@
 # E2E Strategy
 
+## Active Root Rewrite
+
+The active root `crates/ployz-e2e` crate currently contains in-process product
+acceptance tests for the new Polis/Ployz boundary. It is not yet the
+long-running daemon/substrate harness. Run it with:
+
+```bash
+cargo test -p ployz-e2e
+```
+
+`cargo run -p ployz-e2e` exits non-zero until a real scenario runner exists.
+
 Ployz E2E tests live in `crates/ployz-e2e`. They are the long-running system
 harness and should be reserved for behavior that cannot be tested meaningfully
 below E2E.

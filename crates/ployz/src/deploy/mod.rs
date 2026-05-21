@@ -153,6 +153,11 @@ where
         let RuntimeActivationOutcome::Activated(receipt) = outcome else {
             return Err(DeployFailure::RuntimeParticipantFailed);
         };
+        if receipt.workload != request.manifest.workload
+            || receipt.machine != request.manifest.machine
+        {
+            return Err(DeployFailure::RuntimeParticipantFailed);
+        }
 
         Ok(receipt)
     }
@@ -226,8 +231,10 @@ pub fn certificate_unusable_reason(
     if certificate.material != CertificateMaterialState::PresentProtected {
         return Some(CertificateUnusableReason::UnsafeMaterial);
     }
-    if certificate.revocation != RevocationFreshness::KnownFresh {
-        return Some(CertificateUnusableReason::KnownRevoked);
+    match certificate.revocation {
+        RevocationFreshness::KnownFresh => {}
+        RevocationFreshness::KnownRevoked => return Some(CertificateUnusableReason::KnownRevoked),
+        RevocationFreshness::Unknown => return Some(CertificateUnusableReason::FreshnessUnknown),
     }
     if certificate.not_after < minimum_valid_until {
         return Some(CertificateUnusableReason::SafetyWindowTooShort);

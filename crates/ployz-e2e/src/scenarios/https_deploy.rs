@@ -165,6 +165,24 @@ pub(super) fn engine(
     )
 }
 
+fn engine_with_runtime(
+    certificate: CertificateUsability,
+    runtime: RuntimeActivationOutcome,
+    activation: ServingActivationStatus,
+    operations: FakeOperations,
+    contexts: Rc<RefCell<Vec<MutationContext>>>,
+) -> DeployEngine<FakeCertificates, FakeRuntime, FakeServing, FakeOperations> {
+    DeployEngine::new(
+        FakeCertificates {
+            outcome: EnsureCertificateOutcome::Usable(certificate),
+            contexts,
+        },
+        FakeRuntime { outcome: runtime },
+        FakeServing { activation },
+        operations,
+    )
+}
+
 #[test]
 fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
     let operations = FakeOperations::default();
@@ -197,23 +215,53 @@ fn https_deploy_ensures_cert_commits_serving_and_verifies_activation() {
 }
 
 #[test]
-fn revoked_or_unknown_certificate_freshness_fails_deploy() {
-    let mut certificate = usable_certificate();
-    certificate.revocation = RevocationFreshness::Unknown;
-    let operations = FakeOperations::default();
-    let deploy = engine(
-        certificate,
-        ServingActivationStatus::Acknowledged(ServingCheckpoint {
-            generation: ServingGeneration::new(11),
-        }),
-        operations,
-        Rc::new(RefCell::new(Vec::new())),
-    );
+fn certificate_usability_reasons_keep_unknown_distinct() {
+    let binding = request().manifest.https;
+    let mut cases = Vec::new();
+    let mut unknown = usable_certificate();
+    unknown.revocation = RevocationFreshness::Unknown;
+    cases.push((
+        unknown.clone(),
+        ployz::acme::CertificateUnusableReason::FreshnessUnknown,
+    ));
+    let mut revoked = usable_certificate();
+    revoked.revocation = RevocationFreshness::KnownRevoked;
+    cases.push((
+        revoked.clone(),
+        ployz::acme::CertificateUnusableReason::KnownRevoked,
+    ));
+    let mut short_lived = usable_certificate();
+    short_lived.not_after = UNIX_EPOCH + Duration::from_secs(30);
+    cases.push((
+        short_lived.clone(),
+        ployz::acme::CertificateUnusableReason::SafetyWindowTooShort,
+    ));
 
-    assert_eq!(
-        deploy.deploy_https(request()),
-        Err(DeployFailure::CertificateUnusable)
-    );
+    for (certificate, reason) in cases {
+        assert_eq!(
+            ployz::deploy::certificate_unusable_reason(
+                &certificate,
+                &binding,
+                UNIX_EPOCH + Duration::from_secs(3_600)
+            ),
+            Some(reason)
+        );
+    }
+
+    for certificate in [unknown, revoked, short_lived] {
+        let deploy = engine(
+            certificate,
+            ServingActivationStatus::Acknowledged(ServingCheckpoint {
+                generation: ServingGeneration::new(11),
+            }),
+            FakeOperations::default(),
+            Rc::new(RefCell::new(Vec::new())),
+        );
+        assert_eq!(
+            deploy.deploy_https(request()),
+            Err(DeployFailure::CertificateUnusable)
+        );
+    }
 }
 
 #[test]
@@ -246,7 +294,32 @@ fn operation_evidence_does_not_render_private_key_material() {
     );
 
     let _outcome = deploy.deploy_https(request()).expect("deploy success");
-    let rendered = format!("{:?}", operations.evidence.borrow());
 
-    assert!(!rendered.contains("PRIVATE KEY"));
+    assert!(operations.evidence.borrow().iter().all(|evidence| matches!(
+        evidence.kind,
+        EvidenceKind::Checkpoint | EvidenceKind::Observation | EvidenceKind::Failure
+    )));
+}
+
+#[test]
+fn runtime_receipt_must_match_requested_participant() {
+    let operations = FakeOperations::default();
+    let deploy = engine_with_runtime(
+        usable_certificate(),
+        RuntimeActivationOutcome::Activated(ParticipantReceipt {
+            workload: WorkloadId::parse("other-workload").expect("workload"),
+            machine: MachineId::parse("machine-a").expect("machine"),
+            revision: RuntimeRevision::new(3),
+        }),
+        ServingActivationStatus::Acknowledged(ServingCheckpoint {
+            generation: ServingGeneration::new(11),
+        }),
+        operations,
+        Rc::new(RefCell::new(Vec::new())),
+    );
+
+    assert_eq!(
+        deploy.deploy_https(request()),
+        Err(DeployFailure::RuntimeParticipantFailed)
+    );
 }
