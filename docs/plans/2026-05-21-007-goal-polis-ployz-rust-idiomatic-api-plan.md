@@ -138,6 +138,10 @@ Already improved in the current branch:
 - Unused public `polis::records` and `polis::projections` modules were deleted.
   Record append and projection freshness values should return only with a real
   Ployz append/read path, not as speculative public substrate.
+- `CommandEnvelope` is no longer re-exported from `ployz::operation`; product
+  callers stay on issued deploy and volume command tokens.
+- `VolumeTransferCommand::issue` documents that refreshed fences are new
+  transfer attempts and require fresh idempotency keys.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -146,13 +150,6 @@ Still weak:
   Non-success replay is explicit and product-visible, but same-idempotency
   resume still requires a later typed receipt/checkpoint design before it is
   safe to rerun mutating phases.
-- The low-level operation boundary still exposes `CommandEnvelope` because the
-  command runner API is public. Product deploy and volume APIs no longer expose
-  it directly, and `CommandBackend` implementation is sealed.
-- A refreshed fence for the same logical command now requires a new
-  idempotency key. That is safer than silently treating two fenced attempts as
-  the same request, but product command issuers still need to make that policy
-  obvious at their API boundary.
 - Failure terminalization remains best-effort. If recording the failed or
   interrupted marker fails, the operator still sees the product failure, but
   the operation may remain open until a broader operation health surface gives
