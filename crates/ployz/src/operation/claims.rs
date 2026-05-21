@@ -58,13 +58,23 @@ impl SubmittedFenceToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimGuard<R> {
     resource: TypedResourceId<R>,
+    submitted_fence: SubmittedFenceToken,
     proof: polis::ClaimGuard<R>,
 }
 
 impl<R> ClaimGuard<R> {
     pub fn from_acquired(proof: polis::ClaimGuard<R>) -> Result<Self, PrimitiveFailure> {
+        let resource = TypedResourceId::parse(proof.resource().as_str())?;
+        let fence = proof.fence();
+        let submitted_fence = SubmittedFenceToken {
+            resource: ResourceId::parse(resource.as_str())?,
+            holder: PrincipalId::parse(fence.holder().as_str())?,
+            epoch: FenceEpoch::new(fence.epoch().value())?,
+            claim_hash: ClaimHash::parse(fence.claim_hash().as_str())?,
+        };
         Ok(Self {
-            resource: TypedResourceId::parse(proof.resource().as_str())?,
+            resource,
+            submitted_fence,
             proof,
         })
     }
@@ -95,6 +105,11 @@ impl<R> ClaimGuard<R> {
     #[must_use]
     pub fn expires_at(&self) -> SystemTime {
         self.proof.expires_at()
+    }
+
+    #[must_use]
+    pub fn submitted_fence(&self) -> &SubmittedFenceToken {
+        &self.submitted_fence
     }
 
     #[cfg(test)]
