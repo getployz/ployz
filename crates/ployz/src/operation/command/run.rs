@@ -454,6 +454,7 @@ mod tests {
             CommandKind::parse("test").expect("command"),
             vec![1],
             vec![FingerprintedResource::parse("resource:test").expect("resource")],
+            None,
             polis::GrantEpoch::new(1),
         )
         .expect("fingerprint");

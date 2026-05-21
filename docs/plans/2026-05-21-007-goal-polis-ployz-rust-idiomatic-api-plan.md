@@ -90,6 +90,9 @@ Already improved in the current branch:
 - `DomainStatus` no longer implements `Default`; tests and fakes initialize
   `DomainStatus::Unknown` explicitly so uncertainty is visible at construction
   sites.
+- Submitted command fences now participate in the Polis request fingerprint
+  through a typed `SubmittedFenceFingerprint`. Ployz owns the submitted fence
+  token; Polis owns only the product-neutral idempotency comparison value.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -100,10 +103,10 @@ Still weak:
 - Product APIs still require callers to pass generic `CommandEnvelope` plumbing
   instead of issuing typed product commands that derive command kind, resources,
   payload hash, and fence participation from product requests.
-- `MutationIntent.submitted_fence` is not included in the operation
-  fingerprint. The next command-issuance slice must either include it in the
-  fingerprint or remove it from generic command intent and make product command
-  issuers own the digest.
+- A refreshed fence for the same logical command now requires a new
+  idempotency key. That is safer than silently treating two fenced attempts as
+  the same request, but product command issuers still need to make that policy
+  obvious at their API boundary.
 - Failure recording can still mask the product failure that the operator needs
   to see when status writes or terminalization fail.
 - `DomainServingActivation` still uses a crate-local constructor plus
@@ -405,10 +408,10 @@ manually handling operation evidence.
 ### S5. Command Summary, Evidence Encoding, And Replay Boundary
 
 **Status:** In progress. Narrow slices have removed generic empty evidence,
-moved checkpoint byte encoding behind the Ployz command boundary, and added
-success-only replay verification for volume. Deploy retry after partial failure,
-product command issuance, fence-aware fingerprinting, and failure-recording
-semantics remain open.
+moved checkpoint byte encoding behind the Ployz command boundary, added
+success-only replay verification for volume, and made submitted fences part of
+the operation fingerprint. Deploy retry after partial failure, product command
+issuance, and failure-recording semantics remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.
