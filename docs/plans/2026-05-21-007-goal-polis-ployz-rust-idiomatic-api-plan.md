@@ -93,6 +93,9 @@ Already improved in the current branch:
 - Submitted command fences now participate in the Polis request fingerprint
   through a typed `SubmittedFenceFingerprint`. Ployz owns the submitted fence
   token; Polis owns only the product-neutral idempotency comparison value.
+- `CommandRunner` preserves the original product failure when best-effort
+  failed-operation terminalization fails. Successful product work still
+  requires a durable success marker.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -107,8 +110,10 @@ Still weak:
   idempotency key. That is safer than silently treating two fenced attempts as
   the same request, but product command issuers still need to make that policy
   obvious at their API boundary.
-- Failure recording can still mask the product failure that the operator needs
-  to see when status writes or terminalization fail.
+- Failed-operation terminalization remains best-effort. If recording the
+  failed marker fails, the operator still sees the product failure, but the
+  operation may remain open until the broader replay/outcome slice gives that
+  lifecycle failure a better status surface.
 - `DomainServingActivation` still uses a crate-local constructor plus
   `test-support` constructor; this is acceptable for current fakes but should
   be revisited when a real serving adapter exists.
@@ -409,9 +414,10 @@ manually handling operation evidence.
 
 **Status:** In progress. Narrow slices have removed generic empty evidence,
 moved checkpoint byte encoding behind the Ployz command boundary, added
-success-only replay verification for volume, and made submitted fences part of
-the operation fingerprint. Deploy retry after partial failure, product command
-issuance, and failure-recording semantics remain open.
+success-only replay verification for volume, made submitted fences part of the
+operation fingerprint, and stopped failed-marker terminalization from masking
+the original product failure. Deploy retry after partial failure and product
+command issuance remain open.
 
 **Goal:** Product modules return typed summaries/proofs; the command boundary
 encodes safe evidence into Polis records and owns replay behavior.
