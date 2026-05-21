@@ -32,21 +32,67 @@ impl<'a> CommandContext<'a> {
         &self.mutation
     }
 
-    pub(crate) fn checkpoint(
-        &self,
-        checkpoint: impl CommandCheckpoint,
-    ) -> Result<(), PrimitiveFailure> {
+    pub(crate) fn checkpoint(&self, checkpoint: CommandCheckpoint) -> Result<(), PrimitiveFailure> {
         record_operation(
             self.operations,
             &self.operation,
-            EvidenceKind::Checkpoint(checkpoint.encode_checkpoint()),
+            EvidenceKind::Checkpoint(checkpoint.encode()),
         )
         .map_err(map_polis_to_primitive)
     }
 }
 
-pub(crate) trait CommandCheckpoint {
-    fn encode_checkpoint(&self) -> Vec<u8>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandCheckpoint {
+    name: &'static str,
+    fields: Vec<CheckpointField>,
+}
+
+impl CommandCheckpoint {
+    #[must_use]
+    pub(crate) fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            fields: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn field(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.fields.push(CheckpointField {
+            key,
+            value: value.into(),
+        });
+        self
+    }
+
+    #[must_use]
+    fn encode(&self) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(self.name.as_bytes());
+        payload.push(b';');
+        for field in &self.fields {
+            field.encode_into(&mut payload);
+        }
+        payload
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckpointField {
+    key: &'static str,
+    value: String,
+}
+
+impl CheckpointField {
+    fn encode_into(&self, payload: &mut Vec<u8>) {
+        payload.extend_from_slice(self.key.as_bytes());
+        payload.push(b'=');
+        payload.extend_from_slice(self.value.len().to_string().as_bytes());
+        payload.push(b':');
+        payload.extend_from_slice(self.value.as_bytes());
+        payload.push(b';');
+    }
 }
 
 pub trait CommandBackend {
@@ -195,18 +241,6 @@ mod tests {
 
     enum TestCommand {}
 
-    enum TestCheckpoint {
-        Progress,
-    }
-
-    impl CommandCheckpoint for TestCheckpoint {
-        fn encode_checkpoint(&self) -> Vec<u8> {
-            match self {
-                Self::Progress => b"test.progress".to_vec(),
-            }
-        }
-    }
-
     #[test]
     fn command_runner_terminalizes_success_once() {
         let operations = FakeOperations::default();
@@ -287,7 +321,7 @@ mod tests {
             envelope,
             |failure| failure,
             |context| {
-                context.checkpoint(TestCheckpoint::Progress)?;
+                context.checkpoint(CommandCheckpoint::new("test.progress"))?;
                 Ok::<_, PrimitiveFailure>(())
             },
         );
@@ -295,7 +329,19 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(
             operations.evidence.borrow().as_slice(),
-            [EvidenceKind::Checkpoint(b"test.progress".to_vec())]
+            [EvidenceKind::Checkpoint(b"test.progress;".to_vec())]
+        );
+    }
+
+    #[test]
+    fn command_checkpoint_encodes_fields_with_lengths() {
+        let checkpoint = CommandCheckpoint::new("test.progress")
+            .field("resource", "db;owner=wrong")
+            .field("holder", "node=b");
+
+        assert_eq!(
+            checkpoint.encode(),
+            b"test.progress;resource=14:db;owner=wrong;holder=6:node=b;".to_vec()
         );
     }
 

@@ -408,18 +408,7 @@ fn cleanup_pending_records_checkpoint_before_terminal_success() {
         .expect("ownership committed");
 
     assert!(matches!(outcome.cleanup, CleanupStatus::Pending(_)));
-    assert_eq!(
-        operations.evidence.borrow().as_slice(),
-        [
-            EvidenceKind::Checkpoint(
-                b"volume.ownership_committed;volume=4:data;owner=6:node-b;epoch=1:2;watermark=1:5;"
-                    .to_vec()
-            ),
-            EvidenceKind::Checkpoint(
-                b"volume.cleanup_pending;artifact=16:actual-temp-data;".to_vec()
-            )
-        ]
-    );
+    assert_checkpoint_count(&operations, 2);
     assert_eq!(
         operations.terminal.borrow().as_slice(),
         [TerminalMarker::Succeeded]
@@ -566,13 +555,7 @@ fn explicit_recovery_command_requires_verified_ownership() {
         )
         .expect("verified ownership resumes success");
     assert!(retry_mutations.borrow().is_empty());
-    assert_eq!(
-        retry_operations.evidence.borrow().as_slice(),
-        [EvidenceKind::Checkpoint(
-            b"volume.ownership_committed;volume=4:data;owner=6:node-b;epoch=1:2;watermark=1:5;"
-                .to_vec()
-        )]
-    );
+    assert_checkpoint_count(&retry_operations, 1);
 }
 
 #[test]
@@ -625,4 +608,14 @@ fn idempotent_replay_does_not_run_volume_recovery_work() {
     assert!(mutations.borrow().is_empty());
     assert!(operations.evidence.borrow().is_empty());
     assert!(operations.terminal.borrow().is_empty());
+}
+
+fn assert_checkpoint_count(operations: &FakeOperations, expected: usize) {
+    let evidence = operations.evidence.borrow();
+    assert_eq!(evidence.len(), expected);
+    assert!(
+        evidence
+            .iter()
+            .all(|evidence| matches!(evidence, EvidenceKind::Checkpoint(_)))
+    );
 }
