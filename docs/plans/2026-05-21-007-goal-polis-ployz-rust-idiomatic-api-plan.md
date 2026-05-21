@@ -70,6 +70,8 @@ Already improved in the current branch:
 - Domain readiness no longer exposes raw `DomainClaimObservation` fields.
   Fresh readiness ports receive a `DomainClaim` product proof, and the service
   is split into reuse and fresh-readiness transitions.
+- The unused public `polis::calls` module was removed. Bounded call receipt
+  APIs should be reintroduced only when a real Ployz operation needs them.
 - `just check` and clippy passed after those slices.
 
 Still weak:
@@ -88,10 +90,10 @@ Still weak:
 - `DomainServingActivation` still uses a crate-local constructor plus
   `test-support` constructor; this is acceptable for current fakes but should
   be revisited when a real serving adapter exists.
-- `crates/polis/src/calls.rs` and `crates/polis/src/claims.rs` are still larger
-  than expected for foundational primitives. Their public APIs need a final pass
-  to separate real generic capability mechanics from accidental product-shaped
-  growth.
+- Ployz still mirrors some Polis claim/fence concepts in
+  `crates/ployz/src/operation/claims.rs`. A bounded follow-up should collapse
+  the Ployz-facing wrappers onto Polis-backed claim capabilities without
+  importing Polis directly into product modules.
 
 ## Requirements
 
@@ -429,16 +431,22 @@ encodes safe evidence into Polis records and owns replay behavior.
 
 ### S6. Typed Receipt Store Boundary
 
+**Status:** Deferred. The unused speculative `polis::calls` API was deleted in
+the API roast pass. Reintroduce this slice only when a real Ployz operation
+needs bounded call receipts.
+
 **Goal:** Keep mutation receipts typed through the store seam instead of
 defaulting back to bytes and generic `polis::Error`.
 
 **Modify:**
 
-- `crates/polis/src/calls.rs`
+- future `crates/polis/src/calls.rs` replacement, only when a product caller
+  exists
 - Ployz adapters or fakes that store call receipts
 
 **Work:**
 
+- Start from the product caller and add only the receipt shape it needs.
 - Make the receipt store generic or give it associated success/failure types.
 - Keep serialization below the adapter boundary.
 - Add tests that persist and replay typed receipts, not only construct them in
