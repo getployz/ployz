@@ -4,7 +4,9 @@ mod serving;
 
 pub(crate) use cluster::start_cluster_daemons;
 pub(crate) use cluster::{MvpBootstrapEvidence, MvpDaemonEvidence, bootstrap_cluster};
-pub(crate) use deploy::{MvpDeployEvidence, deploy_web_api_and_echo};
+pub(crate) use deploy::{
+    MvpDeployEvidence, MvpUpdateDrainEvidence, deploy_web_api_and_echo, update_api_and_verify_drain,
+};
 pub(crate) use serving::{
     MvpAcmeHttpsEvidence, MvpContainerDnsEvidence, MvpGatewayHttpEvidence, verify_acme_https,
     verify_container_dns, verify_gateway_http,
