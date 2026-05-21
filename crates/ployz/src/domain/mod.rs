@@ -157,11 +157,6 @@ impl UsableDomainCertificate {
     pub fn certificate(&self) -> &CertificateUsability {
         &self.certificate
     }
-
-    #[must_use]
-    pub fn into_certificate(self) -> CertificateUsability {
-        self.certificate
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,11 +212,6 @@ pub struct DomainClaimObservation {
     pub epoch: crate::operation::FenceEpoch,
     pub claim_hash: crate::operation::ClaimHash,
     pub expires_at: SystemTime,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainServingObservation {
-    pub generation: ServingGeneration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
