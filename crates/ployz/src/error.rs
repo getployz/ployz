@@ -127,6 +127,10 @@ pub enum VolumeFailure {
     SourceNotOwner,
     #[error("fencing token is stale")]
     StaleFence,
+    #[error("transfer is already in progress")]
+    TransferInProgress,
+    #[error("ownership observation is stale")]
+    StaleOwnership,
     #[error("source writes are still open")]
     SourceWriteStillOpen,
     #[error("snapshot failed")]

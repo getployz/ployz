@@ -44,6 +44,7 @@ pub struct SubmittedFenceToken {
 }
 
 impl SubmittedFenceToken {
+    #[cfg(test)]
     pub(crate) fn fingerprint(&self) -> Result<polis::SubmittedFenceFingerprint, PrimitiveFailure> {
         polis::SubmittedFenceFingerprint::new(
             polis::FingerprintedResource::parse(self.resource.as_str())

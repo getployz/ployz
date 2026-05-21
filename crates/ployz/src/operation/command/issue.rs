@@ -85,12 +85,6 @@ impl<C> IssuedAttempt<C> {
     pub fn context(&self) -> &MutationContext {
         &self.context
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn fingerprint_for_test(&self) -> &polis::RequestFingerprint {
-        self.operation_request.fingerprint()
-    }
 }
 
 #[cfg(test)]
@@ -129,6 +123,7 @@ mod tests {
     fn issue_for_fence(submitted_fence: Option<SubmittedFenceToken>) -> IssuedAttempt<TestCommand> {
         let mut spec = AttemptSpec::new("test", "test.v1")
             .field("payload", "value")
+            .field_u64("generation", 1)
             .resource("resource:test");
         if let Some(fence) = submitted_fence {
             spec = spec.submitted_fence(fence);
