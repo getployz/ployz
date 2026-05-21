@@ -105,6 +105,7 @@ impl MutationContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct AttemptSpec {
     command: &'static str,
     schema: &'static str,
@@ -113,6 +114,7 @@ pub(crate) struct AttemptSpec {
     submitted_fence: Option<SubmittedFenceToken>,
 }
 
+#[cfg(test)]
 impl AttemptSpec {
     #[must_use]
     pub(crate) fn new(command: &'static str, schema: &'static str) -> Self {
@@ -185,12 +187,14 @@ impl AttemptSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 struct AttemptField {
     key: &'static str,
     value: AttemptFieldValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 enum AttemptFieldValue {
     String(String),
     U64(u64),

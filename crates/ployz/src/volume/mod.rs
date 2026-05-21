@@ -1,11 +1,7 @@
 //! Volume transfer product ports.
 
-use crate::error::{PrimitiveFailure, VolumeFailure};
-use crate::operation::{
-    AttemptBackend, AttemptCheckpoint, AttemptContext, AttemptFailureDisposition, AttemptIssue,
-    AttemptIssuer, AttemptProductError, AttemptSpec, AuthorityPort, IssuedAttempt, MutationContext,
-    ResourceId, SubmittedFenceToken,
-};
+use crate::error::VolumeFailure;
+use crate::operation::{ClaimHash, FenceEpoch, MutationContext, PrincipalId, ResourceId};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VolumeId(String);
@@ -71,6 +67,10 @@ impl OwnershipEpoch {
     pub fn value(self) -> u64 {
         self.0
     }
+
+    fn immediately_follows(self, previous: Self) -> bool {
+        previous.0.checked_add(1).is_some_and(|next| next == self.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -98,6 +98,13 @@ pub struct VolumeTransferPlan {
     pub cleanup_artifact: CleanupArtifactId,
 }
 
+impl VolumeTransferPlan {
+    fn resource(&self) -> Result<ResourceId, VolumeFailure> {
+        ResourceId::parse(format!("volume:{}", self.volume.as_str()))
+            .map_err(|_| VolumeFailure::InvalidPayload)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VolumeTransferRequest {
     pub plan: VolumeTransferPlan,
@@ -110,11 +117,67 @@ pub enum VolumeClaimCheck {
     Stale,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeTransferGuard {
+    resource: ResourceId,
+    holder: PrincipalId,
+    epoch: FenceEpoch,
+    claim_hash: ClaimHash,
+}
+
+impl VolumeTransferGuard {
+    fn from_context(
+        context: &MutationContext,
+        plan: &VolumeTransferPlan,
+    ) -> Result<Self, VolumeFailure> {
+        let Some(fence) = context.submitted_fence() else {
+            return Err(VolumeFailure::StaleFence);
+        };
+        if fence.resource != plan.resource()? || &fence.holder != context.authority().principal() {
+            return Err(VolumeFailure::StaleFence);
+        }
+        Ok(Self {
+            resource: fence.resource.clone(),
+            holder: fence.holder.clone(),
+            epoch: fence.epoch,
+            claim_hash: fence.claim_hash.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn resource(&self) -> &ResourceId {
+        &self.resource
+    }
+
+    #[must_use]
+    pub fn holder(&self) -> &PrincipalId {
+        &self.holder
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> FenceEpoch {
+        self.epoch
+    }
+
+    #[must_use]
+    pub fn claim_hash(&self) -> &ClaimHash {
+        &self.claim_hash
+    }
+}
+
 pub trait VolumeClaimPort {
+    fn begin_transfer(
+        &self,
+        context: &MutationContext,
+        plan: &VolumeTransferPlan,
+        guard: &VolumeTransferGuard,
+    ) -> Result<(), VolumeFailure>;
+
     fn check_transfer_claim(
         &self,
         context: &MutationContext,
         plan: &VolumeTransferPlan,
+        guard: &VolumeTransferGuard,
     ) -> Result<VolumeClaimCheck, VolumeFailure>;
 }
 
@@ -151,18 +214,21 @@ pub trait VolumeSourcePort {
     fn stop_writes(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         plan: &VolumeTransferPlan,
     ) -> Result<SourceWriteStatus, VolumeFailure>;
 
     fn snapshot(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         plan: &VolumeTransferPlan,
     ) -> Result<SnapshotReceipt, VolumeFailure>;
 
     fn final_delta(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         plan: &VolumeTransferPlan,
     ) -> Result<FinalDeltaReceipt, VolumeFailure>;
 }
@@ -183,6 +249,7 @@ pub trait VolumeTargetPort {
     fn receive(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         plan: &VolumeTransferPlan,
         snapshot: &SnapshotReceipt,
         final_delta: &FinalDeltaReceipt,
@@ -204,28 +271,36 @@ impl OwnershipCommit {
             && self.epoch == plan.next_epoch
             && self.source_watermark == plan.expected_source_watermark
     }
+
+    fn matches_source_owner(&self, plan: &VolumeTransferPlan) -> bool {
+        self.volume == plan.volume && self.owner == plan.source
+    }
+
+    fn can_advance_to(&self, plan: &VolumeTransferPlan) -> bool {
+        self.matches_source_owner(plan) && plan.next_epoch.immediately_follows(self.epoch)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OwnershipVerification {
-    Verified(OwnershipCommit),
+pub enum OwnershipObservation {
+    Present(OwnershipCommit),
     Missing,
-    Mismatch,
 }
 
 pub trait VolumeOwnershipPort {
     fn commit_ownership(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         plan: &VolumeTransferPlan,
         receive: &ReceiveReceipt,
     ) -> Result<OwnershipCommit, VolumeFailure>;
 
-    fn verify_ownership(
+    fn observe_ownership(
         &self,
         context: &MutationContext,
-        plan: &VolumeTransferPlan,
-    ) -> Result<OwnershipVerification, VolumeFailure>;
+        volume: &VolumeId,
+    ) -> Result<OwnershipObservation, VolumeFailure>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +344,7 @@ pub trait VolumeCleanupPort {
     fn cleanup_source_artifact(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         commit: &OwnershipCommit,
         artifact: &CleanupArtifactId,
     ) -> Result<CleanupStatus, VolumeCleanupFailure>;
@@ -279,6 +355,14 @@ pub trait VolumeCleanupPort {
         commit: &OwnershipCommit,
         artifact: &CleanupArtifactId,
     ) -> Result<CleanupStatus, VolumeFailure>;
+
+    fn record_cleanup_pending(
+        &self,
+        context: &MutationContext,
+        guard: &VolumeTransferGuard,
+        commit: &OwnershipCommit,
+        pending: &CleanupPending,
+    ) -> Result<(), VolumeFailure>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,284 +382,202 @@ pub struct VolumeTransferOutcome {
     pub cleanup: CleanupStatus,
 }
 
-enum VolumeCheckpoint<'a> {
-    OwnershipCommitted(&'a OwnershipCommit),
-    CleanupPending(&'a CleanupPending),
-}
-
-impl VolumeCheckpoint<'_> {
-    fn command_checkpoint(&self) -> AttemptCheckpoint {
-        match self {
-            Self::OwnershipCommitted(commit) => {
-                AttemptCheckpoint::new("volume.ownership_committed")
-                    .field("volume", commit.volume.as_str())
-                    .field("owner", commit.owner.as_str())
-                    .field("epoch", commit.epoch.value().to_string())
-                    .field("watermark", commit.source_watermark.value().to_string())
-            }
-            Self::CleanupPending(pending) => AttemptCheckpoint::new("volume.cleanup_pending")
-                .field("artifact", pending.artifact().as_str())
-                .field(
-                    "reason",
-                    pending
-                        .reason()
-                        .map_or("unknown", CleanupFailureReason::as_str),
-                ),
-        }
-    }
-}
-
-impl CleanupFailureReason {
-    #[must_use]
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::DeleteFailed => "delete_failed",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VolumeTransferCommand {}
-
-pub struct IssuedVolumeTransferCommand {
-    envelope: IssuedAttempt<VolumeTransferCommand>,
-    request: VolumeTransferRequest,
+enum VolumeTransferAction {
+    AlreadyTransferred(OwnershipCommit),
+    Apply,
 }
 
-impl VolumeTransferCommand {
-    /// Issues a transfer attempt for the submitted fence.
-    ///
-    /// The submitted fence participates in the command fingerprint. Reacquiring
-    /// or refreshing the fence is a new transfer attempt and must use a fresh
-    /// idempotency key.
-    pub fn issue<A>(
-        issuer: &AttemptIssuer<A>,
-        command: AttemptIssue,
-        request: VolumeTransferRequest,
-        submitted_fence: SubmittedFenceToken,
-    ) -> Result<IssuedVolumeTransferCommand, PrimitiveFailure>
-    where
-        A: AuthorityPort,
-    {
-        let expected_resource =
-            ResourceId::parse(format!("volume:{}", request.plan.volume.as_str()))?;
-        if submitted_fence.resource != expected_resource {
-            return Err(PrimitiveFailure::StaleFence);
+impl VolumeTransferAction {
+    fn from_observation(
+        observation: OwnershipObservation,
+        plan: &VolumeTransferPlan,
+    ) -> Result<Self, VolumeFailure> {
+        match observation {
+            OwnershipObservation::Present(ownership) if ownership.matches_plan(plan) => {
+                Ok(Self::AlreadyTransferred(ownership))
+            }
+            OwnershipObservation::Present(ownership) if ownership.can_advance_to(plan) => {
+                Ok(Self::Apply)
+            }
+            OwnershipObservation::Present(ownership) if ownership.matches_source_owner(plan) => {
+                Err(VolumeFailure::StaleOwnership)
+            }
+            OwnershipObservation::Missing => Err(VolumeFailure::SourceNotOwner),
+            OwnershipObservation::Present(_) => Err(VolumeFailure::SourceNotOwner),
         }
-
-        let envelope = issuer.issue(
-            command,
-            volume_transfer_attempt_spec(&request, submitted_fence),
-        )?;
-        Ok(IssuedVolumeTransferCommand { envelope, request })
     }
 }
 
-fn volume_transfer_attempt_spec(
-    request: &VolumeTransferRequest,
-    submitted_fence: SubmittedFenceToken,
-) -> AttemptSpec {
-    AttemptSpec::new("volume-transfer", "ployz.volume.transfer.v1")
-        .field("volume", request.plan.volume.as_str())
-        .field("source", request.plan.source.as_str())
-        .field("target", request.plan.target.as_str())
-        .field_u64(
-            "expected_source_watermark",
-            request.plan.expected_source_watermark.value(),
-        )
-        .field_u64("next_epoch", request.plan.next_epoch.value())
-        .field("cleanup_artifact", request.plan.cleanup_artifact.as_str())
-        .resource(format!("volume:{}", request.plan.volume.as_str()))
-        .submitted_fence(submitted_fence)
-}
-
-pub struct VolumeTransferEngine<G, S, T, W, C, O> {
+pub struct VolumeTransferEngine<G, S, T, W, C> {
     claims: G,
     source: S,
     target: T,
     ownership: W,
     cleanup: C,
-    commands: O,
 }
 
-impl<G, S, T, W, C, O> VolumeTransferEngine<G, S, T, W, C, O> {
+impl<G, S, T, W, C> VolumeTransferEngine<G, S, T, W, C> {
     #[must_use]
-    pub fn new(claims: G, source: S, target: T, ownership: W, cleanup: C, commands: O) -> Self {
+    pub fn new(claims: G, source: S, target: T, ownership: W, cleanup: C) -> Self {
         Self {
             claims,
             source,
             target,
             ownership,
             cleanup,
-            commands,
         }
     }
 }
 
-impl<G, S, T, W, C, O> VolumeTransferEngine<G, S, T, W, C, O>
+impl<G, S, T, W, C> VolumeTransferEngine<G, S, T, W, C>
 where
     G: VolumeClaimPort,
     S: VolumeSourcePort,
     T: VolumeTargetPort,
     W: VolumeOwnershipPort,
     C: VolumeCleanupPort,
-    O: AttemptBackend,
 {
     pub fn transfer(
         &self,
-        command: IssuedVolumeTransferCommand,
+        context: &MutationContext,
+        request: VolumeTransferRequest,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        let IssuedVolumeTransferCommand { envelope, request } = command;
-        self.commands.run_with_replay_and_failure_disposition(
-            envelope,
-            AttemptFailureDisposition::Interrupted,
-            |context| self.transfer_scoped(context, &request.plan),
-            |mutation| self.verify_replayed_success(mutation, &request.plan),
-        )
+        let observation = self
+            .ownership
+            .observe_ownership(context, &request.plan.volume)?;
+        match VolumeTransferAction::from_observation(observation, &request.plan)? {
+            VolumeTransferAction::AlreadyTransferred(ownership) => {
+                self.observe_cleanup(context, ownership, &request.plan.cleanup_artifact)
+            }
+            VolumeTransferAction::Apply => self.execute_transfer(context, &request.plan),
+        }
     }
 
-    fn transfer_scoped(
+    fn execute_transfer(
         &self,
-        context: &AttemptContext<'_>,
+        context: &MutationContext,
         plan: &VolumeTransferPlan,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        let mutation = context.mutation();
-        self.ensure_current_claim(mutation, plan)?;
-        if self.source.stop_writes(mutation, plan)? != SourceWriteStatus::Stopped {
+        let guard = self.begin_transfer(context, plan)?;
+        if self.source.stop_writes(context, &guard, plan)? != SourceWriteStatus::Stopped {
             return Err(VolumeFailure::SourceWriteStillOpen);
         }
-        self.ensure_current_claim(mutation, plan)?;
-        let snapshot = self.source.snapshot(mutation, plan)?;
+        self.ensure_current_claim(context, &guard, plan)?;
+        let snapshot = self.source.snapshot(context, &guard, plan)?;
         if !snapshot.has_expected_watermark(plan) {
             return Err(VolumeFailure::SnapshotFailed);
         }
-        self.ensure_current_claim(mutation, plan)?;
-        let final_delta = self.source.final_delta(mutation, plan)?;
+        self.ensure_current_claim(context, &guard, plan)?;
+        let final_delta = self.source.final_delta(context, &guard, plan)?;
         if !final_delta.has_expected_watermark(plan) {
             return Err(VolumeFailure::SnapshotFailed);
         }
-        self.ensure_current_claim(mutation, plan)?;
+        self.ensure_current_claim(context, &guard, plan)?;
         let receive = self
             .target
-            .receive(mutation, plan, &snapshot, &final_delta)?;
+            .receive(context, &guard, plan, &snapshot, &final_delta)?;
         if !receive.matches_transfer(&snapshot, plan) {
             return Err(VolumeFailure::ReceiveFailed);
         }
-        self.ensure_current_claim(mutation, plan)?;
-        let ownership = self.ownership.commit_ownership(mutation, plan, &receive)?;
-
-        self.finish_transfer(context, plan, ownership)
-    }
-
-    fn verify_replayed_success(
-        &self,
-        mutation: &MutationContext,
-        plan: &VolumeTransferPlan,
-    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        let ownership = self.verified_ownership(mutation, plan)?;
-        let cleanup = self
-            .cleanup
-            .cleanup_status(mutation, &ownership, &plan.cleanup_artifact)?;
-        Ok(VolumeTransferOutcome { ownership, cleanup })
-    }
-
-    fn finish_transfer(
-        &self,
-        context: &AttemptContext<'_>,
-        plan: &VolumeTransferPlan,
-        ownership: OwnershipCommit,
-    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        let mutation = context.mutation();
-        let verified = self.verified_ownership(mutation, plan)?;
-        if verified != ownership {
+        self.ensure_current_claim(context, &guard, plan)?;
+        let committed = self
+            .ownership
+            .commit_ownership(context, &guard, plan, &receive)?;
+        if !committed.matches_plan(plan) {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
-        if !ownership.matches_plan(plan) {
+        let ownership = self.observed_desired_ownership(context, plan)?;
+        if ownership != committed {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
-        context
-            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership).command_checkpoint())
-            .map_err(map_primitive_to_volume)?;
-        self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
+        self.cleanup_after_transfer(context, &guard, plan, ownership)
     }
 
-    fn finish_cleanup(
+    fn observe_cleanup(
         &self,
-        context: &AttemptContext<'_>,
+        context: &MutationContext,
         ownership: OwnershipCommit,
         artifact: &CleanupArtifactId,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        let cleanup =
-            match self
-                .cleanup
-                .cleanup_source_artifact(context.mutation(), &ownership, artifact)
-            {
-                Ok(status) => status,
-                Err(error) => CleanupStatus::Pending(CleanupPending::from_failure(error)),
-            };
-        if let CleanupStatus::Pending(pending) = &cleanup {
-            context
-                .checkpoint(VolumeCheckpoint::CleanupPending(pending).command_checkpoint())
-                .map_err(map_primitive_to_volume)?;
-        }
-
+        let cleanup = self.cleanup.cleanup_status(context, &ownership, artifact)?;
         Ok(VolumeTransferOutcome { ownership, cleanup })
     }
 
-    fn verified_ownership(
+    fn cleanup_after_transfer(
         &self,
-        mutation: &MutationContext,
+        context: &MutationContext,
+        guard: &VolumeTransferGuard,
+        plan: &VolumeTransferPlan,
+        ownership: OwnershipCommit,
+    ) -> Result<VolumeTransferOutcome, VolumeFailure> {
+        self.ensure_current_claim(context, guard, plan)?;
+        let cleanup = match self.cleanup.cleanup_source_artifact(
+            context,
+            guard,
+            &ownership,
+            &plan.cleanup_artifact,
+        ) {
+            Ok(CleanupStatus::Done) => CleanupStatus::Done,
+            Ok(CleanupStatus::Pending(pending)) => {
+                self.record_pending_cleanup(context, guard, plan, &ownership, pending)?
+            }
+            Err(error) => {
+                let pending = CleanupPending::from_failure(error);
+                self.record_pending_cleanup(context, guard, plan, &ownership, pending)?
+            }
+        };
+        Ok(VolumeTransferOutcome { ownership, cleanup })
+    }
+
+    fn record_pending_cleanup(
+        &self,
+        context: &MutationContext,
+        guard: &VolumeTransferGuard,
+        plan: &VolumeTransferPlan,
+        ownership: &OwnershipCommit,
+        pending: CleanupPending,
+    ) -> Result<CleanupStatus, VolumeFailure> {
+        self.ensure_current_claim(context, guard, plan)?;
+        self.cleanup
+            .record_cleanup_pending(context, guard, ownership, &pending)?;
+        Ok(CleanupStatus::Pending(pending))
+    }
+
+    fn observed_desired_ownership(
+        &self,
+        context: &MutationContext,
         plan: &VolumeTransferPlan,
     ) -> Result<OwnershipCommit, VolumeFailure> {
-        let OwnershipVerification::Verified(ownership) =
-            self.ownership.verify_ownership(mutation, plan)?
-        else {
-            return Err(VolumeFailure::OwnershipCommitRejected);
-        };
-        if !ownership.matches_plan(plan) {
-            return Err(VolumeFailure::OwnershipCommitRejected);
+        match self.ownership.observe_ownership(context, &plan.volume)? {
+            OwnershipObservation::Present(ownership) if ownership.matches_plan(plan) => {
+                Ok(ownership)
+            }
+            OwnershipObservation::Present(_) | OwnershipObservation::Missing => {
+                Err(VolumeFailure::OwnershipCommitRejected)
+            }
         }
-        Ok(ownership)
+    }
+
+    fn begin_transfer(
+        &self,
+        context: &MutationContext,
+        plan: &VolumeTransferPlan,
+    ) -> Result<VolumeTransferGuard, VolumeFailure> {
+        let guard = VolumeTransferGuard::from_context(context, plan)?;
+        self.claims.begin_transfer(context, plan, &guard)?;
+        Ok(guard)
     }
 
     fn ensure_current_claim(
         &self,
         context: &MutationContext,
+        guard: &VolumeTransferGuard,
         plan: &VolumeTransferPlan,
     ) -> Result<(), VolumeFailure> {
-        match self.claims.check_transfer_claim(context, plan)? {
+        match self.claims.check_transfer_claim(context, plan, guard)? {
             VolumeClaimCheck::Current => Ok(()),
             VolumeClaimCheck::Missing | VolumeClaimCheck::Stale => Err(VolumeFailure::StaleFence),
-        }
-    }
-}
-
-fn map_primitive_to_volume(error: PrimitiveFailure) -> VolumeFailure {
-    match error {
-        PrimitiveFailure::StaleFence => VolumeFailure::StaleFence,
-        PrimitiveFailure::MalformedPayload => VolumeFailure::InvalidPayload,
-        PrimitiveFailure::Conflict
-        | PrimitiveFailure::Unauthorized
-        | PrimitiveFailure::Timeout
-        | PrimitiveFailure::NoResponder
-        | PrimitiveFailure::FreshnessUnknown
-        | PrimitiveFailure::TerminalAlreadyWritten => VolumeFailure::OwnershipCommitRejected,
-        PrimitiveFailure::OperationAlreadySucceeded => VolumeFailure::OperationAlreadySucceeded,
-        PrimitiveFailure::OperationInProgress => VolumeFailure::OperationInProgress,
-        PrimitiveFailure::OperationAlreadyFailed => VolumeFailure::OperationAlreadyFailed,
-        PrimitiveFailure::OperationInterrupted => VolumeFailure::Interrupted,
-    }
-}
-
-impl AttemptProductError for VolumeFailure {
-    fn from_primitive_failure(error: PrimitiveFailure) -> Self {
-        map_primitive_to_volume(error)
-    }
-
-    fn terminalization_failed(product: Self, terminalization: PrimitiveFailure) -> Self {
-        Self::AttemptTerminalizationFailed {
-            product: Box::new(product),
-            terminalization,
         }
     }
 }
@@ -594,10 +596,6 @@ fn parse_non_empty<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::{
-        AttemptIssuer, AuthorityDecision, AuthorityEpoch, AuthorityPort, ClaimHash, FenceEpoch,
-        IdempotencyKey, OperationId, PrincipalId, ScopeId,
-    };
 
     #[test]
     fn empty_volume_id_is_invalid_payload() {
@@ -605,23 +603,10 @@ mod tests {
     }
 
     #[test]
-    fn volume_maps_replay_states_to_visible_failures() {
-        assert_eq!(
-            map_primitive_to_volume(PrimitiveFailure::OperationInProgress),
-            VolumeFailure::OperationInProgress
-        );
-        assert_eq!(
-            map_primitive_to_volume(PrimitiveFailure::OperationAlreadyFailed),
-            VolumeFailure::OperationAlreadyFailed
-        );
-        assert_eq!(
-            map_primitive_to_volume(PrimitiveFailure::OperationAlreadySucceeded),
-            VolumeFailure::OperationAlreadySucceeded
-        );
-        assert_eq!(
-            map_primitive_to_volume(PrimitiveFailure::OperationInterrupted),
-            VolumeFailure::Interrupted
-        );
+    fn volume_plan_derives_claim_resource() {
+        let resource = plan().resource().expect("resource");
+
+        assert_eq!(resource.as_str(), "volume:data");
     }
 
     #[test]
@@ -677,77 +662,61 @@ mod tests {
     }
 
     #[test]
-    fn volume_transfer_command_issue_derives_payload_from_plan() {
-        let request = VolumeTransferRequest { plan: plan() };
-        let changed_target = VolumeTransferRequest {
-            plan: VolumeTransferPlan {
-                target: VolumeOwner::parse("node-c").expect("target"),
-                ..request.plan.clone()
-            },
+    fn transfer_action_comes_from_observed_ownership() {
+        let plan = plan();
+        let desired_owner = OwnershipCommit {
+            volume: plan.volume.clone(),
+            owner: plan.target.clone(),
+            epoch: plan.next_epoch,
+            source_watermark: plan.expected_source_watermark,
+        };
+        let source_owner = OwnershipCommit {
+            volume: plan.volume.clone(),
+            owner: plan.source.clone(),
+            epoch: OwnershipEpoch::new(1),
+            source_watermark: plan.expected_source_watermark,
+        };
+        let source_owner_before_transfer_watermark = OwnershipCommit {
+            source_watermark: SourceWatermark::new(4),
+            ..source_owner.clone()
+        };
+        let conflicting_owner = OwnershipCommit {
+            owner: VolumeOwner::parse("node-c").expect("owner"),
+            ..source_owner.clone()
         };
 
-        let first = VolumeTransferCommand::issue(
-            &AttemptIssuer::new(AllowAuthority),
-            issue(),
-            request.clone(),
-            fence("volume:data"),
-        )
-        .expect("first command");
-        let second = VolumeTransferCommand::issue(
-            &AttemptIssuer::new(AllowAuthority),
-            issue(),
-            changed_target,
-            fence("volume:data"),
-        )
-        .expect("second command");
-
-        assert_ne!(
-            first.envelope.fingerprint_for_test().payload_hash(),
-            second.envelope.fingerprint_for_test().payload_hash()
+        assert_eq!(
+            VolumeTransferAction::from_observation(
+                OwnershipObservation::Present(desired_owner.clone()),
+                &plan
+            ),
+            Ok(VolumeTransferAction::AlreadyTransferred(desired_owner))
         );
-    }
-
-    #[test]
-    fn volume_transfer_command_issue_rejects_fence_for_wrong_volume() {
-        let result = VolumeTransferCommand::issue(
-            &AttemptIssuer::new(AllowAuthority),
-            issue(),
-            VolumeTransferRequest { plan: plan() },
-            fence("volume:other"),
+        assert_eq!(
+            VolumeTransferAction::from_observation(
+                OwnershipObservation::Present(source_owner),
+                &plan
+            ),
+            Ok(VolumeTransferAction::Apply)
         );
-
-        assert!(matches!(result, Err(PrimitiveFailure::StaleFence)));
-    }
-
-    struct AllowAuthority;
-
-    impl AuthorityPort for AllowAuthority {
-        fn decide(
-            &self,
-            _principal: &PrincipalId,
-            _scope: &ScopeId,
-        ) -> Result<AuthorityDecision, PrimitiveFailure> {
-            Ok(AuthorityDecision::Allowed(AuthorityEpoch::new(7)))
-        }
-    }
-
-    fn issue() -> AttemptIssue {
-        AttemptIssue {
-            operation: OperationId::parse("volume-transfer-1").expect("operation"),
-            idempotency: IdempotencyKey::parse("idem-volume-1").expect("idempotency"),
-            principal: PrincipalId::parse("node-a").expect("principal"),
-            scope: ScopeId::parse("cluster").expect("scope"),
-            deadline: std::time::SystemTime::UNIX_EPOCH,
-        }
-    }
-
-    fn fence(resource: &str) -> SubmittedFenceToken {
-        SubmittedFenceToken {
-            resource: ResourceId::parse(resource).expect("resource"),
-            holder: PrincipalId::parse("node-a").expect("holder"),
-            epoch: FenceEpoch::new(3).expect("fence epoch"),
-            claim_hash: ClaimHash::parse("claim-hash-a").expect("claim hash"),
-        }
+        assert_eq!(
+            VolumeTransferAction::from_observation(
+                OwnershipObservation::Present(source_owner_before_transfer_watermark),
+                &plan
+            ),
+            Ok(VolumeTransferAction::Apply)
+        );
+        assert_eq!(
+            VolumeTransferAction::from_observation(OwnershipObservation::Missing, &plan),
+            Err(VolumeFailure::SourceNotOwner)
+        );
+        assert_eq!(
+            VolumeTransferAction::from_observation(
+                OwnershipObservation::Present(conflicting_owner),
+                &plan
+            ),
+            Err(VolumeFailure::SourceNotOwner)
+        );
     }
 
     fn plan() -> VolumeTransferPlan {
