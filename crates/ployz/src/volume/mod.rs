@@ -99,13 +99,6 @@ pub struct VolumeTransferPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VolumeTransferRequest {
     pub plan: VolumeTransferPlan,
-    pub mode: VolumeTransferMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VolumeTransferMode {
-    Start,
-    VerifyCommittedOwnership,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +239,13 @@ pub trait VolumeCleanupPort {
         commit: &OwnershipCommit,
         artifact: &CleanupArtifactId,
     ) -> Result<CleanupStatus, VolumeCleanupFailure>;
+
+    fn cleanup_status(
+        &self,
+        context: &MutationContext,
+        commit: &OwnershipCommit,
+        artifact: &CleanupArtifactId,
+    ) -> Result<CleanupStatus, VolumeFailure>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,23 +326,20 @@ where
         command: CommandEnvelope<VolumeTransferCommand>,
         request: VolumeTransferRequest,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        self.commands
-            .run(command, map_primitive_to_volume, |context| {
-                self.transfer_scoped(context, &request.plan, &request.mode)
-            })
+        self.commands.run_with_replay(
+            command,
+            map_primitive_to_volume,
+            |context| self.transfer_scoped(context, &request.plan),
+            |mutation| self.verify_replayed_success(mutation, &request.plan),
+        )
     }
 
     fn transfer_scoped(
         &self,
         context: &CommandContext<'_>,
         plan: &VolumeTransferPlan,
-        mode: &VolumeTransferMode,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
         let mutation = context.mutation();
-        if let VolumeTransferMode::VerifyCommittedOwnership = mode {
-            return self.finish_verified_transfer(context, plan);
-        }
-
         self.ensure_current_claim(mutation, plan)?;
         if self.source.stop_writes(mutation, plan)? != SourceWriteStatus::Stopped {
             return Err(VolumeFailure::SourceWriteStillOpen);
@@ -370,25 +367,16 @@ where
         self.finish_transfer(context, plan, ownership)
     }
 
-    fn finish_verified_transfer(
+    fn verify_replayed_success(
         &self,
-        context: &CommandContext<'_>,
+        mutation: &MutationContext,
         plan: &VolumeTransferPlan,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
-        let mutation = context.mutation();
-        self.ensure_current_claim(mutation, plan)?;
-        let OwnershipVerification::Verified(ownership) =
-            self.ownership.verify_ownership(mutation, plan)?
-        else {
-            return Err(VolumeFailure::OwnershipCommitRejected);
-        };
-        if !ownership.matches_plan(plan) {
-            return Err(VolumeFailure::OwnershipCommitRejected);
-        }
-        context
-            .checkpoint(VolumeCheckpoint::OwnershipCommitted(&ownership).command_checkpoint())
-            .map_err(map_primitive_to_volume)?;
-        self.finish_cleanup(context, ownership, &plan.cleanup_artifact)
+        let ownership = self.verified_ownership(mutation, plan)?;
+        let cleanup = self
+            .cleanup
+            .cleanup_status(mutation, &ownership, &plan.cleanup_artifact)?;
+        Ok(VolumeTransferOutcome { ownership, cleanup })
     }
 
     fn finish_transfer(
@@ -398,11 +386,7 @@ where
         ownership: OwnershipCommit,
     ) -> Result<VolumeTransferOutcome, VolumeFailure> {
         let mutation = context.mutation();
-        let OwnershipVerification::Verified(verified) =
-            self.ownership.verify_ownership(mutation, plan)?
-        else {
-            return Err(VolumeFailure::OwnershipCommitRejected);
-        };
+        let verified = self.verified_ownership(mutation, plan)?;
         if verified != ownership {
             return Err(VolumeFailure::OwnershipCommitRejected);
         }
@@ -436,6 +420,22 @@ where
         }
 
         Ok(VolumeTransferOutcome { ownership, cleanup })
+    }
+
+    fn verified_ownership(
+        &self,
+        mutation: &MutationContext,
+        plan: &VolumeTransferPlan,
+    ) -> Result<OwnershipCommit, VolumeFailure> {
+        let OwnershipVerification::Verified(ownership) =
+            self.ownership.verify_ownership(mutation, plan)?
+        else {
+            return Err(VolumeFailure::OwnershipCommitRejected);
+        };
+        if !ownership.matches_plan(plan) {
+            return Err(VolumeFailure::OwnershipCommitRejected);
+        }
+        Ok(ownership)
     }
 
     fn ensure_current_claim(

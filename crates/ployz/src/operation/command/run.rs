@@ -104,6 +104,17 @@ pub trait CommandBackend {
     ) -> Result<T, E>
     where
         F: FnOnce(&CommandContext<'_>) -> Result<T, E>;
+
+    fn run_with_replay<C, T, E, F, R>(
+        &self,
+        envelope: CommandEnvelope<C>,
+        map_primitive: fn(PrimitiveFailure) -> E,
+        work: F,
+        verify_replayed_success: R,
+    ) -> Result<T, E>
+    where
+        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        R: FnOnce(&MutationContext) -> Result<T, E>;
 }
 
 pub struct CommandRunner<O> {
@@ -130,13 +141,35 @@ where
     where
         F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
     {
+        self.run_with_replay(envelope, map_primitive, work, |_replay| {
+            Err(map_primitive(PrimitiveFailure::ReplayUnavailable))
+        })
+    }
+
+    fn run_with_replay<C, T, E, F, R>(
+        &self,
+        envelope: CommandEnvelope<C>,
+        map_primitive: fn(PrimitiveFailure) -> E,
+        work: F,
+        verify_replayed_success: R,
+    ) -> Result<T, E>
+    where
+        F: FnOnce(&CommandContext<'_>) -> Result<T, E>,
+        R: FnOnce(&MutationContext) -> Result<T, E>,
+    {
         let mutation = envelope.context().clone();
         let start = polis::start_or_replay(&self.operations, envelope.operation_request)
             .map_err(map_polis_to_primitive)
             .map_err(&map_primitive)?;
 
-        let polis::OperationStart::Started(operation) = start else {
-            return Err(map_primitive(PrimitiveFailure::ReplayUnavailable));
+        let operation = match start {
+            polis::OperationStart::Started(operation) => operation,
+            polis::OperationStart::Replayed(replay) => {
+                if replay.terminal() == Some(&TerminalMarker::Succeeded) {
+                    return verify_replayed_success(&mutation);
+                }
+                return Err(map_primitive(PrimitiveFailure::ReplayUnavailable));
+            }
         };
 
         let context = CommandContext::new(mutation, operation, &self.operations);
@@ -201,7 +234,7 @@ mod tests {
         evidence: Rc<RefCell<Vec<EvidenceKind>>>,
         terminal: Rc<RefCell<Vec<TerminalMarker>>>,
         operation: Rc<RefCell<Vec<BackendOperationId>>>,
-        replay: bool,
+        replay: Option<Option<TerminalMarker>>,
     }
 
     impl OperationBackend for FakeOperations {
@@ -209,10 +242,10 @@ mod tests {
             &self,
             request: &OperationRequest,
         ) -> polis::Result<BackendOperationStart> {
-            if self.replay {
+            if let Some(terminal) = self.replay.clone() {
                 return Ok(BackendOperationStart::Replayed {
                     operation: request.operation().clone(),
-                    terminal: None,
+                    terminal,
                 });
             }
             Ok(BackendOperationStart::Started)
@@ -271,7 +304,7 @@ mod tests {
     #[test]
     fn command_runner_replay_does_not_run_work_or_write_terminal() {
         let operations = FakeOperations {
-            replay: true,
+            replay: Some(None),
             ..FakeOperations::default()
         };
         let runner = CommandRunner::new(operations.clone());
@@ -287,6 +320,59 @@ mod tests {
         assert_eq!(result, Err(PrimitiveFailure::ReplayUnavailable));
         assert!(operations.evidence.borrow().is_empty());
         assert!(operations.terminal.borrow().is_empty());
+    }
+
+    #[test]
+    fn command_runner_replay_uses_product_verifier_without_writing_terminal() {
+        let operations = FakeOperations {
+            replay: Some(Some(TerminalMarker::Succeeded)),
+            ..FakeOperations::default()
+        };
+        let runner = CommandRunner::new(operations.clone());
+
+        let envelope: CommandEnvelope<TestCommand> =
+            CommandEnvelope::new(context(), operation_request());
+        let result = runner.run_with_replay(
+            envelope,
+            |failure| failure,
+            |_context| panic!("replayed commands should not run product work"),
+            |mutation| {
+                assert_eq!(mutation.authority().epoch(), AuthorityEpoch::new(1));
+                Ok::<_, PrimitiveFailure>(9)
+            },
+        );
+
+        assert_eq!(result, Ok(9));
+        assert!(operations.evidence.borrow().is_empty());
+        assert!(operations.terminal.borrow().is_empty());
+    }
+
+    #[test]
+    fn command_runner_non_success_replay_never_calls_product_verifier() {
+        for terminal in [
+            None,
+            Some(TerminalMarker::Failed(Vec::new())),
+            Some(TerminalMarker::Interrupted),
+        ] {
+            let operations = FakeOperations {
+                replay: Some(terminal),
+                ..FakeOperations::default()
+            };
+            let runner = CommandRunner::new(operations.clone());
+            let envelope: CommandEnvelope<TestCommand> =
+                CommandEnvelope::new(context(), operation_request());
+
+            let result: Result<(), PrimitiveFailure> = runner.run_with_replay(
+                envelope,
+                |failure| failure,
+                |_context| panic!("replayed commands should not run product work"),
+                |_mutation| panic!("only terminal success replay should verify"),
+            );
+
+            assert_eq!(result, Err(PrimitiveFailure::ReplayUnavailable));
+            assert!(operations.evidence.borrow().is_empty());
+            assert!(operations.terminal.borrow().is_empty());
+        }
     }
 
     #[test]

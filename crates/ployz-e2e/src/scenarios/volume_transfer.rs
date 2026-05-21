@@ -14,8 +14,7 @@ use ployz::volume::{
     OwnershipVerification, ReceiveReceipt, SnapshotReceipt, SourceWatermark, SourceWriteStatus,
     VolumeClaimCheck, VolumeClaimPort, VolumeCleanupFailure, VolumeCleanupPort, VolumeId,
     VolumeOwner, VolumeOwnershipPort, VolumeSnapshotId, VolumeSourcePort, VolumeTargetPort,
-    VolumeTransferCommand, VolumeTransferEngine, VolumeTransferMode, VolumeTransferPlan,
-    VolumeTransferRequest,
+    VolumeTransferCommand, VolumeTransferEngine, VolumeTransferPlan, VolumeTransferRequest,
 };
 use polis::{EvidenceKind, TerminalMarker};
 
@@ -147,13 +146,25 @@ impl VolumeCleanupPort for FakeCleanup {
     ) -> Result<CleanupStatus, VolumeCleanupFailure> {
         self.result.clone()
     }
+
+    fn cleanup_status(
+        &self,
+        _context: &MutationContext,
+        _commit: &OwnershipCommit,
+        _artifact: &ployz::volume::CleanupArtifactId,
+    ) -> Result<CleanupStatus, VolumeFailure> {
+        match self.result.clone() {
+            Ok(status) => Ok(status),
+            Err(error) => Ok(CleanupStatus::Pending(error.artifact)),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
 struct FakeOperations {
     evidence: Rc<RefCell<Vec<EvidenceKind>>>,
     terminal: Rc<RefCell<Vec<TerminalMarker>>>,
-    replay: bool,
+    replay: Option<Option<TerminalMarker>>,
 }
 
 impl polis::OperationBackend for FakeOperations {
@@ -161,10 +172,10 @@ impl polis::OperationBackend for FakeOperations {
         &self,
         request: &polis::OperationRequest,
     ) -> polis::Result<polis::BackendOperationStart> {
-        if self.replay {
+        if let Some(terminal) = self.replay.clone() {
             return Ok(polis::BackendOperationStart::Replayed {
                 operation: request.operation().clone(),
-                terminal: None,
+                terminal,
             });
         }
         Ok(polis::BackendOperationStart::Started)
@@ -236,8 +247,8 @@ fn plan() -> VolumeTransferPlan {
     }
 }
 
-fn request(mode: VolumeTransferMode) -> VolumeTransferRequest {
-    VolumeTransferRequest { plan: plan(), mode }
+fn request() -> VolumeTransferRequest {
+    VolumeTransferRequest { plan: plan() }
 }
 
 fn engine(
@@ -284,7 +295,7 @@ fn stale_claim_rejects_before_source_mutation() {
     );
 
     assert_eq!(
-        transfer.transfer(command(), request(VolumeTransferMode::Start)),
+        transfer.transfer(command(), request()),
         Err(VolumeFailure::StaleFence)
     );
     assert!(mutations.borrow().is_empty());
@@ -336,7 +347,7 @@ fn stale_claim_rejects_before_each_later_mutation() {
         );
 
         assert_eq!(
-            transfer.transfer(command(), request(VolumeTransferMode::Start)),
+            transfer.transfer(command(), request()),
             Err(VolumeFailure::StaleFence)
         );
         assert_eq!(mutations.borrow().as_slice(), expected_mutations.as_slice());
@@ -357,7 +368,7 @@ fn cleanup_failure_remains_visible_without_rewriting_ownership() {
     );
 
     let outcome = transfer
-        .transfer(command(), request(VolumeTransferMode::Start))
+        .transfer(command(), request())
         .expect("ownership committed");
 
     assert_eq!(
@@ -404,7 +415,7 @@ fn cleanup_pending_records_checkpoint_before_terminal_success() {
     );
 
     let outcome = transfer
-        .transfer(command(), request(VolumeTransferMode::Start))
+        .transfer(command(), request())
         .expect("ownership committed");
 
     assert!(matches!(outcome.cleanup, CleanupStatus::Pending(_)));
@@ -446,7 +457,7 @@ fn receive_receipt_must_match_snapshot_and_target_before_ownership_commit() {
     );
 
     assert_eq!(
-        transfer.transfer(command(), request(VolumeTransferMode::Start)),
+        transfer.transfer(command(), request()),
         Err(VolumeFailure::ReceiveFailed)
     );
 }
@@ -492,46 +503,25 @@ fn committed_ownership_must_match_transfer_plan() {
     );
 
     assert_eq!(
-        transfer.transfer(command(), request(VolumeTransferMode::Start)),
+        transfer.transfer(command(), request()),
         Err(VolumeFailure::OwnershipCommitRejected)
     );
     assert!(operations.evidence.borrow().is_empty());
 }
 
 #[test]
-fn explicit_recovery_command_requires_verified_ownership() {
-    let verifications = Rc::new(RefCell::new(VecDeque::from([
-        OwnershipVerification::Missing,
-        OwnershipVerification::Verified(OwnershipCommit {
-            volume: VolumeId::parse("data").expect("volume"),
-            owner: VolumeOwner::parse("node-b").expect("owner"),
-            epoch: OwnershipEpoch::new(2),
-            source_watermark: SourceWatermark::new(5),
-        }),
-    ])));
-
-    let first_attempt = engine(
-        vec![VolumeClaimCheck::Current; 5],
-        Rc::new(RefCell::new(Vec::new())),
-        verifications.clone(),
-        Ok(CleanupStatus::Done),
-    );
-    assert_eq!(
-        first_attempt.transfer(command(), request(VolumeTransferMode::Start)),
-        Err(VolumeFailure::OwnershipCommitRejected)
-    );
-
-    let retry_mutations = Rc::new(RefCell::new(Vec::new()));
-    let retry_operations = FakeOperations::default();
+fn terminal_success_replay_verifies_ownership_without_mutation() {
+    let replay_mutations = Rc::new(RefCell::new(Vec::new()));
+    let replay_operations = FakeOperations {
+        replay: Some(Some(TerminalMarker::Succeeded)),
+        ..FakeOperations::default()
+    };
     let second_attempt = VolumeTransferEngine::new(
         FakeClaims {
-            checks: Rc::new(RefCell::new(VecDeque::from(vec![
-                VolumeClaimCheck::Current,
-                VolumeClaimCheck::Current,
-            ]))),
+            checks: Rc::new(RefCell::new(VecDeque::new())),
         },
         FakeSource {
-            mutations: retry_mutations.clone(),
+            mutations: replay_mutations.clone(),
         },
         FakeTarget {
             receive: ReceiveReceipt {
@@ -540,28 +530,34 @@ fn explicit_recovery_command_requires_verified_ownership() {
             },
         },
         FakeOwnership {
-            verifications,
+            verifications: Rc::new(RefCell::new(VecDeque::from([
+                OwnershipVerification::Verified(OwnershipCommit {
+                    volume: VolumeId::parse("data").expect("volume"),
+                    owner: VolumeOwner::parse("node-b").expect("owner"),
+                    epoch: OwnershipEpoch::new(2),
+                    source_watermark: SourceWatermark::new(5),
+                }),
+            ]))),
             commit: None,
         },
         FakeCleanup {
             result: Ok(CleanupStatus::Done),
         },
-        CommandRunner::new(retry_operations.clone()),
+        CommandRunner::new(replay_operations.clone()),
     );
-    second_attempt
-        .transfer(
-            command(),
-            request(VolumeTransferMode::VerifyCommittedOwnership),
-        )
-        .expect("verified ownership resumes success");
-    assert!(retry_mutations.borrow().is_empty());
-    assert_checkpoint_count(&retry_operations, 1);
+    let outcome = second_attempt
+        .transfer(command(), request())
+        .expect("replay verifies ownership");
+    assert_eq!(outcome.cleanup, CleanupStatus::Done);
+    assert!(replay_mutations.borrow().is_empty());
+    assert!(replay_operations.evidence.borrow().is_empty());
+    assert!(replay_operations.terminal.borrow().is_empty());
 }
 
 #[test]
 fn idempotent_replay_does_not_run_volume_recovery_work() {
     let operations = FakeOperations {
-        replay: true,
+        replay: Some(None),
         ..FakeOperations::default()
     };
     let mutations = Rc::new(RefCell::new(Vec::new()));
@@ -599,10 +595,7 @@ fn idempotent_replay_does_not_run_volume_recovery_work() {
     );
 
     assert_eq!(
-        transfer.transfer(
-            command(),
-            request(VolumeTransferMode::VerifyCommittedOwnership),
-        ),
+        transfer.transfer(command(), request()),
         Err(VolumeFailure::OwnershipCommitRejected)
     );
     assert!(mutations.borrow().is_empty());
