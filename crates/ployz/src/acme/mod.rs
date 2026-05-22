@@ -148,7 +148,7 @@ pub trait CertificateAuthorityPort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertificateIssueOutcome {
     Issued,
-    Replayed,
+    AlreadyIssued,
     InProgress,
     Interrupted,
 }
@@ -202,7 +202,7 @@ where
 
         let request = CertificateIssueRequest::new(binding.clone(), deadline);
         match self.issuer.issue_certificate(context, &request)? {
-            CertificateIssueOutcome::Issued | CertificateIssueOutcome::Replayed => {
+            CertificateIssueOutcome::Issued | CertificateIssueOutcome::AlreadyIssued => {
                 Ok(status_to_outcome(
                     self.certificates.status(binding)?,
                     binding,
@@ -390,9 +390,9 @@ mod tests {
     }
 
     #[test]
-    fn replayed_issuance_still_requires_observed_usable_certificate() {
+    fn completed_issuance_still_requires_observed_usable_certificate() {
         let status = FakeCertificateStatus::new(CertificateStatus::Absent);
-        let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::Replayed);
+        let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::AlreadyIssued);
         let service = CertificateReadinessService::new(status, issuer);
 
         let outcome = service

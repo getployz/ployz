@@ -61,7 +61,7 @@ where
                 }
             }
             polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Succeeded { .. }) => {
-                Ok(CertificateIssueOutcome::Replayed)
+                Ok(CertificateIssueOutcome::AlreadyIssued)
             }
             polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Open {
                 operation,
@@ -118,7 +118,9 @@ where
         replay: polis::TypedAttemptReplay<CertificateFailure>,
     ) -> Result<CertificateIssueOutcome, CertificateFailure> {
         match replay {
-            polis::TypedAttemptReplay::Succeeded { .. } => Ok(CertificateIssueOutcome::Replayed),
+            polis::TypedAttemptReplay::Succeeded { .. } => {
+                Ok(CertificateIssueOutcome::AlreadyIssued)
+            }
             polis::TypedAttemptReplay::Failed { failure, .. } => Err(failure),
             polis::TypedAttemptReplay::Interrupted { .. } => {
                 Ok(CertificateIssueOutcome::Interrupted)
@@ -323,7 +325,7 @@ mod tests {
             .issue_certificate(&context(), &request())
             .expect("replay");
 
-        assert_eq!(outcome, CertificateIssueOutcome::Replayed);
+        assert_eq!(outcome, CertificateIssueOutcome::AlreadyIssued);
         assert_eq!(*authority.calls.borrow(), 0);
     }
 
@@ -378,7 +380,7 @@ mod tests {
             .issue_certificate(&context(), &request())
             .expect("replay");
 
-        assert_eq!(outcome, CertificateIssueOutcome::Replayed);
+        assert_eq!(outcome, CertificateIssueOutcome::AlreadyIssued);
         assert_eq!(*authority.calls.borrow(), 0);
     }
 
@@ -469,7 +471,7 @@ mod tests {
             .issue_certificate(&context(), &request())
             .expect("replay");
 
-        assert_eq!(outcome, CertificateIssueOutcome::Replayed);
+        assert_eq!(outcome, CertificateIssueOutcome::AlreadyIssued);
         assert_eq!(*authority.calls.borrow(), 1);
     }
 
@@ -485,7 +487,7 @@ mod tests {
             .issue_certificate(&context(), &request())
             .expect("replay");
 
-        assert_eq!(outcome, CertificateIssueOutcome::Replayed);
+        assert_eq!(outcome, CertificateIssueOutcome::AlreadyIssued);
         assert_eq!(*authority.calls.borrow(), 1);
     }
 
