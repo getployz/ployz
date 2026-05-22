@@ -1,6 +1,8 @@
 //! Operation evidence and idempotency primitives.
 
 use std::collections::BTreeSet;
+use std::fmt;
+use std::marker::PhantomData;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::authority::GrantEpoch;
@@ -477,6 +479,156 @@ pub enum AttemptReplay {
     },
 }
 
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
+#[error("attempt failure payload is malformed")]
+pub struct AttemptFailureDecodeError;
+
+pub trait AttemptFailureCodec {
+    type Failure;
+
+    fn encode_failure(failure: &Self::Failure) -> Vec<u8>;
+
+    fn decode_failure(
+        payload: &[u8],
+    ) -> std::result::Result<Self::Failure, AttemptFailureDecodeError>;
+}
+
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum TypedAttemptError {
+    #[error("attempt primitive failed: {0}")]
+    Primitive(#[from] Error),
+
+    #[error("attempt failed terminal payload is malformed for operation {operation:?}")]
+    MalformedFailurePayload { operation: OperationId },
+}
+
+pub type TypedAttemptResult<T> = std::result::Result<T, TypedAttemptError>;
+
+pub struct TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    request: AttemptRequest,
+    _codec: PhantomData<fn() -> C>,
+}
+
+impl<C> fmt::Debug for TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("TypedAttemptRequest")
+            .field(&self.request)
+            .finish()
+    }
+}
+
+impl<C> Clone for TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    fn clone(&self) -> Self {
+        Self {
+            request: self.request.clone(),
+            _codec: PhantomData,
+        }
+    }
+}
+
+impl<C> PartialEq for TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.request == other.request
+    }
+}
+
+impl<C> Eq for TypedAttemptRequest<C> where C: AttemptFailureCodec {}
+
+impl<C> TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    #[must_use]
+    pub fn new(request: AttemptRequest) -> Self {
+        Self {
+            request,
+            _codec: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        self.request.operation()
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        self.request.idempotency()
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        self.request.fingerprint()
+    }
+
+    #[must_use]
+    pub fn owner_deadline(&self) -> SystemTime {
+        self.request.owner_deadline()
+    }
+
+    #[must_use]
+    fn as_operation_request(&self) -> OperationRequest {
+        self.request.as_operation_request()
+    }
+}
+
+impl<C> From<AttemptRequest> for TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    fn from(request: AttemptRequest) -> Self {
+        Self::new(request)
+    }
+}
+
+impl<C> From<OperationRequest> for TypedAttemptRequest<C>
+where
+    C: AttemptFailureCodec,
+{
+    fn from(request: OperationRequest) -> Self {
+        Self::new(request.into())
+    }
+}
+
+pub enum TypedAttemptStart<'a, C>
+where
+    C: AttemptFailureCodec,
+{
+    Started(TypedOpenAttempt<'a, C>),
+    Replayed(TypedAttemptReplay<C::Failure>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedAttemptReplay<F> {
+    Open {
+        operation: OperationId,
+        owner_deadline: SystemTime,
+    },
+    Succeeded {
+        operation: OperationId,
+    },
+    Failed {
+        operation: OperationId,
+        failure: F,
+    },
+    Interrupted {
+        operation: OperationId,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptTerminal {
     Succeeded,
@@ -599,8 +751,17 @@ impl<'a> OpenAttempt<'a> {
     }
 
     pub fn terminalize(mut self, terminal: AttemptTerminal) -> Result<()> {
-        self.terminalized = true;
-        self.backend.close(&self.operation, terminal.marker())
+        match self.backend.close(&self.operation, terminal.marker()) {
+            Ok(()) => {
+                self.terminalized = true;
+                Ok(())
+            }
+            Err(Error::TerminalAlreadyWritten) => {
+                self.terminalized = true;
+                Err(Error::TerminalAlreadyWritten)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -612,6 +773,58 @@ impl Drop for OpenAttempt<'_> {
         let _ = self
             .backend
             .close(&self.operation, TerminalMarker::Interrupted);
+    }
+}
+
+pub struct TypedOpenAttempt<'a, C>
+where
+    C: AttemptFailureCodec,
+{
+    attempt: OpenAttempt<'a>,
+    _codec: PhantomData<fn() -> C>,
+}
+
+impl<'a, C> TypedOpenAttempt<'a, C>
+where
+    C: AttemptFailureCodec,
+{
+    #[must_use]
+    fn new(attempt: OpenAttempt<'a>) -> Self {
+        Self {
+            attempt,
+            _codec: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &OperationId {
+        self.attempt.operation()
+    }
+
+    #[must_use]
+    pub fn idempotency(&self) -> &IdempotencyKey {
+        self.attempt.idempotency()
+    }
+
+    #[must_use]
+    pub fn fingerprint(&self) -> &RequestFingerprint {
+        self.attempt.fingerprint()
+    }
+
+    pub fn record(&self, evidence: OperationEvidence) -> Result<()> {
+        self.attempt.record(evidence)
+    }
+
+    pub fn succeeded(self) -> Result<()> {
+        self.attempt.succeeded()
+    }
+
+    pub fn failed(self, failure: &C::Failure) -> Result<()> {
+        self.attempt.failed(C::encode_failure(failure))
+    }
+
+    pub fn interrupted(self) -> Result<()> {
+        self.attempt.interrupted()
     }
 }
 
@@ -725,15 +938,56 @@ pub fn begin_attempt<'a>(
             operation,
             owner_deadline,
             terminal,
-        } => Ok(AttemptStart::Replayed(match terminal {
-            Some(TerminalMarker::Succeeded) => AttemptReplay::Succeeded { operation },
-            Some(TerminalMarker::Failed(payload)) => AttemptReplay::Failed { operation, payload },
-            Some(TerminalMarker::Interrupted) => AttemptReplay::Interrupted { operation },
-            None => AttemptReplay::Open {
-                operation,
-                owner_deadline,
-            },
-        })),
+        } => Ok(AttemptStart::Replayed(AttemptReplay::from_backend(
+            operation,
+            owner_deadline,
+            terminal,
+        ))),
+    }
+}
+
+pub fn begin_typed_attempt<'a, C>(
+    backend: &'a dyn OperationBackend,
+    request: impl Into<TypedAttemptRequest<C>>,
+) -> TypedAttemptResult<TypedAttemptStart<'a, C>>
+where
+    C: AttemptFailureCodec,
+{
+    let request = request.into();
+    let operation_request = request.as_operation_request();
+    match backend.start_or_replay(&operation_request)? {
+        BackendOperationStart::Started => Ok(TypedAttemptStart::Started(TypedOpenAttempt::new(
+            OpenAttempt::from_request(&operation_request, backend),
+        ))),
+        BackendOperationStart::Replayed {
+            operation,
+            owner_deadline,
+            terminal,
+        } => Ok(TypedAttemptStart::Replayed(typed_replay::<C>(
+            AttemptReplay::from_backend(operation, owner_deadline, terminal),
+        )?)),
+    }
+}
+
+pub fn replay_typed_attempt<C>(
+    backend: &dyn OperationBackend,
+    request: &TypedAttemptRequest<C>,
+) -> TypedAttemptResult<TypedAttemptReplay<C::Failure>>
+where
+    C: AttemptFailureCodec,
+{
+    let operation_request = request.as_operation_request();
+    match backend.start_or_replay(&operation_request)? {
+        BackendOperationStart::Started => Err(Error::Conflict.into()),
+        BackendOperationStart::Replayed {
+            operation,
+            owner_deadline,
+            terminal,
+        } => typed_replay::<C>(AttemptReplay::from_backend(
+            operation,
+            owner_deadline,
+            terminal,
+        )),
     }
 }
 
@@ -751,6 +1005,52 @@ pub fn close(
     marker: TerminalMarker,
 ) -> Result<()> {
     backend.close(operation.operation(), marker)
+}
+
+impl AttemptReplay {
+    #[must_use]
+    fn from_backend(
+        operation: OperationId,
+        owner_deadline: SystemTime,
+        terminal: Option<TerminalMarker>,
+    ) -> Self {
+        match terminal {
+            Some(TerminalMarker::Succeeded) => Self::Succeeded { operation },
+            Some(TerminalMarker::Failed(payload)) => Self::Failed { operation, payload },
+            Some(TerminalMarker::Interrupted) => Self::Interrupted { operation },
+            None => Self::Open {
+                operation,
+                owner_deadline,
+            },
+        }
+    }
+}
+
+fn typed_replay<C>(replay: AttemptReplay) -> TypedAttemptResult<TypedAttemptReplay<C::Failure>>
+where
+    C: AttemptFailureCodec,
+{
+    match replay {
+        AttemptReplay::Open {
+            operation,
+            owner_deadline,
+        } => Ok(TypedAttemptReplay::Open {
+            operation,
+            owner_deadline,
+        }),
+        AttemptReplay::Succeeded { operation } => Ok(TypedAttemptReplay::Succeeded { operation }),
+        AttemptReplay::Failed { operation, payload } => {
+            let failure = C::decode_failure(&payload).map_err(|_| {
+                TypedAttemptError::MalformedFailurePayload {
+                    operation: operation.clone(),
+                }
+            })?;
+            Ok(TypedAttemptReplay::Failed { operation, failure })
+        }
+        AttemptReplay::Interrupted { operation } => {
+            Ok(TypedAttemptReplay::Interrupted { operation })
+        }
+    }
 }
 
 fn canonical_payload_digest(schema: &str, mut fields: Vec<FingerprintField>) -> Result<Vec<u8>> {
@@ -850,7 +1150,7 @@ fn parse_non_empty<T>(value: impl Into<String>, build: impl FnOnce(String) -> T)
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::*;
@@ -858,6 +1158,7 @@ mod tests {
     struct MemoryOperationStore {
         by_idempotency: RefCell<BTreeMap<IdempotencyKey, OpenOperation>>,
         terminal: RefCell<BTreeMap<OperationId, TerminalMarker>>,
+        close_errors: RefCell<VecDeque<Error>>,
     }
 
     impl MemoryOperationStore {
@@ -865,6 +1166,15 @@ mod tests {
             Self {
                 by_idempotency: RefCell::new(BTreeMap::new()),
                 terminal: RefCell::new(BTreeMap::new()),
+                close_errors: RefCell::new(VecDeque::new()),
+            }
+        }
+
+        fn with_close_errors(errors: impl Into<VecDeque<Error>>) -> Self {
+            Self {
+                by_idempotency: RefCell::new(BTreeMap::new()),
+                terminal: RefCell::new(BTreeMap::new()),
+                close_errors: RefCell::new(errors.into()),
             }
         }
     }
@@ -895,6 +1205,9 @@ mod tests {
         }
 
         fn close(&self, operation: &OperationId, marker: TerminalMarker) -> Result<()> {
+            if let Some(error) = self.close_errors.borrow_mut().pop_front() {
+                return Err(error);
+            }
             let mut terminal = self.terminal.borrow_mut();
             if terminal.contains_key(operation) {
                 return Err(Error::TerminalAlreadyWritten);
@@ -1132,6 +1445,106 @@ mod tests {
         );
 
         assert_eq!(attempt.succeeded(), Err(Error::TerminalAlreadyWritten));
+    }
+
+    #[test]
+    fn failed_attempt_terminalization_keeps_drop_interrupt_capable() {
+        let store = MemoryOperationStore::with_close_errors([Error::Timeout]);
+        let request = request_for(
+            "op-terminal-timeout",
+            "idem-terminal-timeout",
+            &[1, 2, 3],
+            7,
+            None,
+        );
+        let AttemptStart::Started(attempt) = begin_attempt(&store, request).expect("started")
+        else {
+            panic!("expected started attempt");
+        };
+
+        assert_eq!(attempt.succeeded(), Err(Error::Timeout));
+        assert_eq!(
+            store
+                .terminal
+                .borrow()
+                .get(&OperationId::parse("op-terminal-timeout").expect("operation"))
+                .cloned(),
+            Some(TerminalMarker::Interrupted)
+        );
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum TestAttemptFailure {
+        ChallengeFailed,
+        RemoteRejected,
+    }
+
+    struct TestAttemptFailureCodec;
+
+    impl AttemptFailureCodec for TestAttemptFailureCodec {
+        type Failure = TestAttemptFailure;
+
+        fn encode_failure(failure: &Self::Failure) -> Vec<u8> {
+            match failure {
+                TestAttemptFailure::ChallengeFailed => b"challenge_failed".to_vec(),
+                TestAttemptFailure::RemoteRejected => b"remote_rejected".to_vec(),
+            }
+        }
+
+        fn decode_failure(
+            payload: &[u8],
+        ) -> std::result::Result<Self::Failure, AttemptFailureDecodeError> {
+            match payload {
+                b"challenge_failed" => Ok(TestAttemptFailure::ChallengeFailed),
+                b"remote_rejected" => Ok(TestAttemptFailure::RemoteRejected),
+                _ => Err(AttemptFailureDecodeError),
+            }
+        }
+    }
+
+    #[test]
+    fn typed_attempt_failure_replays_typed_failure() {
+        let store = MemoryOperationStore::new();
+        let request = request_for("op-typed", "idem-typed", &[1, 2, 3], 7, None);
+        let TypedAttemptStart::Started(attempt) =
+            begin_typed_attempt::<TestAttemptFailureCodec>(&store, request.clone())
+                .expect("started")
+        else {
+            panic!("expected started typed attempt");
+        };
+
+        attempt
+            .failed(&TestAttemptFailure::RemoteRejected)
+            .expect("failed");
+
+        let TypedAttemptStart::Replayed(TypedAttemptReplay::Failed { operation, failure }) =
+            begin_typed_attempt::<TestAttemptFailureCodec>(&store, request).expect("replayed")
+        else {
+            panic!("expected typed failed replay");
+        };
+        assert_eq!(operation.as_str(), "op-typed");
+        assert_eq!(failure, TestAttemptFailure::RemoteRejected);
+    }
+
+    #[test]
+    fn typed_attempt_rejects_malformed_failed_terminal_payload() {
+        let store = MemoryOperationStore::new();
+        let request = request_for("op-malformed", "idem-malformed", &[1, 2, 3], 7, None);
+        let AttemptStart::Started(attempt) =
+            begin_attempt(&store, request.clone()).expect("started")
+        else {
+            panic!("expected started attempt");
+        };
+
+        attempt.failed(b"unknown_failure".to_vec()).expect("failed");
+
+        match begin_typed_attempt::<TestAttemptFailureCodec>(&store, request) {
+            Err(TypedAttemptError::MalformedFailurePayload { operation }) => {
+                assert_eq!(operation.as_str(), "op-malformed");
+            }
+            Err(error) => panic!("expected malformed failure payload, got {error:?}"),
+            Ok(_) => panic!("expected malformed payload"),
+        }
     }
 
     #[test]
