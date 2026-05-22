@@ -9,6 +9,7 @@ test:
 
 boundary:
     ./scripts/check-boundary.sh
+    ./scripts/check-boundary.sh --self-test
 
 check:
     just fmt
