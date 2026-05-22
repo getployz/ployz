@@ -3,10 +3,17 @@
 //! Feature modules should depend on Ployz-owned traits. This module is allowed
 //! to assemble concrete adapters and pass them into product orchestration.
 
-use crate::adapters::polis::PolisMachineMembership;
+use crate::adapters::polis::{PolisDomainStatus, PolisMachineMembership};
+use crate::domain::DomainStatusPort;
 use crate::machine::MachineMembershipPort;
+use crate::operation::ScopeId;
 
 #[must_use]
 pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     PolisMachineMembership::in_memory()
+}
+
+#[must_use]
+pub fn in_memory_domain_status(scope: ScopeId) -> impl DomainStatusPort {
+    PolisDomainStatus::in_memory(scope)
 }

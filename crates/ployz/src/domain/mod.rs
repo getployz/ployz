@@ -761,6 +761,42 @@ mod tests {
     }
 
     #[test]
+    fn fact_backed_ready_status_is_reused_without_fresh_mutations() {
+        let ready = DomainReady::new(
+            domain(),
+            UsableDomainCertificate::new(
+                &domain(),
+                certificate(),
+                CertificatePolicy {
+                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("usable certificate"),
+            DomainServingActivation::active(ServingGeneration::new(7)),
+        );
+        let records =
+            crate::composition::in_memory_domain_status(ScopeId::parse("cluster").expect("scope"));
+        records
+            .record_ready(&context(), ready.record())
+            .expect("ready status");
+        let claims = CountingClaims::default();
+        let domains = DomainReadinessService::new(
+            claims.clone(),
+            FakeCertificates {
+                certificate: certificate(),
+            },
+            FakeServing::success(),
+            records,
+        );
+
+        assert_eq!(
+            domains.ensure_ready(&context(), add()),
+            Ok(DomainReadinessOutcome::Ready(ready))
+        );
+        assert_eq!(*claims.count.borrow(), 0);
+    }
+
+    #[test]
     fn verify_ready_does_not_take_fresh_readiness_path() {
         let records = FakeRecords::default();
         let claims = CountingClaims::default();

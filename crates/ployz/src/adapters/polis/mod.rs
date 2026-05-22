@@ -1,7 +1,11 @@
 //! Polis adapter helpers for Ployz composition code.
 
+mod domain;
+
 use std::collections::BTreeMap;
 use std::time::SystemTime;
+
+pub(crate) use domain::PolisDomainStatus;
 
 use crate::acme::{
     CertificateAuthorityPort, CertificateIssueOutcome, CertificateIssueRequest,
