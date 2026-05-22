@@ -594,7 +594,7 @@ impl FactCandidate {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CandidateStatus {
     Verified,
     Conflict,
@@ -605,7 +605,7 @@ pub enum CandidateStatus {
     CrossScope,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FactQuery {
     scope: ScopeId,
     resource: Option<ResourceId>,
@@ -685,7 +685,7 @@ pub struct FactPayloadBatch {
     failures: BTreeMap<FactId, FactPayloadReadFailure>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FactPayloadReadFailure {
     UnknownCandidate,
     CandidateMismatch,
@@ -713,6 +713,15 @@ impl FactPayloadBatch {
     }
 
     #[must_use]
+    pub fn failure_counts(&self) -> BTreeMap<FactPayloadReadFailure, usize> {
+        let mut counts = BTreeMap::new();
+        for failure in self.failures.values() {
+            *counts.entry(*failure).or_default() += 1;
+        }
+        counts
+    }
+
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         self.failures.is_empty()
     }
@@ -731,21 +740,32 @@ impl FactPayloadBatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactCandidateSet {
     candidates: Vec<FactCandidate>,
-    source_cursor: FactCursor,
+    complete_through: FactCursor,
 }
 
 impl FactCandidateSet {
+    /// Builds a complete prefix for a query.
+    ///
+    /// Implementors must include every matching candidate with a cursor at or
+    /// before `complete_through`, in ascending cursor order. Projection
+    /// catch-up relies on this watermark as a completeness proof, not as a
+    /// paging cursor.
     #[must_use]
-    pub fn new(candidates: Vec<FactCandidate>, source_cursor: FactCursor) -> Self {
+    pub fn complete_prefix(candidates: Vec<FactCandidate>, complete_through: FactCursor) -> Self {
         Self {
             candidates,
-            source_cursor,
+            complete_through,
         }
     }
 
     #[must_use]
     pub fn source_cursor(&self) -> FactCursor {
-        self.source_cursor
+        self.complete_through
+    }
+
+    #[must_use]
+    pub fn complete_through(&self) -> FactCursor {
+        self.complete_through
     }
 
     #[must_use]
@@ -776,6 +796,12 @@ impl FactCandidateSet {
 pub trait FactStore {
     fn append(&self, request: FactAppendRequest) -> Result<FactAppendOutcome>;
 
+    /// Returns a complete candidate prefix for `query`.
+    ///
+    /// The returned set must contain every matching candidate through
+    /// `FactCandidateSet::complete_through()` and candidates must be ordered by
+    /// ascending cursor. Partial pages must not advertise a cursor beyond their
+    /// complete prefix.
     fn list_candidates(&self, query: FactQuery) -> Result<FactCandidateSet>;
 
     fn read_payloads(&self, candidates: &[FactCandidate]) -> Result<FactPayloadBatch>;
@@ -858,7 +884,7 @@ impl FactStore for MemoryFactStore {
             .filter(|record| query.matches(&record.receipt))
             .map(|record| record.candidate(&conflicts))
             .collect();
-        Ok(FactCandidateSet::new(
+        Ok(FactCandidateSet::complete_prefix(
             candidates,
             FactCursor::new(state.next_cursor),
         ))

@@ -69,7 +69,7 @@ impl FactStore for ContractFactStore {
             })
             .collect();
 
-        Ok(FactCandidateSet::new(
+        Ok(FactCandidateSet::complete_prefix(
             candidates,
             FactCursor::new(self.next_cursor.get()),
         ))

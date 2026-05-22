@@ -17,6 +17,7 @@ pub mod error;
 pub mod facts;
 pub mod identity;
 pub mod operations;
+pub mod projection;
 
 pub use authority::{
     Authority, AuthorityContext, AuthorityDecision, AuthorityService, Authorized, GrantEpoch,
@@ -41,6 +42,11 @@ pub use operations::{
     OperationRequest, OperationStart, RequestFingerprint, RequestFingerprintBuilder,
     SubmittedFenceFingerprint, TerminalMarker, begin_attempt, close, record, start_or_replay,
 };
+pub use projection::{
+    FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,
+    ProjectionError, ProjectionFreshness, ProjectionHealth, ProjectionKey, ProjectionRequest,
+    ProjectionRequestIdentity, ProjectionSnapshot, ProjectionSource, ProjectionView, VerifiedFact,
+};
 
 #[cfg(test)]
 mod tests {
@@ -53,6 +59,7 @@ mod tests {
             "facts",
             "identity",
             "operations",
+            "projection",
         ];
 
         assert!(!public_modules.contains(&"deploy"));
