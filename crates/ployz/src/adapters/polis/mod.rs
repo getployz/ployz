@@ -7,7 +7,7 @@ mod serving;
 
 use std::collections::BTreeMap;
 
-pub(crate) use acme::AttemptingCertificateIssuer;
+pub(crate) use acme::AcmeCertificateIssuer;
 pub(crate) use domain::PolisDomainStatus;
 pub(crate) use machine::PolisMachineMembership;
 pub(crate) use serving::PolisServingSnapshots;
