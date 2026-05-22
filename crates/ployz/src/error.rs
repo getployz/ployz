@@ -60,11 +60,6 @@ pub enum DeployFailure {
     CleanupPending,
     #[error("operation was interrupted")]
     Interrupted,
-    #[error("attempt terminalization failed after product failure")]
-    AttemptTerminalizationFailed {
-        product: Box<DeployFailure>,
-        terminalization: PrimitiveFailure,
-    },
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -151,11 +146,6 @@ pub enum VolumeFailure {
     Interrupted,
     #[error("payload is invalid")]
     InvalidPayload,
-    #[error("attempt terminalization failed after product failure")]
-    AttemptTerminalizationFailed {
-        product: Box<VolumeFailure>,
-        terminalization: PrimitiveFailure,
-    },
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -174,8 +164,8 @@ pub enum PrimitiveFailure {
     FreshnessUnknown,
     #[error("payload is malformed")]
     MalformedPayload,
-    #[error("terminal marker already exists")]
-    TerminalAlreadyWritten,
+    #[error("operation state conflicts with existing result")]
+    OperationStateConflict,
     #[error("operation already succeeded")]
     OperationAlreadySucceeded,
     #[error("operation is still in progress")]

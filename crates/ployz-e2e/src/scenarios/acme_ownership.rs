@@ -5,8 +5,8 @@ use ployz::acme::{
 };
 use ployz::error::CertificateFailure;
 use ployz::operation::{
-    AttemptIssue, AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, MutationContext,
-    OperationId, PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
+    AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, MutationContext, OperationId,
+    PrincipalId, ResourceId, ScopeId, SubmittedFenceToken,
 };
 
 struct ClaimingAcme;
@@ -52,16 +52,14 @@ fn context(fence: FenceInput) -> MutationContext {
             claim_hash: ClaimHash::parse(claim_hash).expect("claim hash"),
         }),
     };
-    MutationContext::test_new(
-        AttemptIssue {
-            operation: OperationId::parse("acme-1").expect("operation"),
-            idempotency: IdempotencyKey::parse("idem-acme-1").expect("idempotency"),
-            principal: PrincipalId::parse("node-a").expect("principal"),
-            scope: ScopeId::parse("cluster").expect("scope"),
-            deadline: UNIX_EPOCH + Duration::from_secs(60),
-        },
+    MutationContext::test_authorized(
+        OperationId::parse("acme-1").expect("operation"),
+        IdempotencyKey::parse("idem-acme-1").expect("idempotency"),
+        PrincipalId::parse("node-a").expect("principal"),
+        ScopeId::parse("cluster").expect("scope"),
         AuthorityEpoch::new(7),
         submitted_fence,
+        UNIX_EPOCH + Duration::from_secs(60),
     )
 }
 

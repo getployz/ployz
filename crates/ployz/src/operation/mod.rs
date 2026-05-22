@@ -2,15 +2,14 @@
 
 mod authority;
 mod claims;
-#[cfg(test)]
-mod command;
 mod context;
 mod identity;
+#[cfg(any(test, feature = "test-support"))]
 mod polis_boundary;
 
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
-pub use context::{AttemptIssue, MutationContext};
+pub use context::MutationContext;
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,
 };

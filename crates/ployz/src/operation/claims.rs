@@ -2,6 +2,7 @@ use std::time::SystemTime;
 
 use crate::error::PrimitiveFailure;
 use crate::operation::identity::{PrincipalId, ResourceId, TypedResourceId, parse_non_empty};
+#[cfg(any(test, feature = "test-support"))]
 use crate::operation::polis_boundary::map_polis_to_primitive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,20 +42,6 @@ pub struct SubmittedFenceToken {
     pub holder: PrincipalId,
     pub epoch: FenceEpoch,
     pub claim_hash: ClaimHash,
-}
-
-impl SubmittedFenceToken {
-    #[cfg(test)]
-    pub(crate) fn fingerprint(&self) -> Result<polis::SubmittedFenceFingerprint, PrimitiveFailure> {
-        polis::SubmittedFenceFingerprint::new(
-            polis::FingerprintedResource::parse(self.resource.as_str())
-                .map_err(map_polis_to_primitive)?,
-            polis::PrincipalId::parse(self.holder.as_str()).map_err(map_polis_to_primitive)?,
-            self.epoch.value(),
-            self.claim_hash.as_str().as_bytes().to_vec(),
-        )
-        .map_err(map_polis_to_primitive)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,22 +139,5 @@ mod tests {
         assert_eq!(guard.proof().fence().holder().as_str(), "node-a");
         assert_eq!(guard.proof().fence().epoch().value(), 2);
         assert_eq!(guard.proof().fence().claim_hash().as_str(), "claim-hash");
-    }
-
-    #[test]
-    fn submitted_fence_fingerprint_includes_fence_identity() {
-        let fence = SubmittedFenceToken {
-            resource: ResourceId::parse("volume:data").expect("resource"),
-            holder: PrincipalId::parse("node-a").expect("holder"),
-            epoch: FenceEpoch::new(3).expect("epoch"),
-            claim_hash: ClaimHash::parse("claim-hash-a").expect("hash"),
-        };
-
-        let fingerprint = fence.fingerprint().expect("fingerprint");
-
-        assert_eq!(fingerprint.resource(), "volume:data");
-        assert_eq!(fingerprint.holder(), "node-a");
-        assert_eq!(fingerprint.epoch(), 3);
-        assert_eq!(fingerprint.claim_hash(), b"claim-hash-a");
     }
 }

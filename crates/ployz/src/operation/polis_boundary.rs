@@ -9,6 +9,6 @@ pub(crate) fn map_polis_to_primitive(error: polis::Error) -> PrimitiveFailure {
         polis::Error::NoResponder => PrimitiveFailure::NoResponder,
         polis::Error::FreshnessUnknown => PrimitiveFailure::FreshnessUnknown,
         polis::Error::MalformedPayload => PrimitiveFailure::MalformedPayload,
-        polis::Error::TerminalAlreadyWritten => PrimitiveFailure::TerminalAlreadyWritten,
+        polis::Error::TerminalAlreadyWritten => PrimitiveFailure::OperationStateConflict,
     }
 }
