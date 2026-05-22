@@ -8,10 +8,10 @@ use ployz::acme::{
 };
 use ployz::deploy::{DeployEngine, DeployManifest, DeployRequest, certificate_unusable_reason};
 use ployz::domain::{
-    CertificatePolicy, DomainCertificatePort, DomainClaim, DomainClaimPort, DomainFailure,
-    DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord,
-    DomainServingActivation, DomainServingPort, DomainServingReadiness, DomainStatus,
-    DomainStatusPort, UsableDomainCertificate,
+    CertificatePolicy, DomainCertificatePort, DomainCertificateReadiness, DomainClaim,
+    DomainClaimPort, DomainFailure, DomainName, DomainPendingReason, DomainReadinessService,
+    DomainReadyRecord, DomainServingActivation, DomainServingPort, DomainServingReadiness,
+    DomainStatus, DomainStatusPort, UsableDomainCertificate,
 };
 use ployz::error::{DeployFailure, RuntimeFailure, ServingFailure};
 use ployz::machine::MachineId;
@@ -63,8 +63,10 @@ impl DomainCertificatePort for FakeDomains {
         _context: &MutationContext,
         claim: &DomainClaim,
         policy: CertificatePolicy,
-    ) -> Result<UsableDomainCertificate, DomainFailure> {
-        UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)
+    ) -> Result<DomainCertificateReadiness, DomainFailure> {
+        Ok(DomainCertificateReadiness::Usable(
+            UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)?,
+        ))
     }
 }
 
