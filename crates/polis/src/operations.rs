@@ -453,6 +453,7 @@ pub enum AttemptStart<'a> {
 pub enum AttemptReplay {
     Open {
         operation: OperationId,
+        owner_deadline: SystemTime,
     },
     Succeeded {
         operation: OperationId,
@@ -491,6 +492,7 @@ pub enum BackendOperationStart {
     /// the idempotency key and request fingerprint.
     Replayed {
         operation: OperationId,
+        owner_deadline: SystemTime,
         terminal: Option<TerminalMarker>,
     },
 }
@@ -500,6 +502,7 @@ pub struct OpenOperation {
     operation: OperationId,
     idempotency: IdempotencyKey,
     fingerprint: RequestFingerprint,
+    owner_deadline: SystemTime,
 }
 
 impl OpenOperation {
@@ -509,6 +512,7 @@ impl OpenOperation {
             operation: request.operation.clone(),
             idempotency: request.idempotency.clone(),
             fingerprint: request.fingerprint.clone(),
+            owner_deadline: request.owner_deadline,
         }
     }
 
@@ -525,6 +529,11 @@ impl OpenOperation {
     #[must_use]
     pub fn fingerprint(&self) -> &RequestFingerprint {
         &self.fingerprint
+    }
+
+    #[must_use]
+    pub fn owner_deadline(&self) -> SystemTime {
+        self.owner_deadline
     }
 }
 
@@ -683,6 +692,7 @@ pub fn start_or_replay(
         ))),
         BackendOperationStart::Replayed {
             operation,
+            owner_deadline: _,
             terminal,
         } => Ok(OperationStart::Replayed(OperationReplay::from_backend(
             operation, terminal,
@@ -703,12 +713,16 @@ pub fn begin_attempt<'a>(
         ))),
         BackendOperationStart::Replayed {
             operation,
+            owner_deadline,
             terminal,
         } => Ok(AttemptStart::Replayed(match terminal {
             Some(TerminalMarker::Succeeded) => AttemptReplay::Succeeded { operation },
             Some(TerminalMarker::Failed(payload)) => AttemptReplay::Failed { operation, payload },
             Some(TerminalMarker::Interrupted) => AttemptReplay::Interrupted { operation },
-            None => AttemptReplay::Open { operation },
+            None => AttemptReplay::Open {
+                operation,
+                owner_deadline,
+            },
         })),
     }
 }
@@ -854,6 +868,7 @@ mod tests {
                 }
                 return Ok(BackendOperationStart::Replayed {
                     operation: existing.operation().clone(),
+                    owner_deadline: existing.owner_deadline(),
                     terminal: self.terminal.borrow().get(existing.operation()).cloned(),
                 });
             }

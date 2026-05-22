@@ -41,10 +41,30 @@ pub struct CertificateDeadline {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateIssueRequest {
+    pub binding: HttpsBinding,
+    pub deadline: CertificateDeadline,
+}
+
+impl CertificateIssueRequest {
+    #[must_use]
+    pub fn new(binding: HttpsBinding, deadline: CertificateDeadline) -> Self {
+        Self { binding, deadline }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnsureCertificateOutcome {
     Usable(CertificateUsability),
     Unusable(CertificateUnusableReason),
+    Waiting(CertificateWaitReason),
     FreshnessUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateWaitReason {
+    IssuanceInProgress,
+    IssuanceInterrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +133,96 @@ pub trait CertificatePort {
     fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure>;
 }
 
+pub trait CertificateStatusPort {
+    fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure>;
+}
+
+pub trait CertificateAuthorityPort {
+    fn issue_certificate(
+        &self,
+        context: &MutationContext,
+        request: &CertificateIssueRequest,
+    ) -> Result<(), CertificateFailure>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateIssueOutcome {
+    Issued,
+    Replayed,
+    InProgress,
+    Interrupted,
+}
+
+pub trait CertificateIssuerPort {
+    fn issue_certificate(
+        &self,
+        context: &MutationContext,
+        request: &CertificateIssueRequest,
+    ) -> Result<CertificateIssueOutcome, CertificateFailure>;
+}
+
+pub struct CertificateReadinessService<S, I> {
+    certificates: S,
+    issuer: I,
+}
+
+impl<S, I> CertificateReadinessService<S, I> {
+    #[must_use]
+    pub fn new(certificates: S, issuer: I) -> Self {
+        Self {
+            certificates,
+            issuer,
+        }
+    }
+}
+
+impl<S, I> CertificatePort for CertificateReadinessService<S, I>
+where
+    S: CertificateStatusPort,
+    I: CertificateIssuerPort,
+{
+    fn ensure_usable(
+        &self,
+        context: &MutationContext,
+        binding: &HttpsBinding,
+        deadline: CertificateDeadline,
+    ) -> Result<EnsureCertificateOutcome, CertificateFailure> {
+        match status_to_outcome(self.certificates.status(binding)?, binding, &deadline) {
+            EnsureCertificateOutcome::Usable(certificate) => {
+                return Ok(EnsureCertificateOutcome::Usable(certificate));
+            }
+            EnsureCertificateOutcome::Unusable(_) => {}
+            EnsureCertificateOutcome::Waiting(reason) => {
+                return Ok(EnsureCertificateOutcome::Waiting(reason));
+            }
+            EnsureCertificateOutcome::FreshnessUnknown => {
+                return Ok(EnsureCertificateOutcome::FreshnessUnknown);
+            }
+        }
+
+        let request = CertificateIssueRequest::new(binding.clone(), deadline);
+        match self.issuer.issue_certificate(context, &request)? {
+            CertificateIssueOutcome::Issued | CertificateIssueOutcome::Replayed => {
+                Ok(status_to_outcome(
+                    self.certificates.status(binding)?,
+                    binding,
+                    &request.deadline,
+                ))
+            }
+            CertificateIssueOutcome::InProgress => Ok(EnsureCertificateOutcome::Waiting(
+                CertificateWaitReason::IssuanceInProgress,
+            )),
+            CertificateIssueOutcome::Interrupted => Ok(EnsureCertificateOutcome::Waiting(
+                CertificateWaitReason::IssuanceInterrupted,
+            )),
+        }
+    }
+
+    fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure> {
+        self.certificates.status(binding)
+    }
+}
+
 #[must_use]
 pub fn certificate_is_usable(
     certificate: &CertificateUsability,
@@ -150,6 +260,30 @@ pub fn certificate_unusable_reason(
     None
 }
 
+#[must_use]
+fn status_to_outcome(
+    status: CertificateStatus,
+    binding: &HttpsBinding,
+    deadline: &CertificateDeadline,
+) -> EnsureCertificateOutcome {
+    match status {
+        CertificateStatus::Present(certificate)
+            if certificate_is_usable(&certificate, binding, deadline.expires_at) =>
+        {
+            EnsureCertificateOutcome::Usable(certificate)
+        }
+        CertificateStatus::Present(certificate) => EnsureCertificateOutcome::Unusable(
+            certificate_unusable_reason(&certificate, binding, deadline.expires_at)
+                .unwrap_or(CertificateUnusableReason::InvalidChain),
+        ),
+        CertificateStatus::Absent => {
+            EnsureCertificateOutcome::Unusable(CertificateUnusableReason::Missing)
+        }
+        CertificateStatus::Unusable(reason) => EnsureCertificateOutcome::Unusable(reason),
+        CertificateStatus::Unknown => EnsureCertificateOutcome::FreshnessUnknown,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChallengeSlot(String);
 
@@ -180,6 +314,13 @@ pub trait ChallengeOwnershipPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation::{
+        AuthorityContext, AuthorityEpoch, IdempotencyKey, MutationContext, OperationId,
+        PrincipalId, ScopeId,
+    };
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
     fn empty_hostname_is_rejected() {
@@ -205,5 +346,202 @@ mod tests {
             ChallengeSlot::parse(""),
             Err(CertificateFailure::UnauthorizedBinding)
         );
+    }
+
+    #[test]
+    fn existing_usable_certificate_skips_issuance() {
+        let status = FakeCertificateStatus::new(CertificateStatus::Present(certificate()));
+        let issuer = FakeIssuer::default();
+        let service = CertificateReadinessService::new(status, issuer.clone());
+
+        let outcome = service
+            .ensure_usable(
+                &context(),
+                &binding(),
+                CertificateDeadline {
+                    expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("ensure");
+
+        assert!(matches!(outcome, EnsureCertificateOutcome::Usable(_)));
+        assert_eq!(*issuer.calls.borrow(), 0);
+    }
+
+    #[test]
+    fn missing_certificate_issues_then_reobserves_status() {
+        let status = FakeCertificateStatus::new(CertificateStatus::Absent);
+        status.push(CertificateStatus::Present(certificate()));
+        let issuer = FakeIssuer::default();
+        let service = CertificateReadinessService::new(status, issuer.clone());
+
+        let outcome = service
+            .ensure_usable(
+                &context(),
+                &binding(),
+                CertificateDeadline {
+                    expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("ensure");
+
+        assert!(matches!(outcome, EnsureCertificateOutcome::Usable(_)));
+        assert_eq!(*issuer.calls.borrow(), 1);
+    }
+
+    #[test]
+    fn replayed_issuance_still_requires_observed_usable_certificate() {
+        let status = FakeCertificateStatus::new(CertificateStatus::Absent);
+        let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::Replayed);
+        let service = CertificateReadinessService::new(status, issuer);
+
+        let outcome = service
+            .ensure_usable(
+                &context(),
+                &binding(),
+                CertificateDeadline {
+                    expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("ensure");
+
+        assert!(matches!(
+            outcome,
+            EnsureCertificateOutcome::Unusable(CertificateUnusableReason::Missing)
+        ));
+    }
+
+    #[test]
+    fn in_progress_issuance_reports_wait_state() {
+        let status = FakeCertificateStatus::new(CertificateStatus::Absent);
+        let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::InProgress);
+        let service = CertificateReadinessService::new(status, issuer);
+
+        let outcome = service
+            .ensure_usable(
+                &context(),
+                &binding(),
+                CertificateDeadline {
+                    expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("ensure");
+
+        assert_eq!(
+            outcome,
+            EnsureCertificateOutcome::Waiting(CertificateWaitReason::IssuanceInProgress)
+        );
+    }
+
+    #[test]
+    fn interrupted_issuance_reports_wait_state() {
+        let status = FakeCertificateStatus::new(CertificateStatus::Absent);
+        let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::Interrupted);
+        let service = CertificateReadinessService::new(status, issuer);
+
+        let outcome = service
+            .ensure_usable(
+                &context(),
+                &binding(),
+                CertificateDeadline {
+                    expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("ensure");
+
+        assert_eq!(
+            outcome,
+            EnsureCertificateOutcome::Waiting(CertificateWaitReason::IssuanceInterrupted)
+        );
+    }
+
+    #[derive(Clone)]
+    struct FakeCertificateStatus {
+        statuses: Rc<RefCell<Vec<CertificateStatus>>>,
+    }
+
+    impl FakeCertificateStatus {
+        fn new(status: CertificateStatus) -> Self {
+            Self {
+                statuses: Rc::new(RefCell::new(vec![status])),
+            }
+        }
+
+        fn push(&self, status: CertificateStatus) {
+            self.statuses.borrow_mut().push(status);
+        }
+    }
+
+    impl CertificateStatusPort for FakeCertificateStatus {
+        fn status(&self, _binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure> {
+            let mut statuses = self.statuses.borrow_mut();
+            if statuses.len() > 1 {
+                return Ok(statuses.remove(0));
+            }
+            let Some(status) = statuses.first() else {
+                return Ok(CertificateStatus::Unknown);
+            };
+            Ok(status.clone())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeIssuer {
+        outcome: CertificateIssueOutcome,
+        calls: Rc<RefCell<usize>>,
+    }
+
+    impl Default for FakeIssuer {
+        fn default() -> Self {
+            Self::with_outcome(CertificateIssueOutcome::Issued)
+        }
+    }
+
+    impl FakeIssuer {
+        fn with_outcome(outcome: CertificateIssueOutcome) -> Self {
+            Self {
+                outcome,
+                calls: Rc::new(RefCell::new(0)),
+            }
+        }
+    }
+
+    impl CertificateIssuerPort for FakeIssuer {
+        fn issue_certificate(
+            &self,
+            _context: &MutationContext,
+            _request: &CertificateIssueRequest,
+        ) -> Result<CertificateIssueOutcome, CertificateFailure> {
+            *self.calls.borrow_mut() += 1;
+            Ok(self.outcome)
+        }
+    }
+
+    fn context() -> MutationContext {
+        MutationContext::new(
+            OperationId::parse("cert-ensure-1").expect("operation"),
+            IdempotencyKey::parse("cert-ensure-1").expect("idempotency"),
+            AuthorityContext::new(
+                PrincipalId::parse("node-a").expect("principal"),
+                ScopeId::parse("cluster").expect("scope"),
+                AuthorityEpoch::new(7),
+            ),
+            None,
+            UNIX_EPOCH + Duration::from_secs(60),
+        )
+    }
+
+    fn binding() -> HttpsBinding {
+        HttpsBinding::new(Hostname::parse("app.example.com").expect("hostname"))
+    }
+
+    fn certificate() -> CertificateUsability {
+        CertificateUsability {
+            hostname: Hostname::parse("app.example.com").expect("hostname"),
+            not_after: UNIX_EPOCH + Duration::from_secs(7_200),
+            activation: CertificateActivation::Acknowledged,
+            material: CertificateMaterialState::PresentProtected,
+            revocation: RevocationFreshness::KnownFresh,
+        }
     }
 }

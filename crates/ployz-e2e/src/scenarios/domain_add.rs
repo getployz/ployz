@@ -7,10 +7,11 @@ use ployz::acme::{
     CertificateUsability, Hostname, RevocationFreshness,
 };
 use ployz::domain::{
-    CertificatePolicy, DomainAdd, DomainCertificatePort, DomainClaim, DomainClaimPort,
-    DomainFailure, DomainName, DomainPendingReason, DomainReadinessService, DomainReadyRecord,
-    DomainServingActivation, DomainServingPort, DomainServingReadiness, DomainStatus,
-    DomainStatusPort, UsableDomainCertificate,
+    CertificatePolicy, DomainAdd, DomainCertificatePort, DomainCertificateReadiness, DomainClaim,
+    DomainClaimPort, DomainFailure, DomainName, DomainPendingReason, DomainReadinessOutcome,
+    DomainReadinessService, DomainReady, DomainReadyRecord, DomainServingActivation,
+    DomainServingPort, DomainServingReadiness, DomainStatus, DomainStatusPort,
+    UsableDomainCertificate,
 };
 use ployz::operation::{
     AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, MutationContext, OperationId,
@@ -53,8 +54,10 @@ impl DomainCertificatePort for FakeCertificates {
         _context: &MutationContext,
         claim: &DomainClaim,
         policy: CertificatePolicy,
-    ) -> Result<UsableDomainCertificate, DomainFailure> {
-        UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)
+    ) -> Result<DomainCertificateReadiness, DomainFailure> {
+        Ok(DomainCertificateReadiness::Usable(
+            UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)?,
+        ))
     }
 }
 
@@ -197,9 +200,11 @@ fn domain_add_records_ready_without_generic_terminalization() {
         status.clone(),
     );
 
-    let ready = domains
-        .ensure_ready(&context(), request())
-        .expect("domain ready");
+    let ready = expect_ready(
+        domains
+            .ensure_ready(&context(), request())
+            .expect("domain ready"),
+    );
 
     assert_eq!(ready.domain().as_str(), "app.example.com");
     assert_eq!(
@@ -293,9 +298,11 @@ fn domain_add_retry_after_checkpoint_verifies_ready_invariants() {
         status.clone(),
     );
 
-    let ready = domains
-        .ensure_ready(&context(), request())
-        .expect("domain ready");
+    let ready = expect_ready(
+        domains
+            .ensure_ready(&context(), request())
+            .expect("domain ready"),
+    );
 
     assert_eq!(ready.domain().as_str(), "app.example.com");
     assert_eq!(claims.claims.borrow().len(), 1);
@@ -308,11 +315,20 @@ fn domain_add_retry_after_checkpoint_verifies_ready_invariants() {
         DomainStatus::Pending(DomainPendingReason::ServingActivation)
     )));
 
-    let replayed = domains
-        .ensure_ready(&context(), request())
-        .expect("domain ready replay");
+    let replayed = expect_ready(
+        domains
+            .ensure_ready(&context(), request())
+            .expect("domain ready replay"),
+    );
 
     assert_eq!(replayed.domain().as_str(), "app.example.com");
     assert_eq!(claims.claims.borrow().len(), 1);
     assert_eq!(*verifications.borrow(), 1);
+}
+
+fn expect_ready(outcome: DomainReadinessOutcome) -> DomainReady {
+    let DomainReadinessOutcome::Ready(ready) = outcome else {
+        panic!("expected ready outcome");
+    };
+    ready
 }

@@ -8,7 +8,8 @@ use crate::acme::{
     certificate_unusable_reason as acme_certificate_unusable_reason,
 };
 use crate::domain::{
-    CertificatePolicy, DomainAdd, DomainFailure, DomainName, DomainReadinessPort, DomainReady,
+    CertificatePolicy, DomainAdd, DomainFailure, DomainName, DomainPendingReason,
+    DomainReadinessOutcome, DomainReadinessPort, DomainReady,
 };
 use crate::error::{DeployFailure, ServingFailure};
 use crate::machine::MachineId;
@@ -287,9 +288,16 @@ where
         context: &MutationContext,
         desired: &DeployDesiredState,
     ) -> Result<DomainReady, DeployFailure> {
-        self.domains
+        match self
+            .domains
             .ensure_ready(context, desired.domain_request())
-            .map_err(map_domain_to_deploy)?;
+            .map_err(map_domain_to_deploy)?
+        {
+            DomainReadinessOutcome::Ready(_) => {}
+            DomainReadinessOutcome::Pending(reason) => {
+                return Err(map_domain_pending_to_deploy(reason));
+            }
+        }
 
         self.observe_domain_ready(context, desired)?
             .ok_or(DeployFailure::DomainReadinessFailed)
@@ -424,6 +432,15 @@ fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
     }
 }
 
+fn map_domain_pending_to_deploy(reason: DomainPendingReason) -> DeployFailure {
+    match reason {
+        DomainPendingReason::CertificateIssuance | DomainPendingReason::ServingActivation => {
+            DeployFailure::OperationInProgress
+        }
+        DomainPendingReason::CertificateIssuanceInterrupted => DeployFailure::Interrupted,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
@@ -542,6 +559,22 @@ mod tests {
         assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
         assert_eq!(plan.runtime, DeployPlanStep::Apply);
         assert_eq!(plan.serving, DeployPlanStep::Apply);
+    }
+
+    #[test]
+    fn domain_pending_certificate_issuance_maps_to_deploy_in_progress() {
+        assert_eq!(
+            map_domain_pending_to_deploy(DomainPendingReason::CertificateIssuance),
+            DeployFailure::OperationInProgress
+        );
+    }
+
+    #[test]
+    fn domain_interrupted_certificate_issuance_maps_to_deploy_interrupted() {
+        assert_eq!(
+            map_domain_pending_to_deploy(DomainPendingReason::CertificateIssuanceInterrupted),
+            DeployFailure::Interrupted
+        );
     }
 
     fn request() -> DeployRequest {
