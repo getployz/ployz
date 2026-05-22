@@ -7,4 +7,6 @@ mod domain_add;
 #[cfg(test)]
 mod https_deploy;
 #[cfg(test)]
+mod machine_add;
+#[cfg(test)]
 mod volume_transfer;

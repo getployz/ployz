@@ -14,12 +14,13 @@ use ployz::domain::{
     DomainStatusPort, UsableDomainCertificate,
 };
 use ployz::error::{DeployFailure, RuntimeFailure, ServingFailure};
+use ployz::machine::MachineId;
 use ployz::operation::{
     AuthorityEpoch, ClaimHash, FenceEpoch, IdempotencyKey, MutationContext, OperationId,
     PrincipalId, ScopeId, TypedResourceId,
 };
 use ployz::runtime::{
-    MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
+    ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
     RuntimeParticipantStatus, RuntimeParticipantVerification, RuntimePort, RuntimeRevision,
     WorkloadId,
 };
