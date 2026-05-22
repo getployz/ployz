@@ -25,6 +25,7 @@ pub struct AuthorityContext {
 
 impl AuthorityContext {
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new(principal: PrincipalId, scope: ScopeId, epoch: AuthorityEpoch) -> Self {
         Self {
             principal,
