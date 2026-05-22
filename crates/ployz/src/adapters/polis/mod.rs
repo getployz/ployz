@@ -7,10 +7,6 @@ mod serving;
 
 use std::collections::BTreeMap;
 
-#[allow(
-    unused_imports,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 pub(crate) use acme::AttemptingCertificateIssuer;
 pub(crate) use domain::PolisDomainStatus;
 pub(crate) use machine::PolisMachineMembership;
