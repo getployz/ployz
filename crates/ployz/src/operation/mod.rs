@@ -9,7 +9,7 @@ mod polis_boundary;
 
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
-pub use context::MutationContext;
+pub use context::{MutationAuthorizer, MutationContext, MutationContextRequest};
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,
 };
