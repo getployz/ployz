@@ -49,6 +49,15 @@ struct FakeCertificates {
 }
 
 impl DomainCertificatePort for FakeCertificates {
+    fn observe_usable_certificate(
+        &self,
+        _context: &MutationContext,
+        domain: &DomainName,
+        policy: CertificatePolicy,
+    ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
+        Ok(UsableDomainCertificate::new(domain, self.certificate.clone(), policy).ok())
+    }
+
     fn ensure_usable_certificate(
         &self,
         _context: &MutationContext,
