@@ -322,6 +322,7 @@ pub struct FactAppendRequest {
     target: FactTarget,
     payload: FactPayload,
     submitted_fence: Option<Box<SubmittedFenceFingerprint>>,
+    conflict_policy: FactConflictPolicy,
 }
 
 impl FactAppendRequest {
@@ -343,7 +344,14 @@ impl FactAppendRequest {
             target,
             payload,
             submitted_fence: submitted_fence.map(Box::new),
+            conflict_policy: FactConflictPolicy::RecordCandidate,
         }
+    }
+
+    #[must_use]
+    pub fn with_conflict_policy(mut self, conflict_policy: FactConflictPolicy) -> Self {
+        self.conflict_policy = conflict_policy;
+        self
     }
 
     #[must_use]
@@ -394,6 +402,11 @@ impl FactAppendRequest {
     #[must_use]
     pub fn submitted_fence(&self) -> Option<&SubmittedFenceFingerprint> {
         self.submitted_fence.as_deref()
+    }
+
+    #[must_use]
+    pub fn conflict_policy(&self) -> FactConflictPolicy {
+        self.conflict_policy
     }
 
     pub fn validate(self) -> FactAppendValidation {
@@ -458,11 +471,20 @@ pub enum FactConflict {
         existing: Box<FactReceipt>,
         new_candidate: Box<FactReceipt>,
     },
+    RejectedKeyPayloadConflict {
+        existing: Box<FactReceipt>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactRejection {
     Unauthorized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactConflictPolicy {
+    RecordCandidate,
+    RejectCandidate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -841,6 +863,15 @@ impl FactStore for MemoryFactStore {
         }
 
         let existing = state.earliest_conflicting_receipt(append.request());
+        if let Some(existing) = &existing
+            && append.request().conflict_policy() == FactConflictPolicy::RejectCandidate
+        {
+            return Ok(FactAppendOutcome::Conflict(Box::new(
+                FactConflict::RejectedKeyPayloadConflict {
+                    existing: Box::new(existing.clone()),
+                },
+            )));
+        }
 
         let stored = state.insert_authorized(append);
         let original_outcome = match &existing {
@@ -1077,6 +1108,14 @@ impl FactAppendFingerprint {
                 write_bytes(&mut hasher, fence.claim_hash());
             }
             None => write_component(&mut hasher, "no-submitted-fence"),
+        }
+        match request.conflict_policy() {
+            FactConflictPolicy::RecordCandidate => {
+                write_component(&mut hasher, "record-conflict-candidate");
+            }
+            FactConflictPolicy::RejectCandidate => {
+                write_component(&mut hasher, "reject-conflict-candidate");
+            }
         }
         Self(hasher.finalize().to_vec())
     }
@@ -1414,6 +1453,57 @@ mod tests {
                 .iter()
                 .all(|candidate| candidate.status() == CandidateStatus::Conflict)
         );
+    }
+
+    #[test]
+    fn rejecting_key_payload_conflict_does_not_store_candidate() {
+        let store = MemoryFactStore::new();
+        let scope = authorized().context().scope().clone();
+        let resource = resource("serving-route-generation:route-a:7");
+        let key = key("serving/route-a/generation/7");
+        let kind = kind("ployz.serving.generation-slot.v1");
+
+        let first = store
+            .append(request(
+                "op-1",
+                "idem-1",
+                resource.clone(),
+                key.clone(),
+                kind.clone(),
+                payload(b"target=gateway-a"),
+            ))
+            .expect("first append");
+        let second = store
+            .append(
+                request(
+                    "op-2",
+                    "idem-2",
+                    resource.clone(),
+                    key.clone(),
+                    kind.clone(),
+                    payload(b"target=gateway-b"),
+                )
+                .with_conflict_policy(FactConflictPolicy::RejectCandidate),
+            )
+            .expect("conflicting append");
+
+        assert!(matches!(first, FactAppendOutcome::Appended(_)));
+        assert!(matches!(
+            second,
+            FactAppendOutcome::Conflict(conflict)
+                if matches!(
+                    conflict.as_ref(),
+                    FactConflict::RejectedKeyPayloadConflict { .. }
+                )
+        ));
+        let candidates = store
+            .list_candidates(FactQuery::new(scope).resource(resource).key(key).kind(kind))
+            .expect("candidates");
+
+        let [candidate] = candidates.as_slice() else {
+            panic!("expected one candidate");
+        };
+        assert_eq!(candidate.status(), CandidateStatus::Verified);
     }
 
     #[test]

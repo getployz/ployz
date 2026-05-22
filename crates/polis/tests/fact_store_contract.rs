@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use polis::{
     Authority, AuthorityContext, AuthorityDecision, AuthorityService, CandidateStatus,
     FactAppendFingerprint, FactAppendOutcome, FactAppendRequest, FactAppendScope, FactCandidate,
-    FactCandidateSet, FactConflict, FactCursor, FactGrantAuthority, FactGrantDecision,
-    FactGrantPurpose, FactGrantService, FactKey, FactKind, FactPayload, FactPayloadBatch,
-    FactPayloadReadFailure, FactQuery, FactReceipt, FactReplayKey, FactStore, FactTarget,
-    GrantEpoch, IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId,
+    FactCandidateSet, FactConflict, FactConflictPolicy, FactCursor, FactGrantAuthority,
+    FactGrantDecision, FactGrantPurpose, FactGrantService, FactKey, FactKind, FactPayload,
+    FactPayloadBatch, FactPayloadDigest, FactPayloadReadFailure, FactQuery, FactReceipt,
+    FactReplayKey, FactStore, FactTarget, GrantEpoch, IdempotencyKey, OperationId, PrincipalId,
+    ResourceId, ScopeId,
 };
 
 #[derive(Default)]
@@ -38,6 +39,16 @@ impl FactStore for ContractFactStore {
         }
 
         let cursor = self.next_cursor.get() + 1;
+        if let Some(existing) = self.earliest_conflicting_receipt(append.request())
+            && append.request().conflict_policy() == FactConflictPolicy::RejectCandidate
+        {
+            return Ok(FactAppendOutcome::Conflict(Box::new(
+                FactConflict::RejectedKeyPayloadConflict {
+                    existing: Box::new(existing),
+                },
+            )));
+        }
+
         self.next_cursor.set(cursor);
         let receipt = FactReceipt::from_validated_append(&append, FactCursor::new(cursor));
         let replay_key = append.replay_key().clone();
@@ -112,6 +123,21 @@ impl FactStore for ContractFactStore {
         }
 
         Ok(FactPayloadBatch::from_parts(payloads, failures))
+    }
+}
+
+impl ContractFactStore {
+    fn earliest_conflicting_receipt(&self, request: &FactAppendRequest) -> Option<FactReceipt> {
+        let payload_digest = request.payload().digest();
+        self.records
+            .borrow()
+            .iter()
+            .find(|(receipt, _payload)| {
+                receipt.scope() == request.authority().context().scope()
+                    && receipt.target() == request.target()
+                    && receipt.payload_digest() != &payload_digest
+            })
+            .map(|(receipt, _payload)| receipt.clone())
     }
 }
 
@@ -229,4 +255,84 @@ fn non_memory_fact_store_reuses_public_request_validation() {
         outcome,
         FactAppendOutcome::Rejected(polis::FactRejection::Unauthorized)
     );
+}
+
+#[test]
+fn non_memory_fact_store_rejects_conflicting_candidate_when_policy_requires_it() {
+    let store = ContractFactStore::default();
+    let scope = ScopeId::parse("cluster").expect("scope");
+    let target = FactTarget::new(
+        ResourceId::parse("serving-route-generation:route-app:11").expect("resource"),
+        FactKey::parse("/facts/serving/route-app/generation/11").expect("key"),
+        FactKind::parse("ployz.serving.generation-slot.v1").expect("kind"),
+    );
+
+    let first = store
+        .append(request(
+            "op-1",
+            "idem-1",
+            target.clone(),
+            FactPayload::new(b"gateway-a".to_vec()).expect("payload"),
+            FactConflictPolicy::RejectCandidate,
+        ))
+        .expect("first append");
+    let second = store
+        .append(request(
+            "op-2",
+            "idem-2",
+            target.clone(),
+            FactPayload::new(b"gateway-b".to_vec()).expect("payload"),
+            FactConflictPolicy::RejectCandidate,
+        ))
+        .expect("second append");
+
+    assert!(matches!(first, FactAppendOutcome::Appended(_)));
+    assert!(matches!(
+        second,
+        FactAppendOutcome::Conflict(conflict)
+            if matches!(
+                conflict.as_ref(),
+                FactConflict::RejectedKeyPayloadConflict { .. }
+            )
+    ));
+    let candidates = store
+        .list_candidates(FactQuery::new(scope).resource(target.resource().clone()))
+        .expect("candidates");
+    let [candidate] = candidates.as_slice() else {
+        panic!("expected only the accepted candidate");
+    };
+    assert_eq!(candidate.status(), CandidateStatus::Verified);
+    assert_eq!(candidate.receipt().payload_digest(), &digest(b"gateway-a"));
+}
+
+fn request(
+    operation: &str,
+    idempotency: &str,
+    target: FactTarget,
+    payload: FactPayload,
+    conflict_policy: FactConflictPolicy,
+) -> FactAppendRequest {
+    let authority = AuthorityService::new(AllowAuthority)
+        .authorize::<FactAppendScope>(
+            PrincipalId::parse("node-a").expect("principal"),
+            ScopeId::parse("cluster").expect("scope"),
+        )
+        .expect("authorized");
+    let grant = FactGrantService::new(AllowGrantAuthority)
+        .issue_append(&authority, target.clone())
+        .expect("write grant");
+    FactAppendRequest::new(
+        OperationId::parse(operation).expect("operation"),
+        IdempotencyKey::parse(idempotency).expect("idempotency"),
+        authority,
+        grant,
+        target,
+        payload,
+        None,
+    )
+    .with_conflict_policy(conflict_policy)
+}
+
+fn digest(value: &[u8]) -> FactPayloadDigest {
+    FactPayload::new(value.to_vec()).expect("payload").digest()
 }

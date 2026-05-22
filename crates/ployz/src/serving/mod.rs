@@ -1,7 +1,10 @@
 //! Serving product ports.
 
+use std::time::SystemTime;
+
 use crate::acme::Hostname;
 use crate::error::ServingFailure;
+use crate::facts::ProductFactCursor;
 use crate::operation::MutationContext;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -22,6 +25,20 @@ impl RouteId {
 pub struct ServingTarget(String);
 
 impl ServingTarget {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ServingFailure> {
+        parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ServingCommitId(String);
+
+impl ServingCommitId {
     pub fn parse(value: impl Into<String>) -> Result<Self, ServingFailure> {
         parse_non_empty(value, Self)
     }
@@ -80,6 +97,11 @@ impl ServingCommitRequest {
     pub fn checkpoint(&self) -> ServingActivationCheckpoint {
         ServingActivationCheckpoint::from_request(self)
     }
+
+    #[must_use]
+    pub fn commit_identity(&self) -> ServingCommitIdentity {
+        ServingCommitIdentity::from_request(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,6 +142,51 @@ pub struct ServingActivationCheckpoint {
     hostname: Hostname,
     target: ServingTarget,
     generation: ServingGeneration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ServingCommitIdentity {
+    route: RouteId,
+    hostname: Hostname,
+    target: ServingTarget,
+    generation: ServingGeneration,
+}
+
+impl ServingCommitIdentity {
+    #[must_use]
+    fn from_request(request: &ServingCommitRequest) -> Self {
+        Self {
+            route: request.route.clone(),
+            hostname: request.hostname.clone(),
+            target: request.target.clone(),
+            generation: request.generation,
+        }
+    }
+
+    #[must_use]
+    pub fn route(&self) -> &RouteId {
+        &self.route
+    }
+
+    #[must_use]
+    pub fn hostname(&self) -> &Hostname {
+        &self.hostname
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &ServingTarget {
+        &self.target
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> ServingGeneration {
+        self.generation
+    }
+
+    #[must_use]
+    pub fn matches_request(&self, request: &ServingCommitRequest) -> bool {
+        self == &request.commit_identity()
+    }
 }
 
 impl ServingActivationCheckpoint {
@@ -233,18 +300,199 @@ impl ServingActivationObservation {
     }
 }
 
-pub trait ServingPort {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ServingProjectionCursor(ProductFactCursor);
+
+impl ServingProjectionCursor {
+    #[must_use]
+    pub(crate) fn from_product_cursor(cursor: ProductFactCursor) -> Self {
+        Self(cursor)
+    }
+
+    #[must_use]
+    pub(crate) fn product_cursor(self) -> ProductFactCursor {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServingCommitReceipt {
+    commit_id: ServingCommitId,
+    identity: ServingCommitIdentity,
+    cursor: ServingProjectionCursor,
+}
+
+impl ServingCommitReceipt {
+    #[must_use]
+    pub(crate) fn new(
+        commit_id: ServingCommitId,
+        identity: ServingCommitIdentity,
+        cursor: ServingProjectionCursor,
+    ) -> Self {
+        Self {
+            commit_id,
+            identity,
+            cursor,
+        }
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> &ServingCommitIdentity {
+        &self.identity
+    }
+
+    #[must_use]
+    pub fn cursor(&self) -> ServingProjectionCursor {
+        self.cursor
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingCommittedSnapshot {
+    commit_id: ServingCommitId,
+    identity: ServingCommitIdentity,
+}
+
+impl ServingCommittedSnapshot {
+    #[must_use]
+    pub fn new(commit_id: ServingCommitId, identity: ServingCommitIdentity) -> Self {
+        Self {
+            commit_id,
+            identity,
+        }
+    }
+
+    #[must_use]
+    pub fn commit_id(&self) -> &ServingCommitId {
+        &self.commit_id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> &ServingCommitIdentity {
+        &self.identity
+    }
+
+    #[must_use]
+    pub fn matches_request(&self, request: &ServingCommitRequest) -> bool {
+        self.identity.matches_request(request)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingRouteState {
+    route: RouteId,
+    current: Option<ServingCommittedSnapshot>,
+    superseded: usize,
+}
+
+impl ServingRouteState {
+    #[must_use]
+    pub fn new(
+        route: RouteId,
+        current: Option<ServingCommittedSnapshot>,
+        superseded: usize,
+    ) -> Self {
+        Self {
+            route,
+            current,
+            superseded,
+        }
+    }
+
+    #[must_use]
+    pub fn empty(route: RouteId) -> Self {
+        Self::new(route, None, 0)
+    }
+
+    #[must_use]
+    pub fn route(&self) -> &RouteId {
+        &self.route
+    }
+
+    #[must_use]
+    pub fn current(&self) -> Option<&ServingCommittedSnapshot> {
+        self.current.as_ref()
+    }
+
+    #[must_use]
+    pub fn superseded(&self) -> usize {
+        self.superseded
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServingCommitObservation {
+    Current(ServingCommittedSnapshot),
+    Missing,
+    Unknown,
+}
+
+impl ServingCommitObservation {
+    pub fn try_confirm_commit(
+        &self,
+        request: &ServingCommitRequest,
+    ) -> Result<ServingCommitMatch, ServingFailure> {
+        match self {
+            Self::Current(current) if current.matches_request(request) => {
+                Ok(ServingCommitMatch::Current)
+            }
+            Self::Current(current)
+                if current.identity().route() == request.route()
+                    && current.identity().generation() == request.generation() =>
+            {
+                Err(ServingFailure::ProjectionStale)
+            }
+            Self::Current(_) | Self::Missing => Ok(ServingCommitMatch::Missing),
+            Self::Unknown => Err(ServingFailure::LiveObservationUnknown),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServingCommitMatch {
+    Current,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServingProjectionCatchUp {
+    CaughtUp,
+    TimedOut,
+    FreshnessUnknown,
+    ProjectionFailed,
+}
+
+pub trait ServingSnapshotPort {
+    type Receipt;
+
     fn commit_snapshot(
         &self,
         context: &MutationContext,
         request: &ServingCommitRequest,
-    ) -> Result<(), ServingFailure>;
+    ) -> Result<Self::Receipt, ServingFailure>;
 
+    fn commit_status(
+        &self,
+        request: &ServingCommitRequest,
+    ) -> Result<ServingCommitObservation, ServingFailure>;
+
+    fn catch_up_commits(
+        &self,
+        receipt: &Self::Receipt,
+        deadline: SystemTime,
+    ) -> Result<ServingProjectionCatchUp, ServingFailure>;
+}
+
+pub trait ServingActivationPort {
     fn activation_status(
         &self,
         request: &ServingCommitRequest,
     ) -> Result<ServingActivationObservation, ServingFailure>;
 }
+
+pub trait ServingPort: ServingSnapshotPort + ServingActivationPort {}
+
+impl<T> ServingPort for T where T: ServingSnapshotPort + ServingActivationPort {}
 
 fn parse_non_empty<T>(
     value: impl Into<String>,
