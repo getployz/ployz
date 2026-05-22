@@ -341,7 +341,7 @@ observable operation over current state and plan execution.
 ### Acceptance
 
 - `crates/ployz/src/deploy/mod.rs` does not mention `Attempt`, `AttemptLog`,
-  `AttemptBackend`, `IssuedProductAttempt`, `TerminalMarker`, or replay.
+  `AttemptBackend`, `IssuedProductAttempt`, `AttemptTerminalMarker`, or replay.
 - Deploy business logic remains readable and direct.
 - HTTPS deploy behavior remains covered.
 
@@ -565,7 +565,7 @@ plan for fact store/projection extraction instead of expanding Attempt.
 - Observable operations recover through current facts/projections/live state.
 - Polis remains product-neutral and owns only foundational capabilities.
 - Ployz product modules do not import `MutationIntent`, `CommandPayload`,
-  `FingerprintedResource`, `CommandKind`, or direct Polis attempt types.
+  `AttemptResource`, `AttemptKind`, or direct Polis attempt types.
 - `just check` and `cargo clippy --workspace --all-targets -- -D warnings`
   pass.
 - A zero-context review agrees the split no longer forces observable product

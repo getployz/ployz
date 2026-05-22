@@ -16,7 +16,7 @@ pub mod claims;
 pub mod error;
 pub mod facts;
 pub mod identity;
-pub mod operations;
+mod operations;
 pub mod projection;
 
 pub use authority::{
@@ -36,14 +36,12 @@ pub use facts::{
 };
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};
 pub use operations::{
-    AttemptFailureCodec, AttemptFailureDecodeError, AttemptReplay, AttemptRequest, AttemptStart,
-    AttemptTerminal, BackendOperationStart, CommandKind, EvidenceKind, FingerprintedResource,
-    IdempotencyKey, OpenAttempt, OpenOperation, OperationBackend, OperationEvidence, OperationId,
-    OperationReplay, OperationReplayStatus, OperationRequest, OperationStart, RequestFingerprint,
-    RequestFingerprintBuilder, SubmittedFenceFingerprint, TerminalMarker, TypedAttemptError,
-    TypedAttemptReplay, TypedAttemptRequest, TypedAttemptResult, TypedAttemptStart,
-    TypedOpenAttempt, begin_attempt, begin_typed_attempt, close, record, replay_typed_attempt,
-    start_or_replay,
+    AttemptBackend, AttemptBackendRequest, AttemptBackendStart, AttemptEvidence,
+    AttemptEvidenceKind, AttemptFailureCodec, AttemptFailureDecodeError, AttemptFingerprint,
+    AttemptFingerprintBuilder, AttemptKind, AttemptRequest, AttemptResource, AttemptTerminalMarker,
+    IdempotencyKey, OperationId, SubmittedFenceFingerprint, TypedAttemptError, TypedAttemptReplay,
+    TypedAttemptRequest, TypedAttemptResult, TypedAttemptStart, TypedOpenAttempt,
+    begin_typed_attempt, interrupt_typed_attempt, replay_typed_attempt,
 };
 pub use projection::{
     FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,
@@ -61,7 +59,6 @@ mod tests {
             "error",
             "facts",
             "identity",
-            "operations",
             "projection",
         ];
 
