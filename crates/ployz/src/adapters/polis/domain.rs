@@ -79,39 +79,15 @@ where
         event: &DomainStatusEvent,
     ) -> Result<(), DomainFailure> {
         let envelope = event.encode().map_err(map_domain_fact_error)?;
-        let target = super::polis_fact_target(envelope.target()).map_err(map_domain_primitive)?;
-        let payload =
-            super::polis_fact_payload(envelope.payload()).map_err(map_domain_primitive)?;
-        let authority =
-            super::context_fact_append_authority(context).map_err(map_domain_primitive)?;
-        let grant = polis::FactGrantService::new(DomainFactGrantAuthority)
-            .issue_append(&authority, target.clone())
-            .map_err(map_domain_polis_error)?;
-        let request = polis::FactAppendRequest::new(
-            polis::OperationId::parse(format!(
-                "{}:{}",
-                context.operation().as_str(),
-                envelope.target().key().as_str()
-            ))
-            .map_err(map_domain_polis_error)?,
-            polis::IdempotencyKey::parse(format!(
-                "{}:{}",
-                context.idempotency().as_str(),
-                envelope.target().key().as_str()
-            ))
-            .map_err(map_domain_polis_error)?,
-            authority,
-            grant,
-            target,
-            payload,
-            None,
-        );
-
-        match polis::FactStore::append(self.projection.facts(), request)
-            .map_err(map_domain_polis_error)
-            .and_then(|outcome| {
-                super::product_fact_append_outcome(outcome).map_err(map_domain_primitive)
-            })? {
+        match super::append_product_fact(
+            self.projection.facts(),
+            context,
+            &envelope,
+            DomainFactGrantAuthority,
+            polis::FactConflictPolicy::RecordCandidate,
+        )
+        .map_err(map_domain_primitive)?
+        {
             ProductFactAppendOutcome::Appended(_) | ProductFactAppendOutcome::Replayed(_) => Ok(()),
             ProductFactAppendOutcome::Conflict(conflict) => Err(domain_conflict_failure(conflict)),
             ProductFactAppendOutcome::Rejected(ProductFactRejection::Unauthorized) => {

@@ -19,9 +19,10 @@ pub(crate) use serving::PolisServingSnapshots;
 use crate::error::PrimitiveFailure;
 use crate::facts::{
     ProductCandidateRejection, ProductFactAppendOutcome, ProductFactConflict, ProductFactCursor,
-    ProductFactKey, ProductFactKind, ProductFactPayload, ProductFactReceipt, ProductFactRejection,
-    ProductFactResource, ProductFactTarget, ProductPayloadFailure, ProductProjectionCatchUp,
-    ProductProjectionFreshness, ProductProjectionHealth, ProductProjectionSnapshot,
+    ProductFactEnvelope, ProductFactKey, ProductFactKind, ProductFactPayload, ProductFactReceipt,
+    ProductFactRejection, ProductFactResource, ProductFactTarget, ProductPayloadFailure,
+    ProductProjectionCatchUp, ProductProjectionFreshness, ProductProjectionHealth,
+    ProductProjectionSnapshot,
 };
 use crate::operation::MutationContext;
 
@@ -100,6 +101,49 @@ pub fn product_fact_append_outcome(
             ProductFactAppendOutcome::Rejected(ProductFactRejection::Unauthorized),
         ),
     }
+}
+
+pub fn append_product_fact<S, G>(
+    facts: &S,
+    context: &MutationContext,
+    envelope: &ProductFactEnvelope,
+    grant_authority: G,
+    conflict_policy: polis::FactConflictPolicy,
+) -> Result<ProductFactAppendOutcome, PrimitiveFailure>
+where
+    S: polis::FactStore,
+    G: polis::FactGrantAuthority,
+{
+    let target = polis_fact_target(envelope.target())?;
+    let payload = polis_fact_payload(envelope.payload())?;
+    let authority = context_fact_append_authority(context)?;
+    let grant = polis::FactGrantService::new(grant_authority)
+        .issue_append(&authority, target.clone())
+        .map_err(map_polis_error)?;
+    let request = polis::FactAppendRequest::new(
+        polis::OperationId::parse(format!(
+            "{}:{}",
+            context.operation().as_str(),
+            envelope.target().key().as_str()
+        ))
+        .map_err(map_polis_error)?,
+        polis::IdempotencyKey::parse(format!(
+            "{}:{}",
+            context.idempotency().as_str(),
+            envelope.target().key().as_str()
+        ))
+        .map_err(map_polis_error)?,
+        authority,
+        grant,
+        target,
+        payload,
+        None,
+    )
+    .with_conflict_policy(conflict_policy);
+
+    polis::FactStore::append(facts, request)
+        .map_err(map_polis_error)
+        .and_then(product_fact_append_outcome)
 }
 
 fn product_fact_conflict(
