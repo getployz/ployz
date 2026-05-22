@@ -1,19 +1,21 @@
 //! Internal distributed-control support primitives for Ployz.
 //!
-//! Polis owns product-neutral mechanics such as identity, authority, operation
-//! evidence, and claims. It must not know
-//! Ployz product domains such as deploys, certificates, routes, runtime
-//! participants, or volumes.
+//! Polis owns product-neutral mechanics such as identity, authority, facts,
+//! projections, claims, and external-state attempts. It must not know Ployz
+//! product domains such as deploys, certificates, routes, runtime participants,
+//! or volumes.
 //!
 //! Production rules:
 //! - primitives expose typed failures, not display-string contracts;
-//! - durable evidence is not product truth until a Ployz verifier accepts it;
+//! - attempt evidence is only for external state that cluster facts cannot
+//!   fully observe;
 //! - claims are advisory until a product resource enforces the fence;
 //! - external I/O must be deadline-bounded by the adapter using the primitive.
 
 pub mod authority;
 pub mod claims;
 pub mod error;
+pub mod external_attempt;
 pub mod facts;
 pub mod identity;
 mod operations;
@@ -35,14 +37,7 @@ pub use facts::{
     MemoryFactStore, ValidatedFactAppend,
 };
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};
-pub use operations::{
-    AttemptBackend, AttemptBackendRequest, AttemptBackendStart, AttemptEvidence,
-    AttemptEvidenceKind, AttemptFailureCodec, AttemptFailureDecodeError, AttemptFingerprint,
-    AttemptFingerprintBuilder, AttemptKind, AttemptRequest, AttemptResource, AttemptTerminalMarker,
-    IdempotencyKey, OperationId, SubmittedFenceFingerprint, TypedAttemptError, TypedAttemptReplay,
-    TypedAttemptRequest, TypedAttemptResult, TypedAttemptStart, TypedOpenAttempt,
-    begin_typed_attempt, interrupt_typed_attempt, replay_typed_attempt,
-};
+pub use operations::{IdempotencyKey, OperationId, SubmittedFenceFingerprint};
 pub use projection::{
     FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,
     ProjectionError, ProjectionFreshness, ProjectionHealth, ProjectionKey, ProjectionRequest,

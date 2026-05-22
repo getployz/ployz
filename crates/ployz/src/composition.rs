@@ -7,12 +7,13 @@ use crate::acme::{
     CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
 };
 use crate::adapters::polis::{
-    AttemptingCertificateIssuer, PolisDomainStatus, PolisMachineMembership, PolisServingSnapshots,
+    AcmeCertificateIssuer, PolisDomainStatus, PolisMachineMembership, PolisServingSnapshots,
 };
 use crate::domain::DomainStatusPort;
 use crate::machine::MachineMembershipPort;
 use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
+use polis::external_attempt as attempt;
 
 #[must_use]
 pub fn certificate_readiness_with_attempts<S, A, I>(
@@ -22,13 +23,10 @@ pub fn certificate_readiness_with_attempts<S, A, I>(
 ) -> impl CertificatePort
 where
     S: CertificateStatusPort,
-    A: polis::AttemptBackend,
+    A: attempt::Backend,
     I: CertificateAuthorityPort,
 {
-    CertificateReadinessService::new(
-        certificates,
-        AttemptingCertificateIssuer::new(attempts, issuer),
-    )
+    CertificateReadinessService::new(certificates, AcmeCertificateIssuer::new(attempts, issuer))
 }
 
 #[must_use]
@@ -83,13 +81,13 @@ mod tests {
         assert_eq!(*issuer.calls.borrow(), 1);
         assert_eq!(
             attempts.terminals.borrow().as_slice(),
-            &[polis::AttemptTerminalMarker::Succeeded]
+            &[attempt::TerminalMarker::Succeeded]
         );
         let records = attempts.records.borrow();
         let Some(record) = records.first() else {
             panic!("expected certificate issuance checkpoint");
         };
-        let polis::AttemptEvidenceKind::Checkpoint(payload) = &record.kind else {
+        let attempt::EvidenceKind::Checkpoint(payload) = &record.kind else {
             panic!("expected checkpoint evidence");
         };
         assert_eq!(payload, b"certificate-issued");
@@ -136,22 +134,22 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct RecordingAttemptBackend {
-        records: Rc<RefCell<Vec<polis::AttemptEvidence>>>,
-        terminals: Rc<RefCell<Vec<polis::AttemptTerminalMarker>>>,
+        records: Rc<RefCell<Vec<attempt::Evidence>>>,
+        terminals: Rc<RefCell<Vec<attempt::TerminalMarker>>>,
     }
 
-    impl polis::AttemptBackend for RecordingAttemptBackend {
+    impl attempt::Backend for RecordingAttemptBackend {
         fn start_or_replay(
             &self,
-            _request: &polis::AttemptBackendRequest,
-        ) -> polis::Result<polis::AttemptBackendStart> {
-            Ok(polis::AttemptBackendStart::Started)
+            _request: &attempt::BackendRequest,
+        ) -> polis::Result<attempt::BackendStart> {
+            Ok(attempt::BackendStart::Started)
         }
 
         fn record(
             &self,
-            _operation: &polis::OperationId,
-            evidence: polis::AttemptEvidence,
+            _operation: &attempt::OperationId,
+            evidence: attempt::Evidence,
         ) -> polis::Result<()> {
             self.records.borrow_mut().push(evidence);
             Ok(())
@@ -159,8 +157,8 @@ mod tests {
 
         fn close(
             &self,
-            _operation: &polis::OperationId,
-            marker: polis::AttemptTerminalMarker,
+            _operation: &attempt::OperationId,
+            marker: attempt::TerminalMarker,
         ) -> polis::Result<()> {
             self.terminals.borrow_mut().push(marker);
             Ok(())
