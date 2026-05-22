@@ -383,6 +383,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fact_backed_first_add_projects_joined_membership() {
+        let fact_backed_membership = crate::composition::in_memory_machine_membership();
+        let service = MachineMembershipService::new(fact_backed_membership);
+
+        let outcome = service
+            .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .expect("machine add");
+
+        assert!(
+            matches!(outcome, MachineAddOutcome::Joined(joined) if joined == membership("node-a", 1, "fd00::1"))
+        );
+    }
+
+    #[test]
+    fn fact_backed_already_present_reads_projection_without_fresh_join() {
+        let fact_backed_membership = crate::composition::in_memory_machine_membership();
+        let service = MachineMembershipService::new(fact_backed_membership);
+        service
+            .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .expect("first add");
+
+        let outcome = service
+            .add_machine(&context(), request("node-a", 2, "fd00::1"))
+            .expect("second add");
+
+        assert!(
+            matches!(outcome, MachineAddOutcome::AlreadyPresent(joined) if joined == membership("node-a", 1, "fd00::1"))
+        );
+    }
+
+    fn context() -> MutationContext {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        use crate::operation::{
+            AuthorityContext, AuthorityEpoch, IdempotencyKey, MutationContext, OperationId,
+            PrincipalId, ScopeId,
+        };
+
+        MutationContext::new(
+            OperationId::parse("machine-add-1").expect("operation"),
+            IdempotencyKey::parse("machine-add-1").expect("idempotency"),
+            AuthorityContext::new(
+                PrincipalId::parse("node-a").expect("principal"),
+                ScopeId::parse("cluster").expect("scope"),
+                AuthorityEpoch::new(7),
+            ),
+            None,
+            UNIX_EPOCH + Duration::from_secs(60),
+        )
+    }
+
+    fn request(machine: &str, epoch: u64, overlay_ip: &str) -> MachineAddRequest {
+        MachineAddRequest {
+            machine: MachineId::parse(machine).expect("machine"),
+            epoch: MachineEpoch::new(epoch).expect("epoch"),
+            network: MachineNetworkIdentity::new(
+                OverlayIp::parse(overlay_ip).expect("overlay ip"),
+                IrohEndpointId::parse("iroh-node-a").expect("iroh endpoint"),
+                WireGuardPublicKey::parse("wg-node-a").expect("wireguard key"),
+            ),
+        }
+    }
+
     fn membership(machine: &str, epoch: u64, overlay_ip: &str) -> MachineMembership {
         MachineMembership::new(
             MachineId::parse(machine).expect("machine"),

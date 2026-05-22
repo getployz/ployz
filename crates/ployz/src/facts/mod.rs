@@ -4,6 +4,8 @@
 //! Raw substrate records and projection internals stay behind
 //! `crates/ployz/src/adapters/**`.
 
+pub mod machine;
+
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 

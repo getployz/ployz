@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use ployz::composition;
 use ployz::error::MachineFailure;
 use ployz::machine::{
     IrohEndpointId, MachineAddOutcome, MachineAddRequest, MachineEpoch, MachineId,
@@ -190,6 +191,26 @@ fn stale_absent_observation_accepts_current_matching_join_result() {
     assert_eq!(
         membership.joined(),
         vec![membership_record("node-a", 1, "fd00::1")]
+    );
+}
+
+#[test]
+fn fact_backed_machine_add_reuses_projected_membership() {
+    let membership = composition::in_memory_machine_membership();
+    let service = MachineMembershipService::new(membership);
+
+    let first = service
+        .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .expect("first add");
+    let second = service
+        .add_machine(&context(), request("node-a", 2, "fd00::1"))
+        .expect("second add");
+
+    assert!(
+        matches!(first, MachineAddOutcome::Joined(joined) if joined == membership_record("node-a", 1, "fd00::1"))
+    );
+    assert!(
+        matches!(second, MachineAddOutcome::AlreadyPresent(joined) if joined == membership_record("node-a", 1, "fd00::1"))
     );
 }
 
