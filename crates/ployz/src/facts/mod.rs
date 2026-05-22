@@ -4,6 +4,7 @@
 //! Raw substrate records and projection internals stay behind
 //! `crates/ployz/src/adapters/**`.
 
+pub mod domain;
 pub mod machine;
 
 use std::collections::BTreeMap;
