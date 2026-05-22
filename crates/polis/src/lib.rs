@@ -28,10 +28,10 @@ pub use claims::{
 pub use error::{Error, Result};
 pub use facts::{
     CandidateStatus, FactAppendFingerprint, FactAppendOutcome, FactAppendRequest, FactAppendScope,
-    FactAppendValidation, FactCandidate, FactCandidateSet, FactConflict, FactCursor,
-    FactGrantAuthority, FactGrantDecision, FactGrantPurpose, FactGrantService, FactId, FactKey,
-    FactKind, FactPayload, FactPayloadBatch, FactPayloadDigest, FactPayloadReadFailure, FactQuery,
-    FactReceipt, FactRejection, FactReplayKey, FactStore, FactTarget, FactWriteGrant,
+    FactAppendValidation, FactCandidate, FactCandidateSet, FactConflict, FactConflictPolicy,
+    FactCursor, FactGrantAuthority, FactGrantDecision, FactGrantPurpose, FactGrantService, FactId,
+    FactKey, FactKind, FactPayload, FactPayloadBatch, FactPayloadDigest, FactPayloadReadFailure,
+    FactQuery, FactReceipt, FactRejection, FactReplayKey, FactStore, FactTarget, FactWriteGrant,
     MemoryFactStore, ValidatedFactAppend,
 };
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};

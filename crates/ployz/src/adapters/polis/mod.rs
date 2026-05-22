@@ -1,11 +1,13 @@
 //! Polis adapter helpers for Ployz composition code.
 
 mod domain;
+mod serving;
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 pub(crate) use domain::PolisDomainStatus;
+pub(crate) use serving::PolisServingSnapshots;
 
 use crate::acme::{
     CertificateAuthorityPort, CertificateIssueOutcome, CertificateIssueRequest,
@@ -116,6 +118,11 @@ fn product_fact_conflict(
             existing: product_fact_receipt(existing)?,
             new_candidate: product_fact_receipt(new_candidate)?,
         }),
+        polis::FactConflict::RejectedKeyPayloadConflict { existing } => {
+            Ok(ProductFactConflict::RejectedKeyPayloadConflict {
+                existing: product_fact_receipt(existing)?,
+            })
+        }
     }
 }
 
@@ -392,10 +399,13 @@ fn machine_conflict_failure(
     desired: &MachineMembership,
 ) -> MachineFailure {
     match conflict {
-        ProductFactConflict::KeyPayloadConflict { .. } => MachineFailure::MembershipConflict {
-            machine: desired.machine.clone(),
-            epoch: Some(desired.epoch),
-        },
+        ProductFactConflict::KeyPayloadConflict { .. }
+        | ProductFactConflict::RejectedKeyPayloadConflict { .. } => {
+            MachineFailure::MembershipConflict {
+                machine: desired.machine.clone(),
+                epoch: Some(desired.epoch),
+            }
+        }
         ProductFactConflict::IdempotencyKeyReuse { .. } => MachineFailure::MutationRejected,
     }
 }

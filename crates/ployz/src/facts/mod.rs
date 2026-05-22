@@ -6,6 +6,7 @@
 
 pub mod domain;
 pub mod machine;
+pub mod serving;
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
@@ -193,6 +194,9 @@ pub enum ProductFactConflict {
     KeyPayloadConflict {
         existing: ProductFactReceipt,
         new_candidate: ProductFactReceipt,
+    },
+    RejectedKeyPayloadConflict {
+        existing: ProductFactReceipt,
     },
 }
 

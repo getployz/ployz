@@ -1,28 +1,25 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ployz::domain::DomainStatus;
 use ployz::error::DeployFailure;
 use ployz::error::ServingFailure;
 use ployz::serving::ServingActivationObservation;
 
 use super::https_deploy::{
-    activation_for, deploy_context, engine_with_shared_state, receipt, request, runtime_for,
+    SharedDeployState, activation_for, deploy_context, engine_with_state, receipt, request,
     usable_certificate,
 };
 
 #[test]
 fn retry_after_missing_serving_activation_observes_activation_proof() {
-    let status = Rc::new(RefCell::new(DomainStatus::Unknown));
-    let runtime = runtime_for(receipt());
-    let serving_commits = Rc::new(RefCell::new(0));
-    let first_deploy = engine_with_shared_state(
+    let state = SharedDeployState::new();
+    let runtime = state.runtime_for(receipt());
+    let first_deploy = engine_with_state(
         usable_certificate(),
         ServingActivationObservation::Unknown,
         Rc::new(RefCell::new(Vec::new())),
-        status.clone(),
+        state.clone(),
         runtime.clone(),
-        serving_commits.clone(),
     );
 
     assert_eq!(
@@ -33,13 +30,12 @@ fn retry_after_missing_serving_activation_observes_activation_proof() {
     );
 
     let retry_contexts = Rc::new(RefCell::new(Vec::new()));
-    let retry_deploy = engine_with_shared_state(
+    let retry_deploy = engine_with_state(
         usable_certificate(),
         activation_for(&request()),
         retry_contexts.clone(),
-        status,
+        state.clone(),
         runtime.clone(),
-        serving_commits.clone(),
     );
 
     retry_deploy
@@ -47,5 +43,5 @@ fn retry_after_missing_serving_activation_observes_activation_proof() {
         .expect("retry observes activation");
     assert!(retry_contexts.borrow().is_empty());
     assert_eq!(*runtime.activations.borrow(), 1);
-    assert_eq!(*serving_commits.borrow(), 1);
+    assert_eq!(*state.serving_commits().borrow(), 1);
 }

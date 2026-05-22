@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz::acme::{
     CertificateActivation, CertificateMaterialState, CertificateUsability, Hostname, HttpsBinding,
@@ -25,7 +25,9 @@ use ployz::runtime::{
     WorkloadId,
 };
 use ployz::serving::{
-    RouteId, ServingActivationObservation, ServingCommitRequest, ServingGeneration, ServingPort,
+    RouteId, ServingActivationObservation, ServingActivationPort, ServingCommitId,
+    ServingCommitIdentity, ServingCommitObservation, ServingCommitRequest,
+    ServingCommittedSnapshot, ServingGeneration, ServingProjectionCatchUp, ServingSnapshotPort,
     ServingTarget,
 };
 
@@ -169,19 +171,187 @@ impl RuntimePort for FakeRuntime {
 pub(super) struct FakeServing {
     activation: ServingActivationObservation,
     pub(super) commits: Rc<RefCell<usize>>,
+    snapshots: Rc<RefCell<Vec<ServingCommittedSnapshot>>>,
+    catch_up: Rc<RefCell<ServingProjectionCatchUp>>,
 }
 
-impl ServingPort for FakeServing {
+#[derive(Debug, Clone)]
+pub(super) struct FakeServingReceipt {
+    commit_id: ServingCommitId,
+}
+
+#[derive(Clone)]
+struct FakeServingProjectionState {
+    snapshots: Rc<RefCell<Vec<ServingCommittedSnapshot>>>,
+    catch_up: Rc<RefCell<ServingProjectionCatchUp>>,
+}
+
+impl Default for FakeServingProjectionState {
+    fn default() -> Self {
+        Self {
+            snapshots: Rc::new(RefCell::new(Vec::new())),
+            catch_up: Rc::new(RefCell::new(ServingProjectionCatchUp::CaughtUp)),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct SharedDeployState {
+    domain_status: Rc<RefCell<DomainStatus>>,
+    runtime_status: Rc<RefCell<RuntimeParticipantStatus>>,
+    serving_commits: Rc<RefCell<usize>>,
+    serving_projection: FakeServingProjectionState,
+}
+
+impl Default for SharedDeployState {
+    fn default() -> Self {
+        Self {
+            domain_status: Rc::new(RefCell::new(DomainStatus::Unknown)),
+            runtime_status: Rc::new(RefCell::new(RuntimeParticipantStatus::Missing)),
+            serving_commits: Rc::new(RefCell::new(0)),
+            serving_projection: FakeServingProjectionState::default(),
+        }
+    }
+}
+
+impl SharedDeployState {
+    #[must_use]
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub(super) fn domain_status(&self) -> Rc<RefCell<DomainStatus>> {
+        self.domain_status.clone()
+    }
+
+    #[must_use]
+    pub(super) fn serving_commits(&self) -> Rc<RefCell<usize>> {
+        self.serving_commits.clone()
+    }
+
+    #[must_use]
+    pub(super) fn runtime_for(&self, receipt: ParticipantReceipt) -> FakeRuntime {
+        FakeRuntime {
+            outcome: RuntimeActivationOutcome::Activated(receipt.clone()),
+            status: self.runtime_status.clone(),
+            activation_visible: true,
+            activations: Rc::new(RefCell::new(0)),
+            verifications: Rc::new(RefCell::new(0)),
+        }
+    }
+}
+
+impl ServingSnapshotPort for FakeServing {
+    type Receipt = FakeServingReceipt;
+
     fn commit_snapshot(
         &self,
         context: &MutationContext,
-        _request: &ServingCommitRequest,
-    ) -> Result<(), ServingFailure> {
-        *self.commits.borrow_mut() += 1;
+        request: &ServingCommitRequest,
+    ) -> Result<FakeServingReceipt, ServingFailure> {
         assert_eq!(context.authority().epoch(), AuthorityEpoch::new(7));
-        Ok(())
+        if self.snapshots.borrow().iter().any(|snapshot| {
+            snapshot.identity().route() == request.route()
+                && snapshot.identity().generation() == request.generation()
+                && !snapshot.matches_request(request)
+        }) {
+            return Err(ServingFailure::ProjectionStale);
+        }
+        *self.commits.borrow_mut() += 1;
+        let commit_id =
+            ServingCommitId::parse(format!("fake-serving-commit-{}", *self.commits.borrow()))
+                .expect("commit id");
+        self.snapshots
+            .borrow_mut()
+            .push(ServingCommittedSnapshot::new(
+                commit_id.clone(),
+                request.commit_identity(),
+            ));
+        Ok(FakeServingReceipt { commit_id })
     }
 
+    fn commit_status(
+        &self,
+        request: &ServingCommitRequest,
+    ) -> Result<ServingCommitObservation, ServingFailure> {
+        let snapshots = self.snapshots.borrow();
+        let route_snapshots = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.identity().route() == request.route())
+            .collect::<Vec<_>>();
+        let Some(highest_generation) = route_snapshots
+            .iter()
+            .map(|snapshot| snapshot.identity().generation())
+            .max()
+        else {
+            return Ok(ServingCommitObservation::Missing);
+        };
+        let head_candidates = route_snapshots
+            .iter()
+            .filter(|snapshot| snapshot.identity().generation() == highest_generation)
+            .collect::<Vec<_>>();
+        let distinct_identities = head_candidates
+            .iter()
+            .map(|snapshot| snapshot.identity().clone())
+            .collect::<std::collections::BTreeSet<ServingCommitIdentity>>();
+        if distinct_identities.len() > 1 {
+            return Err(ServingFailure::ProjectionStale);
+        }
+        let head = head_candidates
+            .into_iter()
+            .max_by_key(|snapshot| snapshot.commit_id().clone())
+            .expect("head candidate");
+        if head.identity().generation() == request.generation() {
+            Ok(ServingCommitObservation::Current((*head).clone()))
+        } else {
+            Ok(ServingCommitObservation::Missing)
+        }
+    }
+
+    fn catch_up_commits(
+        &self,
+        receipt: &FakeServingReceipt,
+        deadline: SystemTime,
+    ) -> Result<ServingProjectionCatchUp, ServingFailure> {
+        if SystemTime::now() >= deadline {
+            return Ok(ServingProjectionCatchUp::TimedOut);
+        }
+        if !self
+            .snapshots
+            .borrow()
+            .iter()
+            .any(|snapshot| snapshot.commit_id() == &receipt.commit_id)
+        {
+            return Ok(ServingProjectionCatchUp::ProjectionFailed);
+        }
+
+        let route_identity = self
+            .snapshots
+            .borrow()
+            .iter()
+            .find(|snapshot| snapshot.commit_id() == &receipt.commit_id)
+            .map(|snapshot| snapshot.identity().clone());
+        let Some(route_identity) = route_identity else {
+            return Ok(ServingProjectionCatchUp::ProjectionFailed);
+        };
+        let snapshots = self.snapshots.borrow();
+        let same_generation = snapshots
+            .iter()
+            .filter(|snapshot| {
+                snapshot.identity().route() == route_identity.route()
+                    && snapshot.identity().generation() == route_identity.generation()
+            })
+            .map(|snapshot| snapshot.identity().clone())
+            .collect::<std::collections::BTreeSet<ServingCommitIdentity>>();
+        if same_generation.len() > 1 {
+            return Ok(ServingProjectionCatchUp::ProjectionFailed);
+        }
+        Ok(self.catch_up.borrow().clone())
+    }
+}
+
+impl ServingActivationPort for FakeServing {
     fn activation_status(
         &self,
         _request: &ServingCommitRequest,
@@ -212,7 +382,7 @@ pub(super) fn request() -> DeployRequest {
             machine: MachineId::parse("machine-a").expect("machine"),
             minimum_certificate_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
         },
-        deadline: UNIX_EPOCH + Duration::from_secs(60),
+        deadline: SystemTime::now() + Duration::from_secs(60),
     }
 }
 
@@ -233,7 +403,7 @@ pub(super) fn deploy_context() -> MutationContext {
         ScopeId::parse("cluster").expect("scope"),
         AuthorityEpoch::new(7),
         None,
-        UNIX_EPOCH + Duration::from_secs(60),
+        SystemTime::now() + Duration::from_secs(60),
     )
 }
 
@@ -241,7 +411,7 @@ pub(super) fn engine(
     certificate: CertificateUsability,
     activation: ServingActivationObservation,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
-) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, FakeServing> {
     engine_with_shared_state(
         certificate,
         activation,
@@ -257,7 +427,7 @@ fn engine_with_runtime(
     runtime: RuntimeActivationOutcome,
     activation: ServingActivationObservation,
     contexts: Rc<RefCell<Vec<MutationContext>>>,
-) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, FakeServing> {
     let runtime = FakeRuntime {
         outcome: runtime,
         status: Rc::new(RefCell::new(RuntimeParticipantStatus::Missing)),
@@ -282,19 +452,61 @@ pub(super) fn engine_with_shared_state(
     status: Rc<RefCell<DomainStatus>>,
     runtime: FakeRuntime,
     serving_commits: Rc<RefCell<usize>>,
-) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing> {
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, FakeServing> {
+    engine_with_shared_serving_projection(
+        certificate,
+        activation,
+        contexts,
+        status,
+        runtime,
+        serving_commits,
+        FakeServingProjectionState::default(),
+    )
+}
+
+pub(super) fn engine_with_state(
+    certificate: CertificateUsability,
+    activation: ServingActivationObservation,
+    contexts: Rc<RefCell<Vec<MutationContext>>>,
+    state: SharedDeployState,
+    runtime: FakeRuntime,
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, FakeServing> {
+    engine_with_shared_serving_projection(
+        certificate,
+        activation,
+        contexts,
+        state.domain_status(),
+        runtime,
+        state.serving_commits(),
+        state.serving_projection.clone(),
+    )
+}
+
+fn engine_with_shared_serving_projection(
+    certificate: CertificateUsability,
+    activation: ServingActivationObservation,
+    contexts: Rc<RefCell<Vec<MutationContext>>>,
+    status: Rc<RefCell<DomainStatus>>,
+    runtime: FakeRuntime,
+    serving_commits: Rc<RefCell<usize>>,
+    serving_projection: FakeServingProjectionState,
+) -> DeployEngine<FakeDomainReadiness, FakeRuntime, FakeServing, FakeServing> {
     let domains = FakeDomains {
         certificate,
         contexts,
         status,
     };
+    let serving = FakeServing {
+        activation,
+        commits: serving_commits,
+        snapshots: serving_projection.snapshots,
+        catch_up: serving_projection.catch_up,
+    };
     DeployEngine::new(
         DomainReadinessService::new(domains.clone(), domains.clone(), domains.clone(), domains),
         runtime,
-        FakeServing {
-            activation,
-            commits: serving_commits,
-        },
+        serving.clone(),
+        serving,
     )
 }
 
@@ -399,17 +611,45 @@ fn serving_commit_without_activation_is_not_success() {
 }
 
 #[test]
+fn serving_projection_must_catch_up_before_activation_succeeds() {
+    let runtime = runtime_for(receipt());
+    let serving_commits = Rc::new(RefCell::new(0));
+    let deploy = engine_with_shared_serving_projection(
+        usable_certificate(),
+        activation_for(&request()),
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(DomainStatus::Unknown)),
+        runtime,
+        serving_commits.clone(),
+        FakeServingProjectionState {
+            snapshots: Rc::new(RefCell::new(Vec::new())),
+            catch_up: Rc::new(RefCell::new(ServingProjectionCatchUp::FreshnessUnknown)),
+        },
+    );
+
+    assert_eq!(
+        deploy.deploy_https(&deploy_context(), request()),
+        Err(DeployFailure::ServingFailed(
+            ServingFailure::LiveObservationUnknown
+        ))
+    );
+    assert_eq!(*serving_commits.borrow(), 1);
+}
+
+#[test]
 fn retry_after_missing_serving_activation_observes_current_state() {
     let status = Rc::new(RefCell::new(DomainStatus::Unknown));
     let runtime = runtime_for(receipt());
     let serving_commits = Rc::new(RefCell::new(0));
-    let first = engine_with_shared_state(
+    let serving_projection = FakeServingProjectionState::default();
+    let first = engine_with_shared_serving_projection(
         usable_certificate(),
         ServingActivationObservation::Unknown,
         Rc::new(RefCell::new(Vec::new())),
         status.clone(),
         runtime.clone(),
         serving_commits.clone(),
+        serving_projection.clone(),
     );
     assert_eq!(
         first.deploy_https(&deploy_context(), request()),
@@ -419,13 +659,14 @@ fn retry_after_missing_serving_activation_observes_current_state() {
     );
 
     let contexts = Rc::new(RefCell::new(Vec::new()));
-    let deploy = engine_with_shared_state(
+    let deploy = engine_with_shared_serving_projection(
         usable_certificate(),
         activation_for(&request()),
         contexts.clone(),
         status,
         runtime.clone(),
         serving_commits.clone(),
+        serving_projection,
     );
 
     let outcome = deploy
@@ -465,6 +706,36 @@ fn second_deploy_observes_current_state_without_mutation() {
     assert!(contexts.borrow().is_empty());
     assert_eq!(*runtime.activations.borrow(), 1);
     assert_eq!(*runtime.verifications.borrow(), 3);
+    assert_eq!(*serving_commits.borrow(), 1);
+}
+
+#[test]
+fn same_generation_serving_conflict_fails_without_poisoning_projection() {
+    let contexts = Rc::new(RefCell::new(Vec::new()));
+    let runtime = runtime_for(receipt());
+    let serving_commits = Rc::new(RefCell::new(0));
+    let deploy = engine_with_shared_state(
+        usable_certificate(),
+        activation_for(&request()),
+        contexts,
+        Rc::new(RefCell::new(DomainStatus::Unknown)),
+        runtime,
+        serving_commits.clone(),
+    );
+    deploy
+        .deploy_https(&deploy_context(), request())
+        .expect("initial deploy");
+
+    let mut conflicting = request();
+    conflicting.manifest.serving_target =
+        ServingTarget::parse("gateway-b").expect("conflicting target");
+
+    assert_eq!(
+        deploy.deploy_https(&deploy_context(), conflicting),
+        Err(DeployFailure::ServingFailed(
+            ServingFailure::ProjectionStale
+        ))
+    );
     assert_eq!(*serving_commits.borrow(), 1);
 }
 

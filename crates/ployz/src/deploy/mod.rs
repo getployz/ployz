@@ -19,7 +19,8 @@ use crate::runtime::{
     RuntimeParticipantStatus, RuntimeParticipantVerification, RuntimePort, WorkloadId,
 };
 use crate::serving::{
-    RouteId, ServingActivationProof, ServingGeneration, ServingPort, ServingTarget,
+    RouteId, ServingActivationPort, ServingActivationProof, ServingCommitMatch, ServingGeneration,
+    ServingProjectionCatchUp, ServingSnapshotPort, ServingTarget,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,28 +186,31 @@ impl DeployPlan {
     }
 }
 
-pub struct DeployEngine<D, R, S> {
+pub struct DeployEngine<D, R, S, A> {
     domains: D,
     runtime: R,
-    serving: S,
+    serving_snapshots: S,
+    serving_activation: A,
 }
 
-impl<D, R, S> DeployEngine<D, R, S> {
+impl<D, R, S, A> DeployEngine<D, R, S, A> {
     #[must_use]
-    pub fn new(domains: D, runtime: R, serving: S) -> Self {
+    pub fn new(domains: D, runtime: R, serving_snapshots: S, serving_activation: A) -> Self {
         Self {
             domains,
             runtime,
-            serving,
+            serving_snapshots,
+            serving_activation,
         }
     }
 }
 
-impl<D, R, S> DeployEngine<D, R, S>
+impl<D, R, S, A> DeployEngine<D, R, S, A>
 where
     D: DomainReadinessPort,
     R: RuntimePort,
-    S: ServingPort,
+    S: ServingSnapshotPort,
+    A: ServingActivationPort,
 {
     pub fn deploy_https(
         &self,
@@ -261,7 +265,9 @@ where
             DeployPlanStep::AlreadyCurrent => observed
                 .serving
                 .ok_or(DeployFailure::ServingActivationFailed)?,
-            DeployPlanStep::Apply => self.commit_and_verify_serving(context, desired, &domain)?,
+            DeployPlanStep::Apply => {
+                self.commit_and_verify_serving(context, request, desired, &domain)?
+            }
         };
 
         Ok(DeployOutcome {
@@ -358,8 +364,17 @@ where
             desired.serving_target.clone(),
             desired.serving_generation,
         );
+        let commit_status = self
+            .serving_snapshots
+            .commit_status(&commit)
+            .map_err(DeployFailure::ServingFailed)?;
+        match commit_status.try_confirm_commit(&commit) {
+            Ok(ServingCommitMatch::Current) => {}
+            Ok(ServingCommitMatch::Missing) => return Ok(None),
+            Err(error) => return Err(DeployFailure::ServingFailed(error)),
+        }
         let activation = self
-            .serving
+            .serving_activation
             .activation_status(&commit)
             .map_err(DeployFailure::ServingFailed)?;
         match activation.try_acknowledge_commit(&commit) {
@@ -372,6 +387,7 @@ where
     fn commit_and_verify_serving(
         &self,
         context: &MutationContext,
+        request: &DeployRequest,
         desired: &DeployDesiredState,
         ready: &DomainReady,
     ) -> Result<ServingActivationProof, DeployFailure> {
@@ -383,12 +399,39 @@ where
             desired.serving_target.clone(),
             desired.serving_generation,
         );
-        self.serving
+        let receipt = self
+            .serving_snapshots
             .commit_snapshot(context, &commit)
+            .map_err(DeployFailure::ServingFailed)?;
+        match self
+            .serving_snapshots
+            .catch_up_commits(&receipt, request.deadline)
+            .map_err(DeployFailure::ServingFailed)?
+        {
+            ServingProjectionCatchUp::CaughtUp => {}
+            ServingProjectionCatchUp::TimedOut | ServingProjectionCatchUp::ProjectionFailed => {
+                return Err(DeployFailure::ServingFailed(
+                    ServingFailure::ProjectionStale,
+                ));
+            }
+            ServingProjectionCatchUp::FreshnessUnknown => {
+                return Err(DeployFailure::ServingFailed(
+                    ServingFailure::LiveObservationUnknown,
+                ));
+            }
+        }
+        self.serving_snapshots
+            .commit_status(&commit)
+            .map_err(DeployFailure::ServingFailed)?
+            .try_confirm_commit(&commit)
+            .and_then(|result| match result {
+                ServingCommitMatch::Current => Ok(()),
+                ServingCommitMatch::Missing => Err(ServingFailure::ProjectionStale),
+            })
             .map_err(DeployFailure::ServingFailed)?;
 
         let activation = self
-            .serving
+            .serving_activation
             .activation_status(&commit)
             .map_err(DeployFailure::ServingFailed)?;
         activation
