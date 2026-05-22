@@ -5,8 +5,8 @@ use std::time::SystemTime;
 use thiserror::Error;
 
 use crate::acme::{
-    CertificateDeadline, CertificatePort, CertificateUnusableReason, CertificateUsability,
-    CertificateWaitReason, EnsureCertificateOutcome, Hostname, HttpsBinding,
+    CertificateDeadline, CertificatePort, CertificateStatus, CertificateUnusableReason,
+    CertificateUsability, CertificateWaitReason, EnsureCertificateOutcome, Hostname, HttpsBinding,
     certificate_unusable_reason,
 };
 use crate::error::{CertificateFailure, ServingFailure};
@@ -313,6 +313,13 @@ pub trait DomainClaimPort {
 }
 
 pub trait DomainCertificatePort {
+    fn observe_usable_certificate(
+        &self,
+        context: &MutationContext,
+        domain: &DomainName,
+        policy: CertificatePolicy,
+    ) -> Result<Option<UsableDomainCertificate>, DomainFailure>;
+
     fn ensure_usable_certificate(
         &self,
         context: &MutationContext,
@@ -331,6 +338,26 @@ impl<T> DomainCertificatePort for T
 where
     T: CertificatePort,
 {
+    fn observe_usable_certificate(
+        &self,
+        _context: &MutationContext,
+        domain: &DomainName,
+        policy: CertificatePolicy,
+    ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
+        let binding = domain.https_binding()?;
+        match self
+            .status(&binding)
+            .map_err(DomainFailure::CertificateFailed)?
+        {
+            CertificateStatus::Present(certificate) => {
+                Ok(UsableDomainCertificate::new(domain, certificate, policy).ok())
+            }
+            CertificateStatus::Absent
+            | CertificateStatus::Unusable(_)
+            | CertificateStatus::Unknown => Ok(None),
+        }
+    }
+
     fn ensure_usable_certificate(
         &self,
         context: &MutationContext,
@@ -567,11 +594,12 @@ where
         if record.domain() != &request.domain {
             return Ok(None);
         }
-        let Ok(certificate) = UsableDomainCertificate::new(
+        let Some(certificate) = self.certificates.observe_usable_certificate(
+            context,
             &request.domain,
-            record.certificate().clone(),
             request.certificate_policy,
-        ) else {
+        )?
+        else {
             return Ok(None);
         };
         match self.serving.verify_certificate_activation(
@@ -761,6 +789,82 @@ mod tests {
     }
 
     #[test]
+    fn verify_ready_rechecks_current_certificate_before_reusing_record() {
+        let stored_ready = DomainReady::new(
+            domain(),
+            UsableDomainCertificate::new(
+                &domain(),
+                certificate(),
+                CertificatePolicy {
+                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("usable certificate"),
+            DomainServingActivation::active(ServingGeneration::new(7)),
+        );
+        let mut revoked_certificate = certificate();
+        revoked_certificate.revocation = RevocationFreshness::KnownRevoked;
+        let records = FakeRecords::with_status(DomainStatus::Ready(stored_ready.record()));
+        let claims = CountingClaims::default();
+        let domains = DomainReadinessService::new(
+            claims.clone(),
+            FakeCertificates {
+                certificate: revoked_certificate,
+            },
+            FakeServing::success(),
+            records.clone(),
+        );
+
+        assert_eq!(
+            domains.verify_ready(&context(), add()),
+            Err(DomainFailure::UnknownReadiness)
+        );
+        assert!(records.recorded.borrow().is_empty());
+        assert_eq!(*claims.count.borrow(), 0);
+    }
+
+    #[test]
+    fn stored_ready_with_stale_current_certificate_takes_fresh_path() {
+        let stored_ready = DomainReady::new(
+            domain(),
+            UsableDomainCertificate::new(
+                &domain(),
+                certificate(),
+                CertificatePolicy {
+                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
+                },
+            )
+            .expect("usable certificate"),
+            DomainServingActivation::active(ServingGeneration::new(7)),
+        );
+        let mut current_certificate = certificate();
+        current_certificate.revocation = RevocationFreshness::KnownRevoked;
+        let records = FakeRecords::with_status(DomainStatus::Ready(stored_ready.record()));
+        let claims = CountingClaims::default();
+        let domains = DomainReadinessService::new(
+            claims.clone(),
+            RefreshingCertificates {
+                observed: current_certificate,
+                issued: certificate(),
+            },
+            FakeServing::success(),
+            records,
+        );
+
+        let refreshed = expect_ready(
+            domains
+                .ensure_ready(&context(), add())
+                .expect("fresh readiness"),
+        );
+
+        assert_eq!(
+            refreshed.serving().checkpoint().generation(),
+            ServingGeneration::new(7)
+        );
+        assert_eq!(*claims.count.borrow(), 1);
+    }
+
+    #[test]
     fn fact_backed_ready_status_is_reused_without_fresh_mutations() {
         let ready = DomainReady::new(
             domain(),
@@ -892,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_stored_ready_certificate_takes_fresh_certificate_path() {
+    fn stale_stored_ready_certificate_reuses_current_certificate_observation() {
         let mut stale_certificate = certificate();
         stale_certificate.not_after = UNIX_EPOCH + Duration::from_secs(30);
         let ready = DomainReadyRecord::new(domain(), stale_certificate, ServingGeneration::new(7))
@@ -918,7 +1022,8 @@ mod tests {
             refreshed.serving().checkpoint().generation(),
             ServingGeneration::new(7)
         );
-        assert_eq!(*claims.count.borrow(), 1);
+        assert_eq!(refreshed.certificate().certificate(), &certificate());
+        assert_eq!(*claims.count.borrow(), 0);
     }
 
     #[test]
@@ -1203,6 +1308,15 @@ mod tests {
     }
 
     impl DomainCertificatePort for FakeCertificates {
+        fn observe_usable_certificate(
+            &self,
+            _context: &MutationContext,
+            domain: &DomainName,
+            policy: CertificatePolicy,
+        ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
+            Ok(UsableDomainCertificate::new(domain, self.certificate.clone(), policy).ok())
+        }
+
         fn ensure_usable_certificate(
             &self,
             _context: &MutationContext,
@@ -1221,6 +1335,15 @@ mod tests {
     }
 
     impl DomainCertificatePort for PendingCertificates {
+        fn observe_usable_certificate(
+            &self,
+            _context: &MutationContext,
+            _domain: &DomainName,
+            _policy: CertificatePolicy,
+        ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
+            Ok(None)
+        }
+
         fn ensure_usable_certificate(
             &self,
             _context: &MutationContext,
@@ -1228,6 +1351,34 @@ mod tests {
             _policy: CertificatePolicy,
         ) -> Result<DomainCertificateReadiness, DomainFailure> {
             Ok(DomainCertificateReadiness::Pending(self.reason.clone()))
+        }
+    }
+
+    #[derive(Clone)]
+    struct RefreshingCertificates {
+        observed: CertificateUsability,
+        issued: CertificateUsability,
+    }
+
+    impl DomainCertificatePort for RefreshingCertificates {
+        fn observe_usable_certificate(
+            &self,
+            _context: &MutationContext,
+            domain: &DomainName,
+            policy: CertificatePolicy,
+        ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
+            Ok(UsableDomainCertificate::new(domain, self.observed.clone(), policy).ok())
+        }
+
+        fn ensure_usable_certificate(
+            &self,
+            _context: &MutationContext,
+            claim: &DomainClaim,
+            policy: CertificatePolicy,
+        ) -> Result<DomainCertificateReadiness, DomainFailure> {
+            Ok(DomainCertificateReadiness::Usable(
+                UsableDomainCertificate::new(claim.domain(), self.issued.clone(), policy)?,
+            ))
         }
     }
 
