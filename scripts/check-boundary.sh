@@ -3,6 +3,7 @@ set -euo pipefail
 
 RAW_IMPORT_PATTERN='\b(use +)?(polis|p2panda|iroh)(::|\s+as\s+|\s*\{)|\bextern +crate +(polis|p2panda|iroh)\b|::mvp_'
 RAW_SUBSTRATE_PATTERN='\b(RawRecord|AuthorizedRecord|ProjectionInput|RecordSource|ProofMetadata|CandidateStatus|candidate_status|VerifiedFact|FactReducer|MemoryFactStore|MemoryProjectionSource|Fact(Append|Candidate|Conflict|Cursor|Grant|Id|Key|Kind|Payload|Query|Receipt|Rejection|Replay|Store|Target|Write)[A-Za-z0-9_]*|Projection(CatchUp|Error|Freshness|Health|Key|Request|Snapshot|Source|View)[A-Za-z0-9_]*)\b'
+RAW_ATTEMPT_PATTERN='\b(CommandRunner|AttemptLog|AttemptBackend|AttemptReplay|AttemptRequest|AttemptStart|IssuedProductAttempt|IssuedDeployCommand|IssuedVolumeTransferCommand|OpenAttempt|TerminalMarker|MutationIntent|CommandPayload|CommandKind|FingerprintedResource|record_evidence|terminalize|begin_attempt|begin_typed_attempt)\b'
 
 feature_files() {
   find crates/ployz/src -type f -name '*.rs' \
@@ -59,10 +60,18 @@ run_self_test() {
   fi
 
   reset_fixture
+  printf 'pub struct Bad(AttemptRequest);\n' > "$tmp/crates/ployz/src/deploy/mod.rs"
+  if ! scan_feature_files "$tmp" "$RAW_ATTEMPT_PATTERN" >/dev/null; then
+    echo "boundary self-test failed to catch raw attempt orchestration" >&2
+    exit 1
+  fi
+
+  reset_fixture
   printf 'use crate::facts::ProductFactCursor;\npub struct Good(ProductFactCursor);\n' \
     > "$tmp/crates/ployz/src/deploy/mod.rs"
   if scan_feature_files "$tmp" "$RAW_IMPORT_PATTERN" >/dev/null \
-    || scan_feature_files "$tmp" "$RAW_SUBSTRATE_PATTERN" >/dev/null; then
+    || scan_feature_files "$tmp" "$RAW_SUBSTRATE_PATTERN" >/dev/null \
+    || scan_feature_files "$tmp" "$RAW_ATTEMPT_PATTERN" >/dev/null; then
     echo "boundary self-test rejected product-owned fact vocabulary" >&2
     exit 1
   fi
@@ -105,5 +114,10 @@ fi
 
 if scan_feature_files "." "$RAW_SUBSTRATE_PATTERN"; then
   echo "ployz feature modules must not mention raw substrate record/projection internals" >&2
+  exit 1
+fi
+
+if scan_feature_files "." "$RAW_ATTEMPT_PATTERN"; then
+  echo "ployz feature modules must not mention generic attempt or command-runner orchestration" >&2
   exit 1
 fi
