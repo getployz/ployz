@@ -19,6 +19,11 @@ impl OperationId {
         }
         Ok(Self(value))
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,6 +36,11 @@ impl IdempotencyKey {
             return Err(Error::MalformedPayload);
         }
         Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

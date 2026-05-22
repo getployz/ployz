@@ -14,14 +14,25 @@
 pub mod authority;
 pub mod claims;
 pub mod error;
+pub mod facts;
 pub mod identity;
 pub mod operations;
 
-pub use authority::{Authority, AuthorityDecision, AuthorityService, Authorized, GrantEpoch};
+pub use authority::{
+    Authority, AuthorityContext, AuthorityDecision, AuthorityService, Authorized, GrantEpoch,
+};
 pub use claims::{
     ClaimEpoch, ClaimGuard, ClaimHash, ClaimLease, FenceCheck, FenceToken, HolderId, ResourceId,
 };
 pub use error::{Error, Result};
+pub use facts::{
+    CandidateStatus, FactAppendFingerprint, FactAppendOutcome, FactAppendRequest, FactAppendScope,
+    FactAppendValidation, FactCandidate, FactCandidateSet, FactConflict, FactCursor,
+    FactGrantAuthority, FactGrantDecision, FactGrantPurpose, FactGrantService, FactId, FactKey,
+    FactKind, FactPayload, FactPayloadBatch, FactPayloadDigest, FactPayloadReadFailure, FactQuery,
+    FactReceipt, FactRejection, FactReplayKey, FactStore, FactTarget, FactWriteGrant,
+    MemoryFactStore, ValidatedFactAppend,
+};
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};
 pub use operations::{
     AttemptReplay, AttemptRequest, AttemptStart, AttemptTerminal, BackendOperationStart,
@@ -35,7 +46,14 @@ pub use operations::{
 mod tests {
     #[test]
     fn crate_has_no_product_modules() {
-        let public_modules = ["authority", "claims", "error", "identity", "operations"];
+        let public_modules = [
+            "authority",
+            "claims",
+            "error",
+            "facts",
+            "identity",
+            "operations",
+        ];
 
         assert!(!public_modules.contains(&"deploy"));
         assert!(!public_modules.contains(&"acme"));
