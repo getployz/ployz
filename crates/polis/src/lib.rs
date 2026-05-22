@@ -36,11 +36,14 @@ pub use facts::{
 };
 pub use identity::{PrincipalId, ScopeId, SourceWatermark};
 pub use operations::{
-    AttemptReplay, AttemptRequest, AttemptStart, AttemptTerminal, BackendOperationStart,
-    CommandKind, EvidenceKind, FingerprintedResource, IdempotencyKey, OpenAttempt, OpenOperation,
-    OperationBackend, OperationEvidence, OperationId, OperationReplay, OperationReplayStatus,
-    OperationRequest, OperationStart, RequestFingerprint, RequestFingerprintBuilder,
-    SubmittedFenceFingerprint, TerminalMarker, begin_attempt, close, record, start_or_replay,
+    AttemptFailureCodec, AttemptFailureDecodeError, AttemptReplay, AttemptRequest, AttemptStart,
+    AttemptTerminal, BackendOperationStart, CommandKind, EvidenceKind, FingerprintedResource,
+    IdempotencyKey, OpenAttempt, OpenOperation, OperationBackend, OperationEvidence, OperationId,
+    OperationReplay, OperationReplayStatus, OperationRequest, OperationStart, RequestFingerprint,
+    RequestFingerprintBuilder, SubmittedFenceFingerprint, TerminalMarker, TypedAttemptError,
+    TypedAttemptReplay, TypedAttemptRequest, TypedAttemptResult, TypedAttemptStart,
+    TypedOpenAttempt, begin_attempt, begin_typed_attempt, close, record, replay_typed_attempt,
+    start_or_replay,
 };
 pub use projection::{
     FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,

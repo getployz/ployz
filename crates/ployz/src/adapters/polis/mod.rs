@@ -616,12 +616,12 @@ where
         request: &CertificateIssueRequest,
     ) -> Result<CertificateIssueOutcome, CertificateFailure> {
         let attempt_request = certificate_attempt_request(context, request)?;
-        match polis::begin_attempt(&self.attempts, attempt_request.clone())
-            .map_err(map_polis_certificate_error)?
+        match polis::begin_typed_attempt(&self.attempts, attempt_request.clone())
+            .map_err(map_typed_attempt_certificate_error)?
         {
-            polis::AttemptStart::Started(attempt) => {
+            polis::TypedAttemptStart::Started(attempt) => {
                 if let Err(failure) = self.issuer.issue_certificate(context, request) {
-                    return match attempt.failed(certificate_failure_payload(&failure)) {
+                    return match attempt.failed(&failure) {
                         Ok(()) => Err(failure),
                         Err(error) => self.replay_or_map_terminal_error(&attempt_request, error),
                     };
@@ -637,24 +637,25 @@ where
                     Err(error) => self.replay_or_map_terminal_error(&attempt_request, error),
                 }
             }
-            polis::AttemptStart::Replayed(polis::AttemptReplay::Succeeded { .. }) => {
+            polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Succeeded { .. }) => {
                 Ok(CertificateIssueOutcome::Replayed)
             }
-            polis::AttemptStart::Replayed(polis::AttemptReplay::Open {
+            polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Open {
                 operation,
                 owner_deadline,
             }) if owner_deadline <= SystemTime::now() => {
                 self.interrupt_expired_attempt(&attempt_request, &operation)
             }
-            polis::AttemptStart::Replayed(polis::AttemptReplay::Open { .. }) => {
+            polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Open { .. }) => {
                 Ok(CertificateIssueOutcome::InProgress)
             }
-            polis::AttemptStart::Replayed(polis::AttemptReplay::Interrupted { .. }) => {
-                Ok(CertificateIssueOutcome::Interrupted)
-            }
-            polis::AttemptStart::Replayed(polis::AttemptReplay::Failed { payload, .. }) => {
-                Err(certificate_failure_from_payload(&payload))
-            }
+            polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Interrupted {
+                ..
+            }) => Ok(CertificateIssueOutcome::Interrupted),
+            polis::TypedAttemptStart::Replayed(polis::TypedAttemptReplay::Failed {
+                failure,
+                ..
+            }) => Err(failure),
         }
     }
 }
@@ -669,7 +670,7 @@ where
 {
     fn interrupt_expired_attempt(
         &self,
-        request: &polis::AttemptRequest,
+        request: &polis::TypedAttemptRequest<CertificateFailureCodec>,
         operation: &polis::OperationId,
     ) -> Result<CertificateIssueOutcome, CertificateFailure> {
         match self
@@ -686,41 +687,23 @@ where
 
     fn replay_after_terminal_conflict(
         &self,
-        request: &polis::AttemptRequest,
+        request: &polis::TypedAttemptRequest<CertificateFailureCodec>,
     ) -> Result<CertificateIssueOutcome, CertificateFailure> {
-        let operation_request = polis::OperationRequest::new(
-            request.operation().clone(),
-            request.idempotency().clone(),
-            request.fingerprint().clone(),
-            request.owner_deadline(),
-        );
-        match self
-            .attempts
-            .start_or_replay(&operation_request)
-            .map_err(map_polis_certificate_error)?
+        match polis::replay_typed_attempt(&self.attempts, request)
+            .map_err(map_typed_attempt_certificate_error)?
         {
-            polis::BackendOperationStart::Started => Err(CertificateFailure::IssuanceFailed),
-            polis::BackendOperationStart::Replayed {
-                terminal: Some(polis::TerminalMarker::Succeeded),
-                ..
-            } => Ok(CertificateIssueOutcome::Replayed),
-            polis::BackendOperationStart::Replayed {
-                terminal: Some(polis::TerminalMarker::Failed(payload)),
-                ..
-            } => Err(certificate_failure_from_payload(&payload)),
-            polis::BackendOperationStart::Replayed {
-                terminal: Some(polis::TerminalMarker::Interrupted),
-                ..
-            } => Ok(CertificateIssueOutcome::Interrupted),
-            polis::BackendOperationStart::Replayed { terminal: None, .. } => {
-                Err(CertificateFailure::FreshnessUnknown)
+            polis::TypedAttemptReplay::Succeeded { .. } => Ok(CertificateIssueOutcome::Replayed),
+            polis::TypedAttemptReplay::Failed { failure, .. } => Err(failure),
+            polis::TypedAttemptReplay::Interrupted { .. } => {
+                Ok(CertificateIssueOutcome::Interrupted)
             }
+            polis::TypedAttemptReplay::Open { .. } => Err(CertificateFailure::FreshnessUnknown),
         }
     }
 
     fn replay_or_map_terminal_error(
         &self,
-        request: &polis::AttemptRequest,
+        request: &polis::TypedAttemptRequest<CertificateFailureCodec>,
         error: polis::Error,
     ) -> Result<CertificateIssueOutcome, CertificateFailure> {
         match error {
@@ -743,7 +726,7 @@ where
 fn certificate_attempt_request(
     context: &MutationContext,
     request: &CertificateIssueRequest,
-) -> Result<polis::AttemptRequest, CertificateFailure> {
+) -> Result<polis::TypedAttemptRequest<CertificateFailureCodec>, CertificateFailure> {
     let hostname = request.binding.hostname.as_str();
     let actor = polis::PrincipalId::parse(context.authority().principal().as_str())
         .map_err(map_polis_certificate_error)?;
@@ -765,7 +748,7 @@ fn certificate_attempt_request(
     .resource(resource)
     .finish()
     .map_err(map_polis_certificate_error)?;
-    Ok(polis::AttemptRequest::new(
+    Ok(polis::TypedAttemptRequest::new(polis::AttemptRequest::new(
         polis::OperationId::parse(format!(
             "{}:acme-issue:{hostname}",
             context.operation().as_str()
@@ -778,7 +761,7 @@ fn certificate_attempt_request(
         .map_err(map_polis_certificate_error)?,
         fingerprint,
         context.deadline(),
-    ))
+    )))
 }
 
 #[allow(
@@ -804,16 +787,12 @@ fn map_polis_certificate_error(error: polis::Error) -> CertificateFailure {
     dead_code,
     reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
 )]
-fn certificate_failure_payload(failure: &CertificateFailure) -> Vec<u8> {
-    match failure {
-        CertificateFailure::UnauthorizedBinding => b"unauthorized_binding".to_vec(),
-        CertificateFailure::ChallengeFailed => b"challenge_failed".to_vec(),
-        CertificateFailure::IssuanceFailed => b"issuance_failed".to_vec(),
-        CertificateFailure::MaterialUnsafe => b"material_unsafe".to_vec(),
-        CertificateFailure::SafetyWindowFailed => b"safety_window_failed".to_vec(),
-        CertificateFailure::KnownRevoked => b"known_revoked".to_vec(),
-        CertificateFailure::FreshnessUnknown => b"freshness_unknown".to_vec(),
-        CertificateFailure::ActivationRejected => b"activation_rejected".to_vec(),
+fn map_typed_attempt_certificate_error(error: polis::TypedAttemptError) -> CertificateFailure {
+    match error {
+        polis::TypedAttemptError::Primitive(error) => map_polis_certificate_error(error),
+        polis::TypedAttemptError::MalformedFailurePayload { .. } => {
+            CertificateFailure::FreshnessUnknown
+        }
     }
 }
 
@@ -821,17 +800,38 @@ fn certificate_failure_payload(failure: &CertificateFailure) -> Vec<u8> {
     dead_code,
     reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
 )]
-fn certificate_failure_from_payload(payload: &[u8]) -> CertificateFailure {
-    match payload {
-        b"unauthorized_binding" => CertificateFailure::UnauthorizedBinding,
-        b"challenge_failed" => CertificateFailure::ChallengeFailed,
-        b"issuance_failed" => CertificateFailure::IssuanceFailed,
-        b"material_unsafe" => CertificateFailure::MaterialUnsafe,
-        b"safety_window_failed" => CertificateFailure::SafetyWindowFailed,
-        b"known_revoked" => CertificateFailure::KnownRevoked,
-        b"freshness_unknown" => CertificateFailure::FreshnessUnknown,
-        b"activation_rejected" => CertificateFailure::ActivationRejected,
-        _ => CertificateFailure::IssuanceFailed,
+struct CertificateFailureCodec;
+
+impl polis::AttemptFailureCodec for CertificateFailureCodec {
+    type Failure = CertificateFailure;
+
+    fn encode_failure(failure: &Self::Failure) -> Vec<u8> {
+        match failure {
+            CertificateFailure::UnauthorizedBinding => b"unauthorized_binding".to_vec(),
+            CertificateFailure::ChallengeFailed => b"challenge_failed".to_vec(),
+            CertificateFailure::IssuanceFailed => b"issuance_failed".to_vec(),
+            CertificateFailure::MaterialUnsafe => b"material_unsafe".to_vec(),
+            CertificateFailure::SafetyWindowFailed => b"safety_window_failed".to_vec(),
+            CertificateFailure::KnownRevoked => b"known_revoked".to_vec(),
+            CertificateFailure::FreshnessUnknown => b"freshness_unknown".to_vec(),
+            CertificateFailure::ActivationRejected => b"activation_rejected".to_vec(),
+        }
+    }
+
+    fn decode_failure(
+        payload: &[u8],
+    ) -> std::result::Result<Self::Failure, polis::AttemptFailureDecodeError> {
+        match payload {
+            b"unauthorized_binding" => Ok(CertificateFailure::UnauthorizedBinding),
+            b"challenge_failed" => Ok(CertificateFailure::ChallengeFailed),
+            b"issuance_failed" => Ok(CertificateFailure::IssuanceFailed),
+            b"material_unsafe" => Ok(CertificateFailure::MaterialUnsafe),
+            b"safety_window_failed" => Ok(CertificateFailure::SafetyWindowFailed),
+            b"known_revoked" => Ok(CertificateFailure::KnownRevoked),
+            b"freshness_unknown" => Ok(CertificateFailure::FreshnessUnknown),
+            b"activation_rejected" => Ok(CertificateFailure::ActivationRejected),
+            _ => Err(polis::AttemptFailureDecodeError),
+        }
     }
 }
 
@@ -1200,7 +1200,9 @@ mod tests {
     fn expired_open_replay_close_conflict_replays_failed_terminal() {
         let backend = FakeOperationBackend::with_open_replay_then_close_conflict(
             UNIX_EPOCH,
-            Some(polis::TerminalMarker::Failed(b"challenge_failed".to_vec())),
+            Some(certificate_failed_marker(
+                CertificateFailure::ChallengeFailed,
+            )),
         );
         let authority = FakeCertificateAuthority::default();
         let issuer = AttemptingCertificateIssuer::new(backend, authority.clone());
@@ -1231,14 +1233,16 @@ mod tests {
                 .values()
                 .cloned()
                 .collect::<Vec<_>>(),
-            vec![polis::TerminalMarker::Failed(b"challenge_failed".to_vec())]
+            vec![certificate_failed_marker(
+                CertificateFailure::ChallengeFailed
+            )]
         );
     }
 
     #[test]
     fn failed_replay_preserves_certificate_failure_class() {
-        let backend = FakeOperationBackend::with_replay(Some(polis::TerminalMarker::Failed(
-            b"challenge_failed".to_vec(),
+        let backend = FakeOperationBackend::with_replay(Some(certificate_failed_marker(
+            CertificateFailure::ChallengeFailed,
         )));
         let authority = FakeCertificateAuthority::default();
         let issuer = AttemptingCertificateIssuer::new(backend, authority.clone());
@@ -1248,6 +1252,22 @@ mod tests {
             .expect_err("failed replay");
 
         assert_eq!(error, CertificateFailure::ChallengeFailed);
+        assert_eq!(*authority.calls.borrow(), 0);
+    }
+
+    #[test]
+    fn malformed_failed_replay_reports_freshness_unknown() {
+        let backend = FakeOperationBackend::with_replay(Some(polis::TerminalMarker::Failed(
+            b"unknown_certificate_failure".to_vec(),
+        )));
+        let authority = FakeCertificateAuthority::default();
+        let issuer = AttemptingCertificateIssuer::new(backend, authority.clone());
+
+        let error = issuer
+            .issue_certificate(&context(), &request())
+            .expect_err("malformed replay");
+
+        assert_eq!(error, CertificateFailure::FreshnessUnknown);
         assert_eq!(*authority.calls.borrow(), 0);
     }
 
@@ -1286,7 +1306,7 @@ mod tests {
     #[test]
     fn started_success_close_conflict_replays_actual_failed_terminal() {
         let backend = FakeOperationBackend::with_started_then_close_conflict(Some(
-            polis::TerminalMarker::Failed(b"challenge_failed".to_vec()),
+            certificate_failed_marker(CertificateFailure::ChallengeFailed),
         ));
         let authority = FakeCertificateAuthority::default();
         let issuer = AttemptingCertificateIssuer::new(backend, authority.clone());
@@ -1455,6 +1475,12 @@ mod tests {
             *self.calls.borrow_mut() += 1;
             self.result.clone()
         }
+    }
+
+    fn certificate_failed_marker(failure: CertificateFailure) -> polis::TerminalMarker {
+        polis::TerminalMarker::Failed(
+            <CertificateFailureCodec as polis::AttemptFailureCodec>::encode_failure(&failure),
+        )
     }
 
     fn context() -> MutationContext {
