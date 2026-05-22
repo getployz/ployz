@@ -47,35 +47,35 @@ impl IdempotencyKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequestFingerprint {
+pub struct AttemptFingerprint {
     actor: PrincipalId,
     scope: ScopeId,
-    command: CommandKind,
+    command: AttemptKind,
     payload_hash: Vec<u8>,
     request_hash: Vec<u8>,
-    resources: Vec<FingerprintedResource>,
+    resources: Vec<AttemptResource>,
     submitted_fence: Option<Box<SubmittedFenceFingerprint>>,
     authority_epoch: GrantEpoch,
 }
 
-impl RequestFingerprint {
+impl AttemptFingerprint {
     #[must_use]
     pub fn builder(
         actor: PrincipalId,
         scope: ScopeId,
-        command: CommandKind,
+        command: AttemptKind,
         schema: impl Into<String>,
         authority_epoch: GrantEpoch,
-    ) -> RequestFingerprintBuilder {
-        RequestFingerprintBuilder::new(actor, scope, command, schema, authority_epoch)
+    ) -> AttemptFingerprintBuilder {
+        AttemptFingerprintBuilder::new(actor, scope, command, schema, authority_epoch)
     }
 
     pub fn new(
         actor: PrincipalId,
         scope: ScopeId,
-        command: CommandKind,
+        command: AttemptKind,
         payload_hash: Vec<u8>,
-        resources: Vec<FingerprintedResource>,
+        resources: Vec<AttemptResource>,
         submitted_fence: Option<SubmittedFenceFingerprint>,
         authority_epoch: GrantEpoch,
     ) -> Result<Self> {
@@ -117,7 +117,7 @@ impl RequestFingerprint {
     }
 
     #[must_use]
-    pub fn command(&self) -> &CommandKind {
+    pub fn command(&self) -> &AttemptKind {
         &self.command
     }
 
@@ -132,7 +132,7 @@ impl RequestFingerprint {
     }
 
     #[must_use]
-    pub fn resources(&self) -> &[FingerprintedResource] {
+    pub fn resources(&self) -> &[AttemptResource] {
         &self.resources
     }
 
@@ -147,23 +147,23 @@ impl RequestFingerprint {
     }
 }
 
-pub struct RequestFingerprintBuilder {
+pub struct AttemptFingerprintBuilder {
     actor: PrincipalId,
     scope: ScopeId,
-    command: CommandKind,
+    command: AttemptKind,
     schema: String,
     fields: Vec<FingerprintField>,
-    resources: Vec<FingerprintedResource>,
+    resources: Vec<AttemptResource>,
     submitted_fence: Option<SubmittedFenceFingerprint>,
     authority_epoch: GrantEpoch,
 }
 
-impl RequestFingerprintBuilder {
+impl AttemptFingerprintBuilder {
     #[must_use]
     fn new(
         actor: PrincipalId,
         scope: ScopeId,
-        command: CommandKind,
+        command: AttemptKind,
         schema: impl Into<String>,
         authority_epoch: GrantEpoch,
     ) -> Self {
@@ -207,7 +207,7 @@ impl RequestFingerprintBuilder {
     }
 
     #[must_use]
-    pub fn resource(mut self, resource: FingerprintedResource) -> Self {
+    pub fn resource(mut self, resource: AttemptResource) -> Self {
         self.resources.push(resource);
         self
     }
@@ -218,13 +218,13 @@ impl RequestFingerprintBuilder {
         self
     }
 
-    pub fn finish(self) -> Result<RequestFingerprint> {
+    pub fn finish(self) -> Result<AttemptFingerprint> {
         if self.schema.trim().is_empty() || self.fields.is_empty() || self.resources.is_empty() {
             return Err(Error::MalformedPayload);
         }
 
         let payload_hash = canonical_payload_digest(&self.schema, self.fields)?;
-        RequestFingerprint::new(
+        AttemptFingerprint::new(
             self.actor,
             self.scope,
             self.command,
@@ -251,7 +251,7 @@ enum FingerprintValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SubmittedFenceFingerprint {
-    resource: FingerprintedResource,
+    resource: AttemptResource,
     holder: PrincipalId,
     epoch: u64,
     claim_hash: Vec<u8>,
@@ -259,7 +259,7 @@ pub struct SubmittedFenceFingerprint {
 
 impl SubmittedFenceFingerprint {
     pub fn new(
-        resource: FingerprintedResource,
+        resource: AttemptResource,
         holder: PrincipalId,
         epoch: u64,
         claim_hash: impl Into<Vec<u8>>,
@@ -285,7 +285,7 @@ impl SubmittedFenceFingerprint {
         epoch: u64,
         claim_hash: impl Into<Vec<u8>>,
     ) -> Result<Self> {
-        let resource = FingerprintedResource::parse(resource)?;
+        let resource = AttemptResource::parse(resource)?;
         let holder = PrincipalId::parse(holder)?;
         Self::new(resource, holder, epoch, claim_hash)
     }
@@ -312,9 +312,9 @@ impl SubmittedFenceFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CommandKind(String);
+pub struct AttemptKind(String);
 
-impl CommandKind {
+impl AttemptKind {
     pub fn parse(value: impl Into<String>) -> Result<Self> {
         parse_non_empty(value, Self)
     }
@@ -326,9 +326,9 @@ impl CommandKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FingerprintedResource(String);
+pub struct AttemptResource(String);
 
-impl FingerprintedResource {
+impl AttemptResource {
     pub fn parse(value: impl Into<String>) -> Result<Self> {
         parse_non_empty(value, Self)
     }
@@ -340,19 +340,19 @@ impl FingerprintedResource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationRequest {
+pub struct AttemptBackendRequest {
     operation: OperationId,
     idempotency: IdempotencyKey,
-    fingerprint: RequestFingerprint,
+    fingerprint: AttemptFingerprint,
     owner_deadline: SystemTime,
 }
 
-impl OperationRequest {
+impl AttemptBackendRequest {
     #[must_use]
     pub fn new(
         operation: OperationId,
         idempotency: IdempotencyKey,
-        fingerprint: RequestFingerprint,
+        fingerprint: AttemptFingerprint,
         owner_deadline: SystemTime,
     ) -> Self {
         Self {
@@ -374,7 +374,7 @@ impl OperationRequest {
     }
 
     #[must_use]
-    pub fn fingerprint(&self) -> &RequestFingerprint {
+    pub fn fingerprint(&self) -> &AttemptFingerprint {
         &self.fingerprint
     }
 
@@ -388,7 +388,7 @@ impl OperationRequest {
 pub struct AttemptRequest {
     operation: OperationId,
     idempotency: IdempotencyKey,
-    fingerprint: RequestFingerprint,
+    fingerprint: AttemptFingerprint,
     owner_deadline: SystemTime,
 }
 
@@ -397,7 +397,7 @@ impl AttemptRequest {
     pub fn new(
         operation: OperationId,
         idempotency: IdempotencyKey,
-        fingerprint: RequestFingerprint,
+        fingerprint: AttemptFingerprint,
         owner_deadline: SystemTime,
     ) -> Self {
         Self {
@@ -419,7 +419,7 @@ impl AttemptRequest {
     }
 
     #[must_use]
-    pub fn fingerprint(&self) -> &RequestFingerprint {
+    pub fn fingerprint(&self) -> &AttemptFingerprint {
         &self.fingerprint
     }
 
@@ -429,8 +429,8 @@ impl AttemptRequest {
     }
 
     #[must_use]
-    fn as_operation_request(&self) -> OperationRequest {
-        OperationRequest::new(
+    fn as_operation_request(&self) -> AttemptBackendRequest {
+        AttemptBackendRequest::new(
             self.operation.clone(),
             self.idempotency.clone(),
             self.fingerprint.clone(),
@@ -439,8 +439,8 @@ impl AttemptRequest {
     }
 }
 
-impl From<OperationRequest> for AttemptRequest {
-    fn from(request: OperationRequest) -> Self {
+impl From<AttemptBackendRequest> for AttemptRequest {
+    fn from(request: AttemptBackendRequest) -> Self {
         Self::new(
             request.operation,
             request.idempotency,
@@ -451,12 +451,15 @@ impl From<OperationRequest> for AttemptRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationStart {
+#[cfg(test)]
+enum OperationStart {
     Started(OpenOperation),
     Replayed(OperationReplay),
 }
 
-pub enum AttemptStart<'a> {
+#[cfg(test)]
+#[allow(dead_code)]
+enum AttemptStart<'a> {
     Started(OpenAttempt<'a>),
     Replayed(AttemptReplay),
 }
@@ -570,7 +573,7 @@ where
     }
 
     #[must_use]
-    pub fn fingerprint(&self) -> &RequestFingerprint {
+    pub fn fingerprint(&self) -> &AttemptFingerprint {
         self.request.fingerprint()
     }
 
@@ -580,7 +583,7 @@ where
     }
 
     #[must_use]
-    fn as_operation_request(&self) -> OperationRequest {
+    fn as_operation_request(&self) -> AttemptBackendRequest {
         self.request.as_operation_request()
     }
 }
@@ -594,11 +597,11 @@ where
     }
 }
 
-impl<C> From<OperationRequest> for TypedAttemptRequest<C>
+impl<C> From<AttemptBackendRequest> for TypedAttemptRequest<C>
 where
     C: AttemptFailureCodec,
 {
-    fn from(request: OperationRequest) -> Self {
+    fn from(request: AttemptBackendRequest) -> Self {
         Self::new(request.into())
     }
 }
@@ -638,38 +641,40 @@ pub enum AttemptTerminal {
 
 impl AttemptTerminal {
     #[must_use]
-    fn marker(self) -> TerminalMarker {
+    fn marker(self) -> AttemptTerminalMarker {
         match self {
-            Self::Succeeded => TerminalMarker::Succeeded,
-            Self::Failed(payload) => TerminalMarker::Failed(payload),
-            Self::Interrupted => TerminalMarker::Interrupted,
+            Self::Succeeded => AttemptTerminalMarker::Succeeded,
+            Self::Failed(payload) => AttemptTerminalMarker::Failed(payload),
+            Self::Interrupted => AttemptTerminalMarker::Interrupted,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackendOperationStart {
+pub enum AttemptBackendStart {
     Started,
     /// Existing operation found by a trusted durable backend after validating
     /// the idempotency key and request fingerprint.
     Replayed {
         operation: OperationId,
         owner_deadline: SystemTime,
-        terminal: Option<TerminalMarker>,
+        terminal: Option<AttemptTerminalMarker>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenOperation {
+#[cfg(test)]
+struct OpenOperation {
     operation: OperationId,
     idempotency: IdempotencyKey,
-    fingerprint: RequestFingerprint,
+    fingerprint: AttemptFingerprint,
     owner_deadline: SystemTime,
 }
 
+#[cfg(test)]
 impl OpenOperation {
     #[must_use]
-    fn from_request(request: &OperationRequest) -> Self {
+    fn from_request(request: &AttemptBackendRequest) -> Self {
         Self {
             operation: request.operation.clone(),
             idempotency: request.idempotency.clone(),
@@ -689,7 +694,7 @@ impl OpenOperation {
     }
 
     #[must_use]
-    pub fn fingerprint(&self) -> &RequestFingerprint {
+    pub fn fingerprint(&self) -> &AttemptFingerprint {
         &self.fingerprint
     }
 
@@ -702,14 +707,14 @@ impl OpenOperation {
 pub struct OpenAttempt<'a> {
     operation: OperationId,
     idempotency: IdempotencyKey,
-    fingerprint: RequestFingerprint,
-    backend: &'a dyn OperationBackend,
+    fingerprint: AttemptFingerprint,
+    backend: &'a dyn AttemptBackend,
     terminalized: bool,
 }
 
 impl<'a> OpenAttempt<'a> {
     #[must_use]
-    fn from_request(request: &OperationRequest, backend: &'a dyn OperationBackend) -> Self {
+    fn from_request(request: &AttemptBackendRequest, backend: &'a dyn AttemptBackend) -> Self {
         Self {
             operation: request.operation.clone(),
             idempotency: request.idempotency.clone(),
@@ -730,11 +735,11 @@ impl<'a> OpenAttempt<'a> {
     }
 
     #[must_use]
-    pub fn fingerprint(&self) -> &RequestFingerprint {
+    pub fn fingerprint(&self) -> &AttemptFingerprint {
         &self.fingerprint
     }
 
-    pub fn record(&self, evidence: OperationEvidence) -> Result<()> {
+    pub fn record(&self, evidence: AttemptEvidence) -> Result<()> {
         self.backend.record(&self.operation, evidence)
     }
 
@@ -772,7 +777,7 @@ impl Drop for OpenAttempt<'_> {
         }
         let _ = self
             .backend
-            .close(&self.operation, TerminalMarker::Interrupted);
+            .close(&self.operation, AttemptTerminalMarker::Interrupted);
     }
 }
 
@@ -807,11 +812,11 @@ where
     }
 
     #[must_use]
-    pub fn fingerprint(&self) -> &RequestFingerprint {
+    pub fn fingerprint(&self) -> &AttemptFingerprint {
         self.attempt.fingerprint()
     }
 
-    pub fn record(&self, evidence: OperationEvidence) -> Result<()> {
+    pub fn record(&self, evidence: AttemptEvidence) -> Result<()> {
         self.attempt.record(evidence)
     }
 
@@ -829,14 +834,16 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationReplay {
+#[cfg(test)]
+struct OperationReplay {
     operation: OperationId,
-    terminal: Option<TerminalMarker>,
+    terminal: Option<AttemptTerminalMarker>,
 }
 
+#[cfg(test)]
 impl OperationReplay {
     #[must_use]
-    fn from_backend(operation: OperationId, terminal: Option<TerminalMarker>) -> Self {
+    fn from_backend(operation: OperationId, terminal: Option<AttemptTerminalMarker>) -> Self {
         Self {
             operation,
             terminal,
@@ -844,28 +851,19 @@ impl OperationReplay {
     }
 
     #[must_use]
-    pub fn operation(&self) -> &OperationId {
-        &self.operation
-    }
-
-    #[must_use]
-    pub fn terminal(&self) -> Option<&TerminalMarker> {
-        self.terminal.as_ref()
-    }
-
-    #[must_use]
     pub fn status(&self) -> OperationReplayStatus<'_> {
         match self.terminal.as_ref() {
-            Some(TerminalMarker::Succeeded) => OperationReplayStatus::Succeeded,
-            Some(TerminalMarker::Failed(payload)) => OperationReplayStatus::Failed(payload),
-            Some(TerminalMarker::Interrupted) => OperationReplayStatus::Interrupted,
+            Some(AttemptTerminalMarker::Succeeded) => OperationReplayStatus::Succeeded,
+            Some(AttemptTerminalMarker::Failed(payload)) => OperationReplayStatus::Failed(payload),
+            Some(AttemptTerminalMarker::Interrupted) => OperationReplayStatus::Interrupted,
             None => OperationReplayStatus::Open,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperationReplayStatus<'a> {
+#[cfg(test)]
+enum OperationReplayStatus<'a> {
     Open,
     Succeeded,
     Failed(&'a [u8]),
@@ -873,20 +871,20 @@ pub enum OperationReplayStatus<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationEvidence {
+pub struct AttemptEvidence {
     pub recorded_at: SystemTime,
-    pub kind: EvidenceKind,
+    pub kind: AttemptEvidenceKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EvidenceKind {
+pub enum AttemptEvidenceKind {
     Checkpoint(Vec<u8>),
     Observation(Vec<u8>),
     Failure(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalMarker {
+pub enum AttemptTerminalMarker {
     Succeeded,
     Failed(Vec<u8>),
     Interrupted,
@@ -897,23 +895,24 @@ pub enum TerminalMarker {
 /// Implementations must validate idempotency keys against the full request
 /// fingerprint before returning a replay decision. Polis uses that backend
 /// decision to mint the lifecycle proof values exposed to callers.
-pub trait OperationBackend {
-    fn start_or_replay(&self, request: &OperationRequest) -> Result<BackendOperationStart>;
+pub trait AttemptBackend {
+    fn start_or_replay(&self, request: &AttemptBackendRequest) -> Result<AttemptBackendStart>;
 
-    fn record(&self, operation: &OperationId, evidence: OperationEvidence) -> Result<()>;
+    fn record(&self, operation: &OperationId, evidence: AttemptEvidence) -> Result<()>;
 
-    fn close(&self, operation: &OperationId, marker: TerminalMarker) -> Result<()>;
+    fn close(&self, operation: &OperationId, marker: AttemptTerminalMarker) -> Result<()>;
 }
 
-pub fn start_or_replay(
-    backend: &dyn OperationBackend,
-    request: OperationRequest,
+#[cfg(test)]
+fn start_or_replay(
+    backend: &dyn AttemptBackend,
+    request: AttemptBackendRequest,
 ) -> Result<OperationStart> {
     match backend.start_or_replay(&request)? {
-        BackendOperationStart::Started => Ok(OperationStart::Started(OpenOperation::from_request(
+        AttemptBackendStart::Started => Ok(OperationStart::Started(OpenOperation::from_request(
             &request,
         ))),
-        BackendOperationStart::Replayed {
+        AttemptBackendStart::Replayed {
             operation,
             owner_deadline: _,
             terminal,
@@ -923,18 +922,19 @@ pub fn start_or_replay(
     }
 }
 
-pub fn begin_attempt<'a>(
-    backend: &'a dyn OperationBackend,
+#[cfg(test)]
+fn begin_attempt<'a>(
+    backend: &'a dyn AttemptBackend,
     request: impl Into<AttemptRequest>,
 ) -> Result<AttemptStart<'a>> {
     let request = request.into();
     let operation_request = request.as_operation_request();
     match backend.start_or_replay(&operation_request)? {
-        BackendOperationStart::Started => Ok(AttemptStart::Started(OpenAttempt::from_request(
+        AttemptBackendStart::Started => Ok(AttemptStart::Started(OpenAttempt::from_request(
             &operation_request,
             backend,
         ))),
-        BackendOperationStart::Replayed {
+        AttemptBackendStart::Replayed {
             operation,
             owner_deadline,
             terminal,
@@ -947,7 +947,7 @@ pub fn begin_attempt<'a>(
 }
 
 pub fn begin_typed_attempt<'a, C>(
-    backend: &'a dyn OperationBackend,
+    backend: &'a dyn AttemptBackend,
     request: impl Into<TypedAttemptRequest<C>>,
 ) -> TypedAttemptResult<TypedAttemptStart<'a, C>>
 where
@@ -956,10 +956,10 @@ where
     let request = request.into();
     let operation_request = request.as_operation_request();
     match backend.start_or_replay(&operation_request)? {
-        BackendOperationStart::Started => Ok(TypedAttemptStart::Started(TypedOpenAttempt::new(
+        AttemptBackendStart::Started => Ok(TypedAttemptStart::Started(TypedOpenAttempt::new(
             OpenAttempt::from_request(&operation_request, backend),
         ))),
-        BackendOperationStart::Replayed {
+        AttemptBackendStart::Replayed {
             operation,
             owner_deadline,
             terminal,
@@ -970,7 +970,7 @@ where
 }
 
 pub fn replay_typed_attempt<C>(
-    backend: &dyn OperationBackend,
+    backend: &dyn AttemptBackend,
     request: &TypedAttemptRequest<C>,
 ) -> TypedAttemptResult<TypedAttemptReplay<C::Failure>>
 where
@@ -978,8 +978,8 @@ where
 {
     let operation_request = request.as_operation_request();
     match backend.start_or_replay(&operation_request)? {
-        BackendOperationStart::Started => Err(Error::Conflict.into()),
-        BackendOperationStart::Replayed {
+        AttemptBackendStart::Started => Err(Error::Conflict.into()),
+        AttemptBackendStart::Replayed {
             operation,
             owner_deadline,
             terminal,
@@ -991,18 +991,28 @@ where
     }
 }
 
-pub fn record(
-    backend: &dyn OperationBackend,
-    operation: &OpenOperation,
-    evidence: OperationEvidence,
-) -> Result<()> {
-    backend.record(operation.operation(), evidence)
+pub fn interrupt_typed_attempt<C>(
+    backend: &dyn AttemptBackend,
+    request: &TypedAttemptRequest<C>,
+    operation: &OperationId,
+) -> TypedAttemptResult<TypedAttemptReplay<C::Failure>>
+where
+    C: AttemptFailureCodec,
+{
+    match backend.close(operation, AttemptTerminalMarker::Interrupted) {
+        Ok(()) => Ok(TypedAttemptReplay::Interrupted {
+            operation: operation.clone(),
+        }),
+        Err(Error::TerminalAlreadyWritten) => replay_typed_attempt::<C>(backend, request),
+        Err(error) => Err(error.into()),
+    }
 }
 
-pub fn close(
-    backend: &dyn OperationBackend,
+#[cfg(test)]
+fn close(
+    backend: &dyn AttemptBackend,
     operation: OpenOperation,
-    marker: TerminalMarker,
+    marker: AttemptTerminalMarker,
 ) -> Result<()> {
     backend.close(operation.operation(), marker)
 }
@@ -1012,12 +1022,12 @@ impl AttemptReplay {
     fn from_backend(
         operation: OperationId,
         owner_deadline: SystemTime,
-        terminal: Option<TerminalMarker>,
+        terminal: Option<AttemptTerminalMarker>,
     ) -> Self {
         match terminal {
-            Some(TerminalMarker::Succeeded) => Self::Succeeded { operation },
-            Some(TerminalMarker::Failed(payload)) => Self::Failed { operation, payload },
-            Some(TerminalMarker::Interrupted) => Self::Interrupted { operation },
+            Some(AttemptTerminalMarker::Succeeded) => Self::Succeeded { operation },
+            Some(AttemptTerminalMarker::Failed(payload)) => Self::Failed { operation, payload },
+            Some(AttemptTerminalMarker::Interrupted) => Self::Interrupted { operation },
             None => Self::Open {
                 operation,
                 owner_deadline,
@@ -1085,9 +1095,9 @@ fn canonical_payload_digest(schema: &str, mut fields: Vec<FingerprintField>) -> 
 fn canonical_request_digest(
     actor: &PrincipalId,
     scope: &ScopeId,
-    command: &CommandKind,
+    command: &AttemptKind,
     payload_hash: &[u8],
-    resources: &[FingerprintedResource],
+    resources: &[AttemptResource],
     submitted_fence: Option<&SubmittedFenceFingerprint>,
     authority_epoch: GrantEpoch,
 ) -> Vec<u8> {
@@ -1157,7 +1167,7 @@ mod tests {
 
     struct MemoryOperationStore {
         by_idempotency: RefCell<BTreeMap<IdempotencyKey, OpenOperation>>,
-        terminal: RefCell<BTreeMap<OperationId, TerminalMarker>>,
+        terminal: RefCell<BTreeMap<OperationId, AttemptTerminalMarker>>,
         close_errors: RefCell<VecDeque<Error>>,
     }
 
@@ -1179,14 +1189,14 @@ mod tests {
         }
     }
 
-    impl OperationBackend for MemoryOperationStore {
-        fn start_or_replay(&self, request: &OperationRequest) -> Result<BackendOperationStart> {
+    impl AttemptBackend for MemoryOperationStore {
+        fn start_or_replay(&self, request: &AttemptBackendRequest) -> Result<AttemptBackendStart> {
             let by_idempotency = self.by_idempotency.borrow();
             if let Some(existing) = by_idempotency.get(request.idempotency()) {
                 if existing.fingerprint() != request.fingerprint() {
                     return Err(Error::Conflict);
                 }
-                return Ok(BackendOperationStart::Replayed {
+                return Ok(AttemptBackendStart::Replayed {
                     operation: existing.operation().clone(),
                     owner_deadline: existing.owner_deadline(),
                     terminal: self.terminal.borrow().get(existing.operation()).cloned(),
@@ -1197,14 +1207,14 @@ mod tests {
             self.by_idempotency
                 .borrow_mut()
                 .insert(record.idempotency().clone(), record.clone());
-            Ok(BackendOperationStart::Started)
+            Ok(AttemptBackendStart::Started)
         }
 
-        fn record(&self, _operation: &OperationId, _evidence: OperationEvidence) -> Result<()> {
+        fn record(&self, _operation: &OperationId, _evidence: AttemptEvidence) -> Result<()> {
             Ok(())
         }
 
-        fn close(&self, operation: &OperationId, marker: TerminalMarker) -> Result<()> {
+        fn close(&self, operation: &OperationId, marker: AttemptTerminalMarker) -> Result<()> {
             if let Some(error) = self.close_errors.borrow_mut().pop_front() {
                 return Err(error);
             }
@@ -1226,15 +1236,15 @@ mod tests {
         payload_hash: &[u8],
         authority_epoch: u64,
         submitted_fence: Option<SubmittedFenceFingerprint>,
-    ) -> RequestFingerprint {
-        RequestFingerprint::new(
+    ) -> AttemptFingerprint {
+        AttemptFingerprint::new(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
-            CommandKind::parse("deploy").expect("command"),
+            AttemptKind::parse("deploy").expect("command"),
             payload_hash.to_vec(),
             vec![
-                FingerprintedResource::parse("route:app").expect("route"),
-                FingerprintedResource::parse("cert:app.example.com").expect("cert"),
+                AttemptResource::parse("route:app").expect("route"),
+                AttemptResource::parse("cert:app.example.com").expect("cert"),
             ],
             submitted_fence,
             GrantEpoch::new(authority_epoch),
@@ -1242,7 +1252,7 @@ mod tests {
         .expect("fingerprint")
     }
 
-    fn request(payload_hash: &[u8], authority_epoch: u64) -> OperationRequest {
+    fn request(payload_hash: &[u8], authority_epoch: u64) -> AttemptBackendRequest {
         request_with_fence(payload_hash, authority_epoch, None)
     }
 
@@ -1250,7 +1260,7 @@ mod tests {
         payload_hash: &[u8],
         authority_epoch: u64,
         submitted_fence: Option<SubmittedFenceFingerprint>,
-    ) -> OperationRequest {
+    ) -> AttemptBackendRequest {
         request_for(
             "op-1",
             "deploy-1",
@@ -1266,8 +1276,8 @@ mod tests {
         payload_hash: &[u8],
         authority_epoch: u64,
         submitted_fence: Option<SubmittedFenceFingerprint>,
-    ) -> OperationRequest {
-        OperationRequest::new(
+    ) -> AttemptBackendRequest {
+        AttemptBackendRequest::new(
             OperationId::parse(operation).expect("operation id"),
             IdempotencyKey::parse(idempotency).expect("idempotency key"),
             fingerprint(payload_hash, authority_epoch, submitted_fence),
@@ -1294,20 +1304,24 @@ mod tests {
             OperationReplayStatus::Open
         );
         assert_eq!(
-            OperationReplay::from_backend(operation.clone(), Some(TerminalMarker::Succeeded))
-                .status(),
+            OperationReplay::from_backend(
+                operation.clone(),
+                Some(AttemptTerminalMarker::Succeeded)
+            )
+            .status(),
             OperationReplayStatus::Succeeded
         );
         assert_eq!(
             OperationReplay::from_backend(
                 operation.clone(),
-                Some(TerminalMarker::Failed(b"failed".to_vec())),
+                Some(AttemptTerminalMarker::Failed(b"failed".to_vec())),
             )
             .status(),
             OperationReplayStatus::Failed(b"failed")
         );
         assert_eq!(
-            OperationReplay::from_backend(operation, Some(TerminalMarker::Interrupted)).status(),
+            OperationReplay::from_backend(operation, Some(AttemptTerminalMarker::Interrupted))
+                .status(),
             OperationReplayStatus::Interrupted
         );
     }
@@ -1375,10 +1389,10 @@ mod tests {
             panic!("expected started operation");
         };
 
-        close(&store, open.clone(), TerminalMarker::Succeeded).expect("closed");
+        close(&store, open.clone(), AttemptTerminalMarker::Succeeded).expect("closed");
 
         assert_eq!(
-            close(&store, open, TerminalMarker::Succeeded),
+            close(&store, open, AttemptTerminalMarker::Succeeded),
             Err(Error::TerminalAlreadyWritten)
         );
     }
@@ -1400,7 +1414,7 @@ mod tests {
                 .borrow()
                 .get(&OperationId::parse("op-1").expect("operation"))
                 .cloned(),
-            Some(TerminalMarker::Succeeded)
+            Some(AttemptTerminalMarker::Succeeded)
         );
     }
 
@@ -1421,7 +1435,7 @@ mod tests {
                 .borrow()
                 .get(&OperationId::parse("op-1").expect("operation"))
                 .cloned(),
-            Some(TerminalMarker::Interrupted)
+            Some(AttemptTerminalMarker::Interrupted)
         );
     }
 
@@ -1441,7 +1455,7 @@ mod tests {
         };
         store.terminal.borrow_mut().insert(
             OperationId::parse("op-terminal-fails").expect("operation"),
-            TerminalMarker::Interrupted,
+            AttemptTerminalMarker::Interrupted,
         );
 
         assert_eq!(attempt.succeeded(), Err(Error::TerminalAlreadyWritten));
@@ -1469,7 +1483,7 @@ mod tests {
                 .borrow()
                 .get(&OperationId::parse("op-terminal-timeout").expect("operation"))
                 .cloned(),
-            Some(TerminalMarker::Interrupted)
+            Some(AttemptTerminalMarker::Interrupted)
         );
     }
 
@@ -1549,32 +1563,32 @@ mod tests {
 
     #[test]
     fn fingerprint_builder_uses_canonical_digest_for_fields_resources_and_fence() {
-        let first = RequestFingerprint::builder(
+        let first = AttemptFingerprint::builder(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
-            CommandKind::parse("deploy").expect("command"),
+            AttemptKind::parse("deploy").expect("command"),
             "ployz.deploy.https.v1",
             GrantEpoch::new(7),
         )
         .field("hostname", "app.example.com")
         .field_u64("generation", 11)
         .field_time("deadline", UNIX_EPOCH + Duration::from_secs(10))
-        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .resource(AttemptResource::parse("domain:app.example.com").expect("resource"))
         .submitted_fence(fence(3, b"claim-hash-a"))
         .finish()
         .expect("fingerprint");
 
-        let second = RequestFingerprint::builder(
+        let second = AttemptFingerprint::builder(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
-            CommandKind::parse("deploy").expect("command"),
+            AttemptKind::parse("deploy").expect("command"),
             "ployz.deploy.https.v1",
             GrantEpoch::new(7),
         )
         .field("hostname", "app.example.com")
         .field_u64("generation", 12)
         .field_time("deadline", UNIX_EPOCH + Duration::from_secs(10))
-        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .resource(AttemptResource::parse("domain:app.example.com").expect("resource"))
         .submitted_fence(fence(3, b"claim-hash-a"))
         .finish()
         .expect("fingerprint");
@@ -1584,29 +1598,29 @@ mod tests {
 
     #[test]
     fn fingerprint_builder_is_stable_across_field_order() {
-        let first = RequestFingerprint::builder(
+        let first = AttemptFingerprint::builder(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
-            CommandKind::parse("deploy").expect("command"),
+            AttemptKind::parse("deploy").expect("command"),
             "ployz.deploy.https.v1",
             GrantEpoch::new(7),
         )
         .field("hostname", "app.example.com")
         .field_u64("generation", 11)
-        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .resource(AttemptResource::parse("domain:app.example.com").expect("resource"))
         .finish()
         .expect("fingerprint");
 
-        let second = RequestFingerprint::builder(
+        let second = AttemptFingerprint::builder(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
-            CommandKind::parse("deploy").expect("command"),
+            AttemptKind::parse("deploy").expect("command"),
             "ployz.deploy.https.v1",
             GrantEpoch::new(7),
         )
         .field_u64("generation", 11)
         .field("hostname", "app.example.com")
-        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .resource(AttemptResource::parse("domain:app.example.com").expect("resource"))
         .finish()
         .expect("fingerprint");
 
@@ -1615,16 +1629,16 @@ mod tests {
 
     #[test]
     fn fingerprint_builder_rejects_duplicate_fields() {
-        let result = RequestFingerprint::builder(
+        let result = AttemptFingerprint::builder(
             PrincipalId::parse("node-a").expect("principal"),
             ScopeId::parse("cluster").expect("scope"),
-            CommandKind::parse("deploy").expect("command"),
+            AttemptKind::parse("deploy").expect("command"),
             "ployz.deploy.https.v1",
             GrantEpoch::new(7),
         )
         .field("hostname", "app.example.com")
         .field("hostname", "other.example.com")
-        .resource(FingerprintedResource::parse("domain:app.example.com").expect("resource"))
+        .resource(AttemptResource::parse("domain:app.example.com").expect("resource"))
         .finish();
 
         assert_eq!(result, Err(Error::MalformedPayload));

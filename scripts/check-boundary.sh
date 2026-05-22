@@ -3,7 +3,7 @@ set -euo pipefail
 
 RAW_IMPORT_PATTERN='\b(use +)?(polis|p2panda|iroh)(::|\s+as\s+|\s*\{)|\bextern +crate +(polis|p2panda|iroh)\b|::mvp_'
 RAW_SUBSTRATE_PATTERN='\b(RawRecord|AuthorizedRecord|ProjectionInput|RecordSource|ProofMetadata|CandidateStatus|candidate_status|VerifiedFact|FactReducer|MemoryFactStore|MemoryProjectionSource|Fact(Append|Candidate|Conflict|Cursor|Grant|Id|Key|Kind|Payload|Query|Receipt|Rejection|Replay|Store|Target|Write)[A-Za-z0-9_]*|Projection(CatchUp|Error|Freshness|Health|Key|Request|Snapshot|Source|View)[A-Za-z0-9_]*)\b'
-RAW_ATTEMPT_PATTERN='\b(CommandRunner|AttemptLog|AttemptBackend|AttemptReplay|AttemptRequest|AttemptStart|IssuedProductAttempt|IssuedDeployCommand|IssuedVolumeTransferCommand|OpenAttempt|TerminalMarker|MutationIntent|CommandPayload|CommandKind|FingerprintedResource|record_evidence|terminalize|begin_attempt|begin_typed_attempt)\b'
+RAW_ATTEMPT_PATTERN='\b(CommandRunner|Attempt(Log|Backend(Request|Start)?|Evidence(Kind)?|Failure(Codec|DecodeError)|Fingerprint(Builder)?|Kind|Replay|Request|Resource|Start|TerminalMarker)|TypedAttempt[A-Za-z0-9_]*|IssuedProductAttempt|IssuedDeployCommand|IssuedVolumeTransferCommand|OpenAttempt|MutationIntent|CommandPayload|record_evidence|terminalize|begin_attempt|begin_typed_attempt)\b'
 
 feature_files() {
   find crates/ployz/src -type f -name '*.rs' \
@@ -28,6 +28,12 @@ scan_feature_files() {
   return "$matched"
 }
 
+scan_polis_root_exports() {
+  local root="$1"
+  grep -nE '(^pub[[:space:]]+mod[[:space:]]+operations;|\b(OpenOperation|OperationReplay|OperationStart|start_or_replay|begin_attempt|AttemptStart|OpenAttempt|AttemptTerminal)\b)' \
+    "$root/crates/polis/src/lib.rs"
+}
+
 run_self_test() {
   local tmp
   tmp="$(mktemp -d)"
@@ -36,6 +42,11 @@ run_self_test() {
   reset_fixture() {
     rm -rf "$tmp/crates"
     mkdir -p "$tmp/crates/ployz/src/deploy" "$tmp/crates/ployz/src/facts"
+  }
+
+  reset_polis_fixture() {
+    rm -rf "$tmp/crates"
+    mkdir -p "$tmp/crates/polis/src"
   }
 
   reset_fixture
@@ -63,6 +74,28 @@ run_self_test() {
   printf 'pub struct Bad(AttemptRequest);\n' > "$tmp/crates/ployz/src/deploy/mod.rs"
   if ! scan_feature_files "$tmp" "$RAW_ATTEMPT_PATTERN" >/dev/null; then
     echo "boundary self-test failed to catch raw attempt orchestration" >&2
+    exit 1
+  fi
+
+  reset_fixture
+  printf 'pub struct Bad(AttemptFailureCodec);\n' > "$tmp/crates/ployz/src/deploy/mod.rs"
+  if ! scan_feature_files "$tmp" "$RAW_ATTEMPT_PATTERN" >/dev/null; then
+    echo "boundary self-test failed to catch raw attempt failure codec" >&2
+    exit 1
+  fi
+
+  reset_polis_fixture
+  printf 'pub mod operations;\n' > "$tmp/crates/polis/src/lib.rs"
+  if ! scan_polis_root_exports "$tmp" >/dev/null; then
+    echo "boundary self-test failed to catch public polis operations module" >&2
+    exit 1
+  fi
+
+  reset_polis_fixture
+  printf 'mod operations;\npub use operations::{TypedAttemptRequest};\n' \
+    > "$tmp/crates/polis/src/lib.rs"
+  if scan_polis_root_exports "$tmp" >/dev/null; then
+    echo "boundary self-test rejected typed attempt root export" >&2
     exit 1
   fi
 
@@ -104,6 +137,11 @@ PY
 
 if grep -R --include='*.rs' -nE '\b(use +)?ployz(::|\s+as\s+|\s*::|\s*\{)|\bextern +crate +ployz\b' crates/polis; then
   echo "polis must not import ployz" >&2
+  exit 1
+fi
+
+if scan_polis_root_exports "."; then
+  echo "polis root exports must expose the typed attempt API, not the generic operation runner" >&2
   exit 1
 fi
 
