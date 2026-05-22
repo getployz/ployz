@@ -21,6 +21,9 @@ pub enum Error {
     #[error("runtime operation failed: {0}")]
     Runtime(#[from] RuntimeFailure),
 
+    #[error("machine operation failed: {0}")]
+    Machine(#[from] MachineFailure),
+
     #[error("volume operation failed: {0}")]
     Volume(#[from] VolumeFailure),
 
@@ -114,6 +117,33 @@ pub enum RuntimeFailure {
     LostReplyConflict,
     #[error("backend failed")]
     BackendFailed,
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum MachineFailure {
+    #[error("payload is invalid")]
+    InvalidPayload,
+    #[error("membership projection is unavailable")]
+    ProjectionUnavailable,
+    #[error("machine membership conflicts for {machine:?} at epoch {epoch:?}")]
+    MembershipConflict {
+        machine: crate::machine::MachineId,
+        epoch: Option<crate::machine::MachineEpoch>,
+    },
+    #[error("machine {machine:?} is tombstoned at epoch {epoch:?}")]
+    MachineTombstoned {
+        machine: crate::machine::MachineId,
+        epoch: crate::machine::MachineEpoch,
+    },
+    #[error("machine {machine:?} is currently being removed at epoch {epoch:?}")]
+    MachineRemoving {
+        machine: crate::machine::MachineId,
+        epoch: crate::machine::MachineEpoch,
+    },
+    #[error("membership mutation was rejected")]
+    MutationRejected,
+    #[error("membership mutation result did not match desired machine {machine:?}")]
+    MutationMismatch { machine: crate::machine::MachineId },
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]

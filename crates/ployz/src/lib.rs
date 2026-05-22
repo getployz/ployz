@@ -19,6 +19,7 @@ pub mod composition;
 pub mod deploy;
 pub mod domain;
 pub mod error;
+pub mod machine;
 pub mod operation;
 pub mod runtime;
 pub mod serving;

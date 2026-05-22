@@ -11,9 +11,10 @@ use crate::domain::{
     CertificatePolicy, DomainAdd, DomainFailure, DomainName, DomainReadinessPort, DomainReady,
 };
 use crate::error::{DeployFailure, ServingFailure};
+use crate::machine::MachineId;
 use crate::operation::MutationContext;
 use crate::runtime::{
-    MachineId, ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
+    ParticipantReceipt, RuntimeActivationOutcome, RuntimeActivationRequest,
     RuntimeParticipantStatus, RuntimeParticipantVerification, RuntimePort, WorkloadId,
 };
 use crate::serving::{
