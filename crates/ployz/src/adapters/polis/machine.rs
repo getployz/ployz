@@ -95,36 +95,14 @@ where
         fact: &MachineMembershipFact,
     ) -> Result<ProductFactAppendOutcome, MachineFailure> {
         let envelope = fact.encode().map_err(map_machine_fact_error)?;
-        let target = super::polis_fact_target(envelope.target()).map_err(map_machine_primitive)?;
-        let payload =
-            super::polis_fact_payload(envelope.payload()).map_err(map_machine_primitive)?;
-        let authority =
-            super::context_fact_append_authority(context).map_err(map_machine_primitive)?;
-        let grant = polis::FactGrantService::new(MachineFactGrantAuthority)
-            .issue_append(&authority, target.clone())
-            .map_err(map_machine_polis_error)?;
-        let request = polis::FactAppendRequest::new(
-            polis::OperationId::parse(format!(
-                "{}:{}",
-                context.operation().as_str(),
-                envelope.target().key().as_str()
-            ))
-            .map_err(map_machine_polis_error)?,
-            polis::IdempotencyKey::parse(format!(
-                "{}:{}",
-                context.idempotency().as_str(),
-                envelope.target().key().as_str()
-            ))
-            .map_err(map_machine_polis_error)?,
-            authority,
-            grant,
-            target,
-            payload,
-            None,
-        );
-        let outcome = polis::FactStore::append(self.projection.facts(), request)
-            .map_err(map_machine_polis_error)?;
-        super::product_fact_append_outcome(outcome).map_err(map_machine_primitive)
+        super::append_product_fact(
+            self.projection.facts(),
+            context,
+            &envelope,
+            MachineFactGrantAuthority,
+            polis::FactConflictPolicy::RecordCandidate,
+        )
+        .map_err(map_machine_primitive)
     }
 
     fn project_machine_status(

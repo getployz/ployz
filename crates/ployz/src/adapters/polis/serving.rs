@@ -154,40 +154,14 @@ where
         envelope: &crate::facts::ProductFactEnvelope,
         conflict_policy: polis::FactConflictPolicy,
     ) -> Result<ProductFactAppendOutcome, ServingFailure> {
-        let target = super::polis_fact_target(envelope.target()).map_err(map_serving_primitive)?;
-        let payload =
-            super::polis_fact_payload(envelope.payload()).map_err(map_serving_primitive)?;
-        let authority =
-            super::context_fact_append_authority(context).map_err(map_serving_primitive)?;
-        let grant = polis::FactGrantService::new(ServingFactGrantAuthority)
-            .issue_append(&authority, target.clone())
-            .map_err(map_serving_polis_error)?;
-        let request = polis::FactAppendRequest::new(
-            polis::OperationId::parse(format!(
-                "{}:{}",
-                context.operation().as_str(),
-                envelope.target().key().as_str()
-            ))
-            .map_err(map_serving_polis_error)?,
-            polis::IdempotencyKey::parse(format!(
-                "{}:{}",
-                context.idempotency().as_str(),
-                envelope.target().key().as_str()
-            ))
-            .map_err(map_serving_polis_error)?,
-            authority,
-            grant,
-            target,
-            payload,
-            None,
+        super::append_product_fact(
+            self.projection.facts(),
+            context,
+            envelope,
+            ServingFactGrantAuthority,
+            conflict_policy,
         )
-        .with_conflict_policy(conflict_policy);
-
-        polis::FactStore::append(self.projection.facts(), request)
-            .map_err(map_serving_polis_error)
-            .and_then(|outcome| {
-                super::product_fact_append_outcome(outcome).map_err(map_serving_primitive)
-            })
+        .map_err(map_serving_primitive)
     }
 
     fn project_route_state(&self, route: &RouteId) -> Result<ServingRouteState, ServingFailure> {
