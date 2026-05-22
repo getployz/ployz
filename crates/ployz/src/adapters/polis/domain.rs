@@ -129,8 +129,10 @@ where
             },
         );
         polis::ProjectionSource::project(&self.projection, request)
-            .map(|snapshot| snapshot.into_view())
             .map_err(map_domain_projection_error)
+            .and_then(|snapshot| {
+                super::require_fresh_projection(snapshot, |_| DomainFailure::StatusUnavailable)
+            })
     }
 }
 
@@ -252,6 +254,8 @@ mod tests {
     };
     use crate::serving::ServingGeneration;
 
+    use crate::adapters::polis::context_fact_append_authority;
+
     use super::*;
 
     #[test]
@@ -323,6 +327,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn degraded_projection_is_not_exposed_as_domain_status() {
+        let records = status_records();
+        append_conflicting_raw_domain_status(&records, "payload-a");
+        append_conflicting_raw_domain_status(&records, "payload-b");
+
+        assert_eq!(
+            records.status(&domain()),
+            Err(DomainFailure::StatusUnavailable)
+        );
+    }
+
     fn status_records() -> PolisDomainStatus<polis::MemoryFactStore> {
         PolisDomainStatus::in_memory(ScopeId::parse("cluster").expect("scope"))
     }
@@ -339,6 +355,32 @@ mod tests {
             None,
             UNIX_EPOCH + Duration::from_secs(60),
         )
+    }
+
+    fn append_conflicting_raw_domain_status(
+        records: &PolisDomainStatus<polis::MemoryFactStore>,
+        payload: &str,
+    ) {
+        let target = polis::FactTarget::new(
+            polis::ResourceId::parse("domain-status:app.example.com").expect("resource"),
+            polis::FactKey::parse("/facts/domain/app.example.com/conflict").expect("key"),
+            polis::FactKind::parse(DOMAIN_PENDING_KIND).expect("kind"),
+        );
+        let authority = context_fact_append_authority(&context()).expect("authority");
+        let grant = polis::FactGrantService::new(DomainFactGrantAuthority)
+            .issue_append(&authority, target.clone())
+            .expect("grant");
+        let request = polis::FactAppendRequest::new(
+            polis::OperationId::parse(format!("raw-domain-{payload}")).expect("operation"),
+            polis::IdempotencyKey::parse(format!("raw-domain-{payload}")).expect("idempotency"),
+            authority,
+            grant,
+            target,
+            polis::FactPayload::new(payload.as_bytes().to_vec()).expect("payload"),
+            None,
+        );
+
+        polis::FactStore::append(records.projection.facts(), request).expect("append");
     }
 
     fn ready_record() -> DomainReadyRecord {

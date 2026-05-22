@@ -199,8 +199,10 @@ where
             },
         );
         polis::ProjectionSource::project(&self.projection, request)
-            .map(|snapshot| snapshot.into_view())
             .map_err(map_serving_projection_error)
+            .and_then(|snapshot| {
+                super::require_fresh_projection(snapshot, |_| ServingFailure::ProjectionStale)
+            })
     }
 }
 
@@ -356,6 +358,8 @@ mod tests {
         ServingCommitRequest, ServingCommittedSnapshot, ServingGeneration,
         ServingProjectionCatchUp, ServingSnapshotPort, ServingTarget,
     };
+
+    use crate::adapters::polis::context_fact_append_authority;
 
     use super::*;
 
@@ -517,6 +521,18 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn degraded_projection_is_not_exposed_as_serving_status() {
+        let snapshots = serving_snapshots();
+        append_conflicting_raw_serving_commit(&snapshots, "payload-a");
+        append_conflicting_raw_serving_commit(&snapshots, "payload-b");
+
+        assert_eq!(
+            snapshots.commit_status(&commit_request(7)),
+            Err(ServingFailure::ProjectionStale)
+        );
+    }
+
     fn serving_snapshots() -> PolisServingSnapshots<polis::MemoryFactStore> {
         PolisServingSnapshots::in_memory(ScopeId::parse("cluster").expect("scope"))
     }
@@ -537,6 +553,32 @@ mod tests {
             None,
             UNIX_EPOCH + Duration::from_secs(60),
         )
+    }
+
+    fn append_conflicting_raw_serving_commit(
+        snapshots: &PolisServingSnapshots<polis::MemoryFactStore>,
+        payload: &str,
+    ) {
+        let target = polis::FactTarget::new(
+            polis::ResourceId::parse("serving-route:route-app").expect("resource"),
+            polis::FactKey::parse("/facts/serving/conflict").expect("key"),
+            polis::FactKind::parse(SERVING_COMMIT_KIND).expect("kind"),
+        );
+        let authority = context_fact_append_authority(&context()).expect("authority");
+        let grant = polis::FactGrantService::new(ServingFactGrantAuthority)
+            .issue_append(&authority, target.clone())
+            .expect("grant");
+        let request = polis::FactAppendRequest::new(
+            polis::OperationId::parse(format!("raw-serving-{payload}")).expect("operation"),
+            polis::IdempotencyKey::parse(format!("raw-serving-{payload}")).expect("idempotency"),
+            authority,
+            grant,
+            target,
+            polis::FactPayload::new(payload.as_bytes().to_vec()).expect("payload"),
+            None,
+        );
+
+        polis::FactStore::append(snapshots.projection.facts(), request).expect("append");
     }
 
     fn commit_request(generation: u64) -> ServingCommitRequest {

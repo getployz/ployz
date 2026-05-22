@@ -14,10 +14,6 @@
 //!   operation evidence.
 
 pub mod acme;
-#[expect(
-    dead_code,
-    reason = "adapter scaffolding is tested here and wired into product ports by later fact/projection slices"
-)]
 pub(crate) mod adapters;
 pub mod composition;
 pub mod deploy;

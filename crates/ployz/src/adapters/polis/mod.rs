@@ -18,8 +18,8 @@ use crate::facts::{
     ProductCandidateRejection, ProductFact, ProductFactAppendOutcome, ProductFactConflict,
     ProductFactCursor, ProductFactKey, ProductFactKind, ProductFactPayload, ProductFactReceipt,
     ProductFactRejection, ProductFactResource, ProductFactTarget, ProductPayloadFailure,
-    ProductProjectionCatchUp, ProductProjectionCatchUpRequest, ProductProjectionFreshness,
-    ProductProjectionHealth,
+    ProductProjectionCatchUp, ProductProjectionFreshness, ProductProjectionHealth,
+    ProductProjectionSnapshot,
     machine::{
         MACHINE_JOINED_KIND, MACHINE_REMOVAL_STARTED_KIND, MACHINE_TOMBSTONED_KIND,
         MachineFactError, MachineMembershipFact, MachineMembershipReducer,
@@ -196,6 +196,29 @@ pub fn product_projection_health(health: &polis::ProjectionHealth) -> ProductPro
     ProductProjectionHealth::new(candidate_rejections, payload_failures)
 }
 
+#[must_use]
+pub fn product_projection_snapshot<V>(
+    snapshot: polis::ProjectionSnapshot<V>,
+) -> ProductProjectionSnapshot<V> {
+    let source_cursor = snapshot.source_cursor().map(product_fact_cursor);
+    let freshness = product_projection_freshness(snapshot.freshness());
+    let health = product_projection_health(snapshot.health());
+    ProductProjectionSnapshot::new(snapshot.into_view(), source_cursor, freshness, health)
+}
+
+pub fn require_fresh_projection<V, E>(
+    snapshot: polis::ProjectionSnapshot<V>,
+    degraded: impl FnOnce(ProductProjectionHealth) -> E,
+) -> Result<V, E> {
+    let snapshot = product_projection_snapshot(snapshot);
+    if snapshot.freshness() == ProductProjectionFreshness::Fresh
+        && !snapshot.health().has_failures()
+    {
+        return Ok(snapshot.into_view());
+    }
+    Err(degraded(snapshot.health().clone()))
+}
+
 fn insert_candidate_count(
     counts: &mut BTreeMap<ProductCandidateRejection, usize>,
     rejection: ProductCandidateRejection,
@@ -217,10 +240,11 @@ fn insert_payload_count(
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn polis_projection_catch_up_request(
     view: polis::ProjectionView,
     query: polis::FactQuery,
-    request: ProductProjectionCatchUpRequest,
+    request: crate::facts::ProductProjectionCatchUpRequest,
 ) -> polis::ProjectionCatchUpRequest {
     polis::ProjectionCatchUpRequest::new(
         view,
@@ -389,8 +413,10 @@ where
             },
         );
         polis::ProjectionSource::project(&self.projection, request)
-            .map(|snapshot| snapshot.into_view())
             .map_err(map_machine_projection_error)
+            .and_then(|snapshot| {
+                require_fresh_projection(snapshot, |_| MachineFailure::ProjectionUnavailable)
+            })
     }
 }
 
@@ -557,11 +583,19 @@ fn map_machine_fact_error(error: MachineFactError) -> MachineFailure {
 }
 
 #[derive(Debug, Clone)]
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 pub struct AttemptingCertificateIssuer<A, I> {
     attempts: A,
     issuer: I,
 }
 
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 impl<A, I> AttemptingCertificateIssuer<A, I> {
     #[must_use]
     pub fn new(attempts: A, issuer: I) -> Self {
@@ -623,6 +657,10 @@ where
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 impl<A, I> AttemptingCertificateIssuer<A, I>
 where
     A: polis::OperationBackend,
@@ -696,6 +734,10 @@ where
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 fn certificate_attempt_request(
     context: &MutationContext,
     request: &CertificateIssueRequest,
@@ -737,6 +779,10 @@ fn certificate_attempt_request(
     ))
 }
 
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 fn map_polis_certificate_error(error: polis::Error) -> CertificateFailure {
     match error {
         polis::Error::Unauthorized | polis::Error::StaleFence => {
@@ -752,6 +798,10 @@ fn map_polis_certificate_error(error: polis::Error) -> CertificateFailure {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 fn certificate_failure_payload(failure: &CertificateFailure) -> Vec<u8> {
     match failure {
         CertificateFailure::UnauthorizedBinding => b"unauthorized_binding".to_vec(),
@@ -765,6 +815,10 @@ fn certificate_failure_payload(failure: &CertificateFailure) -> Vec<u8> {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
+)]
 fn certificate_failure_from_payload(payload: &[u8]) -> CertificateFailure {
     match payload {
         b"unauthorized_binding" => CertificateFailure::UnauthorizedBinding,
@@ -914,7 +968,10 @@ mod tests {
 
     #[test]
     fn polis_projection_catch_up_request_keeps_deadline_and_cursor() {
-        let request = ProductProjectionCatchUpRequest::new(ProductFactCursor::new(5), UNIX_EPOCH);
+        let request = crate::facts::ProductProjectionCatchUpRequest::new(
+            ProductFactCursor::new(5),
+            UNIX_EPOCH,
+        );
         let mapped = polis_projection_catch_up_request(projection_view(), fact_query(), request);
 
         assert_eq!(mapped.cursor(), polis::FactCursor::new(5));
@@ -1017,6 +1074,18 @@ mod tests {
             MachineStatus::Tombstoned(tombstone)
                 if tombstone.machine.as_str() == "node-a" && tombstone.epoch.value() == 2
         ));
+    }
+
+    #[test]
+    fn degraded_projection_is_not_exposed_as_machine_status() {
+        let membership = PolisMachineMembership::in_memory();
+        append_conflicting_raw_machine_fact(&membership, "payload-a");
+        append_conflicting_raw_machine_fact(&membership, "payload-b");
+
+        assert_eq!(
+            membership.observe(&context(), &MachineId::parse("node-a").expect("machine")),
+            Err(MachineFailure::ProjectionUnavailable)
+        );
     }
 
     #[test]
@@ -1398,6 +1467,32 @@ mod tests {
             None,
             UNIX_EPOCH + Duration::from_secs(60),
         )
+    }
+
+    fn append_conflicting_raw_machine_fact(
+        membership: &PolisMachineMembership<polis::MemoryFactStore>,
+        payload: &str,
+    ) {
+        let target = polis::FactTarget::new(
+            polis::ResourceId::parse("machine:node-a").expect("resource"),
+            polis::FactKey::parse("/facts/node/node-a/conflict").expect("key"),
+            polis::FactKind::parse(MACHINE_JOINED_KIND).expect("kind"),
+        );
+        let authority = context_fact_append_authority(&context()).expect("authority");
+        let grant = polis::FactGrantService::new(MachineFactGrantAuthority)
+            .issue_append(&authority, target.clone())
+            .expect("grant");
+        let request = polis::FactAppendRequest::new(
+            polis::OperationId::parse(format!("raw-machine-{payload}")).expect("operation"),
+            polis::IdempotencyKey::parse(format!("raw-machine-{payload}")).expect("idempotency"),
+            authority,
+            grant,
+            target,
+            polis::FactPayload::new(payload.as_bytes().to_vec()).expect("payload"),
+            None,
+        );
+
+        polis::FactStore::append(membership.projection.facts(), request).expect("append");
     }
 
     fn machine_membership(machine: &str, epoch: u64, overlay_ip: &str) -> MachineMembership {
