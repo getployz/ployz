@@ -8,19 +8,11 @@ use crate::error::CertificateFailure;
 use crate::operation::MutationContext;
 
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 pub(crate) struct AttemptingCertificateIssuer<A, I> {
     attempts: A,
     issuer: I,
 }
 
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 impl<A, I> AttemptingCertificateIssuer<A, I> {
     #[must_use]
     pub(crate) fn new(attempts: A, issuer: I) -> Self {
@@ -83,10 +75,6 @@ where
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 impl<A, I> AttemptingCertificateIssuer<A, I>
 where
     A: polis::AttemptBackend,
@@ -147,10 +135,6 @@ where
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 fn certificate_attempt_request(
     context: &MutationContext,
     request: &CertificateIssueRequest,
@@ -192,10 +176,6 @@ fn certificate_attempt_request(
     )))
 }
 
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 fn map_polis_certificate_error(error: polis::Error) -> CertificateFailure {
     match error {
         polis::Error::Unauthorized | polis::Error::StaleFence => {
@@ -211,10 +191,6 @@ fn map_polis_certificate_error(error: polis::Error) -> CertificateFailure {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 fn map_typed_attempt_certificate_error(error: polis::TypedAttemptError) -> CertificateFailure {
     match error {
         polis::TypedAttemptError::Primitive(error) => map_polis_certificate_error(error),
@@ -224,10 +200,6 @@ fn map_typed_attempt_certificate_error(error: polis::TypedAttemptError) -> Certi
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "ACME attempt adapter is intentionally kept for external-state issuance before production composition wiring"
-)]
 struct CertificateFailureCodec;
 
 impl polis::AttemptFailureCodec for CertificateFailureCodec {
