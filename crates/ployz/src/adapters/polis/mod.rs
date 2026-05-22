@@ -336,7 +336,11 @@ where
         }
 
         match self.project_machine_status(context, &membership.machine)? {
-            MachineStatus::Joined(joined) if joined.machine == membership.machine => Ok(joined),
+            MachineStatus::Joined(joined) if joined == *membership => Ok(joined),
+            MachineStatus::Joined(joined) => Err(MachineFailure::MembershipConflict {
+                machine: joined.machine,
+                epoch: Some(joined.epoch),
+            }),
             MachineStatus::Conflicted { machine, epoch } => {
                 Err(MachineFailure::MembershipConflict {
                     machine,
@@ -351,11 +355,9 @@ where
                 machine: tombstone.machine,
                 epoch: tombstone.epoch,
             }),
-            MachineStatus::Absent | MachineStatus::Joined(_) => {
-                Err(MachineFailure::MutationMismatch {
-                    machine: membership.machine.clone(),
-                })
-            }
+            MachineStatus::Absent => Err(MachineFailure::MutationMismatch {
+                machine: membership.machine.clone(),
+            }),
         }
     }
 }
