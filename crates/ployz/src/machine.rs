@@ -130,8 +130,8 @@ impl MachineMembership {
     }
 
     #[must_use]
-    fn same_machine_identity(&self, other: &Self) -> bool {
-        self.machine == other.machine && self.network == other.network
+    fn same_machine_record(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
@@ -204,7 +204,7 @@ impl MachineAddPlan {
     fn diff(observed: MachineStatus, desired: MachineMembership) -> Result<Self, MachineFailure> {
         match observed {
             MachineStatus::Absent => Ok(Self::Join(desired)),
-            MachineStatus::Joined(current) if current.same_machine_identity(&desired) => {
+            MachineStatus::Joined(current) if current.same_machine_record(&desired) => {
                 Ok(Self::AlreadyPresent(current))
             }
             MachineStatus::Joined(current) => Err(MachineFailure::MembershipConflict {
@@ -271,9 +271,10 @@ where
             }
             MachineAddPlan::Join(desired) => {
                 let joined = self.membership.join(context, &desired)?;
-                if !joined.same_machine_identity(&desired) {
-                    return Err(MachineFailure::MutationMismatch {
-                        machine: desired.machine,
+                if !joined.same_machine_record(&desired) {
+                    return Err(MachineFailure::MembershipConflict {
+                        machine: joined.machine,
+                        epoch: Some(joined.epoch),
                     });
                 }
                 Ok(MachineAddOutcome::Joined(joined))
@@ -338,13 +339,29 @@ mod tests {
     }
 
     #[test]
-    fn same_identity_is_already_present_even_with_newer_observed_epoch() {
-        let desired = membership("node-a", 1, "fd00::1");
+    fn same_record_is_already_present() {
+        let desired = membership("node-a", 2, "fd00::1");
         let current = membership("node-a", 2, "fd00::1");
         let plan =
             MachineAddPlan::diff(MachineStatus::Joined(current.clone()), desired).expect("plan");
 
         assert!(matches!(plan, MachineAddPlan::AlreadyPresent(present) if present == current));
+    }
+
+    #[test]
+    fn different_epoch_is_conflict() {
+        let desired = membership("node-a", 1, "fd00::1");
+        let current = membership("node-a", 2, "fd00::1");
+        let error =
+            MachineAddPlan::diff(MachineStatus::Joined(current), desired).expect_err("conflict");
+
+        assert_eq!(
+            error,
+            MachineFailure::MembershipConflict {
+                machine: MachineId::parse("node-a").expect("machine"),
+                epoch: Some(MachineEpoch::new(2).expect("epoch")),
+            }
+        );
     }
 
     #[test]
@@ -406,11 +423,32 @@ mod tests {
             .expect("first add");
 
         let outcome = service
-            .add_machine(&context(), request("node-a", 2, "fd00::1"))
+            .add_machine(&context(), request("node-a", 1, "fd00::1"))
             .expect("second add");
 
         assert!(
             matches!(outcome, MachineAddOutcome::AlreadyPresent(joined) if joined == membership("node-a", 1, "fd00::1"))
+        );
+    }
+
+    #[test]
+    fn fact_backed_different_epoch_is_conflict() {
+        let fact_backed_membership = crate::composition::in_memory_machine_membership();
+        let service = MachineMembershipService::new(fact_backed_membership);
+        service
+            .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .expect("first add");
+
+        let error = service
+            .add_machine(&context(), request("node-a", 2, "fd00::1"))
+            .expect_err("epoch conflict");
+
+        assert_eq!(
+            error,
+            MachineFailure::MembershipConflict {
+                machine: MachineId::parse("node-a").expect("machine"),
+                epoch: Some(MachineEpoch::new(1).expect("epoch")),
+            }
         );
     }
 

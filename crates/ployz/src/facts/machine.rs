@@ -196,18 +196,15 @@ impl MachineReducerState {
             return;
         }
 
-        if let Some((_machine, conflict_epoch)) = &self.conflict {
-            if *conflict_epoch > membership.epoch {
-                return;
-            }
-            if *conflict_epoch == membership.epoch {
-                return;
-            }
-            self.conflict = None;
+        if self.conflict.is_some() {
+            return;
         }
 
         match &self.joined {
-            Some(existing) if existing.epoch > membership.epoch => {}
+            Some(existing) if existing.epoch != membership.epoch => {
+                self.conflict = Some((membership.machine.clone(), membership.epoch));
+                self.joined = None;
+            }
             Some(existing) if existing.epoch == membership.epoch && existing != &membership => {
                 self.conflict = Some((membership.machine.clone(), membership.epoch));
                 self.joined = None;
@@ -390,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn reducer_ignores_older_joined_membership() {
+    fn reducer_marks_different_epoch_joined_membership_as_conflict() {
         let reducer = MachineMembershipReducer::new(machine("node-a"));
 
         let status = reducer
@@ -400,9 +397,11 @@ mod tests {
             ])
             .expect("status");
 
-        assert!(
-            matches!(status, MachineStatus::Joined(joined) if joined == membership("node-a", 3, "fd00::1"))
-        );
+        assert!(matches!(
+            status,
+            MachineStatus::Conflicted { machine, epoch }
+                if machine.as_str() == "node-a" && epoch.value() == 1
+        ));
     }
 
     #[test]
