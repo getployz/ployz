@@ -1,0 +1,14 @@
+[package]
+name = "ployz-dns-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-config = { path = "../ployz-config" }
+ployz-types = { path = "../ployz-types" }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

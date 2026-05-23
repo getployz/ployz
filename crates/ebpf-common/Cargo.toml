@@ -1,0 +1,11 @@
+[package]
+name = "ployz-ebpf-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]

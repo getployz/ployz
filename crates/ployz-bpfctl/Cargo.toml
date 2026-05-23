@@ -1,0 +1,16 @@
+[package]
+name = "ployz-bpfctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ployz-bpfctl"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = "0.13"
+ipnet = "2"
+libc = "0.2"
+ployz-ebpf-common = { path = "../ebpf-common" }
