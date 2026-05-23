@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "crates/polis",
+    "crates/ployz",
     "crates/ployz-config",
     "crates/ployz-api",
     "crates/ployz-types",
@@ -24,6 +26,8 @@ members = [
     "crates/ployz-bpfctl",
 ]
 default-members = [
+    "crates/polis",
+    "crates/ployz",
     "crates/ployz-config",
     "crates/ployz-api",
     "crates/ployz-types",
@@ -52,8 +56,10 @@ resolver = "3"
 version = "0.6.1"
 edition = "2024"
 rust-version = "1.88"
+license = "MIT"
 
 [workspace.dependencies]
+polis = { path = "crates/polis" }
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "sync", "time", "net", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
