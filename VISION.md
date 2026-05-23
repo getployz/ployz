@@ -190,7 +190,7 @@ usable by agents, cloud workflows, and future automation.
 ### 3. The data plane outlives the control plane
 
 The daemon (ployzd) is disposable. It can crash, upgrade, or restart
-without disrupting WireGuard, NATS, the gateway, DNS, or workloads.
+without disrupting WireGuard, iroh connectivity, the gateway, DNS, or workloads.
 On startup it adopts what is already running rather than recreating it.
 The daemon misbehaving must not brick the data plane.
 
@@ -212,9 +212,9 @@ ambiguous progress.
 ### 6. Every node is a peer
 
 There is no master. No special node holds state others lack. Coordination,
-locking, and state visibility work on a peer-oriented model with NATS
-as a foundational part of the system. This is what makes `machine remove`
-safe regardless of which machine is removed.
+locking, and state visibility work on a peer-oriented model with iroh as the
+foundational transport. This is what makes `machine remove` safe regardless of
+which machine is removed.
 
 ### 7. ZFS is product strategy, not implementation detail
 
@@ -231,13 +231,14 @@ events, not inferred health. Health and reachability are observed live at
 decision time, when the operator asks. The system does not rewrite cluster
 truth in the background from stale observations.
 
-### 9. Store access is the trust boundary
+### 9. Replicated state access is the trust boundary
 
-NATS is the cluster state substrate. Anything written to a replicated stream
-or KV bucket — including TLS private keys, ACME account keys, and invite
-tokens — must be treated as cluster-private material. For now, nodes with
-`storage=true` are trusted with the full control-plane store; nodes with
-`storage=false` should receive only the state they need for their runtime role.
+p2panda is the intended replicated state substrate, with iroh underneath it for
+peer connectivity. Anything replicated through the cluster — including TLS
+private keys, ACME account keys, and invite tokens — must be treated as
+cluster-private material. For now, nodes with `storage=true` are trusted with
+the full control-plane store; nodes with `storage=false` should receive only
+the state they need for their runtime role.
 
 The consequences follow from that:
 
@@ -248,9 +249,9 @@ The consequences follow from that:
   material (re-issuing certs, revoking ACME accounts), not just removing the
   machine.
 
-If a future workload needs a stricter boundary, model that as scoped NATS
-subjects/streams and role-specific distribution, not as an ad hoc privacy flag
-on a store record.
+If a future workload needs a stricter boundary, model that as scoped fact
+replication and role-specific distribution, not as an ad hoc privacy flag on a
+store record.
 
 ### 10. Local and cloud share one model
 

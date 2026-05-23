@@ -65,9 +65,9 @@ in documented areas.
 # Control Plane Boundaries
 
 - All privileged operations must pass through an authorization boundary before
-  reaching handlers. Local IPC, NATS RPC, HTTP endpoints, and background tasks
-  are separate trust boundaries.
-- NATS node RPC must not deserialize directly into public daemon API requests.
+  reaching handlers. Local IPC, iroh peer RPC, HTTP endpoints, and background
+  tasks are separate trust boundaries.
+- Iroh peer RPC must not deserialize directly into public daemon API requests.
   Internal peer commands need a smaller typed protocol with explicit allowed
   operations.
 - Background tasks must not silently rewrite durable control-plane truth. They
@@ -75,7 +75,7 @@ in documented areas.
   checked state transition.
 - Background tasks must have a supervisor, shutdown path, health surface, and
   bounded retry policy with backoff/jitter where many nodes may retry together.
-- No external control-plane I/O may await indefinitely. Docker, NATS, SSH, HTTP,
+- No external control-plane I/O may await indefinitely. Docker, iroh, SSH, HTTP,
   filesystem locks, process waits, and publish/flush paths need explicit
   operation timeouts.
 - If lock renewal, lease refresh, or coordination publish can stall, the caller

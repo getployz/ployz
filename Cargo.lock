@@ -3141,6 +3141,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "ployz"
+version = "0.6.1"
+dependencies = [
+ "polis",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ployz-api"
 version = "0.6.1"
 dependencies = [
@@ -3221,13 +3232,8 @@ dependencies = [
 name = "ployz-e2e"
 version = "0.6.1"
 dependencies = [
- "backon",
- "clap",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
- "xshell",
+ "ployz",
+ "polis",
 ]
 
 [[package]]
@@ -3486,6 +3492,14 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "x25519-dalek",
+]
+
+[[package]]
+name = "polis"
+version = "0.6.1"
+dependencies = [
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5881,21 +5895,6 @@ dependencies = [
  "libc",
  "rustix",
 ]
-
-[[package]]
-name = "xshell"
-version = "0.3.0-pre.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e6192cff94a7552e329df8c2c6f00371f107eb6e8c970f9948879216d7c46fe"
-dependencies = [
- "xshell-macros",
-]
-
-[[package]]
-name = "xshell-macros"
-version = "0.3.0-pre.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3259fc1522c6f4915b1cc3b52dff32a88069ba979b2513fe8ee6a058670dd5dc"
 
 [[package]]
 name = "yansi"
