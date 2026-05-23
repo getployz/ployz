@@ -3142,7 +3142,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "ployz"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "polis",
  "serde",
@@ -3153,7 +3153,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-api"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ipnet",
  "ployz-types",
@@ -3164,7 +3164,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-bpfctl"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aya",
  "ipnet",
@@ -3174,7 +3174,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-cert-backends"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "instant-acme",
@@ -3189,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "directories",
  "figment",
@@ -3200,7 +3200,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "backon",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-dns-config"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ployz-config",
  "ployz-types",
@@ -3230,7 +3230,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-e2e"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ployz",
  "polis",
@@ -3238,11 +3238,11 @@ dependencies = [
 
 [[package]]
 name = "ployz-ebpf-common"
-version = "0.6.1"
+version = "0.6.2"
 
 [[package]]
 name = "ployz-gateway"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "backon",
@@ -3268,7 +3268,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-gateway-config"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ployz-config",
  "thiserror 2.0.18",
@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-install"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "libc",
  "ployz-config",
@@ -3284,7 +3284,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-metrics"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "axum",
  "prometheus",
@@ -3293,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-nats"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-orchestrator"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "aya",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-api"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "hostname",
@@ -3353,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-runtime-backends"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "backon",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ployz-api",
  "ployz-config",
@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sim"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ployz-dns",
  "ployz-gateway",
@@ -3414,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-store-api"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "ployz-types",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-types"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "base64",
  "derive_more",
@@ -3441,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "ployzctl"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "clap",
  "ployz-config",
@@ -3450,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -3496,7 +3496,7 @@ dependencies = [
 
 [[package]]
 name = "polis"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "sha2",
  "thiserror 2.0.18",
