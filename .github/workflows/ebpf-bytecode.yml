@@ -1,0 +1,50 @@
+name: Build eBPF bytecode
+
+on:
+  push:
+    tags:
+      - "ebpf-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    env:
+      CARGO_TARGET_DIR: target/ebpf-bytecode
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly + bpf-linker
+        run: |
+          rustup install nightly
+          rustup component add rust-src --toolchain nightly
+          cargo +nightly install bpf-linker
+
+      - name: Build BPF bytecode
+        run: |
+          cargo +nightly build \
+            -Z build-std=core \
+            --release \
+            --target bpfel-unknown-none \
+            --manifest-path ebpf/Cargo.toml
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          cp target/ebpf-bytecode/bpfel-unknown-none/release/ployz-ebpf-tc dist/
+          sha256sum dist/ployz-ebpf-tc > dist/checksums.txt
+          cat dist/checksums.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "eBPF bytecode $tag" \
+            --notes "Pre-built eBPF TC classifier bytecode." \
+            dist/ployz-ebpf-tc \
+            dist/checksums.txt

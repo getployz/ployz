@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1.7
+FROM rust:1-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends clang cmake g++ libclang-dev lld musl-tools && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) rustup target add x86_64-unknown-linux-musl ;; \
+      arm64) rustup target add aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    case "$TARGETARCH" in \
+      amd64) \
+        target=x86_64-unknown-linux-musl; \
+        export CC_x86_64_unknown_linux_musl=clang; \
+        export CXX_x86_64_unknown_linux_musl=clang++; \
+        export CFLAGS="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        export CXXFLAGS="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        export CFLAGS_x86_64_unknown_linux_musl="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        export CXXFLAGS_x86_64_unknown_linux_musl="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        ;; \
+      arm64) \
+        target=aarch64-unknown-linux-musl; \
+        export CC_aarch64_unknown_linux_musl=clang; \
+        export CXX_aarch64_unknown_linux_musl=clang++; \
+        export CFLAGS="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        export CXXFLAGS="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        export CFLAGS_aarch64_unknown_linux_musl="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        export CXXFLAGS_aarch64_unknown_linux_musl="--target=$target -D_LARGEFILE64_SOURCE -Dfopen64=fopen"; \
+        ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    rm -f /build/target/"$target"/release/deps/libboring_sys-* && \
+    rm -rf /build/target/"$target"/release/build/boring-sys-* && \
+    RUSTFLAGS="-C link-arg=-Wl,--defsym=fopen64=fopen" \
+      cargo build --locked --release -p ployz-gateway --target "$target" && \
+    mkdir -p /build/release-bin && \
+    cp /build/target/"$target"/release/ployz-gateway /build/release-bin/ployz-gateway && \
+    strip /build/release-bin/ployz-gateway
+
+FROM alpine:3.21
+COPY --from=builder /build/release-bin/ployz-gateway /usr/local/bin/ployz-gateway
+ENTRYPOINT ["ployz-gateway"]

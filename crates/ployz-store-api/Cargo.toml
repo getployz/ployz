@@ -1,0 +1,16 @@
+[package]
+name = "ployz-store-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-types = { path = "../ployz-types" }
+serde = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

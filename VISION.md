@@ -233,14 +233,12 @@ truth in the background from stale observations.
 
 ### 9. Replicated state access is the trust boundary
 
-p2panda is the replicated state substrate, with iroh underneath it for peer
-connectivity. Polis exists to make p2panda-backed capabilities ergonomic for
-Ployz; it must stay a thin typed facade, not a parallel distributed-systems
-framework. Anything replicated through the cluster — including TLS private
-keys, ACME account keys, and invite tokens — must be treated as cluster-private
-material. For now, nodes with `storage=true` are trusted with the full
-control-plane store; nodes with `storage=false` should receive only the state
-they need for their runtime role.
+p2panda is the intended replicated state substrate, with iroh underneath it for
+peer connectivity. Anything replicated through the cluster — including TLS
+private keys, ACME account keys, and invite tokens — must be treated as
+cluster-private material. For now, nodes with `storage=true` are trusted with
+the full control-plane store; nodes with `storage=false` should receive only
+the state they need for their runtime role.
 
 The consequences follow from that:
 

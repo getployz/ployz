@@ -1,0 +1,16 @@
+[package]
+name = "ployz-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ployz-types = { path = "../ployz-types" }
+ipnet = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+
+[lints]
+workspace = true

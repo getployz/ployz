@@ -1,0 +1,18 @@
+[package]
+name = "ployzctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ployzctl"
+path = "src/main.rs"
+
+[dependencies]
+ployz-config = { path = "../ployz-config" }
+ployz-install = { path = "../ployz-install" }
+clap = { workspace = true }
+
+[lints]
+workspace = true
