@@ -1,0 +1,7 @@
+e2e_all_timeout := env_var_or_default("MVP_E2E_ALL_TIMEOUT", "120s")
+
+test:
+    cargo fmt --all -- --check
+    cargo clippy --all-targets -- -D warnings
+    cargo test
+    MVP_E2E_ALL_TIMEOUT={{e2e_all_timeout}} cargo run -p mvp-e2e -- all

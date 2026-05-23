@@ -1,0 +1,20 @@
+[package]
+name = "mvp-bus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mvp_bus"
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1"
+bytes = "1"
+crossbeam-channel = "0.5"
+kameo = "0.20"
+tokio = { version = "1", features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

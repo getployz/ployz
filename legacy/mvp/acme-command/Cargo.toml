@@ -1,0 +1,19 @@
+[package]
+name = "mvp-acme-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+mvp-acme = { path = "../acme" }
+mvp-bus = { path = "../bus" }
+mvp-identity = { path = "../identity" }
+mvp-lease = { path = "../lease" }
+mvp-p2panda-facts = { path = "../p2panda-facts" }
+mvp-projection = { path = "../projection" }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
