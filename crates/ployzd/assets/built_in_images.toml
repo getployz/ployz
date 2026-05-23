@@ -1,4 +1,0 @@
-networking = "ghcr.io/getployz/ployz-networking:latest@sha256:520abe6e45704e5b8ef1b8336188a1d6f2f70db1ef70fcb199bc1ce6bc34890f"
-nats = "nats:2.14-alpine"
-dns = "ghcr.io/getployz/ployz-dns:latest@sha256:015ac8c768db2860f4ea3c63781961ad3a608c7c3276a130a374739265bf7432"
-gateway = "ghcr.io/getployz/ployz-gateway:latest@sha256:fa37ccf54bf629b8cc16208791716f95e17fbacc7b15ad8f64906a0004f58dcb"
