@@ -3141,6 +3141,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "ployz"
+version = "0.6.1"
+dependencies = [
+ "polis",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ployz-api"
 version = "0.6.1"
 dependencies = [
@@ -3486,6 +3497,14 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "x25519-dalek",
+]
+
+[[package]]
+name = "polis"
+version = "0.6.1"
+dependencies = [
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
