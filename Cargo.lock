@@ -459,8 +459,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 [[package]]
 name = "corro-api-types"
 version = "0.2.0-alpha.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22da0c4388f11224936d6afcdec1811e5b7bf45e2f0b85296d193aa4c8ce0f29"
+source = "git+https://github.com/superfly/corrosion?branch=main#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
 dependencies = [
  "camino",
  "compact_str",
@@ -479,8 +478,7 @@ dependencies = [
 [[package]]
 name = "corro-client"
 version = "0.2.0-alpha.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f92ff0610ce9220d4d9093b50ac22ea4832f35fa2498cc7abcf732ee5aacd2f1"
+source = "git+https://github.com/superfly/corrosion?branch=main#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
 dependencies = [
  "bytes",
  "corro-api-types",
@@ -3675,8 +3673,7 @@ dependencies = [
 [[package]]
 name = "sqlite-pool"
 version = "0.1.0-alpha.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8f2de873f4b55188476e984dc3c6c31dab454b992a0f817f9acb589c3117977"
+source = "git+https://github.com/superfly/corrosion?branch=main#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
 dependencies = [
  "arc-swap",
  "deadpool",
