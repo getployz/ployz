@@ -51,9 +51,9 @@ pub use membership::{
 pub use operations::{IdempotencyKey, OperationId, SubmittedFenceFingerprint};
 pub use peers::{
     FakePeerProbe, PLOYZ_PEER_ALPN, PeerEndpoint, PeerError, PeerIdentity, PeerProbe,
-    PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcProbe, PeerRpcService, PeerTicket,
-    PeerTicketPath, bind_peer_endpoint, import_ticket, issue_endpoint_ticket, issue_ticket,
-    load_or_create_identity, preflight_membership,
+    PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcListener, PeerRpcProbe,
+    PeerRpcService, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
+    issue_endpoint_ticket, issue_ticket, load_or_create_identity, preflight_membership,
 };
 pub use projection::{
     FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,
