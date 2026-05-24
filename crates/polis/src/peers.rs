@@ -33,6 +33,10 @@ pub enum PeerError {
     MalformedIdentity,
     #[error("peer identity storage failed")]
     IdentityIo { source: std::io::Error },
+    #[error("peer endpoint bind failed: {message}")]
+    EndpointBind { message: String },
+    #[error("peer endpoint did not become online before deadline")]
+    EndpointOnlineTimeout,
     #[error("peer probe failed for {endpoint}: {reason}")]
     ProbeFailed {
         endpoint: IrohEndpointId,
@@ -116,6 +120,16 @@ pub fn import_ticket(value: &str) -> PeerProbeResult<PeerTicket> {
         .map_err(|_| PeerError::MalformedTicket)
 }
 
+pub async fn issue_endpoint_ticket(
+    endpoint: &PeerEndpoint,
+    deadline: PeerProbeDeadline,
+) -> PeerProbeResult<PeerTicket> {
+    tokio::time::timeout(deadline.duration(), endpoint.online())
+        .await
+        .map_err(|_| PeerError::EndpointOnlineTimeout)?;
+    Ok(issue_ticket(endpoint.addr()))
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
     secret_key: SecretKey,
@@ -152,6 +166,16 @@ impl PeerIdentity {
     pub fn to_bytes(&self) -> [u8; 32] {
         self.secret_key.to_bytes()
     }
+}
+
+pub async fn bind_peer_endpoint(identity: &PeerIdentity) -> PeerProbeResult<PeerEndpoint> {
+    iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .secret_key(identity.secret_key.clone())
+        .bind()
+        .await
+        .map_err(|error| PeerError::EndpointBind {
+            message: error.to_string(),
+        })
 }
 
 pub fn load_or_create_identity(path: &Path) -> PeerProbeResult<PeerIdentity> {
@@ -549,6 +573,23 @@ mod tests {
 
         assert_eq!(first.endpoint_id(), second.endpoint_id());
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn bound_endpoint_uses_loaded_identity_for_bootstrap_ticket() {
+        let path = temp_identity_path();
+        let identity = load_or_create_identity(&path).expect("identity");
+        let endpoint = bind_peer_endpoint(&identity).await.expect("endpoint");
+        let ticket =
+            issue_endpoint_ticket(&endpoint, PeerProbeDeadline::new(Duration::from_secs(5)))
+                .await
+                .expect("ticket");
+
+        assert_eq!(endpoint.id().to_string(), identity.endpoint_id().as_str());
+        assert_eq!(ticket.endpoint_id(), identity.endpoint_id());
+
+        endpoint.close().await;
         let _ = fs::remove_file(path);
     }
 

@@ -34,7 +34,7 @@ where
 }
 
 #[must_use]
-pub fn in_memory_machine_membership() -> impl MachineMembershipPort + MachineWireGuardPeerPort {
+pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     PolisMachineMembership::in_memory()
 }
 
@@ -59,9 +59,12 @@ pub fn iroh_peer_rpc_probe(
 
 fn map_peer_probe_error(error: polis::PeerError) -> PrimitiveFailure {
     match error {
-        polis::PeerError::MalformedTicket
-        | polis::PeerError::MalformedIdentity
-        | polis::PeerError::IdentityIo { .. } => PrimitiveFailure::MalformedPayload,
+        polis::PeerError::MalformedTicket | polis::PeerError::MalformedIdentity => {
+            PrimitiveFailure::MalformedPayload
+        }
+        polis::PeerError::IdentityIo { .. }
+        | polis::PeerError::EndpointBind { .. }
+        | polis::PeerError::EndpointOnlineTimeout => PrimitiveFailure::OperationInterrupted,
         polis::PeerError::RpcTimeout => PrimitiveFailure::Timeout,
         polis::PeerError::ProbeFailed { .. }
         | polis::PeerError::RpcTransport { .. }
@@ -117,6 +120,19 @@ impl CorrosionMachineMembershipRows {
 
     fn reply_timeout() -> Duration {
         Duration::from_secs(polis::StoreTimeout::CONTROL_PLANE_DEFAULT.seconds_value() + 1)
+    }
+
+    fn request<T>(
+        &self,
+        command: impl FnOnce(mpsc::Sender<Result<T, polis::StoreError>>) -> CorrosionMembershipCommand,
+    ) -> Result<T, polis::StoreError> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(command(reply))
+            .map_err(|_| Self::worker_stopped())?;
+        response
+            .recv_timeout(Self::reply_timeout())
+            .map_err(map_membership_reply_error)?
     }
 }
 
@@ -185,45 +201,27 @@ impl MachineMembershipRows for CorrosionMachineMembershipRows {
         &self,
         machine_id: &polis::StoreMachineId,
     ) -> Result<Option<polis::MachineRow>, polis::StoreError> {
-        let (reply, response) = mpsc::channel();
-        self.commands
-            .send(CorrosionMembershipCommand::Observe {
-                machine_id: machine_id.clone(),
-                reply,
-            })
-            .map_err(|_| Self::worker_stopped())?;
-        response
-            .recv_timeout(Self::reply_timeout())
-            .map_err(map_membership_reply_error)?
+        self.request(|reply| CorrosionMembershipCommand::Observe {
+            machine_id: machine_id.clone(),
+            reply,
+        })
     }
 
     fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
-        let (reply, response) = mpsc::channel();
-        self.commands
-            .send(CorrosionMembershipCommand::Upsert {
-                row: row.clone(),
-                reply,
-            })
-            .map_err(|_| Self::worker_stopped())?;
-        response
-            .recv_timeout(Self::reply_timeout())
-            .map_err(map_membership_reply_error)?
+        self.request(|reply| CorrosionMembershipCommand::Upsert {
+            row: row.clone(),
+            reply,
+        })
     }
 
     fn wireguard_peers_for_machine(
         &self,
         machine_id: &polis::StoreMachineId,
     ) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
-        let (reply, response) = mpsc::channel();
-        self.commands
-            .send(CorrosionMembershipCommand::WireGuardPeers {
-                machine_id: machine_id.clone(),
-                reply,
-            })
-            .map_err(|_| Self::worker_stopped())?;
-        response
-            .recv_timeout(Self::reply_timeout())
-            .map_err(map_membership_reply_error)?
+        self.request(|reply| CorrosionMembershipCommand::WireGuardPeers {
+            machine_id: machine_id.clone(),
+            reply,
+        })
     }
 }
 

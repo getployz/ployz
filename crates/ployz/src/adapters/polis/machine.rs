@@ -6,10 +6,7 @@ use crate::facts::{
         MachineFactError, MachineMembershipFact, MachineMembershipReducer,
     },
 };
-use crate::machine::{
-    MachineId, MachineMembership, MachineMembershipPort, MachineStatus, MachineWireGuardPeer,
-    MachineWireGuardPeerPort,
-};
+use crate::machine::{MachineId, MachineMembership, MachineMembershipPort, MachineStatus};
 use crate::operation::MutationContext;
 
 #[derive(Debug)]
@@ -85,19 +82,6 @@ where
                 machine: membership.machine.clone(),
             }),
         }
-    }
-}
-
-impl<S> MachineWireGuardPeerPort for PolisMachineMembership<S>
-where
-    S: polis::FactStore,
-{
-    fn wireguard_peers(
-        &self,
-        _context: &MutationContext,
-        _machine: &MachineId,
-    ) -> Result<Vec<MachineWireGuardPeer>, MachineFailure> {
-        Ok(Vec::new())
     }
 }
 
