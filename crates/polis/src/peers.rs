@@ -370,6 +370,36 @@ pub struct PeerRpcService {
     _actor: Option<thread::JoinHandle<()>>,
 }
 
+pub struct PeerRpcListener {
+    _service: PeerRpcService,
+    router: iroh::protocol::Router,
+}
+
+impl PeerRpcListener {
+    pub fn start(endpoint: PeerEndpoint) -> PeerProbeResult<Self> {
+        let service = PeerRpcService::spawn()?;
+        let router = iroh::protocol::Router::builder(endpoint)
+            .accept(Self::ALPN, service.protocol_handler()?)
+            .spawn();
+
+        Ok(Self {
+            _service: service,
+            router,
+        })
+    }
+
+    pub const ALPN: &'static [u8] = PLOYZ_PEER_ALPN;
+
+    pub async fn shutdown(self, deadline: PeerProbeDeadline) -> PeerProbeResult<()> {
+        tokio::time::timeout(deadline.duration(), self.router.shutdown())
+            .await
+            .map_err(|_| PeerError::RpcTimeout)?
+            .map_err(|error| PeerError::RpcRuntime {
+                message: error.to_string(),
+            })
+    }
+}
+
 pub struct PeerRpcProbe {
     endpoint: IrohEndpointId,
     observed_path: PeerTicketPath,
@@ -693,26 +723,27 @@ mod tests {
         let server_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
             .await
             .expect("server endpoint");
-        let server = PeerRpcService::spawn().expect("server");
-        let router = iroh::protocol::Router::builder(server_endpoint.clone())
-            .accept(
-                PeerRpcService::ALPN,
-                server.protocol_handler().expect("protocol handler"),
-            )
-            .spawn();
-        server_endpoint.online().await;
+        let listener = PeerRpcListener::start(server_endpoint.clone()).expect("listener");
+        let ticket = issue_endpoint_ticket(
+            &server_endpoint,
+            PeerProbeDeadline::new(Duration::from_secs(5)),
+        )
+        .await
+        .expect("ticket");
 
         let client_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
             .await
             .expect("client endpoint");
-        let client = PeerRpcService::connect(client_endpoint, server_endpoint.addr());
-
+        let client = PeerRpcService::connect(client_endpoint, ticket.endpoint_addr().clone());
         client
             .preflight(PeerProbeDeadline::new(Duration::from_secs(5)))
             .await
             .expect("preflight");
 
-        router.shutdown().await.expect("router shutdown");
+        listener
+            .shutdown(PeerProbeDeadline::new(Duration::from_secs(5)))
+            .await
+            .expect("router shutdown");
     }
 
     fn temp_identity_path() -> std::path::PathBuf {
