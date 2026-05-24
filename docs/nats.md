@@ -1,7 +1,9 @@
 # NATS
 
-NATS is the control-plane substrate. The product model is documented in
-[`authority-roadmap.md`](authority-roadmap.md).
+Historical note: NATS is no longer the target control-plane substrate for new
+work. Current distributed-state work targets Corrosion rows/subscriptions plus
+bounded iroh peer RPC. Keep this document only for understanding old code or
+old design discussions.
 
 Implementation references:
 

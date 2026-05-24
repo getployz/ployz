@@ -142,6 +142,8 @@ pub enum MachineFailure {
     },
     #[error("membership mutation was rejected")]
     MutationRejected,
+    #[error("machine {machine:?} failed peer preflight")]
+    PeerPreflightFailed { machine: crate::machine::MachineId },
     #[error("membership mutation result did not match desired machine {machine:?}")]
     MutationMismatch { machine: crate::machine::MachineId },
 }

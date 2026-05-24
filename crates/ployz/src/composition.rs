@@ -3,13 +3,17 @@
 //! Feature modules should depend on Ployz-owned traits. This module is allowed
 //! to assemble concrete adapters and pass them into product orchestration.
 
+use std::{sync::mpsc, thread};
+
 use crate::acme::{
     CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
 };
 use crate::adapters::polis::{
-    AcmeCertificateIssuer, PolisDomainStatus, PolisMachineMembership, PolisServingSnapshots,
+    AcmeCertificateIssuer, CorrosionMachineMembership, MachineMembershipRows, PolisDomainStatus,
+    PolisMachineMembership, PolisServingSnapshots,
 };
 use crate::domain::DomainStatusPort;
+use crate::error::PrimitiveFailure;
 use crate::machine::MachineMembershipPort;
 use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
@@ -32,6 +36,127 @@ where
 #[must_use]
 pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     PolisMachineMembership::in_memory()
+}
+
+#[must_use]
+pub fn corrosion_machine_membership<P>(
+    store: polis::CorrosionStore,
+    probe: P,
+    island: polis::IslandId,
+) -> Result<impl MachineMembershipPort, PrimitiveFailure>
+where
+    P: polis::PeerProbe,
+{
+    CorrosionMachineMembershipRows::start(store)
+        .map(|rows| CorrosionMachineMembership::new(rows, probe, island))
+}
+
+enum CorrosionMembershipCommand {
+    Observe {
+        machine_id: polis::StoreMachineId,
+        reply: mpsc::Sender<Result<Option<polis::MachineRow>, polis::StoreError>>,
+    },
+    Upsert {
+        row: polis::MachineRow,
+        reply: mpsc::Sender<Result<(), polis::StoreError>>,
+    },
+}
+
+struct CorrosionMachineMembershipRows {
+    commands: mpsc::Sender<CorrosionMembershipCommand>,
+}
+
+impl CorrosionMachineMembershipRows {
+    fn start(store: polis::CorrosionStore) -> Result<Self, PrimitiveFailure> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| PrimitiveFailure::OperationInterrupted)?;
+        let (commands, receiver) = mpsc::channel();
+
+        thread::Builder::new()
+            .name("ployz-corrosion-membership".to_string())
+            .spawn(move || run_corrosion_membership_worker(store, runtime, receiver))
+            .map_err(|_| PrimitiveFailure::OperationInterrupted)?;
+
+        Ok(Self { commands })
+    }
+
+    fn worker_stopped() -> polis::StoreError {
+        polis::StoreError::Stream {
+            message: "corrosion membership worker stopped".to_string(),
+        }
+    }
+}
+
+fn run_corrosion_membership_worker(
+    store: polis::CorrosionStore,
+    runtime: tokio::runtime::Runtime,
+    receiver: mpsc::Receiver<CorrosionMembershipCommand>,
+) {
+    let timeout = polis::StoreTimeout::CONTROL_PLANE_DEFAULT;
+    while let Ok(command) = receiver.recv() {
+        match command {
+            CorrosionMembershipCommand::Observe { machine_id, reply } => {
+                let result = runtime.block_on(observe_machine_row(&store, &machine_id, timeout));
+                let _ = reply.send(result);
+            }
+            CorrosionMembershipCommand::Upsert { row, reply } => {
+                let result = runtime.block_on(upsert_machine_row(&store, &row, timeout));
+                let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+async fn observe_machine_row(
+    store: &polis::CorrosionStore,
+    machine_id: &polis::StoreMachineId,
+    timeout: polis::StoreTimeout,
+) -> Result<Option<polis::MachineRow>, polis::StoreError> {
+    let statement = polis::select_machine_statement(machine_id)?;
+    let rows = store.query(&statement, timeout).await?;
+    let Some(row) = rows.rows().first() else {
+        return Ok(None);
+    };
+    polis::machine_row_from_store_row(row).map(Some)
+}
+
+async fn upsert_machine_row(
+    store: &polis::CorrosionStore,
+    row: &polis::MachineRow,
+    timeout: polis::StoreTimeout,
+) -> Result<(), polis::StoreError> {
+    let statement = polis::upsert_machine_statement(row)?;
+    store.execute_transaction(&[statement], timeout).await?;
+    Ok(())
+}
+
+impl MachineMembershipRows for CorrosionMachineMembershipRows {
+    fn observe_machine(
+        &self,
+        machine_id: &polis::StoreMachineId,
+    ) -> Result<Option<polis::MachineRow>, polis::StoreError> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(CorrosionMembershipCommand::Observe {
+                machine_id: machine_id.clone(),
+                reply,
+            })
+            .map_err(|_| Self::worker_stopped())?;
+        response.recv().map_err(|_| Self::worker_stopped())?
+    }
+
+    fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(CorrosionMembershipCommand::Upsert {
+                row: row.clone(),
+                reply,
+            })
+            .map_err(|_| Self::worker_stopped())?;
+        response.recv().map_err(|_| Self::worker_stopped())?
+    }
 }
 
 #[must_use]

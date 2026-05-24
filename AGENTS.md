@@ -23,6 +23,22 @@ in documented areas.
 - SDK is for external consumers, not internal convenience imports.
 - Dependencies flow inward toward contracts and domain logic.
 - Prefer testable seams, narrow public surfaces, and policy out of binaries.
+- `polis` owns distributed substrate primitives, not Ployz product-shaped
+  services. Keep Corrosion access, transactions, subscriptions, change
+  cursors, iroh identity, tickets, peer RPC, deadlines, probes, membership
+  records, leases, and distributed failure typing in `polis`.
+- `ployz` owns product behavior: machine join semantics, deploy semantics,
+  namespace meaning, routing decisions, capacity policy, volume movement,
+  readiness, and operation outcomes. Put translation from Ployz ports to
+  Polis primitives in `crates/ployz/src/adapters/polis/`.
+- Do not add product-shaped Polis APIs such as `machines.join`,
+  `capacity.reserve`, `deploy.record_ready`, or routing policy unless the
+  concept has proven to be substrate infrastructure rather than product
+  behavior. Ployz adapters may be purposeful and thicker when sequencing
+  store, subscription, lease, probe, and RPC primitives.
+- New distributed-state work targets Corrosion rows/subscriptions plus iroh
+  peer RPC. Treat NATS and p2panda control-plane guidance as historical unless
+  a task explicitly asks to maintain old code.
 
 # AI Architecture Guardrails
 

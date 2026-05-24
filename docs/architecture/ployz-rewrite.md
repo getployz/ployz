@@ -6,9 +6,11 @@ created: 2026-05-23
 
 # Ployz Rewrite Shape
 
-This rewrite treats `crates/ployz` as the product center. `crates/polis` is not
-part of the new design path. It can stay in the tree while Ployz stops importing
-it, then be deleted when unused.
+This document is historical. The current direction keeps `crates/ployz` as the
+product center and keeps `crates/polis` as the distributed-primitives crate:
+Corrosion rows/subscriptions, iroh identity, tickets, peer RPC, leases, probes,
+and distributed failure typing. Do not use this document to justify new
+p2panda, NATS, or product-shaped Polis work.
 
 ## Goal
 
@@ -33,8 +35,8 @@ Owns product behavior:
 - gateway and DNS behavior.
 
 Product code should read as observe, decide, mutate, verify. It should not know
-about p2panda stream ack policy, replay mechanics, operation envelopes, or
-projection cursor storage.
+about Corrosion SQL, subscription cursors, iroh ticket internals, or irpc
+transport types.
 
 ### Pure Control
 
@@ -50,7 +52,10 @@ Owns local, testable control values:
 This layer should be mostly pure Rust: small values, enums, transition methods,
 and traits for ports that genuinely have multiple implementations.
 
-### Cluster Memory
+### Cluster Memory (Historical)
+
+The p2panda design below has been superseded by Polis primitives over
+Corrosion and iroh. It remains only as a record of the older rewrite shape.
 
 Owns replicated cluster state through a private p2panda Node worker:
 
@@ -73,7 +78,7 @@ distributed log mechanics. Ployz owns product semantics.
 - Product modules must not import p2panda directly.
 - Cluster memory may depend on p2panda.
 - Cluster memory must not hide authority decisions or product conflict rules.
-- `crates/polis` is ignored for new work.
+- `crates/polis` is the current distributed-primitives boundary for new work.
 - No compatibility shim is required unless a concrete rollout needs one.
 
 ## First Proof
@@ -95,4 +100,5 @@ to read than the current product module, the cluster-memory API is wrong.
 
 Delete `crates/polis` only after `crates/ployz` no longer imports it.
 
-Until then, treat Polis as old code. Do not extend it to support the rewrite.
+Superseded: Polis is no longer old code. Extend it only with substrate
+primitives, not Ployz product services.
