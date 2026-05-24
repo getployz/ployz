@@ -56,13 +56,11 @@ controller running ahead of them or behind them. There is no manifest to keep
 in sync.
 
 Commands are evaluated from the perspective of the node the operator reached.
-That node reads the replicated rows and operation records it has, probes any peers the operation
+That node reads the replicated rows it has, probes any peers the operation
 depends on, computes a concrete plan, and runs that plan. The system does not
-require a globally perfect cluster view before every operation. If a partition
-or stale row makes the operation unsafe, the command fails with a visible
-reason; if a disconnected half of the cluster takes independent action, the
-conflict is surfaced when rows meet again and the next operator command
-decides what to do.
+require a globally perfect cluster view before every operation. Most durable
+rows are owned by one actor and change rarely; if a partition or stale row
+makes the operation unsafe, the command fails with a visible reason.
 
 For a human: this means transparency. You can explain why the system
 believes what it believes with a short causal chain. There are no surprise
@@ -214,10 +212,10 @@ because owning them is what makes single-command primitives possible.
 The substrate boundary is deliberate. `polis` owns distributed substrate
 primitives: replicated store access, transactions, subscriptions, change
 cursors, endpoint identity, tickets, peer RPC, deadlines, probes,
-membership records, leases, and distributed failure typing. `ployz` owns
-product behavior: machine join semantics, deploy semantics, namespace
-meaning, routing decisions, capacity policy, volume movement, readiness,
-and operation outcomes.
+membership records, and distributed failure typing. `ployz` owns product
+behavior: machine join semantics, deploy semantics, namespace meaning,
+routing decisions, capacity policy, volume movement, readiness, and operation
+outcomes.
 
 That means ordinary Ployz modules stay readable by depending on product
 ports, while Ployz adapters translate those ports into Polis primitives.

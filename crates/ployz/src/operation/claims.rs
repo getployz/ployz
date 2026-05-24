@@ -149,6 +149,6 @@ mod tests {
             SystemTime::UNIX_EPOCH,
         );
 
-        assert_eq!(guard, Err(PrimitiveFailure::MalformedPayload));
+        assert!(matches!(guard, Err(PrimitiveFailure::MalformedPayload)));
     }
 }

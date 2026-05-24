@@ -14,6 +14,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use iroh::{EndpointAddr, SecretKey};
 use iroh_tickets::endpoint::EndpointTicket;
+use irpc::{Client, WithChannels, channel::oneshot, rpc::RemoteService, rpc_requests};
+use irpc_iroh::{IrohLazyRemoteConnection, IrohProtocol};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::IrohEndpointId;
@@ -33,6 +36,10 @@ pub enum PeerError {
         endpoint: IrohEndpointId,
         reason: String,
     },
+    #[error("peer rpc failed: {message}")]
+    Rpc { message: String },
+    #[error("peer rpc service is not local")]
+    RemoteServiceCannotListen,
 }
 
 pub type PeerProbeResult<T> = std::result::Result<T, PeerError>;
@@ -143,20 +150,31 @@ impl PeerIdentity {
 
 pub fn load_or_create_identity(path: &Path) -> PeerProbeResult<PeerIdentity> {
     match fs::read(path) {
-        Ok(bytes) => {
-            restrict_identity_permissions(path)?;
-            PeerIdentity::from_bytes(&bytes)
-        }
+        Ok(bytes) => parse_existing_identity(path, &bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let identity = PeerIdentity::generate();
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| PeerError::IdentityIo { source })?;
             }
-            write_identity_file(path, &identity.to_bytes())?;
-            Ok(identity)
+            match write_identity_file(path, &identity.to_bytes()) {
+                Ok(()) => Ok(identity),
+                Err(PeerError::IdentityIo { source })
+                    if source.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
+                    let bytes =
+                        fs::read(path).map_err(|source| PeerError::IdentityIo { source })?;
+                    parse_existing_identity(path, &bytes)
+                }
+                Err(error) => Err(error),
+            }
         }
         Err(source) => Err(PeerError::IdentityIo { source }),
     }
+}
+
+fn parse_existing_identity(path: &Path, bytes: &[u8]) -> PeerProbeResult<PeerIdentity> {
+    restrict_identity_permissions(path)?;
+    PeerIdentity::from_bytes(bytes)
 }
 
 fn write_identity_file(path: &Path, bytes: &[u8; 32]) -> PeerProbeResult<()> {
@@ -304,6 +322,77 @@ impl PeerProbe for FakePeerProbe {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PeerPreflightRequest;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PeerPreflightReceipt;
+
+#[rpc_requests(message = PeerRpcMessage, no_spans)]
+#[derive(Debug, Serialize, Deserialize)]
+enum PeerRpcProtocol {
+    #[rpc(tx=oneshot::Sender<PeerPreflightReceipt>)]
+    Preflight(PeerPreflightRequest),
+}
+
+pub struct PeerRpcService {
+    client: Client<PeerRpcProtocol>,
+    _actor: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PeerRpcService {
+    pub const ALPN: &'static [u8] = PLOYZ_PEER_ALPN;
+
+    #[must_use]
+    pub fn spawn() -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let actor = tokio::spawn(run_peer_rpc_actor(rx));
+        Self {
+            client: Client::local(tx),
+            _actor: Some(actor),
+        }
+    }
+
+    #[must_use]
+    pub fn connect(endpoint: iroh::Endpoint, addr: impl Into<iroh::EndpointAddr>) -> Self {
+        let connection = IrohLazyRemoteConnection::new(endpoint, addr.into(), Self::ALPN.to_vec());
+        Self {
+            client: Client::boxed(connection),
+            _actor: None,
+        }
+    }
+
+    pub fn protocol_handler(&self) -> PeerProbeResult<impl iroh::protocol::ProtocolHandler> {
+        let Some(local) = self.client.as_local() else {
+            return Err(PeerError::RemoteServiceCannotListen);
+        };
+        Ok(IrohProtocol::new(PeerRpcProtocol::remote_handler(local)))
+    }
+
+    pub async fn preflight(&self, deadline: PeerProbeDeadline) -> PeerProbeResult<()> {
+        tokio::time::timeout(deadline.duration(), self.client.rpc(PeerPreflightRequest))
+            .await
+            .map_err(|_| PeerError::Rpc {
+                message: "preflight timed out".to_string(),
+            })?
+            .map(|_| ())
+            .map_err(|error| PeerError::Rpc {
+                message: error.to_string(),
+            })
+    }
+}
+
+async fn run_peer_rpc_actor(mut rx: tokio::sync::mpsc::Receiver<PeerRpcMessage>) {
+    while let Some(message) = rx.recv().await {
+        match message {
+            PeerRpcMessage::Preflight(message) => {
+                let WithChannels { tx, .. } = message;
+                let _ = tx.send(PeerPreflightReceipt).await;
+            }
+        }
+    }
+}
+
 pub fn preflight_membership<P>(
     probe: &P,
     target: &IrohEndpointId,
@@ -325,7 +414,11 @@ fn redact_ascii(value: &str, prefix: usize, suffix: usize, fallback: &str) -> St
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, net::SocketAddr, time::SystemTime};
+    use std::{
+        fs,
+        net::SocketAddr,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use iroh::TransportAddr;
 
@@ -445,11 +538,40 @@ mod tests {
         assert_eq!(receipt.endpoint(), &endpoint);
     }
 
+    #[tokio::test]
+    async fn iroh_irpc_preflight_round_trips_between_endpoints() {
+        let server_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
+            .await
+            .expect("server endpoint");
+        let server = PeerRpcService::spawn();
+        let router = iroh::protocol::Router::builder(server_endpoint.clone())
+            .accept(
+                PeerRpcService::ALPN,
+                server.protocol_handler().expect("protocol handler"),
+            )
+            .spawn();
+        server_endpoint.online().await;
+
+        let client_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
+            .await
+            .expect("client endpoint");
+        let client = PeerRpcService::connect(client_endpoint, server_endpoint.addr());
+
+        client
+            .preflight(PeerProbeDeadline::new(Duration::from_secs(5)))
+            .await
+            .expect("preflight");
+
+        router.shutdown().await.expect("router shutdown");
+    }
+
     fn temp_identity_path() -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!("polis-peer-identity-{nanos}.key"))
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "polis-peer-identity-{}-{id}.key",
+            std::process::id()
+        ))
     }
 }

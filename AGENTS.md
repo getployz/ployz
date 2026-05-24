@@ -26,7 +26,7 @@ in documented areas.
 - `polis` owns distributed substrate primitives, not Ployz product-shaped
   services. Keep Corrosion access, transactions, subscriptions, change
   cursors, iroh identity, tickets, peer RPC, deadlines, probes, membership
-  records, leases, and distributed failure typing in `polis`.
+  records, and distributed failure typing in `polis`.
 - `ployz` owns product behavior: machine join semantics, deploy semantics,
   namespace meaning, routing decisions, capacity policy, volume movement,
   readiness, and operation outcomes. Put translation from Ployz ports to

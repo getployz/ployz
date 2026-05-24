@@ -1,7 +1,7 @@
 //! Substrate membership row primitives.
 //!
 //! These types describe durable rows and queries. They do not decide Ployz
-//! product outcomes such as `Joined`, `AlreadyPresent`, or `Conflict`.
+//! product outcomes such as `Joined` or `AlreadyPresent`.
 
 use crate::{Error, IrohEndpointId, StoreParam, StoreResult, StoreStatement, StoreValue};
 
@@ -366,18 +366,6 @@ pub fn membership_schema_statements() -> StoreResult<Vec<StoreStatement>> {
                 PRIMARY KEY(namespace_id, machine_id)
             )",
         )?,
-        StoreStatement::new(
-            "CREATE TABLE IF NOT EXISTS operations (
-                operation_id TEXT PRIMARY KEY,
-                idempotency_key TEXT NOT NULL,
-                coordinator_machine_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                state TEXT NOT NULL,
-                request_json TEXT NOT NULL,
-                result_json TEXT,
-                updated_at INTEGER NOT NULL
-            )",
-        )?,
     ])
 }
 
@@ -403,16 +391,7 @@ pub fn upsert_machine_statement(row: &MachineRow) -> StoreResult<StoreStatement>
             lifecycle = excluded.lifecycle,
             epoch = excluded.epoch,
             updated_at = excluded.updated_at
-        WHERE excluded.epoch > machines.epoch
-           OR (
-                excluded.epoch = machines.epoch
-            AND excluded.island_id = machines.island_id
-            AND excluded.iroh_endpoint_id = machines.iroh_endpoint_id
-            AND excluded.wireguard_public_key = machines.wireguard_public_key
-            AND excluded.overlay_ip = machines.overlay_ip
-            AND excluded.capabilities_json = machines.capabilities_json
-            AND excluded.lifecycle = machines.lifecycle
-           )",
+        WHERE excluded.epoch >= machines.epoch",
         vec![
             StoreParam::Text(row.machine_id.as_str().to_string()),
             StoreParam::Text(row.island_id.as_str().to_string()),
@@ -584,6 +563,33 @@ mod tests {
     }
 
     #[test]
+    fn schema_creates_only_membership_tables_for_this_slice() {
+        let conn = test_connection();
+        let mut query = conn
+            .prepare(
+                "SELECT name FROM sqlite_schema
+                 WHERE type = 'table'
+                   AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .expect("prepare schema query");
+        let tables = query
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("tables");
+
+        assert_eq!(
+            tables,
+            vec![
+                "machines".to_string(),
+                "namespace_memberships".to_string(),
+                "namespaces".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn machine_upsert_is_parameterized() {
         let statement = upsert_machine_statement(&machine_row()).expect("statement");
 
@@ -608,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_upsert_does_not_overwrite_same_epoch_identity_conflict() {
+    fn machine_upsert_allows_same_epoch_owner_update() {
         let conn = test_connection();
         execute_machine_upsert(&conn, "node-a", "prod", "endpoint-a", "wg-a", "fd00::1", 2);
 
@@ -622,8 +628,66 @@ mod tests {
             )
             .expect("endpoint");
 
+        assert_eq!(changed, 1);
+        assert_eq!(endpoint, "endpoint-b");
+    }
+
+    #[test]
+    fn machine_upsert_ignores_lower_epoch_row() {
+        let conn = test_connection();
+        execute_machine_upsert(&conn, "node-a", "prod", "endpoint-a", "wg-a", "fd00::1", 2);
+
+        let changed =
+            execute_machine_upsert(&conn, "node-a", "prod", "endpoint-b", "wg-b", "fd00::2", 1);
+        let endpoint: String = conn
+            .query_row(
+                "SELECT iroh_endpoint_id FROM machines WHERE machine_id = 'node-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("endpoint");
+
         assert_eq!(changed, 0);
         assert_eq!(endpoint, "endpoint-a");
+    }
+
+    #[test]
+    fn namespace_upsert_ignores_lower_epoch_row() {
+        let conn = test_connection();
+        let original = namespace_row("prod", "Production", 2);
+        let stale = namespace_row("prod", "Stale", 1);
+
+        assert_eq!(execute_namespace_upsert(&conn, &original), 1);
+        assert_eq!(execute_namespace_upsert(&conn, &stale), 0);
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM namespaces WHERE namespace_id = 'prod'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("name");
+
+        assert_eq!(name, "Production");
+    }
+
+    #[test]
+    fn namespace_membership_upsert_ignores_lower_epoch_row() {
+        let conn = test_connection();
+        let original = namespace_membership_row("prod", "node-a", "writer", 2);
+        let stale = namespace_membership_row("prod", "node-a", "reader", 1);
+
+        assert_eq!(execute_namespace_membership_upsert(&conn, &original), 1);
+        assert_eq!(execute_namespace_membership_upsert(&conn, &stale), 0);
+        let role: String = conn
+            .query_row(
+                "SELECT role FROM namespace_memberships
+                 WHERE namespace_id = 'prod' AND machine_id = 'node-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("role");
+
+        assert_eq!(role, "writer");
     }
 
     #[test]
@@ -637,7 +701,16 @@ mod tests {
             ("node-e", "endpoint-e", "fd00::5", "active"),
         ] {
             execute_machine_upsert_with_lifecycle(
-                &conn, machine, "prod", endpoint, machine, overlay, 1, lifecycle,
+                &conn,
+                MachineUpsertInput {
+                    machine_id: machine,
+                    island_id: "prod",
+                    endpoint_id: endpoint,
+                    wireguard_public_key: machine,
+                    overlay_ip: overlay,
+                    epoch: 1,
+                    lifecycle,
+                },
             );
         }
         insert_namespace_membership(&conn, "prod", "node-a", "active");
@@ -694,6 +767,34 @@ mod tests {
         )
     }
 
+    fn namespace_row(namespace_id: &str, name: &str, epoch: u64) -> NamespaceRow {
+        NamespaceRow::new(
+            NamespaceId::parse(namespace_id).expect("namespace"),
+            IslandId::parse("prod").expect("island"),
+            name,
+            MembershipLifecycle::Active,
+            RowEpoch::new(epoch).expect("epoch"),
+            100,
+        )
+        .expect("namespace row")
+    }
+
+    fn namespace_membership_row(
+        namespace_id: &str,
+        machine_id: &str,
+        role: &str,
+        epoch: u64,
+    ) -> NamespaceMembershipRow {
+        NamespaceMembershipRow::new(
+            NamespaceId::parse(namespace_id).expect("namespace"),
+            StoreMachineId::parse(machine_id).expect("machine"),
+            NamespaceRole::parse(role).expect("role"),
+            MembershipLifecycle::Active,
+            RowEpoch::new(epoch).expect("epoch"),
+            100,
+        )
+    }
+
     fn test_connection() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
         for statement in membership_schema_statements().expect("schema") {
@@ -713,35 +814,41 @@ mod tests {
     ) -> usize {
         execute_machine_upsert_with_lifecycle(
             conn,
-            machine_id,
-            island_id,
-            endpoint_id,
-            wireguard_public_key,
-            overlay_ip,
-            epoch,
-            "active",
+            MachineUpsertInput {
+                machine_id,
+                island_id,
+                endpoint_id,
+                wireguard_public_key,
+                overlay_ip,
+                epoch,
+                lifecycle: "active",
+            },
         )
+    }
+
+    struct MachineUpsertInput<'a> {
+        machine_id: &'a str,
+        island_id: &'a str,
+        endpoint_id: &'a str,
+        wireguard_public_key: &'a str,
+        overlay_ip: &'a str,
+        epoch: i64,
+        lifecycle: &'a str,
     }
 
     fn execute_machine_upsert_with_lifecycle(
         conn: &rusqlite::Connection,
-        machine_id: &str,
-        island_id: &str,
-        endpoint_id: &str,
-        wireguard_public_key: &str,
-        overlay_ip: &str,
-        epoch: i64,
-        lifecycle: &str,
+        input: MachineUpsertInput<'_>,
     ) -> usize {
         let statement = upsert_machine_statement(&MachineRow::new(
-            StoreMachineId::parse(machine_id).expect("machine"),
-            IslandId::parse(island_id).expect("island"),
-            IrohEndpointId::parse(endpoint_id).expect("endpoint"),
-            WireGuardPublicKey::parse(wireguard_public_key).expect("wireguard"),
-            OverlayIp::parse(overlay_ip).expect("overlay"),
+            StoreMachineId::parse(input.machine_id).expect("machine"),
+            IslandId::parse(input.island_id).expect("island"),
+            IrohEndpointId::parse(input.endpoint_id).expect("endpoint"),
+            WireGuardPublicKey::parse(input.wireguard_public_key).expect("wireguard"),
+            OverlayIp::parse(input.overlay_ip).expect("overlay"),
             CapabilitiesJson::parse("{}").expect("capabilities"),
-            MembershipLifecycle::parse(lifecycle).expect("lifecycle"),
-            RowEpoch::new(epoch as u64).expect("epoch"),
+            MembershipLifecycle::parse(input.lifecycle).expect("lifecycle"),
+            RowEpoch::new(input.epoch as u64).expect("epoch"),
             100,
         ))
         .expect("statement");
@@ -749,14 +856,14 @@ mod tests {
         conn.execute(
             statement.sql(),
             rusqlite::params![
-                machine_id,
-                island_id,
-                endpoint_id,
-                wireguard_public_key,
-                overlay_ip,
+                input.machine_id,
+                input.island_id,
+                input.endpoint_id,
+                input.wireguard_public_key,
+                input.overlay_ip,
                 "{}",
-                lifecycle,
-                epoch,
+                input.lifecycle,
+                input.epoch,
                 100_i64,
             ],
         )
@@ -781,5 +888,40 @@ mod tests {
             rusqlite::params![namespace_id, machine_id, lifecycle],
         )
         .expect("namespace membership");
+    }
+
+    fn execute_namespace_upsert(conn: &rusqlite::Connection, row: &NamespaceRow) -> usize {
+        let statement = upsert_namespace_statement(row).expect("statement");
+        conn.execute(
+            statement.sql(),
+            rusqlite::params![
+                row.namespace_id.as_str(),
+                row.owner_island_id.as_str(),
+                row.name,
+                row.lifecycle.as_str(),
+                row.epoch.sql_value(),
+                row.updated_at,
+            ],
+        )
+        .expect("namespace upsert")
+    }
+
+    fn execute_namespace_membership_upsert(
+        conn: &rusqlite::Connection,
+        row: &NamespaceMembershipRow,
+    ) -> usize {
+        let statement = upsert_namespace_membership_statement(row).expect("statement");
+        conn.execute(
+            statement.sql(),
+            rusqlite::params![
+                row.namespace_id.as_str(),
+                row.machine_id.as_str(),
+                row.role.as_str(),
+                row.lifecycle.as_str(),
+                row.epoch.sql_value(),
+                row.updated_at,
+            ],
+        )
+        .expect("namespace membership upsert")
     }
 }

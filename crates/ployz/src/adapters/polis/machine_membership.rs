@@ -267,6 +267,97 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_upsert_reobserves_existing_joined_row_as_conflict() {
+        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
+        let rows = RecordingRows::default()
+            .with_row(row("node-a", 2, "fd00::2"))
+            .ignoring_upserts();
+        let probe = polis::FakePeerProbe::new().reachable(endpoint);
+        let adapter = adapter(rows, probe);
+
+        let error = adapter
+            .join(&context(), &membership("node-a", 1, "fd00::1"))
+            .expect_err("conflict");
+
+        assert!(
+            matches!(error, MachineFailure::MembershipConflict { machine, epoch: Some(epoch) }
+                if machine.as_str() == "node-a" && epoch.value() == 2)
+        );
+    }
+
+    #[test]
+    fn stale_upsert_reobserves_conflicted_row_as_conflict() {
+        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
+        let rows = RecordingRows::default()
+            .with_row(row_with_lifecycle(
+                "node-a",
+                2,
+                "fd00::2",
+                polis::MembershipLifecycle::Conflicted,
+            ))
+            .ignoring_upserts();
+        let probe = polis::FakePeerProbe::new().reachable(endpoint);
+        let adapter = adapter(rows, probe);
+
+        let error = adapter
+            .join(&context(), &membership("node-a", 1, "fd00::1"))
+            .expect_err("conflict");
+
+        assert!(
+            matches!(error, MachineFailure::MembershipConflict { machine, epoch: Some(epoch) }
+                if machine.as_str() == "node-a" && epoch.value() == 2)
+        );
+    }
+
+    #[test]
+    fn stale_upsert_reobserves_removing_row_as_removing() {
+        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
+        let rows = RecordingRows::default()
+            .with_row(row_with_lifecycle(
+                "node-a",
+                2,
+                "fd00::2",
+                polis::MembershipLifecycle::Removing,
+            ))
+            .ignoring_upserts();
+        let probe = polis::FakePeerProbe::new().reachable(endpoint);
+        let adapter = adapter(rows, probe);
+
+        let error = adapter
+            .join(&context(), &membership("node-a", 1, "fd00::1"))
+            .expect_err("removing");
+
+        assert!(
+            matches!(error, MachineFailure::MachineRemoving { machine, epoch }
+                if machine.as_str() == "node-a" && epoch.value() == 2)
+        );
+    }
+
+    #[test]
+    fn stale_upsert_reobserves_deleted_row_as_tombstoned() {
+        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
+        let rows = RecordingRows::default()
+            .with_row(row_with_lifecycle(
+                "node-a",
+                2,
+                "fd00::2",
+                polis::MembershipLifecycle::Deleted,
+            ))
+            .ignoring_upserts();
+        let probe = polis::FakePeerProbe::new().reachable(endpoint);
+        let adapter = adapter(rows, probe);
+
+        let error = adapter
+            .join(&context(), &membership("node-a", 1, "fd00::1"))
+            .expect_err("tombstoned");
+
+        assert!(
+            matches!(error, MachineFailure::MachineTombstoned { machine, epoch }
+                if machine.as_str() == "node-a" && epoch.value() == 2)
+        );
+    }
+
     fn adapter(
         rows: RecordingRows,
         probe: polis::FakePeerProbe,
@@ -282,11 +373,17 @@ mod tests {
     struct RecordingRows {
         row: Rc<RefCell<Option<polis::MachineRow>>>,
         committed: Rc<RefCell<Vec<String>>>,
+        ignore_upserts: bool,
     }
 
     impl RecordingRows {
         fn with_row(self, row: polis::MachineRow) -> Self {
             self.row.replace(Some(row));
+            self
+        }
+
+        fn ignoring_upserts(mut self) -> Self {
+            self.ignore_upserts = true;
             self
         }
     }
@@ -300,7 +397,9 @@ mod tests {
         }
 
         fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
-            self.row.replace(Some(row.clone()));
+            if !self.ignore_upserts {
+                self.row.replace(Some(row.clone()));
+            }
             self.committed
                 .borrow_mut()
                 .push(row.machine_id().as_str().to_string());
@@ -347,6 +446,20 @@ mod tests {
     }
 
     fn row(machine: &str, epoch: u64, overlay_ip: &str) -> polis::MachineRow {
+        row_with_lifecycle(
+            machine,
+            epoch,
+            overlay_ip,
+            polis::MembershipLifecycle::Active,
+        )
+    }
+
+    fn row_with_lifecycle(
+        machine: &str,
+        epoch: u64,
+        overlay_ip: &str,
+        lifecycle: polis::MembershipLifecycle,
+    ) -> polis::MachineRow {
         polis::MachineRow::new(
             polis::StoreMachineId::parse(machine).expect("machine"),
             polis::IslandId::parse("prod").expect("island"),
@@ -354,7 +467,7 @@ mod tests {
             polis::WireGuardPublicKey::parse(format!("wg-{machine}")).expect("wireguard"),
             polis::OverlayIp::parse(overlay_ip).expect("overlay"),
             polis::CapabilitiesJson::parse("{}").expect("capabilities"),
-            polis::MembershipLifecycle::Active,
+            lifecycle,
             polis::RowEpoch::new(epoch).expect("epoch"),
             0,
         )
