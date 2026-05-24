@@ -3,7 +3,7 @@
 //! This module intentionally exposes distributed store mechanics, not Ployz
 //! product services. Ployz adapters own row decoding and product semantics.
 
-use std::{fmt, net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, fmt, net::SocketAddr, time::Duration};
 
 use corro_api_types::{
     ChangeId, ExecResult, SqliteParam, SqliteValue, Statement, TypedNotifyEvent, TypedQueryEvent,
@@ -28,6 +28,9 @@ pub enum StoreError {
 
     #[error("query stream ended before end-of-query")]
     QueryEndedBeforeEndOfQuery,
+
+    #[error("query stream emitted a change before end-of-query")]
+    QueryChangedBeforeEndOfQuery,
 
     #[error("store operation timed out")]
     Timeout,
@@ -169,7 +172,46 @@ impl From<SqliteValue> for StoreValue {
     }
 }
 
-pub type StoreRow = Vec<StoreValue>;
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoreRow {
+    fields: BTreeMap<String, StoreValue>,
+}
+
+impl StoreRow {
+    pub fn from_fields<I, N>(fields: I) -> StoreResult<Self>
+    where
+        I: IntoIterator<Item = (N, StoreValue)>,
+        N: Into<String>,
+    {
+        let mut row = BTreeMap::new();
+        for (name, value) in fields {
+            let name = name.into();
+            if name.trim().is_empty() || row.insert(name, value).is_some() {
+                return Err(StoreError::MalformedPayload);
+            }
+        }
+        Ok(Self { fields: row })
+    }
+
+    #[must_use]
+    pub fn value(&self, name: &str) -> Option<&StoreValue> {
+        self.fields.get(name)
+    }
+
+    pub fn text(&self, name: &str) -> StoreResult<&str> {
+        let Some(StoreValue::Text(value)) = self.value(name) else {
+            return Err(StoreError::MalformedPayload);
+        };
+        Ok(value)
+    }
+
+    pub fn integer(&self, name: &str) -> StoreResult<i64> {
+        let Some(StoreValue::Integer(value)) = self.value(name) else {
+            return Err(StoreError::MalformedPayload);
+        };
+        Ok(*value)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoreQueryRows {
@@ -190,9 +232,9 @@ impl StoreQueryRows {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum StoreQueryEvent {
+pub enum StoreSubscriptionEvent {
     Columns(Vec<String>),
-    Row(StoreRow),
+    InitialRow(StoreRow),
     EndOfQuery {
         change_id: Option<StoreChangeId>,
     },
@@ -316,7 +358,11 @@ impl CorrosionStore {
         .await
         .map_err(|_| StoreError::Timeout)?
         .map_err(map_client_error)?;
-        Ok(StoreSubscription { inner, timeout })
+        Ok(StoreSubscription {
+            inner,
+            timeout,
+            columns: Vec::new(),
+        })
     }
 
     pub async fn updates(&self, table: &str, timeout: StoreTimeout) -> StoreResult<StoreUpdate> {
@@ -334,6 +380,7 @@ impl CorrosionStore {
 pub struct StoreSubscription {
     inner: sub::SubscriptionStream<Vec<SqliteValue>>,
     timeout: StoreTimeout,
+    columns: Vec<String>,
 }
 
 impl StoreSubscription {
@@ -343,16 +390,17 @@ impl StoreSubscription {
     }
 
     pub async fn next(&mut self) -> StoreResult<Option<StoreSubscriptionEvent>> {
-        tokio::time::timeout(self.timeout.duration(), self.inner.next())
+        let Some(event) = tokio::time::timeout(self.timeout.duration(), self.inner.next())
             .await
             .map_err(|_| StoreError::Timeout)?
             .transpose()
-            .map_err(map_subscription_error)
-            .map(|event| event.map(StoreSubscriptionEvent::from))
+            .map_err(map_subscription_error)?
+        else {
+            return Ok(None);
+        };
+        map_subscription_event(event, &mut self.columns).map(Some)
     }
 }
-
-pub type StoreSubscriptionEvent = StoreQueryEvent;
 
 pub struct StoreUpdate {
     inner: sub::UpdatesStream<Vec<SqliteValue>>,
@@ -377,19 +425,15 @@ impl StoreUpdate {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreUpdateEvent {
-    Notify {
-        change_type: StoreChangeType,
-        row: StoreRow,
-    },
+    Notify { change_type: StoreChangeType },
     Error(String),
 }
 
 impl From<TypedNotifyEvent<Vec<SqliteValue>>> for StoreUpdateEvent {
     fn from(value: TypedNotifyEvent<Vec<SqliteValue>>) -> Self {
         match value {
-            TypedNotifyEvent::Notify(change_type, row) => Self::Notify {
+            TypedNotifyEvent::Notify(change_type, _) => Self::Notify {
                 change_type: change_type.into(),
-                row: convert_row(row),
             },
             TypedNotifyEvent::Error(error) => Self::Error(error.to_string()),
         }
@@ -399,24 +443,24 @@ impl From<TypedNotifyEvent<Vec<SqliteValue>>> for StoreUpdateEvent {
 async fn collect_query_rows(
     stream: &mut sub::QueryStream<Vec<SqliteValue>>,
 ) -> StoreResult<StoreQueryRows> {
+    let mut columns = Vec::new();
     let mut rows = Vec::new();
     while let Some(event) = stream.next().await {
         match event.map_err(map_query_error)? {
-            TypedQueryEvent::Columns(_) => {}
-            TypedQueryEvent::Row(_, row) => rows.push(convert_row(row)),
+            TypedQueryEvent::Columns(next_columns) => {
+                columns = next_columns
+                    .into_iter()
+                    .map(|column| column.to_string())
+                    .collect();
+            }
+            TypedQueryEvent::Row(_, row) => rows.push(convert_row(&columns, row)?),
             TypedQueryEvent::EndOfQuery { change_id, .. } => {
                 return Ok(StoreQueryRows {
                     rows,
                     change_id: change_id.map(StoreChangeId::from),
                 });
             }
-            TypedQueryEvent::Change(_, _, row, change_id) => {
-                rows.push(convert_row(row));
-                return Ok(StoreQueryRows {
-                    rows,
-                    change_id: Some(StoreChangeId::from(change_id)),
-                });
-            }
+            TypedQueryEvent::Change(..) => return Err(StoreError::QueryChangedBeforeEndOfQuery),
             TypedQueryEvent::Error(error) => {
                 return Err(StoreError::Response {
                     message: error.to_string(),
@@ -425,29 +469,6 @@ async fn collect_query_rows(
         }
     }
     Err(StoreError::QueryEndedBeforeEndOfQuery)
-}
-
-impl From<TypedQueryEvent<Vec<SqliteValue>>> for StoreQueryEvent {
-    fn from(value: TypedQueryEvent<Vec<SqliteValue>>) -> Self {
-        match value {
-            TypedQueryEvent::Columns(columns) => Self::Columns(
-                columns
-                    .into_iter()
-                    .map(|column| column.to_string())
-                    .collect(),
-            ),
-            TypedQueryEvent::Row(_, row) => Self::Row(convert_row(row)),
-            TypedQueryEvent::EndOfQuery { change_id, .. } => Self::EndOfQuery {
-                change_id: change_id.map(StoreChangeId::from),
-            },
-            TypedQueryEvent::Change(change_type, _, row, change_id) => Self::Change {
-                change_type: change_type.into(),
-                row: convert_row(row),
-                change_id: StoreChangeId::from(change_id),
-            },
-            TypedQueryEvent::Error(error) => Self::Error(error.to_string()),
-        }
-    }
 }
 
 fn transaction_receipt(results: Vec<ExecResult>) -> StoreResult<TransactionReceipt> {
@@ -466,8 +487,45 @@ fn transaction_receipt(results: Vec<ExecResult>) -> StoreResult<TransactionRecei
     Ok(TransactionReceipt { rows_affected })
 }
 
-fn convert_row(row: Vec<SqliteValue>) -> StoreRow {
-    row.into_iter().map(StoreValue::from).collect()
+fn map_subscription_event(
+    event: TypedQueryEvent<Vec<SqliteValue>>,
+    columns: &mut Vec<String>,
+) -> StoreResult<StoreSubscriptionEvent> {
+    match event {
+        TypedQueryEvent::Columns(next_columns) => {
+            *columns = next_columns
+                .into_iter()
+                .map(|column| column.to_string())
+                .collect();
+            Ok(StoreSubscriptionEvent::Columns(columns.clone()))
+        }
+        TypedQueryEvent::Row(_, row) => {
+            convert_row(columns, row).map(StoreSubscriptionEvent::InitialRow)
+        }
+        TypedQueryEvent::EndOfQuery { change_id, .. } => Ok(StoreSubscriptionEvent::EndOfQuery {
+            change_id: change_id.map(StoreChangeId::from),
+        }),
+        TypedQueryEvent::Change(change_type, _, row, change_id) => {
+            Ok(StoreSubscriptionEvent::Change {
+                change_type: change_type.into(),
+                row: convert_row(columns, row)?,
+                change_id: StoreChangeId::from(change_id),
+            })
+        }
+        TypedQueryEvent::Error(error) => Ok(StoreSubscriptionEvent::Error(error.to_string())),
+    }
+}
+
+fn convert_row(columns: &[String], row: Vec<SqliteValue>) -> StoreResult<StoreRow> {
+    if columns.len() != row.len() {
+        return Err(StoreError::MalformedPayload);
+    }
+    StoreRow::from_fields(
+        columns
+            .iter()
+            .cloned()
+            .zip(row.into_iter().map(StoreValue::from)),
+    )
 }
 
 impl StoreTimeout {
@@ -579,19 +637,19 @@ mod tests {
 
     #[test]
     fn sqlite_values_are_hidden_behind_store_values() {
-        let row = super::convert_row(vec![
-            SqliteValue::Null,
-            SqliteValue::Integer(7),
-            SqliteValue::Text("hello".into()),
-        ]);
-
-        assert_eq!(
-            row,
+        let columns = vec!["none".to_string(), "count".to_string(), "label".to_string()];
+        let row = super::convert_row(
+            &columns,
             vec![
-                StoreValue::Null,
-                StoreValue::Integer(7),
-                StoreValue::Text("hello".to_string())
-            ]
-        );
+                SqliteValue::Null,
+                SqliteValue::Integer(7),
+                SqliteValue::Text("hello".into()),
+            ],
+        )
+        .expect("row");
+
+        assert_eq!(row.value("none"), Some(&StoreValue::Null));
+        assert_eq!(row.integer("count").expect("count"), 7);
+        assert_eq!(row.text("label").expect("label"), "hello");
     }
 }

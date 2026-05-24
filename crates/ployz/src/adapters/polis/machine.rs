@@ -1,6 +1,8 @@
+use std::future::Future;
+
 use crate::error::{MachineFailure, PrimitiveFailure};
 use crate::facts::{
-    ProductFact, ProductFactAppendOutcome, ProductFactConflict, ProductFactRejection,
+    ProductFact, ProductFactAppendOutcome, ProductFactRejection,
     machine::{
         MACHINE_JOINED_KIND, MACHINE_REMOVAL_STARTED_KIND, MACHINE_TOMBSTONED_KIND,
         MachineFactError, MachineMembershipFact, MachineMembershipReducer,
@@ -34,53 +36,30 @@ impl<S> MachineMembershipPort for PolisMachineMembership<S>
 where
     S: polis::FactStore,
 {
-    fn observe(
-        &self,
-        context: &MutationContext,
-        machine: &MachineId,
-    ) -> Result<MachineStatus, MachineFailure> {
-        self.project_machine_status(context, machine)
+    fn observe<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        machine: &'a MachineId,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
+        async move { self.project_machine_status(context, machine) }
     }
 
-    fn join(
-        &self,
-        context: &MutationContext,
-        membership: &MachineMembership,
-    ) -> Result<MachineMembership, MachineFailure> {
-        let fact = MachineMembershipFact::joined(membership.clone());
-        match self.append_machine_fact(context, &fact)? {
-            ProductFactAppendOutcome::Appended(_) | ProductFactAppendOutcome::Replayed(_) => {}
-            ProductFactAppendOutcome::Conflict(conflict) => {
-                return Err(machine_conflict_failure(conflict, membership));
+    fn join<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        membership: &'a MachineMembership,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
+        async move {
+            let fact = MachineMembershipFact::joined(membership.clone());
+            match self.append_machine_fact(context, &fact)? {
+                ProductFactAppendOutcome::Appended(_) | ProductFactAppendOutcome::Replayed(_) => {}
+                ProductFactAppendOutcome::Conflict(_) => {}
+                ProductFactAppendOutcome::Rejected(ProductFactRejection::Unauthorized) => {
+                    return Err(MachineFailure::MutationRejected);
+                }
             }
-            ProductFactAppendOutcome::Rejected(ProductFactRejection::Unauthorized) => {
-                return Err(MachineFailure::MutationRejected);
-            }
-        }
 
-        match self.project_machine_status(context, &membership.machine)? {
-            MachineStatus::Joined(joined) if joined == *membership => Ok(joined),
-            MachineStatus::Joined(joined) => Err(MachineFailure::MembershipConflict {
-                machine: joined.machine,
-                epoch: Some(joined.epoch),
-            }),
-            MachineStatus::Conflicted { machine, epoch } => {
-                Err(MachineFailure::MembershipConflict {
-                    machine,
-                    epoch: Some(epoch),
-                })
-            }
-            MachineStatus::Removing(removal) => Err(MachineFailure::MachineRemoving {
-                machine: removal.machine,
-                epoch: removal.epoch,
-            }),
-            MachineStatus::Tombstoned(tombstone) => Err(MachineFailure::MachineTombstoned {
-                machine: tombstone.machine,
-                epoch: tombstone.epoch,
-            }),
-            MachineStatus::Absent => Err(MachineFailure::MutationMismatch {
-                machine: membership.machine.clone(),
-            }),
+            self.project_machine_status(context, &membership.machine)
         }
     }
 }
@@ -122,22 +101,6 @@ where
             .and_then(|snapshot| {
                 super::require_fresh_projection(snapshot, |_| MachineFailure::ProjectionUnavailable)
             })
-    }
-}
-
-fn machine_conflict_failure(
-    conflict: ProductFactConflict,
-    desired: &MachineMembership,
-) -> MachineFailure {
-    match conflict {
-        ProductFactConflict::KeyPayloadConflict { .. }
-        | ProductFactConflict::RejectedKeyPayloadConflict { .. } => {
-            MachineFailure::MembershipConflict {
-                machine: desired.machine.clone(),
-                epoch: Some(desired.epoch),
-            }
-        }
-        ProductFactConflict::IdempotencyKeyReuse { .. } => MachineFailure::MutationRejected,
     }
 }
 
@@ -271,34 +234,35 @@ mod tests {
     };
     use std::time::{Duration, UNIX_EPOCH};
 
-    #[test]
-    fn fact_backed_machine_same_epoch_identity_conflict_projects_conflicted() {
+    #[tokio::test]
+    async fn fact_backed_machine_same_epoch_identity_conflict_projects_conflicted() {
         let membership = PolisMachineMembership::in_memory();
         membership
             .join(&context(), &machine_membership("node-a", 1, "fd00::1"))
+            .await
             .expect("first join");
-        let error = membership
+        let observed = membership
             .join(&context(), &machine_membership("node-a", 1, "fd00::2"))
-            .expect_err("conflict");
+            .await
+            .expect("conflict status");
 
-        assert_eq!(
-            error,
-            MachineFailure::MembershipConflict {
-                machine: MachineId::parse("node-a").expect("machine"),
-                epoch: Some(MachineEpoch::new(1).expect("epoch")),
-            }
-        );
+        assert!(matches!(
+            observed,
+            MachineStatus::Conflicted { machine, epoch }
+                if machine.as_str() == "node-a" && epoch.value() == 1
+        ));
         assert!(matches!(
             membership
                 .observe(&context(), &MachineId::parse("node-a").expect("machine"))
+                .await
                 .expect("observe"),
             MachineStatus::Conflicted { machine, epoch }
                 if machine.as_str() == "node-a" && epoch.value() == 1
         ));
     }
 
-    #[test]
-    fn fact_backed_machine_removal_reason_conflict_still_projects_removing() {
+    #[tokio::test]
+    async fn fact_backed_machine_removal_reason_conflict_still_projects_removing() {
         let membership = PolisMachineMembership::in_memory();
         membership
             .append_machine_fact(
@@ -330,14 +294,15 @@ mod tests {
         assert!(matches!(
             membership
                 .observe(&context(), &MachineId::parse("node-a").expect("machine"))
+                .await
                 .expect("observe"),
             MachineStatus::Removing(removal)
                 if removal.machine.as_str() == "node-a" && removal.epoch.value() == 2
         ));
     }
 
-    #[test]
-    fn fact_backed_machine_tombstone_reason_conflict_still_projects_tombstoned() {
+    #[tokio::test]
+    async fn fact_backed_machine_tombstone_reason_conflict_still_projects_tombstoned() {
         let membership = PolisMachineMembership::in_memory();
         membership
             .append_machine_fact(
@@ -363,20 +328,23 @@ mod tests {
         assert!(matches!(
             membership
                 .observe(&context(), &MachineId::parse("node-a").expect("machine"))
+                .await
                 .expect("observe"),
             MachineStatus::Tombstoned(tombstone)
                 if tombstone.machine.as_str() == "node-a" && tombstone.epoch.value() == 2
         ));
     }
 
-    #[test]
-    fn degraded_projection_is_not_exposed_as_machine_status() {
+    #[tokio::test]
+    async fn degraded_projection_is_not_exposed_as_machine_status() {
         let membership = PolisMachineMembership::in_memory();
         append_conflicting_raw_machine_fact(&membership, "payload-a");
         append_conflicting_raw_machine_fact(&membership, "payload-b");
 
         assert_eq!(
-            membership.observe(&context(), &MachineId::parse("node-a").expect("machine")),
+            membership
+                .observe(&context(), &MachineId::parse("node-a").expect("machine"))
+                .await,
             Err(MachineFailure::ProjectionUnavailable)
         );
     }
