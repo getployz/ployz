@@ -14,7 +14,7 @@ use crate::adapters::polis::{
 };
 use crate::domain::DomainStatusPort;
 use crate::error::PrimitiveFailure;
-use crate::machine::MachineMembershipPort;
+use crate::machine::{MachineMembershipPort, MachineWireGuardPeerPort};
 use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
 use polis::external_attempt as attempt;
@@ -34,7 +34,7 @@ where
 }
 
 #[must_use]
-pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
+pub fn in_memory_machine_membership() -> impl MachineMembershipPort + MachineWireGuardPeerPort {
     PolisMachineMembership::in_memory()
 }
 
@@ -42,7 +42,7 @@ pub fn corrosion_machine_membership<P>(
     store: polis::CorrosionStore,
     probe: P,
     island: polis::IslandId,
-) -> Result<impl MachineMembershipPort, PrimitiveFailure>
+) -> Result<impl MachineMembershipPort + MachineWireGuardPeerPort, PrimitiveFailure>
 where
     P: polis::PeerProbe,
 {
@@ -78,6 +78,10 @@ enum CorrosionMembershipCommand {
     Upsert {
         row: polis::MachineRow,
         reply: mpsc::Sender<Result<(), polis::StoreError>>,
+    },
+    WireGuardPeers {
+        machine_id: polis::StoreMachineId,
+        reply: mpsc::Sender<Result<Vec<polis::MachineRow>, polis::StoreError>>,
     },
 }
 
@@ -132,6 +136,10 @@ fn run_corrosion_membership_worker(
                 let result = runtime.block_on(upsert_machine_row(&store, &row, timeout));
                 let _ = reply.send(result);
             }
+            CorrosionMembershipCommand::WireGuardPeers { machine_id, reply } => {
+                let result = runtime.block_on(wireguard_peer_rows(&store, &machine_id, timeout));
+                let _ = reply.send(result);
+            }
         }
     }
 }
@@ -159,6 +167,19 @@ async fn upsert_machine_row(
     Ok(())
 }
 
+async fn wireguard_peer_rows(
+    store: &polis::CorrosionStore,
+    machine_id: &polis::StoreMachineId,
+    timeout: polis::StoreTimeout,
+) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
+    let statement = polis::wireguard_peers_for_machine_statement(machine_id)?;
+    let rows = store.query(&statement, timeout).await?;
+    rows.rows()
+        .iter()
+        .map(|row| polis::machine_row_from_store_row(row))
+        .collect()
+}
+
 impl MachineMembershipRows for CorrosionMachineMembershipRows {
     fn observe_machine(
         &self,
@@ -181,6 +202,22 @@ impl MachineMembershipRows for CorrosionMachineMembershipRows {
         self.commands
             .send(CorrosionMembershipCommand::Upsert {
                 row: row.clone(),
+                reply,
+            })
+            .map_err(|_| Self::worker_stopped())?;
+        response
+            .recv_timeout(Self::reply_timeout())
+            .map_err(map_membership_reply_error)?
+    }
+
+    fn wireguard_peers_for_machine(
+        &self,
+        machine_id: &polis::StoreMachineId,
+    ) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(CorrosionMembershipCommand::WireGuardPeers {
+                machine_id: machine_id.clone(),
                 reply,
             })
             .map_err(|_| Self::worker_stopped())?;

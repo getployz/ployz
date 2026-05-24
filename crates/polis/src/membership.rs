@@ -504,13 +504,25 @@ pub fn wireguard_peers_for_machine_statement(
     machine_id: &StoreMachineId,
 ) -> StoreResult<StoreStatement> {
     StoreStatement::with_params(
-        "SELECT DISTINCT peer.*
+        "SELECT DISTINCT
+            peer.machine_id,
+            peer.island_id,
+            peer.iroh_endpoint_id,
+            peer.wireguard_public_key,
+            peer.overlay_ip,
+            peer.capabilities_json,
+            peer.lifecycle,
+            peer.epoch,
+            peer.updated_at
         FROM namespace_memberships self_membership
+        JOIN namespaces namespace
+          ON namespace.namespace_id = self_membership.namespace_id
         JOIN namespace_memberships peer_membership
           ON peer_membership.namespace_id = self_membership.namespace_id
         JOIN machines peer
           ON peer.machine_id = peer_membership.machine_id
         WHERE self_membership.machine_id = ?1
+          AND namespace.lifecycle = 'active'
           AND self_membership.lifecycle = 'active'
           AND peer_membership.lifecycle = 'active'
           AND peer.machine_id != ?1
@@ -713,6 +725,8 @@ mod tests {
                 },
             );
         }
+        insert_namespace(&conn, "prod", "active");
+        insert_namespace(&conn, "other", "deleted");
         insert_namespace_membership(&conn, "prod", "node-a", "active");
         insert_namespace_membership(&conn, "prod", "node-b", "active");
         insert_namespace_membership(&conn, "prod", "node-c", "deleted");
@@ -888,6 +902,21 @@ mod tests {
             rusqlite::params![namespace_id, machine_id, lifecycle],
         )
         .expect("namespace membership");
+    }
+
+    fn insert_namespace(conn: &rusqlite::Connection, namespace_id: &str, lifecycle: &str) {
+        conn.execute(
+            "INSERT INTO namespaces (
+                namespace_id,
+                owner_island_id,
+                name,
+                lifecycle,
+                epoch,
+                updated_at
+            ) VALUES (?1, 'prod', ?1, ?2, 1, 0)",
+            rusqlite::params![namespace_id, lifecycle],
+        )
+        .expect("namespace");
     }
 
     fn execute_namespace_upsert(conn: &rusqlite::Connection, row: &NamespaceRow) -> usize {
