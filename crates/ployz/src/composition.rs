@@ -50,6 +50,26 @@ where
         .map(|rows| CorrosionMachineMembership::new(rows, probe, island))
 }
 
+pub fn iroh_peer_rpc_probe(
+    endpoint: polis::PeerEndpoint,
+    ticket: &polis::PeerTicket,
+) -> Result<impl polis::PeerProbe, PrimitiveFailure> {
+    polis::PeerRpcProbe::connect(endpoint, ticket).map_err(map_peer_probe_error)
+}
+
+fn map_peer_probe_error(error: polis::PeerError) -> PrimitiveFailure {
+    match error {
+        polis::PeerError::MalformedTicket
+        | polis::PeerError::MalformedIdentity
+        | polis::PeerError::IdentityIo { .. } => PrimitiveFailure::MalformedPayload,
+        polis::PeerError::RpcTimeout => PrimitiveFailure::Timeout,
+        polis::PeerError::ProbeFailed { .. }
+        | polis::PeerError::RpcTransport { .. }
+        | polis::PeerError::RpcRuntime { .. }
+        | polis::PeerError::RemoteServiceCannotListen => PrimitiveFailure::NoResponder,
+    }
+}
+
 enum CorrosionMembershipCommand {
     Observe {
         machine_id: polis::StoreMachineId,
