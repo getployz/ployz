@@ -6,6 +6,7 @@ use std::{
     io::Write,
     path::Path,
     str::FromStr,
+    thread,
     time::Duration,
 };
 
@@ -22,6 +23,7 @@ use thiserror::Error;
 use crate::IrohEndpointId;
 
 pub const PLOYZ_PEER_ALPN: &[u8] = b"ployz/peer-rpc/0";
+pub type PeerEndpoint = iroh::Endpoint;
 
 #[derive(Debug, Error)]
 pub enum PeerError {
@@ -36,8 +38,12 @@ pub enum PeerError {
         endpoint: IrohEndpointId,
         reason: String,
     },
-    #[error("peer rpc failed: {message}")]
-    Rpc { message: String },
+    #[error("peer rpc timed out")]
+    RpcTimeout,
+    #[error("peer rpc transport failed: {message}")]
+    RpcTransport { message: String },
+    #[error("peer rpc runtime failed: {message}")]
+    RpcRuntime { message: String },
     #[error("peer rpc service is not local")]
     RemoteServiceCannotListen,
 }
@@ -337,20 +343,85 @@ enum PeerRpcProtocol {
 
 pub struct PeerRpcService {
     client: Client<PeerRpcProtocol>,
-    _actor: Option<tokio::task::JoinHandle<()>>,
+    _actor: Option<thread::JoinHandle<()>>,
+}
+
+pub struct PeerRpcProbe {
+    endpoint: IrohEndpointId,
+    observed_path: PeerTicketPath,
+    service: PeerRpcService,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl PeerRpcProbe {
+    pub fn connect(endpoint: PeerEndpoint, ticket: &PeerTicket) -> PeerProbeResult<Self> {
+        Self::from_service(
+            ticket.endpoint_id(),
+            ticket.path(),
+            PeerRpcService::connect(endpoint, ticket.endpoint_addr().clone()),
+        )
+    }
+
+    fn from_service(
+        endpoint: IrohEndpointId,
+        observed_path: PeerTicketPath,
+        service: PeerRpcService,
+    ) -> PeerProbeResult<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(|error| PeerError::RpcRuntime {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            endpoint,
+            observed_path,
+            service,
+            runtime,
+        })
+    }
+}
+
+impl PeerProbe for PeerRpcProbe {
+    fn probe(
+        &self,
+        target: &IrohEndpointId,
+        deadline: PeerProbeDeadline,
+    ) -> PeerProbeResult<PeerProbeReceipt> {
+        if target != &self.endpoint {
+            return Err(PeerError::ProbeFailed {
+                endpoint: target.clone(),
+                reason: "peer rpc probe was built for a different endpoint".to_string(),
+            });
+        }
+
+        self.runtime.block_on(self.service.preflight(deadline))?;
+        Ok(PeerProbeReceipt::new(target.clone(), self.observed_path))
+    }
 }
 
 impl PeerRpcService {
     pub const ALPN: &'static [u8] = PLOYZ_PEER_ALPN;
 
-    #[must_use]
-    pub fn spawn() -> Self {
+    pub fn spawn() -> PeerProbeResult<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let actor = tokio::spawn(run_peer_rpc_actor(rx));
-        Self {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .map_err(|error| PeerError::RpcRuntime {
+                message: error.to_string(),
+            })?;
+        let actor = thread::Builder::new()
+            .name("polis-peer-rpc".to_string())
+            .spawn(move || {
+                runtime.block_on(run_peer_rpc_actor(rx));
+            })
+            .map_err(|error| PeerError::RpcRuntime {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
             client: Client::local(tx),
             _actor: Some(actor),
-        }
+        })
     }
 
     #[must_use]
@@ -372,11 +443,9 @@ impl PeerRpcService {
     pub async fn preflight(&self, deadline: PeerProbeDeadline) -> PeerProbeResult<()> {
         tokio::time::timeout(deadline.duration(), self.client.rpc(PeerPreflightRequest))
             .await
-            .map_err(|_| PeerError::Rpc {
-                message: "preflight timed out".to_string(),
-            })?
+            .map_err(|_| PeerError::RpcTimeout)?
             .map(|_| ())
-            .map_err(|error| PeerError::Rpc {
+            .map_err(|error| PeerError::RpcTransport {
                 message: error.to_string(),
             })
     }
@@ -538,12 +607,52 @@ mod tests {
         assert_eq!(receipt.endpoint(), &endpoint);
     }
 
+    #[test]
+    fn peer_rpc_probe_binds_receipt_to_configured_endpoint() {
+        let endpoint = IrohEndpointId::parse("node-a-endpoint").expect("endpoint");
+        let probe = PeerRpcProbe::from_service(
+            endpoint.clone(),
+            PeerTicketPath::DiscoveryOnly,
+            PeerRpcService::spawn().expect("service"),
+        )
+        .expect("probe");
+
+        let receipt = probe
+            .probe(&endpoint, PeerProbeDeadline::new(Duration::from_secs(1)))
+            .expect("preflight");
+
+        assert_eq!(receipt.endpoint(), &endpoint);
+        assert_eq!(receipt.alpn(), PLOYZ_PEER_ALPN);
+    }
+
+    #[test]
+    fn peer_rpc_probe_rejects_unconfigured_endpoint_without_rpc_call() {
+        let endpoint = IrohEndpointId::parse("node-a-endpoint").expect("endpoint");
+        let other = IrohEndpointId::parse("node-b-endpoint").expect("endpoint");
+        let probe = PeerRpcProbe::from_service(
+            endpoint,
+            PeerTicketPath::DiscoveryOnly,
+            PeerRpcService::spawn().expect("service"),
+        )
+        .expect("probe");
+
+        let error = probe
+            .probe(&other, PeerProbeDeadline::new(Duration::from_secs(1)))
+            .expect_err("wrong endpoint");
+
+        assert!(matches!(
+            error,
+            PeerError::ProbeFailed { endpoint, reason }
+                if endpoint == other && reason == "peer rpc probe was built for a different endpoint"
+        ));
+    }
+
     #[tokio::test]
     async fn iroh_irpc_preflight_round_trips_between_endpoints() {
         let server_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
             .await
             .expect("server endpoint");
-        let server = PeerRpcService::spawn();
+        let server = PeerRpcService::spawn().expect("server");
         let router = iroh::protocol::Router::builder(server_endpoint.clone())
             .accept(
                 PeerRpcService::ALPN,
