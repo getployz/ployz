@@ -50,7 +50,6 @@ Option B, chosen:
 - `identity.endpoint_id`
 - `membership.known_peers`
 - `membership.rows`
-- `membership.wireguard_peers_for_machine`
 - `peers.probe`
 - `peers.rpc`
 
@@ -89,8 +88,9 @@ Corrosion.
   concrete plan, and runs it without requiring perfect global consensus.
 - R8. Derive WireGuard peer configuration from active namespace membership,
   not global machine membership.
-- R9. Keep the first schema minimal: `machines`, `namespaces`, and
-  `namespace_memberships`.
+- R9. Keep the first schema minimal: `machines` only. Defer namespace and
+  namespace-membership tables until a concrete WireGuard controller path
+  consumes them.
 - R10. Model authority islands with `island_id`, namespace membership, and
   prod-owned writes. Do not introduce a large authority schema yet.
 - R11. Resolve the async substrate boundary before Corrosion or iroh code
@@ -112,14 +112,8 @@ MachineMembershipPort::observe/join
       -> polis peer probe/preflight primitive
 ```
 
-The first slice may create the minimal Corrosion schema required for:
-
-- `machines`
-- `namespaces`
-- `namespace_memberships`
-
-But it should only exercise the parts needed by machine membership and
-namespace-derived peer sets.
+The first slice creates only the Corrosion schema required for machine
+membership rows.
 
 ### Explicit Non-Goals
 
@@ -154,31 +148,17 @@ namespace-derived peer sets.
 - `iroh_endpoint_id`
 - `wireguard_public_key`
 - `overlay_ip`
-- `capabilities_json`
 - `lifecycle`
 - `epoch`
 - `updated_at`
 
-No `iroh_ticket` column. Durable identity is `iroh_endpoint_id`.
+No `iroh_ticket` column. Durable identity is `iroh_endpoint_id`. Keep this
+Corrosion-shaped: explicit columns, stable primary keys, and no opaque machine
+document blobs.
 
-### `namespaces`
-
-- `namespace_id`
-- `owner_island_id`
-- `name`
-- `lifecycle`
-- `epoch`
-- `updated_at`
-
-### `namespace_memberships`
-
-- `namespace_id`
-- `machine_id`
-- `role`
-- `lifecycle`
-- `epoch`
-- `updated_at`
-- Primary key: `(namespace_id, machine_id)`
+Namespace and namespace-membership tables remain deferred. Add them with the
+WireGuard controller path that first consumes namespace-derived peers, so Polis
+does not publish product-shaped namespace APIs ahead of a real caller.
 
 ---
 
@@ -225,8 +205,9 @@ WHERE self_membership.machine_id = ?
   AND peer.lifecycle = 'active';
 ```
 
-This may live in Polis only as a pure membership/network primitive such as
-`wireguard_peers_for_machine`. Ployz owns the policy that uses the peer set.
+Keep this as the required derivation rule. Add a Polis query for it when the
+WireGuard controller consumes the peer set; do not expose a public Ployz port
+for it before there is a product caller.
 
 ---
 
@@ -351,10 +332,10 @@ membership adapter.
 
 ### U2. Add Identity and Membership Row Primitives
 
-**Goal:** Represent endpoint identity, known peer rows, namespace overlap, and
-WireGuard peer derivation without owning machine join semantics.
+**Goal:** Represent endpoint identity and known machine rows without owning
+machine join semantics.
 
-**Requirements:** R3, R5, R8, R9, R10
+**Requirements:** R3, R5, R9, R10
 
 **Dependencies:** U1
 
@@ -371,24 +352,21 @@ WireGuard peer derivation without owning machine join semantics.
 - Represent iroh endpoint IDs as typed values with parsing, serialization, and
   redacted display.
 - Represent membership rows as substrate records only.
-- Keep lifecycle and epoch as row fields; Ployz interprets product outcomes
-  such as `Joined`, `AlreadyPresent`, `Conflict`, and `Removing`.
-- Provide primitive reads/writes for:
-  - machine rows
-  - namespace rows
-  - namespace membership rows
-  - active peer rows
-  - WireGuard peer derivation
+- Store machine fields as explicit Corrosion columns. Ployz interprets product
+  outcomes such as `Joined`, `AlreadyPresent`, `Conflict`, and `Removing`.
+- Keep schema DDL in `crates/polis/src/membership/schema.sql`.
+- Provide primitive reads/writes for machine rows.
 - Do not store ticket text in durable rows.
 
 **Verification:**
 
-- Membership rows preserve endpoint ID, WireGuard key, overlay IP,
-  capabilities, lifecycle, epoch, and island ID.
-- Lower-epoch rows do not overwrite newer owner-written rows.
-- Same-epoch owner updates are accepted; this first slice does not build a
-  row-conflict subsystem.
-- Active namespace overlap derives the expected WireGuard peers.
+- Membership rows preserve endpoint ID, WireGuard key, overlay IP, lifecycle,
+  epoch, and island ID.
+- Owner-written machine rows are idempotent for the exact same row and reject a
+  different existing row so Ployz reports membership conflict instead of
+  relying on Corrosion last-writer-wins convergence.
+- Namespace and WireGuard peer derivation stay deferred until there is a
+  product caller.
 
 ---
 
@@ -462,8 +440,8 @@ keeping machine join semantics in Ployz.
   4. product outcome mapping.
 - Do not allow a real join path to write membership before required peer
   preflight succeeds or is explicitly bypassed by a local/test path.
-- Keep namespace-derived WireGuard peer derivation in the adapter or a
-  primitive query; product meaning remains in Ployz.
+- Keep namespace-derived WireGuard peer derivation out of this slice until the
+  WireGuard controller consumes it.
 
 **Verification:**
 

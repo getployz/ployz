@@ -41,18 +41,14 @@ pub use facts::{
 };
 pub use identity::{IrohEndpointId, PrincipalId, ScopeId, SourceWatermark};
 pub use membership::{
-    CapabilitiesJson, IslandId, MachineRow, MembershipLifecycle, NamespaceId,
-    NamespaceMembershipRow, NamespaceRole, NamespaceRow, OverlayIp, RowEpoch, StoreMachineId,
-    WireGuardPublicKey, active_machine_statement, machine_row_from_store_row,
-    membership_schema_statements, select_machine_statement, upsert_machine_statement,
-    upsert_namespace_membership_statement, upsert_namespace_statement,
-    wireguard_peers_for_machine_statement,
+    IslandId, MachineRow, MachineRowQuery, MembershipLifecycle, OverlayIp, RowEpoch,
+    StoreMachineId, WireGuardPublicKey, membership_schema_statements, upsert_machine_statement,
 };
 pub use operations::{IdempotencyKey, OperationId, SubmittedFenceFingerprint};
 pub use peers::{
     FakePeerProbe, PLOYZ_PEER_ALPN, PeerEndpoint, PeerError, PeerIdentity, PeerProbe,
-    PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcListener, PeerRpcProbe,
-    PeerRpcService, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
+    PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcClient, PeerRpcListener,
+    PeerRpcProbe, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
     issue_endpoint_ticket, issue_ticket, load_or_create_identity, preflight_membership,
 };
 pub use projection::{
@@ -61,10 +57,9 @@ pub use projection::{
     ProjectionRequestIdentity, ProjectionSnapshot, ProjectionSource, ProjectionView, VerifiedFact,
 };
 pub use store::{
-    CorrosionStore, StoreChangeId, StoreChangeType, StoreError, StoreParam, StoreQueryEvent,
-    StoreQueryRows, StoreResult, StoreRow, StoreStatement, StoreSubscription,
-    StoreSubscriptionEvent, StoreTimeout, StoreUpdate, StoreUpdateEvent, StoreValue,
-    TransactionReceipt,
+    CorrosionStore, StoreChangeId, StoreChangeType, StoreError, StoreParam, StoreQueryRows,
+    StoreResult, StoreRow, StoreStatement, StoreSubscription, StoreSubscriptionEvent, StoreTimeout,
+    StoreUpdate, StoreUpdateEvent, StoreValue, TransactionReceipt,
 };
 
 #[cfg(test)]

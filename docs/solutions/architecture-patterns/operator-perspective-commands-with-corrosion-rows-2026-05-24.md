@@ -43,7 +43,7 @@ operation, computes a concrete plan, and executes that plan.
 
 Use Corrosion for replicated state:
 
-- machine membership and capabilities,
+- machine membership and narrow capability rows,
 - placement inputs,
 - rows emitted by completed lifecycle events,
 - live observations that should be visible to other nodes,

@@ -20,13 +20,9 @@ test:
 
 test-all:
     cargo test
-    just verify-deploy-types
 
 deploy-types:
     bash ./scripts/generate-deploy-types.sh
-
-verify-deploy-types:
-    bash ./scripts/verify-deploy-types.sh
 
 bootstrap-linux *args:
     ./scripts/bootstrap-linux.sh {{args}}

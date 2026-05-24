@@ -3,28 +3,23 @@
 //! This adapter owns Ployz product semantics. Polis supplies row statements,
 //! endpoint identity, and peer probe primitives.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
-use crate::error::MachineFailure;
+use crate::error::{MachineFailure, PrimitiveFailure};
 use crate::machine::{
     IrohEndpointId, MachineEpoch, MachineId, MachineMembership, MachineMembershipPort,
     MachineNetworkIdentity, MachineRemoval, MachineRemovalReason, MachineStatus, MachineTombstone,
-    MachineWireGuardPeer, MachineWireGuardPeerPort, OverlayIp, WireGuardPublicKey,
+    OverlayIp, WireGuardPublicKey,
 };
 use crate::operation::MutationContext;
 
 pub(crate) trait MachineMembershipRows {
-    fn observe_machine(
+    async fn observe_machine(
         &self,
         machine_id: &polis::StoreMachineId,
     ) -> Result<Option<polis::MachineRow>, polis::StoreError>;
 
-    fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError>;
-
-    fn wireguard_peers_for_machine(
-        &self,
-        machine_id: &polis::StoreMachineId,
-    ) -> Result<Vec<polis::MachineRow>, polis::StoreError>;
+    async fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError>;
 }
 
 #[derive(Debug)]
@@ -45,23 +40,19 @@ impl<R, P> CorrosionMachineMembership<R, P> {
     }
 }
 
-impl<R, P> MachineWireGuardPeerPort for CorrosionMachineMembership<R, P>
+pub(crate) async fn start_corrosion_machine_membership<P>(
+    store: polis::CorrosionStore,
+    probe: P,
+    island: polis::IslandId,
+) -> Result<impl MachineMembershipPort, PrimitiveFailure>
 where
-    R: MachineMembershipRows,
+    P: polis::PeerProbe,
 {
-    fn wireguard_peers(
-        &self,
-        _context: &MutationContext,
-        machine: &MachineId,
-    ) -> Result<Vec<MachineWireGuardPeer>, MachineFailure> {
-        let machine_id = polis_machine_id(machine)?;
-        self.rows
-            .wireguard_peers_for_machine(&machine_id)
-            .map_err(map_machine_store_error)?
-            .into_iter()
-            .map(|row| machine_wireguard_peer_from_row(&row))
-            .collect()
-    }
+    Ok(CorrosionMachineMembership::new(
+        CorrosionMachineMembershipRows::start(store),
+        probe,
+        island,
+    ))
 }
 
 impl<R, P> MachineMembershipPort for CorrosionMachineMembership<R, P>
@@ -69,78 +60,110 @@ where
     R: MachineMembershipRows,
     P: polis::PeerProbe,
 {
-    fn observe(
-        &self,
-        _context: &MutationContext,
-        machine: &MachineId,
-    ) -> Result<MachineStatus, MachineFailure> {
-        let machine_id = polis_machine_id(machine)?;
-        let Some(row) = self
-            .rows
-            .observe_machine(&machine_id)
-            .map_err(map_machine_store_error)?
-        else {
-            return Ok(MachineStatus::Absent);
-        };
+    fn observe<'a>(
+        &'a self,
+        _context: &'a MutationContext,
+        machine: &'a MachineId,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
+        async move {
+            let machine_id = polis_machine_id(machine)?;
+            let Some(row) = self
+                .rows
+                .observe_machine(&machine_id)
+                .await
+                .map_err(map_machine_store_error)?
+            else {
+                return Ok(MachineStatus::Absent);
+            };
 
-        machine_status_from_row(row)
-    }
-
-    fn join(
-        &self,
-        _context: &MutationContext,
-        membership: &MachineMembership,
-    ) -> Result<MachineMembership, MachineFailure> {
-        let endpoint = polis_endpoint_id(&membership.network.iroh_endpoint_id)?;
-        self.probe
-            .probe(
-                &endpoint,
-                polis::PeerProbeDeadline::new(Duration::from_secs(2)),
-            )
-            .map_err(|_| MachineFailure::PeerPreflightFailed {
-                machine: membership.machine.clone(),
-            })?;
-
-        let row = machine_row_from_membership(membership, &self.island)?;
-        self.rows
-            .upsert_machine(&row)
-            .map_err(map_machine_store_error)?;
-
-        let machine_id = polis_machine_id(&membership.machine)?;
-        match self
-            .rows
-            .observe_machine(&machine_id)
-            .map_err(map_machine_store_error)?
-        {
-            Some(row) => match machine_status_from_row(row)? {
-                MachineStatus::Joined(joined) if joined == *membership => Ok(joined),
-                MachineStatus::Joined(joined) => Err(MachineFailure::MembershipConflict {
-                    machine: joined.machine,
-                    epoch: Some(joined.epoch),
-                }),
-                MachineStatus::Conflicted { machine, epoch } => {
-                    Err(MachineFailure::MembershipConflict {
-                        machine,
-                        epoch: Some(epoch),
-                    })
-                }
-                MachineStatus::Removing(removal) => Err(MachineFailure::MachineRemoving {
-                    machine: removal.machine,
-                    epoch: removal.epoch,
-                }),
-                MachineStatus::Tombstoned(tombstone) => Err(MachineFailure::MachineTombstoned {
-                    machine: tombstone.machine,
-                    epoch: tombstone.epoch,
-                }),
-                MachineStatus::Absent => Err(MachineFailure::MutationMismatch {
-                    machine: membership.machine.clone(),
-                }),
-            },
-            None => Err(MachineFailure::MutationMismatch {
-                machine: membership.machine.clone(),
-            }),
+            machine_status_from_row(row)
         }
     }
+
+    fn join<'a>(
+        &'a self,
+        _context: &'a MutationContext,
+        membership: &'a MachineMembership,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
+        async move {
+            let endpoint = polis_endpoint_id(&membership.network.iroh_endpoint_id)?;
+            self.probe
+                .probe(
+                    &endpoint,
+                    polis::PeerProbeDeadline::new(Duration::from_secs(2)),
+                )
+                .await
+                .map_err(|_| MachineFailure::PeerPreflightFailed {
+                    machine: membership.machine.clone(),
+                })?;
+
+            let row = machine_row_from_membership(membership, &self.island)?;
+            self.rows
+                .upsert_machine(&row)
+                .await
+                .map_err(map_machine_store_error)?;
+
+            let machine_id = polis_machine_id(&membership.machine)?;
+            let Some(row) = self
+                .rows
+                .observe_machine(&machine_id)
+                .await
+                .map_err(map_machine_store_error)?
+            else {
+                return Ok(MachineStatus::Absent);
+            };
+
+            machine_status_from_row(row)
+        }
+    }
+}
+
+struct CorrosionMachineMembershipRows {
+    store: polis::CorrosionStore,
+}
+
+impl CorrosionMachineMembershipRows {
+    fn start(store: polis::CorrosionStore) -> Self {
+        Self { store }
+    }
+}
+
+impl MachineMembershipRows for CorrosionMachineMembershipRows {
+    async fn observe_machine(
+        &self,
+        machine_id: &polis::StoreMachineId,
+    ) -> Result<Option<polis::MachineRow>, polis::StoreError> {
+        observe_machine_row(
+            &self.store,
+            machine_id,
+            polis::StoreTimeout::CONTROL_PLANE_DEFAULT,
+        )
+        .await
+    }
+
+    async fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
+        upsert_machine_row(&self.store, row, polis::StoreTimeout::CONTROL_PLANE_DEFAULT).await
+    }
+}
+
+async fn observe_machine_row(
+    store: &polis::CorrosionStore,
+    machine_id: &polis::StoreMachineId,
+    timeout: polis::StoreTimeout,
+) -> Result<Option<polis::MachineRow>, polis::StoreError> {
+    let query = polis::MachineRowQuery::by_machine_id(machine_id)?;
+    let rows = store.query(query.statement(), timeout).await?;
+    query.decode_optional(&rows)
+}
+
+async fn upsert_machine_row(
+    store: &polis::CorrosionStore,
+    row: &polis::MachineRow,
+    timeout: polis::StoreTimeout,
+) -> Result<(), polis::StoreError> {
+    let statement = polis::upsert_machine_statement(row)?;
+    store.execute_transaction(&[statement], timeout).await?;
+    Ok(())
 }
 
 fn machine_row_from_membership(
@@ -155,7 +178,6 @@ fn machine_row_from_membership(
             .map_err(map_machine_polis_error)?,
         polis::OverlayIp::parse(membership.network.overlay_ip.canonical())
             .map_err(map_machine_polis_error)?,
-        polis::CapabilitiesJson::parse("{}").map_err(map_machine_polis_error)?,
         polis::MembershipLifecycle::Active,
         polis::RowEpoch::new(membership.epoch.value()).map_err(map_machine_polis_error)?,
         0,
@@ -198,16 +220,6 @@ fn machine_membership_from_row(
     ))
 }
 
-fn machine_wireguard_peer_from_row(
-    row: &polis::MachineRow,
-) -> Result<MachineWireGuardPeer, MachineFailure> {
-    Ok(MachineWireGuardPeer::new(
-        MachineId::parse(row.machine_id().as_str())?,
-        OverlayIp::parse(row.overlay_ip().as_str())?,
-        WireGuardPublicKey::parse(row.wireguard_public_key().as_str())?,
-    ))
-}
-
 fn polis_machine_id(machine: &MachineId) -> Result<polis::StoreMachineId, MachineFailure> {
     polis::StoreMachineId::parse(machine.as_str()).map_err(map_machine_polis_error)
 }
@@ -216,8 +228,17 @@ fn polis_endpoint_id(endpoint: &IrohEndpointId) -> Result<polis::IrohEndpointId,
     polis::IrohEndpointId::parse(endpoint.as_str()).map_err(map_machine_polis_error)
 }
 
-fn map_machine_store_error(_error: polis::StoreError) -> MachineFailure {
-    MachineFailure::ProjectionUnavailable
+fn map_machine_store_error(error: polis::StoreError) -> MachineFailure {
+    match error {
+        polis::StoreError::MalformedPayload => MachineFailure::ProjectionPayloadInvalid,
+        polis::StoreError::Timeout => MachineFailure::ProjectionTimeout,
+        polis::StoreError::MissedChange { .. } => MachineFailure::ProjectionMissedChanges,
+        polis::StoreError::Stream { .. } => MachineFailure::ProjectionStreamInterrupted,
+        polis::StoreError::Client { .. }
+        | polis::StoreError::Response { .. }
+        | polis::StoreError::QueryChangedBeforeEndOfQuery
+        | polis::StoreError::QueryEndedBeforeEndOfQuery => MachineFailure::ProjectionUnavailable,
+    }
 }
 
 fn map_machine_polis_error(error: polis::Error) -> MachineFailure {
@@ -245,8 +266,8 @@ mod tests {
         AuthorityContext, AuthorityEpoch, IdempotencyKey, OperationId, PrincipalId, ScopeId,
     };
 
-    #[test]
-    fn absent_preflighted_machine_commits_one_membership_row() {
+    #[tokio::test]
+    async fn absent_preflighted_machine_commits_one_membership_row() {
         let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
         let rows = RecordingRows::default();
         let row_store = rows.clone();
@@ -256,6 +277,7 @@ mod tests {
 
         let outcome = service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .await
             .expect("add");
 
         assert!(
@@ -265,8 +287,8 @@ mod tests {
         assert_eq!(row_store.committed.borrow().as_slice(), &["node-a"]);
     }
 
-    #[test]
-    fn preflight_failure_writes_no_membership_row() {
+    #[tokio::test]
+    async fn preflight_failure_writes_no_membership_row() {
         let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
         let rows = RecordingRows::default();
         let probe = polis::FakePeerProbe::new().failing(endpoint, "dial failed");
@@ -275,6 +297,7 @@ mod tests {
 
         let error = adapter
             .join(&context(), &membership)
+            .await
             .expect_err("preflight");
 
         assert_eq!(
@@ -286,14 +309,15 @@ mod tests {
         assert!(adapter.rows.committed.borrow().is_empty());
     }
 
-    #[test]
-    fn existing_active_row_observes_as_joined() {
+    #[tokio::test]
+    async fn existing_active_row_observes_as_joined() {
         let rows = RecordingRows::default().with_row(row("node-a", 1, "fd00::1"));
         let probe = polis::FakePeerProbe::new();
         let adapter = adapter(rows, probe);
 
         let observed = adapter
             .observe(&context(), &MachineId::parse("node-a").expect("machine"))
+            .await
             .expect("observe");
 
         assert!(
@@ -301,116 +325,60 @@ mod tests {
         );
     }
 
-    #[test]
-    fn namespace_derived_wireguard_peers_are_decoded_as_machine_memberships() {
-        let peer = row("node-b", 1, "fd00::2");
-        let rows = RecordingRows::default().with_wireguard_peers(vec![peer]);
-        let probe = polis::FakePeerProbe::new();
+    #[tokio::test]
+    async fn join_returns_existing_active_row_after_protected_upsert_noop() {
+        let rows = RecordingRows::default().with_row(row("node-a", 2, "fd00::2"));
+        let probe = reachable_probe("node-a");
         let adapter = adapter(rows, probe);
 
-        let peers = adapter
-            .wireguard_peers(&context(), &MachineId::parse("node-a").expect("machine"))
-            .expect("peers");
+        let observed = adapter
+            .join(&context(), &membership("node-a", 1, "fd00::1"))
+            .await
+            .expect("join");
 
-        assert_eq!(
-            peers,
-            vec![MachineWireGuardPeer::new(
-                MachineId::parse("node-b").expect("machine"),
-                OverlayIp::parse("fd00::2").expect("overlay"),
-                WireGuardPublicKey::parse("wg-node-b").expect("wireguard"),
-            )]
+        assert!(
+            matches!(observed, MachineStatus::Joined(joined) if joined == membership("node-a", 2, "fd00::2"))
         );
     }
 
-    #[test]
-    fn stale_upsert_reobserves_existing_joined_row_as_conflict() {
-        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
-        let rows = RecordingRows::default()
-            .with_row(row("node-a", 2, "fd00::2"))
-            .ignoring_upserts();
-        let probe = polis::FakePeerProbe::new().reachable(endpoint);
+    #[tokio::test]
+    async fn join_returns_existing_removing_row_after_protected_upsert_noop() {
+        let rows = RecordingRows::default().with_row(row_with_lifecycle(
+            "node-a",
+            2,
+            "fd00::2",
+            polis::MembershipLifecycle::Removing,
+        ));
+        let probe = reachable_probe("node-a");
         let adapter = adapter(rows, probe);
 
-        let error = adapter
+        let observed = adapter
             .join(&context(), &membership("node-a", 1, "fd00::1"))
-            .expect_err("conflict");
+            .await
+            .expect("join");
 
-        assert!(
-            matches!(error, MachineFailure::MembershipConflict { machine, epoch: Some(epoch) }
-                if machine.as_str() == "node-a" && epoch.value() == 2)
-        );
+        assert!(matches!(observed, MachineStatus::Removing(removal)
+                if removal.machine.as_str() == "node-a" && removal.epoch.value() == 2));
     }
 
-    #[test]
-    fn stale_upsert_reobserves_conflicted_row_as_conflict() {
-        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
-        let rows = RecordingRows::default()
-            .with_row(row_with_lifecycle(
-                "node-a",
-                2,
-                "fd00::2",
-                polis::MembershipLifecycle::Conflicted,
-            ))
-            .ignoring_upserts();
-        let probe = polis::FakePeerProbe::new().reachable(endpoint);
+    #[tokio::test]
+    async fn join_returns_existing_tombstone_after_protected_upsert_noop() {
+        let rows = RecordingRows::default().with_row(row_with_lifecycle(
+            "node-a",
+            2,
+            "fd00::2",
+            polis::MembershipLifecycle::Tombstoned,
+        ));
+        let probe = reachable_probe("node-a");
         let adapter = adapter(rows, probe);
 
-        let error = adapter
+        let observed = adapter
             .join(&context(), &membership("node-a", 1, "fd00::1"))
-            .expect_err("conflict");
+            .await
+            .expect("join");
 
-        assert!(
-            matches!(error, MachineFailure::MembershipConflict { machine, epoch: Some(epoch) }
-                if machine.as_str() == "node-a" && epoch.value() == 2)
-        );
-    }
-
-    #[test]
-    fn stale_upsert_reobserves_removing_row_as_removing() {
-        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
-        let rows = RecordingRows::default()
-            .with_row(row_with_lifecycle(
-                "node-a",
-                2,
-                "fd00::2",
-                polis::MembershipLifecycle::Removing,
-            ))
-            .ignoring_upserts();
-        let probe = polis::FakePeerProbe::new().reachable(endpoint);
-        let adapter = adapter(rows, probe);
-
-        let error = adapter
-            .join(&context(), &membership("node-a", 1, "fd00::1"))
-            .expect_err("removing");
-
-        assert!(
-            matches!(error, MachineFailure::MachineRemoving { machine, epoch }
-                if machine.as_str() == "node-a" && epoch.value() == 2)
-        );
-    }
-
-    #[test]
-    fn stale_upsert_reobserves_deleted_row_as_tombstoned() {
-        let endpoint = polis::IrohEndpointId::parse("iroh-node-a").expect("endpoint");
-        let rows = RecordingRows::default()
-            .with_row(row_with_lifecycle(
-                "node-a",
-                2,
-                "fd00::2",
-                polis::MembershipLifecycle::Deleted,
-            ))
-            .ignoring_upserts();
-        let probe = polis::FakePeerProbe::new().reachable(endpoint);
-        let adapter = adapter(rows, probe);
-
-        let error = adapter
-            .join(&context(), &membership("node-a", 1, "fd00::1"))
-            .expect_err("tombstoned");
-
-        assert!(
-            matches!(error, MachineFailure::MachineTombstoned { machine, epoch }
-                if machine.as_str() == "node-a" && epoch.value() == 2)
-        );
+        assert!(matches!(observed, MachineStatus::Tombstoned(tombstone)
+                if tombstone.machine.as_str() == "node-a" && tombstone.epoch.value() == 2));
     }
 
     fn adapter(
@@ -428,8 +396,6 @@ mod tests {
     struct RecordingRows {
         row: Rc<RefCell<Option<polis::MachineRow>>>,
         committed: Rc<RefCell<Vec<String>>>,
-        wireguard_peers: Rc<RefCell<Vec<polis::MachineRow>>>,
-        ignore_upserts: bool,
     }
 
     impl RecordingRows {
@@ -437,41 +403,25 @@ mod tests {
             self.row.replace(Some(row));
             self
         }
-
-        fn ignoring_upserts(mut self) -> Self {
-            self.ignore_upserts = true;
-            self
-        }
-
-        fn with_wireguard_peers(self, peers: Vec<polis::MachineRow>) -> Self {
-            self.wireguard_peers.replace(peers);
-            self
-        }
     }
 
     impl MachineMembershipRows for RecordingRows {
-        fn observe_machine(
+        async fn observe_machine(
             &self,
             _machine_id: &polis::StoreMachineId,
         ) -> Result<Option<polis::MachineRow>, polis::StoreError> {
             Ok(self.row.borrow().clone())
         }
 
-        fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
-            if !self.ignore_upserts {
-                self.row.replace(Some(row.clone()));
+        async fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
+            let mut stored = self.row.borrow_mut();
+            if stored.as_ref().is_none_or(|current| current == row) {
+                *stored = Some(row.clone());
             }
             self.committed
                 .borrow_mut()
                 .push(row.machine_id().as_str().to_string());
             Ok(())
-        }
-
-        fn wireguard_peers_for_machine(
-            &self,
-            _machine_id: &polis::StoreMachineId,
-        ) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
-            Ok(self.wireguard_peers.borrow().clone())
         }
     }
 
@@ -487,6 +437,11 @@ mod tests {
             None,
             UNIX_EPOCH + Duration::from_secs(60),
         )
+    }
+
+    fn reachable_probe(machine: &str) -> polis::FakePeerProbe {
+        polis::FakePeerProbe::new()
+            .reachable(polis::IrohEndpointId::parse(format!("iroh-{machine}")).expect("endpoint"))
     }
 
     fn request(machine: &str, epoch: u64, overlay_ip: &str) -> MachineAddRequest {
@@ -534,7 +489,6 @@ mod tests {
             polis::IrohEndpointId::parse(format!("iroh-{machine}")).expect("endpoint"),
             polis::WireGuardPublicKey::parse(format!("wg-{machine}")).expect("wireguard"),
             polis::OverlayIp::parse(overlay_ip).expect("overlay"),
-            polis::CapabilitiesJson::parse("{}").expect("capabilities"),
             lifecycle,
             polis::RowEpoch::new(epoch).expect("epoch"),
             0,

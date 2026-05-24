@@ -459,7 +459,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 [[package]]
 name = "corro-api-types"
 version = "0.2.0-alpha.0"
-source = "git+https://github.com/superfly/corrosion?branch=main#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
+source = "git+https://github.com/superfly/corrosion?rev=50542c94a2875d2b66ed9b48dc9d2516440c8c9c#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
 dependencies = [
  "camino",
  "compact_str",
@@ -478,7 +478,7 @@ dependencies = [
 [[package]]
 name = "corro-client"
 version = "0.2.0-alpha.0"
-source = "git+https://github.com/superfly/corrosion?branch=main#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
+source = "git+https://github.com/superfly/corrosion?rev=50542c94a2875d2b66ed9b48dc9d2516440c8c9c#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
 dependencies = [
  "bytes",
  "corro-api-types",
@@ -2748,6 +2748,7 @@ name = "ployz"
 version = "0.1.0"
 dependencies = [
  "polis",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2761,6 +2762,7 @@ version = "0.1.0"
 dependencies = [
  "ployz",
  "polis",
+ "tokio",
 ]
 
 [[package]]
@@ -3673,7 +3675,7 @@ dependencies = [
 [[package]]
 name = "sqlite-pool"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/superfly/corrosion?branch=main#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
+source = "git+https://github.com/superfly/corrosion?rev=50542c94a2875d2b66ed9b48dc9d2516440c8c9c#50542c94a2875d2b66ed9b48dc9d2516440c8c9c"
 dependencies = [
  "arc-swap",
  "deadpool",

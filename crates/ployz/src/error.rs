@@ -125,6 +125,14 @@ pub enum MachineFailure {
     InvalidPayload,
     #[error("membership projection is unavailable")]
     ProjectionUnavailable,
+    #[error("membership projection timed out")]
+    ProjectionTimeout,
+    #[error("membership projection payload is invalid")]
+    ProjectionPayloadInvalid,
+    #[error("membership projection stream was interrupted")]
+    ProjectionStreamInterrupted,
+    #[error("membership projection missed changes")]
+    ProjectionMissedChanges,
     #[error("machine membership conflicts for {machine:?} at epoch {epoch:?}")]
     MembershipConflict {
         machine: crate::machine::MachineId,

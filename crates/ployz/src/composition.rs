@@ -3,18 +3,18 @@
 //! Feature modules should depend on Ployz-owned traits. This module is allowed
 //! to assemble concrete adapters and pass them into product orchestration.
 
-use std::{path::Path, sync::mpsc, thread, time::Duration};
+use std::path::Path;
 
 use crate::acme::{
     CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
 };
 use crate::adapters::polis::{
-    AcmeCertificateIssuer, CorrosionMachineMembership, MachineMembershipRows, PolisDomainStatus,
-    PolisMachineMembership, PolisServingSnapshots,
+    AcmeCertificateIssuer, PolisDomainStatus, PolisMachineMembership, PolisServingSnapshots,
+    start_corrosion_machine_membership,
 };
 use crate::domain::DomainStatusPort;
 use crate::error::PrimitiveFailure;
-use crate::machine::{MachineMembershipPort, MachineWireGuardPeerPort};
+use crate::machine::MachineMembershipPort;
 use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
 use polis::external_attempt as attempt;
@@ -38,16 +38,15 @@ pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     PolisMachineMembership::in_memory()
 }
 
-pub fn corrosion_machine_membership<P>(
+pub async fn corrosion_machine_membership<P>(
     store: polis::CorrosionStore,
     probe: P,
     island: polis::IslandId,
-) -> Result<impl MachineMembershipPort + MachineWireGuardPeerPort, PrimitiveFailure>
+) -> Result<impl MachineMembershipPort, PrimitiveFailure>
 where
     P: polis::PeerProbe,
 {
-    CorrosionMachineMembershipRows::start(store)
-        .map(|rows| CorrosionMachineMembership::new(rows, probe, island))
+    start_corrosion_machine_membership(store, probe, island).await
 }
 
 pub fn iroh_peer_rpc_probe(
@@ -132,179 +131,7 @@ fn map_peer_probe_error(error: polis::PeerError) -> PrimitiveFailure {
         polis::PeerError::RpcTimeout => PrimitiveFailure::Timeout,
         polis::PeerError::ProbeFailed { .. }
         | polis::PeerError::RpcTransport { .. }
-        | polis::PeerError::RpcRuntime { .. }
-        | polis::PeerError::RemoteServiceCannotListen => PrimitiveFailure::NoResponder,
-    }
-}
-
-enum CorrosionMembershipCommand {
-    Observe {
-        machine_id: polis::StoreMachineId,
-        reply: mpsc::Sender<Result<Option<polis::MachineRow>, polis::StoreError>>,
-    },
-    Upsert {
-        row: polis::MachineRow,
-        reply: mpsc::Sender<Result<(), polis::StoreError>>,
-    },
-    WireGuardPeers {
-        machine_id: polis::StoreMachineId,
-        reply: mpsc::Sender<Result<Vec<polis::MachineRow>, polis::StoreError>>,
-    },
-}
-
-struct CorrosionMachineMembershipRows {
-    commands: mpsc::Sender<CorrosionMembershipCommand>,
-}
-
-impl CorrosionMachineMembershipRows {
-    fn start(store: polis::CorrosionStore) -> Result<Self, PrimitiveFailure> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| PrimitiveFailure::OperationInterrupted)?;
-        let schema = polis::membership_schema_statements().map_err(map_membership_store_error)?;
-        runtime
-            .block_on(store.apply_schema(&schema, polis::StoreTimeout::CONTROL_PLANE_DEFAULT))
-            .map_err(map_membership_store_error)?;
-        let (commands, receiver) = mpsc::channel();
-
-        thread::Builder::new()
-            .name("ployz-corrosion-membership".to_string())
-            .spawn(move || run_corrosion_membership_worker(store, runtime, receiver))
-            .map_err(|_| PrimitiveFailure::OperationInterrupted)?;
-
-        Ok(Self { commands })
-    }
-
-    fn worker_stopped() -> polis::StoreError {
-        polis::StoreError::Stream {
-            message: "corrosion membership worker stopped".to_string(),
-        }
-    }
-
-    fn reply_timeout() -> Duration {
-        Duration::from_secs(polis::StoreTimeout::CONTROL_PLANE_DEFAULT.seconds_value() + 1)
-    }
-
-    fn request<T>(
-        &self,
-        command: impl FnOnce(mpsc::Sender<Result<T, polis::StoreError>>) -> CorrosionMembershipCommand,
-    ) -> Result<T, polis::StoreError> {
-        let (reply, response) = mpsc::channel();
-        self.commands
-            .send(command(reply))
-            .map_err(|_| Self::worker_stopped())?;
-        response
-            .recv_timeout(Self::reply_timeout())
-            .map_err(map_membership_reply_error)?
-    }
-}
-
-fn run_corrosion_membership_worker(
-    store: polis::CorrosionStore,
-    runtime: tokio::runtime::Runtime,
-    receiver: mpsc::Receiver<CorrosionMembershipCommand>,
-) {
-    let timeout = polis::StoreTimeout::CONTROL_PLANE_DEFAULT;
-    while let Ok(command) = receiver.recv() {
-        match command {
-            CorrosionMembershipCommand::Observe { machine_id, reply } => {
-                let result = runtime.block_on(observe_machine_row(&store, &machine_id, timeout));
-                let _ = reply.send(result);
-            }
-            CorrosionMembershipCommand::Upsert { row, reply } => {
-                let result = runtime.block_on(upsert_machine_row(&store, &row, timeout));
-                let _ = reply.send(result);
-            }
-            CorrosionMembershipCommand::WireGuardPeers { machine_id, reply } => {
-                let result = runtime.block_on(wireguard_peer_rows(&store, &machine_id, timeout));
-                let _ = reply.send(result);
-            }
-        }
-    }
-}
-
-async fn observe_machine_row(
-    store: &polis::CorrosionStore,
-    machine_id: &polis::StoreMachineId,
-    timeout: polis::StoreTimeout,
-) -> Result<Option<polis::MachineRow>, polis::StoreError> {
-    let statement = polis::select_machine_statement(machine_id)?;
-    let rows = store.query(&statement, timeout).await?;
-    let Some(row) = rows.rows().first() else {
-        return Ok(None);
-    };
-    polis::machine_row_from_store_row(row).map(Some)
-}
-
-async fn upsert_machine_row(
-    store: &polis::CorrosionStore,
-    row: &polis::MachineRow,
-    timeout: polis::StoreTimeout,
-) -> Result<(), polis::StoreError> {
-    let statement = polis::upsert_machine_statement(row)?;
-    store.execute_transaction(&[statement], timeout).await?;
-    Ok(())
-}
-
-async fn wireguard_peer_rows(
-    store: &polis::CorrosionStore,
-    machine_id: &polis::StoreMachineId,
-    timeout: polis::StoreTimeout,
-) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
-    let statement = polis::wireguard_peers_for_machine_statement(machine_id)?;
-    let rows = store.query(&statement, timeout).await?;
-    rows.rows()
-        .iter()
-        .map(|row| polis::machine_row_from_store_row(row))
-        .collect()
-}
-
-impl MachineMembershipRows for CorrosionMachineMembershipRows {
-    fn observe_machine(
-        &self,
-        machine_id: &polis::StoreMachineId,
-    ) -> Result<Option<polis::MachineRow>, polis::StoreError> {
-        self.request(|reply| CorrosionMembershipCommand::Observe {
-            machine_id: machine_id.clone(),
-            reply,
-        })
-    }
-
-    fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
-        self.request(|reply| CorrosionMembershipCommand::Upsert {
-            row: row.clone(),
-            reply,
-        })
-    }
-
-    fn wireguard_peers_for_machine(
-        &self,
-        machine_id: &polis::StoreMachineId,
-    ) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
-        self.request(|reply| CorrosionMembershipCommand::WireGuardPeers {
-            machine_id: machine_id.clone(),
-            reply,
-        })
-    }
-}
-
-fn map_membership_reply_error(error: mpsc::RecvTimeoutError) -> polis::StoreError {
-    match error {
-        mpsc::RecvTimeoutError::Timeout => polis::StoreError::Timeout,
-        mpsc::RecvTimeoutError::Disconnected => CorrosionMachineMembershipRows::worker_stopped(),
-    }
-}
-
-fn map_membership_store_error(error: polis::StoreError) -> PrimitiveFailure {
-    match error {
-        polis::StoreError::MalformedPayload => PrimitiveFailure::MalformedPayload,
-        polis::StoreError::Timeout => PrimitiveFailure::Timeout,
-        polis::StoreError::Client { .. }
-        | polis::StoreError::Response { .. }
-        | polis::StoreError::QueryEndedBeforeEndOfQuery
-        | polis::StoreError::MissedChange { .. }
-        | polis::StoreError::Stream { .. } => PrimitiveFailure::OperationInterrupted,
+        | polis::PeerError::RpcRuntime { .. } => PrimitiveFailure::NoResponder,
     }
 }
 
@@ -392,7 +219,7 @@ mod tests {
             let client_endpoint = polis::bind_peer_endpoint(&client_identity)
                 .await
                 .expect("client endpoint");
-            let client = polis::PeerRpcService::connect(
+            let client = polis::PeerRpcClient::connect(
                 client_endpoint.clone(),
                 peer.ticket().endpoint_addr().clone(),
             );
