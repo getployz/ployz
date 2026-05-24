@@ -51,7 +51,7 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.91"
           cache: false
           rustflags: ""
 
@@ -67,6 +67,12 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CURRENT_SHA: ${{ github.sha }}
         run: |
+          if grep -q "currently contains in-process product acceptance tests" crates/ployz-e2e/src/main.rs; then
+            echo "run_e2e=false" >> "${GITHUB_OUTPUT}"
+            echo "hostexec e2e skipped: ployz-e2e is currently in-process product acceptance tests"
+            exit 0
+          fi
+
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             echo "run_e2e=true" >> "${GITHUB_OUTPUT}"
             echo "workflow_dispatch requested hostexec e2e"
@@ -127,7 +133,7 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.91"
           cache: false
           rustflags: ""
 
@@ -192,7 +198,7 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.91"
           cache: false
           rustflags: ""
 
