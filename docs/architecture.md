@@ -83,9 +83,9 @@ diagnostics, but they do not silently become cluster policy.
 ### Disposable Daemon, Durable Data Plane
 
 `ployzd` is disposable control plane. It can crash, upgrade, or restart without
-disrupting the data plane. WireGuard tunnels stay up, Corrosion keeps serving replicated state,
-the gateway keeps proxying, DNS keeps resolving, and workload containers keep
-running.
+disrupting the data plane. WireGuard tunnels stay up, Corrosion keeps serving
+replicated state, the gateway keeps proxying, DNS keeps resolving, and workload
+containers keep running.
 
 On startup, the daemon adopts what is already running and only recreates
 managed infrastructure whose identity has drifted.
@@ -164,10 +164,11 @@ Code is organized by domain, not by adapter pattern.
   surfaces for capacity.
 - **mesh**: WireGuard overlay lifecycle, peer state, subnet coordination, and
   mesh phase state.
-- **store**: durable Corrosion rows, subscriptions, leases, and memory test
-  implementations.
-- **coordination**: leases, participant commands, explicit foreground
-  coordination, and failure reporting.
+- **store**: durable Corrosion rows, subscriptions, change cursors, and memory
+  test implementations.
+- **coordination**: participant commands, explicit foreground coordination,
+  failure reporting, and optional leases only when a product path proves they
+  are needed.
 - **deploy**: preview, placement, participant probing, apply, commit, cleanup,
   and deploy lifecycle rows.
 - **runtime**: local container/process operations through narrow backend
@@ -206,6 +207,25 @@ important architectural commitments are:
 Corrosion is not a command bus and is not a justification for hidden
 reconcilers. Corrosion rows/subscriptions are mechanisms for replicated state;
 bounded iroh RPC is the command path for concrete peer work.
+
+### Polis And Ployz
+
+`crates/polis` owns distributed substrate primitives: Corrosion transactions,
+queries, subscriptions, change cursors, iroh endpoint identity, bootstrap
+tickets, peer RPC, deadlines, probes, membership rows, and substrate failure
+typing. Polis APIs should stay product-neutral. Do not add product-shaped calls
+such as `machines.join`, `capacity.reserve`, `deploy.record_ready`, or routing
+policy helpers unless the concept has clearly become substrate infrastructure.
+
+`crates/ployz` owns product behavior. Machine join semantics, namespace
+meaning, deploy semantics, routing decisions, capacity policy, readiness, and
+operation outcomes belong in Ployz modules and Ployz adapters. Ployz adapters
+may be intentionally thicker when they sequence Polis store, subscription,
+probe, and RPC primitives into a product port.
+
+Ordinary Ployz modules should depend on Ployz ports and product types, not on
+Corrosion SQL, `corro-client`, iroh ticket internals, or `irpc` transport
+types.
 
 ## Routing And Deploys
 

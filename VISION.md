@@ -233,10 +233,11 @@ ambiguous progress.
 
 ### 6. Every node is a peer
 
-There is no master. No special node holds state others lack. Coordination,
-locking, and state visibility work on a peer-oriented model with iroh as the
-foundational transport. This is what makes `machine remove` safe regardless of
-which machine is removed.
+There is no master. No special node holds state others lack. Coordination and
+state visibility work on a peer-oriented model with iroh as the foundational
+transport. Locks and fences are added only when a product path proves it needs
+them. This is what makes `machine remove` safe regardless of which machine is
+removed.
 
 ### 7. ZFS is product strategy, not implementation detail
 
@@ -256,20 +257,20 @@ truth in the background from stale observations.
 ### 9. Corrosion rows are not command execution
 
 Corrosion is the intended replicated state substrate. It carries cluster rows,
-operation records, membership, placement inputs, and observations that peers
-need to see. It is not the command bus, and it is not treated as a linearizable
+membership, placement inputs, lifecycle rows, and observations that peers need
+to see. It is not the command bus, and it is not treated as a linearizable
 source of truth for in-flight operations.
 
 Mutating primitives still execute through bounded daemon-to-daemon RPC. The
 coordinating node reads the replicated rows it currently has, checks live
 preconditions for the peers involved, issues narrow internal RPCs for concrete
-work, and records the outcome back into Corrosion rows. External API and CLI
-requests must not be forwarded directly as peer RPC payloads; internal peer
-RPC has its own typed protocol with only the operations a node is allowed to
-perform for another node.
+work, and records durable lifecycle outcomes back into Corrosion rows at real
+commit points. External API and CLI requests must not be forwarded directly as
+peer RPC payloads; internal peer RPC has its own typed protocol with only the
+operations a node is allowed to perform for another node.
 
 Anything replicated through the cluster — including TLS private keys, ACME
-account keys, invite tokens, operation records, and placement facts — must be
+account keys, invite tokens, lifecycle rows, and placement facts — must be
 treated as cluster-private material. For now, nodes with `storage=true` are
 trusted with the full control-plane store; nodes with `storage=false` should
 receive only the state they need for their runtime role.
