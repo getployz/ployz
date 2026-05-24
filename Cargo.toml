@@ -18,8 +18,8 @@ rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
-corro-api-types = "0.2.0-alpha.0"
-corro-client = "0.2.0-alpha.0"
+corro-api-types = { git = "https://github.com/superfly/corrosion", branch = "main" }
+corro-client = { git = "https://github.com/superfly/corrosion", branch = "main" }
 futures-util = "0.3"
 iroh = { version = "=1.0.0-rc.0", default-features = false }
 iroh-tickets = "=1.0.0-rc.0"

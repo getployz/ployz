@@ -6,6 +6,12 @@ PACKAGE_DIR="${ROOT_DIR}/packages/deploy"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
+if ! cargo metadata --format-version 1 --no-deps \
+  | grep -q '"name":"ployz-types"'; then
+  echo "ployz-types is not part of this workspace; skipping deploy type verification"
+  exit 0
+fi
+
 cp "${PACKAGE_DIR}/package.json" "${TMP_DIR}/package.json"
 DEPLOY_PACKAGE_DIR="${TMP_DIR}" bash "${ROOT_DIR}/scripts/generate-deploy-types.sh" >/dev/null
 
