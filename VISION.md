@@ -55,6 +55,15 @@ result, decides the next thing. That is the whole loop. There is no
 controller running ahead of them or behind them. There is no manifest to keep
 in sync.
 
+Commands are evaluated from the perspective of the node the operator reached.
+That node reads the replicated rows and operation records it has, probes any peers the operation
+depends on, computes a concrete plan, and runs that plan. The system does not
+require a globally perfect cluster view before every operation. If a partition
+or stale row makes the operation unsafe, the command fails with a visible
+reason; if a disconnected half of the cluster takes independent action, the
+conflict is surfaced when rows meet again and the next operator command
+decides what to do.
+
 For a human: this means transparency. You can explain why the system
 believes what it believes with a short causal chain. There are no surprise
 mutations and no out-of-band convergence.
@@ -202,6 +211,21 @@ controllable network. Docker gives container identity we control. A
 managed PaaS abstracts these away to serve many customers; we keep them,
 because owning them is what makes single-command primitives possible.
 
+The substrate boundary is deliberate. `polis` owns distributed substrate
+primitives: replicated store access, transactions, subscriptions, change
+cursors, endpoint identity, tickets, peer RPC, deadlines, probes,
+membership records, leases, and distributed failure typing. `ployz` owns
+product behavior: machine join semantics, deploy semantics, namespace
+meaning, routing decisions, capacity policy, volume movement, readiness,
+and operation outcomes.
+
+That means ordinary Ployz modules stay readable by depending on product
+ports, while Ployz adapters translate those ports into Polis primitives.
+Polis must not become a second Ployz backend with product-shaped APIs such
+as deploy, routing, capacity, or machine-join policy. It may be
+Corrosion-specific internally; the important abstraction is hiding
+distributed mechanics from product code, not hiding Corrosion from Polis.
+
 ### 5. Operations are atomic
 
 Every operation succeeds or fails clearly. Half-applied state presented as
@@ -231,14 +255,26 @@ events, not inferred health. Health and reachability are observed live at
 decision time, when the operator asks. The system does not rewrite cluster
 truth in the background from stale observations.
 
-### 9. Replicated state access is the trust boundary
+### 9. Corrosion rows are not command execution
 
-p2panda is the intended replicated state substrate, with iroh underneath it for
-peer connectivity. Anything replicated through the cluster — including TLS
-private keys, ACME account keys, and invite tokens — must be treated as
-cluster-private material. For now, nodes with `storage=true` are trusted with
-the full control-plane store; nodes with `storage=false` should receive only
-the state they need for their runtime role.
+Corrosion is the intended replicated state substrate. It carries cluster rows,
+operation records, membership, placement inputs, and observations that peers
+need to see. It is not the command bus, and it is not treated as a linearizable
+source of truth for in-flight operations.
+
+Mutating primitives still execute through bounded daemon-to-daemon RPC. The
+coordinating node reads the replicated rows it currently has, checks live
+preconditions for the peers involved, issues narrow internal RPCs for concrete
+work, and records the outcome back into Corrosion rows. External API and CLI
+requests must not be forwarded directly as peer RPC payloads; internal peer
+RPC has its own typed protocol with only the operations a node is allowed to
+perform for another node.
+
+Anything replicated through the cluster — including TLS private keys, ACME
+account keys, invite tokens, operation records, and placement facts — must be
+treated as cluster-private material. For now, nodes with `storage=true` are
+trusted with the full control-plane store; nodes with `storage=false` should
+receive only the state they need for their runtime role.
 
 The consequences follow from that:
 

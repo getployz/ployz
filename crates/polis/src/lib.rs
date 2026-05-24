@@ -18,8 +18,11 @@ pub mod error;
 pub mod external_attempt;
 pub mod facts;
 pub mod identity;
+pub mod membership;
 mod operations;
+pub mod peers;
 pub mod projection;
+pub mod store;
 
 pub use authority::{
     Authority, AuthorityContext, AuthorityDecision, AuthorityService, Authorized, GrantEpoch,
@@ -36,12 +39,31 @@ pub use facts::{
     FactQuery, FactReceipt, FactRejection, FactReplayKey, FactStore, FactTarget, FactWriteGrant,
     MemoryFactStore, ValidatedFactAppend,
 };
-pub use identity::{PrincipalId, ScopeId, SourceWatermark};
+pub use identity::{IrohEndpointId, PrincipalId, ScopeId, SourceWatermark};
+pub use membership::{
+    CapabilitiesJson, IslandId, MachineRow, MembershipLifecycle, NamespaceId,
+    NamespaceMembershipRow, NamespaceRole, NamespaceRow, OverlayIp, RowEpoch, StoreMachineId,
+    WireGuardPublicKey, active_machine_statement, machine_row_from_store_row,
+    membership_schema_statements, select_machine_statement, upsert_machine_statement,
+    upsert_namespace_membership_statement, upsert_namespace_statement,
+    wireguard_peers_for_machine_statement,
+};
 pub use operations::{IdempotencyKey, OperationId, SubmittedFenceFingerprint};
+pub use peers::{
+    FakePeerProbe, PLOYZ_PEER_ALPN, PeerIdentity, PeerProbe, PeerProbeDeadline, PeerProbeReceipt,
+    PeerProbeResult, PeerTicket, PeerTicketPath, import_ticket, issue_ticket,
+    load_or_create_identity, preflight_membership,
+};
 pub use projection::{
     FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,
     ProjectionError, ProjectionFreshness, ProjectionHealth, ProjectionKey, ProjectionRequest,
     ProjectionRequestIdentity, ProjectionSnapshot, ProjectionSource, ProjectionView, VerifiedFact,
+};
+pub use store::{
+    CorrosionStore, StoreChangeId, StoreChangeType, StoreError, StoreParam, StoreQueryEvent,
+    StoreQueryRows, StoreResult, StoreRow, StoreStatement, StoreSubscription,
+    StoreSubscriptionEvent, StoreTimeout, StoreUpdate, StoreUpdateEvent, StoreValue,
+    TransactionReceipt,
 };
 
 #[cfg(test)]

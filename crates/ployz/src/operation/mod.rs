@@ -4,8 +4,6 @@ mod authority;
 mod claims;
 mod context;
 mod identity;
-#[cfg(any(test, feature = "test-support"))]
-mod polis_boundary;
 
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
