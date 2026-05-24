@@ -9,7 +9,7 @@ use crate::error::MachineFailure;
 use crate::machine::{
     IrohEndpointId, MachineEpoch, MachineId, MachineMembership, MachineMembershipPort,
     MachineNetworkIdentity, MachineRemoval, MachineRemovalReason, MachineStatus, MachineTombstone,
-    OverlayIp, WireGuardPublicKey,
+    MachineWireGuardPeer, MachineWireGuardPeerPort, OverlayIp, WireGuardPublicKey,
 };
 use crate::operation::MutationContext;
 
@@ -20,6 +20,11 @@ pub(crate) trait MachineMembershipRows {
     ) -> Result<Option<polis::MachineRow>, polis::StoreError>;
 
     fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError>;
+
+    fn wireguard_peers_for_machine(
+        &self,
+        machine_id: &polis::StoreMachineId,
+    ) -> Result<Vec<polis::MachineRow>, polis::StoreError>;
 }
 
 #[derive(Debug)]
@@ -37,6 +42,25 @@ impl<R, P> CorrosionMachineMembership<R, P> {
             probe,
             island,
         }
+    }
+}
+
+impl<R, P> MachineWireGuardPeerPort for CorrosionMachineMembership<R, P>
+where
+    R: MachineMembershipRows,
+{
+    fn wireguard_peers(
+        &self,
+        _context: &MutationContext,
+        machine: &MachineId,
+    ) -> Result<Vec<MachineWireGuardPeer>, MachineFailure> {
+        let machine_id = polis_machine_id(machine)?;
+        self.rows
+            .wireguard_peers_for_machine(&machine_id)
+            .map_err(map_machine_store_error)?
+            .into_iter()
+            .map(|row| machine_wireguard_peer_from_row(&row))
+            .collect()
     }
 }
 
@@ -174,6 +198,16 @@ fn machine_membership_from_row(
     ))
 }
 
+fn machine_wireguard_peer_from_row(
+    row: &polis::MachineRow,
+) -> Result<MachineWireGuardPeer, MachineFailure> {
+    Ok(MachineWireGuardPeer::new(
+        MachineId::parse(row.machine_id().as_str())?,
+        OverlayIp::parse(row.overlay_ip().as_str())?,
+        WireGuardPublicKey::parse(row.wireguard_public_key().as_str())?,
+    ))
+}
+
 fn polis_machine_id(machine: &MachineId) -> Result<polis::StoreMachineId, MachineFailure> {
     polis::StoreMachineId::parse(machine.as_str()).map_err(map_machine_polis_error)
 }
@@ -264,6 +298,27 @@ mod tests {
 
         assert!(
             matches!(observed, MachineStatus::Joined(joined) if joined == membership("node-a", 1, "fd00::1"))
+        );
+    }
+
+    #[test]
+    fn namespace_derived_wireguard_peers_are_decoded_as_machine_memberships() {
+        let peer = row("node-b", 1, "fd00::2");
+        let rows = RecordingRows::default().with_wireguard_peers(vec![peer]);
+        let probe = polis::FakePeerProbe::new();
+        let adapter = adapter(rows, probe);
+
+        let peers = adapter
+            .wireguard_peers(&context(), &MachineId::parse("node-a").expect("machine"))
+            .expect("peers");
+
+        assert_eq!(
+            peers,
+            vec![MachineWireGuardPeer::new(
+                MachineId::parse("node-b").expect("machine"),
+                OverlayIp::parse("fd00::2").expect("overlay"),
+                WireGuardPublicKey::parse("wg-node-b").expect("wireguard"),
+            )]
         );
     }
 
@@ -373,6 +428,7 @@ mod tests {
     struct RecordingRows {
         row: Rc<RefCell<Option<polis::MachineRow>>>,
         committed: Rc<RefCell<Vec<String>>>,
+        wireguard_peers: Rc<RefCell<Vec<polis::MachineRow>>>,
         ignore_upserts: bool,
     }
 
@@ -384,6 +440,11 @@ mod tests {
 
         fn ignoring_upserts(mut self) -> Self {
             self.ignore_upserts = true;
+            self
+        }
+
+        fn with_wireguard_peers(self, peers: Vec<polis::MachineRow>) -> Self {
+            self.wireguard_peers.replace(peers);
             self
         }
     }
@@ -404,6 +465,13 @@ mod tests {
                 .borrow_mut()
                 .push(row.machine_id().as_str().to_string());
             Ok(())
+        }
+
+        fn wireguard_peers_for_machine(
+            &self,
+            _machine_id: &polis::StoreMachineId,
+        ) -> Result<Vec<polis::MachineRow>, polis::StoreError> {
+            Ok(self.wireguard_peers.borrow().clone())
         }
     }
 

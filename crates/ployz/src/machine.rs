@@ -119,6 +119,28 @@ pub struct MachineMembership {
     pub network: MachineNetworkIdentity,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineWireGuardPeer {
+    pub machine: MachineId,
+    pub overlay_ip: OverlayIp,
+    pub wireguard_public_key: WireGuardPublicKey,
+}
+
+impl MachineWireGuardPeer {
+    #[must_use]
+    pub fn new(
+        machine: MachineId,
+        overlay_ip: OverlayIp,
+        wireguard_public_key: WireGuardPublicKey,
+    ) -> Self {
+        Self {
+            machine,
+            overlay_ip,
+            wireguard_public_key,
+        }
+    }
+}
+
 impl MachineMembership {
     #[must_use]
     pub fn new(machine: MachineId, epoch: MachineEpoch, network: MachineNetworkIdentity) -> Self {
@@ -241,6 +263,14 @@ pub trait MachineMembershipPort {
         context: &MutationContext,
         membership: &MachineMembership,
     ) -> Result<MachineMembership, MachineFailure>;
+}
+
+pub trait MachineWireGuardPeerPort {
+    fn wireguard_peers(
+        &self,
+        context: &MutationContext,
+        machine: &MachineId,
+    ) -> Result<Vec<MachineWireGuardPeer>, MachineFailure>;
 }
 
 pub struct MachineMembershipService<M> {
