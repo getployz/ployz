@@ -44,7 +44,7 @@ operation, computes a concrete plan, and executes that plan.
 Use Corrosion for replicated state:
 
 - machine membership and capabilities,
-- placement inputs and operation records,
+- placement inputs,
 - rows emitted by completed lifecycle events,
 - live observations that should be visible to other nodes,
 - conflict evidence after partitioned peers exchange rows again.
@@ -69,9 +69,11 @@ behavior. If disconnected operators mutate disconnected halves of a cluster,
 surface the conflict when rows meet again; the next operator command decides
 how to resolve it.
 
-Use narrow operation locks or leases for common concurrent-operator conflicts,
-but treat them as operational guards, not as a promise of linearizable global
-truth across network partitions.
+Use narrow operation locks, leases, or command evidence only when a product path
+proves it needs them. Most rows are owner-written and mostly static. Do not add
+a coordination table or lock subsystem just because concurrent operators are
+theoretically possible; first make the operation's owner and failure audience
+explicit.
 
 ## Why This Matters
 
@@ -101,8 +103,9 @@ operator can decide the next command.
 
 A deploy command reads current machine and workload rows from Corrosion,
 probes candidate machines, computes placement, sends peer RPCs to prepare and
-start the selected workload, and records the operation result as rows. It does
-not wait for a reconciler to notice desired state and eventually converge.
+start the selected workload, and records durable lifecycle rows only at the
+operation's real commit points. It does not wait for a reconciler to notice
+desired state and eventually converge.
 
 A machine remove command uses Corrosion to discover known workload ownership
 and storage placement, but it still RPCs involved nodes to drain, transfer, and
