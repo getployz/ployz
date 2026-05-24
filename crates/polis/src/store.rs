@@ -285,12 +285,17 @@ impl CorrosionStore {
         statement: &StoreStatement,
         timeout: StoreTimeout,
     ) -> StoreResult<StoreQueryRows> {
-        let mut stream = self
-            .client
-            .query(statement.as_corrosion(), Some(timeout.seconds_value()))
+        let mut stream = tokio::time::timeout(
+            timeout.duration(),
+            self.client
+                .query(statement.as_corrosion(), Some(timeout.seconds_value())),
+        )
+        .await
+        .map_err(|_| StoreError::Timeout)?
+        .map_err(map_client_error)?;
+        tokio::time::timeout(timeout.duration(), collect_query_rows(&mut stream))
             .await
-            .map_err(map_client_error)?;
-        collect_query_rows(&mut stream).await
+            .map_err(|_| StoreError::Timeout)?
     }
 
     pub async fn subscribe(

@@ -3,7 +3,7 @@
 //! Feature modules should depend on Ployz-owned traits. This module is allowed
 //! to assemble concrete adapters and pass them into product orchestration.
 
-use std::{sync::mpsc, thread};
+use std::{sync::mpsc, thread, time::Duration};
 
 use crate::acme::{
     CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
@@ -38,7 +38,6 @@ pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     PolisMachineMembership::in_memory()
 }
 
-#[must_use]
 pub fn corrosion_machine_membership<P>(
     store: polis::CorrosionStore,
     probe: P,
@@ -72,6 +71,10 @@ impl CorrosionMachineMembershipRows {
             .enable_all()
             .build()
             .map_err(|_| PrimitiveFailure::OperationInterrupted)?;
+        let schema = polis::membership_schema_statements().map_err(map_membership_store_error)?;
+        runtime
+            .block_on(store.apply_schema(&schema, polis::StoreTimeout::CONTROL_PLANE_DEFAULT))
+            .map_err(map_membership_store_error)?;
         let (commands, receiver) = mpsc::channel();
 
         thread::Builder::new()
@@ -86,6 +89,10 @@ impl CorrosionMachineMembershipRows {
         polis::StoreError::Stream {
             message: "corrosion membership worker stopped".to_string(),
         }
+    }
+
+    fn reply_timeout() -> Duration {
+        Duration::from_secs(polis::StoreTimeout::CONTROL_PLANE_DEFAULT.seconds_value() + 1)
     }
 }
 
@@ -144,7 +151,9 @@ impl MachineMembershipRows for CorrosionMachineMembershipRows {
                 reply,
             })
             .map_err(|_| Self::worker_stopped())?;
-        response.recv().map_err(|_| Self::worker_stopped())?
+        response
+            .recv_timeout(Self::reply_timeout())
+            .map_err(map_membership_reply_error)?
     }
 
     fn upsert_machine(&self, row: &polis::MachineRow) -> Result<(), polis::StoreError> {
@@ -155,7 +164,28 @@ impl MachineMembershipRows for CorrosionMachineMembershipRows {
                 reply,
             })
             .map_err(|_| Self::worker_stopped())?;
-        response.recv().map_err(|_| Self::worker_stopped())?
+        response
+            .recv_timeout(Self::reply_timeout())
+            .map_err(map_membership_reply_error)?
+    }
+}
+
+fn map_membership_reply_error(error: mpsc::RecvTimeoutError) -> polis::StoreError {
+    match error {
+        mpsc::RecvTimeoutError::Timeout => polis::StoreError::Timeout,
+        mpsc::RecvTimeoutError::Disconnected => CorrosionMachineMembershipRows::worker_stopped(),
+    }
+}
+
+fn map_membership_store_error(error: polis::StoreError) -> PrimitiveFailure {
+    match error {
+        polis::StoreError::MalformedPayload => PrimitiveFailure::MalformedPayload,
+        polis::StoreError::Timeout => PrimitiveFailure::Timeout,
+        polis::StoreError::Client { .. }
+        | polis::StoreError::Response { .. }
+        | polis::StoreError::QueryEndedBeforeEndOfQuery
+        | polis::StoreError::MissedChange { .. }
+        | polis::StoreError::Stream { .. } => PrimitiveFailure::OperationInterrupted,
     }
 }
 

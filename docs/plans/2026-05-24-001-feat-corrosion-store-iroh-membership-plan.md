@@ -15,8 +15,8 @@ peer preflight.
 
 `polis` is the distributed-primitives layer. It owns Corrosion access,
 transactions, subscriptions, change cursors, iroh identity, tickets, RPC,
-deadlines, peer probes, membership row primitives, leases, and distributed
-failure typing.
+deadlines, peer probes, membership row primitives, and distributed failure
+typing.
 
 `ployz` owns product semantics. Machine join behavior, namespace meaning,
 deploy semantics, routing decisions, capacity policy, volume movement,
@@ -53,20 +53,19 @@ Option B, chosen:
 - `membership.wireguard_peers_for_machine`
 - `peers.probe`
 - `peers.rpc`
-- `leases.acquire`
 
 Why: Option A keeps Ployz very clean in the short term, but it makes Polis
 drift toward "Ployz backend in disguise". Product vocabulary leaks downward,
 deploy/capacity/routing semantics split across crates, and future non-Ployz
 users inherit Ployz-shaped APIs. Option B keeps Polis conceptually small and
-reusable: distributed store, RPC, membership, identity, leases, subscriptions,
-and networking.
+reusable: distributed store, RPC, membership, identity, subscriptions, and
+networking.
 
 Accepted cost: Ployz adapters carry more responsibility. They may be
 purposeful and a little thicker when product behavior needs to sequence
-transactions, subscriptions, probes, leases, and RPC calls. Ordinary Ployz
-modules still stay readable because they depend on Ployz ports, not on Polis
-or Corrosion.
+transactions, subscriptions, probes, and RPC calls. Ordinary Ployz modules
+still stay readable because they depend on Ployz ports, not on Polis or
+Corrosion.
 
 ---
 
@@ -90,14 +89,12 @@ or Corrosion.
   concrete plan, and runs it without requiring perfect global consensus.
 - R8. Derive WireGuard peer configuration from active namespace membership,
   not global machine membership.
-- R9. Keep the first schema minimal: `machines`, `namespaces`,
-  `namespace_memberships`, and `operations`.
+- R9. Keep the first schema minimal: `machines`, `namespaces`, and
+  `namespace_memberships`.
 - R10. Model authority islands with `island_id`, namespace membership, and
   prod-owned writes. Do not introduce a large authority schema yet.
 - R11. Resolve the async substrate boundary before Corrosion or iroh code
   lands. No adapter may invent local `block_on` behavior.
-- R12. Ployz-owned claim/fence DTOs must remain opaque; product code must not
-  store `polis::ClaimGuard` directly.
 
 ---
 
@@ -120,7 +117,6 @@ The first slice may create the minimal Corrosion schema required for:
 - `machines`
 - `namespaces`
 - `namespace_memberships`
-- `operations`
 
 But it should only exercise the parts needed by machine membership and
 namespace-derived peer sets.
@@ -135,6 +131,9 @@ namespace-derived peer sets.
 - Do not introduce a reconciler or background policy engine.
 - Do not attempt perfect split-brain prevention.
 - Do not store durable ticket text in machine rows.
+- Do not add operations or claims/leases in this slice. Most rows are
+  owner-written and mostly static; command evidence and fencing can return
+  when a product path proves it needs them.
 
 ### Deferred
 
@@ -180,20 +179,6 @@ No `iroh_ticket` column. Durable identity is `iroh_endpoint_id`.
 - `epoch`
 - `updated_at`
 - Primary key: `(namespace_id, machine_id)`
-
-### `operations`
-
-- `operation_id`
-- `idempotency_key`
-- `coordinator_machine_id`
-- `kind`
-- `state`
-- `request_json`
-- `result_json`
-- `updated_at`
-
-The first slice does not need to fully exercise `operations`; the table exists
-because command evidence is part of the durable substrate shape.
 
 ---
 
@@ -276,7 +261,6 @@ crates/polis/src/subscriptions.rs
 crates/polis/src/identity.rs
 crates/polis/src/membership.rs
 crates/polis/src/peers.rs
-crates/polis/src/leases.rs
 
 crates/ployz/src/adapters/polis/
   machine_membership.rs
@@ -295,17 +279,14 @@ This is not a hard module map. The hard rule is ownership:
 
 ### U0. Resolve Substrate Gates
 
-**Goal:** Decide the toolchain, async boundary, and Ployz/Polis claim boundary
-before adding Corrosion or iroh implementation code.
+**Goal:** Decide the toolchain and async boundary before adding Corrosion or
+iroh implementation code.
 
-**Requirements:** R2, R11, R12
+**Requirements:** R2, R11
 
 **Files:**
 
 - Modify: `Cargo.toml`
-- Modify: `crates/ployz/src/operation/claims.rs`
-- Modify if still needed: `crates/ployz/src/operation/polis_boundary.rs`
-- Test: `crates/ployz/src/operation/claims.rs`
 
 **Approach:**
 
@@ -319,13 +300,9 @@ before adding Corrosion or iroh implementation code.
   - Either Ployz ports that perform substrate I/O become async.
   - Or daemon composition owns the only blocking boundary.
 - Forbid ad hoc `block_on` inside individual adapters.
-- Replace any embedded `polis::ClaimGuard<R>` inside Ployz `ClaimGuard<R>`
-  with Ployz-owned resource, submitted fence, and expiry fields.
-- Keep conversion from Polis lease/fence proof at the adapter boundary only.
 
 **Verification:**
 
-- Ployz product code no longer stores Polis claim proofs directly.
 - Target dependency versions have a compatible workspace Rust version.
 - The async boundary is explicit enough to review.
 
@@ -408,8 +385,9 @@ WireGuard peer derivation without owning machine join semantics.
 
 - Membership rows preserve endpoint ID, WireGuard key, overlay IP,
   capabilities, lifecycle, epoch, and island ID.
-- Lower-epoch or mismatched endpoint rows surface as typed substrate conflicts
-  for adapters to interpret.
+- Lower-epoch rows do not overwrite newer owner-written rows.
+- Same-epoch owner updates are accepted; this first slice does not build a
+  row-conflict subsystem.
 - Active namespace overlap derives the expected WireGuard peers.
 
 ---

@@ -23,10 +23,6 @@ use crate::facts::{
     ProductProjectionSnapshot,
 };
 use crate::operation::MutationContext;
-use crate::operation::{
-    ClaimGuard, ClaimHash, FenceEpoch, PrincipalId, ResourceId, SubmittedFenceToken,
-    TypedResourceId,
-};
 
 #[must_use]
 pub fn map_polis_error(error: polis::Error) -> PrimitiveFailure {
@@ -146,23 +142,6 @@ where
     polis::FactStore::append(facts, request)
         .map_err(map_polis_error)
         .and_then(product_fact_append_outcome)
-}
-
-pub(crate) fn claim_guard_from_acquired<R>(
-    proof: polis::ClaimGuard<R>,
-) -> Result<ClaimGuard<R>, PrimitiveFailure> {
-    let resource = TypedResourceId::parse(proof.resource().as_str())?;
-    let fence = proof.fence();
-    ClaimGuard::new(
-        resource.clone(),
-        SubmittedFenceToken {
-            resource: ResourceId::parse(resource.as_str())?,
-            holder: PrincipalId::parse(fence.holder().as_str())?,
-            epoch: FenceEpoch::new(fence.epoch().value())?,
-            claim_hash: ClaimHash::parse(fence.claim_hash().as_str())?,
-        },
-        proof.expires_at(),
-    )
 }
 
 fn product_fact_conflict(
@@ -506,26 +485,6 @@ mod tests {
 
         assert_eq!(mapped.cursor(), polis::FactCursor::new(5));
         assert_eq!(mapped.deadline(), UNIX_EPOCH);
-    }
-
-    #[test]
-    fn acquired_polis_claim_is_copied_at_adapter_boundary() {
-        enum TestResource {}
-
-        let lease = polis::ClaimLease::test_new(
-            polis::ResourceId::<TestResource>::parse("domain:example.com").expect("resource"),
-            polis::HolderId::parse("node-a").expect("holder"),
-            polis::ClaimEpoch::new(2).expect("epoch"),
-            polis::ClaimHash::parse("claim-hash").expect("hash"),
-            UNIX_EPOCH,
-        );
-
-        let guard = claim_guard_from_acquired(lease.guard()).expect("guard");
-
-        assert_eq!(guard.resource().as_str(), "domain:example.com");
-        assert_eq!(guard.expires_at(), UNIX_EPOCH);
-        assert_eq!(guard.submitted_fence().holder.as_str(), "node-a");
-        assert_eq!(guard.submitted_fence().epoch.value(), 2);
     }
 
     struct AllowFactAuthority;
