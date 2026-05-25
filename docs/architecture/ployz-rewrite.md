@@ -6,11 +6,17 @@ created: 2026-05-23
 
 # Ployz Rewrite Shape
 
-This rewrite treats `crates/ployz` as the product center. `crates/polis` is not
-part of the new design path. It can stay in the tree while Ployz stops importing
-it, then be deleted when unused.
+This document is historical. The current direction keeps `crates/ployz` as the
+product center and keeps `crates/polis` as the distributed-primitives crate:
+Corrosion rows/subscriptions, iroh identity, tickets, peer RPC, deadlines,
+probes, and distributed failure typing. Do not use this document to justify
+new p2panda, NATS, or product-shaped Polis work.
 
-## Goal
+Canonical current guidance lives in `VISION.md`, `docs/architecture.md`, and
+`docs/plans/2026-05-24-001-feat-corrosion-store-iroh-membership-plan.md`.
+The sections below are archived context from the older rewrite discussion.
+
+## Historical Goal
 
 Build Ployz around product operations that are easy to read and hard to misuse.
 The code should expose that this is a distributed system with peer nodes,
@@ -18,7 +24,7 @@ replicated cluster memory, explicit authority, leases, and fallible runtime
 mutation, without forcing product modules to manually handle substrate
 bookkeeping.
 
-## Layers
+## Historical Layers
 
 ### Product Orchestration
 
@@ -33,8 +39,8 @@ Owns product behavior:
 - gateway and DNS behavior.
 
 Product code should read as observe, decide, mutate, verify. It should not know
-about p2panda stream ack policy, replay mechanics, operation envelopes, or
-projection cursor storage.
+about Corrosion SQL, subscription cursors, iroh ticket internals, or irpc
+transport types.
 
 ### Pure Control
 
@@ -42,7 +48,7 @@ Owns local, testable control values:
 
 - command context;
 - authority and grants;
-- leases and claim guards;
+- optional leases and claim guards when a product path proves it needs them;
 - external attempts for unobservable external systems such as ACME;
 - typed resource identities;
 - structured failure types.
@@ -50,7 +56,10 @@ Owns local, testable control values:
 This layer should be mostly pure Rust: small values, enums, transition methods,
 and traits for ports that genuinely have multiple implementations.
 
-### Cluster Memory
+### Cluster Memory (Historical)
+
+The p2panda design below has been superseded by Polis primitives over
+Corrosion and iroh. It remains only as a record of the older rewrite shape.
 
 Owns replicated cluster state through a private p2panda Node worker:
 
@@ -67,18 +76,16 @@ Owns replicated cluster state through a private p2panda Node worker:
 This is an internal Ployz module, not a reusable framework. p2panda owns the
 distributed log mechanics. Ployz owns product semantics.
 
-## Boundary Rules
+## Historical Boundary Rules
 
-- Product modules may depend on pure control and cluster memory APIs.
-- Product modules must not import p2panda directly.
-- Cluster memory may depend on p2panda.
-- Cluster memory must not hide authority decisions or product conflict rules.
-- `crates/polis` is ignored for new work.
-- No compatibility shim is required unless a concrete rollout needs one.
+Superseded. The current Ployz/Polis boundary is documented in
+`docs/architecture.md`. Do not use this archived rewrite note to infer active
+module ownership.
 
-## First Proof
+## Historical First Proof
 
-The first rewrite slice should prove machine membership end to end:
+Superseded. The older rewrite slice expected machine membership to flow through
+a private p2panda worker:
 
 1. Define a typed machine membership event.
 2. Publish it through the private p2panda Node worker.
@@ -86,13 +93,12 @@ The first rewrite slice should prove machine membership end to end:
 4. Ack only after successful materialization.
 5. Replay unacked events after restart.
 6. Reject unauthorized authors before projection changes.
-7. Make machine-add product code read through the new Ployz-local API.
+7. Make machine-add product code read through the Ployz-local API.
 
-The success criterion is code shape, not only behavior. If machine add is harder
-to read than the current product module, the cluster-memory API is wrong.
+This proof is not current implementation guidance.
 
-## Deletion Gate
+## Superseded Direction
 
-Delete `crates/polis` only after `crates/ployz` no longer imports it.
-
-Until then, treat Polis as old code. Do not extend it to support the rewrite.
+Do not revive the p2panda publish/materialize/ack path for new control-plane
+work. Do not delete `crates/polis`; it is no longer old code. Extend it only
+with substrate primitives, not Ployz product services.

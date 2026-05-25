@@ -3,13 +3,17 @@
 //! Feature modules should depend on Ployz-owned traits. This module is allowed
 //! to assemble concrete adapters and pass them into product orchestration.
 
+use std::path::Path;
+
 use crate::acme::{
     CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
 };
 use crate::adapters::polis::{
     AcmeCertificateIssuer, PolisDomainStatus, PolisMachineMembership, PolisServingSnapshots,
+    start_corrosion_machine_membership,
 };
 use crate::domain::DomainStatusPort;
+use crate::error::PrimitiveFailure;
 use crate::machine::MachineMembershipPort;
 use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
@@ -34,6 +38,103 @@ pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     PolisMachineMembership::in_memory()
 }
 
+pub async fn corrosion_machine_membership<P>(
+    store: polis::CorrosionStore,
+    probe: P,
+    island: polis::IslandId,
+) -> Result<impl MachineMembershipPort, PrimitiveFailure>
+where
+    P: polis::PeerProbe,
+{
+    start_corrosion_machine_membership(store, probe, island).await
+}
+
+pub fn iroh_peer_rpc_probe(
+    endpoint: polis::PeerEndpoint,
+    ticket: &polis::PeerTicket,
+) -> Result<impl polis::PeerProbe, PrimitiveFailure> {
+    polis::PeerRpcProbe::connect(endpoint, ticket).map_err(map_peer_probe_error)
+}
+
+pub struct PeerRuntime {
+    endpoint: polis::PeerEndpoint,
+    listener: polis::PeerRpcListener,
+    ticket: polis::PeerTicket,
+}
+
+impl PeerRuntime {
+    pub async fn start(
+        identity_path: &Path,
+        boot_deadline: polis::PeerProbeDeadline,
+    ) -> Result<Self, PrimitiveFailure> {
+        let identity =
+            polis::load_or_create_identity(identity_path).map_err(map_peer_probe_error)?;
+        let endpoint = polis::bind_peer_endpoint(&identity)
+            .await
+            .map_err(map_peer_probe_error)?;
+        let ticket = match polis::issue_endpoint_ticket(&endpoint, boot_deadline).await {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                endpoint.close().await;
+                return Err(map_peer_probe_error(error));
+            }
+        };
+        let listener = match polis::PeerRpcListener::start(endpoint.clone()) {
+            Ok(listener) => listener,
+            Err(error) => {
+                endpoint.close().await;
+                return Err(map_peer_probe_error(error));
+            }
+        };
+
+        Ok(Self {
+            endpoint,
+            listener,
+            ticket,
+        })
+    }
+
+    #[must_use]
+    pub fn endpoint(&self) -> polis::PeerEndpoint {
+        self.endpoint.clone()
+    }
+
+    #[must_use]
+    pub fn endpoint_id(&self) -> polis::IrohEndpointId {
+        self.ticket.endpoint_id()
+    }
+
+    #[must_use]
+    pub fn ticket(&self) -> &polis::PeerTicket {
+        &self.ticket
+    }
+
+    pub async fn shutdown(
+        self,
+        shutdown_deadline: polis::PeerProbeDeadline,
+    ) -> Result<(), PrimitiveFailure> {
+        self.listener
+            .shutdown(shutdown_deadline)
+            .await
+            .map_err(map_peer_probe_error)
+    }
+}
+
+fn map_peer_probe_error(error: polis::PeerError) -> PrimitiveFailure {
+    match error {
+        polis::PeerError::MalformedTicket | polis::PeerError::MalformedIdentity => {
+            PrimitiveFailure::MalformedPayload
+        }
+        polis::PeerError::IdentityIo { .. }
+        | polis::PeerError::EndpointBind { .. }
+        | polis::PeerError::EndpointOnlineTimeout => PrimitiveFailure::OperationInterrupted,
+        polis::PeerError::RpcTimeout => PrimitiveFailure::Timeout,
+        polis::PeerError::ProbeFailed { .. }
+        | polis::PeerError::RpcTransport { .. }
+        | polis::PeerError::RpcRuntime { .. } => PrimitiveFailure::NoResponder,
+    }
+}
+
 #[must_use]
 pub fn in_memory_domain_status(scope: ScopeId) -> impl DomainStatusPort {
     PolisDomainStatus::in_memory(scope)
@@ -49,7 +150,9 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::{fs, path::PathBuf};
 
     use super::*;
     use crate::acme::{
@@ -91,6 +194,46 @@ mod tests {
             panic!("expected checkpoint evidence");
         };
         assert_eq!(payload, b"certificate-issued");
+    }
+
+    #[test]
+    fn peer_runtime_starts_identity_bound_rpc_listener() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        runtime.block_on(async {
+            let identity_path = temp_identity_path();
+            let peer = PeerRuntime::start(
+                &identity_path,
+                polis::PeerProbeDeadline::new(Duration::from_secs(5)),
+            )
+            .await
+            .expect("peer runtime");
+            let persisted = polis::load_or_create_identity(&identity_path).expect("identity");
+
+            assert_eq!(peer.endpoint_id(), persisted.endpoint_id());
+
+            let client_identity = polis::PeerIdentity::generate();
+            let client_endpoint = polis::bind_peer_endpoint(&client_identity)
+                .await
+                .expect("client endpoint");
+            let client = polis::PeerRpcClient::connect(
+                client_endpoint.clone(),
+                peer.ticket().endpoint_addr().clone(),
+            );
+            client
+                .preflight(polis::PeerProbeDeadline::new(Duration::from_secs(5)))
+                .await
+                .expect("preflight");
+
+            client_endpoint.close().await;
+            peer.shutdown(polis::PeerProbeDeadline::new(Duration::from_secs(5)))
+                .await
+                .expect("shutdown");
+            let _ = fs::remove_file(identity_path);
+        });
     }
 
     #[derive(Clone)]
@@ -197,5 +340,15 @@ mod tests {
             None,
             SystemTime::now() + Duration::from_secs(60),
         )
+    }
+
+    fn temp_identity_path() -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "ployz-peer-runtime-{}-{id}.key",
+            std::process::id()
+        ))
     }
 }

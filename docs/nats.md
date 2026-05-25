@@ -1,7 +1,14 @@
 # NATS
 
-NATS is the control-plane substrate. The product model is documented in
-[`authority-roadmap.md`](authority-roadmap.md).
+Historical note: NATS is no longer the target control-plane substrate for new
+work. Current distributed-state work targets Corrosion rows/subscriptions plus
+bounded iroh peer RPC. Keep this document only for understanding old code or
+old design discussions.
+
+Do not use this document as implementation guidance for new control-plane
+features. New work should put Corrosion and iroh mechanics behind Polis
+primitives, then translate those primitives into Ployz product ports in
+`crates/ployz/src/adapters/polis/`.
 
 Implementation references:
 
@@ -17,3 +24,5 @@ Rules:
 - Remote mutations never queue. No responder or timeout is a foreground
   failure.
 - Mirrors are async copies, not co-authorities.
+- Corrosion rows are not command queues either; bounded iroh peer RPC is the
+  foreground command path for concrete peer work.

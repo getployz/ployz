@@ -61,7 +61,7 @@ A mutating operation is foreground work with an audience. It should:
 2. build a plan when the operation has meaningful choices,
 3. fail before mutation when preconditions are missing,
 4. execute bounded steps against concrete participants,
-5. commit durable facts at the point of no return,
+5. commit durable rows at the point of no return,
 6. report cleanup, partial progress, or failure explicitly,
 7. leave enough state for safe retry or operator repair.
 
@@ -73,7 +73,7 @@ fact until a later operation resolves it.
 Ployz separates three kinds of truth:
 
 - **Intent**: what an operator explicitly asked the cluster to do.
-- **Status**: durable lifecycle facts emitted by operations.
+- **Status**: durable lifecycle rows emitted by operations.
 - **Observation**: live reachability, health, capacity, and freshness checked
   at decision time.
 
@@ -83,9 +83,9 @@ diagnostics, but they do not silently become cluster policy.
 ### Disposable Daemon, Durable Data Plane
 
 `ployzd` is disposable control plane. It can crash, upgrade, or restart without
-disrupting the data plane. WireGuard tunnels stay up, NATS keeps serving state,
-the gateway keeps proxying, DNS keeps resolving, and workload containers keep
-running.
+disrupting the data plane. WireGuard tunnels stay up, Corrosion keeps serving
+replicated state, the gateway keeps proxying, DNS keeps resolving, and workload
+containers keep running.
 
 On startup, the daemon adopts what is already running and only recreates
 managed infrastructure whose identity has drifted.
@@ -117,7 +117,7 @@ Backends own substrate mechanics:
 
 - Docker or host runtime operations,
 - WireGuard setup and peer configuration,
-- NATS process and asset management,
+- Corrosion process and schema management,
 - ZFS or other storage mechanics,
 - gateway and DNS process supervision,
 - eBPF or bridge networking details.
@@ -131,7 +131,7 @@ when `ployzd` is absent:
 
 - workload containers,
 - WireGuard mesh,
-- NATS,
+- Corrosion,
 - gateway,
 - DNS,
 - storage datasets and volumes.
@@ -164,19 +164,20 @@ Code is organized by domain, not by adapter pattern.
   surfaces for capacity.
 - **mesh**: WireGuard overlay lifecycle, peer state, subnet coordination, and
   mesh phase state.
-- **store**: durable cluster facts, subscriptions, locks, streams, KV records,
-  and memory/NATS implementations.
-- **coordination**: leases, participant commands, explicit foreground
-  coordination, and failure reporting.
+- **store**: durable Corrosion rows, subscriptions, change cursors, and memory
+  test implementations.
+- **coordination**: participant commands, explicit foreground coordination,
+  failure reporting, and optional leases only when a product path proves they
+  are needed.
 - **deploy**: preview, placement, participant probing, apply, commit, cleanup,
-  and deploy lifecycle facts.
+  and deploy lifecycle rows.
 - **runtime**: local container/process operations through narrow backend
   contracts.
 - **storage**: volume creation, snapshot, clone, transfer, receive, migration,
   and rollback mechanics.
-- **routing**: route facts, gateway projection, DNS projection, and freshness
+- **routing**: route rows, gateway projection, DNS projection, and freshness
   handling.
-- **services**: long-lived sidecar supervision for NATS, gateway, DNS, and
+- **services**: long-lived sidecar supervision for Corrosion, gateway, DNS, and
   supporting processes.
 - **daemon**: composition root, request handling, startup adoption, and
   operation dispatch.
@@ -189,28 +190,47 @@ runtime mechanics are not product policy.
 
 ## State And Coordination
 
-NATS is the native control-plane substrate. It provides durable facts,
-coordination, request/reply commands, work queues, scheduled work, and
-operator-visible state surfaces.
+Corrosion is the native replicated-state substrate. It provides durable rows,
+subscriptions, resumable change cursors, and operator-visible state surfaces.
+Iroh peer RPC provides bounded foreground daemon-to-daemon commands.
 
-The target shape is described in `docs/nats-native-control-plane.md`. The
 important architectural commitments are:
 
 - machine add does not silently change storage authority,
 - quorum and data authority changes are explicit operations,
 - mutating commands fail loudly when peers or preconditions are missing,
-- split-brain risk is resolved by refusing writes, not by automatic failover,
+- split-brain risk is handled operationally by visible conflicts and failed
+  preflights, not by automatic failover,
 - the data plane keeps serving last good runtime state when control-plane
   writes are unavailable.
 
-NATS is not a justification for hidden reconcilers. Streams, KV, request/reply,
-and scheduled messages are mechanisms for explicit operations and visible
-failure surfaces.
+Corrosion is not a command bus and is not a justification for hidden
+reconcilers. Corrosion rows/subscriptions are mechanisms for replicated state;
+bounded iroh RPC is the command path for concrete peer work.
+
+### Polis And Ployz
+
+`crates/polis` owns distributed substrate primitives: Corrosion transactions,
+queries, subscriptions, change cursors, iroh endpoint identity, bootstrap
+tickets, peer RPC, deadlines, probes, membership rows, and substrate failure
+typing. Polis APIs should stay product-neutral. Do not add product-shaped calls
+such as `machines.join`, `capacity.reserve`, `deploy.record_ready`, or routing
+policy helpers unless the concept has clearly become substrate infrastructure.
+
+`crates/ployz` owns product behavior. Machine join semantics, namespace
+meaning, deploy semantics, routing decisions, capacity policy, readiness, and
+operation outcomes belong in Ployz modules and Ployz adapters. Ployz adapters
+may be intentionally thicker when they sequence Polis store, subscription,
+probe, and RPC primitives into a product port.
+
+Ordinary Ployz modules should depend on Ployz ports and product types, not on
+Corrosion SQL, `corro-client`, iroh ticket internals, or `irpc` transport
+types.
 
 ## Routing And Deploys
 
 Deploy and routing semantics are described in `docs/routing-and-deploys.md`.
-The baseline rule is that traffic only sees committed, routable facts.
+The baseline rule is that traffic only sees committed, routable rows.
 
 The longer deploy primitive direction is described in
 `docs/architecture/deploy-primitives-roadmap.md`. In that model, deploy is the
@@ -238,7 +258,7 @@ services:
 | Workloads | Never touched by daemon restart |
 | Gateway | Adopted if running and config matches; recreated on drift |
 | DNS | Adopted if running and config matches; recreated on drift |
-| NATS | Adopted if running and parent netns unchanged; recreated on drift |
+| Corrosion | Adopted if running and data directory matches; recreated on explicit repair |
 | WireGuard | Adopted if healthy |
 | CLI RPC, remote deploy, background command listeners | Ephemeral, restarted with daemon |
 
@@ -257,7 +277,7 @@ guarantees beyond the selected mode's contract.
 ## Docker Runtime On macOS
 
 The daemon runs on the macOS host. Everything else runs inside Docker Desktop's
-Linux VM. NATS, gateway, and DNS bind on the node's overlay IPv6 address so
+Linux VM. Corrosion, gateway, and DNS bind on the node's overlay IPv6 address so
 other mesh nodes can reach them directly. In the Docker runtime they share the
 `ployz-networking` network namespace to access `wg0`.
 
@@ -267,8 +287,8 @@ macOS host                         Docker Desktop VM
 | ployzd daemon  |                 | ployz-networking container   |
 |                |  WG bridge      |   wg0 overlay interface      |
 | OverlayBridge  +---------------->|                              |
-|                |                 | nats-server                  |
-| NATS bridge    +---------------->| ployz-gateway                |
+|                |                 | corrosion                    |
+| Store bridge   +---------------->| ployz-gateway                |
 |                |                 | ployz-dns                    |
 |                |                 | workload containers          |
 +----------------+                 +------------------------------+
