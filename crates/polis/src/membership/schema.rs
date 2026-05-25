@@ -12,6 +12,8 @@ const MACHINE_COLUMNS: &str = "machine_id,
             updated_at";
 
 pub fn membership_schema_statements() -> StoreResult<Vec<StoreStatement>> {
+    // Machine rows are owner-written product facts. The machine epoch is an
+    // owner-issued row version, not a global conflict clock.
     include_str!("schema.sql")
         .split(';')
         .map(str::trim)
@@ -68,7 +70,6 @@ pub struct MachineRowQuery {
 }
 
 impl MachineRowQuery {
-    #[must_use]
     pub fn by_machine_id(machine_id: &StoreMachineId) -> StoreResult<Self> {
         Self::with_sql(
             format!("SELECT {MACHINE_COLUMNS} FROM machines WHERE machine_id = ?1"),
@@ -76,7 +77,6 @@ impl MachineRowQuery {
         )
     }
 
-    #[must_use]
     pub fn active_by_machine_id(machine_id: &StoreMachineId) -> StoreResult<Self> {
         Self::with_sql(
             format!(
@@ -99,10 +99,7 @@ impl MachineRowQuery {
     }
 
     pub fn decode_rows(&self, rows: &StoreQueryRows) -> StoreResult<Vec<MachineRow>> {
-        rows.rows()
-            .iter()
-            .map(|row| machine_row_from_store_row(row))
-            .collect()
+        rows.rows().iter().map(machine_row_from_store_row).collect()
     }
 
     pub fn decode_optional(&self, rows: &StoreQueryRows) -> StoreResult<Option<MachineRow>> {
