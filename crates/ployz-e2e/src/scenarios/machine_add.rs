@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::future::Future;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -8,7 +7,7 @@ use ployz::error::MachineFailure;
 use ployz::machine::{
     IrohEndpointId, MachineAddOutcome, MachineAddRequest, MachineEpoch, MachineId,
     MachineMembership, MachineMembershipPort, MachineMembershipService, MachineNetworkIdentity,
-    MachineRemoval, MachineRemovalReason, MachineStatus, OverlayIp, WireGuardPublicKey,
+    MachineStatus, OverlayIp, WireGuardPublicKey,
 };
 use ployz::operation::{
     AuthorityEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId, ScopeId,
@@ -40,30 +39,28 @@ impl FakeMembership {
 }
 
 impl MachineMembershipPort for FakeMembership {
-    fn observe<'a>(
-        &'a self,
-        _context: &'a MutationContext,
-        _machine: &'a MachineId,
-    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
-        async move { Ok(self.observed.borrow().clone()) }
+    async fn observe(
+        &self,
+        _context: &MutationContext,
+        _machine: &MachineId,
+    ) -> Result<MachineStatus, MachineFailure> {
+        Ok(self.observed.borrow().clone())
     }
 
-    fn join<'a>(
-        &'a self,
-        _context: &'a MutationContext,
-        membership: &'a MachineMembership,
-    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
-        async move {
-            self.joined.borrow_mut().push(membership.clone());
-            let joined = self
-                .join_result
-                .borrow()
-                .clone()
-                .unwrap_or_else(|| membership.clone());
-            let status = MachineStatus::Joined(joined);
-            self.observed.replace(status.clone());
-            Ok(status)
-        }
+    async fn join(
+        &self,
+        _context: &MutationContext,
+        membership: &MachineMembership,
+    ) -> Result<MachineStatus, MachineFailure> {
+        self.joined.borrow_mut().push(membership.clone());
+        let joined = self
+            .join_result
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| membership.clone());
+        let status = MachineStatus::Joined(joined);
+        self.observed.replace(status.clone());
+        Ok(status)
     }
 }
 
@@ -142,11 +139,10 @@ async fn existing_conflicting_machine_identity_rejects_without_mutation() {
 
 #[tokio::test]
 async fn removing_machine_rejects_without_mutation() {
-    let membership = FakeMembership::new(MachineStatus::Removing(MachineRemoval {
+    let membership = FakeMembership::new(MachineStatus::Removing {
         machine: MachineId::parse("node-a").expect("machine"),
         epoch: MachineEpoch::new(9).expect("epoch"),
-        reason: MachineRemovalReason::parse("operator requested").expect("reason"),
-    }));
+    });
     let service = MachineMembershipService::new(membership.clone());
 
     let error = service
@@ -234,7 +230,7 @@ async fn stale_absent_observation_rejects_different_epoch_join_result() {
 }
 
 #[tokio::test]
-async fn fact_backed_machine_add_reuses_projected_membership() {
+async fn row_backed_machine_add_reuses_current_membership() {
     let membership = composition::in_memory_machine_membership();
     let service = MachineMembershipService::new(membership);
 
@@ -256,7 +252,7 @@ async fn fact_backed_machine_add_reuses_projected_membership() {
 }
 
 #[tokio::test]
-async fn fact_backed_machine_add_rejects_different_epoch() {
+async fn row_backed_machine_add_rejects_different_epoch() {
     let membership = composition::in_memory_machine_membership();
     let service = MachineMembershipService::new(membership);
 

@@ -90,41 +90,28 @@ impl FakePeerProbe {
 }
 
 impl PeerProbe for FakePeerProbe {
-    fn probe<'a>(
-        &'a self,
-        target: &'a IrohEndpointId,
+    async fn probe(
+        &self,
+        target: &IrohEndpointId,
         _deadline: PeerProbeDeadline,
-    ) -> impl Future<Output = PeerProbeResult<PeerProbeReceipt>> + 'a {
-        async move {
-            if let Some(reason) = self.failures.get(target) {
-                return Err(PeerError::ProbeFailed {
-                    endpoint: target.clone(),
-                    reason: reason.clone(),
-                });
-            }
-
-            if self.reachable.contains(target) {
-                return Ok(PeerProbeReceipt::new(
-                    target.clone(),
-                    PeerTicketPath::DiscoveryOnly,
-                ));
-            }
-
-            Err(PeerError::ProbeFailed {
+    ) -> PeerProbeResult<PeerProbeReceipt> {
+        if let Some(reason) = self.failures.get(target) {
+            return Err(PeerError::ProbeFailed {
                 endpoint: target.clone(),
-                reason: "endpoint is not reachable".to_string(),
-            })
+                reason: reason.clone(),
+            });
         }
-    }
-}
 
-pub async fn preflight_membership<P>(
-    probe: &P,
-    target: &IrohEndpointId,
-    deadline: PeerProbeDeadline,
-) -> PeerProbeResult<PeerProbeReceipt>
-where
-    P: PeerProbe,
-{
-    probe.probe(target, deadline).await
+        if self.reachable.contains(target) {
+            return Ok(PeerProbeReceipt::new(
+                target.clone(),
+                PeerTicketPath::DiscoveryOnly,
+            ));
+        }
+
+        Err(PeerError::ProbeFailed {
+            endpoint: target.clone(),
+            reason: "endpoint is not reachable".to_string(),
+        })
+    }
 }

@@ -16,8 +16,18 @@ pub(crate) struct DaemonSubstrate {
 
 impl DaemonSubstrate {
     pub async fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
+        let configured_report = StartupReport::configured(&config);
+        fs::create_dir_all(config.state_dir())
+            .map_err(|error| setup_error(error, &configured_report))?;
+        let config = match config.with_persisted_corrosion_addresses() {
+            Ok(config) => config,
+            Err(error) => {
+                let failure_report =
+                    configured_report.with_corrosion_failed(CorrosionFailure::Agent);
+                return Err(DaemonError::corrosion(error, failure_report));
+            }
+        };
         let mut report = StartupReport::configured(&config);
-        fs::create_dir_all(config.state_dir()).map_err(|error| setup_error(error, &report))?;
 
         let peer_shutdown_timeout = config.peer_shutdown_timeout();
         let corrosion_shutdown_timeout = config.corrosion_shutdown_timeout();
@@ -40,10 +50,34 @@ impl DaemonSubstrate {
             }
         };
 
-        if let Err(source) = polis::verify_membership_schema(&store, config.schema_timeout()).await
+        let schema = match substrate_schema_statements() {
+            Ok(schema) => schema,
+            Err(source) => {
+                let failure_report = report.with_schema_failed(SchemaFailure::Verify);
+                let error = DaemonError::store(source, failure_report);
+                return Err(rollback_corrosion(corrosion, corrosion_shutdown_timeout, error).await);
+            }
+        };
+        if let Err(source) = store
+            .execute_transaction(&schema, config.schema_timeout())
+            .await
         {
             let failure_report = report.with_schema_failed(SchemaFailure::Verify);
             let error = DaemonError::store(source, failure_report);
+            return Err(rollback_corrosion(corrosion, corrosion_shutdown_timeout, error).await);
+        }
+        if let Err(source) =
+            polis::verify_membership_replication_schema(&store, config.schema_timeout()).await
+        {
+            let failure_report = report.with_schema_failed(SchemaFailure::Verify);
+            let error = DaemonError::store(source, failure_report);
+            return Err(rollback_corrosion(corrosion, corrosion_shutdown_timeout, error).await);
+        }
+        if let Err(source) =
+            ployz::composition::verify_product_schema(&store, config.schema_timeout()).await
+        {
+            let failure_report = report.with_schema_failed(SchemaFailure::Verify);
+            let error = DaemonError::store(map_product_schema_error(source), failure_report);
             return Err(rollback_corrosion(corrosion, corrosion_shutdown_timeout, error).await);
         }
         report.mark_schema_ready();
@@ -146,29 +180,6 @@ async fn start_corrosion(
         CorrosionStartMode::StartManaged => {}
     }
 
-    #[cfg(test)]
-    if config.use_corrosion_fixture() {
-        return match polis::test_support::CorrosionAgentFixtureConfig::persistent_from_config(
-            corrosion_config.clone(),
-        )
-        .start()
-        .await
-        {
-            Ok(agent) => Ok(agent),
-            Err(error)
-                if config.corrosion_start_mode() == CorrosionStartMode::StartOrAdopt
-                    && error.is_retryable_startup_failure() =>
-            {
-                match adopt_existing_corrosion(corrosion_config).await {
-                    polis::CorrosionAdoption::Owned(agent) => Ok(agent),
-                    polis::CorrosionAdoption::NotListening { .. } => Err(error),
-                    polis::CorrosionAdoption::Foreign { source } => Err(source),
-                }
-            }
-            Err(error) => Err(error),
-        };
-    }
-
     match polis::LocalCorrosionAgent::start(corrosion_config.clone()).await {
         Ok(agent) => Ok(agent),
         Err(error)
@@ -229,6 +240,29 @@ fn corrosion_shutdown_error(
             | polis::CorrosionShutdown::Unmanaged,
         ) => None,
         Err(error) => Some(error),
+    }
+}
+
+fn substrate_schema_statements() -> Result<Vec<polis::StoreStatement>, polis::StoreError> {
+    ployz::composition::product_schema_statements().map_err(map_product_schema_error)
+}
+
+fn map_product_schema_error(error: ployz::PrimitiveFailure) -> polis::StoreError {
+    match error {
+        ployz::PrimitiveFailure::MalformedPayload => polis::StoreError::MalformedPayload,
+        ployz::PrimitiveFailure::Timeout => polis::StoreError::Timeout,
+        ployz::PrimitiveFailure::Unauthorized
+        | ployz::PrimitiveFailure::Conflict
+        | ployz::PrimitiveFailure::StaleFence
+        | ployz::PrimitiveFailure::NoResponder
+        | ployz::PrimitiveFailure::FreshnessUnknown
+        | ployz::PrimitiveFailure::OperationStateConflict
+        | ployz::PrimitiveFailure::OperationAlreadySucceeded
+        | ployz::PrimitiveFailure::OperationInProgress
+        | ployz::PrimitiveFailure::OperationAlreadyFailed
+        | ployz::PrimitiveFailure::OperationInterrupted => polis::StoreError::Client {
+            message: format!("product schema construction failed: {error}"),
+        },
     }
 }
 

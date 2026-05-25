@@ -2,14 +2,13 @@ use std::{
     fs,
     io::ErrorKind,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 
-use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 
-use super::config::CorrosionAgentConfig;
+use super::config::{CorrosionAgentConfig, CorrosionOwnerFile, owner_file_path, paths_match};
 use super::process::LocalCorrosionAgent;
 use super::{
     CorrosionAgentError, setup_error, setup_message, store_probe_statement, store_probe_timeout,
@@ -44,9 +43,9 @@ pub(crate) async fn record_owner_marker(
     config: &CorrosionAgentConfig,
 ) -> Result<(), CorrosionAgentError> {
     verify_corrosion_database_path(config).await?;
-    let marker = toml::to_string(&owner_marker(config))
+    let marker = toml::to_string(&CorrosionOwnerFile::from_config(config))
         .map_err(|error| setup_message(format!("serialize corrosion owner marker: {error}")))?;
-    fs::write(owner_marker_path(config), marker).map_err(setup_error)?;
+    fs::write(owner_file_path(config.root_dir()), marker).map_err(setup_error)?;
     Ok(())
 }
 
@@ -54,18 +53,17 @@ pub(crate) async fn verify_owner_marker(
     config: &CorrosionAgentConfig,
 ) -> Result<(), CorrosionAgentError> {
     verify_corrosion_database_path(config).await?;
-    let marker = fs::read_to_string(owner_marker_path(config)).map_err(|error| {
+    let marker = fs::read_to_string(owner_file_path(config.root_dir())).map_err(|error| {
         CorrosionAgentError::Ownership {
             message: format!("read owner marker: {error}"),
         }
     })?;
-    let actual = toml::from_str::<CorrosionOwnerMarker>(&marker).map_err(|error| {
+    let actual = toml::from_str::<CorrosionOwnerFile>(&marker).map_err(|error| {
         CorrosionAgentError::Ownership {
             message: format!("parse owner marker: {error}"),
         }
     })?;
-    let expected = owner_marker(config);
-    if actual != expected {
+    if !actual.matches_config(config) {
         return Err(CorrosionAgentError::Ownership {
             message: "owner marker does not match configured corrosion state".to_string(),
         });
@@ -150,41 +148,4 @@ async fn verify_corrosion_database_path(
     }
 
     Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct CorrosionOwnerMarker {
-    owner_id: String,
-    root_dir: String,
-    api_addr: String,
-    gossip_addr: String,
-    prometheus_addr: String,
-    db_path: String,
-    admin_path: String,
-}
-
-fn owner_marker(config: &CorrosionAgentConfig) -> CorrosionOwnerMarker {
-    CorrosionOwnerMarker {
-        owner_id: "ployzd".to_string(),
-        root_dir: config.root_dir.display().to_string(),
-        api_addr: config.api_addr.to_string(),
-        gossip_addr: config.gossip_addr.to_string(),
-        prometheus_addr: config.prometheus_addr.to_string(),
-        db_path: config.root_dir.join("state.db").display().to_string(),
-        admin_path: config.root_dir.join("admin.sock").display().to_string(),
-    }
-}
-
-fn owner_marker_path(config: &CorrosionAgentConfig) -> PathBuf {
-    config.root_dir.join("polis-owner.toml")
-}
-
-fn paths_match(expected: &Path, actual: &Path) -> bool {
-    if expected == actual {
-        return true;
-    }
-    match (fs::canonicalize(expected), fs::canonicalize(actual)) {
-        (Ok(expected), Ok(actual)) => expected == actual,
-        _ => false,
-    }
 }

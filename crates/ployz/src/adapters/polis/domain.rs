@@ -1,362 +1,392 @@
+//! Domain status rows over Polis store primitives.
+
+mod codecs;
+mod statements;
+
+use crate::acme::CertificateUsability;
 use crate::domain::{
     DomainFailure, DomainName, DomainPendingReason, DomainReadyRecord, DomainStatus,
-    DomainStatusPort,
+    DomainStatusFailure, DomainStatusPort,
 };
-use crate::facts::{
-    ProductFact, ProductFactAppendOutcome, ProductFactConflict, ProductFactRejection,
-    domain::{
-        DOMAIN_FAILED_KIND, DOMAIN_PENDING_KIND, DOMAIN_READY_KIND, DomainFactError,
-        DomainStatusEvent, DomainStatusReducer,
-    },
-};
-use crate::operation::{MutationContext, ScopeId};
+use crate::operation::{MutationContext, MutationWriteIdentity, ScopeId};
+use crate::serving::ServingGeneration;
 
-#[derive(Debug)]
-pub(crate) struct PolisDomainStatus<S> {
-    scope: ScopeId,
-    projection: polis::MemoryProjectionSource<S>,
+const DOMAIN_STATUS_TABLE: &str = "ployz_domain_status";
+const DOMAIN_STATUS_COLUMNS: &[polis::StoreTableColumn] = &[
+    polis::StoreTableColumn::new(
+        "scope",
+        "TEXT",
+        polis::StorePrimaryKey::order(1),
+        Some("length(trim(scope)) > 0"),
+    ),
+    polis::StoreTableColumn::new(
+        "domain",
+        "TEXT",
+        polis::StorePrimaryKey::order(2),
+        Some("length(trim(domain)) > 0"),
+    ),
+    polis::StoreTableColumn::new(
+        "status",
+        "TEXT",
+        polis::StorePrimaryKey::None,
+        Some("status IN ('pending', 'ready', 'failed')"),
+    ),
+    polis::StoreTableColumn::new(
+        "operation",
+        "TEXT",
+        polis::StorePrimaryKey::None,
+        Some("length(trim(operation)) > 0"),
+    ),
+    polis::StoreTableColumn::new(
+        "idempotency",
+        "TEXT",
+        polis::StorePrimaryKey::None,
+        Some("length(trim(idempotency)) > 0"),
+    ),
+    polis::StoreTableColumn::new("status_payload", "TEXT", polis::StorePrimaryKey::None, None),
+];
+
+#[derive(Clone)]
+pub(crate) struct CorrosionDomainStatus {
+    store: polis::CorrosionStore,
 }
 
-impl<S> PolisDomainStatus<S> {
+impl CorrosionDomainStatus {
     #[must_use]
-    pub(crate) fn new(scope: ScopeId, projection: polis::MemoryProjectionSource<S>) -> Self {
-        Self { scope, projection }
+    pub(crate) fn new(store: polis::CorrosionStore) -> Self {
+        Self { store }
     }
 }
 
-impl PolisDomainStatus<polis::MemoryFactStore> {
-    #[must_use]
-    pub(crate) fn in_memory(scope: ScopeId) -> Self {
-        Self::new(
-            scope,
-            polis::MemoryProjectionSource::new(polis::MemoryFactStore::new()),
-        )
-    }
+pub(crate) fn start_corrosion_domain_status(store: polis::CorrosionStore) -> impl DomainStatusPort {
+    CorrosionDomainStatus::new(store)
 }
 
-impl<S> DomainStatusPort for PolisDomainStatus<S>
-where
-    S: polis::FactStore,
-{
-    fn status(&self, domain: &DomainName) -> Result<DomainStatus, DomainFailure> {
-        self.project_domain_status(domain)
+pub(crate) fn domain_status_schema_statements()
+-> Result<Vec<polis::StoreStatement>, polis::StoreError> {
+    statements::schema_statements()
+}
+
+pub(crate) async fn verify_domain_status_schema(
+    store: &polis::CorrosionStore,
+    timeout: polis::StoreTimeout,
+) -> Result<(), polis::StoreError> {
+    polis::verify_table_schema(store, timeout, DOMAIN_STATUS_TABLE, DOMAIN_STATUS_COLUMNS).await
+}
+
+impl DomainStatusPort for CorrosionDomainStatus {
+    async fn status(
+        &self,
+        context: &MutationContext,
+        domain: &DomainName,
+    ) -> Result<DomainStatus, DomainFailure> {
+        self.observe_domain(context.authority().scope(), domain)
+            .await
+            .map_err(map_domain_store_error)?
+            .map(|row| row.into_status())
+            .transpose()
+            .map(|status| status.unwrap_or(DomainStatus::Unknown))
     }
 
-    fn record_pending(
+    async fn record_pending(
         &self,
         context: &MutationContext,
         domain: &DomainName,
         reason: DomainPendingReason,
     ) -> Result<(), DomainFailure> {
-        self.append_domain_event(context, &DomainStatusEvent::pending(domain.clone(), reason))
+        self.upsert_domain(&DomainStatusRow::pending(context, domain.clone(), reason))
+            .await
+            .map_err(map_domain_store_error)
     }
 
-    fn record_ready(
+    async fn record_ready(
         &self,
         context: &MutationContext,
         ready: DomainReadyRecord,
     ) -> Result<(), DomainFailure> {
-        self.append_domain_event(context, &DomainStatusEvent::ready(ready))
+        self.upsert_domain(&DomainStatusRow::ready(context, ready))
+            .await
+            .map_err(map_domain_store_error)
     }
 
-    fn record_failed(
+    async fn record_failed(
         &self,
         context: &MutationContext,
         domain: &DomainName,
-        failure: DomainFailure,
+        failure: DomainStatusFailure,
     ) -> Result<(), DomainFailure> {
-        self.append_domain_event(context, &DomainStatusEvent::failed(domain.clone(), failure))
+        self.upsert_domain(&DomainStatusRow::failed(context, domain.clone(), failure))
+            .await
+            .map_err(map_domain_store_error)
     }
 }
 
-impl<S> PolisDomainStatus<S>
-where
-    S: polis::FactStore,
-{
-    fn append_domain_event(
+impl CorrosionDomainStatus {
+    async fn observe_domain(
         &self,
-        context: &MutationContext,
-        event: &DomainStatusEvent,
-    ) -> Result<(), DomainFailure> {
-        let envelope = event.encode().map_err(map_domain_fact_error)?;
-        match super::append_product_fact(
-            self.projection.facts(),
-            context,
-            &envelope,
-            DomainFactGrantAuthority,
-            polis::FactConflictPolicy::RecordCandidate,
-        )
-        .map_err(map_domain_primitive)?
-        {
-            ProductFactAppendOutcome::Appended(_) | ProductFactAppendOutcome::Replayed(_) => Ok(()),
-            ProductFactAppendOutcome::Conflict(conflict) => Err(domain_conflict_failure(conflict)),
-            ProductFactAppendOutcome::Rejected(ProductFactRejection::Unauthorized) => {
-                Err(DomainFailure::StatusUnavailable)
-            }
+        scope: &ScopeId,
+        domain: &DomainName,
+    ) -> Result<Option<DomainStatusRow>, polis::StoreError> {
+        let statement = statements::domain_status_row_statement(scope, domain)?;
+        let rows = self
+            .store
+            .query(&statement, polis::StoreTimeout::CONTROL_PLANE_DEFAULT)
+            .await?;
+        let Some(row) = rows.rows().first() else {
+            return Ok(None);
+        };
+        codecs::decode_domain_status_row(row).map(Some)
+    }
+
+    async fn upsert_domain(&self, row: &DomainStatusRow) -> Result<(), polis::StoreError> {
+        let statements = statements::domain_upsert_statements(row)?;
+        self.store
+            .execute_transaction(&statements, polis::StoreTimeout::CONTROL_PLANE_DEFAULT)
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DomainStatusRow {
+    domain: DomainName,
+    status: StoredDomainStatus,
+    write: MutationWriteIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoredDomainStatus {
+    Pending(DomainPendingReason),
+    Ready {
+        certificate: CertificateUsability,
+        serving_generation: ServingGeneration,
+    },
+    Failed(DomainStatusFailure),
+}
+
+impl DomainStatusRow {
+    fn pending(context: &MutationContext, domain: DomainName, reason: DomainPendingReason) -> Self {
+        Self {
+            domain,
+            status: StoredDomainStatus::Pending(reason),
+            write: MutationWriteIdentity::from_context(context),
         }
     }
 
-    fn project_domain_status(&self, domain: &DomainName) -> Result<DomainStatus, DomainFailure> {
-        let request = polis::ProjectionRequest::new(
-            domain_projection_view(domain)?,
-            domain_fact_query(&self.scope, domain)?,
-            PolisDomainReducer {
-                reducer: DomainStatusReducer::new(domain.clone()),
+    fn ready(context: &MutationContext, ready: DomainReadyRecord) -> Self {
+        Self {
+            domain: ready.domain().clone(),
+            status: StoredDomainStatus::Ready {
+                certificate: ready.certificate().clone(),
+                serving_generation: ready.serving_generation(),
             },
-        );
-        polis::ProjectionSource::project(&self.projection, request)
-            .map_err(map_domain_projection_error)
-            .and_then(|snapshot| {
-                super::require_fresh_projection(snapshot, |_| DomainFailure::StatusUnavailable)
-            })
-    }
-}
-
-struct PolisDomainReducer {
-    reducer: DomainStatusReducer,
-}
-
-impl polis::FactReducer for PolisDomainReducer {
-    type View = DomainStatus;
-    type Error = DomainFailure;
-
-    fn reduce(
-        &self,
-        facts: Vec<polis::VerifiedFact>,
-    ) -> std::result::Result<Self::View, Self::Error> {
-        let mut events = Vec::with_capacity(facts.len());
-        for fact in facts {
-            let decoded = DomainStatusEvent::decode_payload(fact.payload().as_bytes())
-                .map_err(map_domain_fact_error)?;
-            let expected_target = decoded
-                .encode()
-                .map_err(map_domain_fact_error)?
-                .target()
-                .clone();
-            let actual_target = super::product_fact_receipt(fact.receipt())
-                .map_err(map_domain_primitive)?
-                .target()
-                .clone();
-            if actual_target != expected_target {
-                return Err(DomainFailure::StatusUnavailable);
-            }
-            events.push(decoded);
+            write: MutationWriteIdentity::from_context(context),
         }
-        self.reducer.reduce(events).map_err(map_domain_fact_error)
     }
-}
 
-struct DomainFactGrantAuthority;
+    fn failed(context: &MutationContext, domain: DomainName, failure: DomainStatusFailure) -> Self {
+        Self {
+            domain,
+            status: StoredDomainStatus::Failed(failure),
+            write: MutationWriteIdentity::from_context(context),
+        }
+    }
 
-impl polis::FactGrantAuthority for DomainFactGrantAuthority {
-    fn decide(
-        &self,
-        _authority: &polis::AuthorityContext,
-        target: &polis::FactTarget,
-        purpose: polis::FactGrantPurpose,
-    ) -> polis::FactGrantDecision {
-        match purpose {
-            polis::FactGrantPurpose::Append if domain_fact_target_allowed(target) => {
-                polis::FactGrantDecision::allowed()
-            }
-            polis::FactGrantPurpose::Append | polis::FactGrantPurpose::ReplicaImport => {
-                polis::FactGrantDecision::denied()
-            }
+    fn into_status(self) -> Result<DomainStatus, DomainFailure> {
+        match self.status {
+            StoredDomainStatus::Pending(reason) => Ok(DomainStatus::Pending(reason)),
+            StoredDomainStatus::Ready {
+                certificate,
+                serving_generation,
+            } => DomainReadyRecord::new(self.domain, certificate, serving_generation)
+                .map(DomainStatus::Ready),
+            StoredDomainStatus::Failed(failure) => Ok(DomainStatus::Failed(failure)),
         }
     }
 }
 
-fn domain_fact_target_allowed(target: &polis::FactTarget) -> bool {
-    target.resource().as_str().starts_with("domain-status:")
-        && matches!(
-            target.kind().as_str(),
-            DOMAIN_PENDING_KIND | DOMAIN_READY_KIND | DOMAIN_FAILED_KIND
-        )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomainStatusKind {
+    Pending,
+    Ready,
+    Failed,
 }
 
-fn domain_projection_view(domain: &DomainName) -> Result<polis::ProjectionView, DomainFailure> {
-    polis::ProjectionKey::parse(format!("ployz.domain.status:{}", domain.as_str()))
-        .map(polis::ProjectionView::new)
-        .map_err(map_domain_polis_error)
+impl StoredDomainStatus {
+    fn kind(&self) -> DomainStatusKind {
+        match self {
+            Self::Pending(_) => DomainStatusKind::Pending,
+            Self::Ready { .. } => DomainStatusKind::Ready,
+            Self::Failed(_) => DomainStatusKind::Failed,
+        }
+    }
 }
 
-fn domain_fact_query(
-    scope: &ScopeId,
-    domain: &DomainName,
-) -> Result<polis::FactQuery, DomainFailure> {
-    let scope = polis::ScopeId::parse(scope.as_str()).map_err(map_domain_polis_error)?;
-    let resource = polis::ResourceId::parse(format!("domain-status:{}", domain.as_str()))
-        .map_err(map_domain_polis_error)?;
-    Ok(polis::FactQuery::new(scope).resource(resource))
-}
-
-fn domain_conflict_failure(_conflict: ProductFactConflict) -> DomainFailure {
-    DomainFailure::StatusUnavailable
-}
-
-fn map_domain_projection_error(error: polis::ProjectionError<DomainFailure>) -> DomainFailure {
+fn map_domain_store_error(error: polis::StoreError) -> DomainFailure {
     match error {
-        polis::ProjectionError::Source(source) => map_domain_polis_error(source),
-        polis::ProjectionError::SubstrateFailed { .. } => DomainFailure::StatusUnavailable,
-        polis::ProjectionError::Reducer(failure) => failure,
+        polis::StoreError::MalformedPayload => DomainFailure::StatusRowsPayloadInvalid,
+        polis::StoreError::Timeout => DomainFailure::StatusRowsTimeout,
+        polis::StoreError::MissedChange { .. } => DomainFailure::StatusRowsMissedChanges,
+        polis::StoreError::Stream { .. } => DomainFailure::StatusRowsStreamInterrupted,
+        polis::StoreError::Client { .. }
+        | polis::StoreError::Response { .. }
+        | polis::StoreError::QueryChangedBeforeEndOfQuery
+        | polis::StoreError::QueryEndedBeforeEndOfQuery => DomainFailure::StatusUnavailable,
     }
-}
-
-fn map_domain_primitive(_failure: crate::error::PrimitiveFailure) -> DomainFailure {
-    DomainFailure::StatusUnavailable
-}
-
-fn map_domain_polis_error(error: polis::Error) -> DomainFailure {
-    map_domain_primitive(super::map_polis_error(error))
-}
-
-fn map_domain_fact_error(_error: DomainFactError) -> DomainFailure {
-    DomainFailure::StatusUnavailable
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use crate::acme::{
-        CertificateActivation, CertificateMaterialState, CertificateUsability, Hostname,
-        RevocationFreshness,
-    };
-    use crate::domain::{DomainFailure, DomainName, DomainPendingReason, DomainReadyRecord};
-    use crate::error::CertificateFailure;
-    use crate::operation::{
-        AuthorityContext, AuthorityEpoch, IdempotencyKey, MutationContext, OperationId,
-        PrincipalId, ScopeId,
-    };
-    use crate::serving::ServingGeneration;
-
-    use crate::adapters::polis::context_fact_append_authority;
-
     use super::*;
+    use crate::acme::{
+        CertificateActivation, CertificateMaterialState, Hostname, RevocationFreshness,
+    };
+    use crate::operation::ScopeId;
 
     #[test]
-    fn projects_recorded_ready_status() {
-        let records = status_records();
+    fn schema_creates_domain_status_tables_only() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        for statement in domain_status_schema_statements().expect("schema") {
+            conn.execute(statement.sql(), []).expect("schema statement");
+        }
+
+        let mut query = conn
+            .prepare(
+                "SELECT name FROM sqlite_schema
+                WHERE type = 'table'
+                  AND name LIKE 'ployz_domain_status%'
+                ORDER BY name",
+            )
+            .expect("prepare");
+        let tables = query
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("tables");
+
+        assert_eq!(tables, vec!["ployz_domain_status".to_string()]);
+    }
+
+    #[test]
+    fn status_query_decodes_payload_row() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        for statement in domain_status_schema_statements().expect("schema") {
+            conn.execute(statement.sql(), []).expect("schema statement");
+        }
+
+        let domain = domain();
         let ready = ready_record();
-
-        records
-            .record_pending(
-                &context(),
-                ready.domain(),
-                DomainPendingReason::CertificateIssuance,
-            )
-            .expect("pending");
-        records
-            .record_ready(&context(), ready.clone())
-            .expect("ready");
-
-        assert_eq!(
-            records.status(&domain()).expect("status"),
-            DomainStatus::Ready(ready)
-        );
-    }
-
-    #[test]
-    fn projects_latest_failure_status() {
-        let records = status_records();
-
-        records
-            .record_pending(
-                &context(),
-                &domain(),
-                DomainPendingReason::CertificateIssuance,
-            )
-            .expect("pending");
-        records
-            .record_failed(
-                &context(),
-                &domain(),
-                DomainFailure::CertificateFailed(CertificateFailure::IssuanceFailed),
-            )
-            .expect("failed");
-
-        assert_eq!(
-            records.status(&domain()).expect("status"),
-            DomainStatus::Failed(DomainFailure::CertificateFailed(
-                CertificateFailure::IssuanceFailed
-            ))
-        );
-    }
-
-    #[test]
-    fn projects_unknown_for_domains_without_records() {
-        let records = status_records();
-
-        records
-            .record_pending(
-                &context(),
-                &domain(),
-                DomainPendingReason::CertificateIssuance,
-            )
-            .expect("pending");
-
-        assert_eq!(
-            records
-                .status(&DomainName::parse("other.example.com").expect("domain"))
-                .expect("status"),
-            DomainStatus::Unknown
-        );
-    }
-
-    #[test]
-    fn degraded_projection_is_not_exposed_as_domain_status() {
-        let records = status_records();
-        append_conflicting_raw_domain_status(&records, "payload-a");
-        append_conflicting_raw_domain_status(&records, "payload-b");
-
-        assert_eq!(
-            records.status(&domain()),
-            Err(DomainFailure::StatusUnavailable)
-        );
-    }
-
-    fn status_records() -> PolisDomainStatus<polis::MemoryFactStore> {
-        PolisDomainStatus::in_memory(ScopeId::parse("cluster").expect("scope"))
-    }
-
-    fn context() -> MutationContext {
-        MutationContext::new(
-            OperationId::parse("deploy-1").expect("operation"),
-            IdempotencyKey::parse("deploy-1").expect("idempotency"),
-            AuthorityContext::new(
-                PrincipalId::parse("node-a").expect("principal"),
-                ScopeId::parse("cluster").expect("scope"),
-                AuthorityEpoch::new(7),
-            ),
-            None,
-            UNIX_EPOCH + Duration::from_secs(60),
+        let payload = codecs::status_payload(&StoredDomainStatus::Ready {
+            certificate: ready.certificate().clone(),
+            serving_generation: ready.serving_generation(),
+        })
+        .expect("payload");
+        conn.execute(
+            "INSERT INTO ployz_domain_status (
+                scope,
+                domain,
+                status,
+                operation,
+                idempotency,
+                status_payload
+            ) VALUES ('cluster', ?1, 'ready', 'operation-1', 'idem-1', ?2)",
+            (domain.as_str(), payload),
         )
+        .expect("status row");
+
+        let scope = ScopeId::parse("cluster").expect("scope");
+        let statement =
+            statements::domain_status_row_statement(&scope, &domain).expect("statement");
+        let row = conn
+            .query_row(statement.sql(), [scope.as_str(), domain.as_str()], |row| {
+                Ok((
+                    row.get::<_, String>("domain")?,
+                    row.get::<_, String>("status")?,
+                    row.get::<_, String>("scope")?,
+                    row.get::<_, String>("operation")?,
+                    row.get::<_, String>("idempotency")?,
+                    row.get::<_, String>("status_payload")?,
+                ))
+            })
+            .expect("status row");
+        let store_row = polis::StoreRow::from_fields([
+            ("domain", polis::StoreValue::Text(row.0)),
+            ("status", polis::StoreValue::Text(row.1)),
+            ("scope", polis::StoreValue::Text(row.2)),
+            ("operation", polis::StoreValue::Text(row.3)),
+            ("idempotency", polis::StoreValue::Text(row.4)),
+            ("status_payload", polis::StoreValue::Text(row.5)),
+        ])
+        .expect("store row");
+
+        assert_eq!(
+            codecs::decode_domain_status_row(&store_row)
+                .expect("decode")
+                .into_status(),
+            Ok(DomainStatus::Ready(ready_record()))
+        );
     }
 
-    fn append_conflicting_raw_domain_status(
-        records: &PolisDomainStatus<polis::MemoryFactStore>,
-        payload: &str,
-    ) {
-        let target = polis::FactTarget::new(
-            polis::ResourceId::parse("domain-status:app.example.com").expect("resource"),
-            polis::FactKey::parse("/facts/domain/app.example.com/conflict").expect("key"),
-            polis::FactKind::parse(DOMAIN_PENDING_KIND).expect("kind"),
-        );
-        let authority = context_fact_append_authority(&context()).expect("authority");
-        let grant = polis::FactGrantService::new(DomainFactGrantAuthority)
-            .issue_append(&authority, target.clone())
-            .expect("grant");
-        let request = polis::FactAppendRequest::new(
-            polis::OperationId::parse(format!("raw-domain-{payload}")).expect("operation"),
-            polis::IdempotencyKey::parse(format!("raw-domain-{payload}")).expect("idempotency"),
-            authority,
-            grant,
-            target,
-            polis::FactPayload::new(payload.as_bytes().to_vec()).expect("payload"),
-            None,
-        );
+    #[test]
+    fn status_query_rejects_mismatched_status_column_and_payload() {
+        let payload = codecs::status_payload(&StoredDomainStatus::Ready {
+            certificate: ready_record().certificate().clone(),
+            serving_generation: ready_record().serving_generation(),
+        })
+        .expect("payload");
+        let store_row = polis::StoreRow::from_fields([
+            (
+                "domain",
+                polis::StoreValue::Text(domain().as_str().to_string()),
+            ),
+            ("status", polis::StoreValue::Text("pending".to_string())),
+            ("scope", polis::StoreValue::Text("cluster".to_string())),
+            (
+                "operation",
+                polis::StoreValue::Text("operation-1".to_string()),
+            ),
+            ("idempotency", polis::StoreValue::Text("idem-1".to_string())),
+            ("status_payload", polis::StoreValue::Text(payload)),
+        ])
+        .expect("store row");
 
-        polis::FactStore::append(records.projection.facts(), request).expect("append");
+        assert_eq!(
+            codecs::decode_domain_status_row(&store_row),
+            Err(polis::StoreError::MalformedPayload)
+        );
+    }
+
+    #[test]
+    fn store_errors_map_to_distinct_domain_status_failures() {
+        assert_eq!(
+            map_domain_store_error(polis::StoreError::MalformedPayload),
+            DomainFailure::StatusRowsPayloadInvalid
+        );
+        assert_eq!(
+            map_domain_store_error(polis::StoreError::Timeout),
+            DomainFailure::StatusRowsTimeout
+        );
+        assert_eq!(
+            map_domain_store_error(polis::StoreError::MissedChange {
+                expected: polis::StoreChangeId::new(1),
+                got: polis::StoreChangeId::new(3),
+            }),
+            DomainFailure::StatusRowsMissedChanges
+        );
+        assert_eq!(
+            map_domain_store_error(polis::StoreError::Stream {
+                message: "closed".to_string(),
+            }),
+            DomainFailure::StatusRowsStreamInterrupted
+        );
+        assert_eq!(
+            map_domain_store_error(polis::StoreError::Client {
+                message: "client".to_string(),
+            }),
+            DomainFailure::StatusUnavailable
+        );
     }
 
     fn ready_record() -> DomainReadyRecord {
@@ -364,7 +394,7 @@ mod tests {
             domain(),
             CertificateUsability {
                 hostname: Hostname::parse("app.example.com").expect("hostname"),
-                not_after: UNIX_EPOCH + Duration::from_secs(86_400),
+                not_after: UNIX_EPOCH + Duration::from_secs(3_600),
                 activation: CertificateActivation::Acknowledged,
                 material: CertificateMaterialState::PresentProtected,
                 revocation: RevocationFreshness::KnownFresh,

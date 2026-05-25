@@ -1,5 +1,3 @@
-use std::future::Future;
-
 use irpc::{Client, LocalSender, WithChannels, channel::oneshot, rpc::RemoteService, rpc_requests};
 use irpc_iroh::{IrohLazyRemoteConnection, IrohProtocol};
 use serde::{Deserialize, Serialize};
@@ -93,22 +91,20 @@ impl PeerRpcProbe {
 }
 
 impl PeerProbe for PeerRpcProbe {
-    fn probe<'a>(
-        &'a self,
-        target: &'a IrohEndpointId,
+    async fn probe(
+        &self,
+        target: &IrohEndpointId,
         deadline: PeerProbeDeadline,
-    ) -> impl Future<Output = PeerProbeResult<PeerProbeReceipt>> + 'a {
-        async move {
-            if target != &self.endpoint {
-                return Err(PeerError::ProbeFailed {
-                    endpoint: target.clone(),
-                    reason: "peer rpc probe was built for a different endpoint".to_string(),
-                });
-            }
-
-            self.client.preflight(deadline).await?;
-            Ok(PeerProbeReceipt::new(target.clone(), self.observed_path))
+    ) -> PeerProbeResult<PeerProbeReceipt> {
+        if target != &self.endpoint {
+            return Err(PeerError::ProbeFailed {
+                endpoint: target.clone(),
+                reason: "peer rpc probe was built for a different endpoint".to_string(),
+            });
         }
+
+        self.client.preflight(deadline).await?;
+        Ok(PeerProbeReceipt::new(target.clone(), self.observed_path))
     }
 }
 

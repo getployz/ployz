@@ -10,7 +10,7 @@ use ployz::domain::{
     CertificatePolicy, DomainAdd, DomainCertificatePort, DomainCertificateReadiness, DomainClaim,
     DomainClaimPort, DomainFailure, DomainName, DomainPendingReason, DomainReadinessOutcome,
     DomainReadinessService, DomainReady, DomainReadyRecord, DomainServingActivation,
-    DomainServingPort, DomainServingReadiness, DomainStatus, DomainStatusPort,
+    DomainServingPort, DomainServingReadiness, DomainStatus, DomainStatusFailure, DomainStatusPort,
     UsableDomainCertificate,
 };
 use ployz::operation::{
@@ -49,7 +49,7 @@ struct FakeCertificates {
 }
 
 impl DomainCertificatePort for FakeCertificates {
-    fn observe_usable_certificate(
+    async fn observe_usable_certificate(
         &self,
         _context: &MutationContext,
         domain: &DomainName,
@@ -58,7 +58,7 @@ impl DomainCertificatePort for FakeCertificates {
         Ok(UsableDomainCertificate::new(domain, self.certificate.clone(), policy).ok())
     }
 
-    fn ensure_usable_certificate(
+    async fn ensure_usable_certificate(
         &self,
         _context: &MutationContext,
         claim: &DomainClaim,
@@ -116,11 +116,15 @@ impl Default for FakeStatus {
 }
 
 impl DomainStatusPort for FakeStatus {
-    fn status(&self, _domain: &DomainName) -> Result<DomainStatus, DomainFailure> {
+    async fn status(
+        &self,
+        _context: &MutationContext,
+        _domain: &DomainName,
+    ) -> Result<DomainStatus, DomainFailure> {
         Ok(self.current.borrow().clone())
     }
 
-    fn record_pending(
+    async fn record_pending(
         &self,
         _context: &MutationContext,
         _domain: &DomainName,
@@ -132,7 +136,7 @@ impl DomainStatusPort for FakeStatus {
         Ok(())
     }
 
-    fn record_ready(
+    async fn record_ready(
         &self,
         _context: &MutationContext,
         ready: DomainReadyRecord,
@@ -143,11 +147,11 @@ impl DomainStatusPort for FakeStatus {
         Ok(())
     }
 
-    fn record_failed(
+    async fn record_failed(
         &self,
         _context: &MutationContext,
         _domain: &DomainName,
-        failure: DomainFailure,
+        failure: DomainStatusFailure,
     ) -> Result<(), DomainFailure> {
         self.recorded
             .borrow_mut()
@@ -196,8 +200,8 @@ fn serving_success() -> FakeServing {
     }
 }
 
-#[test]
-fn domain_add_records_ready_without_generic_terminalization() {
+#[tokio::test(flavor = "current_thread")]
+async fn domain_add_records_ready_without_generic_terminalization() {
     let status = FakeStatus::default();
     let claims = FakeClaims::default();
     let domains = DomainReadinessService::new(
@@ -212,6 +216,7 @@ fn domain_add_records_ready_without_generic_terminalization() {
     let ready = expect_ready(
         domains
             .ensure_ready(&context(), request())
+            .await
             .expect("domain ready"),
     );
 
@@ -229,8 +234,8 @@ fn domain_add_records_ready_without_generic_terminalization() {
     );
 }
 
-#[test]
-fn domain_add_certificate_safety_window_failure_is_visible() {
+#[tokio::test(flavor = "current_thread")]
+async fn domain_add_certificate_safety_window_failure_is_visible() {
     let status = FakeStatus::default();
     let mut short_lived = certificate();
     short_lived.not_after = UNIX_EPOCH + Duration::from_secs(30);
@@ -244,14 +249,14 @@ fn domain_add_certificate_safety_window_failure_is_visible() {
     );
 
     assert_eq!(
-        domains.ensure_ready(&context(), request()),
+        domains.ensure_ready(&context(), request()).await,
         Err(DomainFailure::CertificateUnusable(
             CertificateUnusableReason::SafetyWindowTooShort
         ))
     );
     assert!(status.recorded.borrow().iter().any(|status| matches!(
         status,
-        DomainStatus::Failed(DomainFailure::CertificateUnusable(
+        DomainStatus::Failed(DomainStatusFailure::CertificateUnusable(
             CertificateUnusableReason::SafetyWindowTooShort
         ))
     )));
@@ -264,8 +269,8 @@ fn domain_add_certificate_safety_window_failure_is_visible() {
     );
 }
 
-#[test]
-fn domain_add_serving_activation_failure_is_not_ready() {
+#[tokio::test(flavor = "current_thread")]
+async fn domain_add_serving_activation_failure_is_not_ready() {
     let status = FakeStatus::default();
     let domains = DomainReadinessService::new(
         FakeClaims::default(),
@@ -280,7 +285,7 @@ fn domain_add_serving_activation_failure_is_not_ready() {
     );
 
     assert_eq!(
-        domains.ensure_ready(&context(), request()),
+        domains.ensure_ready(&context(), request()).await,
         Err(DomainFailure::ServingActivationFailed)
     );
     assert!(
@@ -292,8 +297,8 @@ fn domain_add_serving_activation_failure_is_not_ready() {
     );
 }
 
-#[test]
-fn domain_add_retry_after_checkpoint_verifies_ready_invariants() {
+#[tokio::test(flavor = "current_thread")]
+async fn domain_add_retry_after_checkpoint_verifies_ready_invariants() {
     let status = FakeStatus::default();
     let claims = FakeClaims::default();
     let serving = serving_success();
@@ -310,6 +315,7 @@ fn domain_add_retry_after_checkpoint_verifies_ready_invariants() {
     let ready = expect_ready(
         domains
             .ensure_ready(&context(), request())
+            .await
             .expect("domain ready"),
     );
 
@@ -327,6 +333,7 @@ fn domain_add_retry_after_checkpoint_verifies_ready_invariants() {
     let replayed = expect_ready(
         domains
             .ensure_ready(&context(), request())
+            .await
             .expect("domain ready replay"),
     );
 

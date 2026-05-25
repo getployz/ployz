@@ -1,68 +1,47 @@
 //! Internal distributed-control support primitives for Ployz.
 //!
-//! Polis owns product-neutral mechanics such as identity, authority, facts,
-//! projections, claims, and external-state attempts. It must not know Ployz
-//! product domains such as deploys, certificates, routes, runtime participants,
-//! or volumes.
+//! Polis owns product-neutral substrate mechanics such as Corrosion access,
+//! iroh identity, peer RPC, probes, tickets, deadlines, and membership rows. It
+//! must not know Ployz product domains such as deploys, certificates, routes,
+//! runtime participants, or volumes.
 //!
 //! Production rules:
 //! - primitives expose typed failures, not display-string contracts;
-//! - attempt evidence is only for external state that cluster facts cannot
-//!   fully observe;
-//! - claims are advisory until a product resource enforces the fence;
-//! - external I/O must be deadline-bounded by the adapter using the primitive.
+//! - Corrosion row APIs expose store mechanics, not product services;
+//! - external I/O must be deadline-bounded by the adapter using the primitive;
+//! - peer and membership substrates stay independent of Ployz product policy.
 
-pub mod authority;
-pub mod claims;
 pub mod corrosion_agent;
 pub mod error;
-pub mod external_attempt;
-pub mod facts;
 pub mod identity;
 pub mod membership;
-mod operations;
 pub mod peers;
-pub mod projection;
+pub mod schema;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use authority::{
-    Authority, AuthorityContext, AuthorityDecision, AuthorityService, Authorized, GrantEpoch,
-};
-pub use claims::{
-    ClaimEpoch, ClaimGuard, ClaimHash, ClaimLease, FenceCheck, FenceToken, HolderId, ResourceId,
-};
 pub use corrosion_agent::{
     CorrosionAdoption, CorrosionAgentAddresses, CorrosionAgentConfig, CorrosionAgentError,
-    CorrosionExit, CorrosionShutdown, LocalCorrosionAgent,
+    CorrosionExit, CorrosionOwnerId, CorrosionShutdown, LocalCorrosionAgent,
 };
 pub use error::{Error, Result};
-pub use facts::{
-    CandidateStatus, FactAppendFingerprint, FactAppendOutcome, FactAppendRequest, FactAppendScope,
-    FactAppendValidation, FactCandidate, FactCandidateSet, FactConflict, FactConflictPolicy,
-    FactCursor, FactGrantAuthority, FactGrantDecision, FactGrantPurpose, FactGrantService, FactId,
-    FactKey, FactKind, FactPayload, FactPayloadBatch, FactPayloadDigest, FactPayloadReadFailure,
-    FactQuery, FactReceipt, FactRejection, FactReplayKey, FactStore, FactTarget, FactWriteGrant,
-    MemoryFactStore, ValidatedFactAppend,
-};
-pub use identity::{IrohEndpointId, PrincipalId, ScopeId, SourceWatermark};
+pub use identity::IrohEndpointId;
 pub use membership::{
     IslandId, MachineRow, MachineRowQuery, MembershipLifecycle, OverlayIp, RowEpoch,
-    StoreMachineId, WireGuardPublicKey, membership_schema_statements,
-    membership_startup_schema_sql, upsert_machine_statement, verify_membership_schema,
+    StoreMachineId, WireGuardPublicKey, membership_replication_schema_sql,
+    membership_schema_statements, upsert_machine_statement, verify_membership_replication_schema,
+    verify_membership_schema,
 };
-pub use operations::{IdempotencyKey, OperationId, SubmittedFenceFingerprint};
 pub use peers::{
     FakePeerProbe, PLOYZ_PEER_ALPN, PeerEndpoint, PeerError, PeerIdentity, PeerProbe,
     PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcClient, PeerRpcListener,
     PeerRpcProbe, PeerRuntime, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
-    issue_endpoint_ticket, issue_ticket, load_or_create_identity, preflight_membership,
+    issue_endpoint_ticket, issue_ticket, load_or_create_identity,
 };
-pub use projection::{
-    FactReducer, MemoryProjectionSource, ProjectionCatchUp, ProjectionCatchUpRequest,
-    ProjectionError, ProjectionFreshness, ProjectionHealth, ProjectionKey, ProjectionRequest,
-    ProjectionRequestIdentity, ProjectionSnapshot, ProjectionSource, ProjectionView, VerifiedFact,
+pub use schema::{
+    StorePrimaryKey, StoreTableColumn, create_table_sql, schema_statements, select_columns,
+    verify_table_schema,
 };
 pub use store::{
     CorrosionStore, StoreChangeId, StoreChangeType, StoreError, StoreParam, StoreQueryRows,
@@ -73,21 +52,32 @@ pub use store::{
 pub use test_support::CorrosionAgentFixtureConfig;
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     #[test]
     fn crate_has_no_product_modules() {
-        let public_modules = [
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for removed in [
             "authority",
             "claims",
-            "error",
+            "external_attempt",
             "facts",
-            "identity",
+            "operations",
             "projection",
-        ];
-
-        assert!(!public_modules.contains(&"deploy"));
-        assert!(!public_modules.contains(&"acme"));
-        assert!(!public_modules.contains(&"serving"));
-        assert!(!public_modules.contains(&"runtime"));
-        assert!(!public_modules.contains(&"volume"));
+            "deploy",
+            "acme",
+            "serving",
+            "runtime",
+            "volume",
+        ] {
+            assert!(
+                !src.join(format!("{removed}.rs")).exists(),
+                "{removed}.rs must not re-enter polis"
+            );
+            assert!(
+                !src.join(removed).exists(),
+                "{removed}/ must not re-enter polis"
+            );
+        }
     }
 }

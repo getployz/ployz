@@ -74,8 +74,16 @@ pub struct LocalCorrosionAgent {
     api_addr: SocketAddr,
     gossip_addr: SocketAddr,
     prometheus_addr: SocketAddr,
-    child: Option<Child>,
-    root_cleanup: CorrosionRootCleanup,
+    process: LocalCorrosionProcess,
+}
+
+#[derive(Debug)]
+enum LocalCorrosionProcess {
+    Managed {
+        child: Child,
+        root_cleanup: CorrosionRootCleanup,
+    },
+    Adopted,
 }
 
 impl LocalCorrosionAgent {
@@ -93,8 +101,7 @@ impl LocalCorrosionAgent {
             api_addr: config.api_addr,
             gossip_addr: config.gossip_addr,
             prometheus_addr: config.prometheus_addr,
-            child: None,
-            root_cleanup: CorrosionRootCleanup::Keep,
+            process: LocalCorrosionProcess::Adopted,
         })
     }
 
@@ -115,7 +122,7 @@ impl LocalCorrosionAgent {
     ) -> Result<Self, CorrosionAgentError> {
         fs::create_dir_all(&config.root_dir).map_err(setup_error)?;
         let config_path = config.root_dir.join("config.toml");
-        write_config(&config, &mode, &config_path)?;
+        write_config(&config, &config_path)?;
 
         let stdout_path = config.root_dir.join("stdout.log");
         let stderr_path = config.root_dir.join("stderr.log");
@@ -135,8 +142,10 @@ impl LocalCorrosionAgent {
             api_addr: config.api_addr,
             gossip_addr: config.gossip_addr,
             prometheus_addr: config.prometheus_addr,
-            child: Some(child),
-            root_cleanup: mode.root_cleanup(),
+            process: LocalCorrosionProcess::Managed {
+                child,
+                root_cleanup: mode.root_cleanup(),
+            },
         };
         if let Err(startup) = agent
             .wait_ready(config.readiness_timeout, &stdout_path, &stderr_path)
@@ -185,7 +194,10 @@ impl LocalCorrosionAgent {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn process_id(&self) -> Option<u32> {
-        self.child.as_ref().map(Child::id)
+        match &self.process {
+            LocalCorrosionProcess::Managed { child, .. } => Some(child.id()),
+            LocalCorrosionProcess::Adopted => None,
+        }
     }
 
     pub fn store(&self) -> Result<CorrosionStore, CorrosionAgentError> {
@@ -196,46 +208,35 @@ impl LocalCorrosionAgent {
         mut self,
         timeout: Duration,
     ) -> Result<CorrosionShutdown, CorrosionAgentError> {
-        let Some(child) = self.child.as_mut() else {
+        let LocalCorrosionProcess::Managed { child, .. } = &mut self.process else {
             return Ok(CorrosionShutdown::Unmanaged);
         };
         if let Some(status) = child.try_wait().map_err(setup_error)? {
             let exit = CorrosionExit::from_logs(status, &self.root_dir);
-            self.child.take();
             return Ok(CorrosionShutdown::UnexpectedExit(exit));
         }
 
         if let Err(error) = terminate_child(child) {
             if child.try_wait().map_err(setup_error)?.is_some() {
-                self.child.take();
                 return Ok(CorrosionShutdown::Graceful);
             }
             return Err(setup_error(error));
         }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            let Some(child) = self.child.as_mut() else {
-                return Ok(CorrosionShutdown::Graceful);
-            };
             if child.try_wait().map_err(setup_error)?.is_some() {
-                self.child.take();
                 return Ok(CorrosionShutdown::Graceful);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        let Some(child) = self.child.as_mut() else {
-            return Ok(CorrosionShutdown::Graceful);
-        };
         if let Err(error) = child.kill() {
             if child.try_wait().map_err(setup_error)?.is_some() {
-                self.child.take();
                 return Ok(CorrosionShutdown::Graceful);
             }
             return Err(setup_error(error));
         }
         let _ = child.wait().map_err(setup_error)?;
-        self.child.take();
         Ok(CorrosionShutdown::Forced)
     }
 
@@ -250,7 +251,7 @@ impl LocalCorrosionAgent {
         let probe = store_probe_statement()?;
 
         loop {
-            let Some(child) = self.child.as_mut() else {
+            let LocalCorrosionProcess::Managed { child, .. } = &mut self.process else {
                 return Err(CorrosionAgentError::Setup {
                     message: "corrosion child was missing during readiness".to_string(),
                 });
@@ -283,14 +284,20 @@ impl LocalCorrosionAgent {
 
 impl Drop for LocalCorrosionAgent {
     fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut()
-            && matches!(child.try_wait(), Ok(None))
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        if self.root_cleanup.remove_on_drop() {
-            let _ = fs::remove_dir_all(&self.root_dir);
+        match &mut self.process {
+            LocalCorrosionProcess::Managed {
+                child,
+                root_cleanup,
+            } => {
+                if matches!(child.try_wait(), Ok(None)) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                if root_cleanup.remove_on_drop() {
+                    let _ = fs::remove_dir_all(&self.root_dir);
+                }
+            }
+            LocalCorrosionProcess::Adopted => {}
         }
     }
 }

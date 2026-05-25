@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use ployz::composition::{self, PeerRuntime};
+use ployz::composition;
 use ployz::machine::{
     IrohEndpointId, MachineAddOutcome, MachineAddRequest, MachineEpoch, MachineId,
     MachineMembershipPort, MachineMembershipService, MachineNetworkIdentity, MachineStatus,
@@ -11,12 +11,14 @@ use ployz::machine::{
 use ployz::operation::{
     AuthorityEpoch, IdempotencyKey, MutationContext, OperationId, PrincipalId, ScopeId,
 };
+use polis::PeerRuntime;
 
 #[tokio::test]
 async fn local_corrosion_agent_applies_membership_schema_through_store_api() {
     let (_agent, store) = start_empty_corrosion_agent(Vec::new()).await;
 
     apply_membership_schema(&store).await;
+    verify_membership_schema(&store).await;
     assert_machines_table_exists(&store).await;
 }
 
@@ -31,7 +33,8 @@ async fn real_corrosion_store_upserts_and_reads_machine_row() {
         .execute_transaction(&[upsert], timeout())
         .await
         .expect("insert");
-    let query = polis::MachineRowQuery::by_machine_id(row.machine_id()).expect("query");
+    let query = polis::MachineRowQuery::by_island_machine_id(row.island_id(), row.machine_id())
+        .expect("query");
     let rows = store
         .query(query.statement(), timeout())
         .await
@@ -40,6 +43,49 @@ async fn real_corrosion_store_upserts_and_reads_machine_row() {
 
     assert_eq!(receipt.rows_affected(), 1);
     assert_eq!(decoded, row);
+}
+
+#[tokio::test]
+async fn corrosion_membership_treats_same_machine_id_in_other_island_as_absent() {
+    let (_agent, store) = start_empty_corrosion_agent(Vec::new()).await;
+    apply_membership_schema(&store).await;
+
+    let endpoint = "endpoint-node-a";
+    let first_island = polis::IslandId::parse("prod").expect("first island");
+    let second_island = polis::IslandId::parse("staging").expect("second island");
+    let probe = || {
+        polis::FakePeerProbe::new()
+            .reachable(polis::IrohEndpointId::parse(endpoint).expect("endpoint"))
+    };
+    let service_a = MachineMembershipService::new(composition::corrosion_machine_membership(
+        store.clone(),
+        probe(),
+        first_island.clone(),
+    ));
+    let service_b = MachineMembershipService::new(composition::corrosion_machine_membership(
+        store.clone(),
+        probe(),
+        second_island.clone(),
+    ));
+    let request = request("node-a", 1, "fd00::1", endpoint);
+
+    let first = service_a
+        .add_machine(&context(), request.clone())
+        .await
+        .expect("first island add");
+    let second = service_b
+        .add_machine(&context(), request)
+        .await
+        .expect("second island add");
+
+    assert!(
+        matches!(first, MachineAddOutcome::Joined(joined) if joined.machine.as_str() == "node-a")
+    );
+    assert!(
+        matches!(second, MachineAddOutcome::Joined(joined) if joined.machine.as_str() == "node-a")
+    );
+    assert_machine_row_exists(&store, &first_island, "node-a").await;
+    assert_machine_row_exists(&store, &second_island, "node-a").await;
 }
 
 #[tokio::test]
@@ -70,9 +116,7 @@ async fn two_nodes_join_and_observe_corrosion_membership_rows() {
             store_a.clone(),
             probe_a_to_b,
             island.clone(),
-        )
-        .await
-        .expect("membership a");
+        );
         let service_a = MachineMembershipService::new(membership_a);
 
         let outcome = service_a
@@ -85,14 +129,12 @@ async fn two_nodes_join_and_observe_corrosion_membership_rows() {
         );
     }
 
-    wait_for_machine_row(&store_b, "node-b").await;
+    wait_for_machine_row(&store_b, &island, "node-b").await;
 
     {
         let probe_b_to_a = composition::iroh_peer_rpc_probe(peer_b.endpoint(), peer_a.ticket())
             .expect("probe b to a");
-        let membership_b = composition::corrosion_machine_membership(store_b, probe_b_to_a, island)
-            .await
-            .expect("membership b");
+        let membership_b = composition::corrosion_machine_membership(store_b, probe_b_to_a, island);
         let observed = membership_b
             .observe(&context, &MachineId::parse("node-b").expect("machine"))
             .await
@@ -132,9 +174,7 @@ async fn restarted_node_keeps_endpoint_id_and_observes_membership_row() {
         let probe = composition::iroh_peer_rpc_probe(coordinator.endpoint(), node_v1.ticket())
             .expect("probe coordinator to node v1");
         let membership =
-            composition::corrosion_machine_membership(store.clone(), probe, island.clone())
-                .await
-                .expect("membership");
+            composition::corrosion_machine_membership(store.clone(), probe, island.clone());
         let service = MachineMembershipService::new(membership);
 
         let outcome = service
@@ -163,9 +203,7 @@ async fn restarted_node_keeps_endpoint_id_and_observes_membership_row() {
     {
         let probe = composition::iroh_peer_rpc_probe(node_v2.endpoint(), coordinator.ticket())
             .expect("probe node v2 to coordinator");
-        let membership = composition::corrosion_machine_membership(store, probe, island)
-            .await
-            .expect("membership");
+        let membership = composition::corrosion_machine_membership(store, probe, island);
         let observed = membership
             .observe(
                 &context,
@@ -199,8 +237,10 @@ async fn start_corrosion_agent(
     let config = polis::CorrosionAgentFixtureConfig::isolated()
         .expect("corrosion config")
         .with_bootstrap(bootstrap)
-        .with_schema_file("membership.sql", polis::membership_startup_schema_sql());
-    start_agent(config).await
+        .with_schema_file("membership.sql", polis::membership_replication_schema_sql());
+    let (agent, store) = start_agent(config).await;
+    verify_membership_replication_schema(&store).await;
+    (agent, store)
 }
 
 async fn start_empty_corrosion_agent(
@@ -223,9 +263,21 @@ async fn start_agent(
 async fn apply_membership_schema(store: &polis::CorrosionStore) {
     let schema = polis::membership_schema_statements().expect("schema");
     store
-        .apply_schema(&schema, timeout())
+        .execute_transaction(&schema, timeout())
         .await
         .expect("apply schema");
+}
+
+async fn verify_membership_schema(store: &polis::CorrosionStore) {
+    polis::verify_membership_schema(store, timeout())
+        .await
+        .expect("membership schema");
+}
+
+async fn verify_membership_replication_schema(store: &polis::CorrosionStore) {
+    polis::verify_membership_replication_schema(store, timeout())
+        .await
+        .expect("membership replication schema");
 }
 
 async fn assert_machines_table_exists(store: &polis::CorrosionStore) {
@@ -241,11 +293,35 @@ async fn assert_machines_table_exists(store: &polis::CorrosionStore) {
     );
 }
 
-async fn wait_for_machine_row(store: &polis::CorrosionStore, machine_id: &str) {
+async fn assert_machine_row_exists(
+    store: &polis::CorrosionStore,
+    island_id: &polis::IslandId,
+    machine_id: &str,
+) {
     let machine = polis::StoreMachineId::parse(machine_id).expect("machine");
-    let query = polis::MachineRowQuery::by_machine_id(&machine).expect("query");
+    let query = polis::MachineRowQuery::by_island_machine_id(island_id, &machine).expect("query");
+    let rows = store
+        .query(query.statement(), timeout())
+        .await
+        .expect("query machine row");
+    let row = query
+        .decode_optional(&rows)
+        .expect("decode machine row")
+        .expect("machine row");
+    assert_eq!(row.island_id(), island_id);
+    assert_eq!(row.machine_id(), &machine);
+}
+
+async fn wait_for_machine_row(
+    store: &polis::CorrosionStore,
+    island_id: &polis::IslandId,
+    machine_id: &str,
+) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
+        let machine = polis::StoreMachineId::parse(machine_id).expect("machine");
+        let query =
+            polis::MachineRowQuery::by_island_machine_id(island_id, &machine).expect("query");
         let rows = store
             .query(query.statement(), timeout())
             .await
@@ -307,7 +383,6 @@ fn machine_row(machine: &str, endpoint_id: &str, overlay_ip: &str) -> polis::Mac
         polis::OverlayIp::parse(overlay_ip).expect("overlay"),
         polis::MembershipLifecycle::Active,
         polis::RowEpoch::new(1).expect("epoch"),
-        100,
     )
 }
 

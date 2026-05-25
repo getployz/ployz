@@ -4,19 +4,23 @@
 //! to assemble concrete adapters and pass them into product orchestration.
 
 use crate::acme::{
-    CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
+    AcmeCertificateIssuer, CertificateAuthorityPort, CertificatePort, CertificateReadinessService,
+    CertificateStatusPort, attempt,
 };
-use crate::adapters::polis::{
-    AcmeCertificateIssuer, PolisDomainStatus, PolisMachineMembership, PolisServingSnapshots,
-    start_corrosion_machine_membership,
+use crate::adapters::{
+    memory::{InMemoryDomainStatus, InMemoryMachineMembership, InMemoryServingSnapshots},
+    polis::{
+        certificate_attempt_schema_statements, domain_status_schema_statements,
+        serving_snapshot_schema_statements, start_corrosion_certificate_attempts,
+        start_corrosion_domain_status, start_corrosion_machine_membership,
+        start_corrosion_serving_snapshots, verify_certificate_attempt_schema,
+        verify_domain_status_schema, verify_serving_snapshot_schema,
+    },
 };
 use crate::domain::DomainStatusPort;
 use crate::error::PrimitiveFailure;
 use crate::machine::MachineMembershipPort;
-use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
-pub use polis::PeerRuntime;
-use polis::external_attempt as attempt;
 
 #[must_use]
 pub fn certificate_readiness_with_attempts<S, A, I>(
@@ -26,7 +30,7 @@ pub fn certificate_readiness_with_attempts<S, A, I>(
 ) -> impl CertificatePort
 where
     S: CertificateStatusPort,
-    A: attempt::Backend,
+    A: attempt::CertificateAttemptStore,
     I: CertificateAuthorityPort,
 {
     CertificateReadinessService::new(certificates, AcmeCertificateIssuer::new(attempts, issuer))
@@ -34,18 +38,92 @@ where
 
 #[must_use]
 pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
-    PolisMachineMembership::in_memory()
+    InMemoryMachineMembership::default()
 }
 
-pub async fn corrosion_machine_membership<P>(
+#[must_use]
+pub fn corrosion_machine_membership<P>(
     store: polis::CorrosionStore,
     probe: P,
     island: polis::IslandId,
-) -> Result<impl MachineMembershipPort, PrimitiveFailure>
+) -> impl MachineMembershipPort
 where
     P: polis::PeerProbe,
 {
-    start_corrosion_machine_membership(store, probe, island).await
+    start_corrosion_machine_membership(store, probe, island)
+}
+
+#[must_use]
+pub fn corrosion_domain_status(store: polis::CorrosionStore) -> impl DomainStatusPort {
+    start_corrosion_domain_status(store)
+}
+
+#[must_use]
+pub fn corrosion_certificate_attempts(
+    store: polis::CorrosionStore,
+) -> impl attempt::CertificateAttemptStore {
+    start_corrosion_certificate_attempts(store)
+}
+
+#[must_use]
+pub fn corrosion_serving_snapshots(store: polis::CorrosionStore) -> impl ServingSnapshotPort {
+    start_corrosion_serving_snapshots(store)
+}
+
+pub fn product_schema_statements() -> Result<Vec<polis::StoreStatement>, PrimitiveFailure> {
+    let mut statements = Vec::new();
+    for schema in PRODUCT_SCHEMAS {
+        statements.extend(schema.statements().map_err(map_product_schema_error)?);
+    }
+    Ok(statements)
+}
+
+pub async fn verify_product_schema(
+    store: &polis::CorrosionStore,
+    timeout: polis::StoreTimeout,
+) -> Result<(), PrimitiveFailure> {
+    for schema in PRODUCT_SCHEMAS {
+        schema
+            .verify(store, timeout)
+            .await
+            .map_err(map_product_schema_error)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProductSchema {
+    DomainStatus,
+    CertificateAttempt,
+    ServingSnapshot,
+}
+
+const PRODUCT_SCHEMAS: &[ProductSchema] = &[
+    ProductSchema::DomainStatus,
+    ProductSchema::CertificateAttempt,
+    ProductSchema::ServingSnapshot,
+];
+
+impl ProductSchema {
+    fn statements(self) -> Result<Vec<polis::StoreStatement>, polis::StoreError> {
+        match self {
+            Self::DomainStatus => domain_status_schema_statements(),
+            Self::CertificateAttempt => certificate_attempt_schema_statements(),
+            Self::ServingSnapshot => serving_snapshot_schema_statements(),
+        }
+    }
+
+    async fn verify(
+        self,
+        store: &polis::CorrosionStore,
+        timeout: polis::StoreTimeout,
+    ) -> Result<(), polis::StoreError> {
+        match self {
+            Self::DomainStatus => verify_domain_status_schema(store, timeout).await,
+            Self::CertificateAttempt => verify_certificate_attempt_schema(store, timeout).await,
+            Self::ServingSnapshot => verify_serving_snapshot_schema(store, timeout).await,
+        }
+    }
 }
 
 pub fn iroh_peer_rpc_probe(
@@ -70,14 +148,27 @@ fn map_peer_probe_error(error: polis::PeerError) -> PrimitiveFailure {
     }
 }
 
-#[must_use]
-pub fn in_memory_domain_status(scope: ScopeId) -> impl DomainStatusPort {
-    PolisDomainStatus::in_memory(scope)
+fn map_product_schema_error(error: polis::StoreError) -> PrimitiveFailure {
+    match error {
+        polis::StoreError::MalformedPayload => PrimitiveFailure::MalformedPayload,
+        polis::StoreError::Timeout => PrimitiveFailure::Timeout,
+        polis::StoreError::MissedChange { .. }
+        | polis::StoreError::Stream { .. }
+        | polis::StoreError::Client { .. }
+        | polis::StoreError::Response { .. }
+        | polis::StoreError::QueryChangedBeforeEndOfQuery
+        | polis::StoreError::QueryEndedBeforeEndOfQuery => PrimitiveFailure::NoResponder,
+    }
 }
 
 #[must_use]
-pub fn in_memory_serving_snapshots(scope: ScopeId) -> impl ServingSnapshotPort {
-    PolisServingSnapshots::in_memory(scope)
+pub fn in_memory_domain_status() -> impl DomainStatusPort {
+    InMemoryDomainStatus::default()
+}
+
+#[must_use]
+pub fn in_memory_serving_snapshots() -> impl ServingSnapshotPort {
+    InMemoryServingSnapshots::default()
 }
 
 #[cfg(test)]
@@ -101,8 +192,8 @@ mod tests {
         PrincipalId, ScopeId,
     };
 
-    #[test]
-    fn certificate_readiness_composition_uses_attempt_adapter_for_missing_cert() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn certificate_readiness_composition_uses_attempt_adapter_for_missing_cert() {
         let status = SequenceCertificateStatus::new(vec![
             CertificateStatus::Absent,
             CertificateStatus::Present(usable_certificate()),
@@ -113,22 +204,15 @@ mod tests {
 
         let outcome = service
             .ensure_usable(&context(), &binding(), deadline())
+            .await
             .expect("ensure certificate");
 
         assert!(matches!(outcome, EnsureCertificateOutcome::Usable(_)));
         assert_eq!(*issuer.calls.borrow(), 1);
         assert_eq!(
             attempts.terminals.borrow().as_slice(),
-            &[attempt::TerminalMarker::Succeeded]
+            &[attempt::CertificateAttemptTerminal::Succeeded]
         );
-        let records = attempts.records.borrow();
-        let Some(record) = records.first() else {
-            panic!("expected certificate issuance checkpoint");
-        };
-        let attempt::EvidenceKind::Checkpoint(payload) = &record.kind else {
-            panic!("expected checkpoint evidence");
-        };
-        assert_eq!(payload, b"certificate-issued");
     }
 
     #[test]
@@ -140,7 +224,7 @@ mod tests {
 
         runtime.block_on(async {
             let identity_path = temp_identity_path();
-            let peer = PeerRuntime::start(
+            let peer = polis::PeerRuntime::start(
                 &identity_path,
                 polis::PeerProbeDeadline::new(Duration::from_secs(5)),
             )
@@ -185,7 +269,10 @@ mod tests {
     }
 
     impl CertificateStatusPort for SequenceCertificateStatus {
-        fn status(&self, _binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure> {
+        async fn status(
+            &self,
+            _binding: &HttpsBinding,
+        ) -> Result<CertificateStatus, CertificateFailure> {
             Ok(self
                 .statuses
                 .borrow_mut()
@@ -200,7 +287,7 @@ mod tests {
     }
 
     impl CertificateAuthorityPort for RecordingCertificateAuthority {
-        fn issue_certificate(
+        async fn issue_certificate(
             &self,
             _context: &MutationContext,
             _request: &CertificateIssueRequest,
@@ -212,32 +299,22 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct RecordingAttemptBackend {
-        records: Rc<RefCell<Vec<attempt::Evidence>>>,
-        terminals: Rc<RefCell<Vec<attempt::TerminalMarker>>>,
+        terminals: Rc<RefCell<Vec<attempt::CertificateAttemptTerminal>>>,
     }
 
-    impl attempt::Backend for RecordingAttemptBackend {
-        fn start_or_replay(
+    impl attempt::CertificateAttemptStore for RecordingAttemptBackend {
+        async fn begin(
             &self,
-            _request: &attempt::BackendRequest,
-        ) -> polis::Result<attempt::BackendStart> {
-            Ok(attempt::BackendStart::Started)
+            _request: &attempt::CertificateAttemptRequest,
+        ) -> Result<attempt::CertificateAttemptStart, PrimitiveFailure> {
+            Ok(attempt::CertificateAttemptStart::Started)
         }
 
-        fn record(
+        async fn finish(
             &self,
-            _operation: &attempt::OperationId,
-            evidence: attempt::Evidence,
-        ) -> polis::Result<()> {
-            self.records.borrow_mut().push(evidence);
-            Ok(())
-        }
-
-        fn close(
-            &self,
-            _operation: &attempt::OperationId,
-            marker: attempt::TerminalMarker,
-        ) -> polis::Result<()> {
+            _request: &attempt::CertificateAttemptRequest,
+            marker: attempt::CertificateAttemptTerminal,
+        ) -> Result<(), PrimitiveFailure> {
             self.terminals.borrow_mut().push(marker);
             Ok(())
         }

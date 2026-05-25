@@ -9,7 +9,8 @@ WireGuard mesh:
 - iroh identity restart preserving the same endpoint ID from disk
 
 The `ployzd` crate tests add the next layer: the daemon runtime composes the
-Polis Corrosion agent, verifies startup schema, starts persisted iroh identity,
+Polis Corrosion agent, applies and verifies schema through `CorrosionStore`,
+starts persisted iroh identity,
 reports typed startup state, and shuts down cleanly.
 
 ## Prerequisites
@@ -48,13 +49,9 @@ Polis membership schema, or Corrosion store behavior.
 
 ## Notes
 
-- The canonical Polis membership schema remains strict and rejects partial
-  rows.
-- The replicated e2e startup schema carries defaults required by Corrosion
-  v1.0 file-backed schema loading. The daemon uses the same startup-schema
-  path and verifies the `machines` columns, lifecycle index, and bounded
-  membership write/delete path after Corrosion readiness. Product writes still
-  provide every column.
+- Corrosion starts with the Polis membership replication schema. It has nullable
+  non-key payload columns so replicated fragments can materialize without
+  sentinel defaults. Typed Polis queries only expose complete machine rows.
 - Daemon adoption verifies a local ownership marker and the live Corrosion
   database path before reusing an existing agent process.
 - The daemon substrate slice is currently a library/runtime test surface. The

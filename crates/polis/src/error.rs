@@ -26,7 +26,4 @@ pub enum Error {
 
     #[error("payload is malformed")]
     MalformedPayload,
-
-    #[error("terminal marker already exists")]
-    TerminalAlreadyWritten,
 }

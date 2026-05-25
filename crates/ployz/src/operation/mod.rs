@@ -7,6 +7,7 @@ mod identity;
 
 pub use authority::{AuthorityContext, AuthorityDecision, AuthorityEpoch, AuthorityPort};
 pub use claims::{ClaimGuard, ClaimHash, FenceEpoch, SubmittedFenceToken};
+pub(crate) use context::MutationWriteIdentity;
 pub use context::{MutationAuthorizer, MutationContext, MutationContextRequest};
 pub use identity::{
     IdempotencyKey, OperationId, PrincipalId, ResourceId, ScopeId, TypedResourceId,

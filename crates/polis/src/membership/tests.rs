@@ -31,7 +31,7 @@ fn schema_does_not_store_durable_ticket_text() {
 }
 
 #[test]
-fn schema_creates_only_membership_tables_for_this_slice() {
+fn schema_creates_membership_table_only() {
     let conn = test_connection();
     let mut query = conn
         .prepare(
@@ -51,6 +51,60 @@ fn schema_creates_only_membership_tables_for_this_slice() {
 }
 
 #[test]
+fn schema_requires_complete_machine_rows() {
+    let schema = membership_schema_statements()
+        .expect("schema")
+        .into_iter()
+        .map(|statement| statement.sql().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(!schema.contains(" DEFAULT "));
+    assert!(!schema.contains("row_kind"));
+}
+
+#[test]
+fn replication_schema_allows_corrosion_fragments_without_sentinel_columns() {
+    let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+    conn.execute_batch(&membership_replication_schema_sql())
+        .expect("replication schema");
+
+    conn.execute(
+        "INSERT INTO machines (machine_id, island_id) VALUES ('node-a', 'prod')",
+        [],
+    )
+    .expect("partial replicated fragment");
+    let schema = membership_replication_schema_sql();
+    assert!(!schema.contains(" DEFAULT "));
+    assert!(!schema.contains("row_kind"));
+}
+
+#[test]
+fn machine_query_only_surfaces_complete_rows() {
+    let query = MachineRowQuery::by_island_machine_id(
+        &IslandId::parse("prod").expect("island"),
+        &StoreMachineId::parse("node-a").expect("machine"),
+    )
+    .expect("query");
+
+    assert!(
+        query
+            .statement()
+            .sql()
+            .contains("iroh_endpoint_id IS NOT NULL")
+    );
+    assert!(
+        query
+            .statement()
+            .sql()
+            .contains("wireguard_public_key IS NOT NULL")
+    );
+    assert!(query.statement().sql().contains("overlay_ip IS NOT NULL"));
+    assert!(query.statement().sql().contains("lifecycle IS NOT NULL"));
+    assert!(query.statement().sql().contains("epoch IS NOT NULL"));
+}
+
+#[test]
 fn schema_rejects_rows_outside_typed_membership_invariants() {
     let conn = test_connection();
 
@@ -63,9 +117,8 @@ fn schema_rejects_rows_outside_typed_membership_invariants() {
                 wireguard_public_key,
                 overlay_ip,
                 lifecycle,
-                epoch,
-                updated_at
-            ) VALUES ('', 'prod', 'endpoint-a', 'wg-a', 'fd00::1', 'active', 1, 0)",
+                epoch
+            ) VALUES ('', 'prod', 'endpoint-a', 'wg-a', 'fd00::1', 'active', 1)",
             [],
         )
         .is_err()
@@ -79,9 +132,8 @@ fn schema_rejects_rows_outside_typed_membership_invariants() {
                 wireguard_public_key,
                 overlay_ip,
                 lifecycle,
-                epoch,
-                updated_at
-            ) VALUES ('node-a', 'prod', 'endpoint-a', 'wg-a', 'fd00::1', 'unknown', 1, 0)",
+                epoch
+            ) VALUES ('node-a', 'prod', 'endpoint-a', 'wg-a', 'fd00::1', 'unknown', 1)",
             [],
         )
         .is_err()
@@ -95,9 +147,8 @@ fn schema_rejects_rows_outside_typed_membership_invariants() {
                 wireguard_public_key,
                 overlay_ip,
                 lifecycle,
-                epoch,
-                updated_at
-            ) VALUES ('node-a', 'prod', 'endpoint-a', 'wg-a', 'fd00::1', 'active', 0, 0)",
+                epoch
+            ) VALUES ('node-a', 'prod', 'endpoint-a', 'wg-a', 'fd00::1', 'active', 0)",
             [],
         )
         .is_err()
@@ -113,7 +164,11 @@ fn machine_upsert_is_parameterized() {
     let statement = upsert_machine_statement(&machine_row()).expect("statement");
 
     assert!(statement.sql().contains("INSERT INTO machines"));
-    assert!(statement.sql().contains("ON CONFLICT(machine_id)"));
+    assert!(
+        statement
+            .sql()
+            .contains("ON CONFLICT(island_id, machine_id)")
+    );
     assert!(!statement.sql().contains("node-a"));
 }
 
@@ -134,6 +189,40 @@ fn machine_upsert_accepts_same_owner_row() {
 
     assert_eq!(changed, 1);
     assert_eq!(endpoint, "endpoint-a");
+}
+
+#[test]
+fn machine_upsert_keeps_same_machine_id_separate_by_island() {
+    let conn = test_connection();
+    execute_machine_upsert(&conn, "node-a", "prod", "endpoint-a", "wg-a", "fd00::1", 2);
+    execute_machine_upsert(
+        &conn,
+        "node-a",
+        "staging",
+        "endpoint-b",
+        "wg-b",
+        "fd00::2",
+        3,
+    );
+
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM machines WHERE machine_id = 'node-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("row count");
+    let staging_endpoint: String = conn
+        .query_row(
+            "SELECT iroh_endpoint_id FROM machines
+             WHERE island_id = 'staging' AND machine_id = 'node-a'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("staging endpoint");
+
+    assert_eq!(rows, 2);
+    assert_eq!(staging_endpoint, "endpoint-b");
 }
 
 #[test]
@@ -171,13 +260,13 @@ fn machine_row_decodes_from_store_row_shape() {
         ("overlay_ip", StoreValue::Text("fd00::1".to_string())),
         ("lifecycle", StoreValue::Text("active".to_string())),
         ("epoch", StoreValue::Integer(7)),
-        ("updated_at", StoreValue::Integer(100)),
     ])
     .expect("store row");
 
     let decoded = machine_row_from_store_row(&row).expect("row");
 
     assert_eq!(decoded.machine_id().as_str(), "node-a");
+    assert_eq!(decoded.island_id().as_str(), "prod");
     assert_eq!(decoded.lifecycle(), MembershipLifecycle::Active);
     assert_eq!(decoded.epoch(), RowEpoch::new(7).expect("epoch"));
 }
@@ -191,7 +280,6 @@ fn machine_row() -> MachineRow {
         OverlayIp::parse("fd00::1").expect("overlay"),
         MembershipLifecycle::Active,
         RowEpoch::new(1).expect("epoch"),
-        100,
     )
 }
 
@@ -248,7 +336,6 @@ fn execute_machine_upsert_with_lifecycle(
         OverlayIp::parse(input.overlay_ip).expect("overlay"),
         MembershipLifecycle::parse(input.lifecycle).expect("lifecycle"),
         RowEpoch::new(input.epoch as u64).expect("epoch"),
-        100,
     ))
     .expect("statement");
 
@@ -262,7 +349,6 @@ fn execute_machine_upsert_with_lifecycle(
             input.overlay_ip,
             input.lifecycle,
             input.epoch,
-            100,
         ],
     )
     .expect("upsert")

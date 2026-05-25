@@ -9,7 +9,7 @@ mod ownership;
 mod process;
 
 pub(crate) use config::write_config;
-pub use config::{CorrosionAgentAddresses, CorrosionAgentConfig};
+pub use config::{CorrosionAgentAddresses, CorrosionAgentConfig, CorrosionOwnerId};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use config::{CorrosionAgentStartMode, CorrosionRootCleanup};
 pub use ownership::CorrosionAdoption;

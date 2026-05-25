@@ -1,5 +1,11 @@
 //! Certificate and ACME product ports.
 
+pub mod attempt;
+mod issuer;
+
+pub(crate) use issuer::AcmeCertificateIssuer;
+
+use std::future::Future;
 use std::time::SystemTime;
 
 use crate::error::CertificateFailure;
@@ -123,26 +129,32 @@ pub enum CertificateStatus {
 }
 
 pub trait CertificatePort {
-    fn ensure_usable(
-        &self,
-        context: &MutationContext,
-        binding: &HttpsBinding,
+    fn ensure_usable<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        binding: &'a HttpsBinding,
         deadline: CertificateDeadline,
-    ) -> Result<EnsureCertificateOutcome, CertificateFailure>;
+    ) -> impl Future<Output = Result<EnsureCertificateOutcome, CertificateFailure>> + 'a;
 
-    fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure>;
+    fn status<'a>(
+        &'a self,
+        binding: &'a HttpsBinding,
+    ) -> impl Future<Output = Result<CertificateStatus, CertificateFailure>> + 'a;
 }
 
 pub trait CertificateStatusPort {
-    fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure>;
+    fn status<'a>(
+        &'a self,
+        binding: &'a HttpsBinding,
+    ) -> impl Future<Output = Result<CertificateStatus, CertificateFailure>> + 'a;
 }
 
 pub trait CertificateAuthorityPort {
-    fn issue_certificate(
-        &self,
-        context: &MutationContext,
-        request: &CertificateIssueRequest,
-    ) -> Result<(), CertificateFailure>;
+    fn issue_certificate<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        request: &'a CertificateIssueRequest,
+    ) -> impl Future<Output = Result<(), CertificateFailure>> + 'a;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,11 +166,11 @@ pub enum CertificateIssueOutcome {
 }
 
 pub trait CertificateIssuerPort {
-    fn issue_certificate(
-        &self,
-        context: &MutationContext,
-        request: &CertificateIssueRequest,
-    ) -> Result<CertificateIssueOutcome, CertificateFailure>;
+    fn issue_certificate<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        request: &'a CertificateIssueRequest,
+    ) -> impl Future<Output = Result<CertificateIssueOutcome, CertificateFailure>> + 'a;
 }
 
 pub struct CertificateReadinessService<S, I> {
@@ -181,13 +193,13 @@ where
     S: CertificateStatusPort,
     I: CertificateIssuerPort,
 {
-    fn ensure_usable(
+    async fn ensure_usable(
         &self,
         context: &MutationContext,
         binding: &HttpsBinding,
         deadline: CertificateDeadline,
     ) -> Result<EnsureCertificateOutcome, CertificateFailure> {
-        match status_to_outcome(self.certificates.status(binding)?, binding, &deadline) {
+        match status_to_outcome(self.certificates.status(binding).await?, binding, &deadline) {
             EnsureCertificateOutcome::Usable(certificate) => {
                 return Ok(EnsureCertificateOutcome::Usable(certificate));
             }
@@ -201,10 +213,10 @@ where
         }
 
         let request = CertificateIssueRequest::new(binding.clone(), deadline);
-        match self.issuer.issue_certificate(context, &request)? {
+        match self.issuer.issue_certificate(context, &request).await? {
             CertificateIssueOutcome::Issued | CertificateIssueOutcome::AlreadyIssued => {
                 Ok(status_to_outcome(
-                    self.certificates.status(binding)?,
+                    self.certificates.status(binding).await?,
                     binding,
                     &request.deadline,
                 ))
@@ -218,8 +230,11 @@ where
         }
     }
 
-    fn status(&self, binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure> {
-        self.certificates.status(binding)
+    async fn status(
+        &self,
+        binding: &HttpsBinding,
+    ) -> Result<CertificateStatus, CertificateFailure> {
+        self.certificates.status(binding).await
     }
 }
 
@@ -348,8 +363,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn existing_usable_certificate_skips_issuance() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn existing_usable_certificate_skips_issuance() {
         let status = FakeCertificateStatus::new(CertificateStatus::Present(certificate()));
         let issuer = FakeIssuer::default();
         let service = CertificateReadinessService::new(status, issuer.clone());
@@ -362,14 +377,15 @@ mod tests {
                     expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
                 },
             )
+            .await
             .expect("ensure");
 
         assert!(matches!(outcome, EnsureCertificateOutcome::Usable(_)));
         assert_eq!(*issuer.calls.borrow(), 0);
     }
 
-    #[test]
-    fn missing_certificate_issues_then_reobserves_status() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn missing_certificate_issues_then_reobserves_status() {
         let status = FakeCertificateStatus::new(CertificateStatus::Absent);
         status.push(CertificateStatus::Present(certificate()));
         let issuer = FakeIssuer::default();
@@ -383,14 +399,15 @@ mod tests {
                     expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
                 },
             )
+            .await
             .expect("ensure");
 
         assert!(matches!(outcome, EnsureCertificateOutcome::Usable(_)));
         assert_eq!(*issuer.calls.borrow(), 1);
     }
 
-    #[test]
-    fn completed_issuance_still_requires_observed_usable_certificate() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn completed_issuance_still_requires_observed_usable_certificate() {
         let status = FakeCertificateStatus::new(CertificateStatus::Absent);
         let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::AlreadyIssued);
         let service = CertificateReadinessService::new(status, issuer);
@@ -403,6 +420,7 @@ mod tests {
                     expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
                 },
             )
+            .await
             .expect("ensure");
 
         assert!(matches!(
@@ -411,8 +429,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn in_progress_issuance_reports_wait_state() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_progress_issuance_reports_wait_state() {
         let status = FakeCertificateStatus::new(CertificateStatus::Absent);
         let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::InProgress);
         let service = CertificateReadinessService::new(status, issuer);
@@ -425,6 +443,7 @@ mod tests {
                     expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
                 },
             )
+            .await
             .expect("ensure");
 
         assert_eq!(
@@ -433,8 +452,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interrupted_issuance_reports_wait_state() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupted_issuance_reports_wait_state() {
         let status = FakeCertificateStatus::new(CertificateStatus::Absent);
         let issuer = FakeIssuer::with_outcome(CertificateIssueOutcome::Interrupted);
         let service = CertificateReadinessService::new(status, issuer);
@@ -447,6 +466,7 @@ mod tests {
                     expires_at: UNIX_EPOCH + Duration::from_secs(3_600),
                 },
             )
+            .await
             .expect("ensure");
 
         assert_eq!(
@@ -473,7 +493,10 @@ mod tests {
     }
 
     impl CertificateStatusPort for FakeCertificateStatus {
-        fn status(&self, _binding: &HttpsBinding) -> Result<CertificateStatus, CertificateFailure> {
+        async fn status(
+            &self,
+            _binding: &HttpsBinding,
+        ) -> Result<CertificateStatus, CertificateFailure> {
             let mut statuses = self.statuses.borrow_mut();
             if statuses.len() > 1 {
                 return Ok(statuses.remove(0));
@@ -507,7 +530,7 @@ mod tests {
     }
 
     impl CertificateIssuerPort for FakeIssuer {
-        fn issue_certificate(
+        async fn issue_certificate(
             &self,
             _context: &MutationContext,
             _request: &CertificateIssueRequest,

@@ -11,8 +11,8 @@ pub use model::{
     WireGuardPublicKey,
 };
 pub use schema::{
-    MachineRowQuery, membership_schema_statements, membership_startup_schema_sql,
-    upsert_machine_statement, verify_membership_schema,
+    MachineRowQuery, membership_replication_schema_sql, membership_schema_statements,
+    upsert_machine_statement, verify_membership_replication_schema, verify_membership_schema,
 };
 
 #[cfg(test)]

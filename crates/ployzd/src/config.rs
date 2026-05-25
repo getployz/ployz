@@ -12,8 +12,6 @@ pub struct DaemonConfig {
     peer_shutdown_timeout: Duration,
     corrosion_shutdown_timeout: Duration,
     corrosion_start_mode: CorrosionStartMode,
-    #[cfg(test)]
-    corrosion_fixture: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +32,8 @@ impl DaemonConfig {
             state_dir.join("corrosion"),
             corrosion_addresses,
         )
-        .with_schema_file("membership.sql", polis::membership_startup_schema_sql());
+        .with_owner_id(polis::CorrosionOwnerId::parse("ployzd").expect("ployzd owner id"))
+        .with_schema_file("membership.sql", polis::membership_replication_schema_sql());
         Self {
             corrosion,
             peer_identity_path: state_dir.join("peer.key"),
@@ -44,8 +43,6 @@ impl DaemonConfig {
             peer_shutdown_timeout: Duration::from_secs(5),
             corrosion_shutdown_timeout: Duration::from_secs(5),
             corrosion_start_mode: CorrosionStartMode::StartOrAdopt,
-            #[cfg(test)]
-            corrosion_fixture: false,
         }
     }
 
@@ -55,9 +52,7 @@ impl DaemonConfig {
         state_dir: impl Into<PathBuf>,
         corrosion_addresses: polis::CorrosionAgentAddresses,
     ) -> Self {
-        let mut config = Self::for_state_dir(state_dir, corrosion_addresses);
-        config.corrosion_fixture = true;
-        config
+        Self::for_state_dir(state_dir, corrosion_addresses)
     }
 
     #[must_use]
@@ -100,6 +95,13 @@ impl DaemonConfig {
     pub fn with_corrosion_start_mode(mut self, mode: CorrosionStartMode) -> Self {
         self.corrosion_start_mode = mode;
         self
+    }
+
+    pub(crate) fn with_persisted_corrosion_addresses(
+        mut self,
+    ) -> Result<Self, polis::CorrosionAgentError> {
+        self.corrosion = self.corrosion.load_or_persist_addresses()?;
+        Ok(self)
     }
 
     #[must_use]
@@ -179,11 +181,5 @@ impl DaemonConfig {
     #[must_use]
     pub fn corrosion_start_mode(&self) -> CorrosionStartMode {
         self.corrosion_start_mode
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn use_corrosion_fixture(&self) -> bool {
-        self.corrosion_fixture
     }
 }

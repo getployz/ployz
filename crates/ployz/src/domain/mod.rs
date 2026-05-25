@@ -1,5 +1,8 @@
 //! Domain HTTPS readiness product primitive.
 
+mod readiness;
+
+use std::future::Future;
 use std::time::SystemTime;
 
 use thiserror::Error;
@@ -16,6 +19,8 @@ use crate::operation::{ClaimHash, FenceEpoch, PrincipalId};
 use crate::serving::{
     RouteId, ServingCheckpoint, ServingCommitRequest, ServingGeneration, ServingTarget,
 };
+
+pub use readiness::{DomainReadinessPort, DomainReadinessService};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DomainName(String);
@@ -56,7 +61,7 @@ pub struct CertificatePolicy {
 pub enum DomainStatus {
     Ready(DomainReadyRecord),
     Pending(DomainPendingReason),
-    Failed(DomainFailure),
+    Failed(DomainStatusFailure),
     Unknown,
 }
 
@@ -71,6 +76,65 @@ pub enum DomainPendingReason {
 pub enum DomainReadinessOutcome {
     Ready(DomainReady),
     Pending(DomainPendingReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomainStatusFailure {
+    InvalidDomain,
+    ClaimRejected,
+    ClaimResourceMismatch,
+    StaleClaim,
+    CertificateUnusable(CertificateUnusableReason),
+    CertificateFailed(CertificateFailure),
+    ServingActivationFailed,
+    ServingFailed(ServingFailure),
+}
+
+impl DomainStatusFailure {
+    #[must_use]
+    pub fn from_operation_failure(failure: &DomainFailure) -> Option<Self> {
+        match failure {
+            DomainFailure::InvalidDomain => Some(Self::InvalidDomain),
+            DomainFailure::ClaimRejected => Some(Self::ClaimRejected),
+            DomainFailure::ClaimResourceMismatch => Some(Self::ClaimResourceMismatch),
+            DomainFailure::StaleClaim => Some(Self::StaleClaim),
+            DomainFailure::CertificateUnusable(reason) => {
+                Some(Self::CertificateUnusable(reason.clone()))
+            }
+            DomainFailure::CertificateFailed(failure) => {
+                Some(Self::CertificateFailed(failure.clone()))
+            }
+            DomainFailure::ServingActivationFailed => Some(Self::ServingActivationFailed),
+            DomainFailure::ServingFailed(failure) => Some(Self::ServingFailed(failure.clone())),
+            DomainFailure::StatusUnavailable
+            | DomainFailure::StatusRowsPayloadInvalid
+            | DomainFailure::StatusRowsTimeout
+            | DomainFailure::StatusRowsStreamInterrupted
+            | DomainFailure::StatusRowsMissedChanges
+            | DomainFailure::FailureRecordUnavailable { .. }
+            | DomainFailure::UnknownReadiness => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_domain_failure(self) -> DomainFailure {
+        match self {
+            Self::InvalidDomain => DomainFailure::InvalidDomain,
+            Self::ClaimRejected => DomainFailure::ClaimRejected,
+            Self::ClaimResourceMismatch => DomainFailure::ClaimResourceMismatch,
+            Self::StaleClaim => DomainFailure::StaleClaim,
+            Self::CertificateUnusable(reason) => DomainFailure::CertificateUnusable(reason),
+            Self::CertificateFailed(failure) => DomainFailure::CertificateFailed(failure),
+            Self::ServingActivationFailed => DomainFailure::ServingActivationFailed,
+            Self::ServingFailed(failure) => DomainFailure::ServingFailed(failure),
+        }
+    }
+}
+
+impl From<DomainStatusFailure> for DomainFailure {
+    fn from(failure: DomainStatusFailure) -> Self {
+        failure.into_domain_failure()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,7 +190,7 @@ impl DomainReady {
         target: ServingTarget,
         generation: ServingGeneration,
     ) -> ServingCommitRequest {
-        ServingCommitRequest::new(
+        ServingCommitRequest::replace_current_route(
             route,
             self.certificate.certificate().hostname.clone(),
             target,
@@ -300,8 +364,44 @@ pub enum DomainFailure {
     ServingFailed(ServingFailure),
     #[error("domain status is unavailable")]
     StatusUnavailable,
+    #[error("domain status row payload is invalid")]
+    StatusRowsPayloadInvalid,
+    #[error("domain status row read timed out")]
+    StatusRowsTimeout,
+    #[error("domain status row stream was interrupted")]
+    StatusRowsStreamInterrupted,
+    #[error("domain status row stream missed changes")]
+    StatusRowsMissedChanges,
+    #[error("{primary} (also failed to record failed domain status: {status})")]
+    FailureRecordUnavailable {
+        primary: Box<DomainFailure>,
+        status: Box<DomainFailure>,
+    },
     #[error("domain readiness is unknown")]
     UnknownReadiness,
+}
+
+impl DomainFailure {
+    #[must_use]
+    pub fn primary(&self) -> &Self {
+        match self {
+            Self::FailureRecordUnavailable { primary, .. } => primary.primary(),
+            Self::InvalidDomain
+            | Self::ClaimRejected
+            | Self::ClaimResourceMismatch
+            | Self::StaleClaim
+            | Self::CertificateUnusable(_)
+            | Self::CertificateFailed(_)
+            | Self::ServingActivationFailed
+            | Self::ServingFailed(_)
+            | Self::StatusUnavailable
+            | Self::StatusRowsPayloadInvalid
+            | Self::StatusRowsTimeout
+            | Self::StatusRowsStreamInterrupted
+            | Self::StatusRowsMissedChanges
+            | Self::UnknownReadiness => self,
+        }
+    }
 }
 
 pub trait DomainClaimPort {
@@ -313,19 +413,19 @@ pub trait DomainClaimPort {
 }
 
 pub trait DomainCertificatePort {
-    fn observe_usable_certificate(
-        &self,
-        context: &MutationContext,
-        domain: &DomainName,
+    fn observe_usable_certificate<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        domain: &'a DomainName,
         policy: CertificatePolicy,
-    ) -> Result<Option<UsableDomainCertificate>, DomainFailure>;
+    ) -> impl Future<Output = Result<Option<UsableDomainCertificate>, DomainFailure>> + 'a;
 
-    fn ensure_usable_certificate(
-        &self,
-        context: &MutationContext,
-        claim: &DomainClaim,
+    fn ensure_usable_certificate<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        claim: &'a DomainClaim,
         policy: CertificatePolicy,
-    ) -> Result<DomainCertificateReadiness, DomainFailure>;
+    ) -> impl Future<Output = Result<DomainCertificateReadiness, DomainFailure>> + 'a;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,7 +438,7 @@ impl<T> DomainCertificatePort for T
 where
     T: CertificatePort,
 {
-    fn observe_usable_certificate(
+    async fn observe_usable_certificate(
         &self,
         _context: &MutationContext,
         domain: &DomainName,
@@ -347,6 +447,7 @@ where
         let binding = domain.https_binding()?;
         match self
             .status(&binding)
+            .await
             .map_err(DomainFailure::CertificateFailed)?
         {
             CertificateStatus::Present(certificate) => {
@@ -358,7 +459,7 @@ where
         }
     }
 
-    fn ensure_usable_certificate(
+    async fn ensure_usable_certificate(
         &self,
         context: &MutationContext,
         claim: &DomainClaim,
@@ -373,6 +474,7 @@ where
                     expires_at: policy.minimum_valid_until,
                 },
             )
+            .await
             .map_err(DomainFailure::CertificateFailed)?
         {
             EnsureCertificateOutcome::Usable(certificate) => {
@@ -411,211 +513,31 @@ pub trait DomainServingPort {
 }
 
 pub trait DomainStatusPort {
-    fn status(&self, domain: &DomainName) -> Result<DomainStatus, DomainFailure>;
+    fn status<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        domain: &'a DomainName,
+    ) -> impl Future<Output = Result<DomainStatus, DomainFailure>> + 'a;
 
-    fn record_pending(
-        &self,
-        context: &MutationContext,
-        domain: &DomainName,
+    fn record_pending<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        domain: &'a DomainName,
         reason: DomainPendingReason,
-    ) -> Result<(), DomainFailure>;
+    ) -> impl Future<Output = Result<(), DomainFailure>> + 'a;
 
-    fn record_ready(
-        &self,
-        context: &MutationContext,
+    fn record_ready<'a>(
+        &'a self,
+        context: &'a MutationContext,
         ready: DomainReadyRecord,
-    ) -> Result<(), DomainFailure>;
+    ) -> impl Future<Output = Result<(), DomainFailure>> + 'a;
 
-    fn record_failed(
-        &self,
-        context: &MutationContext,
-        domain: &DomainName,
-        failure: DomainFailure,
-    ) -> Result<(), DomainFailure>;
-}
-
-pub trait DomainReadinessPort {
-    fn ensure_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReadinessOutcome, DomainFailure>;
-
-    fn verify_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReady, DomainFailure>;
-}
-
-pub struct DomainReadinessService<C, T, S, R> {
-    claims: C,
-    certificates: T,
-    serving: S,
-    records: R,
-}
-
-impl<C, T, S, R> DomainReadinessService<C, T, S, R> {
-    #[must_use]
-    pub fn new(claims: C, certificates: T, serving: S, records: R) -> Self {
-        Self {
-            claims,
-            certificates,
-            serving,
-            records,
-        }
-    }
-}
-
-impl<C, T, S, R> DomainReadinessPort for DomainReadinessService<C, T, S, R>
-where
-    C: DomainClaimPort,
-    T: DomainCertificatePort,
-    S: DomainServingPort,
-    R: DomainStatusPort,
-{
-    fn ensure_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReadinessOutcome, DomainFailure> {
-        self.ensure_ready(context, request)
-    }
-
-    fn verify_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReady, DomainFailure> {
-        self.verify_ready(context, request)
-    }
-}
-
-impl<C, T, S, R> DomainReadinessService<C, T, S, R>
-where
-    C: DomainClaimPort,
-    T: DomainCertificatePort,
-    S: DomainServingPort,
-    R: DomainStatusPort,
-{
-    pub fn ensure_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReadinessOutcome, DomainFailure> {
-        let domain = request.domain.clone();
-        let result = self.try_ensure_ready(context, request);
-        if let Err(failure) = &result {
-            self.records
-                .record_failed(context, &domain, failure.clone())?;
-        }
-        result
-    }
-
-    pub fn verify_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReady, DomainFailure> {
-        self.try_reuse_ready(context, &request)?
-            .ok_or(DomainFailure::UnknownReadiness)
-    }
-
-    fn try_ensure_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReadinessOutcome, DomainFailure> {
-        if let Some(ready) = self.try_reuse_ready(context, &request)? {
-            return Ok(DomainReadinessOutcome::Ready(ready));
-        }
-
-        self.ensure_fresh_ready(context, request)
-    }
-
-    fn try_reuse_ready(
-        &self,
-        context: &MutationContext,
-        request: &DomainAdd,
-    ) -> Result<Option<DomainReady>, DomainFailure> {
-        let DomainStatus::Ready(record) = self.records.status(&request.domain)? else {
-            return Ok(None);
-        };
-        self.try_upgrade_ready_record(context, &record, request)
-    }
-
-    fn ensure_fresh_ready(
-        &self,
-        context: &MutationContext,
-        request: DomainAdd,
-    ) -> Result<DomainReadinessOutcome, DomainFailure> {
-        self.records.record_pending(
-            context,
-            &request.domain,
-            DomainPendingReason::CertificateIssuance,
-        )?;
-
-        let domain = request.domain;
-        let certificate_policy = request.certificate_policy;
-        let claim = self.claims.claim_domain(context, &domain)?;
-        let certificate = match self.certificates.ensure_usable_certificate(
-            context,
-            &claim,
-            certificate_policy,
-        )? {
-            DomainCertificateReadiness::Usable(certificate) => certificate,
-            DomainCertificateReadiness::Pending(reason) => {
-                self.records
-                    .record_pending(context, claim.domain(), reason.clone())?;
-                return Ok(DomainReadinessOutcome::Pending(reason));
-            }
-        };
-
-        self.records.record_pending(
-            context,
-            claim.domain(),
-            DomainPendingReason::ServingActivation,
-        )?;
-        let serving = self
-            .serving
-            .activate_certificate(context, &claim, &certificate)?;
-        let ready = DomainReady::new(domain, certificate, serving);
-
-        self.records.record_ready(context, ready.record())?;
-        Ok(DomainReadinessOutcome::Ready(ready))
-    }
-
-    fn try_upgrade_ready_record(
-        &self,
-        context: &MutationContext,
-        record: &DomainReadyRecord,
-        request: &DomainAdd,
-    ) -> Result<Option<DomainReady>, DomainFailure> {
-        if record.domain() != &request.domain {
-            return Ok(None);
-        }
-        let Some(certificate) = self.certificates.observe_usable_certificate(
-            context,
-            &request.domain,
-            request.certificate_policy,
-        )?
-        else {
-            return Ok(None);
-        };
-        match self.serving.verify_certificate_activation(
-            context,
-            &request.domain,
-            &certificate,
-            record.serving_generation(),
-        )? {
-            DomainServingReadiness::Active(serving) => Ok(Some(DomainReady::new(
-                request.domain.clone(),
-                certificate,
-                serving,
-            ))),
-            DomainServingReadiness::NotActive => Ok(None),
-        }
-    }
+    fn record_failed<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        domain: &'a DomainName,
+        failure: DomainStatusFailure,
+    ) -> impl Future<Output = Result<(), DomainFailure>> + 'a;
 }
 
 fn domain_resource(domain: &DomainName) -> Result<TypedResourceId<DomainResource>, DomainFailure> {
@@ -651,832 +573,4 @@ fn is_valid_domain_label(label: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::acme::{CertificateActivation, CertificateMaterialState, RevocationFreshness};
-    use crate::operation::{
-        AuthorityContext, AuthorityEpoch, FenceEpoch, IdempotencyKey, OperationId, PrincipalId,
-        ScopeId,
-    };
-    use crate::serving::ServingGeneration;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::time::{Duration, UNIX_EPOCH};
-
-    #[test]
-    fn empty_or_invalid_domain_is_rejected() {
-        for value in [
-            "",
-            " ",
-            ".example.com",
-            "example.com.",
-            "-bad.example.com",
-            "bad_.com",
-        ] {
-            assert_eq!(DomainName::parse(value), Err(DomainFailure::InvalidDomain));
-        }
-    }
-
-    #[test]
-    fn unusable_certificate_cannot_be_wrapped_as_domain_certificate() {
-        let mut certificate = certificate();
-        certificate.not_after = UNIX_EPOCH + Duration::from_secs(30);
-
-        assert_eq!(
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate,
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            ),
-            Err(DomainFailure::CertificateUnusable(
-                CertificateUnusableReason::SafetyWindowTooShort
-            ))
-        );
-    }
-
-    #[test]
-    fn certificate_unusable_does_not_record_ready() {
-        let records = FakeRecords::default();
-        let mut short_lived = certificate();
-        short_lived.not_after = UNIX_EPOCH + Duration::from_secs(30);
-        let domains = DomainReadinessService::new(
-            FakeClaims,
-            FakeCertificates {
-                certificate: short_lived,
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Err(DomainFailure::CertificateUnusable(
-                CertificateUnusableReason::SafetyWindowTooShort
-            ))
-        );
-        assert!(
-            records
-                .recorded
-                .borrow()
-                .iter()
-                .all(|status| !matches!(status, DomainStatus::Ready(_)))
-        );
-    }
-
-    #[test]
-    fn existing_ready_status_is_reused_when_still_usable() {
-        let ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let records = FakeRecords::with_status(DomainStatus::Ready(ready.record()));
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Ok(DomainReadinessOutcome::Ready(ready))
-        );
-        assert!(records.recorded.borrow().is_empty());
-        assert_eq!(*claims.count.borrow(), 0);
-    }
-
-    #[test]
-    fn verify_ready_reuses_existing_ready_without_fresh_mutations() {
-        let ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let records = FakeRecords::with_status(DomainStatus::Ready(ready.record()));
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(domains.verify_ready(&context(), add()), Ok(ready));
-        assert!(records.recorded.borrow().is_empty());
-        assert_eq!(*claims.count.borrow(), 0);
-    }
-
-    #[test]
-    fn verify_ready_rechecks_current_certificate_before_reusing_record() {
-        let stored_ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let mut revoked_certificate = certificate();
-        revoked_certificate.revocation = RevocationFreshness::KnownRevoked;
-        let records = FakeRecords::with_status(DomainStatus::Ready(stored_ready.record()));
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: revoked_certificate,
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.verify_ready(&context(), add()),
-            Err(DomainFailure::UnknownReadiness)
-        );
-        assert!(records.recorded.borrow().is_empty());
-        assert_eq!(*claims.count.borrow(), 0);
-    }
-
-    #[test]
-    fn stored_ready_with_stale_current_certificate_takes_fresh_path() {
-        let stored_ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let mut current_certificate = certificate();
-        current_certificate.revocation = RevocationFreshness::KnownRevoked;
-        let records = FakeRecords::with_status(DomainStatus::Ready(stored_ready.record()));
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            RefreshingCertificates {
-                observed: current_certificate,
-                issued: certificate(),
-            },
-            FakeServing::success(),
-            records,
-        );
-
-        let refreshed = expect_ready(
-            domains
-                .ensure_ready(&context(), add())
-                .expect("fresh readiness"),
-        );
-
-        assert_eq!(
-            refreshed.serving().checkpoint().generation(),
-            ServingGeneration::new(7)
-        );
-        assert_eq!(*claims.count.borrow(), 1);
-    }
-
-    #[test]
-    fn fact_backed_ready_status_is_reused_without_fresh_mutations() {
-        let ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let records =
-            crate::composition::in_memory_domain_status(ScopeId::parse("cluster").expect("scope"));
-        records
-            .record_ready(&context(), ready.record())
-            .expect("ready status");
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records,
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Ok(DomainReadinessOutcome::Ready(ready))
-        );
-        assert_eq!(*claims.count.borrow(), 0);
-    }
-
-    #[test]
-    fn verify_ready_does_not_take_fresh_readiness_path() {
-        let records = FakeRecords::default();
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.verify_ready(&context(), add()),
-            Err(DomainFailure::UnknownReadiness)
-        );
-        assert!(records.recorded.borrow().is_empty());
-        assert_eq!(*claims.count.borrow(), 0);
-    }
-
-    #[test]
-    fn existing_ready_status_requires_serving_verification() {
-        let ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let records = FakeRecords::with_status(DomainStatus::Ready(ready.record()));
-        let domains = DomainReadinessService::new(
-            CountingClaims::default(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing {
-                outcome: Ok(DomainServingActivation::active(ServingGeneration::new(7))),
-                verification: Err(DomainFailure::ServingActivationFailed),
-            },
-            records,
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Err(DomainFailure::ServingActivationFailed)
-        );
-    }
-
-    #[test]
-    fn inactive_stored_ready_status_takes_fresh_activation_path() {
-        let ready = DomainReady::new(
-            domain(),
-            UsableDomainCertificate::new(
-                &domain(),
-                certificate(),
-                CertificatePolicy {
-                    minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-                },
-            )
-            .expect("usable certificate"),
-            DomainServingActivation::active(ServingGeneration::new(7)),
-        );
-        let records = FakeRecords::with_status(DomainStatus::Ready(ready.record()));
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing {
-                outcome: Ok(DomainServingActivation::active(ServingGeneration::new(9))),
-                verification: Ok(DomainServingReadiness::NotActive),
-            },
-            records,
-        );
-
-        let refreshed = expect_ready(
-            domains
-                .ensure_ready(&context(), add())
-                .expect("fresh readiness"),
-        );
-
-        assert_eq!(
-            refreshed.serving().checkpoint().generation(),
-            ServingGeneration::new(9)
-        );
-        assert_eq!(*claims.count.borrow(), 1);
-    }
-
-    #[test]
-    fn stale_stored_ready_certificate_reuses_current_certificate_observation() {
-        let mut stale_certificate = certificate();
-        stale_certificate.not_after = UNIX_EPOCH + Duration::from_secs(30);
-        let ready = DomainReadyRecord::new(domain(), stale_certificate, ServingGeneration::new(7))
-            .expect("stored ready record");
-        let records = FakeRecords::with_status(DomainStatus::Ready(ready));
-        let claims = CountingClaims::default();
-        let domains = DomainReadinessService::new(
-            claims.clone(),
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records,
-        );
-
-        let refreshed = expect_ready(
-            domains
-                .ensure_ready(&context(), add())
-                .expect("fresh readiness"),
-        );
-
-        assert_eq!(
-            refreshed.serving().checkpoint().generation(),
-            ServingGeneration::new(7)
-        );
-        assert_eq!(refreshed.certificate().certificate(), &certificate());
-        assert_eq!(*claims.count.borrow(), 0);
-    }
-
-    #[test]
-    fn ready_record_rejects_mismatched_certificate_hostname() {
-        let result = DomainReadyRecord::new(
-            domain(),
-            certificate_for("other.example.com"),
-            ServingGeneration::new(7),
-        );
-
-        assert_eq!(
-            result,
-            Err(DomainFailure::CertificateUnusable(
-                CertificateUnusableReason::HostnameMismatch
-            ))
-        );
-    }
-
-    #[test]
-    fn domain_claim_exposes_submitted_fence_capability() {
-        let claim = claim(domain_resource(&domain()).expect("resource"), domain());
-        let fence = claim.submitted_fence();
-
-        assert_eq!(fence.resource.as_str(), "domain:app.example.com");
-        assert_eq!(fence.holder.as_str(), "node-a");
-        assert_eq!(fence.epoch.value(), 1);
-        assert_eq!(fence.claim_hash.as_str(), "claim-hash-a");
-    }
-
-    #[test]
-    fn mismatched_claim_resource_is_rejected_before_certificate() {
-        let records = FakeRecords::default();
-        let domains = DomainReadinessService::new(
-            MismatchedClaims,
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records,
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Err(DomainFailure::ClaimResourceMismatch)
-        );
-    }
-
-    #[test]
-    fn serving_activation_failure_does_not_record_ready() {
-        let records = FakeRecords::default();
-        let domains = DomainReadinessService::new(
-            FakeClaims,
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing {
-                outcome: Err(DomainFailure::ServingActivationFailed),
-                verification: Ok(DomainServingReadiness::Active(
-                    DomainServingActivation::active(ServingGeneration::new(7)),
-                )),
-            },
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Err(DomainFailure::ServingActivationFailed)
-        );
-        assert!(
-            records
-                .recorded
-                .borrow()
-                .iter()
-                .all(|status| !matches!(status, DomainStatus::Ready(_)))
-        );
-    }
-
-    #[test]
-    fn certificate_in_progress_records_pending_without_failed_status() {
-        let records = FakeRecords::default();
-        let domains = DomainReadinessService::new(
-            FakeClaims,
-            PendingCertificates {
-                reason: DomainPendingReason::CertificateIssuance,
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Ok(DomainReadinessOutcome::Pending(
-                DomainPendingReason::CertificateIssuance
-            ))
-        );
-        assert!(records.recorded.borrow().iter().any(|status| matches!(
-            status,
-            DomainStatus::Pending(DomainPendingReason::CertificateIssuance)
-        )));
-        assert!(
-            records
-                .recorded
-                .borrow()
-                .iter()
-                .all(|status| !matches!(status, DomainStatus::Failed(_) | DomainStatus::Ready(_)))
-        );
-    }
-
-    #[test]
-    fn certificate_interrupted_records_interrupted_pending_without_failed_status() {
-        let records = FakeRecords::default();
-        let domains = DomainReadinessService::new(
-            FakeClaims,
-            PendingCertificates {
-                reason: DomainPendingReason::CertificateIssuanceInterrupted,
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        assert_eq!(
-            domains.ensure_ready(&context(), add()),
-            Ok(DomainReadinessOutcome::Pending(
-                DomainPendingReason::CertificateIssuanceInterrupted
-            ))
-        );
-        assert!(records.recorded.borrow().iter().any(|status| matches!(
-            status,
-            DomainStatus::Pending(DomainPendingReason::CertificateIssuanceInterrupted)
-        )));
-        assert!(
-            records
-                .recorded
-                .borrow()
-                .iter()
-                .all(|status| !matches!(status, DomainStatus::Failed(_) | DomainStatus::Ready(_)))
-        );
-    }
-
-    #[test]
-    fn success_records_ready_without_terminalizing_operation() {
-        let records = FakeRecords::default();
-        let domains = DomainReadinessService::new(
-            FakeClaims,
-            FakeCertificates {
-                certificate: certificate(),
-            },
-            FakeServing::success(),
-            records.clone(),
-        );
-
-        let ready = expect_ready(domains.ensure_ready(&context(), add()).expect("ready"));
-
-        assert_eq!(ready.domain().as_str(), "app.example.com");
-        assert!(
-            records
-                .recorded
-                .borrow()
-                .iter()
-                .any(|status| matches!(status, DomainStatus::Ready(_)))
-        );
-    }
-
-    fn add() -> DomainAdd {
-        DomainAdd {
-            domain: domain(),
-            certificate_policy: CertificatePolicy {
-                minimum_valid_until: UNIX_EPOCH + Duration::from_secs(3_600),
-            },
-        }
-    }
-
-    fn context() -> MutationContext {
-        MutationContext::new(
-            OperationId::parse("domain-1").expect("operation"),
-            IdempotencyKey::parse("domain-1").expect("idempotency"),
-            AuthorityContext::new(
-                PrincipalId::parse("node-a").expect("principal"),
-                ScopeId::parse("cluster").expect("scope"),
-                AuthorityEpoch::new(7),
-            ),
-            None,
-            UNIX_EPOCH + Duration::from_secs(60),
-        )
-    }
-
-    fn domain() -> DomainName {
-        DomainName::parse("app.example.com").expect("domain")
-    }
-
-    fn certificate() -> CertificateUsability {
-        certificate_for("app.example.com")
-    }
-
-    fn certificate_for(hostname: &str) -> CertificateUsability {
-        CertificateUsability {
-            hostname: Hostname::parse(hostname).expect("hostname"),
-            not_after: UNIX_EPOCH + Duration::from_secs(7_200),
-            activation: CertificateActivation::Acknowledged,
-            material: CertificateMaterialState::PresentProtected,
-            revocation: RevocationFreshness::KnownFresh,
-        }
-    }
-
-    fn expect_ready(outcome: DomainReadinessOutcome) -> DomainReady {
-        let DomainReadinessOutcome::Ready(ready) = outcome else {
-            panic!("expected ready outcome");
-        };
-        ready
-    }
-
-    fn claim(resource: TypedResourceId<DomainResource>, domain: DomainName) -> DomainClaim {
-        DomainClaim::from_guard(
-            domain,
-            ClaimGuard::test_new(
-                resource,
-                PrincipalId::parse("node-a").expect("holder"),
-                FenceEpoch::new(1).expect("fence epoch"),
-                crate::operation::ClaimHash::parse("claim-hash-a").expect("claim hash"),
-                UNIX_EPOCH + Duration::from_secs(60),
-            )
-            .expect("claim guard"),
-        )
-        .expect("domain claim")
-    }
-
-    #[derive(Clone, Copy)]
-    struct FakeClaims;
-
-    impl DomainClaimPort for FakeClaims {
-        fn claim_domain(
-            &self,
-            _context: &MutationContext,
-            domain: &DomainName,
-        ) -> Result<DomainClaim, DomainFailure> {
-            Ok(claim(domain_resource(domain)?, domain.clone()))
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    struct MismatchedClaims;
-
-    impl DomainClaimPort for MismatchedClaims {
-        fn claim_domain(
-            &self,
-            _context: &MutationContext,
-            domain: &DomainName,
-        ) -> Result<DomainClaim, DomainFailure> {
-            DomainClaim::from_guard(
-                domain.clone(),
-                ClaimGuard::test_new(
-                    TypedResourceId::parse("domain:other.example.com").expect("resource"),
-                    PrincipalId::parse("node-a").expect("holder"),
-                    FenceEpoch::new(1).expect("fence epoch"),
-                    crate::operation::ClaimHash::parse("claim-hash-a").expect("claim hash"),
-                    UNIX_EPOCH + Duration::from_secs(60),
-                )
-                .expect("claim guard"),
-            )
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct CountingClaims {
-        count: Rc<RefCell<usize>>,
-    }
-
-    impl DomainClaimPort for CountingClaims {
-        fn claim_domain(
-            &self,
-            _context: &MutationContext,
-            domain: &DomainName,
-        ) -> Result<DomainClaim, DomainFailure> {
-            *self.count.borrow_mut() += 1;
-            Ok(claim(domain_resource(domain)?, domain.clone()))
-        }
-    }
-
-    #[derive(Clone)]
-    struct FakeCertificates {
-        certificate: CertificateUsability,
-    }
-
-    impl DomainCertificatePort for FakeCertificates {
-        fn observe_usable_certificate(
-            &self,
-            _context: &MutationContext,
-            domain: &DomainName,
-            policy: CertificatePolicy,
-        ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
-            Ok(UsableDomainCertificate::new(domain, self.certificate.clone(), policy).ok())
-        }
-
-        fn ensure_usable_certificate(
-            &self,
-            _context: &MutationContext,
-            claim: &DomainClaim,
-            policy: CertificatePolicy,
-        ) -> Result<DomainCertificateReadiness, DomainFailure> {
-            Ok(DomainCertificateReadiness::Usable(
-                UsableDomainCertificate::new(claim.domain(), self.certificate.clone(), policy)?,
-            ))
-        }
-    }
-
-    #[derive(Clone)]
-    struct PendingCertificates {
-        reason: DomainPendingReason,
-    }
-
-    impl DomainCertificatePort for PendingCertificates {
-        fn observe_usable_certificate(
-            &self,
-            _context: &MutationContext,
-            _domain: &DomainName,
-            _policy: CertificatePolicy,
-        ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
-            Ok(None)
-        }
-
-        fn ensure_usable_certificate(
-            &self,
-            _context: &MutationContext,
-            _claim: &DomainClaim,
-            _policy: CertificatePolicy,
-        ) -> Result<DomainCertificateReadiness, DomainFailure> {
-            Ok(DomainCertificateReadiness::Pending(self.reason.clone()))
-        }
-    }
-
-    #[derive(Clone)]
-    struct RefreshingCertificates {
-        observed: CertificateUsability,
-        issued: CertificateUsability,
-    }
-
-    impl DomainCertificatePort for RefreshingCertificates {
-        fn observe_usable_certificate(
-            &self,
-            _context: &MutationContext,
-            domain: &DomainName,
-            policy: CertificatePolicy,
-        ) -> Result<Option<UsableDomainCertificate>, DomainFailure> {
-            Ok(UsableDomainCertificate::new(domain, self.observed.clone(), policy).ok())
-        }
-
-        fn ensure_usable_certificate(
-            &self,
-            _context: &MutationContext,
-            claim: &DomainClaim,
-            policy: CertificatePolicy,
-        ) -> Result<DomainCertificateReadiness, DomainFailure> {
-            Ok(DomainCertificateReadiness::Usable(
-                UsableDomainCertificate::new(claim.domain(), self.issued.clone(), policy)?,
-            ))
-        }
-    }
-
-    #[derive(Clone)]
-    struct FakeServing {
-        outcome: Result<DomainServingActivation, DomainFailure>,
-        verification: Result<DomainServingReadiness, DomainFailure>,
-    }
-
-    impl FakeServing {
-        fn success() -> Self {
-            Self {
-                outcome: Ok(DomainServingActivation::active(ServingGeneration::new(7))),
-                verification: Ok(DomainServingReadiness::Active(
-                    DomainServingActivation::active(ServingGeneration::new(7)),
-                )),
-            }
-        }
-    }
-
-    impl DomainServingPort for FakeServing {
-        fn activate_certificate(
-            &self,
-            _context: &MutationContext,
-            _claim: &DomainClaim,
-            _certificate: &UsableDomainCertificate,
-        ) -> Result<DomainServingActivation, DomainFailure> {
-            self.outcome.clone()
-        }
-
-        fn verify_certificate_activation(
-            &self,
-            _context: &MutationContext,
-            _domain: &DomainName,
-            _certificate: &UsableDomainCertificate,
-            _serving_generation: ServingGeneration,
-        ) -> Result<DomainServingReadiness, DomainFailure> {
-            self.verification.clone()
-        }
-    }
-
-    #[derive(Clone)]
-    struct FakeRecords {
-        status: Rc<RefCell<DomainStatus>>,
-        recorded: Rc<RefCell<Vec<DomainStatus>>>,
-    }
-
-    impl Default for FakeRecords {
-        fn default() -> Self {
-            Self::with_status(DomainStatus::Unknown)
-        }
-    }
-
-    impl FakeRecords {
-        fn with_status(status: DomainStatus) -> Self {
-            Self {
-                status: Rc::new(RefCell::new(status)),
-                recorded: Rc::new(RefCell::new(Vec::new())),
-            }
-        }
-    }
-
-    impl DomainStatusPort for FakeRecords {
-        fn status(&self, _domain: &DomainName) -> Result<DomainStatus, DomainFailure> {
-            Ok(self.status.borrow().clone())
-        }
-
-        fn record_pending(
-            &self,
-            _context: &MutationContext,
-            _domain: &DomainName,
-            reason: DomainPendingReason,
-        ) -> Result<(), DomainFailure> {
-            self.recorded
-                .borrow_mut()
-                .push(DomainStatus::Pending(reason));
-            Ok(())
-        }
-
-        fn record_ready(
-            &self,
-            _context: &MutationContext,
-            ready: DomainReadyRecord,
-        ) -> Result<(), DomainFailure> {
-            self.recorded.borrow_mut().push(DomainStatus::Ready(ready));
-            Ok(())
-        }
-
-        fn record_failed(
-            &self,
-            _context: &MutationContext,
-            _domain: &DomainName,
-            failure: DomainFailure,
-        ) -> Result<(), DomainFailure> {
-            self.recorded
-                .borrow_mut()
-                .push(DomainStatus::Failed(failure));
-            Ok(())
-        }
-    }
-}
+mod tests;

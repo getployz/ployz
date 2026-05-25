@@ -1,11 +1,13 @@
 //! Serving product ports.
 
+use std::future::Future;
 use std::time::SystemTime;
 
 use crate::acme::Hostname;
 use crate::error::ServingFailure;
-use crate::facts::ProductFactCursor;
 use crate::operation::MutationContext;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RouteId(String);
@@ -59,7 +61,7 @@ pub struct ServingCommitRequest {
 
 impl ServingCommitRequest {
     #[must_use]
-    pub(crate) fn new(
+    pub(crate) fn replace_current_route(
         route: RouteId,
         hostname: Hostname,
         target: ServingTarget,
@@ -102,9 +104,18 @@ impl ServingCommitRequest {
     pub fn commit_identity(&self) -> ServingCommitIdentity {
         ServingCommitIdentity::from_request(self)
     }
+
+    pub(crate) fn commit_id(&self) -> Result<ServingCommitId, ServingFailure> {
+        commit_id_for_identity(&self.commit_identity())
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Route switch identity carried to DNS/gateway subscribers.
+///
+/// This is not a stale-write fence. Pre-v1 serving state is a latest-current
+/// row, so rollback or same-version route switches are explicit overwrites by
+/// the product writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServingGeneration(u64);
 
 impl ServingGeneration {
@@ -144,7 +155,7 @@ pub struct ServingActivationCheckpoint {
     generation: ServingGeneration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ServingCommitIdentity {
     route: RouteId,
     hostname: Hostname,
@@ -154,13 +165,28 @@ pub struct ServingCommitIdentity {
 
 impl ServingCommitIdentity {
     #[must_use]
-    fn from_request(request: &ServingCommitRequest) -> Self {
+    pub(crate) fn new(
+        route: RouteId,
+        hostname: Hostname,
+        target: ServingTarget,
+        generation: ServingGeneration,
+    ) -> Self {
         Self {
-            route: request.route.clone(),
-            hostname: request.hostname.clone(),
-            target: request.target.clone(),
-            generation: request.generation,
+            route,
+            hostname,
+            target,
+            generation,
         }
+    }
+
+    #[must_use]
+    fn from_request(request: &ServingCommitRequest) -> Self {
+        Self::new(
+            request.route.clone(),
+            request.hostname.clone(),
+            request.target.clone(),
+            request.generation,
+        )
     }
 
     #[must_use]
@@ -300,53 +326,6 @@ impl ServingActivationObservation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ServingProjectionCursor(ProductFactCursor);
-
-impl ServingProjectionCursor {
-    #[must_use]
-    pub(crate) fn from_product_cursor(cursor: ProductFactCursor) -> Self {
-        Self(cursor)
-    }
-
-    #[must_use]
-    pub(crate) fn product_cursor(self) -> ProductFactCursor {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ServingCommitReceipt {
-    commit_id: ServingCommitId,
-    identity: ServingCommitIdentity,
-    cursor: ServingProjectionCursor,
-}
-
-impl ServingCommitReceipt {
-    #[must_use]
-    pub(crate) fn new(
-        commit_id: ServingCommitId,
-        identity: ServingCommitIdentity,
-        cursor: ServingProjectionCursor,
-    ) -> Self {
-        Self {
-            commit_id,
-            identity,
-            cursor,
-        }
-    }
-
-    #[must_use]
-    pub fn identity(&self) -> &ServingCommitIdentity {
-        &self.identity
-    }
-
-    #[must_use]
-    pub fn cursor(&self) -> ServingProjectionCursor {
-        self.cursor
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServingCommittedSnapshot {
     commit_id: ServingCommitId,
@@ -354,11 +333,26 @@ pub struct ServingCommittedSnapshot {
 }
 
 impl ServingCommittedSnapshot {
-    #[must_use]
-    pub fn new(commit_id: ServingCommitId, identity: ServingCommitIdentity) -> Self {
-        Self {
-            commit_id,
+    pub fn from_request(request: &ServingCommitRequest) -> Result<Self, ServingFailure> {
+        Self::from_identity(request.commit_identity())
+    }
+
+    pub(crate) fn from_identity(identity: ServingCommitIdentity) -> Result<Self, ServingFailure> {
+        Ok(Self {
+            commit_id: commit_id_for_identity(&identity)?,
             identity,
+        })
+    }
+
+    pub(crate) fn from_stored_parts(
+        commit_id: ServingCommitId,
+        identity: ServingCommitIdentity,
+    ) -> Result<Self, ServingFailure> {
+        let snapshot = Self::from_identity(identity)?;
+        if snapshot.commit_id == commit_id {
+            Ok(snapshot)
+        } else {
+            Err(ServingFailure::SnapshotRejected)
         }
     }
 
@@ -375,48 +369,10 @@ impl ServingCommittedSnapshot {
     #[must_use]
     pub fn matches_request(&self, request: &ServingCommitRequest) -> bool {
         self.identity.matches_request(request)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServingRouteState {
-    route: RouteId,
-    current: Option<ServingCommittedSnapshot>,
-    superseded: usize,
-}
-
-impl ServingRouteState {
-    #[must_use]
-    pub fn new(
-        route: RouteId,
-        current: Option<ServingCommittedSnapshot>,
-        superseded: usize,
-    ) -> Self {
-        Self {
-            route,
-            current,
-            superseded,
-        }
-    }
-
-    #[must_use]
-    pub fn empty(route: RouteId) -> Self {
-        Self::new(route, None, 0)
-    }
-
-    #[must_use]
-    pub fn route(&self) -> &RouteId {
-        &self.route
-    }
-
-    #[must_use]
-    pub fn current(&self) -> Option<&ServingCommittedSnapshot> {
-        self.current.as_ref()
-    }
-
-    #[must_use]
-    pub fn superseded(&self) -> usize {
-        self.superseded
+            && request
+                .commit_id()
+                .map(|commit_id| self.commit_id == commit_id)
+                .unwrap_or(false)
     }
 }
 
@@ -436,13 +392,8 @@ impl ServingCommitObservation {
             Self::Current(current) if current.matches_request(request) => {
                 Ok(ServingCommitMatch::Current)
             }
-            Self::Current(current)
-                if current.identity().route() == request.route()
-                    && current.identity().generation() == request.generation() =>
-            {
-                Err(ServingFailure::ProjectionStale)
-            }
-            Self::Current(_) | Self::Missing => Ok(ServingCommitMatch::Missing),
+            Self::Current(_) => Ok(ServingCommitMatch::DifferentCurrent),
+            Self::Missing => Ok(ServingCommitMatch::Missing),
             Self::Unknown => Err(ServingFailure::LiveObservationUnknown),
         }
     }
@@ -452,47 +403,41 @@ impl ServingCommitObservation {
 pub enum ServingCommitMatch {
     Current,
     Missing,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServingProjectionCatchUp {
-    CaughtUp,
-    TimedOut,
-    FreshnessUnknown,
-    ProjectionFailed,
+    DifferentCurrent,
 }
 
 pub trait ServingSnapshotPort {
-    type Receipt;
+    fn commit_snapshot<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        request: &'a ServingCommitRequest,
+    ) -> impl Future<Output = Result<(), ServingFailure>> + 'a;
 
-    fn commit_snapshot(
-        &self,
-        context: &MutationContext,
-        request: &ServingCommitRequest,
-    ) -> Result<Self::Receipt, ServingFailure>;
-
-    fn commit_status(
-        &self,
-        request: &ServingCommitRequest,
-    ) -> Result<ServingCommitObservation, ServingFailure>;
-
-    fn catch_up_commits(
-        &self,
-        receipt: &Self::Receipt,
-        deadline: SystemTime,
-    ) -> Result<ServingProjectionCatchUp, ServingFailure>;
+    fn commit_status<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        request: &'a ServingCommitRequest,
+    ) -> impl Future<Output = Result<ServingCommitObservation, ServingFailure>> + 'a;
 }
 
 pub trait ServingActivationPort {
+    /// Return the latest serving commit observed by the activation owner.
+    ///
+    /// Deploy uses this as the explicit boundary between writing the desired
+    /// route row and trusting activation state from DNS/gateway-like observers.
+    fn await_observed_commit<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        request: &'a ServingCommitRequest,
+        deadline: SystemTime,
+    ) -> impl Future<Output = Result<ServingCommitObservation, ServingFailure>> + 'a;
+
     fn activation_status(
         &self,
+        context: &MutationContext,
         request: &ServingCommitRequest,
     ) -> Result<ServingActivationObservation, ServingFailure>;
 }
-
-pub trait ServingPort: ServingSnapshotPort + ServingActivationPort {}
-
-impl<T> ServingPort for T where T: ServingSnapshotPort + ServingActivationPort {}
 
 fn parse_non_empty<T>(
     value: impl Into<String>,
@@ -503,6 +448,36 @@ fn parse_non_empty<T>(
         return Err(ServingFailure::SnapshotRejected);
     }
     Ok(build(value))
+}
+
+fn commit_id_for_identity(
+    identity: &ServingCommitIdentity,
+) -> Result<ServingCommitId, ServingFailure> {
+    let payload = ServingCommitIdentityPayload {
+        route_id: identity.route().as_str(),
+        hostname: identity.hostname().as_str(),
+        target: identity.target().as_str(),
+        generation: identity.generation().value(),
+    };
+    let bytes = serde_json::to_vec(&payload).map_err(|_| ServingFailure::SnapshotRejected)?;
+    let digest = Sha256::digest(bytes);
+    ServingCommitId::parse(hex_prefix(&digest, 16))
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    let mut value = String::with_capacity(len * 2);
+    for byte in bytes.iter().take(len) {
+        value.push_str(&format!("{byte:02x}"));
+    }
+    value
+}
+
+#[derive(Serialize)]
+struct ServingCommitIdentityPayload<'a> {
+    route_id: &'a str,
+    hostname: &'a str,
+    target: &'a str,
+    generation: u64,
 }
 
 #[cfg(test)]
@@ -579,7 +554,7 @@ mod tests {
     }
 
     fn request(generation: ServingGeneration) -> ServingCommitRequest {
-        ServingCommitRequest::new(
+        ServingCommitRequest::replace_current_route(
             RouteId::parse("route-a").expect("route"),
             Hostname::parse("app.example.com").expect("hostname"),
             ServingTarget::parse("gateway-a").expect("target"),

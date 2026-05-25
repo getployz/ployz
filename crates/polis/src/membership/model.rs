@@ -111,22 +111,30 @@ impl MembershipLifecycle {
 }
 
 pub(in crate::membership) fn machine_row_from_store_row(row: &StoreRow) -> StoreResult<MachineRow> {
-    Ok(MachineRow::new(
-        StoreMachineId::parse(row.text("machine_id")?.to_string())
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
-        IslandId::parse(row.text("island_id")?.to_string())
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
-        IrohEndpointId::parse(row.text("iroh_endpoint_id")?.to_string())
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
+    let machine_id = StoreMachineId::parse(row.text("machine_id")?.to_string())
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+    let island_id = IslandId::parse(row.text("island_id")?.to_string())
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+    let iroh_endpoint_id = IrohEndpointId::parse(row.text("iroh_endpoint_id")?.to_string())
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+    let wireguard_public_key =
         WireGuardPublicKey::parse(row.text("wireguard_public_key")?.to_string())
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
-        OverlayIp::parse(row.text("overlay_ip")?.to_string())
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
-        MembershipLifecycle::parse(row.text("lifecycle")?)
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
-        RowEpoch::new(row.integer("epoch")? as u64)
-            .map_err(|_| crate::StoreError::MalformedPayload)?,
-        row.integer("updated_at")?,
+            .map_err(|_| crate::StoreError::MalformedPayload)?;
+    let overlay_ip = OverlayIp::parse(row.text("overlay_ip")?.to_string())
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+    let lifecycle = MembershipLifecycle::parse(row.text("lifecycle")?)
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+    let epoch = RowEpoch::new(row.integer("epoch")? as u64)
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+
+    Ok(MachineRow::new(
+        machine_id,
+        island_id,
+        iroh_endpoint_id,
+        wireguard_public_key,
+        overlay_ip,
+        lifecycle,
+        epoch,
     ))
 }
 
@@ -139,11 +147,9 @@ pub struct MachineRow {
     pub(super) overlay_ip: OverlayIp,
     pub(super) lifecycle: MembershipLifecycle,
     pub(super) epoch: RowEpoch,
-    pub(super) updated_at: i64,
 }
 
 impl MachineRow {
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         machine_id: StoreMachineId,
@@ -153,7 +159,6 @@ impl MachineRow {
         overlay_ip: OverlayIp,
         lifecycle: MembershipLifecycle,
         epoch: RowEpoch,
-        updated_at: i64,
     ) -> Self {
         Self {
             machine_id,
@@ -163,13 +168,17 @@ impl MachineRow {
             overlay_ip,
             lifecycle,
             epoch,
-            updated_at,
         }
     }
 
     #[must_use]
     pub fn machine_id(&self) -> &StoreMachineId {
         &self.machine_id
+    }
+
+    #[must_use]
+    pub fn island_id(&self) -> &IslandId {
+        &self.island_id
     }
 
     #[must_use]

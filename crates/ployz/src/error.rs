@@ -51,6 +51,11 @@ pub enum DeployFailure {
     ServingActivationFailed,
     #[error("serving operation failed: {0}")]
     ServingFailed(ServingFailure),
+    #[error("{primary} (also failed to record failed domain status: {status})")]
+    DomainFailureRecordUnavailable {
+        primary: Box<crate::domain::DomainFailure>,
+        status: Box<crate::domain::DomainFailure>,
+    },
     #[error("operation evidence is stale")]
     StaleEvidence,
     #[error("operation already succeeded")]
@@ -83,14 +88,19 @@ pub enum CertificateFailure {
     FreshnessUnknown,
     #[error("activation was rejected")]
     ActivationRejected,
+    #[error("{primary} (also failed to record failed certificate attempt: {evidence})")]
+    FailureRecordUnavailable {
+        primary: Box<CertificateFailure>,
+        evidence: Box<CertificateFailure>,
+    },
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum ServingFailure {
     #[error("snapshot was rejected")]
     SnapshotRejected,
-    #[error("projection is stale")]
-    ProjectionStale,
+    #[error("snapshot is stale")]
+    SnapshotStale,
     #[error("certificate is unusable")]
     CertificateUnusable,
     #[error("reload failed")]
@@ -123,16 +133,16 @@ pub enum RuntimeFailure {
 pub enum MachineFailure {
     #[error("payload is invalid")]
     InvalidPayload,
-    #[error("membership projection is unavailable")]
-    ProjectionUnavailable,
-    #[error("membership projection timed out")]
-    ProjectionTimeout,
-    #[error("membership projection payload is invalid")]
-    ProjectionPayloadInvalid,
-    #[error("membership projection stream was interrupted")]
-    ProjectionStreamInterrupted,
-    #[error("membership projection missed changes")]
-    ProjectionMissedChanges,
+    #[error("membership rows are unavailable")]
+    MembershipRowsUnavailable,
+    #[error("membership row read timed out")]
+    MembershipRowsTimeout,
+    #[error("membership row payload is invalid")]
+    MembershipRowsPayloadInvalid,
+    #[error("membership row stream was interrupted")]
+    MembershipRowsStreamInterrupted,
+    #[error("membership row stream missed changes")]
+    MembershipRowsMissedChanges,
     #[error("machine membership conflicts for {machine:?} at epoch {epoch:?}")]
     MembershipConflict {
         machine: crate::machine::MachineId,

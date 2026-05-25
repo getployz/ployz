@@ -142,31 +142,13 @@ pub struct MachineTombstone {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineRemoval {
-    pub machine: MachineId,
-    pub epoch: MachineEpoch,
-    pub reason: MachineRemovalReason,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MachineRemovalReason(String);
-
-impl MachineRemovalReason {
-    pub fn parse(value: impl Into<String>) -> Result<Self, MachineFailure> {
-        parse_non_empty(value, Self)
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineStatus {
     Absent,
     Joined(MachineMembership),
-    Removing(MachineRemoval),
+    Removing {
+        machine: MachineId,
+        epoch: MachineEpoch,
+    },
     Tombstoned(MachineTombstone),
     Conflicted {
         machine: MachineId,
@@ -204,7 +186,12 @@ impl MachineAddPlan {
     fn diff(observed: MachineStatus, desired: MachineMembership) -> Result<Self, MachineFailure> {
         match observed {
             MachineStatus::Absent => Ok(Self::Join(desired)),
-            status => joined_membership_from_status(status, &desired).map(Self::AlreadyPresent),
+            status @ (MachineStatus::Joined(_)
+            | MachineStatus::Removing { .. }
+            | MachineStatus::Tombstoned(_)
+            | MachineStatus::Conflicted { .. }) => {
+                joined_membership_from_status(status, &desired).map(Self::AlreadyPresent)
+            }
         }
     }
 }
@@ -268,10 +255,9 @@ fn joined_membership_from_status(
             machine: joined.machine,
             epoch: Some(joined.epoch),
         }),
-        MachineStatus::Removing(removal) => Err(MachineFailure::MachineRemoving {
-            machine: removal.machine,
-            epoch: removal.epoch,
-        }),
+        MachineStatus::Removing { machine, epoch } => {
+            Err(MachineFailure::MachineRemoving { machine, epoch })
+        }
         MachineStatus::Tombstoned(tombstone) => Err(MachineFailure::MachineTombstoned {
             machine: tombstone.machine,
             epoch: tombstone.epoch,
@@ -386,13 +372,11 @@ mod tests {
     #[test]
     fn removing_machine_is_not_already_present() {
         let desired = membership("node-a", 1, "fd00::1");
-        let removal = MachineRemoval {
+        let removal = MachineStatus::Removing {
             machine: MachineId::parse("node-a").expect("machine"),
             epoch: MachineEpoch::new(3).expect("epoch"),
-            reason: MachineRemovalReason::parse("operator requested").expect("reason"),
         };
-        let error =
-            MachineAddPlan::diff(MachineStatus::Removing(removal), desired).expect_err("removing");
+        let error = MachineAddPlan::diff(removal, desired).expect_err("removing");
 
         assert_eq!(
             error,
@@ -404,9 +388,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fact_backed_first_add_projects_joined_membership() {
-        let fact_backed_membership = crate::composition::in_memory_machine_membership();
-        let service = MachineMembershipService::new(fact_backed_membership);
+    async fn row_backed_first_add_records_joined_membership() {
+        let row_backed_membership = crate::composition::in_memory_machine_membership();
+        let service = MachineMembershipService::new(row_backed_membership);
 
         let outcome = service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
@@ -419,9 +403,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fact_backed_already_present_reads_projection_without_fresh_join() {
-        let fact_backed_membership = crate::composition::in_memory_machine_membership();
-        let service = MachineMembershipService::new(fact_backed_membership);
+    async fn row_backed_already_present_reads_current_row_without_fresh_join() {
+        let row_backed_membership = crate::composition::in_memory_machine_membership();
+        let service = MachineMembershipService::new(row_backed_membership);
         service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
             .await
@@ -438,9 +422,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fact_backed_different_epoch_is_conflict() {
-        let fact_backed_membership = crate::composition::in_memory_machine_membership();
-        let service = MachineMembershipService::new(fact_backed_membership);
+    async fn row_backed_different_epoch_is_conflict() {
+        let row_backed_membership = crate::composition::in_memory_machine_membership();
+        let service = MachineMembershipService::new(row_backed_membership);
         service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
             .await

@@ -18,9 +18,9 @@ origin:
 
 Introduce the first narrow `ployzd` crate and move the proven substrate spine
 from test assembly into a daemon-owned boot path. The daemon should start local
-Corrosion v1.0 with the membership startup schema, verify schema usability,
-start persistent iroh peer identity, report substrate readiness, and shut down
-cleanly.
+Corrosion v1.0 with the replicated membership schema, apply product schemas
+through `CorrosionStore`, start persistent iroh peer identity, report substrate
+readiness, and shut down cleanly.
 
 ---
 
@@ -42,10 +42,9 @@ behavior.
   iroh identity path, Corrosion state directory, Corrosion binary path, local
   API/gossip addresses, and readiness deadlines.
 - R3. Start or connect to local Corrosion v1.0 during daemon boot, provide the
-  Corrosion v1.0 file-backed membership startup schema, verify the `machines`
-  columns, lifecycle index, and bounded write/delete path through
-  `CorrosionStore`, and expose the store behind existing composition
-  boundaries.
+  replicated membership schema, apply product schemas through `CorrosionStore`,
+  verify the `machines` columns and lifecycle index plus a non-product probe
+  write path, and expose the store behind existing composition boundaries.
 - R4. Start `PeerRuntime` from a persisted daemon identity path and preserve the
   same iroh endpoint ID across daemon restart with the same state directory.
 - R5. Keep product membership composition outside the daemon substrate boot
@@ -133,15 +132,15 @@ behavior.
 - Keep iroh peer runtime mechanics in Polis: `PeerRuntime` is substrate
   infrastructure, so `ployzd` depends on `polis`, not Ployz product
   composition, for local peer boot.
-- Use a Corrosion v1.0 startup schema for replicated tables: the daemon writes
-  the file-backed membership startup schema before agent launch and then
-  verifies the `machines` table shape, lifecycle index, and membership
-  write/delete path through `CorrosionStore`. The canonical Polis schema
-  remains the strict product schema; startup-schema defaults exist only to
-  satisfy Corrosion v1.0 forward-schema loading.
-- Keep daemon adoption ownership local: Polis records a local owner marker and
+- Keep membership replication schema substrate-owned: Corrosion receives a
+  startup `machines` schema with nullable non-key payload columns so replicated
+  fragments can materialize without sentinels. Polis typed queries only surface
+  complete machine rows. Ployz product schemas are applied after Corrosion
+  readiness through `CorrosionStore`.
+- Keep daemon adoption ownership local: Polis records a local owner file before
+  process launch, reloads persisted Corrosion coordinates on restart, and
   verifies the live Corrosion database path before adopting an existing agent.
-  Ownership markers are not Corrosion replicated product state.
+  Ownership files are not Corrosion replicated product state.
 - Model substrate as an owned daemon handle: Boot should return one handle that
   owns Corrosion process/client, PeerRuntime, startup state, and shutdown order.
 - Leave membership construction to a later daemon control-plane/service layer.
@@ -168,11 +167,10 @@ behavior.
   builders. A serialized config can be added when a CLI/API exists.
 - Exact startup report rendering: Keep the core report typed. Rendering belongs
   to a later CLI/API surface.
-- Whether Corrosion v1.0 daemon startup can use canonical schema only:
-  Resolved during implementation. Corrosion v1.0 requires file-backed startup
-  schemas with defaults for non-null columns, so daemon boot uses the same
-  isolated startup schema as the e2e substrate tests and verifies schema
-  usability after readiness.
+- Whether Corrosion v1.0 daemon startup can use the strict membership schema as
+  a file-backed startup schema: Resolved during implementation. The daemon uses
+  a replication profile for `machines`; it has no sentinel defaults, and typed
+  Polis queries hide incomplete fragments.
 
 ---
 
@@ -213,7 +211,7 @@ sequenceDiagram
 
     Main->>Daemon: boot(config)
     Daemon->>Corrosion: start/connect with bounded readiness
-    Daemon->>Store: verify machines startup schema
+    Daemon->>Store: apply and verify machines schema
     Daemon->>Peer: start persisted identity path
     Daemon-->>Main: ready handle + startup report
     Main->>Daemon: shutdown()
@@ -297,9 +295,8 @@ a ready `CorrosionStore` through a daemon-owned handle.
   shutdown.
 - Prefer repo-local Corrosion binary resolution compatible with
   `CORROSION_BIN` and `target/tools/bin/corrosion`.
-- Provide `polis::membership_startup_schema_sql()` as a Corrosion file-backed
-  startup schema and verify the `machines` columns, lifecycle index, and
-  membership write/delete path with `CorrosionStore` after readiness.
+- Provide `polis::membership_replication_schema_sql()` as the Corrosion startup
+  schema and verify that replication profile before reporting ready.
 - Keep error variants structured: missing binary, config I/O failure, process
   exited before ready, readiness timeout, schema verify failure, and shutdown
   timeout.
@@ -491,7 +488,7 @@ document how the daemon boot slice relates to the substrate spine.
 | Risk | Mitigation |
 |------|------------|
 | Corrosion process lifecycle duplicated between daemon and tests | Keep reusable Corrosion lifecycle mechanics in `polis::corrosion_agent`; have daemon compose that production primitive. |
-| Startup schema behavior differs between direct `apply_schema` and file-backed Corrosion replication | Use file-backed startup schema only for Corrosion v1.0 boot, keep the canonical Polis schema strict, and verify table shape plus write-path usability through `CorrosionStore`. |
+| File-backed startup schema behavior differs from direct store application | Use a dedicated membership replication profile with nullable payload columns, no sentinels, and typed queries that only expose complete rows. |
 | Peer shutdown can time out and make tests flaky | Use bounded shutdown, attempt Corrosion cleanup even when peer cleanup fails, and make cleanup failures visible. |
 | Startup report accidentally becomes durable truth | Keep startup state as typed observation and do not write it back into membership rows. |
 | New daemon crate becomes a feature registry | Limit `DaemonRuntime` to lifecycle ownership and routing; feature state belongs in subsystems. |

@@ -20,7 +20,7 @@ use crate::runtime::{
 };
 use crate::serving::{
     RouteId, ServingActivationPort, ServingActivationProof, ServingCommitMatch, ServingGeneration,
-    ServingProjectionCatchUp, ServingSnapshotPort, ServingTarget,
+    ServingSnapshotPort, ServingTarget,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,58 +116,54 @@ impl DeployDesiredState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DeployObservedState {
-    domain: Option<DomainReady>,
-    runtime: Option<ParticipantReceipt>,
-    serving: Option<ServingActivationProof>,
-}
-
-impl DeployObservedState {
-    #[cfg(test)]
-    #[must_use]
-    fn new(
-        domain: Option<DomainReady>,
-        runtime: Option<ParticipantReceipt>,
-        serving: Option<ServingActivationProof>,
-    ) -> Self {
-        Self {
-            domain,
-            runtime,
-            serving,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeployPlanStep {
-    AlreadyCurrent,
+enum DeployPlanStep<T> {
+    Current(T),
     Apply,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl<T> DeployPlanStep<T> {
+    #[cfg(test)]
+    #[must_use]
+    fn is_current(&self) -> bool {
+        matches!(self, Self::Current(_))
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn is_apply(&self) -> bool {
+        matches!(self, Self::Apply)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DeployPlan {
-    domain: DeployPlanStep,
-    runtime: DeployPlanStep,
-    serving: DeployPlanStep,
+    domain: DeployPlanStep<DomainReady>,
+    runtime: DeployPlanStep<ParticipantReceipt>,
+    serving: DeployPlanStep<ServingActivationProof>,
 }
 
 impl DeployPlan {
     #[must_use]
-    fn diff(observed: &DeployObservedState, desired: &DeployDesiredState) -> Self {
-        let domain = match &observed.domain {
-            Some(ready) if desired.domain_matches(ready) => DeployPlanStep::AlreadyCurrent,
+    fn from_observations(
+        desired: &DeployDesiredState,
+        domain: Option<DomainReady>,
+        runtime: Option<ParticipantReceipt>,
+        serving: Option<ServingActivationProof>,
+    ) -> Self {
+        let domain = match domain {
+            Some(ready) if desired.domain_matches(&ready) => DeployPlanStep::Current(ready),
             Some(_) | None => DeployPlanStep::Apply,
         };
-        let runtime = match &observed.runtime {
+        let runtime = match runtime {
             Some(receipt)
                 if receipt.workload == desired.workload && receipt.machine == desired.machine =>
             {
-                DeployPlanStep::AlreadyCurrent
+                DeployPlanStep::Current(receipt)
             }
             Some(_) | None => DeployPlanStep::Apply,
         };
-        let serving = match &observed.serving {
-            Some(proof) if desired.serving_matches(proof) => DeployPlanStep::AlreadyCurrent,
+        let serving = match serving {
+            Some(proof) if desired.serving_matches(&proof) => DeployPlanStep::Current(proof),
             Some(_) | None => DeployPlanStep::Apply,
         };
         Self {
@@ -179,10 +175,8 @@ impl DeployPlan {
 
     #[cfg(test)]
     #[must_use]
-    fn is_noop(self) -> bool {
-        matches!(self.domain, DeployPlanStep::AlreadyCurrent)
-            && matches!(self.runtime, DeployPlanStep::AlreadyCurrent)
-            && matches!(self.serving, DeployPlanStep::AlreadyCurrent)
+    fn is_noop(&self) -> bool {
+        self.domain.is_current() && self.runtime.is_current() && self.serving.is_current()
     }
 }
 
@@ -212,61 +206,56 @@ where
     S: ServingSnapshotPort,
     A: ServingActivationPort,
 {
-    pub fn deploy_https(
+    pub async fn deploy_https(
         &self,
         context: &MutationContext,
         request: DeployRequest,
     ) -> Result<DeployOutcome, DeployFailure> {
         let desired = DeployDesiredState::from_request(&request)?;
-        let observed = self.observe(context, &desired)?;
-        let plan = DeployPlan::diff(&observed, &desired);
-        self.execute_plan(context, &request, &desired, observed, plan)
+        let plan = self.observe(context, &desired, request.deadline).await?;
+        self.execute_plan(context, &request, &desired, plan).await
     }
 
-    fn observe(
+    async fn observe(
         &self,
         context: &MutationContext,
         desired: &DeployDesiredState,
-    ) -> Result<DeployObservedState, DeployFailure> {
-        let domain = self.observe_domain_ready(context, desired)?;
+        deadline: SystemTime,
+    ) -> Result<DeployPlan, DeployFailure> {
+        let domain = self.observe_domain_ready(context, desired).await?;
         let runtime = self.observe_runtime(context, desired)?;
         let serving = match &domain {
-            Some(ready) => self.observe_serving(desired, ready)?,
+            Some(ready) => {
+                self.observe_serving(context, desired, ready, deadline)
+                    .await?
+            }
             None => None,
         };
-        Ok(DeployObservedState {
-            domain,
-            runtime,
-            serving,
-        })
+        Ok(DeployPlan::from_observations(
+            desired, domain, runtime, serving,
+        ))
     }
 
-    fn execute_plan(
+    async fn execute_plan(
         &self,
         context: &MutationContext,
         request: &DeployRequest,
         desired: &DeployDesiredState,
-        observed: DeployObservedState,
         plan: DeployPlan,
     ) -> Result<DeployOutcome, DeployFailure> {
         let domain = match plan.domain {
-            DeployPlanStep::AlreadyCurrent => observed
-                .domain
-                .ok_or(DeployFailure::DomainReadinessFailed)?,
-            DeployPlanStep::Apply => self.apply_domain_ready(context, desired)?,
+            DeployPlanStep::Current(ready) => ready,
+            DeployPlanStep::Apply => self.apply_domain_ready(context, desired).await?,
         };
         let runtime = match plan.runtime {
-            DeployPlanStep::AlreadyCurrent => observed
-                .runtime
-                .ok_or(DeployFailure::RuntimeParticipantFailed)?,
+            DeployPlanStep::Current(receipt) => receipt,
             DeployPlanStep::Apply => self.apply_runtime(context, request, desired)?,
         };
         let serving = match plan.serving {
-            DeployPlanStep::AlreadyCurrent => observed
-                .serving
-                .ok_or(DeployFailure::ServingActivationFailed)?,
+            DeployPlanStep::Current(proof) => proof,
             DeployPlanStep::Apply => {
-                self.commit_and_verify_serving(context, request, desired, &domain)?
+                self.commit_and_verify_serving(context, request.deadline, desired, &domain)
+                    .await?
             }
         };
 
@@ -277,19 +266,23 @@ where
         })
     }
 
-    fn observe_domain_ready(
+    async fn observe_domain_ready(
         &self,
         context: &MutationContext,
         desired: &DeployDesiredState,
     ) -> Result<Option<DomainReady>, DeployFailure> {
-        match self.domains.verify_ready(context, desired.domain_request()) {
+        match self
+            .domains
+            .verify_ready(context, desired.domain_request())
+            .await
+        {
             Ok(ready) if desired.domain_matches(&ready) => Ok(Some(ready)),
             Ok(_) | Err(DomainFailure::UnknownReadiness) => Ok(None),
             Err(error) => Err(map_domain_to_deploy(error)),
         }
     }
 
-    fn apply_domain_ready(
+    async fn apply_domain_ready(
         &self,
         context: &MutationContext,
         desired: &DeployDesiredState,
@@ -297,6 +290,7 @@ where
         match self
             .domains
             .ensure_ready(context, desired.domain_request())
+            .await
             .map_err(map_domain_to_deploy)?
         {
             DomainReadinessOutcome::Ready(_) => {}
@@ -305,7 +299,8 @@ where
             }
         }
 
-        self.observe_domain_ready(context, desired)?
+        self.observe_domain_ready(context, desired)
+            .await?
             .ok_or(DeployFailure::DomainReadinessFailed)
     }
 
@@ -354,40 +349,33 @@ where
             .ok_or(DeployFailure::RuntimeParticipantFailed)
     }
 
-    fn observe_serving(
+    async fn observe_serving(
         &self,
+        context: &MutationContext,
         desired: &DeployDesiredState,
         ready: &DomainReady,
+        deadline: SystemTime,
     ) -> Result<Option<ServingActivationProof>, DeployFailure> {
         let commit = ready.serving_commit(
             desired.route.clone(),
             desired.serving_target.clone(),
             desired.serving_generation,
         );
-        let commit_status = self
-            .serving_snapshots
-            .commit_status(&commit)
-            .map_err(DeployFailure::ServingFailed)?;
-        match commit_status.try_confirm_commit(&commit) {
-            Ok(ServingCommitMatch::Current) => {}
-            Ok(ServingCommitMatch::Missing) => return Ok(None),
-            Err(error) => return Err(DeployFailure::ServingFailed(error)),
-        }
-        let activation = self
-            .serving_activation
-            .activation_status(&commit)
-            .map_err(DeployFailure::ServingFailed)?;
-        match activation.try_acknowledge_commit(&commit) {
-            Ok(proof) if desired.serving_matches(&proof) => Ok(Some(proof)),
-            Ok(_) | Err(ServingFailure::LiveObservationUnknown) => Ok(None),
-            Err(error) => Err(DeployFailure::ServingFailed(error)),
+        match self
+            .serving_readiness(context, desired, &commit, deadline)
+            .await?
+        {
+            ServingReadinessCheck::Ready(proof) => Ok(Some(proof)),
+            ServingReadinessCheck::NotCurrent | ServingReadinessCheck::ActivationUnknown => {
+                Ok(None)
+            }
         }
     }
 
-    fn commit_and_verify_serving(
+    async fn commit_and_verify_serving(
         &self,
         context: &MutationContext,
-        request: &DeployRequest,
+        deadline: SystemTime,
         desired: &DeployDesiredState,
         ready: &DomainReady,
     ) -> Result<ServingActivationProof, DeployFailure> {
@@ -399,44 +387,93 @@ where
             desired.serving_target.clone(),
             desired.serving_generation,
         );
-        let receipt = self
-            .serving_snapshots
-            .commit_snapshot(context, &commit)
-            .map_err(DeployFailure::ServingFailed)?;
-        match self
-            .serving_snapshots
-            .catch_up_commits(&receipt, request.deadline)
-            .map_err(DeployFailure::ServingFailed)?
-        {
-            ServingProjectionCatchUp::CaughtUp => {}
-            ServingProjectionCatchUp::TimedOut | ServingProjectionCatchUp::ProjectionFailed => {
-                return Err(DeployFailure::ServingFailed(
-                    ServingFailure::ProjectionStale,
-                ));
-            }
-            ServingProjectionCatchUp::FreshnessUnknown => {
-                return Err(DeployFailure::ServingFailed(
-                    ServingFailure::LiveObservationUnknown,
-                ));
-            }
-        }
         self.serving_snapshots
-            .commit_status(&commit)
-            .map_err(DeployFailure::ServingFailed)?
-            .try_confirm_commit(&commit)
-            .and_then(|result| match result {
-                ServingCommitMatch::Current => Ok(()),
-                ServingCommitMatch::Missing => Err(ServingFailure::ProjectionStale),
-            })
+            .commit_snapshot(context, &commit)
+            .await
             .map_err(DeployFailure::ServingFailed)?;
+
+        match self
+            .serving_readiness(context, desired, &commit, deadline)
+            .await?
+        {
+            ServingReadinessCheck::Ready(proof) => Ok(proof),
+            ServingReadinessCheck::NotCurrent => {
+                Err(DeployFailure::ServingFailed(ServingFailure::SnapshotStale))
+            }
+            ServingReadinessCheck::ActivationUnknown => Err(DeployFailure::ServingFailed(
+                ServingFailure::LiveObservationUnknown,
+            )),
+        }
+    }
+
+    async fn serving_readiness(
+        &self,
+        context: &MutationContext,
+        desired: &DeployDesiredState,
+        commit: &crate::serving::ServingCommitRequest,
+        deadline: SystemTime,
+    ) -> Result<ServingReadinessCheck, DeployFailure> {
+        if let Err(not_current) = self
+            .serving_snapshots
+            .commit_status(context, commit)
+            .await
+            .map_err(DeployFailure::ServingFailed)?
+            .try_confirm_commit(commit)
+            .map_err(DeployFailure::ServingFailed)?
+            .current_or_not()
+        {
+            return Ok(not_current);
+        }
+
+        if let Err(not_current) = self
+            .activation_observed_commit(context, commit, deadline)
+            .await?
+            .current_or_not()
+        {
+            return Ok(not_current);
+        }
 
         let activation = self
             .serving_activation
-            .activation_status(&commit)
+            .activation_status(context, commit)
             .map_err(DeployFailure::ServingFailed)?;
-        activation
-            .try_acknowledge_commit(&commit)
+        match activation.try_acknowledge_commit(commit) {
+            Ok(proof) if desired.serving_matches(&proof) => Ok(ServingReadinessCheck::Ready(proof)),
+            Ok(_) => Ok(ServingReadinessCheck::NotCurrent),
+            Err(ServingFailure::LiveObservationUnknown) => {
+                Ok(ServingReadinessCheck::ActivationUnknown)
+            }
+            Err(error) => Err(DeployFailure::ServingFailed(error)),
+        }
+    }
+
+    async fn activation_observed_commit(
+        &self,
+        context: &MutationContext,
+        commit: &crate::serving::ServingCommitRequest,
+        deadline: SystemTime,
+    ) -> Result<ServingCommitMatch, DeployFailure> {
+        self.serving_activation
+            .await_observed_commit(context, commit, deadline)
+            .await
+            .map_err(DeployFailure::ServingFailed)?
+            .try_confirm_commit(commit)
             .map_err(DeployFailure::ServingFailed)
+    }
+}
+
+enum ServingReadinessCheck {
+    Ready(ServingActivationProof),
+    NotCurrent,
+    ActivationUnknown,
+}
+
+impl ServingCommitMatch {
+    fn current_or_not(self) -> Result<(), ServingReadinessCheck> {
+        match self {
+            Self::Current => Ok(()),
+            Self::Missing | Self::DifferentCurrent => Err(ServingReadinessCheck::NotCurrent),
+        }
     }
 }
 
@@ -460,6 +497,9 @@ pub fn certificate_unusable_reason(
 
 fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
     match error {
+        DomainFailure::FailureRecordUnavailable { primary, status } => {
+            DeployFailure::DomainFailureRecordUnavailable { primary, status }
+        }
         DomainFailure::InvalidDomain => DeployFailure::InvalidManifest,
         DomainFailure::ClaimRejected
         | DomainFailure::ClaimResourceMismatch
@@ -469,9 +509,12 @@ fn map_domain_to_deploy(error: DomainFailure) -> DeployFailure {
         }
         DomainFailure::ServingActivationFailed => DeployFailure::ServingActivationFailed,
         DomainFailure::ServingFailed(error) => DeployFailure::ServingFailed(error),
-        DomainFailure::StatusUnavailable | DomainFailure::UnknownReadiness => {
-            DeployFailure::DomainReadinessFailed
-        }
+        DomainFailure::StatusUnavailable
+        | DomainFailure::StatusRowsPayloadInvalid
+        | DomainFailure::StatusRowsTimeout
+        | DomainFailure::StatusRowsStreamInterrupted
+        | DomainFailure::StatusRowsMissedChanges
+        | DomainFailure::UnknownReadiness => DeployFailure::DomainReadinessFailed,
     }
 }
 
@@ -555,14 +598,18 @@ mod tests {
         let desired = DeployDesiredState::from_request(&request).expect("desired");
         let ready = ready_domain(&desired);
         let proof = serving_proof(&desired, &ready);
-        let observed = DeployObservedState::new(Some(ready), Some(receipt(&desired)), Some(proof));
 
-        let plan = DeployPlan::diff(&observed, &desired);
+        let plan = DeployPlan::from_observations(
+            &desired,
+            Some(ready),
+            Some(receipt(&desired)),
+            Some(proof),
+        );
 
         assert!(plan.is_noop());
-        assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
-        assert_eq!(plan.runtime, DeployPlanStep::AlreadyCurrent);
-        assert_eq!(plan.serving, DeployPlanStep::AlreadyCurrent);
+        assert!(plan.domain.is_current());
+        assert!(plan.runtime.is_current());
+        assert!(plan.serving.is_current());
     }
 
     #[test]
@@ -571,8 +618,6 @@ mod tests {
         let desired = DeployDesiredState::from_request(&request).expect("desired");
         let ready = ready_domain(&desired);
         let proof = serving_proof(&desired, &ready);
-        let observed =
-            DeployObservedState::new(Some(ready.clone()), Some(receipt(&desired)), Some(proof));
 
         let route_change = DeployDesiredState::from_request(&DeployRequest {
             manifest: DeployManifest {
@@ -582,10 +627,15 @@ mod tests {
             ..request.clone()
         })
         .expect("route desired");
-        let plan = DeployPlan::diff(&observed, &route_change);
-        assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
-        assert_eq!(plan.runtime, DeployPlanStep::AlreadyCurrent);
-        assert_eq!(plan.serving, DeployPlanStep::Apply);
+        let plan = DeployPlan::from_observations(
+            &route_change,
+            Some(ready.clone()),
+            Some(receipt(&desired)),
+            Some(proof),
+        );
+        assert!(plan.domain.is_current());
+        assert!(plan.runtime.is_current());
+        assert!(plan.serving.is_apply());
 
         let workload_change = DeployDesiredState::from_request(&DeployRequest {
             manifest: DeployManifest {
@@ -595,13 +645,15 @@ mod tests {
             ..request
         })
         .expect("workload desired");
-        let plan = DeployPlan::diff(
-            &DeployObservedState::new(Some(ready), Some(receipt(&desired)), None),
+        let plan = DeployPlan::from_observations(
             &workload_change,
+            Some(ready),
+            Some(receipt(&desired)),
+            None,
         );
-        assert_eq!(plan.domain, DeployPlanStep::AlreadyCurrent);
-        assert_eq!(plan.runtime, DeployPlanStep::Apply);
-        assert_eq!(plan.serving, DeployPlanStep::Apply);
+        assert!(plan.domain.is_current());
+        assert!(plan.runtime.is_apply());
+        assert!(plan.serving.is_apply());
     }
 
     #[test]
@@ -609,6 +661,22 @@ mod tests {
         assert_eq!(
             map_domain_pending_to_deploy(DomainPendingReason::CertificateIssuance),
             DeployFailure::OperationInProgress
+        );
+    }
+
+    #[test]
+    fn failed_domain_status_write_stays_visible_at_deploy_boundary() {
+        let error = DomainFailure::FailureRecordUnavailable {
+            primary: Box::new(DomainFailure::ServingActivationFailed),
+            status: Box::new(DomainFailure::StatusUnavailable),
+        };
+
+        assert_eq!(
+            map_domain_to_deploy(error),
+            DeployFailure::DomainFailureRecordUnavailable {
+                primary: Box::new(DomainFailure::ServingActivationFailed),
+                status: Box::new(DomainFailure::StatusUnavailable),
+            }
         );
     }
 
@@ -652,7 +720,7 @@ mod tests {
     }
 
     fn serving_proof(desired: &DeployDesiredState, ready: &DomainReady) -> ServingActivationProof {
-        let commit = ServingCommitRequest::new(
+        let commit = ServingCommitRequest::replace_current_route(
             desired.route.clone(),
             ready.certificate().certificate().hostname.clone(),
             desired.serving_target.clone(),

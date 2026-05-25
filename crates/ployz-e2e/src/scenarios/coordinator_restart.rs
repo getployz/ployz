@@ -5,41 +5,40 @@ use ployz::error::DeployFailure;
 use ployz::error::ServingFailure;
 use ployz::serving::ServingActivationObservation;
 
-use super::https_deploy::{
-    SharedDeployState, activation_for, deploy_context, engine_with_state, receipt, request,
-    usable_certificate,
+use super::deploy_fixture::{
+    DeployFixtureBuilder, SharedDeployState, activation_for, deploy_context, receipt, request,
 };
 
-#[test]
-fn retry_after_missing_serving_activation_observes_activation_proof() {
+#[tokio::test(flavor = "current_thread")]
+async fn retry_after_missing_serving_activation_observes_activation_proof() {
     let state = SharedDeployState::new();
     let runtime = state.runtime_for(receipt());
-    let first_deploy = engine_with_state(
-        usable_certificate(),
-        ServingActivationObservation::Unknown,
-        Rc::new(RefCell::new(Vec::new())),
-        state.clone(),
-        runtime.clone(),
-    );
+    let first_deploy = DeployFixtureBuilder::new()
+        .activation(ServingActivationObservation::Unknown)
+        .state(state.clone())
+        .runtime(runtime.clone())
+        .build();
 
     assert_eq!(
-        first_deploy.deploy_https(&deploy_context(), request()),
+        first_deploy
+            .deploy_https(&deploy_context(), request())
+            .await,
         Err(DeployFailure::ServingFailed(
             ServingFailure::LiveObservationUnknown
         ))
     );
 
     let retry_contexts = Rc::new(RefCell::new(Vec::new()));
-    let retry_deploy = engine_with_state(
-        usable_certificate(),
-        activation_for(&request()),
-        retry_contexts.clone(),
-        state.clone(),
-        runtime.clone(),
-    );
+    let retry_deploy = DeployFixtureBuilder::new()
+        .contexts(retry_contexts.clone())
+        .state(state.clone())
+        .runtime(runtime.clone())
+        .activation(activation_for(&request()))
+        .build();
 
     retry_deploy
         .deploy_https(&deploy_context(), request())
+        .await
         .expect("retry observes activation");
     assert!(retry_contexts.borrow().is_empty());
     assert_eq!(*runtime.activations.borrow(), 1);

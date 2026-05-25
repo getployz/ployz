@@ -187,7 +187,7 @@ Likely files:
 
 Work:
 
-- Reuse `membership_schema_statements()` and
+- Reuse `membership_canonical_schema_statements()` and
   `CorrosionStore::apply_schema`.
 - Add a focused integration test that inserts/upserts a machine row through
   existing statement helpers and reads it back from a real Corrosion-backed

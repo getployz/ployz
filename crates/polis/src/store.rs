@@ -293,14 +293,6 @@ impl CorrosionStore {
         Self { client }
     }
 
-    pub async fn apply_schema(
-        &self,
-        statements: &[StoreStatement],
-        timeout: StoreTimeout,
-    ) -> StoreResult<TransactionReceipt> {
-        self.execute_transaction(statements, timeout).await
-    }
-
     pub async fn execute_transaction(
         &self,
         statements: &[StoreStatement],

@@ -13,9 +13,7 @@ use crate::IrohEndpointId;
 
 pub use endpoint::{PeerEndpoint, bind_peer_endpoint, issue_endpoint_ticket};
 pub use identity::{PeerIdentity, load_or_create_identity};
-pub use probe::{
-    FakePeerProbe, PeerProbe, PeerProbeDeadline, PeerProbeReceipt, preflight_membership,
-};
+pub use probe::{FakePeerProbe, PeerProbe, PeerProbeDeadline, PeerProbeReceipt};
 pub use rpc::{PeerRpcClient, PeerRpcListener, PeerRpcProbe};
 pub use runtime::PeerRuntime;
 pub use tickets::{PeerTicket, PeerTicketPath, import_ticket, issue_ticket};
@@ -179,22 +177,6 @@ mod tests {
         let ticket = issue_ticket(addr);
 
         assert_eq!(ticket.path(), PeerTicketPath::DirectOrRelay);
-    }
-
-    #[tokio::test]
-    async fn preflight_membership_uses_probe_result() {
-        let endpoint = IrohEndpointId::parse("reachable-endpoint").expect("endpoint");
-        let probe = FakePeerProbe::new().reachable(endpoint.clone());
-
-        let receipt = preflight_membership(
-            &probe,
-            &endpoint,
-            PeerProbeDeadline::new(Duration::from_millis(100)),
-        )
-        .await
-        .expect("preflight");
-
-        assert_eq!(receipt.endpoint(), &endpoint);
     }
 
     #[tokio::test]

@@ -114,6 +114,48 @@ impl MutationContext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct MutationWriteIdentity {
+    scope: ScopeId,
+    operation: OperationId,
+    idempotency: IdempotencyKey,
+}
+
+impl MutationWriteIdentity {
+    #[must_use]
+    pub(crate) fn new(scope: ScopeId, operation: OperationId, idempotency: IdempotencyKey) -> Self {
+        Self {
+            scope,
+            operation,
+            idempotency,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_context(context: &MutationContext) -> Self {
+        Self {
+            scope: context.authority().scope().clone(),
+            operation: context.operation().clone(),
+            idempotency: context.idempotency().clone(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn scope(&self) -> &ScopeId {
+        &self.scope
+    }
+
+    #[must_use]
+    pub(crate) fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    #[must_use]
+    pub(crate) fn idempotency(&self) -> &IdempotencyKey {
+        &self.idempotency
+    }
+}
+
 pub struct MutationAuthorizer<A> {
     authority: A,
 }

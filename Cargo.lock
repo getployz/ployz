@@ -2769,6 +2769,7 @@ dependencies = [
 name = "ployzd"
 version = "0.1.0"
 dependencies = [
+ "ployz",
  "polis",
  "thiserror 2.0.18",
  "tokio",
@@ -2788,7 +2789,6 @@ dependencies = [
  "libc",
  "rusqlite",
  "serde",
- "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
  "toml",

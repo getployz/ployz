@@ -6,7 +6,7 @@
 //! feature modules should read as product orchestration.
 //!
 //! Production rules:
-//! - durable truth, projection freshness, live observation, and unknown health
+//! - durable truth, current row visibility, live observation, and unknown health
 //!   stay distinct;
 //! - foreground work returns typed product results;
 //! - retry and crash behavior must be explicit for every durable mutation;
@@ -19,7 +19,6 @@ pub mod composition;
 pub mod deploy;
 pub mod domain;
 pub mod error;
-pub mod facts;
 pub mod machine;
 pub mod operation;
 pub mod runtime;

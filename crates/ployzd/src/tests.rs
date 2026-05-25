@@ -63,6 +63,9 @@ async fn daemon_boot_applies_membership_schema_and_reports_ready() {
     assert_eq!(runtime.startup_report().peer().phase(), PeerPhase::Ready);
     assert!(runtime.startup_report().endpoint_id().is_some());
     assert_machines_table_exists(runtime.store()).await;
+    assert_product_tables_exist(runtime.store()).await;
+    assert!(root.join("corrosion/schema/membership.sql").is_file());
+    assert!(!root.join("corrosion/schema/ployz.sql").exists());
 
     let stopped = runtime.shutdown().await.expect("shutdown");
     assert!(!stopped.is_ready());
@@ -96,14 +99,15 @@ async fn daemon_restart_preserves_peer_endpoint_id_and_schema_usability() {
     let first = DaemonRuntime::start(config.clone()).await.expect("first");
     let first_endpoint = first.endpoint_id();
     let machine_id = restart_machine_id();
+    let island_id = restart_island_id();
     assert_machines_table_exists(first.store()).await;
-    upsert_machine_row(first.store(), &machine_id).await;
+    upsert_machine_row(first.store(), &machine_id, &island_id).await;
     first.shutdown().await.expect("first shutdown");
 
     let second = DaemonRuntime::start(config).await.expect("second");
     assert_eq!(second.endpoint_id(), first_endpoint);
     assert_machines_table_exists(second.store()).await;
-    assert_machine_row_exists(second.store(), &machine_id).await;
+    assert_machine_row_exists(second.store(), &island_id, &machine_id).await;
     second.shutdown().await.expect("second shutdown");
     let _ = fs::remove_dir_all(root);
 }
@@ -132,6 +136,45 @@ async fn daemon_adopts_existing_corrosion_agent_without_claiming_process_shutdow
         .shutdown(Duration::from_millis(250))
         .await
         .expect("existing corrosion shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn start_or_adopt_reuses_persisted_corrosion_addresses() {
+    let root = temp_state_dir("persisted-corrosion-addresses");
+    let first_config =
+        test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let original_addresses = first_config.corrosion_addresses();
+    let first = DaemonRuntime::start(first_config)
+        .await
+        .expect("first daemon");
+    assert!(root.join("corrosion/polis-addresses.toml").is_file());
+    assert!(root.join("corrosion/polis-owner.toml").is_file());
+    assert!(
+        fs::read_to_string(root.join("corrosion/polis-owner.toml"))
+            .expect("owner marker")
+            .contains("owner_id = \"ployzd\"")
+    );
+
+    let second_config =
+        DaemonConfig::for_test_state_dir(&root, different_addresses(original_addresses));
+    let second = DaemonRuntime::start(second_config)
+        .await
+        .expect("second daemon");
+
+    assert_eq!(
+        second.startup_report().corrosion().api_addr(),
+        first.startup_report().corrosion().api_addr()
+    );
+    assert_eq!(second.corrosion_process_id(), None);
+    let second_stopped = second.shutdown().await.expect("second shutdown");
+    assert_eq!(
+        second_stopped.corrosion().cleanup(),
+        CorrosionCleanup::Unmanaged
+    );
+    assert_machines_table_exists(first.store()).await;
+
+    first.shutdown().await.expect("first shutdown");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -240,7 +283,14 @@ async fn shutdown_reports_managed_corrosion_that_already_exited() {
             corrosion: Some(polis::CorrosionAgentError::UnexpectedExit { exit }),
             ..
         } => assert!(!exit.status().is_empty()),
-        other => panic!("expected unexpected corrosion exit, got {other:?}"),
+        other @ (DaemonErrorKind::Setup { .. }
+        | DaemonErrorKind::Corrosion { .. }
+        | DaemonErrorKind::Store { .. }
+        | DaemonErrorKind::Peer { .. }
+        | DaemonErrorKind::Shutdown { .. }
+        | DaemonErrorKind::StartupRollback { .. }) => {
+            panic!("expected unexpected corrosion exit, got {other:?}");
+        }
     }
     assert_eq!(
         error.startup_report().corrosion().cleanup(),
@@ -307,16 +357,51 @@ async fn assert_machines_table_exists(store: &polis::CorrosionStore) {
     );
 }
 
-async fn upsert_machine_row(store: &polis::CorrosionStore, machine_id: &polis::StoreMachineId) {
+async fn assert_product_tables_exist(store: &polis::CorrosionStore) {
+    let query = polis::StoreStatement::new(
+        "SELECT name FROM sqlite_schema
+        WHERE type = 'table'
+          AND name IN (
+            'ployz_domain_status',
+            'ployz_acme_certificate_attempts',
+            'ployz_serving_routes'
+          )
+        ORDER BY name",
+    )
+    .expect("query");
+    let rows = store
+        .query(&query, test_store_timeout())
+        .await
+        .expect("product tables");
+    let names = rows
+        .rows()
+        .iter()
+        .map(|row| row.text("name").expect("name").to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        vec![
+            "ployz_acme_certificate_attempts".to_string(),
+            "ployz_domain_status".to_string(),
+            "ployz_serving_routes".to_string(),
+        ]
+    );
+}
+
+async fn upsert_machine_row(
+    store: &polis::CorrosionStore,
+    machine_id: &polis::StoreMachineId,
+    island_id: &polis::IslandId,
+) {
     let row = polis::MachineRow::new(
         machine_id.clone(),
-        polis::IslandId::parse("restart-island").expect("island id"),
+        island_id.clone(),
         polis::IrohEndpointId::parse("restart-endpoint").expect("endpoint"),
         polis::WireGuardPublicKey::parse("restart-wireguard-key").expect("wireguard key"),
         polis::OverlayIp::parse("fd00::10").expect("overlay ip"),
         polis::MembershipLifecycle::Active,
         polis::RowEpoch::new(1).expect("epoch"),
-        1,
     );
     let statement = polis::upsert_machine_statement(&row).expect("upsert statement");
     store
@@ -327,9 +412,11 @@ async fn upsert_machine_row(store: &polis::CorrosionStore, machine_id: &polis::S
 
 async fn assert_machine_row_exists(
     store: &polis::CorrosionStore,
+    island_id: &polis::IslandId,
     machine_id: &polis::StoreMachineId,
 ) {
-    let query = polis::MachineRowQuery::by_machine_id(machine_id).expect("machine query");
+    let query =
+        polis::MachineRowQuery::by_island_machine_id(island_id, machine_id).expect("machine query");
     let rows = store
         .query(query.statement(), test_store_timeout())
         .await
@@ -340,10 +427,15 @@ async fn assert_machine_row_exists(
         .expect("persisted row");
 
     assert_eq!(row.machine_id(), machine_id);
+    assert_eq!(row.island_id(), island_id);
 }
 
 fn restart_machine_id() -> polis::StoreMachineId {
     polis::StoreMachineId::parse("restart-machine").expect("machine id")
+}
+
+fn restart_island_id() -> polis::IslandId {
+    polis::IslandId::parse("restart-island").expect("island id")
 }
 
 fn test_store_timeout() -> polis::StoreTimeout {
@@ -368,6 +460,15 @@ fn short_temp_root() -> PathBuf {
 
 fn test_corrosion_addresses() -> polis::CorrosionAgentAddresses {
     polis::test_support::corrosion_agent_addresses().expect("corrosion addresses")
+}
+
+fn different_addresses(existing: polis::CorrosionAgentAddresses) -> polis::CorrosionAgentAddresses {
+    loop {
+        let next = test_corrosion_addresses();
+        if next != existing {
+            return next;
+        }
+    }
 }
 
 fn test_config(root: &Path) -> DaemonConfig {
