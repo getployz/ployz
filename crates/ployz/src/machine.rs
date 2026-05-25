@@ -1,6 +1,6 @@
 //! Machine membership product ports.
 
-use std::net::IpAddr;
+use std::{future::Future, net::IpAddr};
 
 use crate::error::MachineFailure;
 use crate::operation::MutationContext;
@@ -204,43 +204,23 @@ impl MachineAddPlan {
     fn diff(observed: MachineStatus, desired: MachineMembership) -> Result<Self, MachineFailure> {
         match observed {
             MachineStatus::Absent => Ok(Self::Join(desired)),
-            MachineStatus::Joined(current) if current.same_machine_record(&desired) => {
-                Ok(Self::AlreadyPresent(current))
-            }
-            MachineStatus::Joined(current) => Err(MachineFailure::MembershipConflict {
-                machine: current.machine,
-                epoch: Some(current.epoch),
-            }),
-            MachineStatus::Removing(removal) => Err(MachineFailure::MachineRemoving {
-                machine: removal.machine,
-                epoch: removal.epoch,
-            }),
-            MachineStatus::Tombstoned(tombstone) => Err(MachineFailure::MachineTombstoned {
-                machine: tombstone.machine,
-                epoch: tombstone.epoch,
-            }),
-            MachineStatus::Conflicted { machine, epoch } => {
-                Err(MachineFailure::MembershipConflict {
-                    machine,
-                    epoch: Some(epoch),
-                })
-            }
+            status => joined_membership_from_status(status, &desired).map(Self::AlreadyPresent),
         }
     }
 }
 
 pub trait MachineMembershipPort {
-    fn observe(
-        &self,
-        context: &MutationContext,
-        machine: &MachineId,
-    ) -> Result<MachineStatus, MachineFailure>;
+    fn observe<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        machine: &'a MachineId,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a;
 
-    fn join(
-        &self,
-        context: &MutationContext,
-        membership: &MachineMembership,
-    ) -> Result<MachineMembership, MachineFailure>;
+    fn join<'a>(
+        &'a self,
+        context: &'a MutationContext,
+        membership: &'a MachineMembership,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a;
 }
 
 pub struct MachineMembershipService<M> {
@@ -258,28 +238,51 @@ impl<M> MachineMembershipService<M>
 where
     M: MachineMembershipPort,
 {
-    pub fn add_machine(
+    pub async fn add_machine(
         &self,
         context: &MutationContext,
         request: MachineAddRequest,
     ) -> Result<MachineAddOutcome, MachineFailure> {
-        let observed = self.membership.observe(context, &request.machine)?;
+        let observed = self.membership.observe(context, &request.machine).await?;
         let desired = request.desired_membership();
         match MachineAddPlan::diff(observed, desired)? {
             MachineAddPlan::AlreadyPresent(current) => {
                 Ok(MachineAddOutcome::AlreadyPresent(current))
             }
             MachineAddPlan::Join(desired) => {
-                let joined = self.membership.join(context, &desired)?;
-                if !joined.same_machine_record(&desired) {
-                    return Err(MachineFailure::MembershipConflict {
-                        machine: joined.machine,
-                        epoch: Some(joined.epoch),
-                    });
-                }
+                let observed = self.membership.join(context, &desired).await?;
+                let joined = joined_membership_from_status(observed, &desired)?;
                 Ok(MachineAddOutcome::Joined(joined))
             }
         }
+    }
+}
+
+fn joined_membership_from_status(
+    observed: MachineStatus,
+    desired: &MachineMembership,
+) -> Result<MachineMembership, MachineFailure> {
+    match observed {
+        MachineStatus::Joined(joined) if joined.same_machine_record(desired) => Ok(joined),
+        MachineStatus::Joined(joined) => Err(MachineFailure::MembershipConflict {
+            machine: joined.machine,
+            epoch: Some(joined.epoch),
+        }),
+        MachineStatus::Removing(removal) => Err(MachineFailure::MachineRemoving {
+            machine: removal.machine,
+            epoch: removal.epoch,
+        }),
+        MachineStatus::Tombstoned(tombstone) => Err(MachineFailure::MachineTombstoned {
+            machine: tombstone.machine,
+            epoch: tombstone.epoch,
+        }),
+        MachineStatus::Conflicted { machine, epoch } => Err(MachineFailure::MembershipConflict {
+            machine,
+            epoch: Some(epoch),
+        }),
+        MachineStatus::Absent => Err(MachineFailure::MutationMismatch {
+            machine: desired.machine.clone(),
+        }),
     }
 }
 
@@ -400,13 +403,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fact_backed_first_add_projects_joined_membership() {
+    #[tokio::test]
+    async fn fact_backed_first_add_projects_joined_membership() {
         let fact_backed_membership = crate::composition::in_memory_machine_membership();
         let service = MachineMembershipService::new(fact_backed_membership);
 
         let outcome = service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .await
             .expect("machine add");
 
         assert!(
@@ -414,16 +418,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fact_backed_already_present_reads_projection_without_fresh_join() {
+    #[tokio::test]
+    async fn fact_backed_already_present_reads_projection_without_fresh_join() {
         let fact_backed_membership = crate::composition::in_memory_machine_membership();
         let service = MachineMembershipService::new(fact_backed_membership);
         service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .await
             .expect("first add");
 
         let outcome = service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .await
             .expect("second add");
 
         assert!(
@@ -431,16 +437,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fact_backed_different_epoch_is_conflict() {
+    #[tokio::test]
+    async fn fact_backed_different_epoch_is_conflict() {
         let fact_backed_membership = crate::composition::in_memory_machine_membership();
         let service = MachineMembershipService::new(fact_backed_membership);
         service
             .add_machine(&context(), request("node-a", 1, "fd00::1"))
+            .await
             .expect("first add");
 
         let error = service
             .add_machine(&context(), request("node-a", 2, "fd00::1"))
+            .await
             .expect_err("epoch conflict");
 
         assert_eq!(

@@ -14,15 +14,24 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
+corro-api-types = { git = "https://github.com/superfly/corrosion", rev = "50542c94a2875d2b66ed9b48dc9d2516440c8c9c" }
+corro-client = { git = "https://github.com/superfly/corrosion", rev = "50542c94a2875d2b66ed9b48dc9d2516440c8c9c" }
+futures-util = "0.3"
+iroh = { version = "=1.0.0-rc.0", default-features = false }
+iroh-tickets = "=1.0.0-rc.0"
+irpc = "0.15.0"
+irpc-iroh = "0.15.0"
 polis = { path = "crates/polis" }
+rusqlite = "0.38"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokio = "1"
 
 [workspace.lints.clippy]
 indexing_slicing = "warn"

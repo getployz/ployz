@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::future::Future;
 use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -39,37 +40,41 @@ impl FakeMembership {
 }
 
 impl MachineMembershipPort for FakeMembership {
-    fn observe(
-        &self,
-        _context: &MutationContext,
-        _machine: &MachineId,
-    ) -> Result<MachineStatus, MachineFailure> {
-        Ok(self.observed.borrow().clone())
+    fn observe<'a>(
+        &'a self,
+        _context: &'a MutationContext,
+        _machine: &'a MachineId,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
+        async move { Ok(self.observed.borrow().clone()) }
     }
 
-    fn join(
-        &self,
-        _context: &MutationContext,
-        membership: &MachineMembership,
-    ) -> Result<MachineMembership, MachineFailure> {
-        self.joined.borrow_mut().push(membership.clone());
-        let joined = self
-            .join_result
-            .borrow()
-            .clone()
-            .unwrap_or_else(|| membership.clone());
-        self.observed.replace(MachineStatus::Joined(joined.clone()));
-        Ok(joined)
+    fn join<'a>(
+        &'a self,
+        _context: &'a MutationContext,
+        membership: &'a MachineMembership,
+    ) -> impl Future<Output = Result<MachineStatus, MachineFailure>> + 'a {
+        async move {
+            self.joined.borrow_mut().push(membership.clone());
+            let joined = self
+                .join_result
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| membership.clone());
+            let status = MachineStatus::Joined(joined);
+            self.observed.replace(status.clone());
+            Ok(status)
+        }
     }
 }
 
-#[test]
-fn first_machine_add_observes_absent_then_writes_join() {
+#[tokio::test]
+async fn first_machine_add_observes_absent_then_writes_join() {
     let membership = FakeMembership::new(MachineStatus::Absent);
     let service = MachineMembershipService::new(membership.clone());
 
     let outcome = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect("machine add");
 
     assert!(
@@ -78,28 +83,30 @@ fn first_machine_add_observes_absent_then_writes_join() {
     assert_eq!(membership.joined().len(), 1);
 }
 
-#[test]
-fn existing_matching_machine_is_already_present_without_mutation() {
+#[tokio::test]
+async fn existing_matching_machine_is_already_present_without_mutation() {
     let current = membership("node-a", 4, "fd00::1");
     let membership = FakeMembership::new(MachineStatus::Joined(current.clone()));
     let service = MachineMembershipService::new(membership.clone());
 
     let outcome = service
         .add_machine(&context(), request("node-a", 4, "fd00::1"))
+        .await
         .expect("machine add");
 
     assert!(matches!(outcome, MachineAddOutcome::AlreadyPresent(joined) if joined == current));
     assert!(membership.joined().is_empty());
 }
 
-#[test]
-fn existing_different_epoch_rejects_without_mutation() {
+#[tokio::test]
+async fn existing_different_epoch_rejects_without_mutation() {
     let current = membership("node-a", 2, "fd00::1");
     let membership = FakeMembership::new(MachineStatus::Joined(current));
     let service = MachineMembershipService::new(membership.clone());
 
     let error = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect_err("epoch conflict");
 
     assert!(matches!(
@@ -112,14 +119,15 @@ fn existing_different_epoch_rejects_without_mutation() {
     assert!(membership.joined().is_empty());
 }
 
-#[test]
-fn existing_conflicting_machine_identity_rejects_without_mutation() {
+#[tokio::test]
+async fn existing_conflicting_machine_identity_rejects_without_mutation() {
     let current = membership("node-a", 2, "fd00::2");
     let membership = FakeMembership::new(MachineStatus::Joined(current));
     let service = MachineMembershipService::new(membership.clone());
 
     let error = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect_err("conflict");
 
     assert!(matches!(
@@ -132,8 +140,8 @@ fn existing_conflicting_machine_identity_rejects_without_mutation() {
     assert!(membership.joined().is_empty());
 }
 
-#[test]
-fn removing_machine_rejects_without_mutation() {
+#[tokio::test]
+async fn removing_machine_rejects_without_mutation() {
     let membership = FakeMembership::new(MachineStatus::Removing(MachineRemoval {
         machine: MachineId::parse("node-a").expect("machine"),
         epoch: MachineEpoch::new(9).expect("epoch"),
@@ -143,6 +151,7 @@ fn removing_machine_rejects_without_mutation() {
 
     let error = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect_err("removing");
 
     assert!(matches!(
@@ -153,8 +162,8 @@ fn removing_machine_rejects_without_mutation() {
     assert!(membership.joined().is_empty());
 }
 
-#[test]
-fn tombstoned_machine_rejects_without_mutation() {
+#[tokio::test]
+async fn tombstoned_machine_rejects_without_mutation() {
     let membership = FakeMembership::new(MachineStatus::Tombstoned(
         ployz::machine::MachineTombstone {
             machine: MachineId::parse("node-a").expect("machine"),
@@ -165,6 +174,7 @@ fn tombstoned_machine_rejects_without_mutation() {
 
     let error = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect_err("tombstoned");
 
     assert!(matches!(
@@ -175,14 +185,15 @@ fn tombstoned_machine_rejects_without_mutation() {
     assert!(membership.joined().is_empty());
 }
 
-#[test]
-fn mismatched_join_result_is_membership_conflict() {
+#[tokio::test]
+async fn mismatched_join_result_is_membership_conflict() {
     let membership = FakeMembership::new(MachineStatus::Absent);
     membership.return_join_result(membership_record("node-a", 1, "fd00::2"));
     let service = MachineMembershipService::new(membership.clone());
 
     let error = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect_err("mismatch");
 
     assert!(matches!(
@@ -198,14 +209,15 @@ fn mismatched_join_result_is_membership_conflict() {
     );
 }
 
-#[test]
-fn stale_absent_observation_rejects_different_epoch_join_result() {
+#[tokio::test]
+async fn stale_absent_observation_rejects_different_epoch_join_result() {
     let membership = FakeMembership::new(MachineStatus::Absent);
     membership.return_join_result(membership_record("node-a", 4, "fd00::1"));
     let service = MachineMembershipService::new(membership.clone());
 
     let error = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect_err("epoch conflict");
 
     assert!(matches!(
@@ -221,16 +233,18 @@ fn stale_absent_observation_rejects_different_epoch_join_result() {
     );
 }
 
-#[test]
-fn fact_backed_machine_add_reuses_projected_membership() {
+#[tokio::test]
+async fn fact_backed_machine_add_reuses_projected_membership() {
     let membership = composition::in_memory_machine_membership();
     let service = MachineMembershipService::new(membership);
 
     let first = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect("first add");
     let second = service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect("same add");
 
     assert!(
@@ -241,16 +255,18 @@ fn fact_backed_machine_add_reuses_projected_membership() {
     );
 }
 
-#[test]
-fn fact_backed_machine_add_rejects_different_epoch() {
+#[tokio::test]
+async fn fact_backed_machine_add_rejects_different_epoch() {
     let membership = composition::in_memory_machine_membership();
     let service = MachineMembershipService::new(membership);
 
     service
         .add_machine(&context(), request("node-a", 1, "fd00::1"))
+        .await
         .expect("first add");
     let error = service
         .add_machine(&context(), request("node-a", 2, "fd00::1"))
+        .await
         .expect_err("epoch conflict");
 
     assert!(matches!(

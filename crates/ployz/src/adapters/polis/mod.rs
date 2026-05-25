@@ -3,6 +3,7 @@
 mod acme;
 mod domain;
 mod machine;
+mod machine_membership;
 mod serving;
 
 use std::collections::BTreeMap;
@@ -10,6 +11,7 @@ use std::collections::BTreeMap;
 pub(crate) use acme::AcmeCertificateIssuer;
 pub(crate) use domain::PolisDomainStatus;
 pub(crate) use machine::PolisMachineMembership;
+pub(crate) use machine_membership::start_corrosion_machine_membership;
 pub(crate) use serving::PolisServingSnapshots;
 
 use crate::error::PrimitiveFailure;

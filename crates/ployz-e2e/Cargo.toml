@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 polis.workspace = true
 ployz = { path = "../ployz", features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true
