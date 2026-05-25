@@ -9,4 +9,6 @@ mod https_deploy;
 #[cfg(test)]
 mod machine_add;
 #[cfg(test)]
+mod substrate_spine;
+#[cfg(test)]
 mod volume_transfer;

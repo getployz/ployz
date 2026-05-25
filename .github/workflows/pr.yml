@@ -29,6 +29,12 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v3
 
+      - name: Install Corrosion
+        run: just install-corrosion
+
+      - name: Expose Corrosion
+        run: echo "CORROSION_BIN=${GITHUB_WORKSPACE}/target/tools/bin/corrosion" >> "$GITHUB_ENV"
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
