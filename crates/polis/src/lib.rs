@@ -23,6 +23,8 @@ mod operations;
 pub mod peers;
 pub mod projection;
 pub mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use authority::{
     Authority, AuthorityContext, AuthorityDecision, AuthorityService, Authorized, GrantEpoch,
@@ -61,6 +63,8 @@ pub use store::{
     StoreResult, StoreRow, StoreStatement, StoreSubscription, StoreSubscriptionEvent, StoreTimeout,
     StoreUpdate, StoreUpdateEvent, StoreValue, TransactionReceipt,
 };
+#[cfg(feature = "test-support")]
+pub use test_support::{CorrosionAgentConfig, CorrosionAgentError, LocalCorrosionAgent};
 
 #[cfg(test)]
 mod tests {
