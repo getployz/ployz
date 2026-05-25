@@ -320,18 +320,20 @@ Done when:
 
 ### Milestone 0: Keep Current Corrosion/Iroh Slice Honest
 
-- Finish machine membership over Corrosion + iroh.
-- Remove or quarantine old fact-store guidance that conflicts with the new
-  substrate direction.
-- Add docs/comments for row ownership and why the current machine `epoch` is
-  only an owner-issued row version, not a global conflict solution.
+- Completed by the substrate-spine e2e slice: real Corrosion lifecycle/schema,
+  real iroh peer preflight, Corrosion-backed machine add, two-node row
+  visibility, and restart-stable endpoint identity.
+- Old p2panda/NATS/fact-store guidance is historical when it conflicts with
+  the current Corrosion + iroh substrate direction.
+- Machine row comments document row ownership and why the current machine
+  `epoch` is only an owner-issued row version, not a global conflict solution.
 
 ### Milestone 1: CLI Skeleton And Substrate Smoke
 
 - Add CLI crate and root command.
 - Add `status`, `doctor`, `machine list`, `machine inspect`.
 - Add local daemon substrate startup.
-- Prove two-node iroh RPC and Corrosion sync.
+- Reuse the substrate-spine e2e as the daemon startup regression target.
 
 ### Milestone 2: Authority Island Mesh And Namespaces
 

@@ -46,6 +46,9 @@ install prefix="/usr/local":
     install -m 0755 target/release/ployz-dns "{{prefix}}/bin/ployz-dns"
     just install-nats-server {{prefix}}
 
+install-corrosion prefix="target/tools":
+    bash ./scripts/install-corrosion.sh "{{prefix}}"
+
 install-nats-server prefix="/usr/local" repo="nats-io/nats-server":
     #!/usr/bin/env bash
     set -euo pipefail

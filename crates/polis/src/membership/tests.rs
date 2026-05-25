@@ -102,6 +102,10 @@ fn schema_rejects_rows_outside_typed_membership_invariants() {
         )
         .is_err()
     );
+    assert!(
+        conn.execute("INSERT INTO machines (machine_id) VALUES ('node-a')", [])
+            .is_err()
+    );
 }
 
 #[test]

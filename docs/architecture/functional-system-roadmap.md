@@ -212,7 +212,9 @@ Preferred shape:
 
 ### 1. Finish The Substrate Spine
 
-- Corrosion service lifecycle: local config, schema apply, startup adoption.
+- Status: local test/e2e proof exists for Corrosion lifecycle, schema load,
+  two-node row visibility, and restart-stable iroh identity. Full daemon boot
+  adoption remains in the machine/runtime work.
 - Store transactions, queries, subscriptions, and updates exposed through
   narrow Polis primitives.
 - Iroh identity, ticket import/export, peer RPC listener/client, probe
