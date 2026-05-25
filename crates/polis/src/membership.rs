@@ -10,7 +10,10 @@ pub use model::{
     IslandId, MachineRow, MembershipLifecycle, OverlayIp, RowEpoch, StoreMachineId,
     WireGuardPublicKey,
 };
-pub use schema::{MachineRowQuery, membership_schema_statements, upsert_machine_statement};
+pub use schema::{
+    MachineRowQuery, membership_schema_statements, membership_startup_schema_sql,
+    upsert_machine_statement, verify_membership_schema,
+};
 
 #[cfg(test)]
 mod tests;

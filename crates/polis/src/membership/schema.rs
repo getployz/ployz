@@ -1,6 +1,14 @@
 use super::model::machine_row_from_store_row;
-use super::{MachineRow, StoreMachineId};
-use crate::{StoreParam, StoreQueryRows, StoreResult, StoreStatement};
+use super::{
+    IslandId, MachineRow, MembershipLifecycle, OverlayIp, RowEpoch, StoreMachineId,
+    WireGuardPublicKey,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::{
+    CorrosionStore, IrohEndpointId, StoreParam, StoreQueryRows, StoreResult, StoreStatement,
+    StoreTimeout,
+};
 
 const MACHINE_COLUMNS: &str = "machine_id,
             island_id,
@@ -20,6 +28,37 @@ pub fn membership_schema_statements() -> StoreResult<Vec<StoreStatement>> {
         .filter(|statement| !statement.is_empty())
         .map(StoreStatement::new)
         .collect()
+}
+
+pub async fn verify_membership_schema(
+    store: &CorrosionStore,
+    timeout: StoreTimeout,
+) -> StoreResult<()> {
+    verify_machine_columns(store, timeout).await?;
+    verify_machine_lifecycle_index(store, timeout).await?;
+    verify_machine_write_path(store, timeout).await
+}
+
+#[must_use]
+pub fn membership_startup_schema_sql() -> &'static str {
+    // Corrosion v1.0 file-backed startup schemas require defaults on non-null
+    // columns for forward compatibility. Keep those defaults out of the
+    // canonical Polis schema and use them only for Corrosion startup topology;
+    // product writes still provide every column.
+    "CREATE TABLE IF NOT EXISTS machines (
+    machine_id TEXT NOT NULL CHECK(length(trim(machine_id)) > 0),
+    island_id TEXT NOT NULL DEFAULT 'unknown-island' CHECK(length(trim(island_id)) > 0),
+    iroh_endpoint_id TEXT NOT NULL DEFAULT 'unknown-endpoint' CHECK(length(trim(iroh_endpoint_id)) > 0),
+    wireguard_public_key TEXT NOT NULL DEFAULT 'unknown-wireguard' CHECK(length(trim(wireguard_public_key)) > 0),
+    overlay_ip TEXT NOT NULL DEFAULT '0.0.0.0' CHECK(length(trim(overlay_ip)) > 0),
+    lifecycle TEXT NOT NULL DEFAULT 'active' CHECK(lifecycle IN ('active', 'removing', 'tombstoned', 'conflicted', 'deleted')),
+    epoch INTEGER NOT NULL DEFAULT 1 CHECK(epoch > 0),
+    updated_at INTEGER NOT NULL DEFAULT 0 CHECK(updated_at >= 0),
+    PRIMARY KEY(machine_id)
+);
+
+CREATE INDEX IF NOT EXISTS machines_lifecycle_idx
+    ON machines(lifecycle);"
 }
 
 pub fn upsert_machine_statement(row: &MachineRow) -> StoreResult<StoreStatement> {
@@ -62,6 +101,106 @@ pub fn upsert_machine_statement(row: &MachineRow) -> StoreResult<StoreStatement>
             StoreParam::Integer(row.updated_at),
         ],
     )
+}
+
+async fn verify_machine_columns(store: &CorrosionStore, timeout: StoreTimeout) -> StoreResult<()> {
+    let statement = StoreStatement::new(
+        "SELECT name, type, \"notnull\" AS not_null, pk
+        FROM pragma_table_info('machines')
+        ORDER BY cid",
+    )?;
+    let rows = store.query(&statement, timeout).await?;
+    let actual = rows
+        .rows()
+        .iter()
+        .map(|row| {
+            Ok((
+                row.text("name")?.to_string(),
+                row.text("type")?.to_string(),
+                row.integer("not_null")?,
+                row.integer("pk")?,
+            ))
+        })
+        .collect::<StoreResult<Vec<_>>>()?;
+    let expected = [
+        ("machine_id", "TEXT", 1, 1),
+        ("island_id", "TEXT", 1, 0),
+        ("iroh_endpoint_id", "TEXT", 1, 0),
+        ("wireguard_public_key", "TEXT", 1, 0),
+        ("overlay_ip", "TEXT", 1, 0),
+        ("lifecycle", "TEXT", 1, 0),
+        ("epoch", "INTEGER", 1, 0),
+        ("updated_at", "INTEGER", 1, 0),
+    ];
+    if actual
+        == expected
+            .into_iter()
+            .map(|(name, ty, not_null, pk)| (name.to_string(), ty.to_string(), not_null, pk))
+            .collect::<Vec<_>>()
+    {
+        Ok(())
+    } else {
+        Err(crate::StoreError::MalformedPayload)
+    }
+}
+
+async fn verify_machine_lifecycle_index(
+    store: &CorrosionStore,
+    timeout: StoreTimeout,
+) -> StoreResult<()> {
+    let statement = StoreStatement::new(
+        "SELECT name
+        FROM sqlite_schema
+        WHERE type = 'index'
+          AND tbl_name = 'machines'
+          AND name = 'machines_lifecycle_idx'",
+    )?;
+    let rows = store.query(&statement, timeout).await?;
+    if rows.rows().first().and_then(|row| row.text("name").ok()) == Some("machines_lifecycle_idx") {
+        Ok(())
+    } else {
+        Err(crate::StoreError::MalformedPayload)
+    }
+}
+
+async fn verify_machine_write_path(
+    store: &CorrosionStore,
+    timeout: StoreTimeout,
+) -> StoreResult<()> {
+    let machine_id = schema_probe_machine_id()?;
+    let cleanup = StoreStatement::with_params(
+        "DELETE FROM machines WHERE machine_id = ?1",
+        vec![StoreParam::Text(machine_id.as_str().to_string())],
+    )?;
+    let row = MachineRow::new(
+        machine_id,
+        IslandId::parse("schema-probe-island").map_err(|_| crate::StoreError::MalformedPayload)?,
+        IrohEndpointId::parse("schema-probe-endpoint")
+            .map_err(|_| crate::StoreError::MalformedPayload)?,
+        WireGuardPublicKey::parse("schema-probe-wireguard")
+            .map_err(|_| crate::StoreError::MalformedPayload)?,
+        OverlayIp::parse("127.0.0.1").map_err(|_| crate::StoreError::MalformedPayload)?,
+        MembershipLifecycle::Active,
+        RowEpoch::new(1).map_err(|_| crate::StoreError::MalformedPayload)?,
+        0,
+    );
+    let insert = upsert_machine_statement(&row)?;
+    store
+        .execute_transaction(&[cleanup.clone(), insert, cleanup], timeout)
+        .await?;
+    Ok(())
+}
+
+fn schema_probe_machine_id() -> StoreResult<StoreMachineId> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| crate::StoreError::MalformedPayload)?;
+    StoreMachineId::parse(format!(
+        "polis-schema-probe-{}-{}",
+        std::process::id(),
+        elapsed.as_nanos()
+    ))
+    .map_err(|_| crate::StoreError::MalformedPayload)
 }
 
 #[derive(Debug, Clone)]

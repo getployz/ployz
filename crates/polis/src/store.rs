@@ -314,11 +314,14 @@ impl CorrosionStore {
             .iter()
             .map(|statement| statement.as_corrosion().clone())
             .collect::<Vec<_>>();
-        let response = self
-            .client
-            .execute(&statements, Some(timeout.seconds_value()))
-            .await
-            .map_err(map_client_error)?;
+        let response = tokio::time::timeout(
+            timeout.duration(),
+            self.client
+                .execute(&statements, Some(timeout.seconds_value())),
+        )
+        .await
+        .map_err(|_| StoreError::Timeout)?
+        .map_err(map_client_error)?;
         transaction_receipt(response.results)
     }
 

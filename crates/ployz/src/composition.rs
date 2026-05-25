@@ -3,8 +3,6 @@
 //! Feature modules should depend on Ployz-owned traits. This module is allowed
 //! to assemble concrete adapters and pass them into product orchestration.
 
-use std::path::Path;
-
 use crate::acme::{
     CertificateAuthorityPort, CertificatePort, CertificateReadinessService, CertificateStatusPort,
 };
@@ -17,6 +15,7 @@ use crate::error::PrimitiveFailure;
 use crate::machine::MachineMembershipPort;
 use crate::operation::ScopeId;
 use crate::serving::ServingSnapshotPort;
+pub use polis::PeerRuntime;
 use polis::external_attempt as attempt;
 
 #[must_use]
@@ -54,70 +53,6 @@ pub fn iroh_peer_rpc_probe(
     ticket: &polis::PeerTicket,
 ) -> Result<impl polis::PeerProbe, PrimitiveFailure> {
     polis::PeerRpcProbe::connect(endpoint, ticket).map_err(map_peer_probe_error)
-}
-
-pub struct PeerRuntime {
-    endpoint: polis::PeerEndpoint,
-    listener: polis::PeerRpcListener,
-    ticket: polis::PeerTicket,
-}
-
-impl PeerRuntime {
-    pub async fn start(
-        identity_path: &Path,
-        boot_deadline: polis::PeerProbeDeadline,
-    ) -> Result<Self, PrimitiveFailure> {
-        let identity =
-            polis::load_or_create_identity(identity_path).map_err(map_peer_probe_error)?;
-        let endpoint = polis::bind_peer_endpoint(&identity)
-            .await
-            .map_err(map_peer_probe_error)?;
-        let ticket = match polis::issue_endpoint_ticket(&endpoint, boot_deadline).await {
-            Ok(ticket) => ticket,
-            Err(error) => {
-                endpoint.close().await;
-                return Err(map_peer_probe_error(error));
-            }
-        };
-        let listener = match polis::PeerRpcListener::start(endpoint.clone()) {
-            Ok(listener) => listener,
-            Err(error) => {
-                endpoint.close().await;
-                return Err(map_peer_probe_error(error));
-            }
-        };
-
-        Ok(Self {
-            endpoint,
-            listener,
-            ticket,
-        })
-    }
-
-    #[must_use]
-    pub fn endpoint(&self) -> polis::PeerEndpoint {
-        self.endpoint.clone()
-    }
-
-    #[must_use]
-    pub fn endpoint_id(&self) -> polis::IrohEndpointId {
-        self.ticket.endpoint_id()
-    }
-
-    #[must_use]
-    pub fn ticket(&self) -> &polis::PeerTicket {
-        &self.ticket
-    }
-
-    pub async fn shutdown(
-        self,
-        shutdown_deadline: polis::PeerProbeDeadline,
-    ) -> Result<(), PrimitiveFailure> {
-        self.listener
-            .shutdown(shutdown_deadline)
-            .await
-            .map_err(map_peer_probe_error)
-    }
 }
 
 fn map_peer_probe_error(error: polis::PeerError) -> PrimitiveFailure {

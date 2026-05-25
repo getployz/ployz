@@ -4,6 +4,7 @@ mod endpoint;
 mod identity;
 mod probe;
 mod rpc;
+mod runtime;
 mod tickets;
 
 use thiserror::Error;
@@ -16,6 +17,7 @@ pub use probe::{
     FakePeerProbe, PeerProbe, PeerProbeDeadline, PeerProbeReceipt, preflight_membership,
 };
 pub use rpc::{PeerRpcClient, PeerRpcListener, PeerRpcProbe};
+pub use runtime::PeerRuntime;
 pub use tickets::{PeerTicket, PeerTicketPath, import_ticket, issue_ticket};
 
 pub const PLOYZ_PEER_ALPN: &[u8] = b"ployz/peer-rpc/0";

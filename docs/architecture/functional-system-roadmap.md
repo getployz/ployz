@@ -213,8 +213,10 @@ Preferred shape:
 ### 1. Finish The Substrate Spine
 
 - Status: local test/e2e proof exists for Corrosion lifecycle, schema load,
-  two-node row visibility, and restart-stable iroh identity. Full daemon boot
-  adoption remains in the machine/runtime work.
+  two-node row visibility, and restart-stable iroh identity. The next daemon
+  slice makes `ployzd` compose the Polis Corrosion agent, apply schema, start
+  persistent iroh identity, report typed substrate startup state, and shut down
+  cleanly.
 - Store transactions, queries, subscriptions, and updates exposed through
   narrow Polis primitives.
 - Iroh identity, ticket import/export, peer RPC listener/client, probe

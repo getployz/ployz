@@ -45,6 +45,10 @@ in documented areas.
 - AI is allowed to implement features only inside established boundaries. It
   must not invent architecture by accreting fields, enum variants, or branches
   onto existing global paths.
+- When asked to run a thermonuclear code review as a sub-agent, tell the
+  sub-agent to use the thermonuclear code review skill and give it only the
+  diff/review target. Do not pass skill paths, prior implementation context,
+  rationale, desired findings, or suggested fixes.
 - Adding a capability must not add variants to one global control-plane enum
   unless the capability is truly public API. Internal node RPC must have its own
   typed protocol, separate from external CLI/API requests.

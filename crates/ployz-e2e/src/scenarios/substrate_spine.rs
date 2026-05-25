@@ -196,28 +196,26 @@ async fn shutdown_peer(peer: PeerRuntime, label: &str) {
 async fn start_corrosion_agent(
     bootstrap: Vec<std::net::SocketAddr>,
 ) -> (polis::LocalCorrosionAgent, polis::CorrosionStore) {
-    let config = polis::CorrosionAgentConfig::isolated()
+    let config = polis::CorrosionAgentFixtureConfig::isolated()
         .expect("corrosion config")
         .with_bootstrap(bootstrap)
-        .with_schema_file("membership.sql", corrosion_startup_membership_schema());
+        .with_schema_file("membership.sql", polis::membership_startup_schema_sql());
     start_agent(config).await
 }
 
 async fn start_empty_corrosion_agent(
     bootstrap: Vec<std::net::SocketAddr>,
 ) -> (polis::LocalCorrosionAgent, polis::CorrosionStore) {
-    let config = polis::CorrosionAgentConfig::isolated()
+    let config = polis::CorrosionAgentFixtureConfig::isolated()
         .expect("corrosion config")
         .with_bootstrap(bootstrap);
     start_agent(config).await
 }
 
 async fn start_agent(
-    config: polis::CorrosionAgentConfig,
+    config: polis::CorrosionAgentFixtureConfig,
 ) -> (polis::LocalCorrosionAgent, polis::CorrosionStore) {
-    let agent = polis::LocalCorrosionAgent::start(config)
-        .await
-        .expect("corrosion agent");
+    let agent = config.start().await.expect("corrosion agent");
     let store = agent.store().expect("corrosion store");
     (agent, store)
 }
@@ -311,27 +309,6 @@ fn machine_row(machine: &str, endpoint_id: &str, overlay_ip: &str) -> polis::Mac
         polis::RowEpoch::new(1).expect("epoch"),
         100,
     )
-}
-
-fn corrosion_startup_membership_schema() -> &'static str {
-    // Corrosion v1.0 file-backed startup schemas require defaults on non-null
-    // columns for forward compatibility. Keep those defaults out of the
-    // canonical Polis schema and use them only for the replicated startup
-    // topology exercised here; product writes still provide every column.
-    "CREATE TABLE IF NOT EXISTS machines (
-    machine_id TEXT NOT NULL CHECK(length(trim(machine_id)) > 0),
-    island_id TEXT NOT NULL DEFAULT 'unknown-island' CHECK(length(trim(island_id)) > 0),
-    iroh_endpoint_id TEXT NOT NULL DEFAULT 'unknown-endpoint' CHECK(length(trim(iroh_endpoint_id)) > 0),
-    wireguard_public_key TEXT NOT NULL DEFAULT 'unknown-wireguard' CHECK(length(trim(wireguard_public_key)) > 0),
-    overlay_ip TEXT NOT NULL DEFAULT '0.0.0.0' CHECK(length(trim(overlay_ip)) > 0),
-    lifecycle TEXT NOT NULL DEFAULT 'active' CHECK(lifecycle IN ('active', 'removing', 'tombstoned', 'conflicted', 'deleted')),
-    epoch INTEGER NOT NULL DEFAULT 1 CHECK(epoch > 0),
-    updated_at INTEGER NOT NULL DEFAULT 0 CHECK(updated_at >= 0),
-    PRIMARY KEY(machine_id)
-);
-
-CREATE INDEX IF NOT EXISTS machines_lifecycle_idx
-    ON machines(lifecycle);"
 }
 
 fn temp_identity_path(label: &str) -> PathBuf {

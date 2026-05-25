@@ -14,6 +14,7 @@
 
 pub mod authority;
 pub mod claims;
+pub mod corrosion_agent;
 pub mod error;
 pub mod external_attempt;
 pub mod facts;
@@ -32,6 +33,10 @@ pub use authority::{
 pub use claims::{
     ClaimEpoch, ClaimGuard, ClaimHash, ClaimLease, FenceCheck, FenceToken, HolderId, ResourceId,
 };
+pub use corrosion_agent::{
+    CorrosionAdoption, CorrosionAgentAddresses, CorrosionAgentConfig, CorrosionAgentError,
+    CorrosionExit, CorrosionShutdown, LocalCorrosionAgent,
+};
 pub use error::{Error, Result};
 pub use facts::{
     CandidateStatus, FactAppendFingerprint, FactAppendOutcome, FactAppendRequest, FactAppendScope,
@@ -44,13 +49,14 @@ pub use facts::{
 pub use identity::{IrohEndpointId, PrincipalId, ScopeId, SourceWatermark};
 pub use membership::{
     IslandId, MachineRow, MachineRowQuery, MembershipLifecycle, OverlayIp, RowEpoch,
-    StoreMachineId, WireGuardPublicKey, membership_schema_statements, upsert_machine_statement,
+    StoreMachineId, WireGuardPublicKey, membership_schema_statements,
+    membership_startup_schema_sql, upsert_machine_statement, verify_membership_schema,
 };
 pub use operations::{IdempotencyKey, OperationId, SubmittedFenceFingerprint};
 pub use peers::{
     FakePeerProbe, PLOYZ_PEER_ALPN, PeerEndpoint, PeerError, PeerIdentity, PeerProbe,
     PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcClient, PeerRpcListener,
-    PeerRpcProbe, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
+    PeerRpcProbe, PeerRuntime, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
     issue_endpoint_ticket, issue_ticket, load_or_create_identity, preflight_membership,
 };
 pub use projection::{
@@ -63,9 +69,8 @@ pub use store::{
     StoreResult, StoreRow, StoreStatement, StoreSubscription, StoreSubscriptionEvent, StoreTimeout,
     StoreUpdate, StoreUpdateEvent, StoreValue, TransactionReceipt,
 };
-#[cfg(feature = "test-support")]
-pub use test_support::{CorrosionAgentConfig, CorrosionAgentError, LocalCorrosionAgent};
-
+#[cfg(any(test, feature = "test-support"))]
+pub use test_support::CorrosionAgentFixtureConfig;
 #[cfg(test)]
 mod tests {
     #[test]

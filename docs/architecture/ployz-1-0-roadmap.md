@@ -332,7 +332,9 @@ Done when:
 
 - Add CLI crate and root command.
 - Add `status`, `doctor`, `machine list`, `machine inspect`.
-- Add local daemon substrate startup.
+- Add local daemon substrate startup: `ployzd` composes the Polis Corrosion
+  agent, applies membership schema, starts persistent iroh identity, reports
+  typed substrate startup state, and shuts down cleanly.
 - Reuse the substrate-spine e2e as the daemon startup regression target.
 
 ### Milestone 2: Authority Island Mesh And Namespaces
