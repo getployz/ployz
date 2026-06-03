@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[dependencies]
+[dev-dependencies]
 polis = { workspace = true, features = ["test-support"] }
 ployz = { path = "../ployz", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

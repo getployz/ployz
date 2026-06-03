@@ -13,18 +13,44 @@ origin:
 
 ## 1.0 Definition
 
-Ployz 1.0 is a small-cluster orchestration core that can run real production
-workloads through explicit operator commands:
+Ployz 1.0 is the minimal runtime orchestrator behind the launch promise:
+Ployz Cloud is Railway, but it runs on your own servers. The core provides a
+Docker/Compose-style runtime contract across 1-200 owned servers, with
+explicit deploys, overlay networking, HTTP/HTTPS routing, ACME-managed
+certificates, and Ployz-managed ZFS volumes from day one.
 
-- machines join, leave, drain, and expose clear diagnostics;
-- namespaces define deployment/resource scope;
-- services deploy through previewable plans;
-- rolling deploys promote traffic only after readiness;
-- volumes can be created, forked, moved, and rolled back through ZFS-backed
-  evidence;
-- PR branches can run with fresh or cloned state;
-- promote and rollback are first-class deploy compiler front-ends;
-- cloud and agents can drive the same public CLI/API without private semantics.
+Cloud owns the rich product: canvas, environments, GitHub, builders, AI,
+billing, deploy queues, and workflow history. Inngest owns multi-step product
+processes. Rust owns small runtime operations and the facts needed to prove
+what is running on customer-owned machines.
+
+The 1.0 product must prove the permanent substrate:
+
+- machines join, stay identifiable across restart, and expose clear
+  diagnostics;
+- namespace is a typed grouping label on containers, volumes, and
+  certificates, not a durable table;
+- services deploy through previewable plans that create, replace, and remove
+  Ployz-owned containers;
+- service identity is derived from container rows, not a durable services
+  table;
+- HTTP/HTTPS routes and gateway config are derived from container specs,
+  container observation, and usable certificate state;
+- persistent state uses Ployz-managed ZFS datasets, not opaque Docker volumes
+  or host bind mounts;
+- stateful service placement respects volume ownership;
+- cloud and agents can drive the same public CLI/API without private
+  orchestration semantics.
+
+The 1.0 core does not ship branch environments, namespace lifecycle,
+promotion, rollback, volume clone/fork, cross-machine volume movement, or
+machine drain/remove as core-owned primitives. Cloud may model product
+environments and workflow history now; the core keeps only the runtime hooks
+those future primitives need: typed namespace labels embedded in Ployz-owned
+resource rows, deploy specs embedded in Ployz-owned container rows, stable
+service identity labels, volume rows, ZFS dataset identity, volume owner
+machines, certificate state, ACME attempt evidence, and gateway projection
+from container/certificate truth.
 
 The product should stay closer to `~/dev/uncloud` simplicity than the old
 legacy codebase:
@@ -33,7 +59,9 @@ legacy codebase:
 - typed product specs;
 - explicit plan/confirm/execute flows;
 - small operation structs;
+- a small durable row set;
 - thin Corrosion access;
+- services, routes, and deploys as derived command surfaces;
 - no hidden desired-state controller;
 - no generic substrate framework invented before it is needed.
 
@@ -42,9 +70,10 @@ legacy codebase:
 - `polis` owns substrate primitives: Corrosion rows, transactions,
   subscriptions, iroh identity, tickets, peer RPC, probes, deadlines, and
   distributed failure typing.
-- `ployz` owns product behavior: machine lifecycle, namespace meaning, deploy
-  semantics, branching, routing, volume movement, readiness, placement, and
-  operation outcomes.
+- `ployz` owns product behavior: machine lifecycle, namespace labeling, deploy
+  semantics, container runtime identity, routing projection, ACME certificate
+  lifecycle, ZFS-backed volume ownership, readiness, placement, and operation
+  outcomes.
 - Ployz adapters translate between product ports and Polis primitives.
 - Corrosion stores row-shaped cluster state. It is not the command bus.
 - iroh RPC carries bounded peer commands.
@@ -55,16 +84,23 @@ legacy codebase:
   own island and ask a production island to deploy resources; the production
   island authorizes and writes its own rows.
 - Tickets are bootstrap envelopes. Durable identity is iroh endpoint ID.
-- Owner-machine serialization is the default fence. Coordinators RPC to the
-  resource owner, and that owner enforces local ordering before writing its
-  Corrosion rows. Explicit distributed claims are a later escape hatch for a
-  proven multi-owner path.
+- Owner-machine serialization is the default fence for stateful resources.
+  Coordinators RPC to the resource owner, and that owner enforces local
+  ordering before writing its Corrosion rows. Explicit distributed claims are a
+  later escape hatch for a proven multi-owner path.
+- Inngest is the workflow engine for the cloud product. Core operations are
+  bounded runtime transitions with typed results, not durable product
+  workflows.
+- Cloud Postgres may store product state, editor state, deploy workflow state,
+  and cached observations. It must not become the source of cluster runtime
+  truth.
 
 ## Roadmap Tracks
 
 ### Track A: CLI And Public Contract
 
-Goal: make the target product surface concrete before implementation spreads.
+Goal: make the small runtime contract concrete before implementation spreads,
+so cloud, Inngest, CLI, and agents can all call the same operations.
 
 Deliverables:
 
@@ -74,6 +110,7 @@ Deliverables:
 - human and JSON output envelopes;
 - preview/apply/verify conventions;
 - exit-code contract;
+- operation result schemas for cloud workflow persistence;
 - public API structs shared by CLI/cloud/agents.
 
 First slices:
@@ -85,7 +122,14 @@ First slices:
 
 Done when:
 
-- every planned 1.0 workflow has a visible command;
+- the cut 1.0 workflows have visible commands: status, doctor, machine
+  list/inspect/add, namespace list/inspect, deploy preview/apply/verify,
+  service list/inspect/logs, container list/inspect/logs, and volume
+  list/inspect/create;
+- namespace list/inspect are derived from containers, volumes, and
+  certificates; there is no namespace create command in 1.0;
+- container, route, and certificate status is visible from service inspection
+  and doctor output;
 - JSON output can be consumed by a zero-context agent without parsing human
   text;
 - command help text names the risk and confirmation behavior for mutating
@@ -120,30 +164,26 @@ Done when:
 - `machine add` writes/observes rows through Corrosion;
 - peer RPC has explicit deadlines and typed failures.
 
-### Track C: Authority Island Mesh And Namespaces
+### Track C: Authority Island Mesh
 
-Goal: network every machine in the authority island together, while keeping
-namespace as a deploy/resource grouping rather than a network boundary.
+Goal: network every machine in the authority island together. Namespaces do
+not change network policy in 1.0.
 
 Deliverables:
 
-- `namespaces` table;
-- product namespace model;
 - authority island peer query;
 - local WireGuard controller/adoption;
-- namespace diagnostics.
+- mesh diagnostics.
 
 First slices:
 
-1. Add namespace rows.
-2. Derive full authority island peer set for one machine.
-3. Rebuild WireGuard config from derived peers.
-4. Expose namespace inspection and `doctor mesh`.
+1. Derive full authority island peer set for one machine.
+2. Rebuild WireGuard config from derived peers.
+3. Expose `doctor mesh`.
 
 Done when:
 
 - machines in the same authority island get network edges;
-- namespace changes do not rewrite WireGuard policy;
 - a daemon restart rebuilds the same mesh without rewriting cluster truth.
 
 ### Track D: Runtime Backend
@@ -164,157 +204,92 @@ First slices:
 
 1. Start/stop/inspect a trivial workload on one machine.
 2. Add readiness check with timeout.
-3. Add logs surface for failed deploy phases.
+3. Add logs surface for failed container starts.
 4. Add restart adoption.
 
 Done when:
 
-- deploy phases do not deserialize public CLI requests over peer RPC;
+- runtime peer commands do not deserialize public CLI requests over peer RPC;
 - runtime errors are typed by caller action: retry, repair, unsupported, or
   peer unavailable.
 
-### Track E: Single-Service Deploy MVP
+### Track E: Deploy MVP
 
-Goal: deploy one HTTP service to one namespace with durable evidence.
+Goal: deploy Docker/Compose-style HTTP/HTTPS services under one namespace
+label by creating Ployz-owned containers and deriving service/route/namespace
+views from them.
 
 Deliverables:
 
-- deploy manifest model;
-- planning state;
+- deploy manifest/spec model for image-backed services;
+- planning state over machines, volumes, current containers, and certificate
+  status;
 - typed deploy operations;
 - image availability/distribution primitive;
-- service revision rows;
-- service instance placement rows;
-- service instance observation rows;
-- route rows;
-- deploy phase rows;
-- deploy commit rows;
-- gateway/DNS projection from committed rows.
+- durable container rows carrying namespace, service identity, runtime
+  identity, machine, image/spec digest, ports, volume refs, and restart
+  adoption data;
+- local container spec persistence so a machine can rehydrate Ployz-owned
+  containers after daemon restart;
+- certificate material/status rows and ACME account, order, challenge, and
+  attempt rows;
+- HTTP-01 challenge routing;
+- gateway/DNS/certificate projection from container and certificate rows;
+- basic service/container logs and status surfaces.
 
 First slices:
 
-1. Manifest validation/defaults.
-2. Pure planning test for one service.
-3. Runtime apply on one machine.
-4. Route commit/projection.
-5. `deploy history` and `deploy verify`.
+1. Manifest validation/defaults for image, command, env, ports, healthcheck,
+   replica count, route/hostname, ACME policy, and volume references.
+2. Pure planning tests from current container rows for one service, then
+   multiple services under one namespace label.
+3. Runtime apply on one machine, including durable container row write and
+   restart adoption.
+4. ACME challenge, certificate readiness, and HTTPS projection.
+5. `deploy verify`, service logs, and container inspection.
 
 Done when:
 
-- `ployz deploy preview/apply/verify` works for one service;
-- failed readiness does not promote route;
-- deploy history can reconstruct what was attempted and what committed.
+- `ployz deploy preview/apply/verify` works for image-backed services;
+- service, route, and namespace views can be reconstructed from container,
+  volume, and certificate rows without durable service, route, namespace, or
+  deploy tables;
+- failed readiness or failed certificate issuance does not promote an HTTPS
+  route;
+- failed candidate containers remain inspectable when they were created.
 
-### Track F: Rolling Deploys
-
-Goal: replace running instances without losing the old route until the
-candidate is ready.
-
-Deliverables:
-
-- rollout policy model;
-- candidate machine selection;
-- start-first/stop-first decision;
-- route step checkpoints;
-- old instance drain and cleanup retry surface;
-- canary/one-at-a-time tests.
-
-First slices:
-
-1. Plan no-op/create/replace/remove operations.
-2. Implement start-first for stateless services.
-3. Implement stop-first for port conflict and single-writer volume cases.
-4. Add cleanup follow-up result.
-
-Done when:
-
-- rolling deploy can tolerate a candidate readiness failure before route
-  switch;
-- failed cleanup after route switch reports exact recovery command.
-
-### Track G: ZFS Volumes
+### Track F: ZFS Volumes
 
 Goal: make stateful operations a first-class product primitive.
 
 Deliverables:
 
 - volume rows;
-- snapshot rows;
 - ZFS backend contract;
 - fresh volume create;
-- snapshot;
-- fork/clone;
-- send/receive move;
-- volume rollback support.
+- dataset identity and mountpoint adoption;
+- owner machine, scope, and quota;
+- container rows/specs reference attached volume ids;
+- deploy planning that pins stateful services to volume owners;
+- rejection for unsafe multi-writer and multi-replica stateful shapes;
+- pool and volume doctor output.
 
 First slices:
 
-1. ZFS create/snapshot/clone local test.
+1. ZFS create/adopt/destroy local test.
 2. `volume create`.
-3. `volume fork` same-machine clone.
-4. Deploy with fresh/forked volume.
-5. `volume move` send/receive with final delta.
+3. Deploy with a fresh managed volume.
+4. Stateful placement pinned to the owner machine.
+5. Pool, dataset, mount, quota, and owner diagnostics.
 
 Done when:
 
-- a PR branch can clone prod data explicitly;
-- source and target writes diverge after fork;
-- move preserves volume identity and changes owner only after verification.
-
-### Track H: Branch, Promote, Rollback
-
-Goal: PR and branch workflows compile into the same deploy discipline as
-production deploys.
-
-Deliverables:
-
-- branch namespace lifecycle;
-- per-resource source policy;
-- branch lineage;
-- multi-source branch composition;
-- promotion compiler;
-- rollback compiler;
-- branch delete cleanup.
-
-First slices:
-
-1. Branch fresh mode.
-2. Branch with volume clone.
-3. Multi-source branch preview.
-4. Promote stateless branch.
-5. Rollback stateless deploy.
-6. Stateful promote/rollback once volume evidence is sufficient.
-
-Done when:
-
-- PR branches can be created, updated, inspected, promoted, and deleted;
-- branch source lineage is visible and durable;
-- rollback can state exactly what is reversible and what is not.
-
-### Track I: Machine Drain And Removal
-
-Goal: machine lifecycle is safe because drain compiles the exact product work.
-
-Deliverables:
-
-- drain compiler;
-- workload replacement plan;
-- volume movement plan;
-- route migration plan;
-- remove preflight;
-- tombstone semantics.
-
-First slices:
-
-1. Drain preview for stateless services.
-2. Drain apply for stateless services.
-3. Drain with volume move.
-4. Machine remove after empty.
-
-Done when:
-
-- remove refuses active placements;
-- drain lists every affected service, volume, route, and follow-up task.
+- persistent service data is always under a Ployz-managed ZFS dataset;
+- stateful services do not start on machines that do not own their volumes;
+- volume usage can be derived from Ployz-owned container rows without a
+  separate attachment table in 1.0;
+- volume rows contain enough durable identity to add clone, rollback, and move
+  later without migrating user data.
 
 ## Execution Order
 
@@ -337,11 +312,9 @@ Done when:
   typed substrate startup state, and shuts down cleanly.
 - Reuse the substrate-spine e2e as the daemon startup regression target.
 
-### Milestone 2: Authority Island Mesh And Namespaces
+### Milestone 2: Authority Island Mesh
 
-- Add namespace rows.
 - Derive full authority island WireGuard peers.
-- Expose namespace commands.
 - Add mesh diagnostics.
 
 ### Milestone 3: Single-Service Deploy
@@ -349,48 +322,67 @@ Done when:
 - Add manifest model.
 - Add pure planner.
 - Add runtime RPC start/verify/stop.
-- Add service revision/instance/route/deploy evidence rows.
+- Add durable container rows and local container spec persistence.
+- Add certificate status/attempt rows.
 - Ship one-service `deploy preview/apply/verify`.
 
-### Milestone 4: Rolling Deploy
+### Milestone 4: Compose-Style Deploy
 
-- Add rollout policy.
-- Add replace/remove planning.
-- Add route checkpoints.
-- Add cleanup follow-up state.
+- Extend the manifest/spec to multiple image-backed services.
+- Add env, command, ports, healthcheck, replica count, and HTTP/HTTPS route
+  support.
+- Add ACME HTTP-01 challenge handling, certificate issuance, activation, and
+  renewal status.
+- Add service/container logs and status surfaces.
+- Derive service, route, and namespace views from container/certificate rows.
+- Keep HTTPS projection gated by container readiness and certificate usability.
 
-### Milestone 5: Volumes
+### Milestone 5: ZFS Volumes
 
 - Add ZFS backend.
-- Add volume rows and fresh create.
-- Add snapshot/fork.
-- Add deploy with volume attach.
-- Add volume move.
+- Add volume rows, owner machine, dataset identity, scope, and quota.
+- Add fresh volume create and deploy with volume attach.
+- Pin stateful placement to volume owners.
+- Add volume and pool doctor output.
 
-### Milestone 6: Branch Workflows
-
-- Add branch namespace lifecycle.
-- Add per-resource source policy.
-- Add branch create/update/delete.
-- Add PR-oriented JSON output.
-- Add multi-source branch composition.
-
-### Milestone 7: Promote, Rollback, Drain
-
-- Add promotion compiler.
-- Add rollback compiler.
-- Add stateless then stateful rollback support.
-- Add machine drain/remove.
-
-### Milestone 8: Hardening For 1.0
+### Milestone 6: Hardening For 1.0
 
 - Full e2e matrix across two or more nodes.
 - Crash/restart tests during every deploy checkpoint class.
 - Corrosion subscription resume tests.
 - RPC deadline/failure tests.
-- ZFS cleanup/recovery tests.
+- ACME HTTP-01, renewal, and certificate failure visibility tests.
+- ZFS create/adopt/mount/quota/doctor tests.
 - CLI JSON compatibility tests.
-- Docs: operator guide, failure guide, branch/volume guide, architecture guide.
+- Docs: operator guide, failure guide, volume guide, architecture guide.
+
+## Post-1.0 Feature List
+
+The following Rust/core primitives are explicitly outside the 1.0 release.
+They should build on the 1.0 substrate instead of changing it. Cloud may still
+ship product UX around these areas when it can do so through existing bounded
+core operations and Inngest workflow state.
+
+- rolling deploy strategies beyond the minimum readiness-gated route switch;
+- durable deploy/operation history beyond current command output and container
+  evidence;
+- durable namespace lifecycle: create, delete, metadata, ownership, tombstones,
+  empty namespaces, and namespace-level policy;
+- branch/PR environments;
+- per-resource source policy and namespace lineage UX;
+- volume snapshot UI, fork/clone, and clone-backed branch data;
+- cross-machine volume move with ZFS send/receive;
+- machine drain and safe machine remove;
+- promote from a prepared namespace to production;
+- rollback compiler, including stateful rollback once snapshot evidence is
+  strong enough;
+- Compose import refinements beyond the 1.0 spec subset;
+- wildcard certificates, DNS-01 automation, custom certificate upload, and
+  non-ACME certificate providers;
+- autoscaling;
+- provider-native database branches;
+- multi-source branch composition;
+- in-core AI/operator workflow execution.
 
 ## Simplicity Checks Before Each Slice
 
@@ -398,10 +390,13 @@ Ask these before implementing:
 
 - Can this be a typed operation plus direct apply, like uncloud, rather than a
   controller?
+- Is this a durable fact, or can it be derived from machines, containers,
+  volumes, and certificates?
 - Does this row have one obvious owner?
 - Is JSON only used for opaque metadata, not a set/map with independent
   writers?
 - Is this a Ployz product concept that should stay out of Polis?
+- Is this a cloud product workflow that belongs in Inngest instead of Rust?
 - Can the preview prove the dangerous part before mutation?
 - Does failure name the audience and next action?
 - Can a daemon restart adopt the last good state?
@@ -410,11 +405,20 @@ Ask these before implementing:
 ## 1.0 Release Gates
 
 - CLI workflows documented in the CLI plan work in e2e tests.
-- Two-node cluster passes public machine add, deploy, rolling deploy, branch,
-  promote, rollback, volume fork, volume move, drain, and remove tests.
+- Two-node cluster passes public machine add, deploy, HTTP/HTTPS routing,
+  ACME-backed certificate issuance, service/container logs/status, derived
+  namespace list/inspect, and ZFS-backed volume create/attach tests.
+- Services, routes, and namespaces are reconstructable from Ployz-owned
+  container rows, volume rows, and certificate rows; 1.0 has no durable
+  services, routes, namespaces, deploy records, or deploy phase tables.
+- Failed certificate issuance or renewal is visible in CLI/API output and does
+  not silently publish an unusable HTTPS route.
+- A stateful service cannot be deployed outside the machine that owns its
+  attached single-writer volume.
 - Every external control-plane I/O path has a deadline.
 - Every mutating command has human and JSON output.
 - Corrosion schema changes are additive and file-backed.
 - No ordinary Ployz module imports Corrosion, iroh, or irpc types.
 - No hidden background task rewrites product truth.
-- Failed-after-checkpoint states are visible and recoverable.
+- Failed-before-commit and failed-after-checkpoint states are visible and
+  recoverable.

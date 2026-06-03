@@ -13,7 +13,9 @@ use crate::IrohEndpointId;
 
 pub use endpoint::{PeerEndpoint, bind_peer_endpoint, issue_endpoint_ticket};
 pub use identity::{PeerIdentity, load_or_create_identity};
-pub use probe::{FakePeerProbe, PeerProbe, PeerProbeDeadline, PeerProbeReceipt};
+#[cfg(any(test, feature = "test-support"))]
+pub use probe::FakePeerProbe;
+pub use probe::{PeerProbe, PeerProbeDeadline, PeerProbeReceipt};
 pub use rpc::{PeerRpcClient, PeerRpcListener, PeerRpcProbe};
 pub use runtime::PeerRuntime;
 pub use tickets::{PeerTicket, PeerTicketPath, import_ticket, issue_ticket};

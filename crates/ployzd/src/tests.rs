@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::config::CorrosionStartMode;
 use crate::{
-    CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStartMode, CorrosionStop,
-    DaemonConfig, DaemonErrorKind, DaemonRuntime, PeerFailure, PeerPhase, SchemaPhase,
-    StartupReport,
+    CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStop, DaemonConfig,
+    DaemonErrorKind, DaemonRuntime, PeerFailure, PeerPhase, SchemaPhase, StartupReport,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);

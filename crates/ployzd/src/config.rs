@@ -15,9 +15,11 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CorrosionStartMode {
+pub(crate) enum CorrosionStartMode {
     StartOrAdopt,
+    #[cfg(test)]
     StartManaged,
+    #[cfg(test)]
     AdoptExisting,
 }
 
@@ -92,7 +94,8 @@ impl DaemonConfig {
     }
 
     #[must_use]
-    pub fn with_corrosion_start_mode(mut self, mode: CorrosionStartMode) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_corrosion_start_mode(mut self, mode: CorrosionStartMode) -> Self {
         self.corrosion_start_mode = mode;
         self
     }
@@ -179,7 +182,7 @@ impl DaemonConfig {
     }
 
     #[must_use]
-    pub fn corrosion_start_mode(&self) -> CorrosionStartMode {
+    pub(crate) fn corrosion_start_mode(&self) -> CorrosionStartMode {
         self.corrosion_start_mode
     }
 }

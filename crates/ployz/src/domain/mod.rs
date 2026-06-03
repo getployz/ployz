@@ -14,7 +14,7 @@ use crate::acme::{
 };
 use crate::error::{CertificateFailure, ServingFailure};
 use crate::operation::{ClaimGuard, MutationContext, TypedResourceId};
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 use crate::operation::{ClaimHash, FenceEpoch, PrincipalId};
 use crate::serving::{
     RouteId, ServingCheckpoint, ServingCommitRequest, ServingGeneration, ServingTarget,
@@ -280,12 +280,6 @@ impl DomainServingActivation {
         }
     }
 
-    #[cfg(feature = "test-support")]
-    #[must_use]
-    pub fn test_active(generation: ServingGeneration) -> Self {
-        Self::active(generation)
-    }
-
     #[must_use]
     pub fn checkpoint(&self) -> &ServingCheckpoint {
         &self.checkpoint
@@ -313,7 +307,7 @@ impl DomainClaim {
         Ok(Self { domain, guard })
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_new(
         domain: DomainName,
         resource: TypedResourceId<DomainResource>,

@@ -15,24 +15,13 @@ crate-level integration tests.
 
 ## Current Scenario Set
 
-Default `just e2e` runs:
+There is no real-boundary E2E suite yet. `just e2e` currently runs
+`cargo test -p ployz-e2e`, which contains in-process product acceptance tests.
 
-| Scenario | Boundary protected |
-| --- | --- |
-| `mesh_bootstrap_join_smoke` | Real install/startup plus SSH-driven two-node mesh join. |
-| `node_restart_adopts_data_plane` | Daemon/container restart with existing mesh substrate. |
-| `wireguard_partition_reconnect` | Real network partition and WireGuard recovery. |
-| `deploy_http_acme_gateway_smoke` | Deploy, runtime container, gateway, ACME challenge propagation, and HTTPS serving. |
-| `docker_bridge_forward_smoke` | Docker runtime bridge forwarding to NATS over the overlay bridge. |
-
-With `--zfs real`, the suite also runs:
-
-| Scenario | Boundary protected |
-| --- | --- |
-| `zfs_transfer_real_smoke` | Real ZFS snapshot/send/receive plus transfer tracking. |
-
-`--zfs fake` does not add E2E storage scenarios. Fake-ZFS behavior belongs in
-lower-level tests.
+Those tests are useful while the operation spine is being shaped, but they are
+not proof of installed payloads, daemon processes, SSH bootstrap, runtime
+containers, gateway behavior, or real storage. Fake-backed scenarios should move
+down into crate-level tests as the MVP runtime surface stabilizes.
 
 ## Coverage That Belongs Below E2E
 

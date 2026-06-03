@@ -7,15 +7,16 @@ use crate::acme::{
     AcmeCertificateIssuer, CertificateAuthorityPort, CertificatePort, CertificateReadinessService,
     CertificateStatusPort, attempt,
 };
-use crate::adapters::{
-    memory::{InMemoryDomainStatus, InMemoryMachineMembership, InMemoryServingSnapshots},
-    polis::{
-        certificate_attempt_schema_statements, domain_status_schema_statements,
-        serving_snapshot_schema_statements, start_corrosion_certificate_attempts,
-        start_corrosion_domain_status, start_corrosion_machine_membership,
-        start_corrosion_serving_snapshots, verify_certificate_attempt_schema,
-        verify_domain_status_schema, verify_serving_snapshot_schema,
-    },
+#[cfg(any(test, feature = "test-support"))]
+use crate::adapters::memory::{
+    InMemoryDomainStatus, InMemoryMachineMembership, InMemoryServingSnapshots,
+};
+use crate::adapters::polis::{
+    certificate_attempt_schema_statements, domain_status_schema_statements,
+    serving_snapshot_schema_statements, start_corrosion_certificate_attempts,
+    start_corrosion_domain_status, start_corrosion_machine_membership,
+    start_corrosion_serving_snapshots, verify_certificate_attempt_schema,
+    verify_domain_status_schema, verify_serving_snapshot_schema,
 };
 use crate::domain::DomainStatusPort;
 use crate::error::PrimitiveFailure;
@@ -37,6 +38,7 @@ where
 }
 
 #[must_use]
+#[cfg(any(test, feature = "test-support"))]
 pub fn in_memory_machine_membership() -> impl MachineMembershipPort {
     InMemoryMachineMembership::default()
 }
@@ -162,11 +164,13 @@ fn map_product_schema_error(error: polis::StoreError) -> PrimitiveFailure {
 }
 
 #[must_use]
+#[cfg(any(test, feature = "test-support"))]
 pub fn in_memory_domain_status() -> impl DomainStatusPort {
     InMemoryDomainStatus::default()
 }
 
 #[must_use]
+#[cfg(any(test, feature = "test-support"))]
 pub fn in_memory_serving_snapshots() -> impl ServingSnapshotPort {
     InMemoryServingSnapshots::default()
 }

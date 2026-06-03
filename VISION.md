@@ -120,37 +120,45 @@ could handle directly, we let the operator handle it.
 
 ## Relationship to ployz-cloud
 
-Ployz-cloud is an optional, paid hosted product built on top of this
-project: a Railway-style UI with a built-in operator that drives the cluster
-on the user's behalf. It adds the niceties expected of a managed PaaS —
-git-push deploys, environment dashboards, hosted machine pools, secrets
-management, billing — and the hosted operator is the primary control surface
-inside it. The cloud is where the commercial product lives.
+Ployz Cloud is the primary commercial product and launch surface:
+Railway, but it runs on your own servers. The cloud product can be rich:
+canvas-first editing, projects, environments, git-push deploys, hosted
+builders, AI/operator workflows, secrets, billing, notifications, and a
+managed deployment experience. This project is the small orchestrator that
+makes that product reliable.
 
-This project is the open core. It is fully usable without ployz-cloud:
+This project is also the open core. It is fully usable without ployz-cloud:
 self-host on your own machines, drive it with the CLI or with any
 general-purpose coding agent (Claude Code, Cursor, etc.), run `ployzctl dev`
 locally, never pay anyone. The cloud exists for people who want the
-managed experience and hosted operation; the core exists for everyone.
+Railway-grade experience; the core exists for everyone.
 
-Ployz-cloud is a lens over this project. Every operation it exposes —
-every deploy, every branch, every migration — is implemented as a
-primitive shipped here. The cloud UI does not extend the cluster with
-private mechanisms. It does not maintain its own model of cluster truth.
-It does not add reconcilers or controllers that ployz core does not have.
-If the cloud needs a capability, the right answer is almost always to
-strengthen the primitives in this repo — both because it keeps the
-architecture clean, and because anything cloud-specific in the core is a
-tax on the open-source users who are not paying for the cloud.
+Ployz Cloud owns product and workflow state: organizations, projects,
+environments, canvas layout, GitHub connections, build records, deploy
+records, billing, notifications, Inngest run ids, and user-facing workflow
+history. Those records make the product usable, but they are not cluster
+truth. Runtime truth belongs to the core: machines, namespace labels,
+running instances, routes, certificates, volumes, logs, status, events, and
+operation outcomes.
 
-The dependency is one-way. This project does not know about ployz-cloud,
-does not assume the cloud is the operator, and does not optimize for the
-cloud's UI flows. The bet is that if these primitives are great, ployz-cloud
-— and any other downstream consumer, including general-purpose agents driving
-the CLI directly — is great as a consequence.
+Inngest owns multi-step cloud processes. GitHub events, builds, provider
+provisioning, deployment queues, environment cloning, notifications, retries
+across cloud APIs, and UI status updates are cloud workflow concerns. Inngest
+calls small bounded core operations and records cloud workflow state. It must
+not turn ployz core into a workflow engine, and it must not create hidden
+cluster reconcilers.
 
-The same primitives drive `ployzctl dev` on a developer's Mac, the cloud's
-hosted environments, and any future on-prem deployment. One model, three
+Ployz Cloud drives the core through the same public CLI/API surface as users,
+agents, and future on-prem operators. It does not extend the cluster with
+private mechanisms. If the cloud needs a capability, the decision is: is this
+a runtime primitive, or is it a product workflow? Runtime primitives strengthen
+this repo. Product workflows stay in cloud/Inngest.
+
+The dependency is one-way at the code level. This project does not import
+cloud product objects, but its public contract must be excellent for the
+cloud, CLI, agents, and future on-prem operators to consume. The same
+primitives drive `ployzctl dev` on a developer's Mac, customer-owned servers
+managed by Ployz Cloud, and any future on-prem deployment. One model, three
 deployment shapes.
 
 ## The Primitive Surface
@@ -175,8 +183,11 @@ background reconciler to "eventually" complete.
 - **`ployzctl dev`** — run the same model locally on a developer machine,
   with the same primitives.
 
-If a user finds themselves writing a script to compose multiple ployzctl
-commands to achieve a workflow, that workflow is a missing primitive.
+If a user or cloud workflow repeatedly needs several runtime operations to
+achieve one safe infrastructure transition, that transition is a missing
+primitive. If the sequence crosses product systems — GitHub, builds, billing,
+notifications, UI state, provider APIs — it belongs in cloud/Inngest calling
+small core operations.
 
 ## Core Beliefs
 
@@ -185,6 +196,8 @@ commands to achieve a workflow, that workflow is a missing primitive.
 The cluster should be small enough that an operator can hold its model in
 working memory. Every feature that adds in-cluster complexity to enable a
 behavior the operator could enable directly is a feature against the bet.
+For Ployz Cloud, the operator is often an Inngest workflow. That workflow may
+be rich; the cluster still receives bounded operations with clear results.
 
 ### 2. Operation surfaces are first-class
 

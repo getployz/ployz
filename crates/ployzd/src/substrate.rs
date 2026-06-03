@@ -162,6 +162,7 @@ async fn start_corrosion(
 ) -> Result<polis::LocalCorrosionAgent, polis::CorrosionAgentError> {
     let corrosion_config = config.corrosion_config().clone();
     match config.corrosion_start_mode() {
+        #[cfg(test)]
         CorrosionStartMode::AdoptExisting => match adopt_existing_corrosion(corrosion_config).await
         {
             polis::CorrosionAdoption::Owned(agent) => return Ok(agent),
@@ -177,6 +178,7 @@ async fn start_corrosion(
                 polis::CorrosionAdoption::Foreign { source } => return Err(source),
             }
         }
+        #[cfg(test)]
         CorrosionStartMode::StartManaged => {}
     }
 

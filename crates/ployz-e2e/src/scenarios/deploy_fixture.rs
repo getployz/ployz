@@ -97,9 +97,7 @@ impl DomainServingPort for FakeDomainServing {
         _claim: &DomainClaim,
         _certificate: &UsableDomainCertificate,
     ) -> Result<DomainServingActivation, DomainFailure> {
-        Ok(DomainServingActivation::test_active(
-            ServingGeneration::new(11),
-        ))
+        Ok(DomainServingActivation::active(ServingGeneration::new(11)))
     }
 
     fn verify_certificate_activation(
@@ -110,7 +108,7 @@ impl DomainServingPort for FakeDomainServing {
         serving_generation: ServingGeneration,
     ) -> Result<DomainServingReadiness, DomainFailure> {
         Ok(DomainServingReadiness::Active(
-            DomainServingActivation::test_active(serving_generation),
+            DomainServingActivation::active(serving_generation),
         ))
     }
 }

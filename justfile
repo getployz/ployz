@@ -28,7 +28,7 @@ bootstrap-linux *args:
     ./scripts/bootstrap-linux.sh {{args}}
 
 e2e *args:
-    cargo run -p ployz-e2e -- {{args}}
+    cargo test -p ployz-e2e -- {{args}}
 
 built-in-images-dev output="target/ployz-dev/built-in-images.toml":
     bash ./scripts/build-dev-built-in-images.sh "{{output}}"

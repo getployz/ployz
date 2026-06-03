@@ -33,11 +33,13 @@ pub use membership::{
     membership_schema_statements, upsert_machine_statement, verify_membership_replication_schema,
     verify_membership_schema,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use peers::FakePeerProbe;
 pub use peers::{
-    FakePeerProbe, PLOYZ_PEER_ALPN, PeerEndpoint, PeerError, PeerIdentity, PeerProbe,
-    PeerProbeDeadline, PeerProbeReceipt, PeerProbeResult, PeerRpcClient, PeerRpcListener,
-    PeerRpcProbe, PeerRuntime, PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket,
-    issue_endpoint_ticket, issue_ticket, load_or_create_identity,
+    PLOYZ_PEER_ALPN, PeerEndpoint, PeerError, PeerIdentity, PeerProbe, PeerProbeDeadline,
+    PeerProbeReceipt, PeerProbeResult, PeerRpcClient, PeerRpcListener, PeerRpcProbe, PeerRuntime,
+    PeerTicket, PeerTicketPath, bind_peer_endpoint, import_ticket, issue_endpoint_ticket,
+    issue_ticket, load_or_create_identity,
 };
 pub use schema::{
     StorePrimaryKey, StoreTableColumn, create_table_sql, schema_statements, select_columns,

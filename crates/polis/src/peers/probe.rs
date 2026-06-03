@@ -1,12 +1,13 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
-    time::Duration,
-};
+use std::{future::Future, time::Duration};
+
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::IrohEndpointId;
 
-use super::{PLOYZ_PEER_ALPN, PeerError, PeerProbeResult, PeerTicketPath};
+#[cfg(any(test, feature = "test-support"))]
+use super::PeerError;
+use super::{PLOYZ_PEER_ALPN, PeerProbeResult, PeerTicketPath};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerProbeDeadline(Duration);
@@ -65,11 +66,13 @@ pub trait PeerProbe {
 }
 
 #[derive(Debug, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct FakePeerProbe {
     reachable: BTreeSet<IrohEndpointId>,
     failures: BTreeMap<IrohEndpointId, String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl FakePeerProbe {
     #[must_use]
     pub fn new() -> Self {
@@ -89,6 +92,7 @@ impl FakePeerProbe {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl PeerProbe for FakePeerProbe {
     async fn probe(
         &self,

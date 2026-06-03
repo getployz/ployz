@@ -9,7 +9,6 @@ default-members = [
     "crates/polis",
     "crates/ployz",
     "crates/ployzd",
-    "crates/ployz-e2e",
 ]
 resolver = "3"
 

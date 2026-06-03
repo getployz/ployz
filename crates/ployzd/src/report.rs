@@ -142,7 +142,7 @@ pub struct StartupReport {
 
 impl StartupReport {
     #[must_use]
-    pub fn configured(config: &DaemonConfig) -> Self {
+    pub(crate) fn configured(config: &DaemonConfig) -> Self {
         Self {
             corrosion: CorrosionStartup {
                 root_dir: config.corrosion_root_dir().to_path_buf(),
@@ -162,7 +162,7 @@ impl StartupReport {
     }
 
     #[must_use]
-    pub fn with_corrosion_shutdown(mut self, shutdown: &polis::CorrosionShutdown) -> Self {
+    pub(crate) fn with_corrosion_shutdown(mut self, shutdown: &polis::CorrosionShutdown) -> Self {
         self.corrosion.cleanup = match shutdown {
             polis::CorrosionShutdown::Graceful => {
                 CorrosionCleanup::Stopped(CorrosionStop::Graceful)
@@ -177,18 +177,18 @@ impl StartupReport {
     }
 
     #[must_use]
-    pub fn with_corrosion_cleanup_failed(mut self) -> Self {
+    pub(crate) fn with_corrosion_cleanup_failed(mut self) -> Self {
         self.corrosion.cleanup = CorrosionCleanup::Failed;
         self
     }
 
     #[must_use]
-    pub fn with_peer_stopped(mut self) -> Self {
+    pub(crate) fn with_peer_stopped(mut self) -> Self {
         self.peer.phase = PeerPhase::Stopped;
         self
     }
 
-    pub fn mark_corrosion_ready(&mut self, agent: &polis::LocalCorrosionAgent) {
+    pub(crate) fn mark_corrosion_ready(&mut self, agent: &polis::LocalCorrosionAgent) {
         self.corrosion.root_dir = agent.root_dir().to_path_buf();
         self.corrosion.addresses = polis::CorrosionAgentAddresses::new(
             agent.api_addr(),
@@ -199,29 +199,29 @@ impl StartupReport {
         self.corrosion.cleanup = CorrosionCleanup::NotRun;
     }
 
-    pub fn mark_schema_ready(&mut self) {
+    pub(crate) fn mark_schema_ready(&mut self) {
         self.schema.phase = SchemaPhase::Ready;
     }
 
-    pub fn mark_peer_ready(&mut self, endpoint_id: polis::IrohEndpointId) {
+    pub(crate) fn mark_peer_ready(&mut self, endpoint_id: polis::IrohEndpointId) {
         self.peer.endpoint_id = Some(endpoint_id);
         self.peer.phase = PeerPhase::Ready;
     }
 
     #[must_use]
-    pub fn with_corrosion_failed(mut self, failure: CorrosionFailure) -> Self {
+    pub(crate) fn with_corrosion_failed(mut self, failure: CorrosionFailure) -> Self {
         self.corrosion.phase = CorrosionPhase::Failed(failure);
         self
     }
 
     #[must_use]
-    pub fn with_schema_failed(mut self, failure: SchemaFailure) -> Self {
+    pub(crate) fn with_schema_failed(mut self, failure: SchemaFailure) -> Self {
         self.schema.phase = SchemaPhase::Failed(failure);
         self
     }
 
     #[must_use]
-    pub fn with_peer_failed(mut self, failure: PeerFailure) -> Self {
+    pub(crate) fn with_peer_failed(mut self, failure: PeerFailure) -> Self {
         self.peer.phase = PeerPhase::Failed(failure);
         self
     }

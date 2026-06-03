@@ -9,7 +9,7 @@ pub mod daemon;
 pub mod report;
 mod substrate;
 
-pub use config::{CorrosionStartMode, DaemonConfig};
+pub use config::DaemonConfig;
 pub use daemon::{DaemonError, DaemonErrorKind, DaemonRuntime};
 pub use report::{
     CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStartup, CorrosionStop,

@@ -95,7 +95,7 @@ impl DomainServingPort for FakeServing {
     ) -> Result<DomainServingReadiness, DomainFailure> {
         *self.verifications.borrow_mut() += 1;
         Ok(DomainServingReadiness::Active(
-            DomainServingActivation::test_active(serving_generation),
+            DomainServingActivation::active(serving_generation),
         ))
     }
 }
@@ -193,9 +193,7 @@ fn certificate() -> CertificateUsability {
 
 fn serving_success() -> FakeServing {
     FakeServing {
-        outcome: Ok(DomainServingActivation::test_active(
-            ServingGeneration::new(11),
-        )),
+        outcome: Ok(DomainServingActivation::active(ServingGeneration::new(11))),
         verifications: Rc::new(RefCell::new(0)),
     }
 }

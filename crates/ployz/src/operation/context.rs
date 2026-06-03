@@ -68,7 +68,7 @@ impl MutationContext {
         }
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn test_authorized(
         operation: OperationId,
