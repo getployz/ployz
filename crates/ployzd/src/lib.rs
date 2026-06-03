@@ -6,16 +6,20 @@
 
 pub mod commands;
 pub mod config;
+mod control;
 pub mod daemon;
 mod operations;
 pub mod report;
 mod substrate;
+#[cfg(test)]
+mod test_support;
 
 pub use commands::{
     DaemonCommandError, DaemonCommandRequest, DaemonCommandResponse, DaemonCommandService,
     DaemonOperationFailure, DaemonStatus, OperationStatusResponse,
 };
-pub use config::DaemonConfig;
+pub use config::{DaemonConfig, DaemonConfigError};
+pub use control::{DaemonControlError, serve_rpc_stdio};
 pub use daemon::{DaemonError, DaemonErrorKind, DaemonRuntime};
 pub use report::{
     CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStartup, CorrosionStop,

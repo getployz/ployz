@@ -1,6 +1,8 @@
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -12,6 +14,16 @@ pub struct DaemonConfig {
     peer_shutdown_timeout: Duration,
     corrosion_shutdown_timeout: Duration,
     corrosion_start_mode: CorrosionStartMode,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum DaemonConfigError {
+    #[error("environment variable {name} must be a socket address, got {value:?}: {source}")]
+    InvalidSocketAddress {
+        name: &'static str,
+        value: String,
+        source: std::net::AddrParseError,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +58,13 @@ impl DaemonConfig {
             corrosion_shutdown_timeout: Duration::from_secs(5),
             corrosion_start_mode: CorrosionStartMode::StartOrAdopt,
         }
+    }
+
+    pub fn from_env_defaults() -> Result<Self, DaemonConfigError> {
+        Ok(Self::for_state_dir(
+            default_state_dir(),
+            default_corrosion_addresses()?,
+        ))
     }
 
     #[cfg(test)]
@@ -184,5 +203,78 @@ impl DaemonConfig {
     #[must_use]
     pub(crate) fn corrosion_start_mode(&self) -> CorrosionStartMode {
         self.corrosion_start_mode
+    }
+}
+
+fn default_state_dir() -> PathBuf {
+    if let Some(value) = std::env::var_os("PLOYZ_STATE_DIR") {
+        return PathBuf::from(value);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".ployz");
+    }
+    PathBuf::from(".ployz")
+}
+
+fn default_corrosion_addresses() -> Result<polis::CorrosionAgentAddresses, DaemonConfigError> {
+    Ok(polis::CorrosionAgentAddresses::new(
+        env_socket_addr("PLOYZ_CORROSION_API_ADDR", "127.0.0.1:9781")?,
+        env_socket_addr("PLOYZ_CORROSION_GOSSIP_ADDR", "127.0.0.1:9782")?,
+        env_socket_addr("PLOYZ_CORROSION_PROMETHEUS_ADDR", "127.0.0.1:9783")?,
+    ))
+}
+
+fn env_socket_addr(
+    name: &'static str,
+    default: &'static str,
+) -> Result<SocketAddr, DaemonConfigError> {
+    socket_addr_from_env_value(name, std::env::var_os(name), default)
+}
+
+fn socket_addr_from_env_value(
+    name: &'static str,
+    value: Option<OsString>,
+    default: &'static str,
+) -> Result<SocketAddr, DaemonConfigError> {
+    let Some(value) = value else {
+        return Ok(parse_builtin_socket_addr(default));
+    };
+    let value = value.to_string_lossy().into_owned();
+    value
+        .parse()
+        .map_err(|source| DaemonConfigError::InvalidSocketAddress {
+            name,
+            value,
+            source,
+        })
+}
+
+fn parse_builtin_socket_addr(value: &'static str) -> SocketAddr {
+    match value.parse() {
+        Ok(address) => address,
+        Err(error) => panic!("invalid built-in socket address {value}: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provided_invalid_corrosion_address_is_config_error() {
+        let error = socket_addr_from_env_value(
+            "PLOYZ_CORROSION_API_ADDR",
+            Some(OsString::from("not-a-socket")),
+            "127.0.0.1:9781",
+        )
+        .expect_err("invalid env value");
+
+        assert!(matches!(
+            error,
+            DaemonConfigError::InvalidSocketAddress {
+                name: "PLOYZ_CORROSION_API_ADDR",
+                ..
+            }
+        ));
     }
 }

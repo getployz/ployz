@@ -7,12 +7,14 @@ license.workspace = true
 
 [dependencies]
 polis.workspace = true
+ployz-api = { path = "../ployz-api" }
 ployz.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "signal", "sync", "time"] }
 
 [dev-dependencies]
 polis = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

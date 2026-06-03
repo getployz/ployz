@@ -19,7 +19,8 @@ test:
     cargo test --workspace --exclude ployzd --exclude ployz-runtime-backends
 
 test-all:
-    cargo test
+    cargo test --workspace --exclude ployzd
+    cargo test -p ployzd -- --test-threads=1
 
 deploy-types:
     bash ./scripts/generate-deploy-types.sh

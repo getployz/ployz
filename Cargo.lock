@@ -2757,6 +2757,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-api"
+version = "0.1.0"
+dependencies = [
+ "ployz",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
@@ -2766,11 +2776,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployzctl"
+version = "0.1.0"
+dependencies = [
+ "ployzd",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "ployzd"
 version = "0.1.0"
 dependencies = [
  "ployz",
+ "ployz-api",
  "polis",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
 ]

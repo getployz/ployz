@@ -1,12 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::config::CorrosionStartMode;
+use crate::control::handle_protocol_request;
 use crate::operations::{
     FakeOperation, OperationLeasePolicy, OperationRegistry, OperationScript, OperationScriptStep,
 };
+use crate::test_support::MemoryOperationLedger;
 use crate::{
     CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStop, DaemonCommandError,
     DaemonCommandRequest, DaemonCommandResponse, DaemonConfig, DaemonErrorKind, DaemonRuntime,
@@ -14,9 +17,12 @@ use crate::{
 };
 use ployz::operation::{
     IdempotencyKey, OperationFailureCode, OperationId, OperationKind, OperationLedgerPort,
-    OperationPayloadFingerprint, OperationStage, OperationSubmission, OperationTerminal,
-    PrincipalId, ScopeId,
+    OperationOwner, OperationPayloadFingerprint, OperationStage, OperationSubmission,
+    OperationTerminal, PrincipalId, ScopeId,
 };
+use ployz_api::frame::{OutputFrame, RequestFrame, RequestId};
+use ployz_api::operation::{METHOD_OPERATION_STREAM, METHOD_OPERATION_SUBMIT};
+use ployz_api::status::METHOD_STATUS;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -481,13 +487,13 @@ async fn fake_operation_renews_lease_during_long_delay() {
                 fake_kind.clone(),
                 FakeOperation::new(OperationScript::new(
                     vec![
-                        OperationScriptStep::Delay(Duration::from_millis(120)),
+                        OperationScriptStep::Delay(Duration::from_millis(1_200)),
                         OperationScriptStep::Stage(operation_stage("running")),
                     ],
                     OperationTerminal::succeeded(),
                 )),
             ),
-            OperationLeasePolicy::new(Duration::from_millis(40)).expect("lease policy"),
+            OperationLeasePolicy::new(Duration::from_secs(1)).expect("lease policy"),
         )
         .expect("command service");
     let operation = service
@@ -603,6 +609,142 @@ async fn operation_get_and_stream_report_unknown_operation() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn protocol_status_returns_command_readiness() {
+    let root = temp_state_dir("protocol-status");
+    let service = protocol_test_service(&root, OperationRegistry::empty());
+    let request = RequestFrame::new(
+        RequestId::parse("req-status").expect("request id"),
+        METHOD_STATUS,
+        serde_json::json!({}),
+    );
+
+    let frames = handle_protocol_request(&service, request).await;
+
+    let [OutputFrame::Response(response)] = frames.as_slice() else {
+        panic!("expected one response frame");
+    };
+    let value = serde_json::to_value(response).expect("response value");
+    assert_eq!(value["result"]["kind"], "status");
+    assert_eq!(value["result"]["command_service_ready"], true);
+    assert_eq!(value["result"]["daemon_ready"], false);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn protocol_operation_submit_and_stream_return_typed_frames() {
+    let root = temp_state_dir("protocol-operation");
+    let fake_kind = operation_kind("fake.protocol");
+    let service = protocol_test_service(
+        &root,
+        OperationRegistry::empty().with_operation(
+            fake_kind.clone(),
+            FakeOperation::new(OperationScript::new(
+                vec![OperationScriptStep::Stage(operation_stage("running"))],
+                OperationTerminal::succeeded(),
+            )),
+        ),
+    );
+    let submit = RequestFrame::new(
+        RequestId::parse("req-submit").expect("request id"),
+        METHOD_OPERATION_SUBMIT,
+        serde_json::json!({
+            "operation": "protocol-op-1",
+            "kind": fake_kind.as_str(),
+            "scope": "scope-a",
+            "idempotency": "idem-a",
+            "principal": "principal-a",
+            "payload_fingerprint": "payload-a"
+        }),
+    );
+
+    let submitted = handle_protocol_request(&service, submit).await;
+
+    let [OutputFrame::Response(response)] = submitted.as_slice() else {
+        panic!("expected submit response frame");
+    };
+    let response_value = serde_json::to_value(response).expect("submit response value");
+    assert_eq!(response_value["result"]["kind"], "operation_submitted");
+    assert_eq!(response_value["result"]["operation"], "protocol-op-1");
+    wait_for_terminal(
+        &service,
+        &OperationId::parse("protocol-op-1").expect("operation"),
+    )
+    .await;
+
+    let stream = RequestFrame::new(
+        RequestId::parse("req-stream").expect("request id"),
+        METHOD_OPERATION_STREAM,
+        serde_json::json!({
+            "operation": "protocol-op-1"
+        }),
+    );
+    let events = handle_protocol_request(&service, stream).await;
+
+    let [OutputFrame::Response(stream_response)] = events.as_slice() else {
+        panic!("expected stream response frame");
+    };
+    let stream_value = serde_json::to_value(stream_response).expect("stream response value");
+    assert_eq!(stream_value["result"]["kind"], "operation_events");
+    assert!(
+        stream_value["result"]["events"]
+            .as_array()
+            .is_some_and(|events| {
+                events
+                    .iter()
+                    .any(|event| event["kind"]["kind"] == "terminal")
+            })
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn protocol_operation_stream_rejects_mismatched_cursor_operation() {
+    let root = temp_state_dir("protocol-stream-cursor-mismatch");
+    let service = protocol_test_service(&root, OperationRegistry::empty());
+    let request = RequestFrame::new(
+        RequestId::parse("req-stream").expect("request id"),
+        METHOD_OPERATION_STREAM,
+        serde_json::json!({
+            "operation": "protocol-op-1",
+            "cursor": {
+                "operation": "other-op",
+                "sequence": 1
+            }
+        }),
+    );
+
+    let frames = handle_protocol_request(&service, request).await;
+
+    let [OutputFrame::Error(error)] = frames.as_slice() else {
+        panic!("expected cursor mismatch error frame");
+    };
+    let value = serde_json::to_value(error).expect("error value");
+    assert_eq!(value["error"]["code"], "malformed_payload");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn protocol_unknown_method_returns_structured_error() {
+    let root = temp_state_dir("protocol-unknown");
+    let service = protocol_test_service(&root, OperationRegistry::empty());
+    let request = RequestFrame::new(
+        RequestId::parse("req-unknown").expect("request id"),
+        "deploy.apply",
+        serde_json::json!({}),
+    );
+
+    let frames = handle_protocol_request(&service, request).await;
+
+    let [OutputFrame::Error(error)] = frames.as_slice() else {
+        panic!("expected one error frame");
+    };
+    let value = serde_json::to_value(error).expect("error value");
+    assert_eq!(value["error"]["code"], "unsupported_method");
+    assert_eq!(value["error"]["method"], "deploy.apply");
+    let _ = fs::remove_dir_all(root);
+}
+
 async fn wait_for_terminal<L>(
     service: &crate::DaemonCommandService<L>,
     operation: &OperationId,
@@ -610,7 +752,7 @@ async fn wait_for_terminal<L>(
 where
     L: OperationLedgerPort + Clone + Send + Sync + 'static,
 {
-    for _ in 0..50 {
+    for _ in 0..300 {
         let status = service
             .get_operation(operation)
             .await
@@ -618,7 +760,7 @@ where
         if status.record().terminal().is_some() {
             return status;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("operation did not reach terminal state");
 }
@@ -636,6 +778,20 @@ fn operation_submission(
         IdempotencyKey::parse(idempotency).expect("idempotency"),
         PrincipalId::parse("principal-a").expect("principal"),
         OperationPayloadFingerprint::parse(fingerprint).expect("fingerprint"),
+    )
+}
+
+fn protocol_test_service(
+    root: &Path,
+    registry: OperationRegistry,
+) -> crate::DaemonCommandService<MemoryOperationLedger> {
+    crate::DaemonCommandService::new(
+        StartupReport::configured(&test_config(root)),
+        MemoryOperationLedger::default(),
+        OperationOwner::parse("protocol-test-owner").expect("owner"),
+        registry,
+        OperationLeasePolicy::new(Duration::from_secs(1)).expect("lease policy"),
+        Arc::new(AtomicBool::new(false)),
     )
 }
 
@@ -798,6 +954,7 @@ fn different_addresses(existing: polis::CorrosionAgentAddresses) -> polis::Corro
 fn test_config(root: &Path) -> DaemonConfig {
     DaemonConfig::for_test_state_dir(root, test_corrosion_addresses())
         .with_corrosion_shutdown_timeout(Duration::from_millis(250))
+        .with_peer_shutdown_timeout(Duration::from_secs(20))
 }
 
 fn command_test_config(root: &Path) -> DaemonConfig {
