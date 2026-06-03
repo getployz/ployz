@@ -12,15 +12,14 @@ use crate::adapters::memory::{
     InMemoryDomainStatus, InMemoryMachineMembership, InMemoryServingSnapshots,
 };
 use crate::adapters::polis::{
-    certificate_attempt_schema_statements, domain_status_schema_statements,
-    serving_snapshot_schema_statements, start_corrosion_certificate_attempts,
+    operation_schema_statements, start_corrosion_certificate_attempts,
     start_corrosion_domain_status, start_corrosion_machine_membership,
-    start_corrosion_serving_snapshots, verify_certificate_attempt_schema,
-    verify_domain_status_schema, verify_serving_snapshot_schema,
+    start_corrosion_operation_ledger, start_corrosion_serving_snapshots, verify_operation_schema,
 };
 use crate::domain::DomainStatusPort;
 use crate::error::PrimitiveFailure;
 use crate::machine::MachineMembershipPort;
+use crate::operation::OperationLedgerPort;
 use crate::serving::ServingSnapshotPort;
 
 #[must_use]
@@ -72,60 +71,24 @@ pub fn corrosion_serving_snapshots(store: polis::CorrosionStore) -> impl Serving
     start_corrosion_serving_snapshots(store)
 }
 
+#[must_use]
+pub fn corrosion_operation_ledger(
+    store: polis::CorrosionStore,
+) -> impl OperationLedgerPort + Clone + Send + Sync + 'static {
+    start_corrosion_operation_ledger(store)
+}
+
 pub fn product_schema_statements() -> Result<Vec<polis::StoreStatement>, PrimitiveFailure> {
-    let mut statements = Vec::new();
-    for schema in PRODUCT_SCHEMAS {
-        statements.extend(schema.statements().map_err(map_product_schema_error)?);
-    }
-    Ok(statements)
+    operation_schema_statements().map_err(map_product_schema_error)
 }
 
 pub async fn verify_product_schema(
     store: &polis::CorrosionStore,
     timeout: polis::StoreTimeout,
 ) -> Result<(), PrimitiveFailure> {
-    for schema in PRODUCT_SCHEMAS {
-        schema
-            .verify(store, timeout)
-            .await
-            .map_err(map_product_schema_error)?;
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ProductSchema {
-    DomainStatus,
-    CertificateAttempt,
-    ServingSnapshot,
-}
-
-const PRODUCT_SCHEMAS: &[ProductSchema] = &[
-    ProductSchema::DomainStatus,
-    ProductSchema::CertificateAttempt,
-    ProductSchema::ServingSnapshot,
-];
-
-impl ProductSchema {
-    fn statements(self) -> Result<Vec<polis::StoreStatement>, polis::StoreError> {
-        match self {
-            Self::DomainStatus => domain_status_schema_statements(),
-            Self::CertificateAttempt => certificate_attempt_schema_statements(),
-            Self::ServingSnapshot => serving_snapshot_schema_statements(),
-        }
-    }
-
-    async fn verify(
-        self,
-        store: &polis::CorrosionStore,
-        timeout: polis::StoreTimeout,
-    ) -> Result<(), polis::StoreError> {
-        match self {
-            Self::DomainStatus => verify_domain_status_schema(store, timeout).await,
-            Self::CertificateAttempt => verify_certificate_attempt_schema(store, timeout).await,
-            Self::ServingSnapshot => verify_serving_snapshot_schema(store, timeout).await,
-        }
-    }
+    verify_operation_schema(store, timeout)
+        .await
+        .map_err(map_product_schema_error)
 }
 
 pub fn iroh_peer_rpc_probe(

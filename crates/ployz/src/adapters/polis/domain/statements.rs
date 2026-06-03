@@ -3,10 +3,12 @@ use crate::operation::ScopeId;
 
 use super::{DOMAIN_STATUS_COLUMNS, DOMAIN_STATUS_TABLE, DomainStatusRow, codecs};
 
+#[cfg(test)]
 pub(super) fn schema_statements() -> Result<Vec<polis::StoreStatement>, polis::StoreError> {
     polis::schema_statements(&schema_sql())
 }
 
+#[cfg(test)]
 pub(super) fn schema_sql() -> String {
     polis::create_table_sql(DOMAIN_STATUS_TABLE, DOMAIN_STATUS_COLUMNS)
 }

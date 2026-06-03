@@ -83,20 +83,14 @@ pub(crate) fn start_corrosion_serving_snapshots(
     CorrosionServingSnapshots::new(store)
 }
 
-pub(crate) fn serving_snapshot_schema_statements()
--> Result<Vec<polis::StoreStatement>, polis::StoreError> {
+#[cfg(test)]
+fn serving_snapshot_schema_statements() -> Result<Vec<polis::StoreStatement>, polis::StoreError> {
     polis::schema_statements(&schema_sql())
 }
 
+#[cfg(test)]
 fn schema_sql() -> String {
     polis::create_table_sql(SERVING_ROUTES_TABLE, SERVING_ROUTE_COLUMNS)
-}
-
-pub(crate) async fn verify_serving_snapshot_schema(
-    store: &polis::CorrosionStore,
-    timeout: polis::StoreTimeout,
-) -> Result<(), polis::StoreError> {
-    polis::verify_table_schema(store, timeout, SERVING_ROUTES_TABLE, SERVING_ROUTE_COLUMNS).await
 }
 
 impl ServingSnapshotPort for CorrosionServingSnapshots {

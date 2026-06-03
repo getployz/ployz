@@ -4,11 +4,17 @@
 //! shutdown. Product semantics stay in `ployz`; product-neutral primitives stay
 //! in `polis`.
 
+pub mod commands;
 pub mod config;
 pub mod daemon;
+mod operations;
 pub mod report;
 mod substrate;
 
+pub use commands::{
+    DaemonCommandError, DaemonCommandRequest, DaemonCommandResponse, DaemonCommandService,
+    DaemonOperationFailure, DaemonStatus, OperationStatusResponse,
+};
 pub use config::DaemonConfig;
 pub use daemon::{DaemonError, DaemonErrorKind, DaemonRuntime};
 pub use report::{

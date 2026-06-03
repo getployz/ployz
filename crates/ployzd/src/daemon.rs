@@ -1,8 +1,14 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use thiserror::Error;
 
+use crate::commands::DaemonCommandService;
 use crate::config::DaemonConfig;
+use crate::operations::{OperationLeasePolicy, OperationRegistry};
 use crate::report::StartupReport;
 use crate::substrate::DaemonSubstrate;
+use ployz::operation::{OperationLedgerPort, OperationOwner};
 
 #[derive(Debug, Error)]
 #[error("{kind}")]
@@ -120,12 +126,16 @@ impl DaemonError {
 
 pub struct DaemonRuntime {
     substrate: DaemonSubstrate,
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl DaemonRuntime {
     pub async fn start(config: DaemonConfig) -> Result<Self, DaemonError> {
         let substrate = DaemonSubstrate::start(config).await?;
-        Ok(Self { substrate })
+        Ok(Self {
+            substrate,
+            shutting_down: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     #[must_use]
@@ -136,6 +146,38 @@ impl DaemonRuntime {
     #[must_use]
     pub fn endpoint_id(&self) -> polis::IrohEndpointId {
         self.substrate.endpoint_id()
+    }
+
+    #[must_use]
+    pub fn command_service(
+        &self,
+    ) -> Result<
+        DaemonCommandService<impl OperationLedgerPort + Clone + Send + Sync + 'static>,
+        ployz::PrimitiveFailure,
+    > {
+        self.command_service_with_registry(
+            OperationRegistry::empty(),
+            OperationLeasePolicy::default(),
+        )
+    }
+
+    pub(crate) fn command_service_with_registry(
+        &self,
+        registry: OperationRegistry,
+        lease_policy: OperationLeasePolicy,
+    ) -> Result<
+        DaemonCommandService<impl OperationLedgerPort + Clone + Send + Sync + 'static>,
+        ployz::PrimitiveFailure,
+    > {
+        let owner = OperationOwner::parse(self.endpoint_id().as_str())?;
+        Ok(DaemonCommandService::new(
+            self.startup_report().clone(),
+            ployz::composition::corrosion_operation_ledger(self.substrate.store().clone()),
+            owner,
+            registry,
+            lease_policy,
+            self.shutting_down.clone(),
+        ))
     }
 
     #[cfg(test)]
@@ -151,6 +193,7 @@ impl DaemonRuntime {
     }
 
     pub async fn shutdown(self) -> Result<StartupReport, DaemonError> {
+        self.shutting_down.store(true, Ordering::Release);
         self.substrate.shutdown().await
     }
 }

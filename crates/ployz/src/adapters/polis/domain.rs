@@ -62,16 +62,9 @@ pub(crate) fn start_corrosion_domain_status(store: polis::CorrosionStore) -> imp
     CorrosionDomainStatus::new(store)
 }
 
-pub(crate) fn domain_status_schema_statements()
--> Result<Vec<polis::StoreStatement>, polis::StoreError> {
+#[cfg(test)]
+fn domain_status_schema_statements() -> Result<Vec<polis::StoreStatement>, polis::StoreError> {
     statements::schema_statements()
-}
-
-pub(crate) async fn verify_domain_status_schema(
-    store: &polis::CorrosionStore,
-    timeout: polis::StoreTimeout,
-) -> Result<(), polis::StoreError> {
-    polis::verify_table_schema(store, timeout, DOMAIN_STATUS_TABLE, DOMAIN_STATUS_COLUMNS).await
 }
 
 impl DomainStatusPort for CorrosionDomainStatus {

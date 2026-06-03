@@ -4,9 +4,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::config::CorrosionStartMode;
+use crate::operations::{
+    FakeOperation, OperationLeasePolicy, OperationRegistry, OperationScript, OperationScriptStep,
+};
 use crate::{
-    CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStop, DaemonConfig,
-    DaemonErrorKind, DaemonRuntime, PeerFailure, PeerPhase, SchemaPhase, StartupReport,
+    CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStop, DaemonCommandError,
+    DaemonCommandRequest, DaemonCommandResponse, DaemonConfig, DaemonErrorKind, DaemonRuntime,
+    PeerFailure, PeerPhase, SchemaPhase, StartupReport,
+};
+use ployz::operation::{
+    IdempotencyKey, OperationFailureCode, OperationId, OperationKind, OperationLedgerPort,
+    OperationPayloadFingerprint, OperationStage, OperationSubmission, OperationTerminal,
+    PrincipalId, ScopeId,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
@@ -63,7 +72,8 @@ async fn daemon_boot_applies_membership_schema_and_reports_ready() {
     assert_eq!(runtime.startup_report().peer().phase(), PeerPhase::Ready);
     assert!(runtime.startup_report().endpoint_id().is_some());
     assert_machines_table_exists(runtime.store()).await;
-    assert_product_tables_exist(runtime.store()).await;
+    assert_operation_tables_exist(runtime.store()).await;
+    assert_deferred_product_tables_absent(runtime.store()).await;
     assert!(root.join("corrosion/schema/membership.sql").is_file());
     assert!(!root.join("corrosion/schema/ployz.sql").exists());
 
@@ -341,6 +351,302 @@ async fn peer_start_failure_rolls_back_corrosion_and_reports_stopped_report() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn command_status_reports_startup_and_command_readiness() {
+    let root = temp_state_dir("command-status");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let service = runtime.command_service().expect("command service");
+
+    let response = service
+        .handle(DaemonCommandRequest::Status)
+        .await
+        .expect("status");
+
+    let DaemonCommandResponse::Status(status) = response else {
+        panic!("expected status response");
+    };
+    assert!(status.startup_report().is_ready());
+    assert!(status.command_service_ready());
+    runtime.shutdown().await.expect("shutdown");
+    assert!(!service.status().command_service_ready());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn fake_operation_submit_get_and_stream_use_operation_spine() {
+    let root = temp_state_dir("fake-operation");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let fake_kind = operation_kind("fake.success");
+    let service = runtime
+        .command_service_with_registry(
+            OperationRegistry::empty().with_operation(
+                fake_kind.clone(),
+                FakeOperation::new(OperationScript::new(
+                    vec![
+                        OperationScriptStep::Delay(Duration::from_millis(25)),
+                        OperationScriptStep::Stage(operation_stage("running")),
+                    ],
+                    OperationTerminal::succeeded(),
+                )),
+            ),
+            OperationLeasePolicy::new(Duration::from_secs(1)).expect("lease policy"),
+        )
+        .expect("command service");
+    let submission = operation_submission("fake-op-1", fake_kind.as_str(), "idem-a", "payload-a");
+
+    let operation = service
+        .submit_operation(submission.clone())
+        .await
+        .expect("submit");
+    assert_eq!(operation, *submission.operation());
+    let initial = service
+        .get_operation(&operation)
+        .await
+        .expect("initial status");
+    assert!(initial.record().terminal().is_none());
+
+    let terminal = wait_for_terminal(&service, &operation).await;
+    assert_eq!(
+        terminal.record().terminal(),
+        Some(&OperationTerminal::Succeeded)
+    );
+    let events = service
+        .stream_operation(&operation, None)
+        .await
+        .expect("events");
+    assert!(events.len() >= 3);
+    let after_first = service
+        .stream_operation(&operation, Some(&events[0].cursor()))
+        .await
+        .expect("events after cursor");
+    assert_eq!(
+        after_first.first().map(|event| event.sequence().value()),
+        Some(2)
+    );
+
+    runtime.shutdown().await.expect("shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn duplicate_fake_operation_submit_replays_existing_operation() {
+    let root = temp_state_dir("fake-operation-replay");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let fake_kind = operation_kind("fake.success");
+    let service = runtime
+        .command_service_with_registry(
+            OperationRegistry::empty().with_operation(
+                fake_kind.clone(),
+                FakeOperation::new(OperationScript::new(
+                    vec![OperationScriptStep::Stage(operation_stage("running"))],
+                    OperationTerminal::succeeded(),
+                )),
+            ),
+            OperationLeasePolicy::new(Duration::from_secs(1)).expect("lease policy"),
+        )
+        .expect("command service");
+    let submission = operation_submission("fake-op-1", fake_kind.as_str(), "idem-a", "payload-a");
+
+    let first = service
+        .submit_operation(submission.clone())
+        .await
+        .expect("first submit");
+    wait_for_terminal(&service, &first).await;
+    let second = service
+        .submit_operation(submission)
+        .await
+        .expect("replay submit");
+
+    assert_eq!(second, first);
+    runtime.shutdown().await.expect("shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn fake_operation_renews_lease_during_long_delay() {
+    let root = temp_state_dir("fake-operation-renewal");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let fake_kind = operation_kind("fake.delayed");
+    let service = runtime
+        .command_service_with_registry(
+            OperationRegistry::empty().with_operation(
+                fake_kind.clone(),
+                FakeOperation::new(OperationScript::new(
+                    vec![
+                        OperationScriptStep::Delay(Duration::from_millis(120)),
+                        OperationScriptStep::Stage(operation_stage("running")),
+                    ],
+                    OperationTerminal::succeeded(),
+                )),
+            ),
+            OperationLeasePolicy::new(Duration::from_millis(40)).expect("lease policy"),
+        )
+        .expect("command service");
+    let operation = service
+        .submit_operation(operation_submission(
+            "fake-op-renewal",
+            fake_kind.as_str(),
+            "idem-a",
+            "payload-a",
+        ))
+        .await
+        .expect("submit");
+
+    let terminal = wait_for_terminal(&service, &operation).await;
+
+    assert_eq!(
+        terminal.record().terminal(),
+        Some(&OperationTerminal::Succeeded)
+    );
+    runtime.shutdown().await.expect("shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn fake_operation_failure_is_visible_in_status_and_stream() {
+    let root = temp_state_dir("fake-operation-failure");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let fake_kind = operation_kind("fake.failure");
+    let failure = OperationTerminal::failed(
+        OperationFailureCode::parse("fake-failed").expect("failure code"),
+    );
+    let service = runtime
+        .command_service_with_registry(
+            OperationRegistry::empty().with_operation(
+                fake_kind.clone(),
+                FakeOperation::new(OperationScript::new(
+                    vec![OperationScriptStep::Stage(operation_stage("running"))],
+                    failure.clone(),
+                )),
+            ),
+            OperationLeasePolicy::new(Duration::from_secs(1)).expect("lease policy"),
+        )
+        .expect("command service");
+    let operation = service
+        .submit_operation(operation_submission(
+            "fake-op-failure",
+            fake_kind.as_str(),
+            "idem-a",
+            "payload-a",
+        ))
+        .await
+        .expect("submit");
+
+    let terminal = wait_for_terminal(&service, &operation).await;
+    let events = service
+        .stream_operation(&operation, None)
+        .await
+        .expect("events");
+
+    assert_eq!(terminal.record().terminal(), Some(&failure));
+    assert!(matches!(
+        events.last().map(|event| event.kind()),
+        Some(ployz::operation::OperationEventKind::Terminal { terminal }) if terminal == &failure
+    ));
+    runtime.shutdown().await.expect("shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn production_registry_does_not_expose_fake_operation_kind() {
+    let root = temp_state_dir("empty-registry");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let service = runtime.command_service().expect("command service");
+
+    let result = service
+        .submit_operation(operation_submission(
+            "fake-op-1",
+            "fake.success",
+            "idem-a",
+            "payload-a",
+        ))
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonCommandError::UnsupportedOperation { .. })
+    ));
+    runtime.shutdown().await.expect("shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn operation_get_and_stream_report_unknown_operation() {
+    let root = temp_state_dir("unknown-operation");
+    let config =
+        command_test_config(&root).with_corrosion_start_mode(CorrosionStartMode::StartManaged);
+    let runtime = DaemonRuntime::start(config).await.expect("daemon");
+    let service = runtime.command_service().expect("command service");
+    let operation = OperationId::parse("missing-op").expect("operation");
+
+    assert!(matches!(
+        service.get_operation(&operation).await,
+        Err(DaemonCommandError::OperationNotFound { .. })
+    ));
+    assert!(matches!(
+        service.stream_operation(&operation, None).await,
+        Err(DaemonCommandError::OperationNotFound { .. })
+    ));
+    runtime.shutdown().await.expect("shutdown");
+    let _ = fs::remove_dir_all(root);
+}
+
+async fn wait_for_terminal<L>(
+    service: &crate::DaemonCommandService<L>,
+    operation: &OperationId,
+) -> crate::OperationStatusResponse
+where
+    L: OperationLedgerPort + Clone + Send + Sync + 'static,
+{
+    for _ in 0..50 {
+        let status = service
+            .get_operation(operation)
+            .await
+            .expect("operation status");
+        if status.record().terminal().is_some() {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("operation did not reach terminal state");
+}
+
+fn operation_submission(
+    operation: &str,
+    kind: &str,
+    idempotency: &str,
+    fingerprint: &str,
+) -> OperationSubmission {
+    OperationSubmission::new(
+        OperationId::parse(operation).expect("operation"),
+        operation_kind(kind),
+        ScopeId::parse("scope-a").expect("scope"),
+        IdempotencyKey::parse(idempotency).expect("idempotency"),
+        PrincipalId::parse("principal-a").expect("principal"),
+        OperationPayloadFingerprint::parse(fingerprint).expect("fingerprint"),
+    )
+}
+
+fn operation_kind(value: &str) -> OperationKind {
+    OperationKind::parse(value).expect("operation kind")
+}
+
+fn operation_stage(value: &str) -> OperationStage {
+    OperationStage::parse(value).expect("operation stage")
+}
+
 async fn assert_machines_table_exists(store: &polis::CorrosionStore) {
     let query = polis::StoreStatement::new(
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'machines'",
@@ -357,14 +663,13 @@ async fn assert_machines_table_exists(store: &polis::CorrosionStore) {
     );
 }
 
-async fn assert_product_tables_exist(store: &polis::CorrosionStore) {
+async fn assert_operation_tables_exist(store: &polis::CorrosionStore) {
     let query = polis::StoreStatement::new(
         "SELECT name FROM sqlite_schema
         WHERE type = 'table'
           AND name IN (
-            'ployz_domain_status',
-            'ployz_acme_certificate_attempts',
-            'ployz_serving_routes'
+            'ployz_operations',
+            'ployz_operation_events'
           )
         ORDER BY name",
     )
@@ -382,11 +687,30 @@ async fn assert_product_tables_exist(store: &polis::CorrosionStore) {
     assert_eq!(
         names,
         vec![
-            "ployz_acme_certificate_attempts".to_string(),
-            "ployz_domain_status".to_string(),
-            "ployz_serving_routes".to_string(),
+            "ployz_operation_events".to_string(),
+            "ployz_operations".to_string(),
         ]
     );
+}
+
+async fn assert_deferred_product_tables_absent(store: &polis::CorrosionStore) {
+    let query = polis::StoreStatement::new(
+        "SELECT name FROM sqlite_schema
+        WHERE type = 'table'
+          AND name IN (
+            'ployz_domain_status',
+            'ployz_acme_certificate_attempts',
+            'ployz_serving_routes'
+          )
+        ORDER BY name",
+    )
+    .expect("query");
+    let rows = store
+        .query(&query, test_store_timeout())
+        .await
+        .expect("deferred product tables");
+
+    assert!(rows.rows().is_empty());
 }
 
 async fn upsert_machine_row(
@@ -474,6 +798,10 @@ fn different_addresses(existing: polis::CorrosionAgentAddresses) -> polis::Corro
 fn test_config(root: &Path) -> DaemonConfig {
     DaemonConfig::for_test_state_dir(root, test_corrosion_addresses())
         .with_corrosion_shutdown_timeout(Duration::from_millis(250))
+}
+
+fn command_test_config(root: &Path) -> DaemonConfig {
+    test_config(root).with_peer_boot_timeout(Duration::from_secs(20))
 }
 
 fn assert_corrosion_stopped(cleanup: CorrosionCleanup) {

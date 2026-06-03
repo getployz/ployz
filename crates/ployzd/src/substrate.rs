@@ -117,7 +117,6 @@ impl DaemonSubstrate {
         self.peer.endpoint_id()
     }
 
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn store(&self) -> &polis::CorrosionStore {
         &self.store

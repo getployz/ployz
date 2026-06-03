@@ -87,20 +87,15 @@ pub(crate) fn start_corrosion_certificate_attempts(
     CorrosionCertificateAttempts::new(store)
 }
 
-pub(crate) fn certificate_attempt_schema_statements()
--> Result<Vec<polis::StoreStatement>, polis::StoreError> {
+#[cfg(test)]
+fn certificate_attempt_schema_statements() -> Result<Vec<polis::StoreStatement>, polis::StoreError>
+{
     polis::schema_statements(&schema_sql())
 }
 
+#[cfg(test)]
 fn schema_sql() -> String {
     polis::create_table_sql(ATTEMPTS_TABLE, ATTEMPT_COLUMNS)
-}
-
-pub(crate) async fn verify_certificate_attempt_schema(
-    store: &polis::CorrosionStore,
-    timeout: polis::StoreTimeout,
-) -> Result<(), polis::StoreError> {
-    polis::verify_table_schema(store, timeout, ATTEMPTS_TABLE, ATTEMPT_COLUMNS).await
 }
 
 impl CertificateAttemptStore for CorrosionCertificateAttempts {

@@ -47,9 +47,51 @@ impl OperationId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OperationKind(String);
+
+impl OperationKind {
+    pub fn parse(value: impl Into<String>) -> Result<Self, PrimitiveFailure> {
+        parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IdempotencyKey(String);
 
 impl IdempotencyKey {
+    pub fn parse(value: impl Into<String>) -> Result<Self, PrimitiveFailure> {
+        parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OperationPayloadFingerprint(String);
+
+impl OperationPayloadFingerprint {
+    pub fn parse(value: impl Into<String>) -> Result<Self, PrimitiveFailure> {
+        parse_non_empty(value, Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OperationOwner(String);
+
+impl OperationOwner {
     pub fn parse(value: impl Into<String>) -> Result<Self, PrimitiveFailure> {
         parse_non_empty(value, Self)
     }
