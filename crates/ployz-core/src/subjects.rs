@@ -9,6 +9,10 @@ pub const AUDIT_STREAM_SUBJECT: &str = "plz.v1.audit.>";
 pub const OBS_TRANSITION_STREAM_SUBJECT: &str = "plz.v1.obs.node.>";
 pub const SCHEDULE_STREAM_SUBJECT: &str = "plz.v1.sched.>";
 
+pub const API_SERVICE_SCOPE: &str = "plz.v1.svc.api.>";
+pub const NODE_SERVICE_SCOPE: &str = "plz.v1.svc.node.>";
+pub const DEPLOY_SUBMITTED_EVENTS_SUBJECT: &str = "plz.v1.op.*.deploy.submitted";
+
 pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
 pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
 pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
@@ -66,6 +70,11 @@ pub fn node_service(node_id: &NodeId, endpoint: NodeServiceEndpoint) -> String {
     )
 }
 
+#[must_use]
+pub fn node_service_scope(node_id: &NodeId) -> String {
+    format!("plz.v1.svc.node.{}.>", node_id.as_str())
+}
+
 impl DeployRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
@@ -86,6 +95,11 @@ pub fn node_observation(node_id: &NodeId, event: NodeObservationEvent) -> String
         node_id.as_str(),
         event.as_subject()
     )
+}
+
+#[must_use]
+pub fn node_observation_scope(node_id: &NodeId) -> String {
+    format!("plz.v1.obs.node.{}.>", node_id.as_str())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
