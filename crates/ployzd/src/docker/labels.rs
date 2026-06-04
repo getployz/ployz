@@ -1,0 +1,112 @@
+use std::collections::BTreeMap;
+
+use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId, SubjectTokenError};
+use ployz_core::node::ManagedContainerKind;
+
+pub const MANAGED_LABEL: &str = "plz.managed";
+pub const SERVICE_ID_LABEL: &str = "plz.service_id";
+pub const REVISION_LABEL: &str = "plz.revision";
+pub const OPERATION_ID_LABEL: &str = "plz.operation_id";
+pub const STEP_ID_LABEL: &str = "plz.step_id";
+pub const CONTAINER_TYPE_LABEL: &str = "plz.container_type";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedContainerLabels {
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+    pub operation_id: OperationId,
+    pub step_id: StepId,
+    pub kind: ManagedContainerKind,
+}
+
+impl ManagedContainerLabels {
+    #[must_use]
+    pub fn render(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (MANAGED_LABEL.to_owned(), "true".to_owned()),
+            (
+                SERVICE_ID_LABEL.to_owned(),
+                self.service_id.as_str().to_owned(),
+            ),
+            (
+                REVISION_LABEL.to_owned(),
+                self.revision_id.as_str().to_owned(),
+            ),
+            (
+                OPERATION_ID_LABEL.to_owned(),
+                self.operation_id.as_str().to_owned(),
+            ),
+            (STEP_ID_LABEL.to_owned(), self.step_id.as_str().to_owned()),
+            (
+                CONTAINER_TYPE_LABEL.to_owned(),
+                self.kind.as_label().to_owned(),
+            ),
+        ])
+    }
+
+    pub fn parse(labels: &BTreeMap<String, String>) -> Result<Self, ManagedContainerLabelError> {
+        match required_label(labels, MANAGED_LABEL)? {
+            "true" => {}
+            value => {
+                return Err(ManagedContainerLabelError::InvalidManagedValue {
+                    value: value.to_owned(),
+                });
+            }
+        }
+
+        let service_id = parse_id(labels, SERVICE_ID_LABEL, ServiceId::try_new)?;
+        let revision_id = parse_id(labels, REVISION_LABEL, RevisionId::try_new)?;
+        let operation_id = parse_id(labels, OPERATION_ID_LABEL, OperationId::try_new)?;
+        let step_id = parse_id(labels, STEP_ID_LABEL, StepId::try_new)?;
+        let kind_value = required_label(labels, CONTAINER_TYPE_LABEL)?;
+        let Some(kind) = ManagedContainerKind::from_label(kind_value) else {
+            return Err(ManagedContainerLabelError::InvalidKind {
+                value: kind_value.to_owned(),
+            });
+        };
+
+        Ok(Self {
+            service_id,
+            revision_id,
+            operation_id,
+            step_id,
+            kind,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedContainerLabelError {
+    Missing {
+        label: &'static str,
+    },
+    InvalidManagedValue {
+        value: String,
+    },
+    InvalidKind {
+        value: String,
+    },
+    InvalidId {
+        label: &'static str,
+        source: SubjectTokenError,
+    },
+}
+
+fn required_label<'a>(
+    labels: &'a BTreeMap<String, String>,
+    label: &'static str,
+) -> Result<&'a str, ManagedContainerLabelError> {
+    labels
+        .get(label)
+        .map(String::as_str)
+        .ok_or(ManagedContainerLabelError::Missing { label })
+}
+
+fn parse_id<Id>(
+    labels: &BTreeMap<String, String>,
+    label: &'static str,
+    parse: impl FnOnce(String) -> Result<Id, SubjectTokenError>,
+) -> Result<Id, ManagedContainerLabelError> {
+    parse(required_label(labels, label)?.to_owned())
+        .map_err(|source| ManagedContainerLabelError::InvalidId { label, source })
+}
