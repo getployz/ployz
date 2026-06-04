@@ -1043,29 +1043,53 @@ Pipeline finish:
   - Mutating service handler returns before work starts.
 - **Verification:** `cargo test -p ployzd --test services`
 
-### U4. Operation Stream, Status Store, And Worker Consumer
+### U4. Operation Contract, Status Projection, And Worker Consumer
 
-- **Goal:** Prove the core operation contract on NATS.
+- **Goal:** Prove the core operation contract and projection rules with a
+  NATS-shaped contract harness.
 - **Requirements:** R1, R2, R10, R11, R12
 - **Dependencies:** U1, U2, U3
 - **Files:**
-  - `crates/ployz-core/src/ops/status.rs`
-  - `crates/ployz-core/src/ops/event.rs`
+  - `crates/ployz-core/src/ops.rs`
   - `crates/ployz-nats/src/streams.rs`
-  - `crates/ployzd/src/controllers/ops.rs`
-  - `crates/ployzd/src/services/ops.rs`
+  - `crates/ployzd/src/controllers.rs`
+  - `crates/ployzd/src/services.rs`
   - `crates/ployzd/tests/operation_spine.rs`
-- **Approach:** `deploy.submit` publishes a durable submitted event with
-  `Nats-Msg-Id`, writes KV_OPS key `ops.<op_id>`, and returns `op_id`. A
-  durable pull consumer reads submitted events and moves the operation through
-  a fake state machine.
+- **Approach:** `deploy.submit` publishes a submitted event with NATS-style
+  message idempotency, projects `KV_OPS`-shaped status through core transition
+  rules, and returns `op_id`. A durable-consumer-shaped worker reads submitted
+  events and moves the operation through a small fake state machine. This U
+  proves the business contract; the production NATS adapter boundary lands in
+  U4a.
 - **Test scenarios:**
   - Duplicate submit with the same idempotency key returns the same operation.
   - Unacked submitted event redelivers after worker crash.
   - `ops.watch` replays events from `start_sequence`.
   - `KV_OPS` contains the latest operation status and last event sequence.
   - Terminal operation status cannot return to running.
-- **Verification:** `cargo test -p ployzd operation_spine`
+- **Verification:** `cargo test -p ployzd --test operation_spine`
+
+### U4a. Real NATS Operation Adapters
+
+- **Goal:** Replace production-facing in-memory operation stream/status/consumer
+  coupling with narrow async-nats JetStream and KV adapters.
+- **Requirements:** R10, R11, R12
+- **Dependencies:** U4
+- **Files:**
+  - `crates/ployz-nats/src/streams.rs`
+  - `crates/ployz-nats/src/kv.rs`
+  - `crates/ployzd/src/controllers.rs`
+  - `crates/ployzd/tests/operation_spine.rs`
+- **Approach:** Keep core projection policy unchanged. Introduce narrow ports
+  for append/replay, status get/put, and submitted-event acknowledgement, then
+  provide async-nats implementations backed by PLZ_OPS and KV_OPS. The current
+  Vec-backed models remain test harnesses only.
+- **Test scenarios:**
+  - Real JetStream append uses `Nats-Msg-Id` for duplicate submit idempotency.
+  - Real durable consumer redelivers unacked submitted events.
+  - KV_OPS status survives controller restart.
+  - `ops.watch` replays stored operation events from a sequence.
+- **Verification:** `cargo test -p ployz-nats -p ployzd --test operation_spine`
 
 ### U5. Permission Profiles And Credentials
 
@@ -1332,14 +1356,17 @@ Do not build these in v1:
 5. U2 typed model and subjects.
 6. U3 service surface.
 7. U4 operation spine.
-8. U5 permission profiles.
-9. U6 node agent and Docker observation.
-10. U7 first deploy.
-11. U8 gateway/DNS/cert projection.
-12. U9 CLI/SDK ergonomics.
-13. U10 HA/backup.
+8. U4a real NATS operation adapters.
+9. U5 permission profiles.
+10. U6 node agent and Docker observation.
+11. U7 first deploy.
+12. U8 gateway/DNS/cert projection.
+13. U9 CLI/SDK ergonomics.
+14. U10 HA/backup.
 
-The first proof should be Pre-U0 through U4 with a fake worker over local NATS.
-The second proof should be U0-U4 through the iroh NATS tunnel. The third proof
-should be U0-U7 with fake Docker. The first production-shaped proof is U0-U7
-with real Docker on one node plus one edge node connected through iroh.
+The first proof should be Pre-U0 through U4 with a fake worker over the
+operation contract harness. The second proof should be U0-U4a over real local
+NATS. The third proof should be U0-U4a through the iroh NATS tunnel. The
+fourth proof should be U0-U7 with fake Docker. The first production-shaped
+proof is U0-U7 with real Docker on one node plus one edge node connected
+through iroh.

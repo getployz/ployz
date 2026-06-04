@@ -1,7 +1,8 @@
 use ployz_core::ids::{NodeId, OperationId, SubjectTokenError};
+use ployz_core::ops::DeployRunningStage;
 use ployz_core::subjects::{
-    NodeObservationEvent, NodeServiceEndpoint, node_observation, node_service, op_deploy_submitted,
-    op_watch,
+    NodeObservationEvent, NodeServiceEndpoint, node_observation, node_service, op_deploy_completed,
+    op_deploy_planning_started, op_deploy_running, op_deploy_submitted, op_watch,
 };
 
 #[test]
@@ -12,6 +13,18 @@ fn operation_subjects_use_validated_operation_ids() {
     assert_eq!(
         op_deploy_submitted(&op_id),
         "plz.v1.op.op_123.deploy.submitted"
+    );
+    assert_eq!(
+        op_deploy_planning_started(&op_id),
+        "plz.v1.op.op_123.deploy.planning.started"
+    );
+    assert_eq!(
+        op_deploy_running(&op_id, DeployRunningStage::WaitingForHealth),
+        "plz.v1.op.op_123.deploy.running.waiting_for_health"
+    );
+    assert_eq!(
+        op_deploy_completed(&op_id),
+        "plz.v1.op.op_123.deploy.completed"
     );
 }
 

@@ -1,6 +1,7 @@
 //! JetStream stream and durable consumer helpers.
 
 use crate::replication::ReplicationFactor;
+use ployz_core::ops::{EventSequence, OperationEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamSpec {
@@ -55,4 +56,179 @@ pub enum StorageBackend {
 pub enum DiscardPolicy {
     Old,
     New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageId(String);
+
+impl MessageId {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationStreamMessage {
+    pub sequence: EventSequence,
+    pub subject: String,
+    pub message_id: MessageId,
+    pub payload: OperationEvent,
+}
+
+impl OperationStreamMessage {
+    #[must_use]
+    pub fn new(
+        sequence: EventSequence,
+        subject: impl Into<String>,
+        message_id: MessageId,
+        payload: OperationEvent,
+    ) -> Self {
+        Self {
+            sequence,
+            subject: subject.into(),
+            message_id,
+            payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationEventStream {
+    messages: Vec<OperationStreamMessage>,
+}
+
+impl OperationEventStream {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn messages(&self) -> &[OperationStreamMessage] {
+        &self.messages
+    }
+
+    #[must_use]
+    pub fn next_sequence(&self) -> EventSequence {
+        EventSequence::try_new(self.messages.len() as u64 + 1)
+            .expect("operation stream sequence starts at 1")
+    }
+
+    pub fn append(
+        &mut self,
+        subject: impl Into<String>,
+        message_id: MessageId,
+        payload: OperationEvent,
+    ) -> OperationStreamAppend {
+        if let Some(existing) = self
+            .messages
+            .iter()
+            .find(|message| message.message_id == message_id)
+        {
+            return OperationStreamAppend::Duplicate {
+                sequence: existing.sequence,
+                payload: existing.payload.clone(),
+            };
+        }
+
+        let sequence = self.next_sequence();
+        self.messages.push(OperationStreamMessage::new(
+            sequence,
+            subject,
+            message_id,
+            payload.clone(),
+        ));
+
+        OperationStreamAppend::Stored { sequence, payload }
+    }
+
+    #[must_use]
+    pub fn replay(
+        &self,
+        subject_prefix: &str,
+        start_sequence: EventSequence,
+    ) -> Vec<OperationStreamMessage> {
+        self.messages
+            .iter()
+            .filter(|message| {
+                message.sequence >= start_sequence && message.subject.starts_with(subject_prefix)
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+impl Default for OperationEventStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationStreamAppend {
+    Stored {
+        sequence: EventSequence,
+        payload: OperationEvent,
+    },
+    Duplicate {
+        sequence: EventSequence,
+        payload: OperationEvent,
+    },
+}
+
+impl OperationStreamAppend {
+    #[must_use]
+    pub const fn sequence(&self) -> EventSequence {
+        match self {
+            Self::Stored { sequence, .. } | Self::Duplicate { sequence, .. } => *sequence,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DurableConsumerState {
+    acked_sequences: Vec<EventSequence>,
+}
+
+impl DurableConsumerState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn is_acked(&self, sequence: EventSequence) -> bool {
+        self.acked_sequences.contains(&sequence)
+    }
+
+    pub fn ack(&mut self, sequence: EventSequence) {
+        if !self.is_acked(sequence) {
+            self.acked_sequences.push(sequence);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationConsumer {
+    pending: Vec<OperationStreamMessage>,
+}
+
+impl OperationConsumer {
+    #[must_use]
+    pub fn new(pending: Vec<OperationStreamMessage>) -> Self {
+        Self { pending }
+    }
+
+    #[must_use]
+    pub fn next(&self) -> Option<&OperationStreamMessage> {
+        self.pending.first()
+    }
 }

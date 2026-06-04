@@ -1,6 +1,7 @@
 //! NATS subject construction helpers.
 
 use crate::ids::{NodeId, OperationId};
+use crate::ops::DeployRunningStage;
 
 pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
 pub const JOBS_STREAM_SUBJECT: &str = "plz.v1.job.>";
@@ -25,12 +26,57 @@ pub fn op_deploy_submitted(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
+pub fn op_deploy_planning_started(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.deploy.planning.started",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn op_deploy_running(operation_id: &OperationId, stage: DeployRunningStage) -> String {
+    format!(
+        "plz.v1.op.{}.deploy.running.{}",
+        operation_id.as_str(),
+        stage.as_subject(),
+    )
+}
+
+#[must_use]
+pub fn op_deploy_completed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.deploy.completed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_deploy_failed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.deploy.failed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_cancelled(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.cancelled", operation_id.as_str())
+}
+
+#[must_use]
 pub fn node_service(node_id: &NodeId, endpoint: NodeServiceEndpoint) -> String {
     format!(
         "plz.v1.svc.node.{}.{}",
         node_id.as_str(),
         endpoint.as_subject()
     )
+}
+
+impl DeployRunningStage {
+    #[must_use]
+    pub const fn as_subject(&self) -> &'static str {
+        match self {
+            Self::RunningPreDeploy => "predeploy",
+            Self::StartingContainers => "starting_containers",
+            Self::WaitingForHealth => "waiting_for_health",
+            Self::CuttingOverRoute => "cutting_over_route",
+            Self::CleaningUp => "cleaning_up",
+        }
+    }
 }
 
 #[must_use]

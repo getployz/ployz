@@ -113,6 +113,174 @@ impl OperationStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployTransition {
+    Planning,
+    Running { stage: DeployRunningStage },
+    Completed,
+    Failed { failure: DeployOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl DeployTransition {
+    #[must_use]
+    pub fn state(&self) -> DeployOperationState {
+        match self {
+            Self::Planning => DeployOperationState::Planning,
+            Self::Running { stage } => DeployOperationState::Running {
+                stage: stage.clone(),
+            },
+            Self::Completed => DeployOperationState::Completed,
+            Self::Failed { failure } => DeployOperationState::Failed {
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => DeployOperationState::Cancelled {
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployProjection {
+    Updated { status: OperationStatus },
+    AlreadySatisfied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusProjectionError {
+    MissingOperation {
+        operation_id: OperationId,
+    },
+    TerminalState {
+        operation_id: OperationId,
+        current: DeployOperationState,
+        attempted: DeployOperationState,
+    },
+    InvalidTransition {
+        operation_id: OperationId,
+        current: DeployOperationState,
+        attempted: DeployOperationState,
+    },
+}
+
+pub fn project_deploy_transition(
+    current: &OperationStatus,
+    transition: DeployTransition,
+    event_sequence: EventSequence,
+) -> Result<DeployProjection, StatusProjectionError> {
+    let OperationStatus::Deploy {
+        id,
+        service_id,
+        state: current_state,
+        ..
+    } = current;
+    let attempted = transition.state();
+
+    if deploy_transition_satisfied(current_state, &attempted) {
+        return Ok(DeployProjection::AlreadySatisfied);
+    }
+
+    validate_deploy_transition(id, current_state, &attempted)?;
+
+    Ok(DeployProjection::Updated {
+        status: OperationStatus::Deploy {
+            id: id.clone(),
+            service_id: service_id.clone(),
+            state: attempted,
+            last_event_sequence: event_sequence,
+        },
+    })
+}
+
+fn deploy_transition_satisfied(
+    current: &DeployOperationState,
+    attempted: &DeployOperationState,
+) -> bool {
+    match attempted {
+        DeployOperationState::Accepted => matches!(current, DeployOperationState::Accepted),
+        DeployOperationState::Planning => !matches!(current, DeployOperationState::Accepted),
+        DeployOperationState::Running { stage: attempted } => match current {
+            DeployOperationState::Running { stage: current } => {
+                deploy_stage_rank(current) >= deploy_stage_rank(attempted)
+            }
+            DeployOperationState::Accepted
+            | DeployOperationState::Planning
+            | DeployOperationState::Completed
+            | DeployOperationState::Failed { .. }
+            | DeployOperationState::Cancelled { .. } => false,
+        },
+        DeployOperationState::Completed => matches!(current, DeployOperationState::Completed),
+        DeployOperationState::Failed { failure: attempted } => {
+            matches!(current, DeployOperationState::Failed { failure } if failure == attempted)
+        }
+        DeployOperationState::Cancelled { reason: attempted } => {
+            matches!(current, DeployOperationState::Cancelled { reason } if reason == attempted)
+        }
+    }
+}
+
+pub fn validate_deploy_transition(
+    operation_id: &OperationId,
+    current: &DeployOperationState,
+    attempted: &DeployOperationState,
+) -> Result<(), StatusProjectionError> {
+    if current.is_terminal() {
+        return Err(StatusProjectionError::TerminalState {
+            operation_id: operation_id.clone(),
+            current: current.clone(),
+            attempted: attempted.clone(),
+        });
+    }
+
+    if deploy_transition_allowed(current, attempted) {
+        return Ok(());
+    }
+
+    Err(StatusProjectionError::InvalidTransition {
+        operation_id: operation_id.clone(),
+        current: current.clone(),
+        attempted: attempted.clone(),
+    })
+}
+
+fn deploy_transition_allowed(
+    current: &DeployOperationState,
+    attempted: &DeployOperationState,
+) -> bool {
+    match (current, attempted) {
+        (DeployOperationState::Accepted, DeployOperationState::Planning)
+        | (DeployOperationState::Accepted, DeployOperationState::Cancelled { .. })
+        | (DeployOperationState::Accepted, DeployOperationState::Failed { .. })
+        | (DeployOperationState::Planning, DeployOperationState::Cancelled { .. })
+        | (DeployOperationState::Planning, DeployOperationState::Failed { .. })
+        | (DeployOperationState::Running { .. }, DeployOperationState::Cancelled { .. })
+        | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. })
+        | (DeployOperationState::Running { .. }, DeployOperationState::Completed) => true,
+        (DeployOperationState::Planning, DeployOperationState::Running { .. }) => true,
+        (
+            DeployOperationState::Running { stage: current },
+            DeployOperationState::Running { stage: attempted },
+        ) => deploy_stage_rank(attempted) > deploy_stage_rank(current),
+        (DeployOperationState::Accepted, _)
+        | (DeployOperationState::Completed, _)
+        | (DeployOperationState::Failed { .. }, _)
+        | (DeployOperationState::Cancelled { .. }, _)
+        | (DeployOperationState::Planning, _)
+        | (DeployOperationState::Running { .. }, _) => false,
+    }
+}
+
+fn deploy_stage_rank(stage: &DeployRunningStage) -> u8 {
+    match stage {
+        DeployRunningStage::RunningPreDeploy => 0,
+        DeployRunningStage::StartingContainers => 1,
+        DeployRunningStage::WaitingForHealth => 2,
+        DeployRunningStage::CuttingOverRoute => 3,
+        DeployRunningStage::CleaningUp => 4,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "u64", into = "u64")]
 pub struct EventSequence(NonZeroU64);
@@ -177,6 +345,10 @@ pub enum OperationEvent {
     },
     DeployPlanningStarted {
         operation_id: OperationId,
+    },
+    DeployRunning {
+        operation_id: OperationId,
+        stage: DeployRunningStage,
     },
     DeployContainerStarted {
         operation_id: OperationId,
