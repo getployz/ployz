@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU16;
 
-use crate::ids::{RevisionId, ServiceId};
+use crate::ids::{NodeId, RevisionId, ServiceId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,6 +13,80 @@ pub struct DeployRequest {
     pub target_revision: RevisionId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployPlanningInput {
+    pub request: DeployRequest,
+    pub eligible_nodes: Vec<NodeId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployPlan {
+    pub service_id: ServiceId,
+    pub target_revision: RevisionId,
+    pub steps: Vec<DeployPlanStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployPlanStep {
+    RunContainer { node_id: NodeId, slot: ReplicaSlot },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReplicaSlot(u16);
+
+impl ReplicaSlot {
+    pub fn try_new(value: u16) -> Result<Self, ReplicaSlotError> {
+        if value == 0 {
+            return Err(ReplicaSlotError::Zero);
+        }
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicaSlotError {
+    Zero,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployPlanError {
+    NoEligibleNodes,
+}
+
+pub fn plan_new_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
+    if input.eligible_nodes.is_empty() {
+        return Err(DeployPlanError::NoEligibleNodes);
+    }
+
+    let target_replicas = usize::from(input.request.replicas.get());
+    let steps = input
+        .eligible_nodes
+        .iter()
+        .cycle()
+        .take(target_replicas)
+        .enumerate()
+        .map(|(index, node_id)| {
+            let slot = ReplicaSlot((index + 1) as u16);
+            DeployPlanStep::RunContainer {
+                node_id: node_id.clone(),
+                slot,
+            }
+        })
+        .collect();
+
+    Ok(DeployPlan {
+        service_id: input.request.service_id,
+        target_revision: input.request.target_revision,
+        steps,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
