@@ -1029,10 +1029,7 @@ Pipeline finish:
 - **Dependencies:** U1, U1a, U2
 - **Files:**
   - `crates/ployz-nats/src/services.rs`
-  - `crates/ployzd/src/services/mod.rs`
-  - `crates/ployzd/src/services/deploy.rs`
-  - `crates/ployzd/src/services/ops.rs`
-  - `crates/ployzd/src/services/node.rs`
+  - `crates/ployzd/src/services.rs`
   - `crates/ployzd/tests/services.rs`
 - **Approach:** Register services with names, versions, endpoints, and
   metadata. Implement `ops.status`, `ops.watch`, and `node.inspect` first.
@@ -1044,7 +1041,7 @@ Pipeline finish:
   - Calling a node service with no responder returns a typed node-unavailable
     error.
   - Mutating service handler returns before work starts.
-- **Verification:** `cargo test -p ployzd services`
+- **Verification:** `cargo test -p ployzd --test services`
 
 ### U4. Operation Stream, Status Store, And Worker Consumer
 
