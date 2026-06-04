@@ -11,6 +11,7 @@ pub mod bootstrap;
 pub mod connect;
 pub mod kv;
 pub mod objects;
+pub mod operations;
 pub mod permissions;
 pub mod replication;
 pub mod schedules;

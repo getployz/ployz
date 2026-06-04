@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
-use crate::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId};
+use crate::ids::{
+    ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectToken, SubjectTokenError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -147,6 +149,21 @@ pub enum DeployProjection {
     AlreadySatisfied,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OperationIdempotencyKey(SubjectToken);
+
+impl OperationIdempotencyKey {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
+        Ok(Self(SubjectToken::try_new(value)?))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusProjectionError {
     MissingOperation {
@@ -154,13 +171,13 @@ pub enum StatusProjectionError {
     },
     TerminalState {
         operation_id: OperationId,
-        current: DeployOperationState,
-        attempted: DeployOperationState,
+        current: Box<DeployOperationState>,
+        attempted: Box<DeployOperationState>,
     },
     InvalidTransition {
         operation_id: OperationId,
-        current: DeployOperationState,
-        attempted: DeployOperationState,
+        current: Box<DeployOperationState>,
+        attempted: Box<DeployOperationState>,
     },
 }
 
@@ -228,8 +245,8 @@ pub fn validate_deploy_transition(
     if current.is_terminal() {
         return Err(StatusProjectionError::TerminalState {
             operation_id: operation_id.clone(),
-            current: current.clone(),
-            attempted: attempted.clone(),
+            current: Box::new(current.clone()),
+            attempted: Box::new(attempted.clone()),
         });
     }
 
@@ -239,8 +256,8 @@ pub fn validate_deploy_transition(
 
     Err(StatusProjectionError::InvalidTransition {
         operation_id: operation_id.clone(),
-        current: current.clone(),
-        attempted: attempted.clone(),
+        current: Box::new(current.clone()),
+        attempted: Box::new(attempted.clone()),
     })
 }
 
@@ -478,6 +495,7 @@ pub struct RouteTarget {
 }
 
 impl RouteTarget {
+    #[must_use]
     pub fn try_new(hostname: RouteHostname, port: RoutePort) -> Self {
         Self { hostname, port }
     }
