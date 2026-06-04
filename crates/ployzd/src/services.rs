@@ -1,10 +1,9 @@
 //! NATS service handlers exposed by the daemon.
 
-use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::ops::EventSequence;
+use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
     API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_OPS_STATUS, API_OPS_WATCH,
-    NodeServiceEndpoint, node_service, op_watch,
+    NodeServiceEndpoint, node_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsRequestFailure, NatsServiceEndpointSpec, NatsServiceSpec,
@@ -129,32 +128,4 @@ impl NodeServiceCallError {
             },
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedOperation {
-    pub operation_id: OperationId,
-    pub dispatch: OperationDispatch,
-}
-
-impl AcceptedOperation {
-    #[must_use]
-    pub fn queued(operation_id: OperationId, start_sequence: EventSequence) -> Self {
-        let watch_subject = op_watch(&operation_id);
-        Self {
-            operation_id,
-            dispatch: OperationDispatch::Queued {
-                watch_subject,
-                start_sequence,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationDispatch {
-    Queued {
-        watch_subject: String,
-        start_sequence: EventSequence,
-    },
 }

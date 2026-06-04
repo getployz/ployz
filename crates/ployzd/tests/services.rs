@@ -1,18 +1,11 @@
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, NodeServiceEndpoint};
-use ployz_nats::operations::{
-    OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
-};
 use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
 use ployzd::operation_api::{
-    OpsStatusError, OpsWatchError, OpsWatchEventLogFailure, OpsWatchStatusStoreFailure,
-    OpsWatchUnavailableSource, ops_status_missing,
+    AcceptedOperation, OperationDispatch, OpsStatusError, ops_status_missing,
 };
-use ployzd::services::{
-    AcceptedOperation, DaemonServiceCatalog, NodeServiceCallError, OperationDispatch,
-    node_endpoint_subject,
-};
+use ployzd::services::{DaemonServiceCatalog, NodeServiceCallError, node_endpoint_subject};
 
 #[test]
 fn service_catalog_supports_srv_ping_discovery() {
@@ -84,57 +77,6 @@ fn ops_status_returns_typed_missing_operation_error() {
     assert_eq!(
         ops_status_missing(&operation_id),
         OpsStatusError::NoSuchOperation { operation_id }
-    );
-}
-
-#[test]
-fn ops_watch_maps_missing_operation_to_api_error() {
-    let operation_id = operation_id("op_missing");
-
-    assert_eq!(
-        OpsWatchError::from_replay_error(
-            operation_id.clone(),
-            ReplayOperationEventsError::MissingOperation {
-                operation_id: operation_id.clone(),
-            },
-        ),
-        OpsWatchError::NoSuchOperation { operation_id }
-    );
-}
-
-#[test]
-fn ops_watch_preserves_status_store_failure_context() {
-    let operation_id = operation_id("op_123");
-
-    assert_eq!(
-        OpsWatchError::from_replay_error(
-            operation_id.clone(),
-            ReplayOperationEventsError::LoadStatus(OperationStatusStoreError::GetStatus {
-                message: "kv unavailable".to_owned(),
-            }),
-        ),
-        OpsWatchError::Unavailable {
-            operation_id,
-            source: OpsWatchUnavailableSource::StatusStore(OpsWatchStatusStoreFailure::GetStatus),
-        }
-    );
-}
-
-#[test]
-fn ops_watch_preserves_event_log_failure_context() {
-    let operation_id = operation_id("op_123");
-
-    assert_eq!(
-        OpsWatchError::from_replay_error(
-            operation_id.clone(),
-            ReplayOperationEventsError::ReadEvents(OperationEventLogError::ReadEvent {
-                message: "stream unavailable".to_owned(),
-            }),
-        ),
-        OpsWatchError::Unavailable {
-            operation_id,
-            source: OpsWatchUnavailableSource::EventLog(OpsWatchEventLogFailure::ReadEvent),
-        }
     );
 }
 
