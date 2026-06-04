@@ -1,30 +1,18 @@
-//! Minimal daemon lifecycle owner for Ployz substrate boot.
+#![forbid(unsafe_code)]
+
+//! Ployz daemon process wiring.
 //!
-//! `ployzd` owns process lifecycle, local substrate adoption, startup reporting, and
-//! shutdown. Product semantics stay in `ployz`; product-neutral primitives stay
-//! in `polis`.
+//! The daemon owns lifecycle, configuration, service registration,
+//! controllers, node-local services, and runtime adapters. Product policy stays
+//! in `ployz-core`; NATS mechanics stay in `ployz-nats`; iroh byte transport
+//! stays in `ployz-transport`.
 
-pub mod commands;
+pub mod app;
 pub mod config;
-mod control;
-pub mod daemon;
-mod operations;
-pub mod report;
-mod substrate;
-#[cfg(test)]
-mod test_support;
-
-pub use commands::{
-    DaemonCommandError, DaemonCommandRequest, DaemonCommandResponse, DaemonCommandService,
-    DaemonOperationFailure, DaemonStatus, OperationStatusResponse,
-};
-pub use config::{DaemonConfig, DaemonConfigError};
-pub use control::{DaemonControlError, serve_rpc_stdio};
-pub use daemon::{DaemonError, DaemonErrorKind, DaemonRuntime};
-pub use report::{
-    CorrosionCleanup, CorrosionFailure, CorrosionPhase, CorrosionStartup, CorrosionStop,
-    PeerFailure, PeerPhase, PeerStartup, SchemaFailure, SchemaPhase, SchemaStartup, StartupReport,
-};
-
-#[cfg(test)]
-mod tests;
+pub mod controllers;
+pub mod docker;
+pub mod gateway;
+pub mod iroh_tunnel;
+pub mod nats_process;
+pub mod node_agent;
+pub mod services;

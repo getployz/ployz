@@ -1,0 +1,1 @@
+//! Node-facing domain models.

@@ -1,18 +1,11 @@
 [workspace]
 members = [
-    "crates/polis",
-    "crates/ployz",
-    "crates/ployz-api",
-    "crates/ployzd",
-    "crates/ployz-e2e",
-    "crates/ployzctl",
-]
-default-members = [
-    "crates/polis",
-    "crates/ployz",
-    "crates/ployz-api",
+    "crates/ployz-core",
+    "crates/ployz-nats",
+    "crates/ployz-transport",
     "crates/ployzd",
     "crates/ployzctl",
+    "crates/ployz-sdk-types",
 ]
 resolver = "3"
 
@@ -23,27 +16,7 @@ rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
-corro-api-types = { git = "https://github.com/superfly/corrosion", tag = "v1.0.0" }
-corro-client = { git = "https://github.com/superfly/corrosion", tag = "v1.0.0" }
-futures-util = "0.3"
-iroh = { version = "=1.0.0-rc.0", default-features = false }
-iroh-tickets = "=1.0.0-rc.0"
-irpc = "0.15.0"
-irpc-iroh = "0.15.0"
-libc = "0.2"
-polis = { path = "crates/polis" }
-ployz = { path = "crates/ployz" }
-rusqlite = "0.38"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-thiserror = "2"
-tokio = "1"
-toml = "0.8"
-
-[workspace.lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+ployz-core = { path = "crates/ployz-core" }
+ployz-nats = { path = "crates/ployz-nats" }
+ployz-transport = { path = "crates/ployz-transport" }
+ployz-sdk-types = { path = "crates/ployz-sdk-types" }

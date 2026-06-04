@@ -1,0 +1,1 @@
+//! NATS subject construction helpers.
