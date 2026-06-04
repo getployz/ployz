@@ -10,9 +10,13 @@ pub use events::{
     AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError, StoredOperationEvent,
 };
 pub use keys::{deploy_submission_key, operation_status_key};
+pub use ployz_core::ops::{
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
+};
 pub use repository::{
     AsyncNatsOperationRepository, DeployOperationSubmission, RecordDeployEvidenceError,
-    RecordDeployTransitionError, SubmitDeployError,
+    RecordDeployTransitionError, ReplayOperationEventsError, SubmitDeployError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusStoreError, OperationStatusWrite,

@@ -1,12 +1,15 @@
 //! Controller wiring for operation execution.
 
 use ployz_core::ids::{OperationId, ServiceId};
-use ployz_core::ops::{DeployEvidence, DeployTransition, EventSequence, OperationStatus};
+use ployz_core::ops::{
+    DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationStatus,
+};
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, OperationStatusStoreError, OperationStatusWrite,
-    RecordDeployEvidenceError, RecordDeployTransitionError, StoredDeploySubmission,
-    StoredOperationEvent, SubmitDeployError,
+    RecordDeployEvidenceError, RecordDeployTransitionError, ReplayOperationEventsError,
+    StoredDeploySubmission, StoredOperationEvent, SubmitDeployError,
 };
 
 pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
@@ -73,6 +76,13 @@ impl OperationControllers {
         operation_id: &OperationId,
     ) -> Result<Option<OperationStatus>, OperationStatusStoreError> {
         self.repository.operation_status(operation_id).await
+    }
+
+    pub async fn replay_operation_events(
+        &self,
+        request: OperationEventReplayRequest,
+    ) -> Result<OperationEventReplayPage, ReplayOperationEventsError> {
+        self.repository.replay_operation_events(request).await
     }
 }
 

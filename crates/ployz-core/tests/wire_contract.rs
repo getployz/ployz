@@ -2,8 +2,10 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployOperationState, DeployRunningStage,
-    EventSequence, FailureMessage, HealthCheckFailure, OperationEvent, OperationStatus,
-    OperatorHint, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
+    EventSequence, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperatorHint,
+    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
     RouteTarget,
 };
 
@@ -90,6 +92,59 @@ fn operation_status_subject_is_variant_specific_data() {
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
         r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":42}"#
+    );
+}
+
+#[test]
+fn operation_event_replay_request_round_trips_through_json() {
+    let request = OperationEventReplayRequest {
+        operation_id: operation_id("op_123"),
+        start_sequence: event_sequence(3),
+        limit: event_replay_limit(50),
+    };
+
+    let json = serde_json::to_string(&request).expect("request serializes");
+
+    assert_eq!(
+        serde_json::from_str::<OperationEventReplayRequest>(&json).expect("request deserializes"),
+        request,
+    );
+    assert_eq!(
+        json,
+        r#"{"operation_id":"op_123","start_sequence":3,"limit":50}"#
+    );
+}
+
+#[test]
+fn operation_event_replay_page_carries_explicit_cursor() {
+    let page = OperationEventReplayPage::more(
+        vec![ReplayedOperationEvent {
+            sequence: event_sequence(4),
+            event: OperationEvent::DeployPlanningStarted {
+                operation_id: operation_id("op_123"),
+            },
+        }],
+        event_sequence(5),
+    );
+
+    assert_eq!(
+        serde_json::to_string(&page).expect("page serializes"),
+        r#"{"events":[{"sequence":4,"event":{"event":"deploy_planning_started","operation_id":"op_123"}}],"cursor":{"state":"more","next_start_sequence":5}}"#
+    );
+    assert_eq!(
+        OperationEventReplayPage::caught_up(Vec::new()).cursor,
+        OperationEventReplayCursor::CaughtUp
+    );
+}
+
+#[test]
+fn operation_event_replay_limit_rejects_zero_and_oversized_wire_values() {
+    assert!(serde_json::from_str::<OperationEventReplayLimit>("0").is_err());
+    assert!(
+        serde_json::from_str::<OperationEventReplayLimit>(
+            &(MAX_OPERATION_EVENT_REPLAY_LIMIT + 1).to_string(),
+        )
+        .is_err()
     );
 }
 
@@ -297,6 +352,10 @@ fn container_id(value: &str) -> ContainerId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
+    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
 }
 
 fn failure_message(value: &str) -> FailureMessage {

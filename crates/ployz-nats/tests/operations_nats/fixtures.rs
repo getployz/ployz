@@ -4,7 +4,7 @@ use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
-    OperationIdempotencyKey,
+    OperationEventReplayLimit, OperationIdempotencyKey,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
@@ -118,6 +118,10 @@ pub(super) fn container_id(value: &str) -> ployz_core::ids::ContainerId {
 
 pub(super) fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+pub(super) fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
+    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
 }
 
 pub(super) fn idempotency_key(value: &str) -> OperationIdempotencyKey {

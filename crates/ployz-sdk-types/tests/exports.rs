@@ -1,6 +1,8 @@
 use ployz_sdk_types::{
     DeployOperationState, DeployRequest, DeployRunningStage, EventSequence, EventSequenceError,
-    ImageReference, ImageReferenceError, NonEmptyTextError, OperationStatus, OperationSubject,
+    ImageReference, ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationSubject,
     ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
     RoutePortError, ServiceId, SubjectTokenError,
 };
@@ -24,6 +26,12 @@ fn sdk_exports_core_wire_types() {
         service_id,
         EventSequence::try_new(1).expect("valid event sequence"),
     );
+    let replay_request = OperationEventReplayRequest {
+        operation_id: ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id"),
+        start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
+        limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
+    };
+    let replay_page = OperationEventReplayPage::caught_up(Vec::new());
 
     assert_eq!(
         serde_json::to_string(&subject).expect("subject serializes"),
@@ -41,6 +49,8 @@ fn sdk_exports_core_wire_types() {
         serde_json::to_string(&status).expect("status serializes"),
         r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":1}"#
     );
+    assert_eq!(replay_request.limit.get(), 100);
+    assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
 }
 
 #[test]
@@ -60,6 +70,14 @@ fn sdk_exports_constructor_error_types() {
     assert!(matches!(
         EventSequence::try_new(0),
         Err(EventSequenceError::Zero)
+    ));
+    assert!(matches!(
+        OperationEventReplayLimit::try_new(0),
+        Err(OperationEventReplayLimitError::Zero)
+    ));
+    assert!(matches!(
+        OperationEventReplayLimit::try_new(MAX_OPERATION_EVENT_REPLAY_LIMIT + 1),
+        Err(OperationEventReplayLimitError::TooLarge { .. })
     ));
     assert!(matches!(
         ployz_sdk_types::CancellationReason::try_new(""),

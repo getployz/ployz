@@ -1,15 +1,17 @@
 use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
-use async_nats::jetstream::stream::LastRawMessageErrorKind;
+use async_nats::jetstream::message::StreamMessage;
+use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, EventSequenceError, OperationEvent,
-    OperationIdempotencyKey,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
+    ReplayedOperationEvent,
 };
 use ployz_core::subjects::{
     op_cancelled, op_deploy_completed, op_deploy_container_started, op_deploy_failed,
     op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
-    op_deploy_running, op_deploy_submitted,
+    op_deploy_running, op_deploy_submitted, op_watch,
 };
 use std::future::Future;
 
@@ -165,14 +167,7 @@ impl AsyncNatsOperationEventLog {
         &self,
         sequence: EventSequence,
     ) -> Result<OperationEvent, OperationEventLogError> {
-        let stream = with_event_timeout(
-            "operation event stream lookup",
-            self.jetstream.get_stream(PLZ_OPS_STREAM),
-        )
-        .await?
-        .map_err(|error| OperationEventLogError::ReadEvent {
-            message: error.to_string(),
-        })?;
+        let stream = self.operation_stream().await?;
         let message = with_event_timeout(
             "operation event stream read",
             stream.get_raw_message(sequence.get()),
@@ -185,18 +180,47 @@ impl AsyncNatsOperationEventLog {
         serde_json::from_slice(&message.payload).map_err(OperationEventLogError::DecodeEvent)
     }
 
+    pub async fn replay_operation(
+        &self,
+        operation_id: &OperationId,
+        start_sequence: EventSequence,
+        limit: OperationEventReplayLimit,
+    ) -> Result<OperationEventReplayPage, OperationEventLogError> {
+        let stream = self.operation_stream().await?;
+        let subject = op_watch(operation_id);
+        let mut next_sequence = start_sequence.get();
+        let limit = limit.as_usize();
+        let mut events = Vec::with_capacity(limit);
+
+        while events.len() < limit {
+            let Some(message) =
+                next_operation_message(&stream, subject.as_str(), next_sequence).await?
+            else {
+                return Ok(OperationEventReplayPage::caught_up(events));
+            };
+            let replayed = replayed_event_from_message(message.sequence, &message.payload)?;
+            events.push(replayed);
+            next_sequence = message.sequence.checked_add(1).ok_or(
+                OperationEventLogError::InvalidNextReplaySequence {
+                    sequence: message.sequence,
+                },
+            )?;
+        }
+
+        match next_operation_message(&stream, subject.as_str(), next_sequence).await? {
+            Some(message) => Ok(OperationEventReplayPage::more(
+                events,
+                event_sequence_from_u64(message.sequence)?,
+            )),
+            None => Ok(OperationEventReplayPage::caught_up(events)),
+        }
+    }
+
     pub async fn event_at_subject(
         &self,
         subject: &str,
     ) -> Result<Option<(StoredOperationEvent, OperationEvent)>, OperationEventLogError> {
-        let stream = with_event_timeout(
-            "operation event stream lookup",
-            self.jetstream.get_stream(PLZ_OPS_STREAM),
-        )
-        .await?
-        .map_err(|error| OperationEventLogError::ReadEvent {
-            message: error.to_string(),
-        })?;
+        let stream = self.operation_stream().await?;
         let message = match with_event_timeout(
             "operation event subject read",
             stream.get_last_raw_message_by_subject(subject),
@@ -230,6 +254,17 @@ impl AsyncNatsOperationEventLog {
             event,
         )))
     }
+
+    async fn operation_stream(&self) -> Result<Stream, OperationEventLogError> {
+        with_event_timeout(
+            "operation event stream lookup",
+            self.jetstream.get_stream(PLZ_OPS_STREAM),
+        )
+        .await?
+        .map_err(|error| OperationEventLogError::ReadEvent {
+            message: error.to_string(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -251,6 +286,9 @@ pub enum OperationEventLogError {
     InvalidAckSequence {
         sequence: u64,
         error: EventSequenceError,
+    },
+    InvalidNextReplaySequence {
+        sequence: u64,
     },
 }
 
@@ -288,6 +326,44 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::DeployFailed { operation_id, .. } => op_deploy_failed(operation_id),
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }
+}
+
+async fn next_operation_message(
+    stream: &Stream,
+    subject: &str,
+    sequence: u64,
+) -> Result<Option<StreamMessage>, OperationEventLogError> {
+    match with_event_timeout(
+        "operation event replay read",
+        stream
+            .raw_message_builder()
+            .sequence(sequence)
+            .next_by_subject(subject)
+            .send(),
+    )
+    .await?
+    {
+        Ok(message) => Ok(Some(message)),
+        Err(error) if error.kind() == LastRawMessageErrorKind::NoMessageFound => Ok(None),
+        Err(error) => Err(OperationEventLogError::ReadEvent {
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn replayed_event_from_message(
+    sequence: u64,
+    payload: &[u8],
+) -> Result<ReplayedOperationEvent, OperationEventLogError> {
+    let sequence = event_sequence_from_u64(sequence)?;
+    let event = serde_json::from_slice(payload).map_err(OperationEventLogError::DecodeEvent)?;
+
+    Ok(ReplayedOperationEvent { sequence, event })
+}
+
+fn event_sequence_from_u64(sequence: u64) -> Result<EventSequence, OperationEventLogError> {
+    EventSequence::try_new(sequence)
+        .map_err(|error| OperationEventLogError::InvalidAckSequence { sequence, error })
 }
 
 fn transition_message_id(operation_id: &OperationId, transition: &DeployTransition) -> MessageId {

@@ -13,9 +13,12 @@ pub use ployz_core::ids::{
 };
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
-    FailureMessage, HealthCheckFailure, NonEmptyTextError, OperationEvent, OperationStatus,
-    OperationSubject, OperatorHint, RetainedArtifact, RouteCutoverFailureReason, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
+    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationStatus, OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RouteTarget,
 };
 pub use ployz_core::ops::{DeployOperationFailure, DeployOperationState, DeployRunningStage};
 pub use ployz_core::state::{

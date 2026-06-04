@@ -4,7 +4,9 @@ use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::ops::{
-    DeployOperationState, DeployTransition, EventSequence, OperationIdempotencyKey, OperationStatus,
+    DeployOperationState, DeployTransition, EventSequence, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationStatus,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
@@ -56,8 +58,45 @@ async fn e2e_operation_submit_and_transition_over_real_nats()
             last_event_sequence: event_sequence(2),
         })
     );
+    assert_eq!(
+        operation_replay_page(&repository, accepted.start_sequence)
+            .await
+            .events
+            .into_iter()
+            .map(|event| event.event)
+            .collect::<Vec<_>>(),
+        vec![
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id("op_123"),
+                service_id: service_id("svc_api"),
+            },
+            OperationEvent::DeployPlanningStarted {
+                operation_id: operation_id("op_123"),
+            },
+        ]
+    );
+    assert_eq!(
+        operation_replay_page(&repository, accepted.start_sequence)
+            .await
+            .cursor,
+        OperationEventReplayCursor::CaughtUp
+    );
 
     Ok(())
+}
+
+async fn operation_replay_page(
+    repository: &AsyncNatsOperationRepository,
+    start_sequence: EventSequence,
+) -> ployz_core::ops::OperationEventReplayPage {
+    repository
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id: operation_id("op_123"),
+            start_sequence,
+            limit: event_replay_limit(10),
+        })
+        .await
+        .expect("operation event replay succeeds")
 }
 
 async fn bootstrap_operation_resources(
@@ -91,6 +130,10 @@ fn service_id(value: &str) -> ServiceId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
+    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
 }
 
 fn idempotency_key(value: &str) -> OperationIdempotencyKey {

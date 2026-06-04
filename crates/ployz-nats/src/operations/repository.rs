@@ -1,6 +1,7 @@
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEvent, OperationEventProjection,
+    OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus, StatusProjectionError, project_operation_event,
     validate_fresh_deploy_evidence,
 };
@@ -121,6 +122,38 @@ impl AsyncNatsOperationRepository {
         operation_id: &OperationId,
     ) -> Result<Option<OperationStatus>, OperationStatusStoreError> {
         self.status_store.get(operation_id).await
+    }
+
+    pub async fn replay_operation_events(
+        &self,
+        request: OperationEventReplayRequest,
+    ) -> Result<OperationEventReplayPage, ReplayOperationEventsError> {
+        let Some(status) = self
+            .status_store
+            .get(&request.operation_id)
+            .await
+            .map_err(ReplayOperationEventsError::LoadStatus)?
+        else {
+            return Err(ReplayOperationEventsError::MissingOperation {
+                operation_id: request.operation_id,
+            });
+        };
+
+        let page = self
+            .event_log
+            .replay_operation(&request.operation_id, request.start_sequence, request.limit)
+            .await
+            .map_err(ReplayOperationEventsError::ReadEvents)?;
+
+        match (page.cursor, status.is_terminal()) {
+            (OperationEventReplayCursor::CaughtUp, true) => {
+                Ok(OperationEventReplayPage::terminal(page.events))
+            }
+            (cursor, _) => Ok(OperationEventReplayPage {
+                events: page.events,
+                cursor,
+            }),
+        }
     }
 
     async fn put_projected_status(
@@ -440,6 +473,13 @@ pub enum RecordDeployEvidenceError {
     PlanMismatch { operation_id: OperationId },
     StoredEventMismatch { operation_id: OperationId },
     StatusCursorContended,
+}
+
+#[derive(Debug)]
+pub enum ReplayOperationEventsError {
+    LoadStatus(OperationStatusStoreError),
+    ReadEvents(OperationEventLogError),
+    MissingOperation { operation_id: OperationId },
 }
 
 impl RecordDeployEvidenceError {
