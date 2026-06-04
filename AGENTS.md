@@ -46,6 +46,20 @@ async-nats
 
 iroh is byte transport. Product commands must go through NATS.
 
+## Control Plane And Data Plane
+
+- `ployzd` is control plane: bootstrap, health, services, controllers, node RPC.
+- `ployzd` is not the data plane.
+- `nats-server`, NATS tunnels, gateway, DNS, and workloads are independently
+  supervised.
+- Core `ployzd` down must not mean NATS/gateway/DNS/tunnel down.
+- Edge `ployzd` down stops that node's RPC/observations, not its running
+  workloads.
+- Gateway and DNS watch NATS directly and keep last-known-good state.
+- Tunnel loss is health/connectivity state, not stored cluster truth.
+- If `ployzd` starts data-plane/substrate processes, it is a supervisor and
+  needs explicit readiness, restart, shutdown, health, and recovery tests.
+
 ## Module Ownership
 
 Expected crate shape:
