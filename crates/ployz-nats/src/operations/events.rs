@@ -1,12 +1,15 @@
 use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
+use async_nats::jetstream::stream::LastRawMessageErrorKind;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
-    DeployTransition, EventSequence, EventSequenceError, OperationEvent, OperationIdempotencyKey,
+    DeployEvidence, DeployTransition, EventSequence, EventSequenceError, OperationEvent,
+    OperationIdempotencyKey,
 };
 use ployz_core::subjects::{
-    op_cancelled, op_deploy_completed, op_deploy_failed, op_deploy_planning_started,
-    op_deploy_running, op_deploy_submitted, op_watch,
+    op_cancelled, op_deploy_completed, op_deploy_container_started, op_deploy_failed,
+    op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
+    op_deploy_running, op_deploy_submitted,
 };
 use std::future::Future;
 
@@ -53,6 +56,45 @@ impl OperationEventAppend {
     }
 
     #[must_use]
+    pub fn deploy_evidence(operation_id: &OperationId, evidence: &DeployEvidence) -> Self {
+        Self::from_event(
+            evidence_message_id(operation_id, evidence),
+            evidence.event(operation_id),
+        )
+    }
+
+    #[must_use]
+    pub fn deploy_plan_created(
+        operation_id: &OperationId,
+        plan: &ployz_core::deploy::DeployPlan,
+    ) -> Self {
+        Self::deploy_evidence(
+            operation_id,
+            &DeployEvidence::PlanCreated { plan: plan.clone() },
+        )
+    }
+
+    #[must_use]
+    pub fn deploy_container_started(
+        operation_id: &OperationId,
+        node_id: &NodeId,
+        container_id: &ContainerId,
+    ) -> Self {
+        Self::deploy_evidence(
+            operation_id,
+            &DeployEvidence::ContainerStarted {
+                node_id: node_id.clone(),
+                container_id: container_id.clone(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn deploy_health_check_started(operation_id: &OperationId) -> Self {
+        Self::deploy_evidence(operation_id, &DeployEvidence::HealthCheckStarted)
+    }
+
+    #[must_use]
     pub fn subject(&self) -> &str {
         &self.subject
     }
@@ -91,14 +133,12 @@ impl AsyncNatsOperationEventLog {
     ) -> Result<StoredOperationEvent, OperationEventLogError> {
         let payload =
             serde_json::to_vec(&append.payload).map_err(OperationEventLogError::EncodeEvent)?;
+        let publish = PublishMessage::build()
+            .payload(payload.into())
+            .message_id(append.message_id.as_str());
         let ack_future = with_event_timeout(
             "operation event publish request",
-            self.jetstream.send_publish(
-                append.subject,
-                PublishMessage::build()
-                    .payload(payload.into())
-                    .message_id(append.message_id.as_str()),
-            ),
+            self.jetstream.send_publish(append.subject, publish),
         )
         .await?
         .map_err(|error| OperationEventLogError::PublishRequest {
@@ -144,6 +184,52 @@ impl AsyncNatsOperationEventLog {
 
         serde_json::from_slice(&message.payload).map_err(OperationEventLogError::DecodeEvent)
     }
+
+    pub async fn event_at_subject(
+        &self,
+        subject: &str,
+    ) -> Result<Option<(StoredOperationEvent, OperationEvent)>, OperationEventLogError> {
+        let stream = with_event_timeout(
+            "operation event stream lookup",
+            self.jetstream.get_stream(PLZ_OPS_STREAM),
+        )
+        .await?
+        .map_err(|error| OperationEventLogError::ReadEvent {
+            message: error.to_string(),
+        })?;
+        let message = match with_event_timeout(
+            "operation event subject read",
+            stream.get_last_raw_message_by_subject(subject),
+        )
+        .await?
+        {
+            Ok(message) => message,
+            Err(error) if error.kind() == LastRawMessageErrorKind::NoMessageFound => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(OperationEventLogError::ReadEvent {
+                    message: error.to_string(),
+                });
+            }
+        };
+        let sequence = EventSequence::try_new(message.sequence).map_err(|error| {
+            OperationEventLogError::InvalidAckSequence {
+                sequence: message.sequence,
+                error,
+            }
+        })?;
+        let event = serde_json::from_slice(&message.payload)
+            .map_err(OperationEventLogError::DecodeEvent)?;
+
+        Ok(Some((
+            StoredOperationEvent {
+                sequence,
+                duplicate: true,
+            },
+            event,
+        )))
+    }
 }
 
 #[derive(Debug)]
@@ -183,16 +269,22 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::DeployPlanningStarted { operation_id } => {
             op_deploy_planning_started(operation_id)
         }
+        OperationEvent::DeployPlanCreated { operation_id, .. } => {
+            op_deploy_plan_created(operation_id)
+        }
         OperationEvent::DeployRunning {
             operation_id,
             stage,
-        } => op_deploy_running(operation_id, stage.clone()),
+        } => op_deploy_running(operation_id, *stage),
         OperationEvent::DeployContainerStarted {
             operation_id,
             node_id,
             container_id,
         } => op_deploy_container_started(operation_id, node_id, container_id),
-        OperationEvent::DeployCompleted { operation_id } => op_deploy_completed(operation_id),
+        OperationEvent::DeployHealthCheckStarted { operation_id } => {
+            op_deploy_health_check_started(operation_id)
+        }
+        OperationEvent::DeployCompleted { operation_id, .. } => op_deploy_completed(operation_id),
         OperationEvent::DeployFailed { operation_id, .. } => op_deploy_failed(operation_id),
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }
@@ -206,6 +298,27 @@ fn transition_message_id(operation_id: &OperationId, transition: &DeployTransiti
     ))
 }
 
+fn evidence_message_id(operation_id: &OperationId, evidence: &DeployEvidence) -> MessageId {
+    let value = match evidence {
+        DeployEvidence::PlanCreated { .. } => {
+            format!("deploy.plan.created.{}", operation_id.as_str())
+        }
+        DeployEvidence::ContainerStarted {
+            node_id,
+            container_id,
+        } => format!(
+            "deploy.container.started.{}.{}.{}",
+            operation_id.as_str(),
+            node_id.as_str(),
+            container_id.as_str()
+        ),
+        DeployEvidence::HealthCheckStarted => {
+            format!("deploy.health_check.started.{}", operation_id.as_str())
+        }
+    };
+    MessageId::new(value)
+}
+
 fn deploy_transition_event(
     operation_id: &OperationId,
     transition: &DeployTransition,
@@ -216,7 +329,7 @@ fn deploy_transition_event(
         },
         DeployTransition::Running { stage } => OperationEvent::DeployRunning {
             operation_id: operation_id.clone(),
-            stage: stage.clone(),
+            stage: *stage,
         },
         DeployTransition::Completed => OperationEvent::DeployCompleted {
             operation_id: operation_id.clone(),
@@ -232,25 +345,14 @@ fn deploy_transition_event(
     }
 }
 
-fn deploy_transition_token(transition: &DeployTransition) -> &'static str {
+fn deploy_transition_token(transition: &DeployTransition) -> String {
     match transition {
-        DeployTransition::Planning => "planning.started",
-        DeployTransition::Running { stage } => stage.as_subject(),
-        DeployTransition::Completed => "completed",
-        DeployTransition::Failed { .. } => "failed",
-        DeployTransition::Cancelled { .. } => "cancelled",
+        DeployTransition::Planning => "planning.started".to_owned(),
+        DeployTransition::Running { stage } => {
+            format!("running.{}", stage.as_subject())
+        }
+        DeployTransition::Completed => "completed".to_owned(),
+        DeployTransition::Failed { .. } => "failed".to_owned(),
+        DeployTransition::Cancelled { .. } => "cancelled".to_owned(),
     }
-}
-
-fn op_deploy_container_started(
-    operation_id: &OperationId,
-    node_id: &NodeId,
-    container_id: &ContainerId,
-) -> String {
-    format!(
-        "{}deploy.container.started.{}.{}",
-        op_watch(operation_id).trim_end_matches('>'),
-        node_id.as_str(),
-        container_id.as_str()
-    )
 }

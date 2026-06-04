@@ -18,4 +18,6 @@ pub use ployz_core::ops::{
     RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
 };
 pub use ployz_core::ops::{DeployOperationFailure, DeployOperationState, DeployRunningStage};
-pub use ployz_core::state::ActiveServiceState;
+pub use ployz_core::state::{
+    ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
+};

@@ -2,8 +2,11 @@
 
 use crate::kv::KV_CORE_BUCKET;
 use async_nats::jetstream;
-use ployz_core::ids::{RevisionId, ServiceId};
-use ployz_core::state::{ActiveServiceState, ActiveServiceStateKey};
+use ployz_core::ids::ServiceId;
+use ployz_core::state::{
+    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, ActiveServiceState,
+    ActiveServiceStateKey, CoreStateRevision, ExpectedActiveService,
+};
 use std::future::Future;
 
 const NATS_CORE_STATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -66,7 +69,7 @@ impl AsyncNatsCoreStateStore {
             .await?
             {
                 Ok(revision) => Ok(ActiveServiceCommit::Stored {
-                    revision: CoreStateRevision(revision),
+                    revision: CoreStateRevision::new(revision),
                 }),
                 Err(error) => {
                     self.classify_commit_conflict(
@@ -88,7 +91,7 @@ impl AsyncNatsCoreStateStore {
                 .await?
                 {
                     Ok(revision) => Ok(ActiveServiceCommit::Stored {
-                        revision: CoreStateRevision(revision),
+                        revision: CoreStateRevision::new(revision),
                     }),
                     Err(error) => {
                         self.classify_commit_conflict(
@@ -156,61 +159,6 @@ impl AsyncNatsCoreStateStore {
             attempted,
         ))
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoreStateRevision(u64);
-
-impl CoreStateRevision {
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveServiceCommitRequest {
-    pub service_id: ServiceId,
-    pub expected_current: ExpectedActiveService,
-    pub target_revision: RevisionId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExpectedActiveService {
-    Absent,
-    Revision(RevisionId),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveServiceCommit {
-    Stored {
-        revision: CoreStateRevision,
-    },
-    AlreadyCommitted {
-        current_revision: RevisionId,
-    },
-    Stale {
-        reason: ActiveServiceStaleReason,
-    },
-    Contended {
-        current_revision: RevisionId,
-        attempted_revision: RevisionId,
-        expected_current: ExpectedActiveService,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveServiceStaleReason {
-    Missing {
-        expected_revision: RevisionId,
-    },
-    Mismatch {
-        expected_revision: RevisionId,
-        current_revision: RevisionId,
-    },
-    UnexpectedCurrent {
-        current_revision: RevisionId,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +272,7 @@ fn loaded_active_service_state(
 ) -> Result<LoadedActiveServiceState, CoreStateStoreError> {
     Ok(LoadedActiveServiceState {
         state: decode_active_service_state(expected_service_id, key, payload)?,
-        revision: CoreStateRevision(revision),
+        revision: CoreStateRevision::new(revision),
     })
 }
 
@@ -358,6 +306,7 @@ async fn with_core_state_timeout<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::ids::RevisionId;
 
     #[test]
     fn active_service_classifier_requests_update_when_precondition_still_holds() {
@@ -369,7 +318,7 @@ mod tests {
                 service_id: service_id.clone(),
                 active_revision: rev_1.clone(),
             },
-            revision: CoreStateRevision(7),
+            revision: CoreStateRevision::new(7),
         };
         let attempted = ActiveServiceState {
             service_id,
@@ -383,7 +332,7 @@ mod tests {
                 &attempted,
             ),
             ActiveServiceCommitDecision::Update {
-                revision: CoreStateRevision(7)
+                revision: CoreStateRevision::new(7)
             }
         );
     }
@@ -399,7 +348,7 @@ mod tests {
                 service_id: service_id.clone(),
                 active_revision: rev_2.clone(),
             },
-            revision: CoreStateRevision(8),
+            revision: CoreStateRevision::new(8),
         };
         let attempted = ActiveServiceState {
             service_id,

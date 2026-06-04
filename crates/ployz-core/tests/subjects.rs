@@ -2,6 +2,7 @@ use ployz_core::ids::{NodeId, OperationId, SubjectTokenError};
 use ployz_core::ops::DeployRunningStage;
 use ployz_core::subjects::{
     NodeObservationEvent, NodeServiceEndpoint, node_observation, node_service, op_deploy_completed,
+    op_deploy_container_started, op_deploy_health_check_started, op_deploy_plan_created,
     op_deploy_planning_started, op_deploy_running, op_deploy_submitted, op_watch,
 };
 
@@ -19,8 +20,20 @@ fn operation_subjects_use_validated_operation_ids() {
         "plz.v1.op.op_123.deploy.planning.started"
     );
     assert_eq!(
-        op_deploy_running(&op_id, DeployRunningStage::WaitingForHealth),
-        "plz.v1.op.op_123.deploy.running.waiting_for_health"
+        op_deploy_plan_created(&op_id),
+        "plz.v1.op.op_123.deploy.plan.created"
+    );
+    assert_eq!(
+        op_deploy_running(&op_id, DeployRunningStage::ActiveServiceCommit),
+        "plz.v1.op.op_123.deploy.running.active_service_commit"
+    );
+    assert_eq!(
+        op_deploy_container_started(&op_id, &node_id("node_7"), &container_id("ctr_1")),
+        "plz.v1.op.op_123.deploy.container.started.node_7.ctr_1"
+    );
+    assert_eq!(
+        op_deploy_health_check_started(&op_id),
+        "plz.v1.op.op_123.deploy.health_check.started"
     );
     assert_eq!(
         op_deploy_completed(&op_id),
@@ -66,4 +79,12 @@ fn ids_use_positive_ascii_token_grammar() {
             value: "op/123".to_owned()
         })
     );
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
+}
+
+fn container_id(value: &str) -> ployz_core::ids::ContainerId {
+    ployz_core::ids::ContainerId::try_new(value).expect("valid container id")
 }

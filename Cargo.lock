@@ -1307,6 +1307,7 @@ dependencies = [
  "ployz-core",
  "ployz-nats",
  "ployz-transport",
+ "tokio",
 ]
 
 [[package]]

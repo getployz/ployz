@@ -31,6 +31,68 @@ impl ActiveServiceStateKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreStateRevision(u64);
+
+impl CoreStateRevision {
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveServiceCommitRequest {
+    pub service_id: ServiceId,
+    pub expected_current: ExpectedActiveService,
+    pub target_revision: RevisionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedActiveService {
+    Absent,
+    Revision(RevisionId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveServiceCommit {
+    Stored {
+        revision: CoreStateRevision,
+    },
+    AlreadyCommitted {
+        current_revision: RevisionId,
+    },
+    Stale {
+        reason: ActiveServiceStaleReason,
+    },
+    Contended {
+        current_revision: RevisionId,
+        attempted_revision: RevisionId,
+        expected_current: ExpectedActiveService,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveServiceStaleReason {
+    Missing {
+        expected_revision: RevisionId,
+    },
+    Mismatch {
+        expected_revision: RevisionId,
+        current_revision: RevisionId,
+    },
+    UnexpectedCurrent {
+        current_revision: RevisionId,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeContainerObservationKey(String);

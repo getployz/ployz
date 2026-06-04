@@ -12,6 +12,10 @@ workspace = true
 ployz-core.workspace = true
 ployz-nats.workspace = true
 ployz-transport.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lib]
 path = "src/lib.rs"

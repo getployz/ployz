@@ -1,3 +1,4 @@
+use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::ops::{DeployRunningStage, DeployTransition, EventSequence, OperationEvent};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
@@ -31,17 +32,79 @@ fn deploy_transition_append_uses_stable_small_message_id() {
     let append = OperationEventAppend::deploy_transition(
         &operation_id("op_123"),
         &DeployTransition::Running {
-            stage: DeployRunningStage::WaitingForHealth,
+            stage: active_service_running(),
         },
     );
 
     assert_eq!(
         append.subject(),
-        "plz.v1.op.op_123.deploy.running.waiting_for_health"
+        "plz.v1.op.op_123.deploy.running.active_service_commit"
     );
     assert_eq!(
         append.message_id().as_str(),
-        "deploy.event.op_123.waiting_for_health"
+        "deploy.event.op_123.running.active_service_commit"
+    );
+}
+
+#[test]
+fn deploy_container_started_append_uses_stable_message_id() {
+    let append = OperationEventAppend::deploy_container_started(
+        &operation_id("op_123"),
+        &node_id("node_a"),
+        &container_id("ctr_1"),
+    );
+
+    assert_eq!(
+        append.subject(),
+        "plz.v1.op.op_123.deploy.container.started.node_a.ctr_1"
+    );
+    assert_eq!(
+        append.message_id().as_str(),
+        "deploy.container.started.op_123.node_a.ctr_1"
+    );
+    assert_eq!(
+        append.payload(),
+        &OperationEvent::DeployContainerStarted {
+            operation_id: operation_id("op_123"),
+            node_id: node_id("node_a"),
+            container_id: container_id("ctr_1"),
+        }
+    );
+}
+
+#[test]
+fn deploy_health_check_started_append_uses_stable_message_id() {
+    let append = OperationEventAppend::deploy_health_check_started(&operation_id("op_123"));
+
+    assert_eq!(
+        append.subject(),
+        "plz.v1.op.op_123.deploy.health_check.started"
+    );
+    assert_eq!(
+        append.message_id().as_str(),
+        "deploy.health_check.started.op_123"
+    );
+    assert_eq!(
+        append.payload(),
+        &OperationEvent::DeployHealthCheckStarted {
+            operation_id: operation_id("op_123"),
+        }
+    );
+}
+
+#[test]
+fn deploy_plan_created_append_uses_stable_message_id() {
+    let plan = deploy_plan();
+    let append = OperationEventAppend::deploy_plan_created(&operation_id("op_123"), &plan);
+
+    assert_eq!(append.subject(), "plz.v1.op.op_123.deploy.plan.created");
+    assert_eq!(append.message_id().as_str(), "deploy.plan.created.op_123");
+    assert_eq!(
+        append.payload(),
+        &OperationEvent::DeployPlanCreated {
+            operation_id: operation_id("op_123"),
+            plan,
+        }
     );
 }
 
@@ -125,6 +188,29 @@ fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
 
+fn node_id(value: &str) -> ployz_core::ids::NodeId {
+    ployz_core::ids::NodeId::try_new(value).expect("valid node id")
+}
+
+fn container_id(value: &str) -> ployz_core::ids::ContainerId {
+    ployz_core::ids::ContainerId::try_new(value).expect("valid container id")
+}
+
+fn deploy_plan() -> DeployPlan {
+    DeployPlan {
+        service_id: service_id("svc_api"),
+        target_revision: ployz_core::ids::RevisionId::try_new("rev_2").expect("valid revision id"),
+        steps: vec![DeployPlanStep::RunContainer {
+            node_id: node_id("node_a"),
+            slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+        }],
+    }
+}
+
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn active_service_running() -> DeployRunningStage {
+    DeployRunningStage::ActiveServiceCommit
 }

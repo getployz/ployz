@@ -1,10 +1,10 @@
 use async_nats::jetstream;
 use ployz_core::ids::{RevisionId, ServiceId};
-use ployz_core::state::{ActiveServiceState, ActiveServiceStateKey};
-use ployz_nats::core_state::{
-    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason,
-    AsyncNatsCoreStateStore, CoreStateStoreError, ExpectedActiveService,
+use ployz_core::state::{
+    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, ActiveServiceState,
+    ActiveServiceStateKey, ExpectedActiveService,
 };
+use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
 
 #[tokio::test]

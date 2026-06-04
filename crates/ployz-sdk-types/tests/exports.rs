@@ -1,8 +1,8 @@
 use ployz_sdk_types::{
-    DeployOperationState, DeployRequest, EventSequence, EventSequenceError, ImageReference,
-    ImageReferenceError, NonEmptyTextError, OperationStatus, OperationSubject, ReplicaCount,
-    ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    ServiceId, SubjectTokenError,
+    DeployOperationState, DeployRequest, DeployRunningStage, EventSequence, EventSequenceError,
+    ImageReference, ImageReferenceError, NonEmptyTextError, OperationStatus, OperationSubject,
+    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
+    RoutePortError, ServiceId, SubjectTokenError,
 };
 
 #[test]
@@ -12,6 +12,7 @@ fn sdk_exports_core_wire_types() {
         service_id: service_id.clone(),
     };
     let state = DeployOperationState::Accepted;
+    let running = DeployRunningStage::ActiveServiceCommit;
     let _deploy = DeployRequest {
         service_id: service_id.clone(),
         target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
@@ -31,6 +32,10 @@ fn sdk_exports_core_wire_types() {
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
         r#"{"state":"accepted"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&running).expect("running state serializes"),
+        r#""active_service_commit""#
     );
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),

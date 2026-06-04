@@ -11,8 +11,8 @@ pub use events::{
 };
 pub use keys::{deploy_submission_key, operation_status_key};
 pub use repository::{
-    AsyncNatsOperationRepository, DeployOperationSubmission, RecordDeployTransitionError,
-    SubmitDeployError,
+    AsyncNatsOperationRepository, DeployOperationSubmission, RecordDeployEvidenceError,
+    RecordDeployTransitionError, SubmitDeployError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusStoreError, OperationStatusWrite,

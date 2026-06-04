@@ -10,12 +10,30 @@ use ployz_core::ops::{
 #[test]
 fn operation_state_serializes_with_stable_wire_names() {
     let state = DeployOperationState::Running {
-        stage: DeployRunningStage::WaitingForHealth,
+        stage: active_service_running(),
     };
 
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
-        r#"{"state":"running","stage":"waiting_for_health"}"#
+        r#"{"state":"running","stage":"active_service_commit"}"#
+    );
+}
+
+#[test]
+fn running_operation_status_round_trips_through_json() {
+    let status = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        state: DeployOperationState::Running {
+            stage: DeployRunningStage::StartingContainers,
+        },
+        last_event_sequence: event_sequence(2),
+    };
+
+    let json = serde_json::to_string(&status).expect("status serializes");
+    assert_eq!(
+        serde_json::from_str::<OperationStatus>(&json).expect("status deserializes"),
+        status,
     );
 }
 
@@ -25,16 +43,16 @@ fn retained_artifact_carries_variant_specific_failure_data() {
         health_check: HealthCheckFailure::TimedOut {
             timeout_seconds: 30,
         },
-        retained_artifact: RetainedArtifact::StartedContainer {
+        retained_artifacts: vec![RetainedArtifact::StartedContainer {
             node_id: node_id("node_7"),
             container_id: container_id("ctr_123"),
             log_hint: operator_hint("ployz logs ctr_123"),
-        },
+        }],
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifact":{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"}}"#
+        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifacts":[{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"}]}"#
     );
 }
 
@@ -48,13 +66,14 @@ fn terminal_operation_state_is_explicit() {
                 reason: RouteCutoverFailureReason::RouteRejected {
                     message: failure_message("route rejected"),
                 },
+                retained_artifacts: Vec::new(),
             },
         }
         .is_terminal()
     );
     assert!(
         !DeployOperationState::Running {
-            stage: DeployRunningStage::WaitingForHealth,
+            stage: active_service_running(),
         }
         .is_terminal()
     );
@@ -131,12 +150,12 @@ fn failure_payloads_reject_empty_operator_text() {
     let empty_log_hint = r#"{
         "kind": "health_check_failed",
         "health_check": { "reason": "probe_failed", "message": "health check failed" },
-        "retained_artifact": {
+        "retained_artifacts": [{
             "type": "started_container",
             "node_id": "node_7",
             "container_id": "ctr_123",
             "log_hint": ""
-        }
+        }]
     }"#;
 
     assert!(serde_json::from_str::<DeployOperationFailure>(empty_log_hint).is_err());
@@ -149,17 +168,19 @@ fn route_cutover_failures_use_structured_route_targets() {
         reason: RouteCutoverFailureReason::RouteRejected {
             message: failure_message("route rejected"),
         },
+        retained_artifacts: Vec::new(),
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"route_cutover_failed","route":{"hostname":"api.example.com","port":443},"reason":{"reason":"route_rejected","message":"route rejected"}}"#
+        r#"{"kind":"route_cutover_failed","route":{"hostname":"api.example.com","port":443},"reason":{"reason":"route_rejected","message":"route rejected"},"retained_artifacts":[]}"#
     );
 
     let invalid_hostname = r#"{
         "kind": "route_cutover_failed",
         "route": { "hostname": "-api.example.com", "port": 443 },
-        "reason": { "reason": "route_rejected", "message": "route rejected" }
+        "reason": { "reason": "route_rejected", "message": "route rejected" },
+        "retained_artifacts": []
     }"#;
 
     assert!(serde_json::from_str::<DeployOperationFailure>(invalid_hostname).is_err());
@@ -167,7 +188,8 @@ fn route_cutover_failures_use_structured_route_targets() {
     let invalid_port = r#"{
         "kind": "route_cutover_failed",
         "route": { "hostname": "api.example.com", "port": 0 },
-        "reason": { "reason": "route_rejected", "message": "route rejected" }
+        "reason": { "reason": "route_rejected", "message": "route rejected" },
+        "retained_artifacts": []
     }"#;
 
     assert!(serde_json::from_str::<DeployOperationFailure>(invalid_port).is_err());
@@ -199,15 +221,37 @@ fn wire_models_reject_unknown_fields() {
     let failure_with_extra = r#"{
         "kind": "health_check_failed",
         "health_check": { "reason": "timed_out", "timeout_seconds": 30, "message": "stale" },
-        "retained_artifact": {
+        "retained_artifacts": [{
             "type": "started_container",
             "node_id": "node_7",
             "container_id": "ctr_123",
             "log_hint": "ployz logs ctr_123"
-        }
+        }]
     }"#;
 
     assert!(serde_json::from_str::<DeployOperationFailure>(failure_with_extra).is_err());
+}
+
+#[test]
+fn root_operation_state_rejects_unknown_fields() {
+    let state_with_extra = r#"{
+        "state": "running",
+        "stage": { "stage": "starting_containers" },
+        "unsupported": true
+    }"#;
+
+    assert!(serde_json::from_str::<DeployOperationState>(state_with_extra).is_err());
+}
+
+#[test]
+fn root_operation_event_rejects_unknown_fields() {
+    let event_with_extra = r#"{
+        "event": "deploy_planning_started",
+        "operation_id": "op_123",
+        "unsupported": true
+    }"#;
+
+    assert!(serde_json::from_str::<OperationEvent>(event_with_extra).is_err());
 }
 
 #[test]
@@ -237,6 +281,10 @@ fn operation_id(value: &str) -> OperationId {
 
 fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
+}
+
+fn active_service_running() -> DeployRunningStage {
+    DeployRunningStage::ActiveServiceCommit
 }
 
 fn node_id(value: &str) -> NodeId {

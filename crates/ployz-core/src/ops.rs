@@ -4,17 +4,25 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
+use crate::deploy::DeployPlan;
 use crate::ids::{
     ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectToken, SubjectTokenError,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+mod projection;
+
+pub use projection::{
+    DeployProjection, OperationEventProjection, StatusProjectionError, project_deploy_transition,
+    project_operation_event, validate_deploy_transition, validate_fresh_deploy_evidence,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
-    RunningPreDeploy,
     StartingContainers,
     WaitingForHealth,
-    CuttingOverRoute,
+    RouteCutover,
+    ActiveServiceCommit,
     CleaningUp,
 }
 
@@ -42,19 +50,75 @@ impl DeployOperationState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployOperationFailure {
+    PlanningFailed {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        message: FailureMessage,
+    },
     ArtifactUnavailable {
         service_id: ServiceId,
         revision_id: RevisionId,
         reason: ArtifactUnavailableReason,
     },
+    RuntimeUnavailable {
+        node_id: NodeId,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
     HealthCheckFailed {
         health_check: HealthCheckFailure,
-        retained_artifact: RetainedArtifact,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    ControlPlaneCommitFailed {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    CompletionRecordFailedAfterActiveCommit {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    ActiveServiceCommitRejected {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        reason: ActiveServiceCommitFailure,
+        retained_artifacts: Vec<RetainedArtifact>,
     },
     RouteCutoverFailed {
         route: RouteTarget,
         reason: RouteCutoverFailureReason,
+        retained_artifacts: Vec<RetainedArtifact>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ActiveServiceCommitFailure {
+    MissingExpectedRevision {
+        expected_revision: RevisionId,
+    },
+    RevisionMismatch {
+        expected_revision: RevisionId,
+        current_revision: RevisionId,
+    },
+    UnexpectedCurrentRevision {
+        current_revision: RevisionId,
+    },
+    Contended {
+        current_revision: RevisionId,
+        attempted_revision: RevisionId,
+        expected_current: ExpectedActiveServiceFailure,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExpectedActiveServiceFailure {
+    Absent,
+    Revision { revision_id: RevisionId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +140,7 @@ pub enum HealthCheckFailure {
 pub enum RouteCutoverFailureReason {
     GatewayUnavailable { node_id: NodeId },
     RouteRejected { message: FailureMessage },
+    TimedOut { timeout_seconds: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,14 +189,47 @@ pub enum DeployTransition {
     Cancelled { reason: CancellationReason },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployEvidence {
+    PlanCreated {
+        plan: DeployPlan,
+    },
+    ContainerStarted {
+        node_id: NodeId,
+        container_id: ContainerId,
+    },
+    HealthCheckStarted,
+}
+
+impl DeployEvidence {
+    #[must_use]
+    pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
+        match self {
+            Self::PlanCreated { plan } => OperationEvent::DeployPlanCreated {
+                operation_id: operation_id.clone(),
+                plan: plan.clone(),
+            },
+            Self::ContainerStarted {
+                node_id,
+                container_id,
+            } => OperationEvent::DeployContainerStarted {
+                operation_id: operation_id.clone(),
+                node_id: node_id.clone(),
+                container_id: container_id.clone(),
+            },
+            Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {
+                operation_id: operation_id.clone(),
+            },
+        }
+    }
+}
+
 impl DeployTransition {
     #[must_use]
     pub fn state(&self) -> DeployOperationState {
         match self {
             Self::Planning => DeployOperationState::Planning,
-            Self::Running { stage } => DeployOperationState::Running {
-                stage: stage.clone(),
-            },
+            Self::Running { stage } => DeployOperationState::Running { stage: *stage },
             Self::Completed => DeployOperationState::Completed,
             Self::Failed { failure } => DeployOperationState::Failed {
                 failure: failure.clone(),
@@ -141,12 +239,6 @@ impl DeployTransition {
             },
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployProjection {
-    Updated { status: OperationStatus },
-    AlreadySatisfied,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -161,140 +253,6 @@ impl OperationIdempotencyKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StatusProjectionError {
-    MissingOperation {
-        operation_id: OperationId,
-    },
-    TerminalState {
-        operation_id: OperationId,
-        current: Box<DeployOperationState>,
-        attempted: Box<DeployOperationState>,
-    },
-    InvalidTransition {
-        operation_id: OperationId,
-        current: Box<DeployOperationState>,
-        attempted: Box<DeployOperationState>,
-    },
-}
-
-pub fn project_deploy_transition(
-    current: &OperationStatus,
-    transition: DeployTransition,
-    event_sequence: EventSequence,
-) -> Result<DeployProjection, StatusProjectionError> {
-    let OperationStatus::Deploy {
-        id,
-        service_id,
-        state: current_state,
-        ..
-    } = current;
-    let attempted = transition.state();
-
-    if deploy_transition_satisfied(current_state, &attempted) {
-        return Ok(DeployProjection::AlreadySatisfied);
-    }
-
-    validate_deploy_transition(id, current_state, &attempted)?;
-
-    Ok(DeployProjection::Updated {
-        status: OperationStatus::Deploy {
-            id: id.clone(),
-            service_id: service_id.clone(),
-            state: attempted,
-            last_event_sequence: event_sequence,
-        },
-    })
-}
-
-fn deploy_transition_satisfied(
-    current: &DeployOperationState,
-    attempted: &DeployOperationState,
-) -> bool {
-    match attempted {
-        DeployOperationState::Accepted => matches!(current, DeployOperationState::Accepted),
-        DeployOperationState::Planning => !matches!(current, DeployOperationState::Accepted),
-        DeployOperationState::Running { stage: attempted } => match current {
-            DeployOperationState::Running { stage: current } => {
-                deploy_stage_rank(current) >= deploy_stage_rank(attempted)
-            }
-            DeployOperationState::Accepted
-            | DeployOperationState::Planning
-            | DeployOperationState::Completed
-            | DeployOperationState::Failed { .. }
-            | DeployOperationState::Cancelled { .. } => false,
-        },
-        DeployOperationState::Completed => matches!(current, DeployOperationState::Completed),
-        DeployOperationState::Failed { failure: attempted } => {
-            matches!(current, DeployOperationState::Failed { failure } if failure == attempted)
-        }
-        DeployOperationState::Cancelled { reason: attempted } => {
-            matches!(current, DeployOperationState::Cancelled { reason } if reason == attempted)
-        }
-    }
-}
-
-pub fn validate_deploy_transition(
-    operation_id: &OperationId,
-    current: &DeployOperationState,
-    attempted: &DeployOperationState,
-) -> Result<(), StatusProjectionError> {
-    if current.is_terminal() {
-        return Err(StatusProjectionError::TerminalState {
-            operation_id: operation_id.clone(),
-            current: Box::new(current.clone()),
-            attempted: Box::new(attempted.clone()),
-        });
-    }
-
-    if deploy_transition_allowed(current, attempted) {
-        return Ok(());
-    }
-
-    Err(StatusProjectionError::InvalidTransition {
-        operation_id: operation_id.clone(),
-        current: Box::new(current.clone()),
-        attempted: Box::new(attempted.clone()),
-    })
-}
-
-fn deploy_transition_allowed(
-    current: &DeployOperationState,
-    attempted: &DeployOperationState,
-) -> bool {
-    match (current, attempted) {
-        (DeployOperationState::Accepted, DeployOperationState::Planning)
-        | (DeployOperationState::Accepted, DeployOperationState::Cancelled { .. })
-        | (DeployOperationState::Accepted, DeployOperationState::Failed { .. })
-        | (DeployOperationState::Planning, DeployOperationState::Cancelled { .. })
-        | (DeployOperationState::Planning, DeployOperationState::Failed { .. })
-        | (DeployOperationState::Running { .. }, DeployOperationState::Cancelled { .. })
-        | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. })
-        | (DeployOperationState::Running { .. }, DeployOperationState::Completed) => true,
-        (DeployOperationState::Planning, DeployOperationState::Running { .. }) => true,
-        (
-            DeployOperationState::Running { stage: current },
-            DeployOperationState::Running { stage: attempted },
-        ) => deploy_stage_rank(attempted) > deploy_stage_rank(current),
-        (DeployOperationState::Accepted, _)
-        | (DeployOperationState::Completed, _)
-        | (DeployOperationState::Failed { .. }, _)
-        | (DeployOperationState::Cancelled { .. }, _)
-        | (DeployOperationState::Planning, _)
-        | (DeployOperationState::Running { .. }, _) => false,
-    }
-}
-
-fn deploy_stage_rank(stage: &DeployRunningStage) -> u8 {
-    match stage {
-        DeployRunningStage::RunningPreDeploy => 0,
-        DeployRunningStage::StartingContainers => 1,
-        DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::CuttingOverRoute => 3,
-        DeployRunningStage::CleaningUp => 4,
     }
 }
 
@@ -363,6 +321,10 @@ pub enum OperationEvent {
     DeployPlanningStarted {
         operation_id: OperationId,
     },
+    DeployPlanCreated {
+        operation_id: OperationId,
+        plan: DeployPlan,
+    },
     DeployRunning {
         operation_id: OperationId,
         stage: DeployRunningStage,
@@ -371,6 +333,9 @@ pub enum OperationEvent {
         operation_id: OperationId,
         node_id: NodeId,
         container_id: ContainerId,
+    },
+    DeployHealthCheckStarted {
+        operation_id: OperationId,
     },
     DeployCompleted {
         operation_id: OperationId,

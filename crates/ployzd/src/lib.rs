@@ -10,6 +10,7 @@
 pub mod app;
 pub mod config;
 pub mod controllers;
+pub mod deploy_worker;
 pub mod docker;
 pub mod gateway;
 pub mod iroh_tunnel;

@@ -1,11 +1,12 @@
 //! Controller wiring for operation execution.
 
 use ployz_core::ids::{OperationId, ServiceId};
-use ployz_core::ops::{DeployTransition, EventSequence, OperationStatus};
+use ployz_core::ops::{DeployEvidence, DeployTransition, EventSequence, OperationStatus};
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, OperationStatusStoreError, OperationStatusWrite,
-    RecordDeployTransitionError, StoredDeploySubmission, SubmitDeployError,
+    RecordDeployEvidenceError, RecordDeployTransitionError, StoredDeploySubmission,
+    StoredOperationEvent, SubmitDeployError,
 };
 
 pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
@@ -54,6 +55,16 @@ impl OperationControllers {
     ) -> Result<OperationStatusWrite, RecordDeployTransitionError> {
         self.repository
             .record_deploy_transition(operation_id, transition)
+            .await
+    }
+
+    pub async fn record_deploy_evidence(
+        &self,
+        operation_id: &OperationId,
+        evidence: DeployEvidence,
+    ) -> Result<StoredOperationEvent, RecordDeployEvidenceError> {
+        self.repository
+            .record_deploy_evidence(operation_id, evidence)
             .await
     }
 

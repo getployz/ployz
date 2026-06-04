@@ -1,0 +1,114 @@
+use super::fixtures::*;
+use ployz_core::ops::{DeployOperationState, DeployTransition, OperationStatus};
+use ployz_nats::operations::{
+    AsyncNatsOperationEventLog, OperationEventAppend, OperationStatusWrite,
+    RecordDeployTransitionError,
+};
+
+#[tokio::test]
+async fn operation_repository_records_transition_status_against_real_nats() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    repository
+        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .await
+        .expect("submit accepted");
+
+    repository
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
+        .await
+        .expect("planning transition records");
+    let duplicate = repository
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
+        .await
+        .expect("duplicate planning is satisfied");
+
+    assert!(matches!(
+        duplicate,
+        OperationStatusWrite::AlreadySatisfied {
+            current_sequence
+        } if current_sequence == event_sequence(2)
+    ));
+    assert_eq!(
+        repository
+            .operation_status(&operation_id("op_123"))
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::Deploy {
+            id: operation_id("op_123"),
+            service_id: service_id("svc_api"),
+            state: DeployOperationState::Planning,
+            last_event_sequence: event_sequence(2),
+        })
+    );
+}
+
+#[tokio::test]
+async fn operation_repository_rejects_duplicate_failed_transition_payload_mismatch() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
+    repository
+        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .await
+        .expect("submit accepted");
+    event_log
+        .append(OperationEventAppend::deploy_transition(
+            &operation_id("op_123"),
+            &DeployTransition::Failed {
+                failure: planning_failure("first failure"),
+            },
+        ))
+        .await
+        .expect("failed event stores without status projection");
+
+    let mismatch = repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Failed {
+                failure: planning_failure("second failure"),
+            },
+        )
+        .await
+        .expect_err("different failed payload is rejected");
+
+    assert!(matches!(
+        mismatch,
+        RecordDeployTransitionError::StoredTransitionMismatch { .. }
+    ));
+}
+
+#[tokio::test]
+async fn operation_repository_rejects_duplicate_cancelled_transition_payload_mismatch() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
+    repository
+        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .await
+        .expect("submit accepted");
+    event_log
+        .append(OperationEventAppend::deploy_transition(
+            &operation_id("op_123"),
+            &DeployTransition::Cancelled {
+                reason: cancellation_reason("first cancel"),
+            },
+        ))
+        .await
+        .expect("cancelled event stores without status projection");
+
+    let mismatch = repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Cancelled {
+                reason: cancellation_reason("second cancel"),
+            },
+        )
+        .await
+        .expect_err("different cancelled payload is rejected");
+
+    assert!(matches!(
+        mismatch,
+        RecordDeployTransitionError::StoredTransitionMismatch { .. }
+    ));
+}

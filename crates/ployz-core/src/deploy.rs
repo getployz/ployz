@@ -21,19 +21,22 @@ pub struct DeployPlanningInput {
     pub eligible_nodes: Vec<NodeId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeployPlan {
     pub service_id: ServiceId,
     pub target_revision: RevisionId,
     pub steps: Vec<DeployPlanStep>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployPlanStep {
     RunContainer { node_id: NodeId, slot: ReplicaSlot },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
 pub struct ReplicaSlot(u16);
 
 impl ReplicaSlot {
@@ -51,9 +54,31 @@ impl ReplicaSlot {
     }
 }
 
+impl TryFrom<u16> for ReplicaSlot {
+    type Error = ReplicaSlotError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<ReplicaSlot> for u16 {
+    fn from(value: ReplicaSlot) -> Self {
+        value.get()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaSlotError {
     Zero,
+}
+
+impl fmt::Display for ReplicaSlotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => formatter.write_str("replica slot must be greater than zero"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
