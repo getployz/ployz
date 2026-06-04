@@ -104,18 +104,6 @@ pub fn node_runtime_service(node_id: &NodeId) -> NatsServiceSpec {
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpsStatusError {
-    NoSuchOperation { operation_id: OperationId },
-}
-
-#[must_use]
-pub fn ops_status_missing(operation_id: &OperationId) -> OpsStatusError {
-    OpsStatusError::NoSuchOperation {
-        operation_id: operation_id.clone(),
-    }
-}
-
 #[must_use]
 pub fn node_endpoint_subject(node_id: &NodeId, endpoint: NodeServiceEndpoint) -> String {
     node_service(node_id, endpoint)

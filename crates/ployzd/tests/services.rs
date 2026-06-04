@@ -1,10 +1,17 @@
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::EventSequence;
-use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, NodeServiceEndpoint};
+use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, NodeServiceEndpoint};
+use ployz_nats::operations::{
+    OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
+};
 use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
+use ployzd::operation_api::{
+    OpsStatusError, OpsWatchError, OpsWatchEventLogFailure, OpsWatchStatusStoreFailure,
+    OpsWatchUnavailableSource, ops_status_missing,
+};
 use ployzd::services::{
     AcceptedOperation, DaemonServiceCatalog, NodeServiceCallError, OperationDispatch,
-    OpsStatusError, node_endpoint_subject, ops_status_missing,
+    node_endpoint_subject,
 };
 
 #[test]
@@ -32,6 +39,7 @@ fn service_catalog_supports_srv_ping_discovery() {
             && ping.metadata.get("node_id") == Some("node_7")
     }));
     assert!(catalog.has_endpoint_subject(API_OPS_STATUS));
+    assert!(catalog.has_endpoint_subject(API_OPS_WATCH));
     assert!(catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
 }
 
@@ -53,12 +61,80 @@ fn api_service_marks_mutations_as_operation_acceptors() {
 }
 
 #[test]
+fn ops_watch_is_a_query_endpoint() {
+    let catalog = DaemonServiceCatalog::for_node(&node_id("node_7"));
+    let api = catalog
+        .services()
+        .iter()
+        .find(|service| service.name == "plz-api")
+        .expect("api service is registered");
+    let ops_watch = api
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == API_OPS_WATCH)
+        .expect("ops.watch endpoint is registered");
+
+    assert_eq!(ops_watch.execution, EndpointExecution::Query);
+}
+
+#[test]
 fn ops_status_returns_typed_missing_operation_error() {
     let operation_id = operation_id("op_missing");
 
     assert_eq!(
         ops_status_missing(&operation_id),
         OpsStatusError::NoSuchOperation { operation_id }
+    );
+}
+
+#[test]
+fn ops_watch_maps_missing_operation_to_api_error() {
+    let operation_id = operation_id("op_missing");
+
+    assert_eq!(
+        OpsWatchError::from_replay_error(
+            operation_id.clone(),
+            ReplayOperationEventsError::MissingOperation {
+                operation_id: operation_id.clone(),
+            },
+        ),
+        OpsWatchError::NoSuchOperation { operation_id }
+    );
+}
+
+#[test]
+fn ops_watch_preserves_status_store_failure_context() {
+    let operation_id = operation_id("op_123");
+
+    assert_eq!(
+        OpsWatchError::from_replay_error(
+            operation_id.clone(),
+            ReplayOperationEventsError::LoadStatus(OperationStatusStoreError::GetStatus {
+                message: "kv unavailable".to_owned(),
+            }),
+        ),
+        OpsWatchError::Unavailable {
+            operation_id,
+            source: OpsWatchUnavailableSource::StatusStore(OpsWatchStatusStoreFailure::GetStatus),
+        }
+    );
+}
+
+#[test]
+fn ops_watch_preserves_event_log_failure_context() {
+    let operation_id = operation_id("op_123");
+
+    assert_eq!(
+        OpsWatchError::from_replay_error(
+            operation_id.clone(),
+            ReplayOperationEventsError::ReadEvents(OperationEventLogError::ReadEvent {
+                message: "stream unavailable".to_owned(),
+            }),
+        ),
+        OpsWatchError::Unavailable {
+            operation_id,
+            source: OpsWatchUnavailableSource::EventLog(OpsWatchEventLogFailure::ReadEvent),
+        }
     );
 }
 
