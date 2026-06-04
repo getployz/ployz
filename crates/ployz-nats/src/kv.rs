@@ -2,6 +2,8 @@
 
 use crate::replication::ReplicationFactor;
 
+pub const KV_CORE_BUCKET: &str = "KV_CORE";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KvBucketSpec {
     pub name: &'static str,

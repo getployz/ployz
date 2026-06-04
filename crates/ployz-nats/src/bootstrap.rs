@@ -1,6 +1,6 @@
 //! JetStream bucket, stream, and Object Store bootstrap.
 
-use crate::kv::KvBucketSpec;
+use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
 use crate::objects::ObjectBucketSpec;
 use crate::replication::ReplicationFactor;
 use crate::schedules::{NatsServerVersion, ScheduleCapability};
@@ -51,7 +51,7 @@ impl BootstrapPlan {
 
         Self {
             kv_buckets: vec![
-                KvBucketSpec::new("KV_CORE", ReplicationFactor::One),
+                KvBucketSpec::new(KV_CORE_BUCKET, ReplicationFactor::One),
                 KvBucketSpec::new("KV_OPS", ReplicationFactor::One),
                 KvBucketSpec::new("KV_OBS", ReplicationFactor::One),
                 KvBucketSpec::new("KV_LOCKS", ReplicationFactor::One),

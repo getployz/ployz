@@ -1,6 +1,8 @@
 //! NATS account, user, and subject permission rendering.
 
+use crate::kv::KV_CORE_BUCKET;
 use ployz_core::security::NatsPrincipal;
+use ployz_core::state::ACTIVE_SERVICE_STATE_PREFIX;
 use ployz_core::subjects::{
     API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT, DEPLOY_SUBMITTED_EVENTS_SUBJECT, JOBS_STREAM_SUBJECT,
     NODE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
@@ -10,6 +12,11 @@ const RESPONSE_INBOX: &str = "_INBOX.>";
 const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
+
+#[must_use]
+pub fn active_service_state_kv_write_scope() -> String {
+    format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_SERVICE_STATE_PREFIX}.*")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsPermissionProfile {
@@ -37,8 +44,8 @@ impl NatsPermissionProfile {
                     OPS_STREAM_SUBJECT.to_owned(),
                     JOBS_STREAM_SUBJECT.to_owned(),
                     AUDIT_STREAM_SUBJECT.to_owned(),
-                ])
-                .with_denied([CORE_KV_WRITES]),
+                    active_service_state_kv_write_scope(),
+                ]),
                 subscribe: SubjectPermissions::allowing([
                     DEPLOY_SUBMITTED_EVENTS_SUBJECT.to_owned(),
                     JOBS_STREAM_SUBJECT.to_owned(),

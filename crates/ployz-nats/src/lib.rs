@@ -9,6 +9,7 @@
 
 pub mod bootstrap;
 pub mod connect;
+pub mod core_state;
 pub mod kv;
 pub mod objects;
 pub mod observations;
