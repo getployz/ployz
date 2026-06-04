@@ -1,0 +1,276 @@
+use ployz_core::deploy::DeployRequest;
+use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
+use ployz_core::ops::{
+    CancellationReason, DeployOperationFailure, DeployOperationState, DeployRunningStage,
+    EventSequence, FailureMessage, HealthCheckFailure, OperationEvent, OperationStatus,
+    OperatorHint, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
+    RouteTarget,
+};
+
+#[test]
+fn operation_state_serializes_with_stable_wire_names() {
+    let state = DeployOperationState::Running {
+        stage: DeployRunningStage::WaitingForHealth,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&state).expect("state serializes"),
+        r#"{"state":"running","stage":"waiting_for_health"}"#
+    );
+}
+
+#[test]
+fn retained_artifact_carries_variant_specific_failure_data() {
+    let failure = DeployOperationFailure::HealthCheckFailed {
+        health_check: HealthCheckFailure::TimedOut {
+            timeout_seconds: 30,
+        },
+        retained_artifact: RetainedArtifact::StartedContainer {
+            node_id: node_id("node_7"),
+            container_id: container_id("ctr_123"),
+            log_hint: operator_hint("ployz logs ctr_123"),
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifact":{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"}}"#
+    );
+}
+
+#[test]
+fn terminal_operation_state_is_explicit() {
+    assert!(DeployOperationState::Completed.is_terminal());
+    assert!(
+        DeployOperationState::Failed {
+            failure: DeployOperationFailure::RouteCutoverFailed {
+                route: route_target("api.example.com", 443),
+                reason: RouteCutoverFailureReason::RouteRejected {
+                    message: failure_message("route rejected"),
+                },
+            },
+        }
+        .is_terminal()
+    );
+    assert!(
+        !DeployOperationState::Running {
+            stage: DeployRunningStage::WaitingForHealth,
+        }
+        .is_terminal()
+    );
+}
+
+#[test]
+fn operation_status_subject_is_variant_specific_data() {
+    let status = OperationStatus::deploy_accepted(
+        operation_id("op_123"),
+        service_id("svc_api"),
+        event_sequence(42),
+    );
+
+    assert_eq!(
+        serde_json::to_string(&status).expect("status serializes"),
+        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":42}"#
+    );
+}
+
+#[test]
+fn deploy_request_rejects_empty_image_and_zero_replicas() {
+    let empty_image = r#"{
+        "service_id": "svc_api",
+        "target_revision": "rev_1",
+        "image": "",
+        "replicas": 1
+    }"#;
+
+    assert!(serde_json::from_str::<DeployRequest>(empty_image).is_err());
+
+    let zero_replicas = r#"{
+        "service_id": "svc_api",
+        "target_revision": "rev_1",
+        "image": "ghcr.io/acme/api:rev-1",
+        "replicas": 0
+    }"#;
+
+    assert!(serde_json::from_str::<DeployRequest>(zero_replicas).is_err());
+
+    let whitespace_image = r#"{
+        "service_id": "svc_api",
+        "target_revision": "rev_1",
+        "image": " ghcr.io/acme/api:rev-1",
+        "replicas": 1
+    }"#;
+
+    assert!(serde_json::from_str::<DeployRequest>(whitespace_image).is_err());
+}
+
+#[test]
+fn operation_status_rejects_missing_or_zero_event_sequence() {
+    let missing_sequence = r#"{
+        "kind": "deploy",
+        "id": "op_123",
+        "service_id": "svc_api",
+        "state": { "state": "accepted" }
+    }"#;
+
+    assert!(serde_json::from_str::<OperationStatus>(missing_sequence).is_err());
+
+    let zero_sequence = r#"{
+        "kind": "deploy",
+        "id": "op_123",
+        "service_id": "svc_api",
+        "state": { "state": "accepted" },
+        "last_event_sequence": 0
+    }"#;
+
+    assert!(serde_json::from_str::<OperationStatus>(zero_sequence).is_err());
+}
+
+#[test]
+fn failure_payloads_reject_empty_operator_text() {
+    let empty_log_hint = r#"{
+        "kind": "health_check_failed",
+        "health_check": { "reason": "probe_failed", "message": "health check failed" },
+        "retained_artifact": {
+            "type": "started_container",
+            "node_id": "node_7",
+            "container_id": "ctr_123",
+            "log_hint": ""
+        }
+    }"#;
+
+    assert!(serde_json::from_str::<DeployOperationFailure>(empty_log_hint).is_err());
+}
+
+#[test]
+fn route_cutover_failures_use_structured_route_targets() {
+    let failure = DeployOperationFailure::RouteCutoverFailed {
+        route: route_target("api.example.com", 443),
+        reason: RouteCutoverFailureReason::RouteRejected {
+            message: failure_message("route rejected"),
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"route_cutover_failed","route":{"hostname":"api.example.com","port":443},"reason":{"reason":"route_rejected","message":"route rejected"}}"#
+    );
+
+    let invalid_hostname = r#"{
+        "kind": "route_cutover_failed",
+        "route": { "hostname": "-api.example.com", "port": 443 },
+        "reason": { "reason": "route_rejected", "message": "route rejected" }
+    }"#;
+
+    assert!(serde_json::from_str::<DeployOperationFailure>(invalid_hostname).is_err());
+
+    let invalid_port = r#"{
+        "kind": "route_cutover_failed",
+        "route": { "hostname": "api.example.com", "port": 0 },
+        "reason": { "reason": "route_rejected", "message": "route rejected" }
+    }"#;
+
+    assert!(serde_json::from_str::<DeployOperationFailure>(invalid_port).is_err());
+}
+
+#[test]
+fn wire_models_reject_unknown_fields() {
+    let deploy_with_extra = r#"{
+        "service_id": "svc_api",
+        "target_revision": "rev_1",
+        "image": "ghcr.io/acme/api:rev-1",
+        "replicas": 1,
+        "unsupported": true
+    }"#;
+
+    assert!(serde_json::from_str::<DeployRequest>(deploy_with_extra).is_err());
+
+    let status_with_extra = r#"{
+        "kind": "deploy",
+        "id": "op_123",
+        "service_id": "svc_api",
+        "state": { "state": "accepted" },
+        "last_event_sequence": 1,
+        "unsupported": true
+    }"#;
+
+    assert!(serde_json::from_str::<OperationStatus>(status_with_extra).is_err());
+
+    let failure_with_extra = r#"{
+        "kind": "health_check_failed",
+        "health_check": { "reason": "timed_out", "timeout_seconds": 30, "message": "stale" },
+        "retained_artifact": {
+            "type": "started_container",
+            "node_id": "node_7",
+            "container_id": "ctr_123",
+            "log_hint": "ployz logs ctr_123"
+        }
+    }"#;
+
+    assert!(serde_json::from_str::<DeployOperationFailure>(failure_with_extra).is_err());
+}
+
+#[test]
+fn cancellation_reasons_are_non_empty() {
+    let event = OperationEvent::Cancelled {
+        operation_id: operation_id("op_123"),
+        reason: cancellation_reason("operator cancelled"),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&event).expect("event serializes"),
+        r#"{"event":"cancelled","operation_id":"op_123","reason":"operator cancelled"}"#
+    );
+
+    let empty_reason = r#"{
+        "event": "cancelled",
+        "operation_id": "op_123",
+        "reason": ""
+    }"#;
+
+    assert!(serde_json::from_str::<OperationEvent>(empty_reason).is_err());
+}
+
+fn operation_id(value: &str) -> OperationId {
+    OperationId::try_new(value).expect("valid operation id")
+}
+
+fn service_id(value: &str) -> ServiceId {
+    ServiceId::try_new(value).expect("valid service id")
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
+}
+
+fn container_id(value: &str) -> ContainerId {
+    ContainerId::try_new(value).expect("valid container id")
+}
+
+fn event_sequence(value: u64) -> EventSequence {
+    EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn failure_message(value: &str) -> FailureMessage {
+    FailureMessage::try_new(value).expect("valid failure message")
+}
+
+fn cancellation_reason(value: &str) -> CancellationReason {
+    CancellationReason::try_new(value).expect("valid cancellation reason")
+}
+
+fn operator_hint(value: &str) -> OperatorHint {
+    OperatorHint::try_new(value).expect("valid operator hint")
+}
+
+fn route_target(hostname: &str, port: u16) -> RouteTarget {
+    RouteTarget::try_new(route_hostname(hostname), route_port(port))
+}
+
+fn route_hostname(value: &str) -> RouteHostname {
+    RouteHostname::try_new(value).expect("valid route hostname")
+}
+
+fn route_port(value: u16) -> RoutePort {
+    RoutePort::try_new(value).expect("valid route port")
+}

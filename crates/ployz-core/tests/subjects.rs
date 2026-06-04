@@ -38,3 +38,19 @@ fn ids_reject_wildcard_subject_tokens() {
         })
     );
 }
+
+#[test]
+fn ids_use_positive_ascii_token_grammar() {
+    assert_eq!(
+        OperationId::try_new("op\u{7}123"),
+        Err(SubjectTokenError::InvalidCharacter {
+            value: "op\u{7}123".to_owned()
+        })
+    );
+    assert_eq!(
+        OperationId::try_new("op/123"),
+        Err(SubjectTokenError::InvalidCharacter {
+            value: "op/123".to_owned()
+        })
+    );
+}

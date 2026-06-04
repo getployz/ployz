@@ -124,6 +124,8 @@ Transport adapters must not import product orchestration convenience types.
 - Avoid actor frameworks.
 - Avoid stringly states.
 - Avoid sparse option bags for variant data.
+- Encode system invariants in types. If a state, transition, target, or failure
+  shape is invalid, make it unrepresentable instead of documenting the rule.
 - Use typed ids for storage keys, subjects, placement, routing, authorization,
   and operation state.
 - Keep handlers small. A handler must not own transport, authorization,
@@ -141,5 +143,6 @@ Transport adapters must not import product orchestration convenience types.
 - Add `#[must_use]` to builder methods returning `Self`.
 - Prefer enums over booleans for modes, phases, policies, outcomes, freshness,
   and failure classes.
+- Prefer variant-specific data over optional fields shared across variants.
 - Booleans are only for obvious yes/no facts with no plausible third state.
 - Treat Clippy suppressions as a last resort; fix the shape first.

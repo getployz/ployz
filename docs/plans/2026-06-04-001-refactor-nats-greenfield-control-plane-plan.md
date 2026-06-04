@@ -825,6 +825,35 @@ not `ployzd` service response.
 
 ## Implementation Units
 
+### Execution And Review Loop
+
+Each remaining implementation unit is a slice. Finish and commit one slice
+before starting the next.
+
+Slice loop:
+
+1. Implement the unit against this plan.
+2. Run the unit verification command listed on the unit.
+3. Run `cargo test --workspace` unless the unit explicitly requires a narrower
+   temporary check while code is still incomplete.
+4. Run a fresh-context thermonuclear review against the current slice diff
+   after the unit.
+5. Treat review output as advisory engineering input, not an automatic infinite
+   gate. Fix findings that point to real correctness, boundary, safety,
+   reliability, or simplicity improvements. Record or defer findings that would
+   add churn without improving the current slice.
+6. Run the relevant tests again after accepted fixes.
+7. Commit the slice before moving to the next implementation unit.
+
+Pipeline finish:
+
+- After the last slice, run the normal code-review workflow with this plan as
+  the requirements source.
+- Apply review fixes that are clearly valid.
+- Make any residual review findings durable in the PR body or fallback residual
+  review file.
+- Push the branch, open/update a PR, and watch CI when available.
+
 ### Pre-U0. Thermonuclear Repository Cull
 
 - **Goal:** Delete as much old implementation code as possible before creating
@@ -964,7 +993,7 @@ not `ployzd` service response.
   - Edge `ployzd` loss leaves tunnel connectivity available for other local
     NATS clients.
   - Join bundle redaction never prints full NATS credentials or private keys.
-- **Verification:** `cargo test -p ployz-transport && cargo test -p ployz-nats-tunnel`
+- **Verification:** `cargo test -p ployz-transport && cargo test -p ployzd --test iroh_nats_tunnel`
 
 ### U2. Typed Subjects, IDs, And Wire Models
 
@@ -975,11 +1004,12 @@ not `ployzd` service response.
 - **Files:**
   - `crates/ployz-core/src/ids.rs`
   - `crates/ployz-core/src/subjects.rs`
-  - `crates/ployz-core/src/state/mod.rs`
-  - `crates/ployz-core/src/ops/model.rs`
-  - `crates/ployz-core/src/ops/event.rs`
-  - `crates/ployz-core/src/deploy/model.rs`
+  - `crates/ployz-core/src/state.rs`
+  - `crates/ployz-core/src/ops.rs`
+  - `crates/ployz-core/src/deploy.rs`
+  - `crates/ployz-core/tests/subjects.rs`
   - `crates/ployz-sdk-types/src/lib.rs`
+  - `crates/ployz-sdk-types/tests/exports.rs`
   - `crates/ployz-core/tests/wire_contract.rs`
 - **Approach:** Use newtypes for ids and enums for operation state/failure.
   Centralize subject construction with normal functions. Do not build a
