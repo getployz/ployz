@@ -1,0 +1,171 @@
+use async_nats::jetstream;
+use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::node::{
+    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
+};
+use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
+
+#[tokio::test]
+async fn container_observation_store_writes_latest_container_to_kv_obs() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    let running = managed_observation("ctr_123", ContainerRuntimeState::Running);
+    let exited = managed_observation("ctr_123", ContainerRuntimeState::Exited);
+
+    store
+        .replace_node_containers(&node_snapshot([running]))
+        .await
+        .expect("first snapshot stores");
+    store
+        .replace_node_containers(&node_snapshot([exited.clone()]))
+        .await
+        .expect("second snapshot stores");
+
+    assert_eq!(
+        store
+            .container(&node_id("node_7"), &container_id("ctr_123"))
+            .await
+            .expect("container observation loads"),
+        Some(exited)
+    );
+}
+
+#[tokio::test]
+async fn container_observation_snapshot_removes_stale_node_containers() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    let stale = managed_observation("ctr_123", ContainerRuntimeState::Running);
+    let retained = managed_observation("ctr_456", ContainerRuntimeState::Running);
+
+    store
+        .replace_node_containers(&node_snapshot([stale, retained.clone()]))
+        .await
+        .expect("initial node snapshot stores");
+    store
+        .replace_node_containers(&node_snapshot([retained.clone()]))
+        .await
+        .expect("node snapshot stores");
+
+    assert_eq!(
+        store
+            .container(&node_id("node_7"), &container_id("ctr_123"))
+            .await
+            .expect("stale lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        store
+            .container(&node_id("node_7"), &container_id("ctr_456"))
+            .await
+            .expect("retained lookup succeeds"),
+        Some(retained)
+    );
+}
+
+#[tokio::test]
+async fn container_observation_snapshot_rejects_wrong_node_before_store_write() {
+    let mut wrong_node = managed_observation("ctr_456", ContainerRuntimeState::Running);
+    wrong_node.node_id = node_id("node_8");
+
+    assert_eq!(
+        NodeContainerObservationSnapshot::try_new(node_id("node_7"), [wrong_node]),
+        Err(NodeContainerObservationSnapshotError::NodeMismatch {
+            expected: node_id("node_7"),
+            actual: node_id("node_8"),
+            container_id: container_id("ctr_456")
+        })
+    );
+}
+
+#[tokio::test]
+async fn missing_container_observation_returns_none() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+
+    assert_eq!(
+        store
+            .container(&node_id("node_7"), &container_id("ctr_missing"))
+            .await
+            .expect("missing container lookup succeeds"),
+        None
+    );
+}
+
+struct TestNats {
+    _server: nats_server::Server,
+    jetstream: jetstream::Context,
+}
+
+async fn test_nats() -> TestNats {
+    let server = nats_server::run_server("tests/configs/jetstream.conf");
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let jetstream = jetstream::new(client);
+    jetstream
+        .create_key_value(jetstream::kv::Config {
+            bucket: KV_OBS_BUCKET.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("create KV_OBS bucket");
+
+    TestNats {
+        _server: server,
+        jetstream,
+    }
+}
+
+fn managed_observation(
+    container_id_value: &str,
+    state: ContainerRuntimeState,
+) -> ManagedContainerObservation {
+    ManagedContainerObservation {
+        node_id: node_id("node_7"),
+        container_id: container_id(container_id_value),
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_1"),
+        operation_id: operation_id("op_123"),
+        step_id: step_id("step_1"),
+        kind: ManagedContainerKind::Service,
+        state,
+    }
+}
+
+fn node_snapshot(
+    containers: impl IntoIterator<Item = ManagedContainerObservation>,
+) -> NodeContainerObservationSnapshot {
+    NodeContainerObservationSnapshot::try_new(node_id("node_7"), containers)
+        .expect("matching node snapshot")
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
+}
+
+fn container_id(value: &str) -> ContainerId {
+    ContainerId::try_new(value).expect("valid container id")
+}
+
+fn service_id(value: &str) -> ServiceId {
+    ServiceId::try_new(value).expect("valid service id")
+}
+
+fn revision_id(value: &str) -> RevisionId {
+    RevisionId::try_new(value).expect("valid revision id")
+}
+
+fn operation_id(value: &str) -> OperationId {
+    OperationId::try_new(value).expect("valid operation id")
+}
+
+fn step_id(value: &str) -> StepId {
+    StepId::try_new(value).expect("valid step id")
+}

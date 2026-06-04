@@ -1,18 +1,23 @@
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
-use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation};
-use ployz_core::state::ContainerObservationKey;
+use ployz_core::node::{
+    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
+};
+use ployz_core::state::NodeContainerObservationKey;
 use ployzd::docker::labels::{
     CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError, ManagedContainerLabels,
     OPERATION_ID_LABEL, REVISION_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
 };
-use ployzd::node_agent::observer::{InMemoryObservationStore, ObservationStoreError};
+use ployzd::node_agent::observer::InMemoryObservationStore;
 
 #[test]
 fn docker_event_updates_latest_container_observation() {
     let mut store = InMemoryObservationStore::new();
     let observation = managed_observation("ctr_123", ContainerRuntimeState::Running);
 
-    store.put_container(observation.clone());
+    store
+        .put_container(observation.clone())
+        .expect("container observation stores");
 
     assert_eq!(
         store.container(&node_id("node_7"), &container_id("ctr_123")),
@@ -23,15 +28,15 @@ fn docker_event_updates_latest_container_observation() {
 #[test]
 fn full_sync_corrects_missed_docker_event() {
     let mut store = InMemoryObservationStore::new();
-    store.put_container(managed_observation(
-        "ctr_123",
-        ContainerRuntimeState::Running,
-    ));
+    store
+        .put_container(managed_observation(
+            "ctr_123",
+            ContainerRuntimeState::Running,
+        ))
+        .expect("container observation stores");
     let exited = managed_observation("ctr_123", ContainerRuntimeState::Exited);
 
-    store
-        .replace_node_containers(&node_id("node_7"), [exited.clone()])
-        .expect("matching node snapshot");
+    store.replace_node_containers(node_snapshot([exited.clone()]));
 
     assert_eq!(
         store.container(&node_id("node_7"), &container_id("ctr_123")),
@@ -42,16 +47,18 @@ fn full_sync_corrects_missed_docker_event() {
 #[test]
 fn full_sync_removes_stale_containers_for_the_node() {
     let mut store = InMemoryObservationStore::new();
-    store.put_container(managed_observation(
-        "ctr_123",
-        ContainerRuntimeState::Running,
-    ));
-    let retained = managed_observation("ctr_456", ContainerRuntimeState::Running);
-    store.put_container(retained.clone());
-
     store
-        .replace_node_containers(&node_id("node_7"), [retained.clone()])
-        .expect("matching node snapshot");
+        .put_container(managed_observation(
+            "ctr_123",
+            ContainerRuntimeState::Running,
+        ))
+        .expect("container observation stores");
+    let retained = managed_observation("ctr_456", ContainerRuntimeState::Running);
+    store
+        .put_container(retained.clone())
+        .expect("container observation stores");
+
+    store.replace_node_containers(node_snapshot([retained.clone()]));
 
     assert_eq!(
         store.container(&node_id("node_7"), &container_id("ctr_123")),
@@ -64,25 +71,17 @@ fn full_sync_removes_stale_containers_for_the_node() {
 }
 
 #[test]
-fn full_sync_rejects_observations_for_a_different_node_without_mutating() {
-    let mut store = InMemoryObservationStore::new();
-    let original = managed_observation("ctr_123", ContainerRuntimeState::Running);
-    store.put_container(original.clone());
-
+fn node_snapshot_rejects_observations_for_a_different_node() {
     let mut wrong_node = managed_observation("ctr_456", ContainerRuntimeState::Running);
     wrong_node.node_id = node_id("node_8");
 
     assert_eq!(
-        store.replace_node_containers(&node_id("node_7"), [wrong_node]),
-        Err(ObservationStoreError::SnapshotNodeMismatch {
+        NodeContainerObservationSnapshot::try_new(node_id("node_7"), [wrong_node]),
+        Err(NodeContainerObservationSnapshotError::NodeMismatch {
             expected: node_id("node_7"),
             actual: node_id("node_8"),
             container_id: container_id("ctr_456")
         })
-    );
-    assert_eq!(
-        store.container(&node_id("node_7"), &container_id("ctr_123")),
-        Some(&original)
     );
 }
 
@@ -149,9 +148,16 @@ fn managed_container_labels_reject_unknown_container_kind() {
 #[test]
 fn observation_key_matches_kv_obs_container_path() {
     assert_eq!(
-        ContainerObservationKey::from_ids(&node_id("node_7"), &container_id("ctr_123")).as_str(),
-        "containers.node_7.ctr_123"
+        NodeContainerObservationKey::from_node_id(&node_id("node_7")).as_str(),
+        "containers.node_7"
     );
+}
+
+fn node_snapshot(
+    containers: impl IntoIterator<Item = ManagedContainerObservation>,
+) -> NodeContainerObservationSnapshot {
+    NodeContainerObservationSnapshot::try_new(node_id("node_7"), containers)
+        .expect("matching node snapshot")
 }
 
 fn managed_observation(

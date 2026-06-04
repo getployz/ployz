@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
+use crate::ids::{NodeId, RevisionId, ServiceId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,16 +13,12 @@ pub struct ActiveServiceState {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ContainerObservationKey(String);
+pub struct NodeContainerObservationKey(String);
 
-impl ContainerObservationKey {
+impl NodeContainerObservationKey {
     #[must_use]
-    pub fn from_ids(node_id: &NodeId, container_id: &ContainerId) -> Self {
-        Self(format!(
-            "containers.{}.{}",
-            node_id.as_str(),
-            container_id.as_str()
-        ))
+    pub fn from_node_id(node_id: &NodeId) -> Self {
+        Self(format!("containers.{}", node_id.as_str()))
     }
 
     #[must_use]
