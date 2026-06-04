@@ -12,6 +12,7 @@ pub mod connect;
 pub mod kv;
 pub mod objects;
 pub mod permissions;
+pub mod replication;
 pub mod schedules;
 pub mod services;
 pub mod streams;

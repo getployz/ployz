@@ -19,17 +19,31 @@ impl NatsServerVersion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScheduleCapability {
-    pub message_schedules_available: bool,
-    pub extended_schedule_controls_available: bool,
+pub enum ScheduleCapability {
+    Unsupported,
+    MessageSchedules,
+    ExtendedControls,
 }
 
 impl ScheduleCapability {
     #[must_use]
     pub fn from_server_version(version: NatsServerVersion) -> Self {
-        Self {
-            message_schedules_available: version >= NatsServerVersion::new(2, 12, 0),
-            extended_schedule_controls_available: version >= NatsServerVersion::new(2, 14, 0),
+        if version >= NatsServerVersion::new(2, 14, 0) {
+            Self::ExtendedControls
+        } else if version >= NatsServerVersion::new(2, 12, 0) {
+            Self::MessageSchedules
+        } else {
+            Self::Unsupported
         }
+    }
+
+    #[must_use]
+    pub const fn message_schedules_available(self) -> bool {
+        matches!(self, Self::MessageSchedules | Self::ExtendedControls)
+    }
+
+    #[must_use]
+    pub const fn extended_schedule_controls_available(self) -> bool {
+        matches!(self, Self::ExtendedControls)
     }
 }

@@ -1,6 +1,6 @@
 //! JetStream KV helpers.
 
-use crate::bootstrap::ReplicationFactor;
+use crate::replication::ReplicationFactor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KvBucketSpec {
