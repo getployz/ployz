@@ -2,7 +2,7 @@ use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::ops::{DeployRunningStage, DeployTransition, EventSequence, OperationEvent};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
-use ployz_nats::streams::{DurableConsumerState, MessageId, OperationEventStream};
+use ployz_nats::streams::{MessageId, OperationEventStream};
 
 #[test]
 fn operation_status_key_uses_token_safe_operation_id() {
@@ -165,19 +165,6 @@ fn operation_stream_deduplicates_by_message_id() {
 
     assert_eq!(duplicate.sequence(), first.sequence());
     assert_eq!(stream.messages().len(), 1);
-}
-
-#[test]
-fn durable_consumer_tracks_ack_by_event_sequence() {
-    let mut consumer = DurableConsumerState::default();
-
-    assert!(!consumer.is_acked(event_sequence(1)));
-
-    consumer.ack(event_sequence(1));
-    consumer.ack(event_sequence(1));
-
-    assert!(consumer.is_acked(event_sequence(1)));
-    assert!(!consumer.is_acked(event_sequence(2)));
 }
 
 fn operation_id(value: &str) -> OperationId {

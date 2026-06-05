@@ -1,4 +1,4 @@
-//! JetStream stream and durable consumer helpers.
+//! JetStream stream specs and operation event stream harnesses.
 
 use crate::replication::ReplicationFactor;
 use ployz_core::ops::{EventSequence, OperationEvent};
@@ -190,45 +190,5 @@ impl OperationStreamAppend {
         match self {
             Self::Stored { sequence, .. } | Self::Duplicate { sequence, .. } => *sequence,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DurableConsumerState {
-    acked_sequences: Vec<EventSequence>,
-}
-
-impl DurableConsumerState {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn is_acked(&self, sequence: EventSequence) -> bool {
-        self.acked_sequences.contains(&sequence)
-    }
-
-    pub fn ack(&mut self, sequence: EventSequence) {
-        if !self.is_acked(sequence) {
-            self.acked_sequences.push(sequence);
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationConsumer {
-    pending: Vec<OperationStreamMessage>,
-}
-
-impl OperationConsumer {
-    #[must_use]
-    pub fn new(pending: Vec<OperationStreamMessage>) -> Self {
-        Self { pending }
-    }
-
-    #[must_use]
-    pub fn next(&self) -> Option<&OperationStreamMessage> {
-        self.pending.first()
     }
 }

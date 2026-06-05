@@ -11,7 +11,6 @@ pub const SCHEDULE_STREAM_SUBJECT: &str = "plz.v1.sched.>";
 
 pub const API_SERVICE_SCOPE: &str = "plz.v1.svc.api.>";
 pub const NODE_SERVICE_SCOPE: &str = "plz.v1.svc.node.>";
-pub const DEPLOY_SUBMITTED_EVENTS_SUBJECT: &str = "plz.v1.op.*.deploy.submitted";
 
 pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
 pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";

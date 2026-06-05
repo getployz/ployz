@@ -1,11 +1,12 @@
 use ployz_core::ids::NodeId;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT, DEPLOY_SUBMITTED_EVENTS_SUBJECT, JOBS_STREAM_SUBJECT,
-    NODE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
+    API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT, JOBS_STREAM_SUBJECT, NODE_SERVICE_SCOPE,
+    OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
 };
 use ployz_nats::permissions::{
     NatsPermissionProfile, ResponsePermission, active_service_state_kv_write_scope,
+    lock_kv_write_scope, operation_status_kv_write_scope,
 };
 
 #[test]
@@ -32,7 +33,7 @@ fn node_credential_renders_only_own_service_and_observation_scopes() {
 }
 
 #[test]
-fn controller_credential_renders_worker_and_node_service_scopes() {
+fn controller_credential_renders_owner_and_node_service_scopes() {
     let profile = NatsPermissionProfile::render(NatsPrincipal::Controller);
 
     assert_eq!(
@@ -43,15 +44,13 @@ fn controller_credential_renders_worker_and_node_service_scopes() {
             JOBS_STREAM_SUBJECT.to_owned(),
             AUDIT_STREAM_SUBJECT.to_owned(),
             active_service_state_kv_write_scope(),
+            operation_status_kv_write_scope(),
+            lock_kv_write_scope(),
         ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
-        &[
-            DEPLOY_SUBMITTED_EVENTS_SUBJECT.to_owned(),
-            JOBS_STREAM_SUBJECT.to_owned(),
-            "_INBOX.>".to_owned(),
-        ]
+        &[JOBS_STREAM_SUBJECT.to_owned(), "_INBOX.>".to_owned()]
     );
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
 }
