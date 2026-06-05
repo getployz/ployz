@@ -8,15 +8,12 @@ use ployz_core::ops::{
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus,
 };
-use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH};
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, KV_OPS_BUCKET, PLZ_OPS_STREAM,
 };
-use ployz_sdk_types::{
-    DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse, OperationDispatch,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
-};
+use ployz_sdk_types::{DeploySubmitRequest, OperationDispatch, OpsStatusRequest};
+use ployzctl::api_client::OperationApiClient;
 use ployzd::controllers::OperationControllers;
 
 mod support;
@@ -112,21 +109,14 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let _runtime = ployzd::api_runtime::start_operation_api_service(client.clone(), controllers)
         .await
         .expect("api service starts");
+    let api = OperationApiClient::new(client.clone());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_api_123"),
         service_id: service_id("svc_api"),
         idempotency_key: idempotency_key("idem_api_1"),
     };
 
-    let response = client
-        .request(API_DEPLOY_SUBMIT, serde_json::to_vec(&request)?.into())
-        .await?;
-    let accepted = match serde_json::from_slice::<DeploySubmitResponse>(&response.payload)? {
-        OperationApiResponse::Ok { value } => value,
-        OperationApiResponse::DomainError { error } => {
-            panic!("deploy submit failed: {error:?}");
-        }
-    };
+    let accepted = api.deploy_submit(&request).await?;
 
     assert_eq!(accepted.operation_id, operation_id("op_api_123"));
     assert_eq!(
@@ -151,15 +141,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let status_request = OpsStatusRequest {
         operation_id: operation_id("op_api_123"),
     };
-    let status_response = client
-        .request(API_OPS_STATUS, serde_json::to_vec(&status_request)?.into())
-        .await?;
-    let status = match serde_json::from_slice::<OpsStatusResponse>(&status_response.payload)? {
-        OperationApiResponse::Ok { value } => value,
-        OperationApiResponse::DomainError { error } => {
-            panic!("ops status failed: {error:?}");
-        }
-    };
+    let status = api.ops_status(&status_request).await?;
     assert_eq!(
         status,
         OperationStatus::Deploy {
@@ -175,15 +157,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         start_sequence: event_sequence(1),
         limit: event_replay_limit(10),
     };
-    let watch_response = client
-        .request(API_OPS_WATCH, serde_json::to_vec(&watch_request)?.into())
-        .await?;
-    let page = match serde_json::from_slice::<OpsWatchResponse>(&watch_response.payload)? {
-        OperationApiResponse::Ok { value } => value,
-        OperationApiResponse::DomainError { error } => {
-            panic!("ops watch failed: {error:?}");
-        }
-    };
+    let page = api.ops_watch(&watch_request).await?;
     assert_eq!(
         page.events
             .into_iter()

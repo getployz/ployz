@@ -2,9 +2,10 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{deploy_submit, ops_status, ops_watch};
-use crate::services::{API_ENDPOINTS, ApiEndpoint, api_service};
+use crate::services::{api_endpoint_spec, api_service};
+use ployz_core::subjects::{OPERATION_API_ENDPOINTS, OperationApiEndpoint};
 use ployz_nats::service_runtime::{
-    NatsServiceHandlerError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
+    NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, start_nats_service,
 };
 use ployz_sdk_types::{
@@ -24,7 +25,7 @@ pub async fn start_operation_api_service(
         .map_err(ApiServiceRuntimeError::Nats)?;
     let controllers = Arc::new(controllers);
 
-    for endpoint in API_ENDPOINTS {
+    for endpoint in OPERATION_API_ENDPOINTS {
         bind_operation_endpoint(&mut runtime, endpoint, Arc::clone(&controllers)).await?;
     }
 
@@ -33,12 +34,12 @@ pub async fn start_operation_api_service(
 
 async fn bind_operation_endpoint(
     runtime: &mut RunningNatsService,
-    endpoint: ApiEndpoint,
+    endpoint: OperationApiEndpoint,
     controllers: Arc<OperationControllers>,
 ) -> Result<(), ApiServiceRuntimeError> {
     match endpoint {
-        ApiEndpoint::DeploySubmit => {
-            let spec = endpoint.spec();
+        OperationApiEndpoint::DeploySubmit => {
+            let spec = api_endpoint_spec(endpoint);
             runtime
                 .bind_endpoint(&spec, move |request| {
                     let controllers = Arc::clone(&controllers);
@@ -47,8 +48,8 @@ async fn bind_operation_endpoint(
                 .await
                 .map_err(ApiServiceRuntimeError::Nats)?;
         }
-        ApiEndpoint::OpsStatus => {
-            let spec = endpoint.spec();
+        OperationApiEndpoint::OpsStatus => {
+            let spec = api_endpoint_spec(endpoint);
             runtime
                 .bind_endpoint(&spec, move |request| {
                     let controllers = Arc::clone(&controllers);
@@ -57,8 +58,8 @@ async fn bind_operation_endpoint(
                 .await
                 .map_err(ApiServiceRuntimeError::Nats)?;
         }
-        ApiEndpoint::OpsWatch => {
-            let spec = endpoint.spec();
+        OperationApiEndpoint::OpsWatch => {
+            let spec = api_endpoint_spec(endpoint);
             runtime
                 .bind_endpoint(&spec, move |request| {
                     let controllers = Arc::clone(&controllers);
@@ -137,9 +138,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     serde_json::from_slice::<T>(&request.payload).map_err(|error| {
-        NatsServiceResponse::transport_error(NatsServiceHandlerError::bad_request(
-            error.to_string(),
-        ))
+        NatsServiceResponse::transport_error(NatsServiceError::bad_request(error.to_string()))
     })
 }
 
@@ -166,9 +165,9 @@ where
 {
     match serde_json::to_vec(&response) {
         Ok(payload) => output(payload),
-        Err(error) => NatsServiceResponse::transport_error(NatsServiceHandlerError::internal(
-            error.to_string(),
-        )),
+        Err(error) => {
+            NatsServiceResponse::transport_error(NatsServiceError::internal(error.to_string()))
+        }
     }
 }
 

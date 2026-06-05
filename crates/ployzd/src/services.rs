@@ -2,7 +2,7 @@
 
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
-    API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, NodeServiceEndpoint, node_service,
+    NodeServiceEndpoint, OPERATION_API_ENDPOINTS, OperationApiEndpoint, node_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsRequestFailure, NatsServiceEndpointSpec, NatsServiceSpec,
@@ -16,37 +16,6 @@ pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
 pub const NODE_SERVICE_NAME: &str = "plz-node";
 pub const NODE_SERVICE_DESCRIPTION: &str = "Ployz node-local runtime service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
-pub const API_ENDPOINTS: [ApiEndpoint; 3] = [
-    ApiEndpoint::DeploySubmit,
-    ApiEndpoint::OpsStatus,
-    ApiEndpoint::OpsWatch,
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiEndpoint {
-    DeploySubmit,
-    OpsStatus,
-    OpsWatch,
-}
-
-impl ApiEndpoint {
-    #[must_use]
-    pub fn spec(self) -> NatsServiceEndpointSpec {
-        match self {
-            Self::DeploySubmit => NatsServiceEndpointSpec::new(
-                "deploy.submit",
-                API_DEPLOY_SUBMIT,
-                EndpointExecution::AcceptsOperation,
-            ),
-            Self::OpsStatus => {
-                NatsServiceEndpointSpec::new("ops.status", API_OPS_STATUS, EndpointExecution::Query)
-            }
-            Self::OpsWatch => {
-                NatsServiceEndpointSpec::new("ops.watch", API_OPS_WATCH, EndpointExecution::Query)
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonServiceCatalog {
@@ -93,26 +62,54 @@ pub fn api_service() -> NatsServiceSpec {
 
 #[must_use]
 pub fn api_endpoints() -> Vec<NatsServiceEndpointSpec> {
-    API_ENDPOINTS
+    OPERATION_API_ENDPOINTS
         .iter()
         .copied()
-        .map(ApiEndpoint::spec)
+        .map(api_endpoint_spec)
         .collect()
 }
 
 #[must_use]
 pub fn api_deploy_submit_endpoint() -> NatsServiceEndpointSpec {
-    ApiEndpoint::DeploySubmit.spec()
+    api_endpoint_spec(OperationApiEndpoint::DeploySubmit)
 }
 
 #[must_use]
 pub fn api_ops_status_endpoint() -> NatsServiceEndpointSpec {
-    ApiEndpoint::OpsStatus.spec()
+    api_endpoint_spec(OperationApiEndpoint::OpsStatus)
 }
 
 #[must_use]
 pub fn api_ops_watch_endpoint() -> NatsServiceEndpointSpec {
-    ApiEndpoint::OpsWatch.spec()
+    api_endpoint_spec(OperationApiEndpoint::OpsWatch)
+}
+
+#[must_use]
+pub fn api_endpoint_spec(endpoint: OperationApiEndpoint) -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        api_endpoint_name(endpoint),
+        endpoint.subject(),
+        api_endpoint_execution(endpoint),
+    )
+}
+
+#[must_use]
+pub const fn api_endpoint_name(endpoint: OperationApiEndpoint) -> &'static str {
+    match endpoint {
+        OperationApiEndpoint::DeploySubmit => "deploy.submit",
+        OperationApiEndpoint::OpsStatus => "ops.status",
+        OperationApiEndpoint::OpsWatch => "ops.watch",
+    }
+}
+
+#[must_use]
+pub const fn api_endpoint_execution(endpoint: OperationApiEndpoint) -> EndpointExecution {
+    match endpoint {
+        OperationApiEndpoint::DeploySubmit => EndpointExecution::AcceptsOperation,
+        OperationApiEndpoint::OpsStatus | OperationApiEndpoint::OpsWatch => {
+            EndpointExecution::Query
+        }
+    }
 }
 
 #[must_use]

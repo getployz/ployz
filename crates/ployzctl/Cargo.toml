@@ -9,8 +9,16 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
 ployz-core.workspace = true
+ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[bin]]
 name = "ployzctl"

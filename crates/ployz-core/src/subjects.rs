@@ -18,6 +18,29 @@ pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
 pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
 pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 3] = [
+    OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::OpsStatus,
+    OperationApiEndpoint::OpsWatch,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationApiEndpoint {
+    DeploySubmit,
+    OpsStatus,
+    OpsWatch,
+}
+
+impl OperationApiEndpoint {
+    #[must_use]
+    pub const fn subject(self) -> &'static str {
+        match self {
+            Self::DeploySubmit => API_DEPLOY_SUBMIT,
+            Self::OpsStatus => API_OPS_STATUS,
+            Self::OpsWatch => API_OPS_WATCH,
+        }
+    }
+}
 
 #[must_use]
 pub fn op_watch(operation_id: &OperationId) -> String {

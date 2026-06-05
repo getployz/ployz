@@ -1,6 +1,7 @@
 use ployz_nats::service_runtime::{
-    EndpointExecutionPolicy, NatsServiceHandlerError, NatsServiceHandlerErrorCode,
-    NatsServiceResponse, start_nats_service,
+    EndpointExecutionPolicy, NATS_SERVICE_ERROR_CODE_HEADER, NATS_SERVICE_ERROR_HEADER,
+    NatsServiceError, NatsServiceErrorCode, NatsServiceErrorHeaderDecodeError, NatsServiceResponse,
+    decode_nats_service_error, start_nats_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -50,9 +51,7 @@ async fn service_runtime_returns_service_error_headers() {
 
     runtime
         .bind_endpoint(endpoint, |_request| async move {
-            NatsServiceResponse::transport_error(NatsServiceHandlerError::conflict(
-                "already exists",
-            ))
+            NatsServiceResponse::transport_error(NatsServiceError::conflict("already exists"))
         })
         .await
         .expect("endpoint binds");
@@ -75,10 +74,7 @@ async fn service_runtime_returns_service_error_headers() {
             .map(|value| value.as_str()),
         Some("409")
     );
-    assert_eq!(
-        NatsServiceHandlerErrorCode::Conflict.http_status_code(),
-        409
-    );
+    assert_eq!(NatsServiceErrorCode::Conflict.http_status_code(), 409);
 }
 
 #[tokio::test]
@@ -220,4 +216,30 @@ fn test_service_spec(subject: &str) -> NatsServiceSpec {
             EndpointExecution::Query,
         )],
     )
+}
+
+#[test]
+fn service_error_header_decoder_rejects_partial_or_unknown_headers() {
+    let mut headers = async_nats::HeaderMap::new();
+    headers.insert(NATS_SERVICE_ERROR_HEADER, "bad request");
+
+    assert_eq!(
+        decode_nats_service_error(Some(&headers)),
+        Err(NatsServiceErrorHeaderDecodeError::MissingCode)
+    );
+
+    headers.insert(NATS_SERVICE_ERROR_CODE_HEADER, "418");
+    assert_eq!(
+        decode_nats_service_error(Some(&headers)),
+        Err(NatsServiceErrorHeaderDecodeError::UnknownCode { code: 418 })
+    );
+
+    headers.insert(NATS_SERVICE_ERROR_CODE_HEADER, "400");
+    assert_eq!(
+        decode_nats_service_error(Some(&headers)),
+        Ok(Some(NatsServiceError {
+            code: NatsServiceErrorCode::BadRequest,
+            message: "bad request".to_owned(),
+        }))
+    );
 }

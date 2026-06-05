@@ -1,5 +1,9 @@
 //! NATS Service API runtime adapter.
 
+pub use crate::service_protocol::{
+    NATS_SERVICE_ERROR_CODE_HEADER, NATS_SERVICE_ERROR_HEADER, NatsServiceError,
+    NatsServiceErrorCode, NatsServiceErrorHeaderDecodeError, decode_nats_service_error,
+};
 use crate::services::{NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata};
 use async_nats::service::ServiceExt;
 use futures_util::StreamExt;
@@ -87,7 +91,7 @@ impl RunningNatsService {
                             }
                             Err(_) => {
                                 health.request_timeouts.fetch_add(1, Ordering::Relaxed);
-                                Err(NatsServiceHandlerError::timeout(format!(
+                                Err(NatsServiceError::timeout(format!(
                                     "request timed out after {}ms",
                                     policy.request_timeout.as_millis(),
                                 ))
@@ -213,7 +217,7 @@ pub struct NatsServiceRequest {
 pub enum NatsServiceResponse {
     Ok { payload: Vec<u8> },
     DomainError { payload: Vec<u8> },
-    TransportError { error: NatsServiceHandlerError },
+    TransportError { error: NatsServiceError },
 }
 
 impl NatsServiceResponse {
@@ -232,85 +236,8 @@ impl NatsServiceResponse {
     }
 
     #[must_use]
-    pub fn transport_error(error: NatsServiceHandlerError) -> Self {
+    pub fn transport_error(error: NatsServiceError) -> Self {
         Self::TransportError { error }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsServiceHandlerError {
-    pub code: NatsServiceHandlerErrorCode,
-    pub message: String,
-}
-
-impl NatsServiceHandlerError {
-    #[must_use]
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self {
-            code: NatsServiceHandlerErrorCode::BadRequest,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            code: NatsServiceHandlerErrorCode::Conflict,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn unavailable(message: impl Into<String>) -> Self {
-        Self {
-            code: NatsServiceHandlerErrorCode::Unavailable,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            code: NatsServiceHandlerErrorCode::Internal,
-            message: message.into(),
-        }
-    }
-
-    #[must_use]
-    pub fn timeout(message: impl Into<String>) -> Self {
-        Self {
-            code: NatsServiceHandlerErrorCode::Timeout,
-            message: message.into(),
-        }
-    }
-
-    fn into_nats_error(self) -> async_nats::service::error::Error {
-        async_nats::service::error::Error {
-            status: self.message,
-            code: self.code.http_status_code(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NatsServiceHandlerErrorCode {
-    BadRequest,
-    Conflict,
-    Unavailable,
-    Timeout,
-    Internal,
-}
-
-impl NatsServiceHandlerErrorCode {
-    #[must_use]
-    pub const fn http_status_code(self) -> usize {
-        match self {
-            Self::BadRequest => 400,
-            Self::Conflict => 409,
-            Self::Unavailable => 503,
-            Self::Timeout => 504,
-            Self::Internal => 500,
-        }
     }
 }
 
