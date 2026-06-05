@@ -34,6 +34,11 @@ The target shape is:
 - **Subjects and permissions** as the routing/security model.
 - **iroh tunnels** as the default private transport for node-to-core NATS
   client connections.
+- **One shared `ployzd` runtime artifact** with separately supervised
+  `control`, `node`, `gateway`, `dns`, and `tunnel` role processes.
+- **A tiny independently versioned `ployz-keeper`** for node-local bootstrap,
+  artifact install/update, supervisor unit management, and substrate rollout
+  progress reporting.
 
 This is not "NATS as the database". Docker remains execution reality. KV is the
 small current-state projection. Streams are durable timelines and job triggers.
@@ -41,11 +46,12 @@ Ployz code should mostly read as product policy: validate request, create
 operation, plan from current facts, call node services, commit only on success,
 emit events.
 
-The control plane and data plane stay separate. `ployzd` assures the system and
-responds to product services, but gateway, DNS, NATS connectivity, and existing
-workloads are not routed through `ployzd`. Data-plane components are
-independently supervised NATS clients and keep serving from current or
-last-known-good state when `ployzd` is down.
+The control plane and data plane stay separate. `ployzd control` assures the
+system and responds to product services, but gateway, DNS, NATS connectivity,
+and existing workloads are not routed through `ployzd control`. Data-plane
+roles are independently supervised NATS clients and keep serving from current
+or last-known-good state when `ployzd control` is down, even though they share
+the same `ployzd` binary artifact.
 
 ---
 
@@ -180,20 +186,52 @@ commands over iroh.
   relayed, reconnecting, or down.
 - R21. Public TCP/WebSocket NATS exposure is an optional advanced mode, not the
   default node transport.
-- R21a. Separate control plane from data plane. `ployzd` assures the system,
-  responds to product services, runs controllers/node RPC, and performs
-  mutations. It is not in the steady-state serving path for already-running
-  workloads, gateway routing, DNS answers, or NATS client connectivity.
+- R21a. Separate control plane from data plane. `ployzd control` assures the
+  system, responds to product services, runs controllers, and performs
+  mutations. `ployzd node` owns node RPC and observations. Neither role is in
+  the steady-state serving path for already-running workloads, gateway routing,
+  DNS answers, or NATS client connectivity.
 - R21b. Data-plane components are independently supervised NATS clients.
-  Gateway and DNS watch NATS directly, apply route/DNS state directly, and keep
-  serving from last-known-good state if the control plane is unavailable.
-- R21c. Core `ployzd` failure must not imply `nats-server`, gateway, DNS, or
-  NATS tunnel failure. Edge `ployzd` failure makes that node's product RPC,
-  node services, deploy participation, and observations unavailable, but
-  existing workloads and data-plane serving continue.
+  `ployzd gateway` and `ployzd dns` watch NATS directly, apply route/DNS state
+  directly, and keep serving from last-known-good state if the control plane is
+  unavailable.
+- R21c. Core `ployzd control` failure must not imply `nats-server`,
+  `ployzd gateway`, `ployzd dns`, or `ployzd tunnel` failure. Edge
+  `ployzd node` failure makes that node's product RPC, node services, deploy
+  participation, and observations unavailable, but existing workloads and
+  data-plane serving continue. These roles may share one `ployzd` binary while
+  remaining separate supervised processes and failure domains.
 - R21d. Tunnel loss is represented as connectivity/health state. It is not
   inferred into stored cluster truth and does not mutate current workload state
   without an operation owner.
+
+### Local Install And Substrate Updates
+
+- R31. `ployz.sh` is a tiny bootstrapper: it verifies the host, downloads and
+  verifies `ployz-keeper`, installs its supervisor unit, writes one-time join
+  material, and starts the keeper. It does not install or configure the full
+  cluster itself.
+- R32. `ployz-keeper` is a separate, small binary with an independent version
+  from `ployzd`. It owns node-local substrate install/update/reconcile steps
+  for the main `ployzd` artifact, supervisor units, host prerequisites, and
+  bootstrap material.
+- R33. `ployzd` is one main runtime artifact. Control, node-agent, gateway,
+  DNS, and NATS tunnel roles run as separate supervised processes/modes of
+  that same binary unless a later hard boundary requires another split.
+- R34. Join tokens are short-lived, one-time, and scoped to bootstrap. They
+  authorize redeeming join material, not general cluster mutation.
+- R35. Keeper steps are typed, versioned, and observable. Step progress and
+  failures are emitted to the active bootstrap or substrate-update operation.
+- R36. Keeper background reconciliation may change only local substrate state
+  and only against an approved bootstrap/update target. It must not silently
+  change product/runtime truth such as active services, routes, certs, or
+  cluster membership.
+- R37. `ployzd` does not update itself. Keeper installs staged, verified
+  `ployzd` artifacts and restarts/reloads role units with role-specific health
+  gates.
+- R38. Gateway, DNS, and tunnel updates preserve last-known-good serving or
+  connectivity behavior where applicable and expose degraded/failed rollout
+  state instead of rewriting cluster truth.
 
 ### Simplicity And Readability
 
@@ -231,35 +269,49 @@ commands over iroh.
   control planes. NATS gateways, leaf nodes, and domain-per-region coordination
   are deferred.
 
-- KTD3. **Control daemon is not the data plane.** `ployzd` is the control-plane
-  assurance/service process: bootstrap, health checks, repair, service
-  responders, controllers, and node RPC. Gateway, DNS, NATS tunnel forwarding,
+- KTD3. **Control role is not the data plane.** `ployzd control` is the
+  control-plane assurance/service process: bootstrap, health checks, repair,
+  service responders, and controllers. `ployzd node` owns node RPC and
+  observations. `ployzd gateway`, `ployzd dns`, `ployzd tunnel`,
   `nats-server`, and workloads are independently supervised data-plane or
   substrate processes. Only core nodes run `nats-server`.
 
-- KTD4. **NATS server is assured, not embedded.** `ployzd` owns config
+- KTD4. **NATS server is assured, not embedded.** `ployzd control` owns config
   rendering, credentials, stream/KV/Object Store bootstrap, health checks, and
   repair operations. A supervisor such as systemd owns `nats-server` process
-  lifetime by default, so core `ployzd` failure does not automatically take
+  lifetime by default, so `ployzd control` failure does not automatically take
   down the NATS control-plane substrate.
 
 - KTD5. **NATS runs over iroh by default for nodes.** An independently
-  supervised local NATS tunnel forwarder exposes a loopback listener on edge
-  nodes. `async-nats` clients connect to that local address. The forwarder
-  opens an iroh connection to an independently supervised core-side tunnel
-  endpoint, which forwards bytes to the local core `nats-server` client
-  listener. This keeps NATS native while avoiding public NATS exposure and
-  surviving address changes. Tunnel availability is health/connectivity state;
-  losing the tunnel pauses that node's NATS access without rewriting cluster
-  truth.
+  supervised `ployzd tunnel --side edge` role exposes a loopback listener on
+  edge nodes. `async-nats` clients connect to that local address. The edge
+  tunnel opens an iroh connection to an independently supervised
+  `ployzd tunnel --side core` role, which forwards bytes to the local core
+  `nats-server` client listener. This keeps NATS native while avoiding public
+  NATS exposure and surviving address changes. Tunnel availability is
+  health/connectivity state; losing the tunnel pauses that node's NATS access
+  without rewriting cluster truth.
 
-- KTD5a. **If `ployzd` owns a runtime dependency, model it as supervision.**
-  If a deployment mode makes `ployzd` responsible for starting or restarting
-  `nats-server`, gateway, DNS, or tunnel processes, that mode promotes
-  `ployzd` into a supervisor for data-plane/substrate dependencies. It must
-  then have explicit readiness, restart policy, shutdown ordering, health
-  reporting, and recovery tests. This is not the default steady-state
-  assumption.
+- KTD5a. **If a process owns a runtime dependency, model it as supervision.**
+  Keeper writes and updates supervisor units by default. If a deployment mode
+  makes `ployzd control` responsible for starting or restarting `nats-server`,
+  gateway, DNS, or tunnel role processes, that mode promotes `ployzd control`
+  into a supervisor for data-plane/substrate dependencies. It must then have
+  explicit readiness, restart policy, shutdown ordering, health reporting, and
+  recovery tests. This is not the default steady-state assumption.
+
+- KTD5b. **One `ployzd` artifact, many supervised role processes.** Gateway,
+  DNS, tunnel forwarding, node agent, and control services share one `ployzd`
+  binary version, but run as separate process roles such as `ployzd control`,
+  `ployzd node`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel`. A shared
+  artifact keeps runtime compatibility and rollout logic simple; separate
+  process supervision keeps failure domains explicit.
+
+- KTD5c. **Keeper is separate because it upgrades `ployzd`.** `ployz-keeper`
+  is the tiny node-local substrate manager that installs and updates the main
+  `ployzd` artifact, writes supervisor units, verifies artifacts, and reports
+  bootstrap/update progress. It is versioned independently so it can survive
+  and manage `ployzd` upgrades.
 
 - KTD6. **NATS security still matters over iroh.** iroh authenticates and
   encrypts the tunnel, but NATS credentials and subject permissions remain the
@@ -365,27 +417,30 @@ Verified planning inputs:
 ```mermaid
 flowchart TB
   CLI["CLI / TypeScript SDK / Cloud"]
-  Ployzd["ployzd control plane"]
+  Keeper["ployz-keeper"]
+  PloyzdControl["ployzd control"]
   NATS["NATS + JetStream core"]
   Services["NATS Service API"]
   KV["KV_CORE / KV_OPS / KV_OBS / KV_LOCKS"]
   Streams["PLZ_OPS / PLZ_JOBS / PLZ_AUDIT / PLZ_OBS_TRANSITIONS / PLZ_SCHEDULES"]
   Objects["Object Store buckets"]
   Controllers["controller workers"]
-  Agents["ployzd node agents"]
+  Agents["ployzd node"]
   Docker["Docker"]
-  Gateway["gateway NATS client"]
-  DNS["DNS NATS client"]
-  Tunnel["NATS tunnel forwarders"]
+  Gateway["ployzd gateway"]
+  DNS["ployzd dns"]
+  Tunnel["ployzd tunnel"]
 
   CLI --> Services
-  Ployzd --> Services
+  Keeper --> NATS
+  Keeper --> PloyzdControl
+  PloyzdControl --> Services
   Services --> NATS
   NATS --> KV
   NATS --> Streams
   NATS --> Objects
   Streams --> Controllers
-  Controllers --> Ployzd
+  Controllers --> PloyzdControl
   Controllers --> Services
   Services --> Agents
   Agents --> Docker
@@ -397,9 +452,12 @@ flowchart TB
   KV --> DNS
 ```
 
-Every machine can run `ployzd` for control-plane assurance, service response,
-and node RPC. Only core nodes run `nats-server`. Gateway, DNS, and NATS tunnel
-forwarders are independent NATS clients/processes supervised outside `ployzd`.
+Every machine can run the shared `ployzd` artifact in one or more roles:
+`control`, `node`, `gateway`, `dns`, and `tunnel`. Only core nodes run
+`nats-server`. Gateway, DNS, and tunnel roles are independent NATS
+clients/processes supervised outside `ployzd control`, but they use the same
+`ployzd` binary version. `ployz-keeper` is the separately versioned local
+installer/updater that manages the `ployzd` artifact and role units.
 Controllers usually run on core nodes, but controller authority comes from
 credentials and queue consumers, not process identity.
 
@@ -407,37 +465,40 @@ credentials and queue consumers, not process identity.
 
 ```text
 control plane:
-  ployzd service responders
+  ployzd control service responders
   operation controllers and workers
-  node RPC services
+  ployzd node RPC services
   bootstrap, health checks, repair, config rendering
 
 substrate:
   nats-server
   JetStream KV/streams/Object Store
-  NATS tunnel forwarding
+  ployzd tunnel NATS forwarding
+  ployz-keeper local substrate install/update
 
 data plane:
   Docker containers
-  gateway route serving
-  DNS serving
+  ployzd gateway route serving
+  ployzd dns serving
   last-known-good local runtime config
 ```
 
-Control-plane failure stops new mutations that need `ployzd`, such as deploy
-steps or node RPC. It does not stop NATS clients from staying connected, and it
-does not stop data-plane components from serving. If NATS state changes while
-`ployzd` is down, gateway and DNS still see those changes through their own
-NATS subscriptions and apply them directly.
+`ployzd control` failure stops new mutations that need core service
+responders/controllers. `ployzd node` failure stops that node's RPC and
+observations. Neither failure automatically stops `ployzd gateway`,
+`ployzd dns`, `ployzd tunnel`, NATS clients, or existing workloads. If NATS
+state changes while `ployzd control` is down, gateway and DNS role processes
+still see those changes through their own NATS subscriptions and apply them
+directly.
 
 ### Scale Modes
 
 ```text
 1 node:
-  ployzd
+  ployz-keeper
+  ployzd control/node/tunnel roles as needed
   nats-server --jetstream
-  nats tunnel forwarder if needed
-  gateway / DNS if configured
+  ployzd gateway / ployzd dns if configured
   docker
 
 2 nodes:
@@ -447,7 +508,7 @@ NATS subscriptions and apply them directly.
 
 3-200 nodes:
   core-1/core-2/core-3 = NATS + JetStream quorum
-  edges = ployzd agent/control, gateway, DNS, tunnel, runtime as separate roles
+  edges = keeper plus assigned ployzd node/gateway/dns/tunnel roles
 ```
 
 Do not pretend two nodes are HA. Two is transitional.
@@ -492,6 +553,9 @@ KV_CORE
   certs.<cert_id>
   certs.by_host.<encoded_hostname>
   schedules.<schedule_id>
+  substrate.ployzd.target
+  substrate.keeper.target
+  substrate.rollouts.<rollout_id>
 
 KV_OPS
   ops.<op_id>
@@ -500,6 +564,9 @@ KV_OBS
   nodes.<node_id>.heartbeat
   nodes.<node_id>.resources
   nodes.<node_id>.public_ip
+  nodes.<node_id>.components.keeper
+  nodes.<node_id>.components.ployzd
+  nodes.<node_id>.roles.<role>.status
   containers.<node_id>.<container_id>
   gateways.<node_id>.status
   dns.<node_id>.status
@@ -593,6 +660,8 @@ plz.v1.svc.api.service.scale
 plz.v1.svc.api.machine.add
 plz.v1.svc.api.machine.list
 plz.v1.svc.api.machine.inspect
+plz.v1.svc.api.substrate.upgrade
+plz.v1.svc.api.substrate.status
 plz.v1.svc.api.cert.ensure
 ```
 
@@ -656,6 +725,7 @@ crates/
       streams.rs
       objects.rs
       services.rs
+      service_protocol.rs
       schedules.rs
       permissions.rs
   ployz-transport/
@@ -663,9 +733,6 @@ crates/
       iroh_endpoint.rs
       nats_tunnel.rs
       join_bundle.rs
-  ployz-nats-tunnel/
-    src/
-      main.rs
   ployzd/
     src/
       main.rs
@@ -676,17 +743,20 @@ crates/
       controllers/
       node_agent/
       docker/
-  ployz-gateway/
+      gateway/
+      dns/
+      tunnel/
+  ployz-keeper/
     src/
       main.rs
-      projection.rs
-  ployz-dns/
-    src/
-      main.rs
-      projection.rs
+      steps.rs
+      artifacts.rs
+      systemd.rs
+      health.rs
   ployzctl/
     src/
       main.rs
+      api_client.rs
       commands/
   ployz-sdk-types/
     src/
@@ -700,17 +770,28 @@ Rules:
 - `ployz-nats` wraps `async-nats` and owns bootstrapping.
 - `ployz-transport` owns iroh endpoint identity, NATS byte tunnels, and join
   bundle encoding.
-- `ployz-nats-tunnel` is the independently supervised NATS-over-iroh byte
-  forwarder for edge loopback listeners and core tunnel endpoints.
-- `ployzd` wires processes, credentials, service handlers, controllers, node
-  agent, Docker, and assurance/repair checks.
-- `ployz-gateway` is a data-plane NATS client that watches route/container/cert
-  state and serves last-known-good routes independently of `ployzd`.
-- `ployz-dns` is a data-plane NATS client that watches DNS/cert state and
-  serves last-known-good answers independently of `ployzd`.
+- `ployzd` is one main runtime artifact. It wires process roles, credentials,
+  service handlers, controllers, node agent, Docker, gateway, DNS, NATS tunnel,
+  and assurance/repair checks.
+- `ployzd control` runs core services/controllers and bootstrap assurance.
+- `ployzd node` runs node-local services, observation, and Docker integration.
+- `ployzd gateway` is a data-plane NATS client process that watches
+  route/container/cert state and serves last-known-good routes independently of
+  `ployzd control`.
+- `ployzd dns` is a data-plane NATS client process that watches DNS/cert state
+  and serves last-known-good answers independently of `ployzd control`.
+- `ployzd tunnel` is the independently supervised NATS-over-iroh byte
+  forwarder role for edge loopback listeners and core tunnel endpoints.
+- `ployz-keeper` is a separate tiny binary that installs and updates the main
+  `ployzd` artifact, writes supervisor units, reconciles host prerequisites,
+  and reports bootstrap/substrate-update progress.
 - `ployzctl` is a client, not an orchestrator.
 - `ployz-sdk-types` is the public schema surface for generated TypeScript
   bindings.
+
+One binary version does not mean one process or one failure domain. Gateway,
+DNS, tunnel, node, and control roles share the `ployzd` artifact but are
+supervised as separate role units with separate health and restart behavior.
 
 ---
 
@@ -724,12 +805,14 @@ ployz init
   generate NATS operator/account/users
   generate local core iroh endpoint identity
   render nats-server config
-  install or update nats-server supervisor unit
+  install or update ployz-keeper supervisor unit
+  keeper installs or updates nats-server supervisor unit
   wait for supervised nats-server with JetStream
   bootstrap KV/streams/Object Store
-  install or update core-side NATS tunnel supervisor unit
-  install or update ployzd supervisor unit
-  install or update gateway/DNS supervisor units if configured
+  keeper installs or updates the main ployzd artifact
+  keeper installs or updates ployzd control supervisor unit
+  keeper installs or updates ployzd tunnel supervisor unit
+  keeper installs or updates ployzd gateway/dns units if configured
   register NATS services
   write local machine record
   begin KV_OBS heartbeat
@@ -747,6 +830,7 @@ ployz machine add user@host --name node-2
   receive op_id
   controller creates pending machine operation
   controller creates node-scoped NATS user/creds
+  controller creates short-lived one-time join token
   controller creates join bundle:
     domain id
     node id
@@ -754,13 +838,17 @@ ployz machine add user@host --name node-2
     node NATS creds
     core iroh endpoint address/ticket list
     relay map / relay policy
-  controller performs one install/contact event
-  installer writes ployzd config and join bundle
-  installer writes tunnel config
-  installer starts supervised NATS tunnel forwarder
-  installer starts supervised ployzd
-  target async-nats connects to localhost tunnel
-  target registers plz.v1.svc.node.<node_id>.*
+    assigned ployzd roles
+    target ployzd artifact version
+  user runs authenticated ployz.sh on the target
+  ployz.sh installs only ployz-keeper
+  keeper redeems join token and receives/redacts join bundle
+  keeper installs staged verified ployzd artifact
+  keeper writes tunnel, node, gateway, and DNS role configs as assigned
+  keeper starts supervised ployzd tunnel role
+  keeper starts supervised ployzd node role
+  target async-nats clients connect to localhost tunnel
+  target ployzd node registers plz.v1.svc.node.<node_id>.*
   target writes KV_OBS key `nodes.<node_id>.heartbeat`
   controller requests plz.v1.svc.node.<node_id>.inspect
   controller marks machine active in KV_CORE
@@ -772,22 +860,83 @@ after that event: the new node proves itself by connecting to NATS, responding
 to a node service, and publishing observations. iroh keeps that NATS path
 private and stable across NATs and address changes.
 
+### `ployz.sh`
+
+`ployz.sh` is a small trusted bootstrapper, not the installer for the whole
+cluster:
+
+```text
+ployz.sh
+  verify Linux, architecture, root, and systemd
+  accept one-time join token or join URL from the environment/argument
+  create minimal local directories
+  download ployz-keeper for the requested channel/version
+  verify checksum/signature
+  install /usr/local/bin/ployz-keeper
+  write one-time join material with restrictive permissions
+  install and start ployz-keeper.service
+  print journal/status commands
+```
+
+The script does not embed NATS credentials and does not write `ployzd`
+configuration directly. Keeper redeems the join token, receives the join
+bundle, installs the main `ployzd` artifact, writes role-specific supervisor
+units, and reports bootstrap progress to the machine operation.
+
 ### NATS Over iroh Shape
 
 ```text
 edge NATS clients
   async-nats
     -> 127.0.0.1:<ephemeral>
-      -> supervised local NATS tunnel forwarder
+      -> supervised `ployzd tunnel` edge role
         -> iroh QUIC stream
-          -> supervised core NATS tunnel endpoint
+          -> supervised `ployzd tunnel` core role
             -> 127.0.0.1:4222 nats-server
 ```
 
 This is byte forwarding, not a second RPC protocol. NATS service discovery,
 request/reply, KV, streams, consumers, Object Store, schedules, and permissions
 all behave as normal NATS features. The tunnel is part of NATS connectivity,
-not `ployzd` service response.
+not `ployzd control` service response.
+
+### Substrate Updates And Rollouts
+
+Substrate updates are explicit operations executed locally by keeper:
+
+```text
+ployzctl upgrade ployzd --version 0.2.0
+  call plz.v1.svc.api.substrate.upgrade
+  receive op_id
+  controller writes rollout target and first batch assignment
+  assigned keepers see target
+  each keeper downloads and verifies staged artifact
+  each keeper updates local ployzd artifact
+  each keeper restarts/reloads assigned ployzd role units
+  role-specific health gates pass or fail
+  keeper reports step progress and failures to PLZ_OPS/KV_OPS
+  controller advances, pauses, rolls back, or fails the operation
+```
+
+The rollout target can cover the shared `ployzd` artifact, `ployz-keeper`
+self-update, host prerequisites, or rendered supervisor/config material. Keeper
+may reconcile every minute, but it acts only against an approved bootstrap or
+substrate-update target. It must not silently change product truth such as
+active service state, route ownership, cert state, or machine membership.
+
+Rollouts should support canary and batch gates:
+
+```text
+batch 1: one node
+batch 2: small percentage
+batch 3: larger percentage
+batch 4: remaining nodes
+```
+
+The controller stops or pauses the rollout when health checks fail, too many
+keepers report typed failures, `ployzd gateway` or `ployzd dns` serving
+degrades, tunnel connectivity becomes ambiguous, or a keeper reports unknown
+local state.
 
 ---
 
@@ -824,6 +973,36 @@ not `ployzd` service response.
 ---
 
 ## Implementation Units
+
+### Current Implementation Status
+
+The repository has already moved past the original greenfield skeleton. Based
+on the current workspace shape, these units are complete or substantially
+started:
+
+- Pre-U0/U0: the active workspace has been reduced to the new Rust shape and
+  the old Polis/Corrosion path is no longer represented as active crates.
+- U1: `ployz-nats` has NATS connection, bootstrap, KV, streams, Object Store,
+  schedules, and resource-planning tests.
+- U1a: `ployz-transport` and `ployzd` have iroh/NATS tunnel models and tests,
+  but the tunnel is now a `ployzd tunnel` role rather than a standalone binary.
+- U2: `ployz-core` has typed ids, subject constructors, operation wire models,
+  deploy planning, and wire-contract tests.
+- U3: NATS service catalog/runtime behavior exists in `ployz-nats` and
+  `ployzd`. `ployz-nats` owns shared NATS Service API protocol helpers;
+  `ployzctl` owns the caller-facing typed operation client.
+- U4/U4a: operation status, event replay, durable event append/idempotency, and
+  real NATS operation adapters are substantially represented.
+- U5: permission profile rendering exists and is covered by tests.
+- U6: node-agent idempotency and Docker observation/label models are started.
+- U7: the first deploy proof exists against fake Docker-style execution and
+  active-state commit behavior.
+
+Remaining work should avoid redoing those pieces unless current tests reveal a
+real gap. The major remaining gaps are keeper/install/update behavior, real
+Docker execution depth, gateway/DNS data-plane projection as `ployzd` roles,
+CLI/SDK ergonomics, cert projection, HA promotion, backup/restore, and broader
+end-to-end failure coverage.
 
 ### Execution And Review Loop
 
@@ -912,10 +1091,8 @@ Pipeline finish:
   - `crates/ployz-core/src/lib.rs`
   - `crates/ployz-nats/src/lib.rs`
   - `crates/ployz-transport/src/lib.rs`
-  - `crates/ployz-nats-tunnel/src/main.rs`
   - `crates/ployzd/src/main.rs`
-  - `crates/ployz-gateway/src/main.rs`
-  - `crates/ployz-dns/src/main.rs`
+  - `crates/ployz-keeper/src/main.rs`
   - `crates/ployzctl/src/main.rs`
   - `crates/ployz-sdk-types/src/lib.rs`
   - `docs/architecture/nats-control-plane.md`
@@ -932,8 +1109,8 @@ Pipeline finish:
 
 ### U1. NATS Process And Bootstrap Spine
 
-- **Goal:** Let one `ployzd` assure a supervised `nats-server`, connect to it,
-  then bootstrap the required JetStream resources.
+- **Goal:** Let `ployzd control` assure a supervised `nats-server`, connect to
+  it, then bootstrap the required JetStream resources.
 - **Requirements:** R7, R9, R10, R13, R14, R17
 - **Dependencies:** U0
 - **Files:**
@@ -948,7 +1125,7 @@ Pipeline finish:
 - **Approach:** Pin a minimum NATS server version. Render a local single-node
   config first and expose the command/supervisor material needed to run it, but
   keep `nats-server` process lifetime as an external supervisor concern by
-  default. `ployzd` connects, checks health/capabilities, and creates
+  default. `ployzd control` connects, checks health/capabilities, and creates
   `KV_CORE`, `KV_OPS`, `KV_OBS`, `KV_LOCKS`, `PLZ_OPS`, `PLZ_JOBS`,
   `PLZ_AUDIT`, `PLZ_OBS_TRANSITIONS`, `PLZ_SCHEDULES`, and Object Store buckets.
   Detect whether message schedules are available and expose that as a typed
@@ -956,8 +1133,8 @@ Pipeline finish:
 - **Test scenarios:**
   - Fresh data dir boot creates all buckets and streams exactly once.
   - Reboot against the same data dir adopts existing resources.
-  - `ployzd` restart reconnects to the existing supervised `nats-server` and
-    adopts existing resources.
+  - `ployzd control` restart reconnects to the existing supervised
+    `nats-server` and adopts existing resources.
   - Bootstrap refuses to proceed when JetStream is unavailable.
   - Schedule capability is true only when the server reports support.
   - Stream retention for `PLZ_OPS` preserves acknowledged operation events.
@@ -973,25 +1150,25 @@ Pipeline finish:
   - `crates/ployz-transport/src/iroh_endpoint.rs`
   - `crates/ployz-transport/src/nats_tunnel.rs`
   - `crates/ployz-transport/src/join_bundle.rs`
-  - `crates/ployz-nats-tunnel/src/main.rs`
+  - `crates/ployzd/src/iroh_tunnel.rs`
   - `crates/ployz-nats/src/connect.rs`
-  - `crates/ployz-nats-tunnel/tests/iroh_nats_tunnel.rs`
+  - `crates/ployzd/tests/iroh_nats_tunnel.rs`
 - **Approach:** The supervised core tunnel process accepts a dedicated iroh
   protocol for NATS byte forwarding and proxies each stream to local
-  `nats-server`. The supervised edge tunnel process starts a local loopback TCP
-  listener and forwards accepted sockets over iroh. `async-nats` clients,
-  including `ployzd`, gateway, and DNS, connect to the loopback address with
-  normal NATS credentials. Tunnel state is observable but not cluster truth.
-  Tunnel loss marks that node's connectivity unavailable; it does not mutate
-  current workload state.
+  `nats-server`. The supervised edge tunnel process is a `ployzd tunnel` role
+  that starts a local loopback TCP listener and forwards accepted sockets over
+  iroh. `async-nats` clients, including `ployzd node`, `ployzd gateway`, and
+  `ployzd dns`, connect to the loopback address with normal NATS credentials.
+  Tunnel state is observable but not cluster truth. Tunnel loss marks that
+  node's connectivity unavailable; it does not mutate current workload state.
 - **Test scenarios:**
   - Edge `async-nats` connects through loopback tunnel and can call
     `plz.v1.svc.api.ops.status`.
   - Invalid NATS credentials fail even when the iroh tunnel connects.
   - Tunnel reconnects after the iroh connection drops.
   - Tunnel status reports direct, relayed, reconnecting, and down states.
-  - Edge `ployzd` loss leaves tunnel connectivity available for other local
-    NATS clients.
+  - Edge `ployzd node` loss leaves `ployzd tunnel` connectivity available for
+    other local NATS clients.
   - Join bundle redaction never prints full NATS credentials or private keys.
 - **Verification:** `cargo test -p ployz-transport && cargo test -p ployzd --test iroh_nats_tunnel`
 
@@ -1175,61 +1352,116 @@ Pipeline finish:
   - Worker crash after container create resumes idempotently.
 - **Verification:** `cargo test -p ployzd deploy_operation deploy_failure_retention`
 
+### U7a. Keeper, `ployz.sh`, And Substrate Rollouts
+
+- **Goal:** Make node bootstrap and substrate updates first-class operations
+  without splitting the main runtime into separate gateway/DNS/tunnel binaries.
+- **Requirements:** R31, R32, R33, R34, R35, R36, R37, R38
+- **Dependencies:** U1, U1a, U2, U3, U5
+- **Files:**
+  - `Cargo.toml`
+  - `crates/ployz-keeper/src/main.rs`
+  - `crates/ployz-keeper/src/steps.rs`
+  - `crates/ployz-keeper/src/artifacts.rs`
+  - `crates/ployz-keeper/src/systemd.rs`
+  - `crates/ployz-keeper/src/health.rs`
+  - `crates/ployz-keeper/tests/bootstrap.rs`
+  - `crates/ployz-keeper/tests/rollout.rs`
+  - `crates/ployzd/src/controllers/substrate.rs`
+  - `crates/ployzd/tests/substrate_rollout.rs`
+  - `scripts/ployz.sh`
+- **Approach:** Add `ployz-keeper` as a tiny, independently versioned binary.
+  `ployz.sh` installs only keeper. Keeper redeems one-time join material,
+  downloads and verifies the main `ployzd` artifact, writes systemd units for
+  assigned `ployzd` roles, starts those roles, and reports bootstrap/update
+  progress to the active operation. Substrate update operations assign batches;
+  keeper applies local typed steps only against approved targets and reports
+  durable progress/failures.
+- **Test scenarios:**
+  - `ployz.sh` installs `ployz-keeper` only and does not write NATS
+    credentials or `ployzd` role configs.
+  - Keeper redeems a one-time join token, stores redacted join material, and
+    refuses token reuse.
+  - Keeper installs a staged, checksum/signature-verified `ployzd` artifact.
+  - Keeper writes separate supervisor units for `ployzd control`,
+    `ployzd node`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel` only
+    when the node is assigned those roles.
+  - Keeper reports each bootstrap/update step to operation events and latest
+    operation status.
+  - A failed keeper step pauses or fails the rollout with typed failure details.
+  - Keeper self-update stages a new keeper binary, restarts, and reports the
+    new keeper version.
+  - Keeper cannot mutate `KV_CORE` service state, route ownership, cert state,
+    or cluster membership except through the scoped bootstrap/update operation.
+- **Verification:** `cargo test -p ployz-keeper && cargo test -p ployzd substrate_rollout`
+
 ### U8. Gateway, DNS, And Cert Projection Skeleton
 
 - **Goal:** Build independently supervised data-plane projections over KV
-  rather than controller-owned runtime state.
-- **Requirements:** R4, R9, R10, R14
-- **Dependencies:** U6, U7
+  rather than controller-owned runtime state, using `ployzd` role processes
+  from the shared `ployzd` artifact.
+- **Requirements:** R4, R9, R10, R14, R21b, R21c, R33, R38
+- **Dependencies:** U6, U7, U7a
 - **Files:**
-  - `crates/ployz-gateway/src/main.rs`
-  - `crates/ployz-gateway/src/projection.rs`
-  - `crates/ployz-gateway/tests/gateway_projection.rs`
-  - `crates/ployz-dns/src/main.rs`
-  - `crates/ployz-dns/src/projection.rs`
-  - `crates/ployz-dns/tests/dns_projection.rs`
+  - `crates/ployzd/src/gateway.rs`
+  - `crates/ployzd/src/dns.rs`
+  - `crates/ployzd/tests/gateway_projection.rs`
+  - `crates/ployzd/tests/dns_projection.rs`
   - `crates/ployzd/src/controllers/cert.rs`
   - `crates/ployzd/tests/cert_operation.rs`
-- **Approach:** Gateway watches KV_CORE keys `routes.>` and `certs.>`, plus
-  KV_OBS keys `containers.>` through its own NATS client; it serves and applies
-  route changes independently of `ployzd`. DNS watches DNS/cert state through
-  its own NATS client and keeps last-known-good answers. Cert controller remains
-  control plane: it uses KV_LOCKS key `acme.<cert_id>`, Object Store encrypted
-  bundles, and schedule/job subjects.
+- **Approach:** `ployzd gateway` watches KV_CORE keys `routes.>` and
+  `certs.>`, plus KV_OBS keys `containers.>` through its own NATS client; it
+  serves and applies route changes independently of `ployzd control`.
+  `ployzd dns` watches DNS/cert state through its own NATS client and keeps
+  last-known-good answers. Cert controller remains control plane: it uses
+  KV_LOCKS key `acme.<cert_id>`, Object Store encrypted bundles, and
+  schedule/job subjects.
 - **Test scenarios:**
   - Gateway filters unhealthy/stale containers locally.
   - Gateway keeps last good route config when NATS connection drops.
-  - Gateway continues serving and applying NATS route changes while `ployzd` is
-    down.
-  - DNS continues answering and applying NATS record changes while `ployzd` is
-    down.
+  - `ployzd gateway` continues serving and applying NATS route changes while
+    `ployzd control` is down.
+  - `ployzd dns` continues answering and applying NATS record changes while
+    `ployzd control` is down.
   - Cert operation writes challenge state with TTL and updates cert KV only
     after ACME success.
   - Failed cert renewal leaves prior cert active.
   - Cert schedule targets the same job subject as fallback scheduler.
-- **Verification:** `cargo test -p ployz-gateway && cargo test -p ployz-dns && cargo test -p ployzd cert_operation`
+- **Verification:** `cargo test -p ployzd gateway_projection dns_projection cert_operation`
 
 ### U9. CLI And TypeScript SDK Contract
 
 - **Goal:** Give cloud and humans ergonomic access without moving
   orchestration into TypeScript.
-- **Requirements:** R5, R6, R7, R22
-- **Dependencies:** U2, U3, U4, U7
+- **Requirements:** R5, R6, R7, R22, R31, R34, R35
+- **Dependencies:** U2, U3, U4, U7, U7a
 - **Files:**
   - `crates/ployzctl/src/commands/deploy.rs`
   - `crates/ployzctl/src/commands/ops.rs`
+  - `crates/ployzctl/src/commands/machine.rs`
+  - `crates/ployzctl/src/commands/upgrade.rs`
+  - `crates/ployzctl/src/api_client.rs`
+  - `crates/ployzctl/tests/api_client_nats.rs`
   - `crates/ployz-sdk-types/src/lib.rs`
   - `packages/ployz-sdk/src/index.ts`
   - `packages/ployz-sdk/test/operations.test.ts`
   - `crates/ployzctl/tests/cli_contract.rs`
 - **Approach:** Rust owns schemas and wire DTOs. TypeScript exposes a small
   ergonomic `OperationHandle` over generated types: submit, watch, status,
-  cancel. Complex cloud workflows remain in Inngest calling core primitives.
+  cancel. `ployzctl machine add` creates a machine bootstrap operation and
+  prints an authenticated `ployz.sh` command or URL containing only the
+  short-lived join token. `ployzctl upgrade` creates substrate rollout
+  operations; it does not SSH into nodes or update binaries directly. Complex
+  cloud workflows remain in Inngest calling core primitives.
 - **Test scenarios:**
   - Generated TypeScript types match Rust schemas.
   - SDK deploy returns an operation handle with `watch()` and `status()`.
   - CLI `deploy --detach` prints operation id.
   - CLI `ops watch <op_id>` replays persisted events.
+  - CLI `machine add` prints a one-time `ployz.sh` bootstrap command without
+    exposing NATS credentials.
+  - CLI `upgrade ployzd` creates a substrate update operation and reports the
+    rollout operation id.
   - SDK does not call node services directly.
 - **Verification:** `cargo test -p ployzctl && pnpm --dir packages/ployz-sdk test`
 
@@ -1264,15 +1496,17 @@ Pipeline finish:
 | Scenario | Expected Behavior | Test Target |
 | --- | --- | --- |
 | NATS unavailable during new deploy | Existing containers continue; new mutation fails closed | `crates/ployzd/tests/failure_core_down.rs` |
-| Core `ployzd` down | NATS clients stay connected; gateway/DNS keep serving; product RPC needing `ployzd` has no responder | `crates/ployzd/tests/control_plane_down.rs` |
-| Edge `ployzd` down | Existing containers continue; gateway/DNS/tunnel keep serving; node services unavailable | `crates/ployzd/tests/node_unavailable.rs` |
-| iroh tunnel down on edge | Existing containers and last-good gateway/DNS continue; node NATS connectivity reports down | `crates/ployz-nats-tunnel/tests/iroh_nats_tunnel.rs` |
-| iroh path switches direct to relay | NATS reconnects or continues; tunnel status reports relayed | `crates/ployz-nats-tunnel/tests/iroh_nats_tunnel.rs` |
+| Core `ployzd control` down | NATS clients stay connected; `ployzd gateway`/`ployzd dns` keep serving; product RPC needing control has no responder | `crates/ployzd/tests/control_plane_down.rs` |
+| Edge `ployzd node` down | Existing containers continue; `ployzd gateway`/`ployzd dns`/`ployzd tunnel` keep serving; node services unavailable | `crates/ployzd/tests/node_unavailable.rs` |
+| iroh tunnel down on edge | Existing containers and last-good gateway/DNS continue; node NATS connectivity reports down | `crates/ployzd/tests/iroh_nats_tunnel.rs` |
+| iroh path switches direct to relay | NATS reconnects or continues; tunnel status reports relayed | `crates/ployzd/tests/iroh_nats_tunnel.rs` |
 | Valid iroh tunnel with bad NATS creds | NATS connection fails authorization; node cannot mutate cluster | `crates/ployzd/tests/permissions.rs` |
-| Gateway loses NATS | Last good config stays active; degraded status is visible | `crates/ployz-gateway/tests/gateway_projection.rs` |
-| DNS loses NATS | Last good answers stay active; degraded status is visible | `crates/ployz-dns/tests/dns_projection.rs` |
-| Route KV changes while `ployzd` is down | Gateway applies the NATS change because it watches NATS directly | `crates/ployz-gateway/tests/gateway_projection.rs` |
-| DNS KV changes while `ployzd` is down | DNS applies the NATS change because it watches NATS directly | `crates/ployz-dns/tests/dns_projection.rs` |
+| Gateway loses NATS | Last good config stays active; degraded status is visible | `crates/ployzd/tests/gateway_projection.rs` |
+| DNS loses NATS | Last good answers stay active; degraded status is visible | `crates/ployzd/tests/dns_projection.rs` |
+| Route KV changes while `ployzd control` is down | `ployzd gateway` applies the NATS change because it watches NATS directly | `crates/ployzd/tests/gateway_projection.rs` |
+| DNS KV changes while `ployzd control` is down | `ployzd dns` applies the NATS change because it watches NATS directly | `crates/ployzd/tests/dns_projection.rs` |
+| Keeper fails a substrate update step | Rollout pauses or fails with typed failure and affected node evidence | `crates/ployz-keeper/tests/rollout.rs` |
+| Keeper upgrades shared `ployzd` artifact | Role units restart or reload under health gates; other roles keep last-known-good where applicable | `crates/ployzd/tests/substrate_rollout.rs` |
 | Deploy worker crashes before ack | Durable consumer redelivers submitted event | `crates/ployzd/tests/operation_spine.rs` |
 | Deploy worker retries after container create | Node service returns existing step result | `crates/ployzd/tests/deploy_operation.rs` |
 | No responder for node command | Operation marks node unavailable or ambiguous with audience | `crates/ployzd/tests/node_unavailable.rs` |
@@ -1338,12 +1572,18 @@ Do not build these in v1:
   to resume from `PLZ_OPS` and `KV_OPS`.
 - AE4. A node credential cannot publish deploy requests, write `KV_CORE`, or
   call another node's service subject.
-- AE5. Gateway and DNS continue serving when `ployzd` is down. If NATS remains
-  available, they keep applying NATS route/DNS changes because they watch NATS
-  directly; if NATS is down, they keep serving last-known-good state and report
-  degraded status.
+- AE5. `ployzd gateway` and `ployzd dns` continue serving when
+  `ployzd control` is down. If NATS remains available, they keep applying NATS
+  route/DNS changes because they watch NATS directly; if NATS is down, they
+  keep serving last-known-good state and report degraded status.
 - AE6. Cloud/TypeScript never orchestrates low-level container calls. It submits
   primitive operations and watches operation events.
+- AE7. A new node is bootstrapped by a short-lived `ployz.sh` command that
+  installs only `ployz-keeper`; keeper installs the shared `ployzd` artifact,
+  writes role units, and reports durable bootstrap progress.
+- AE8. A `ployzd` substrate upgrade rolls out through keeper-managed batches,
+  restarts/reloads role units under health gates, and stops visibly on typed
+  failure.
 
 ---
 
@@ -1360,13 +1600,16 @@ Do not build these in v1:
 9. U5 permission profiles.
 10. U6 node agent and Docker observation.
 11. U7 first deploy.
-12. U8 gateway/DNS/cert projection.
-13. U9 CLI/SDK ergonomics.
-14. U10 HA/backup.
+12. U7a keeper, `ployz.sh`, and substrate rollouts.
+13. U8 gateway/DNS/cert projection.
+14. U9 CLI/SDK ergonomics.
+15. U10 HA/backup.
 
 The first proof should be Pre-U0 through U4 with a fake worker over the
 operation contract harness. The second proof should be U0-U4a over real local
 NATS. The third proof should be U0-U4a through the iroh NATS tunnel. The
-fourth proof should be U0-U7 with fake Docker. The first production-shaped
-proof is U0-U7 with real Docker on one node plus one edge node connected
-through iroh.
+fourth proof should be U0-U7 with fake Docker. The fifth proof should be
+U0-U7a with `ployz.sh` installing keeper and keeper installing/restarting
+`ployzd` role units. The first production-shaped proof is U0-U8 with real
+Docker on one node plus one edge node connected through iroh, with gateway/DNS
+roles serving independently of `ployzd control`.
