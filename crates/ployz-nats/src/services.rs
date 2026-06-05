@@ -1,5 +1,7 @@
 //! NATS Service API helpers.
 
+use std::fmt;
+
 pub const SERVICE_API_PING_SUBJECT: &str = "$SRV.PING";
 pub const SERVICE_API_INFO_SUBJECT: &str = "$SRV.INFO";
 pub const SERVICE_API_STATS_SUBJECT: &str = "$SRV.STATS";
@@ -76,6 +78,11 @@ impl ServiceMetadata {
             .find(|entry| entry.key == key)
             .map(|entry| entry.value.as_str())
     }
+
+    #[must_use]
+    pub fn entries(&self) -> &[ServiceMetadataEntry] {
+        &self.entries
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +145,12 @@ impl ServiceVersion {
             minor,
             patch,
         }
+    }
+}
+
+impl fmt::Display for ServiceVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 

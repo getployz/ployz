@@ -58,11 +58,7 @@ pub fn api_service() -> NatsServiceSpec {
         API_SERVICE_DESCRIPTION,
         ServiceMetadata::empty(),
         vec![
-            NatsServiceEndpointSpec::new(
-                "deploy.submit",
-                API_DEPLOY_SUBMIT,
-                EndpointExecution::AcceptsOperation,
-            ),
+            api_deploy_submit_endpoint(),
             NatsServiceEndpointSpec::new("deploy.plan", API_DEPLOY_PLAN, EndpointExecution::Query),
             NatsServiceEndpointSpec::new("ops.status", API_OPS_STATUS, EndpointExecution::Query),
             NatsServiceEndpointSpec::new("ops.watch", API_OPS_WATCH, EndpointExecution::Query),
@@ -72,6 +68,15 @@ pub fn api_service() -> NatsServiceSpec {
                 EndpointExecution::AcceptsOperation,
             ),
         ],
+    )
+}
+
+#[must_use]
+pub fn api_deploy_submit_endpoint() -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        "deploy.submit",
+        API_DEPLOY_SUBMIT,
+        EndpointExecution::AcceptsOperation,
     )
 }
 

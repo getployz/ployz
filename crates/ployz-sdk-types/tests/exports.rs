@@ -1,10 +1,12 @@
 use ployz_sdk_types::{
-    DeployOperationState, DeployRequest, DeployRunningStage, EventSequence, EventSequenceError,
-    ImageReference, ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationSubject,
-    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
-    RoutePortError, ServiceId, SubjectTokenError,
+    AcceptedOperation, DeployOperationState, DeployRequest, DeployRunningStage,
+    DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference,
+    ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError, OperationApiResponse,
+    OperationDispatch, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationStatus, OperationSubject, ReplicaCount, ReplicaCountError,
+    RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId,
+    SubjectTokenError,
 };
 
 #[test]
@@ -51,6 +53,45 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
+}
+
+#[test]
+fn sdk_exports_operation_api_wire_types() {
+    let operation_id = ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id");
+    let request = DeploySubmitRequest {
+        operation_id: operation_id.clone(),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_1").expect("valid idempotency key"),
+        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+    };
+    let response: DeploySubmitResponse = OperationApiResponse::Ok {
+        value: AcceptedOperation {
+            operation_id,
+            dispatch: OperationDispatch::Queued {
+                watch_subject: "plz.v1.op.op_123.>".to_owned(),
+                start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
+            },
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_string(&request).expect("request serializes"),
+        r#"{"operation_id":"op_123","idempotency_key":"idem_1","service_id":"svc_api"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&response).expect("response serializes"),
+        r#"{"status":"ok","value":{"operation_id":"op_123","dispatch":{"kind":"queued","watch_subject":"plz.v1.op.op_123.>","start_sequence":1}}}"#
+    );
+
+    let OperationApiResponse::Ok { value } = response else {
+        panic!("response should be ok");
+    };
+    assert_eq!(
+        value.dispatch,
+        OperationDispatch::Queued {
+            watch_subject: "plz.v1.op.op_123.>".to_owned(),
+            start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
+        }
+    );
 }
 
 #[test]

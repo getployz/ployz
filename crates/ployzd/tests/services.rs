@@ -2,9 +2,8 @@ use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::EventSequence;
 use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, NodeServiceEndpoint};
 use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
-use ployzd::operation_api::{
-    AcceptedOperation, OperationDispatch, OpsStatusError, ops_status_missing,
-};
+use ployz_sdk_types::OperationDispatch;
+use ployzd::operation_api::{OpsStatusError, ops_status_missing, queued_operation};
 use ployzd::services::{DaemonServiceCatalog, NodeServiceCallError, node_endpoint_subject};
 
 #[test]
@@ -99,7 +98,7 @@ fn node_service_failures_map_actual_request_failures() {
 
 #[test]
 fn mutating_service_acceptance_is_queued_not_inline_work() {
-    let accepted = AcceptedOperation::queued(operation_id("op_123"), event_sequence(11));
+    let accepted = queued_operation(operation_id("op_123"), event_sequence(11));
 
     assert_eq!(
         accepted.dispatch,

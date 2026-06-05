@@ -7,6 +7,7 @@
 //! in `ployz-core`; NATS mechanics stay in `ployz-nats`; iroh byte transport
 //! stays in `ployz-transport`.
 
+pub mod api_runtime;
 pub mod app;
 pub mod config;
 pub mod controllers;

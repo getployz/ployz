@@ -29,5 +29,6 @@ ployz-sh/dist/
 legacy/ployz-sh/.wrangler/
 legacy/ployz-sh/dist/
 docs/review.md
+generated/
 tigerbeetle/
 tailscale-rs/

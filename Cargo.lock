@@ -1260,6 +1260,9 @@ dependencies = [
  "async-nats",
  "ployz-core",
  "ployz-nats",
+ "ployz-sdk-types",
+ "ployzd",
+ "serde_json",
  "testcontainers-modules",
  "tokio",
 ]
@@ -1269,6 +1272,7 @@ name = "ployz-nats"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "futures-util",
  "nats-server",
  "ployz-core",
  "serde",
@@ -1306,7 +1310,9 @@ version = "0.1.0"
 dependencies = [
  "ployz-core",
  "ployz-nats",
+ "ployz-sdk-types",
  "ployz-transport",
+ "serde_json",
  "tokio",
 ]
 

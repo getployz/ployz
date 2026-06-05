@@ -17,6 +17,7 @@ rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
+futures-util = "0.3"
 ployz-core = { path = "crates/ployz-core" }
 ployz-nats = { path = "crates/ployz-nats" }
 ployz-transport = { path = "crates/ployz-transport" }

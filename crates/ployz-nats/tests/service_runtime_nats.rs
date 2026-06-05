@@ -1,0 +1,223 @@
+use ployz_nats::service_runtime::{
+    EndpointExecutionPolicy, NatsServiceHandlerError, NatsServiceHandlerErrorCode,
+    NatsServiceResponse, start_nats_service,
+};
+use ployz_nats::services::{
+    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
+};
+use std::num::NonZeroUsize;
+use std::time::Duration;
+use tokio::sync::oneshot;
+
+#[tokio::test]
+async fn service_runtime_responds_to_bound_endpoint() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.echo");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |request| async move {
+            NatsServiceResponse::ok(request.payload)
+        })
+        .await
+        .expect("endpoint binds");
+
+    let response = client
+        .request("plz.v1.svc.test.echo", "hello".into())
+        .await
+        .expect("service responds");
+
+    assert_eq!(response.payload.as_ref(), b"hello");
+}
+
+#[tokio::test]
+async fn service_runtime_returns_service_error_headers() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.fail");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            NatsServiceResponse::transport_error(NatsServiceHandlerError::conflict(
+                "already exists",
+            ))
+        })
+        .await
+        .expect("endpoint binds");
+
+    let response = client
+        .request("plz.v1.svc.test.fail", Vec::new().into())
+        .await
+        .expect("service responds");
+    let headers = response.headers.expect("error response carries headers");
+
+    assert_eq!(
+        headers
+            .get("Nats-Service-Error")
+            .map(|value| value.as_str()),
+        Some("already exists")
+    );
+    assert_eq!(
+        headers
+            .get("Nats-Service-Error-Code")
+            .map(|value| value.as_str()),
+        Some("409")
+    );
+    assert_eq!(
+        NatsServiceHandlerErrorCode::Conflict.http_status_code(),
+        409
+    );
+}
+
+#[tokio::test]
+async fn service_runtime_counts_domain_error_payloads_without_service_error_headers() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.domain_error");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            NatsServiceResponse::domain_error(br#"{"status":"domain_error"}"#.to_vec())
+        })
+        .await
+        .expect("endpoint binds");
+
+    let response = client
+        .request("plz.v1.svc.test.domain_error", Vec::new().into())
+        .await
+        .expect("service responds");
+
+    assert!(response.headers.is_none());
+    assert_eq!(response.payload.as_ref(), br#"{"status":"domain_error"}"#);
+    assert_eq!(runtime.health().domain_failures, 1);
+}
+
+#[tokio::test]
+async fn service_runtime_times_out_slow_handler_and_records_health() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.timeout");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    let Some(max_concurrent_requests) = NonZeroUsize::new(1) else {
+        unreachable!("test concurrency is non-zero");
+    };
+
+    runtime
+        .bind_endpoint_with_policy(
+            endpoint,
+            EndpointExecutionPolicy::new(max_concurrent_requests, Duration::from_millis(10)),
+            |_request| async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                NatsServiceResponse::ok(Vec::new())
+            },
+        )
+        .await
+        .expect("endpoint binds");
+
+    let response = client
+        .request("plz.v1.svc.test.timeout", Vec::new().into())
+        .await
+        .expect("service responds");
+    let headers = response.headers.expect("timeout response carries headers");
+
+    assert_eq!(
+        headers
+            .get("Nats-Service-Error-Code")
+            .map(|value| value.as_str()),
+        Some("504")
+    );
+    assert_eq!(runtime.health().request_timeouts, 1);
+}
+
+#[tokio::test]
+async fn service_runtime_shutdown_waits_for_in_flight_request() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.shutdown");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    let (started_tx, started_rx) = oneshot::channel::<()>();
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+
+    let started_tx = std::sync::Mutex::new(Some(started_tx));
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+    runtime
+        .bind_endpoint(endpoint, move |_request| {
+            let started_tx = started_tx.lock().expect("started signal lock").take();
+            let release_rx = release_rx.lock().expect("release signal lock").take();
+            async move {
+                if let Some(started_tx) = started_tx {
+                    let _ = started_tx.send(());
+                }
+                if let Some(release_rx) = release_rx {
+                    let _ = release_rx.await;
+                }
+                NatsServiceResponse::ok("done")
+            }
+        })
+        .await
+        .expect("endpoint binds");
+
+    let request = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .request("plz.v1.svc.test.shutdown", Vec::new().into())
+                .await
+                .expect("service responds")
+        }
+    });
+    started_rx.await.expect("handler starts");
+    let shutdown = tokio::spawn(async move { runtime.shutdown().await });
+
+    release_tx.send(()).expect("handler release sends");
+    let response = request.await.expect("request task joins");
+    shutdown
+        .await
+        .expect("shutdown task joins")
+        .expect("runtime shuts down");
+
+    assert_eq!(response.payload.as_ref(), b"done");
+}
+
+fn test_service_spec(subject: &str) -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        "plz-api.test",
+        "plz-api",
+        ServiceVersion::new(0, 1, 0),
+        "test service",
+        ServiceMetadata::empty(),
+        vec![NatsServiceEndpointSpec::new(
+            "test.endpoint",
+            subject,
+            EndpointExecution::Query,
+        )],
+    )
+}

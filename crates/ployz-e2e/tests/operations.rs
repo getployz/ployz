@@ -8,28 +8,39 @@ use ployz_core::ops::{
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus,
 };
+use ployz_core::subjects::API_DEPLOY_SUBMIT;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, KV_OPS_BUCKET, PLZ_OPS_STREAM,
 };
+use ployz_sdk_types::{
+    DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse, OperationDispatch,
+};
+use ployzd::controllers::OperationControllers;
 
 mod support;
 
 use support::nats::TestNats;
 
 #[tokio::test]
-async fn e2e_operation_submit_and_transition_over_real_nats()
+async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sync>> {
+    e2e_repository_submit_and_transition_over_real_nats().await?;
+    e2e_deploy_submit_service_accepts_operation_over_real_nats().await?;
+
+    Ok(())
+}
+
+async fn e2e_repository_submit_and_transition_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_jetstream().await?;
     let client = async_nats::connect(nats.url()).await?;
     let jetstream = jetstream::new(client);
     bootstrap_operation_resources(&jetstream).await?;
-    let repository = AsyncNatsOperationRepository::new(
-        AsyncNatsOperationEventLog::new(jetstream.clone()),
-        AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
-            .await
-            .expect("open operation status store"),
-    );
+    let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
+    let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
+        .await
+        .expect("open operation status store");
+    let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
 
     let accepted = repository
         .submit_deploy(DeployOperationSubmission {
@@ -80,6 +91,61 @@ async fn e2e_operation_submit_and_transition_over_real_nats()
             .await
             .cursor,
         OperationEventReplayCursor::CaughtUp
+    );
+
+    Ok(())
+}
+
+async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let nats = TestNats::start_jetstream().await?;
+    let client = async_nats::connect(nats.url()).await?;
+    let jetstream = jetstream::new(client.clone());
+    bootstrap_operation_resources(&jetstream).await?;
+    let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
+    let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
+        .await
+        .expect("open operation status store");
+    let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
+    let controllers = OperationControllers::new(event_log, status_store);
+    let _runtime = ployzd::api_runtime::start_deploy_submit_service(client.clone(), controllers)
+        .await
+        .expect("api service starts");
+    let request = DeploySubmitRequest {
+        operation_id: operation_id("op_api_123"),
+        service_id: service_id("svc_api"),
+        idempotency_key: idempotency_key("idem_api_1"),
+    };
+
+    let response = client
+        .request(API_DEPLOY_SUBMIT, serde_json::to_vec(&request)?.into())
+        .await?;
+    let accepted = match serde_json::from_slice::<DeploySubmitResponse>(&response.payload)? {
+        OperationApiResponse::Ok { value } => value,
+        OperationApiResponse::DomainError { error } => {
+            panic!("deploy submit failed: {error:?}");
+        }
+    };
+
+    assert_eq!(accepted.operation_id, operation_id("op_api_123"));
+    assert_eq!(
+        accepted.dispatch,
+        OperationDispatch::Queued {
+            watch_subject: "plz.v1.op.op_api_123.>".to_owned(),
+            start_sequence: event_sequence(1),
+        }
+    );
+    assert_eq!(
+        repository
+            .operation_status(&operation_id("op_api_123"))
+            .await
+            .expect("operation status lookup succeeds"),
+        Some(OperationStatus::Deploy {
+            id: operation_id("op_api_123"),
+            service_id: service_id("svc_api"),
+            state: DeployOperationState::Accepted,
+            last_event_sequence: event_sequence(1),
+        })
     );
 
     Ok(())

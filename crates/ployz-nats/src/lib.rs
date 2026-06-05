@@ -17,5 +17,6 @@ pub mod operations;
 pub mod permissions;
 pub mod replication;
 pub mod schedules;
+pub mod service_runtime;
 pub mod services;
 pub mod streams;

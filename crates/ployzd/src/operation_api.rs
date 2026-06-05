@@ -2,81 +2,40 @@
 
 use crate::controllers::{DeploySubmitCommand, OperationControllers};
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{EventSequence, OperationEventReplayPage, OperationEventReplayRequest};
+use ployz_core::ops::{OperationEventReplayPage, OperationEventReplayRequest};
 use ployz_core::subjects::op_watch;
 use ployz_nats::operations::{
     OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
     SubmitDeployError as SubmitDeployRepositoryError,
 };
+use ployz_sdk_types::{
+    AcceptedOperation, DeploySubmitError, DeploySubmitEventLogFailure, DeploySubmitRequest,
+    DeploySubmitStatusStoreFailure, DeploySubmitUnavailableSource, OperationDispatch,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedOperation {
-    pub operation_id: OperationId,
-    pub dispatch: OperationDispatch,
-}
-
-impl AcceptedOperation {
-    #[must_use]
-    pub fn queued(operation_id: OperationId, start_sequence: EventSequence) -> Self {
-        let watch_subject = op_watch(&operation_id);
-        Self {
-            operation_id,
-            dispatch: OperationDispatch::Queued {
-                watch_subject,
-                start_sequence,
-            },
-        }
+#[must_use]
+pub fn queued_operation(
+    operation_id: OperationId,
+    start_sequence: ployz_core::ops::EventSequence,
+) -> AcceptedOperation {
+    let watch_subject = op_watch(&operation_id);
+    AcceptedOperation {
+        operation_id,
+        dispatch: OperationDispatch::Queued {
+            watch_subject,
+            start_sequence,
+        },
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationDispatch {
-    Queued {
-        watch_subject: String,
-        start_sequence: EventSequence,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeploySubmitError {
-    Unavailable {
-        operation_id: OperationId,
-        source: DeploySubmitUnavailableSource,
-    },
-    DuplicateSequenceMismatch {
-        operation_id: OperationId,
-        sequence: EventSequence,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeploySubmitUnavailableSource {
-    StatusStore(DeploySubmitStatusStoreFailure),
-    EventLog(DeploySubmitEventLogFailure),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeploySubmitStatusStoreFailure {
-    OpenBucket,
-    EncodeStatus,
-    DecodeStatus,
-    EncodeSubmission,
-    DecodeSubmission,
-    CasConflict,
-    GetStatus,
-    Timeout,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeploySubmitEventLogFailure {
-    EncodeEvent,
-    DecodeEvent,
-    PublishRequest,
-    PublishAck,
-    ReadEvent,
-    Timeout,
-    InvalidAckSequence,
-    InvalidNextReplaySequence,
+impl From<DeploySubmitRequest> for DeploySubmitCommand {
+    fn from(value: DeploySubmitRequest) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            idempotency_key: value.idempotency_key,
+            service_id: value.service_id,
+        }
+    }
 }
 
 pub async fn deploy_submit(
@@ -87,31 +46,31 @@ pub async fn deploy_submit(
     controllers
         .submit_deploy(command)
         .await
-        .map(|accepted| AcceptedOperation::queued(accepted.operation_id, accepted.start_sequence))
-        .map_err(|error| DeploySubmitError::from_submit_error(operation_id, error))
+        .map(|accepted| queued_operation(accepted.operation_id, accepted.start_sequence))
+        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))
 }
 
-impl DeploySubmitError {
-    #[must_use]
-    fn from_submit_error(operation_id: OperationId, error: SubmitDeployRepositoryError) -> Self {
-        match error {
-            SubmitDeployRepositoryError::AppendEvent(source) => Self::Unavailable {
-                operation_id,
-                source: DeploySubmitUnavailableSource::EventLog(deploy_submit_event_log_failure(
-                    &source,
-                )),
+fn deploy_submit_error_from_submit_error(
+    operation_id: OperationId,
+    error: SubmitDeployRepositoryError,
+) -> DeploySubmitError {
+    match error {
+        SubmitDeployRepositoryError::AppendEvent(source) => DeploySubmitError::Unavailable {
+            operation_id,
+            source: DeploySubmitUnavailableSource::EventLog {
+                failure: deploy_submit_event_log_failure(&source),
             },
-            SubmitDeployRepositoryError::StoreStatus(source) => Self::Unavailable {
-                operation_id,
-                source: DeploySubmitUnavailableSource::StatusStore(
-                    deploy_submit_status_store_failure(&source),
-                ),
+        },
+        SubmitDeployRepositoryError::StoreStatus(source) => DeploySubmitError::Unavailable {
+            operation_id,
+            source: DeploySubmitUnavailableSource::StatusStore {
+                failure: deploy_submit_status_store_failure(&source),
             },
-            SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
-                Self::DuplicateSequenceMismatch {
-                    operation_id,
-                    sequence,
-                }
+        },
+        SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
+            DeploySubmitError::DuplicateSequenceMismatch {
+                operation_id,
+                sequence,
             }
         }
     }
@@ -279,9 +238,8 @@ fn ops_watch_event_log_failure(error: &OperationEventLogError) -> OpsWatchEventL
 #[cfg(test)]
 mod tests {
     use super::{
-        DeploySubmitError, DeploySubmitEventLogFailure, DeploySubmitStatusStoreFailure,
-        DeploySubmitUnavailableSource, OpsWatchError, OpsWatchEventLogFailure,
-        OpsWatchStatusStoreFailure, OpsWatchUnavailableSource,
+        OpsWatchError, OpsWatchEventLogFailure, OpsWatchStatusStoreFailure,
+        OpsWatchUnavailableSource, deploy_submit_error_from_submit_error,
     };
     use ployz_core::ids::OperationId;
     use ployz_core::ops::EventSequence;
@@ -289,13 +247,17 @@ mod tests {
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitDeployError as SubmitDeployRepositoryError,
     };
+    use ployz_sdk_types::{
+        DeploySubmitError, DeploySubmitEventLogFailure, DeploySubmitStatusStoreFailure,
+        DeploySubmitUnavailableSource,
+    };
 
     #[test]
     fn deploy_submit_maps_status_store_failure_to_api_error() {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
-            DeploySubmitError::from_submit_error(
+            deploy_submit_error_from_submit_error(
                 operation_id.clone(),
                 SubmitDeployRepositoryError::StoreStatus(OperationStatusStoreError::CasConflict {
                     message: "contended".to_owned(),
@@ -303,9 +265,9 @@ mod tests {
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                source: DeploySubmitUnavailableSource::StatusStore(
-                    DeploySubmitStatusStoreFailure::CasConflict,
-                ),
+                source: DeploySubmitUnavailableSource::StatusStore {
+                    failure: DeploySubmitStatusStoreFailure::CasConflict,
+                },
             }
         );
     }
@@ -315,7 +277,7 @@ mod tests {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
-            DeploySubmitError::from_submit_error(
+            deploy_submit_error_from_submit_error(
                 operation_id.clone(),
                 SubmitDeployRepositoryError::AppendEvent(OperationEventLogError::PublishRequest {
                     message: "publish unavailable".to_owned(),
@@ -323,9 +285,9 @@ mod tests {
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                source: DeploySubmitUnavailableSource::EventLog(
-                    DeploySubmitEventLogFailure::PublishRequest,
-                ),
+                source: DeploySubmitUnavailableSource::EventLog {
+                    failure: DeploySubmitEventLogFailure::PublishRequest,
+                },
             }
         );
     }
@@ -335,7 +297,7 @@ mod tests {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
-            DeploySubmitError::from_submit_error(
+            deploy_submit_error_from_submit_error(
                 operation_id.clone(),
                 SubmitDeployRepositoryError::DuplicateSequenceMismatch {
                     sequence: event_sequence(9),
