@@ -10,9 +10,9 @@ use ployzd::operation_api::{ops_status_missing, queued_operation};
 use ployzd::services::{DaemonServiceCatalog, NodeServiceCallError, node_endpoint_subject};
 
 #[test]
-fn service_catalog_supports_srv_ping_discovery() {
+fn control_catalog_supports_srv_ping_discovery() {
     let node_id = node_id("node_7");
-    let catalog = DaemonServiceCatalog::for_node(&node_id);
+    let catalog = DaemonServiceCatalog::for_control();
 
     assert_eq!(ServiceDiscoveryQuery::All.subject(), "$SRV.PING");
     assert_eq!(
@@ -22,27 +22,46 @@ fn service_catalog_supports_srv_ping_discovery() {
 
     let pings = catalog.discover(ServiceDiscoveryQuery::All);
 
-    assert_eq!(pings.len(), 2);
+    assert_eq!(pings.len(), 1);
     assert!(
         pings
             .iter()
             .any(|ping| ping.name == "plz-api" && ping.id == "plz-api.core")
     );
-    assert!(pings.iter().any(|ping| {
-        ping.name == "plz-node"
-            && ping.id == "plz-node.node_7"
-            && ping.metadata.get("node_id") == Some("node_7")
-    }));
     assert!(catalog.has_endpoint_subject(API_OPS_STATUS));
     assert!(catalog.has_endpoint_subject(API_OPS_WATCH));
     assert!(!catalog.has_endpoint_subject(API_DEPLOY_PLAN));
     assert!(!catalog.has_endpoint_subject(API_MACHINE_ADD));
-    assert!(catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
+    assert!(!catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
+
+    let node_catalog = DaemonServiceCatalog::for_node(&node_id);
+    assert!(node_catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
+    assert!(!node_catalog.has_endpoint_subject(API_OPS_STATUS));
+}
+
+#[test]
+fn service_catalogs_keep_control_and_node_surfaces_separate() {
+    let node_id = node_id("node_7");
+
+    let control = DaemonServiceCatalog::for_control();
+    let node = DaemonServiceCatalog::for_node(&node_id);
+
+    assert_eq!(service_names(&control), vec!["plz-api"]);
+    assert_eq!(service_names(&node), vec!["plz-node"]);
+
+    let pings = node.discover(ServiceDiscoveryQuery::All);
+    assert!(pings.iter().any(|ping| {
+        ping.name == "plz-node"
+            && ping.id == "plz-node.node_7"
+            && ping.metadata.get("node_id") == Some(node_id.as_str())
+    }));
+    assert!(!node.has_endpoint_subject(API_OPS_STATUS));
+    assert!(node.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
 }
 
 #[test]
 fn api_service_marks_mutations_as_operation_acceptors() {
-    let catalog = DaemonServiceCatalog::for_node(&node_id("node_7"));
+    let catalog = DaemonServiceCatalog::for_control();
     let api = catalog
         .services()
         .iter()
@@ -59,7 +78,7 @@ fn api_service_marks_mutations_as_operation_acceptors() {
 
 #[test]
 fn ops_watch_is_a_query_endpoint() {
-    let catalog = DaemonServiceCatalog::for_node(&node_id("node_7"));
+    let catalog = DaemonServiceCatalog::for_control();
     let api = catalog
         .services()
         .iter()
@@ -76,7 +95,7 @@ fn ops_watch_is_a_query_endpoint() {
 
 #[test]
 fn ops_status_is_a_query_endpoint() {
-    let catalog = DaemonServiceCatalog::for_node(&node_id("node_7"));
+    let catalog = DaemonServiceCatalog::for_control();
     let api = catalog
         .services()
         .iter()
@@ -141,4 +160,12 @@ fn node_id(value: &str) -> NodeId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn service_names(catalog: &DaemonServiceCatalog) -> Vec<&str> {
+    catalog
+        .services()
+        .iter()
+        .map(|service| service.name)
+        .collect()
 }

@@ -24,9 +24,16 @@ pub struct DaemonServiceCatalog {
 
 impl DaemonServiceCatalog {
     #[must_use]
+    pub fn for_control() -> Self {
+        Self {
+            services: vec![api_service()],
+        }
+    }
+
+    #[must_use]
     pub fn for_node(node_id: &NodeId) -> Self {
         Self {
-            services: vec![api_service(), node_runtime_service(node_id)],
+            services: vec![node_runtime_service(node_id)],
         }
     }
 
