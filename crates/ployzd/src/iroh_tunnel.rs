@@ -6,6 +6,8 @@ use ployz_nats::connect::NatsClientEndpoint;
 use ployz_transport::iroh_endpoint::IrohEndpoint;
 use ployz_transport::nats_tunnel::{CoreNatsTunnelConfig, EdgeNatsTunnelConfig, NatsTunnelConfig};
 
+use crate::role::TunnelSide;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedTunnelService {
     pub service_name: String,
@@ -45,6 +47,14 @@ impl PreparedTunnelService {
     #[must_use]
     pub fn local_client_endpoint(&self) -> NatsClientEndpoint {
         NatsClientEndpoint::from_socket(self.tunnel.local_socket())
+    }
+
+    #[must_use]
+    pub const fn side(&self) -> TunnelSide {
+        match &self.tunnel {
+            NatsTunnelConfig::Core(_) => TunnelSide::Core,
+            NatsTunnelConfig::Edge(_) => TunnelSide::Edge,
+        }
     }
 }
 
