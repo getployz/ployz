@@ -2,15 +2,18 @@
 
 use crate::controllers::{DeploySubmitCommand, OperationControllers};
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{OperationEventReplayPage, OperationEventReplayRequest};
+use ployz_core::ops::{OperationEventReplayPage, OperationEventReplayRequest, OperationStatus};
 use ployz_core::subjects::op_watch;
 use ployz_nats::operations::{
-    OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
+    OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
+    OperationStatusStoreError, ReplayOperationEventsError,
     SubmitDeployError as SubmitDeployRepositoryError,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitEventLogFailure, DeploySubmitRequest,
-    DeploySubmitStatusStoreFailure, DeploySubmitUnavailableSource, OperationDispatch,
+    AcceptedOperation, DeploySubmitError, DeploySubmitEventFailure, DeploySubmitRequest,
+    DeploySubmitStatusFailure, DeploySubmitUnavailableSource, EventReplayFailure,
+    OperationDispatch, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
+    OpsWatchUnavailableSource, StatusReadFailure,
 };
 
 #[must_use]
@@ -58,13 +61,13 @@ fn deploy_submit_error_from_submit_error(
         SubmitDeployRepositoryError::AppendEvent(source) => DeploySubmitError::Unavailable {
             operation_id,
             source: DeploySubmitUnavailableSource::EventLog {
-                failure: deploy_submit_event_log_failure(&source),
+                failure: deploy_submit_event_failure(&source),
             },
         },
         SubmitDeployRepositoryError::StoreStatus(source) => DeploySubmitError::Unavailable {
             operation_id,
             source: DeploySubmitUnavailableSource::StatusStore {
-                failure: deploy_submit_status_store_failure(&source),
+                failure: deploy_submit_status_failure(&source),
             },
         },
         SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
@@ -76,11 +79,6 @@ fn deploy_submit_error_from_submit_error(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpsStatusError {
-    NoSuchOperation { operation_id: OperationId },
-}
-
 #[must_use]
 pub fn ops_status_missing(operation_id: &OperationId) -> OpsStatusError {
     OpsStatusError::NoSuchOperation {
@@ -88,65 +86,42 @@ pub fn ops_status_missing(operation_id: &OperationId) -> OpsStatusError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpsWatchError {
-    NoSuchOperation {
-        operation_id: OperationId,
-    },
-    Unavailable {
-        operation_id: OperationId,
-        source: OpsWatchUnavailableSource,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpsWatchUnavailableSource {
-    StatusStore(OpsWatchStatusStoreFailure),
-    EventLog(OpsWatchEventLogFailure),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpsWatchStatusStoreFailure {
-    OpenBucket,
-    EncodeStatus,
-    DecodeStatus,
-    EncodeSubmission,
-    DecodeSubmission,
-    CasConflict,
-    GetStatus,
-    Timeout,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpsWatchEventLogFailure {
-    EncodeEvent,
-    DecodeEvent,
-    PublishRequest,
-    PublishAck,
-    ReadEvent,
-    Timeout,
-    InvalidAckSequence,
-    InvalidNextReplaySequence,
-}
-
-impl OpsWatchError {
-    #[must_use]
-    fn from_replay_error(operation_id: OperationId, error: ReplayOperationEventsError) -> Self {
-        match error {
-            ReplayOperationEventsError::MissingOperation { operation_id } => {
-                Self::NoSuchOperation { operation_id }
-            }
-            ReplayOperationEventsError::LoadStatus(source) => Self::Unavailable {
-                operation_id,
-                source: OpsWatchUnavailableSource::StatusStore(ops_watch_status_store_failure(
-                    &source,
-                )),
+pub async fn ops_status(
+    controllers: &OperationControllers,
+    operation_id: OperationId,
+) -> Result<OperationStatus, OpsStatusError> {
+    match controllers.operation_status(&operation_id).await {
+        Ok(Some(status)) => Ok(status),
+        Ok(None) => Err(ops_status_missing(&operation_id)),
+        Err(error) => Err(OpsStatusError::Unavailable {
+            operation_id,
+            source: OpsStatusUnavailableSource::StatusStore {
+                failure: status_read_failure(&error),
             },
-            ReplayOperationEventsError::ReadEvents(source) => Self::Unavailable {
-                operation_id,
-                source: OpsWatchUnavailableSource::EventLog(ops_watch_event_log_failure(&source)),
-            },
+        }),
+    }
+}
+
+fn ops_watch_error_from_replay_error(
+    operation_id: OperationId,
+    error: ReplayOperationEventsError,
+) -> OpsWatchError {
+    match error {
+        ReplayOperationEventsError::MissingOperation { operation_id } => {
+            OpsWatchError::NoSuchOperation { operation_id }
         }
+        ReplayOperationEventsError::LoadStatus(source) => OpsWatchError::Unavailable {
+            operation_id,
+            source: OpsWatchUnavailableSource::StatusStore {
+                failure: status_read_failure(&source),
+            },
+        },
+        ReplayOperationEventsError::ReadEvents(source) => OpsWatchError::Unavailable {
+            operation_id,
+            source: OpsWatchUnavailableSource::EventLog {
+                failure: event_replay_failure(&source),
+            },
+        },
     }
 }
 
@@ -158,79 +133,58 @@ pub async fn ops_watch(
     controllers
         .replay_operation_events(request)
         .await
-        .map_err(|error| OpsWatchError::from_replay_error(operation_id, error))
+        .map_err(|error| ops_watch_error_from_replay_error(operation_id, error))
 }
 
-fn deploy_submit_status_store_failure(
-    error: &OperationStatusStoreError,
-) -> DeploySubmitStatusStoreFailure {
+fn deploy_submit_status_failure(error: &OperationStatusStoreError) -> DeploySubmitStatusFailure {
     match error {
-        OperationStatusStoreError::OpenBucket { .. } => DeploySubmitStatusStoreFailure::OpenBucket,
-        OperationStatusStoreError::EncodeStatus(_) => DeploySubmitStatusStoreFailure::EncodeStatus,
-        OperationStatusStoreError::DecodeStatus(_) => DeploySubmitStatusStoreFailure::DecodeStatus,
+        OperationStatusStoreError::OpenBucket { .. } => DeploySubmitStatusFailure::OpenBucket,
+        OperationStatusStoreError::EncodeStatus(_) => DeploySubmitStatusFailure::EncodeStatus,
+        OperationStatusStoreError::DecodeStatus(_) => DeploySubmitStatusFailure::DecodeStatus,
         OperationStatusStoreError::EncodeSubmission(_) => {
-            DeploySubmitStatusStoreFailure::EncodeSubmission
+            DeploySubmitStatusFailure::EncodeSubmission
         }
         OperationStatusStoreError::DecodeSubmission(_) => {
-            DeploySubmitStatusStoreFailure::DecodeSubmission
+            DeploySubmitStatusFailure::DecodeSubmission
         }
-        OperationStatusStoreError::CasConflict { .. } => {
-            DeploySubmitStatusStoreFailure::CasConflict
-        }
-        OperationStatusStoreError::GetStatus { .. } => DeploySubmitStatusStoreFailure::GetStatus,
-        OperationStatusStoreError::Timeout { .. } => DeploySubmitStatusStoreFailure::Timeout,
+        OperationStatusStoreError::CasConflict { .. } => DeploySubmitStatusFailure::CasConflict,
+        OperationStatusStoreError::GetStatus { .. } => DeploySubmitStatusFailure::GetStatus,
+        OperationStatusStoreError::Timeout { .. } => DeploySubmitStatusFailure::Timeout,
     }
 }
 
-fn deploy_submit_event_log_failure(error: &OperationEventLogError) -> DeploySubmitEventLogFailure {
+fn deploy_submit_event_failure(error: &OperationEventLogError) -> DeploySubmitEventFailure {
     match error {
-        OperationEventLogError::EncodeEvent(_) => DeploySubmitEventLogFailure::EncodeEvent,
-        OperationEventLogError::DecodeEvent(_) => DeploySubmitEventLogFailure::DecodeEvent,
-        OperationEventLogError::PublishRequest { .. } => {
-            DeploySubmitEventLogFailure::PublishRequest
-        }
-        OperationEventLogError::PublishAck { .. } => DeploySubmitEventLogFailure::PublishAck,
-        OperationEventLogError::ReadEvent { .. } => DeploySubmitEventLogFailure::ReadEvent,
-        OperationEventLogError::Timeout { .. } => DeploySubmitEventLogFailure::Timeout,
+        OperationEventLogError::EncodeEvent(_) => DeploySubmitEventFailure::EncodeEvent,
+        OperationEventLogError::DecodeEvent(_) => DeploySubmitEventFailure::DecodeEvent,
+        OperationEventLogError::PublishRequest { .. } => DeploySubmitEventFailure::PublishRequest,
+        OperationEventLogError::PublishAck { .. } => DeploySubmitEventFailure::PublishAck,
+        OperationEventLogError::ReadEvent { .. } => DeploySubmitEventFailure::ReadEvent,
+        OperationEventLogError::Timeout { .. } => DeploySubmitEventFailure::Timeout,
         OperationEventLogError::InvalidAckSequence { .. } => {
-            DeploySubmitEventLogFailure::InvalidAckSequence
-        }
-        OperationEventLogError::InvalidNextReplaySequence { .. } => {
-            DeploySubmitEventLogFailure::InvalidNextReplaySequence
+            DeploySubmitEventFailure::InvalidAckSequence
         }
     }
 }
 
-fn ops_watch_status_store_failure(error: &OperationStatusStoreError) -> OpsWatchStatusStoreFailure {
+fn status_read_failure(error: &OperationStatusReadError) -> StatusReadFailure {
     match error {
-        OperationStatusStoreError::OpenBucket { .. } => OpsWatchStatusStoreFailure::OpenBucket,
-        OperationStatusStoreError::EncodeStatus(_) => OpsWatchStatusStoreFailure::EncodeStatus,
-        OperationStatusStoreError::DecodeStatus(_) => OpsWatchStatusStoreFailure::DecodeStatus,
-        OperationStatusStoreError::EncodeSubmission(_) => {
-            OpsWatchStatusStoreFailure::EncodeSubmission
-        }
-        OperationStatusStoreError::DecodeSubmission(_) => {
-            OpsWatchStatusStoreFailure::DecodeSubmission
-        }
-        OperationStatusStoreError::CasConflict { .. } => OpsWatchStatusStoreFailure::CasConflict,
-        OperationStatusStoreError::GetStatus { .. } => OpsWatchStatusStoreFailure::GetStatus,
-        OperationStatusStoreError::Timeout { .. } => OpsWatchStatusStoreFailure::Timeout,
+        OperationStatusReadError::DecodeStatus(_) => StatusReadFailure::DecodeStatus,
+        OperationStatusReadError::GetStatus { .. } => StatusReadFailure::GetStatus,
+        OperationStatusReadError::Timeout { .. } => StatusReadFailure::Timeout,
     }
 }
 
-fn ops_watch_event_log_failure(error: &OperationEventLogError) -> OpsWatchEventLogFailure {
+fn event_replay_failure(error: &OperationEventReplayReadError) -> EventReplayFailure {
     match error {
-        OperationEventLogError::EncodeEvent(_) => OpsWatchEventLogFailure::EncodeEvent,
-        OperationEventLogError::DecodeEvent(_) => OpsWatchEventLogFailure::DecodeEvent,
-        OperationEventLogError::PublishRequest { .. } => OpsWatchEventLogFailure::PublishRequest,
-        OperationEventLogError::PublishAck { .. } => OpsWatchEventLogFailure::PublishAck,
-        OperationEventLogError::ReadEvent { .. } => OpsWatchEventLogFailure::ReadEvent,
-        OperationEventLogError::Timeout { .. } => OpsWatchEventLogFailure::Timeout,
-        OperationEventLogError::InvalidAckSequence { .. } => {
-            OpsWatchEventLogFailure::InvalidAckSequence
+        OperationEventReplayReadError::DecodeEvent(_) => EventReplayFailure::DecodeEvent,
+        OperationEventReplayReadError::ReadEvent { .. } => EventReplayFailure::ReadEvent,
+        OperationEventReplayReadError::Timeout { .. } => EventReplayFailure::Timeout,
+        OperationEventReplayReadError::InvalidEventSequence { .. } => {
+            EventReplayFailure::InvalidEventSequence
         }
-        OperationEventLogError::InvalidNextReplaySequence { .. } => {
-            OpsWatchEventLogFailure::InvalidNextReplaySequence
+        OperationEventReplayReadError::InvalidNextReplaySequence { .. } => {
+            EventReplayFailure::InvalidNextReplaySequence
         }
     }
 }
@@ -238,18 +192,20 @@ fn ops_watch_event_log_failure(error: &OperationEventLogError) -> OpsWatchEventL
 #[cfg(test)]
 mod tests {
     use super::{
-        OpsWatchError, OpsWatchEventLogFailure, OpsWatchStatusStoreFailure,
-        OpsWatchUnavailableSource, deploy_submit_error_from_submit_error,
+        deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error,
+        status_read_failure,
     };
     use ployz_core::ids::OperationId;
     use ployz_core::ops::EventSequence;
     use ployz_nats::operations::{
-        OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
+        OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
+        OperationStatusStoreError, ReplayOperationEventsError,
         SubmitDeployError as SubmitDeployRepositoryError,
     };
     use ployz_sdk_types::{
-        DeploySubmitError, DeploySubmitEventLogFailure, DeploySubmitStatusStoreFailure,
-        DeploySubmitUnavailableSource,
+        DeploySubmitError, DeploySubmitEventFailure, DeploySubmitStatusFailure,
+        DeploySubmitUnavailableSource, EventReplayFailure, OpsWatchError,
+        OpsWatchUnavailableSource, StatusReadFailure,
     };
 
     #[test]
@@ -266,7 +222,7 @@ mod tests {
             DeploySubmitError::Unavailable {
                 operation_id,
                 source: DeploySubmitUnavailableSource::StatusStore {
-                    failure: DeploySubmitStatusStoreFailure::CasConflict,
+                    failure: DeploySubmitStatusFailure::CasConflict,
                 },
             }
         );
@@ -286,7 +242,7 @@ mod tests {
             DeploySubmitError::Unavailable {
                 operation_id,
                 source: DeploySubmitUnavailableSource::EventLog {
-                    failure: DeploySubmitEventLogFailure::PublishRequest,
+                    failure: DeploySubmitEventFailure::PublishRequest,
                 },
             }
         );
@@ -315,7 +271,7 @@ mod tests {
         let operation_id = operation_id("op_missing");
 
         assert_eq!(
-            OpsWatchError::from_replay_error(
+            ops_watch_error_from_replay_error(
                 operation_id.clone(),
                 ReplayOperationEventsError::MissingOperation {
                     operation_id: operation_id.clone(),
@@ -330,17 +286,17 @@ mod tests {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
-            OpsWatchError::from_replay_error(
+            ops_watch_error_from_replay_error(
                 operation_id.clone(),
-                ReplayOperationEventsError::LoadStatus(OperationStatusStoreError::GetStatus {
+                ReplayOperationEventsError::LoadStatus(OperationStatusReadError::GetStatus {
                     message: "kv unavailable".to_owned(),
                 }),
             ),
             OpsWatchError::Unavailable {
                 operation_id,
-                source: OpsWatchUnavailableSource::StatusStore(
-                    OpsWatchStatusStoreFailure::GetStatus,
-                ),
+                source: OpsWatchUnavailableSource::StatusStore {
+                    failure: StatusReadFailure::GetStatus,
+                },
             }
         );
     }
@@ -350,16 +306,26 @@ mod tests {
         let operation_id = operation_id("op_123");
 
         assert_eq!(
-            OpsWatchError::from_replay_error(
+            ops_watch_error_from_replay_error(
                 operation_id.clone(),
-                ReplayOperationEventsError::ReadEvents(OperationEventLogError::ReadEvent {
+                ReplayOperationEventsError::ReadEvents(OperationEventReplayReadError::ReadEvent {
                     message: "stream unavailable".to_owned(),
                 }),
             ),
             OpsWatchError::Unavailable {
                 operation_id,
-                source: OpsWatchUnavailableSource::EventLog(OpsWatchEventLogFailure::ReadEvent),
+                source: OpsWatchUnavailableSource::EventLog {
+                    failure: EventReplayFailure::ReadEvent,
+                },
             }
+        );
+    }
+
+    #[test]
+    fn ops_status_preserves_status_store_failure_context() {
+        assert_eq!(
+            status_read_failure(&OperationStatusReadError::Timeout { operation: "test" }),
+            StatusReadFailure::Timeout
         );
     }
 

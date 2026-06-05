@@ -7,7 +7,8 @@ mod repository;
 mod status_store;
 
 pub use events::{
-    AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError, StoredOperationEvent,
+    AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError,
+    OperationEventReplayReadError, StoredOperationEvent,
 };
 pub use keys::{deploy_submission_key, operation_status_key};
 pub use ployz_core::ops::{
@@ -19,8 +20,8 @@ pub use repository::{
     RecordDeployTransitionError, ReplayOperationEventsError, SubmitDeployError,
 };
 pub use status_store::{
-    AsyncNatsOperationStatusStore, KvRevision, OperationStatusStoreError, OperationStatusWrite,
-    StoredDeploySubmission,
+    AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
+    OperationStatusWrite, StoredDeploySubmission,
 };
 
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";

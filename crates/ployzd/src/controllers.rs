@@ -7,7 +7,7 @@ use ployz_core::ops::{
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, OperationStatusStoreError, OperationStatusWrite,
+    DeployOperationSubmission, OperationStatusReadError, OperationStatusWrite,
     RecordDeployEvidenceError, RecordDeployTransitionError, ReplayOperationEventsError,
     StoredDeploySubmission, StoredOperationEvent, SubmitDeployError,
 };
@@ -74,7 +74,7 @@ impl OperationControllers {
     pub async fn operation_status(
         &self,
         operation_id: &OperationId,
-    ) -> Result<Option<OperationStatus>, OperationStatusStoreError> {
+    ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
         self.repository.operation_status(operation_id).await
     }
 

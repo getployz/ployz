@@ -1,9 +1,12 @@
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::EventSequence;
-use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, NodeServiceEndpoint};
+use ployz_core::subjects::{
+    API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_OPS_STATUS, API_OPS_WATCH,
+    NodeServiceEndpoint,
+};
 use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
-use ployz_sdk_types::OperationDispatch;
-use ployzd::operation_api::{OpsStatusError, ops_status_missing, queued_operation};
+use ployz_sdk_types::{OperationDispatch, OpsStatusError};
+use ployzd::operation_api::{ops_status_missing, queued_operation};
 use ployzd::services::{DaemonServiceCatalog, NodeServiceCallError, node_endpoint_subject};
 
 #[test]
@@ -32,6 +35,8 @@ fn service_catalog_supports_srv_ping_discovery() {
     }));
     assert!(catalog.has_endpoint_subject(API_OPS_STATUS));
     assert!(catalog.has_endpoint_subject(API_OPS_WATCH));
+    assert!(!catalog.has_endpoint_subject(API_DEPLOY_PLAN));
+    assert!(!catalog.has_endpoint_subject(API_MACHINE_ADD));
     assert!(catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
 }
 
@@ -67,6 +72,23 @@ fn ops_watch_is_a_query_endpoint() {
         .expect("ops.watch endpoint is registered");
 
     assert_eq!(ops_watch.execution, EndpointExecution::Query);
+}
+
+#[test]
+fn ops_status_is_a_query_endpoint() {
+    let catalog = DaemonServiceCatalog::for_node(&node_id("node_7"));
+    let api = catalog
+        .services()
+        .iter()
+        .find(|service| service.name == "plz-api")
+        .expect("api service is registered");
+    let ops_status = api
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == API_OPS_STATUS)
+        .expect("ops.status endpoint is registered");
+
+    assert_eq!(ops_status.execution, EndpointExecution::Query);
 }
 
 #[test]

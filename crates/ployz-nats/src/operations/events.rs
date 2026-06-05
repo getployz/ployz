@@ -185,8 +185,8 @@ impl AsyncNatsOperationEventLog {
         operation_id: &OperationId,
         start_sequence: EventSequence,
         limit: OperationEventReplayLimit,
-    ) -> Result<OperationEventReplayPage, OperationEventLogError> {
-        let stream = self.operation_stream().await?;
+    ) -> Result<OperationEventReplayPage, OperationEventReplayReadError> {
+        let stream = self.operation_stream_for_replay().await?;
         let subject = op_watch(operation_id);
         let mut next_sequence = start_sequence.get();
         let limit = limit.as_usize();
@@ -194,23 +194,23 @@ impl AsyncNatsOperationEventLog {
 
         while events.len() < limit {
             let Some(message) =
-                next_operation_message(&stream, subject.as_str(), next_sequence).await?
+                next_replay_message(&stream, subject.as_str(), next_sequence).await?
             else {
                 return Ok(OperationEventReplayPage::caught_up(events));
             };
-            let replayed = replayed_event_from_message(message.sequence, &message.payload)?;
+            let replayed = replayed_event_from_replay_message(message.sequence, &message.payload)?;
             events.push(replayed);
             next_sequence = message.sequence.checked_add(1).ok_or(
-                OperationEventLogError::InvalidNextReplaySequence {
+                OperationEventReplayReadError::InvalidNextReplaySequence {
                     sequence: message.sequence,
                 },
             )?;
         }
 
-        match next_operation_message(&stream, subject.as_str(), next_sequence).await? {
+        match next_replay_message(&stream, subject.as_str(), next_sequence).await? {
             Some(message) => Ok(OperationEventReplayPage::more(
                 events,
-                event_sequence_from_u64(message.sequence)?,
+                event_sequence_from_replay_u64(message.sequence)?,
             )),
             None => Ok(OperationEventReplayPage::caught_up(events)),
         }
@@ -265,6 +265,17 @@ impl AsyncNatsOperationEventLog {
             message: error.to_string(),
         })
     }
+
+    async fn operation_stream_for_replay(&self) -> Result<Stream, OperationEventReplayReadError> {
+        with_replay_timeout(
+            "operation event stream lookup",
+            self.jetstream.get_stream(PLZ_OPS_STREAM),
+        )
+        .await?
+        .map_err(|error| OperationEventReplayReadError::ReadEvent {
+            message: error.to_string(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -287,6 +298,21 @@ pub enum OperationEventLogError {
         sequence: u64,
         error: EventSequenceError,
     },
+}
+
+#[derive(Debug)]
+pub enum OperationEventReplayReadError {
+    DecodeEvent(serde_json::Error),
+    ReadEvent {
+        message: String,
+    },
+    Timeout {
+        operation: &'static str,
+    },
+    InvalidEventSequence {
+        sequence: u64,
+        error: EventSequenceError,
+    },
     InvalidNextReplaySequence {
         sequence: u64,
     },
@@ -299,6 +325,15 @@ async fn with_event_timeout<T>(
     tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
         .await
         .map_err(|_| OperationEventLogError::Timeout { operation })
+}
+
+async fn with_replay_timeout<T>(
+    operation: &'static str,
+    future: impl Future<Output = T>,
+) -> Result<T, OperationEventReplayReadError> {
+    tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
+        .await
+        .map_err(|_| OperationEventReplayReadError::Timeout { operation })
 }
 
 fn operation_event_subject(event: &OperationEvent) -> String {
@@ -328,12 +363,12 @@ fn operation_event_subject(event: &OperationEvent) -> String {
     }
 }
 
-async fn next_operation_message(
+async fn next_replay_message(
     stream: &Stream,
     subject: &str,
     sequence: u64,
-) -> Result<Option<StreamMessage>, OperationEventLogError> {
-    match with_event_timeout(
+) -> Result<Option<StreamMessage>, OperationEventReplayReadError> {
+    match with_replay_timeout(
         "operation event replay read",
         stream
             .raw_message_builder()
@@ -345,25 +380,28 @@ async fn next_operation_message(
     {
         Ok(message) => Ok(Some(message)),
         Err(error) if error.kind() == LastRawMessageErrorKind::NoMessageFound => Ok(None),
-        Err(error) => Err(OperationEventLogError::ReadEvent {
+        Err(error) => Err(OperationEventReplayReadError::ReadEvent {
             message: error.to_string(),
         }),
     }
 }
 
-fn replayed_event_from_message(
+fn replayed_event_from_replay_message(
     sequence: u64,
     payload: &[u8],
-) -> Result<ReplayedOperationEvent, OperationEventLogError> {
-    let sequence = event_sequence_from_u64(sequence)?;
-    let event = serde_json::from_slice(payload).map_err(OperationEventLogError::DecodeEvent)?;
+) -> Result<ReplayedOperationEvent, OperationEventReplayReadError> {
+    let sequence = event_sequence_from_replay_u64(sequence)?;
+    let event =
+        serde_json::from_slice(payload).map_err(OperationEventReplayReadError::DecodeEvent)?;
 
     Ok(ReplayedOperationEvent { sequence, event })
 }
 
-fn event_sequence_from_u64(sequence: u64) -> Result<EventSequence, OperationEventLogError> {
+fn event_sequence_from_replay_u64(
+    sequence: u64,
+) -> Result<EventSequence, OperationEventReplayReadError> {
     EventSequence::try_new(sequence)
-        .map_err(|error| OperationEventLogError::InvalidAckSequence { sequence, error })
+        .map_err(|error| OperationEventReplayReadError::InvalidEventSequence { sequence, error })
 }
 
 fn transition_message_id(operation_id: &OperationId, transition: &DeployTransition) -> MessageId {

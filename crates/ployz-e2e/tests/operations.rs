@@ -8,13 +8,14 @@ use ployz_core::ops::{
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationStatus,
 };
-use ployz_core::subjects::API_DEPLOY_SUBMIT;
+use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH};
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, KV_OPS_BUCKET, PLZ_OPS_STREAM,
 };
 use ployz_sdk_types::{
     DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse, OperationDispatch,
+    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
 };
 use ployzd::controllers::OperationControllers;
 
@@ -108,7 +109,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         .expect("open operation status store");
     let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
     let controllers = OperationControllers::new(event_log, status_store);
-    let _runtime = ployzd::api_runtime::start_deploy_submit_service(client.clone(), controllers)
+    let _runtime = ployzd::api_runtime::start_operation_api_service(client.clone(), controllers)
         .await
         .expect("api service starts");
     let request = DeploySubmitRequest {
@@ -147,6 +148,53 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
             last_event_sequence: event_sequence(1),
         })
     );
+    let status_request = OpsStatusRequest {
+        operation_id: operation_id("op_api_123"),
+    };
+    let status_response = client
+        .request(API_OPS_STATUS, serde_json::to_vec(&status_request)?.into())
+        .await?;
+    let status = match serde_json::from_slice::<OpsStatusResponse>(&status_response.payload)? {
+        OperationApiResponse::Ok { value } => value,
+        OperationApiResponse::DomainError { error } => {
+            panic!("ops status failed: {error:?}");
+        }
+    };
+    assert_eq!(
+        status,
+        OperationStatus::Deploy {
+            id: operation_id("op_api_123"),
+            service_id: service_id("svc_api"),
+            state: DeployOperationState::Accepted,
+            last_event_sequence: event_sequence(1),
+        }
+    );
+
+    let watch_request = OperationEventReplayRequest {
+        operation_id: operation_id("op_api_123"),
+        start_sequence: event_sequence(1),
+        limit: event_replay_limit(10),
+    };
+    let watch_response = client
+        .request(API_OPS_WATCH, serde_json::to_vec(&watch_request)?.into())
+        .await?;
+    let page = match serde_json::from_slice::<OpsWatchResponse>(&watch_response.payload)? {
+        OperationApiResponse::Ok { value } => value,
+        OperationApiResponse::DomainError { error } => {
+            panic!("ops watch failed: {error:?}");
+        }
+    };
+    assert_eq!(
+        page.events
+            .into_iter()
+            .map(|event| event.event)
+            .collect::<Vec<_>>(),
+        vec![OperationEvent::DeploySubmitted {
+            operation_id: operation_id("op_api_123"),
+            service_id: service_id("svc_api"),
+        }]
+    );
+    assert_eq!(page.cursor, OperationEventReplayCursor::CaughtUp);
 
     Ok(())
 }

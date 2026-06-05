@@ -7,12 +7,13 @@ use ployz_core::ops::{
 };
 
 use super::events::{
-    AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError, StoredOperationEvent,
+    AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError,
+    OperationEventReplayReadError, StoredOperationEvent,
 };
 use super::projection::{next_event_sequence, status_sequence};
 use super::status_store::{
-    AsyncNatsOperationStatusStore, OperationStatusStoreError, OperationStatusWrite,
-    StoredDeploySubmission,
+    AsyncNatsOperationStatusStore, OperationStatusReadError, OperationStatusStoreError,
+    OperationStatusWrite, StoredDeploySubmission,
 };
 
 #[derive(Debug, Clone)]
@@ -120,7 +121,7 @@ impl AsyncNatsOperationRepository {
     pub async fn operation_status(
         &self,
         operation_id: &OperationId,
-    ) -> Result<Option<OperationStatus>, OperationStatusStoreError> {
+    ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
         self.status_store.get(operation_id).await
     }
 
@@ -316,7 +317,7 @@ impl RecordDeployEventOutcome {
 
 #[derive(Debug)]
 enum RecordDeployEventError {
-    LoadStatus(OperationStatusStoreError),
+    LoadStatus(OperationStatusReadError),
     StoreStatus(OperationStatusStoreError),
     MissingOperation {
         operation_id: OperationId,
@@ -429,7 +430,7 @@ pub enum SubmitDeployError {
 
 #[derive(Debug)]
 pub enum RecordDeployTransitionError {
-    LoadStatus(OperationStatusStoreError),
+    LoadStatus(OperationStatusReadError),
     AppendEvent(OperationEventLogError),
     ProjectStatus(StatusProjectionError),
     StoreStatus(OperationStatusStoreError),
@@ -465,7 +466,7 @@ impl RecordDeployTransitionError {
 
 #[derive(Debug)]
 pub enum RecordDeployEvidenceError {
-    LoadStatus(OperationStatusStoreError),
+    LoadStatus(OperationStatusReadError),
     StoreStatus(OperationStatusStoreError),
     MissingOperation { operation_id: OperationId },
     ProjectStatus(StatusProjectionError),
@@ -477,8 +478,8 @@ pub enum RecordDeployEvidenceError {
 
 #[derive(Debug)]
 pub enum ReplayOperationEventsError {
-    LoadStatus(OperationStatusStoreError),
-    ReadEvents(OperationEventLogError),
+    LoadStatus(OperationStatusReadError),
+    ReadEvents(OperationEventReplayReadError),
     MissingOperation { operation_id: OperationId },
 }
 

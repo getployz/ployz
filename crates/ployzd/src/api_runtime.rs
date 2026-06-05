@@ -1,66 +1,86 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::controllers::OperationControllers;
-use crate::operation_api::deploy_submit;
-use crate::services::{
-    API_SERVICE_DESCRIPTION, API_SERVICE_ID, API_SERVICE_NAME, SERVICE_VERSION,
-    api_deploy_submit_endpoint,
-};
+use crate::operation_api::{deploy_submit, ops_status, ops_watch};
+use crate::services::{API_ENDPOINTS, ApiEndpoint, api_service};
 use ployz_nats::service_runtime::{
     NatsServiceHandlerError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, start_nats_service,
 };
-use ployz_nats::services::{NatsServiceSpec, ServiceMetadata};
-use ployz_sdk_types::{DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse};
+use ployz_sdk_types::{
+    DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchRequest, OpsWatchResponse,
+};
+use serde::Serialize;
 use std::sync::Arc;
 
-pub async fn start_deploy_submit_service(
+pub async fn start_operation_api_service(
     client: ployz_nats::service_runtime::NatsClient,
     controllers: OperationControllers,
 ) -> Result<RunningNatsService, ApiServiceRuntimeError> {
-    let spec = deploy_submit_service();
+    let spec = api_service();
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(ApiServiceRuntimeError::Nats)?;
-    let deploy_submit_endpoint = api_deploy_submit_endpoint();
-
     let controllers = Arc::new(controllers);
-    runtime
-        .bind_endpoint(&deploy_submit_endpoint, move |request| {
-            let controllers = Arc::clone(&controllers);
-            async move { handle_deploy_submit(&controllers, request).await }
-        })
-        .await
-        .map_err(ApiServiceRuntimeError::Nats)?;
+
+    for endpoint in API_ENDPOINTS {
+        bind_operation_endpoint(&mut runtime, endpoint, Arc::clone(&controllers)).await?;
+    }
 
     Ok(runtime)
 }
 
-#[must_use]
-pub fn deploy_submit_service() -> NatsServiceSpec {
-    NatsServiceSpec::new(
-        API_SERVICE_ID,
-        API_SERVICE_NAME,
-        SERVICE_VERSION,
-        API_SERVICE_DESCRIPTION,
-        ServiceMetadata::empty(),
-        vec![api_deploy_submit_endpoint()],
-    )
+async fn bind_operation_endpoint(
+    runtime: &mut RunningNatsService,
+    endpoint: ApiEndpoint,
+    controllers: Arc<OperationControllers>,
+) -> Result<(), ApiServiceRuntimeError> {
+    match endpoint {
+        ApiEndpoint::DeploySubmit => {
+            let spec = endpoint.spec();
+            runtime
+                .bind_endpoint(&spec, move |request| {
+                    let controllers = Arc::clone(&controllers);
+                    async move { handle_deploy_submit(&controllers, request).await }
+                })
+                .await
+                .map_err(ApiServiceRuntimeError::Nats)?;
+        }
+        ApiEndpoint::OpsStatus => {
+            let spec = endpoint.spec();
+            runtime
+                .bind_endpoint(&spec, move |request| {
+                    let controllers = Arc::clone(&controllers);
+                    async move { handle_ops_status(&controllers, request).await }
+                })
+                .await
+                .map_err(ApiServiceRuntimeError::Nats)?;
+        }
+        ApiEndpoint::OpsWatch => {
+            let spec = endpoint.spec();
+            runtime
+                .bind_endpoint(&spec, move |request| {
+                    let controllers = Arc::clone(&controllers);
+                    async move { handle_ops_watch(&controllers, request).await }
+                })
+                .await
+                .map_err(ApiServiceRuntimeError::Nats)?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn handle_deploy_submit(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match serde_json::from_slice::<DeploySubmitRequest>(&request.payload) {
+    let request = match decode_request::<DeploySubmitRequest>(&request) {
         Ok(request) => request,
-        Err(error) => {
-            return NatsServiceResponse::transport_error(NatsServiceHandlerError::bad_request(
-                error.to_string(),
-            ));
-        }
+        Err(response) => return response,
     };
-    let response = match deploy_submit(controllers, request.into()).await {
+    match deploy_submit(controllers, request.into()).await {
         Ok(value) => {
             let response: DeploySubmitResponse = OperationApiResponse::Ok { value };
             encode_api_success(response)
@@ -69,29 +89,108 @@ async fn handle_deploy_submit(
             let response: DeploySubmitResponse = OperationApiResponse::DomainError { error };
             encode_api_domain_error(response)
         }
-    };
+    }
+}
 
-    match response {
-        Ok(response) => response,
+async fn handle_ops_status(
+    controllers: &OperationControllers,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_request::<OpsStatusRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match ops_status(controllers, request.operation_id).await {
+        Ok(value) => {
+            let response: OpsStatusResponse = OperationApiResponse::Ok { value };
+            encode_api_success(response)
+        }
+        Err(error) => {
+            let response: OpsStatusResponse = OperationApiResponse::DomainError { error };
+            encode_api_domain_error(response)
+        }
+    }
+}
+
+async fn handle_ops_watch(
+    controllers: &OperationControllers,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_request::<OpsWatchRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match ops_watch(controllers, request).await {
+        Ok(value) => {
+            let response: OpsWatchResponse = OperationApiResponse::Ok { value };
+            encode_api_success(response)
+        }
+        Err(error) => {
+            let response: OpsWatchResponse = OperationApiResponse::DomainError { error };
+            encode_api_domain_error(response)
+        }
+    }
+}
+
+fn decode_request<T>(request: &NatsServiceRequest) -> Result<T, NatsServiceResponse>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_slice::<T>(&request.payload).map_err(|error| {
+        NatsServiceResponse::transport_error(NatsServiceHandlerError::bad_request(
+            error.to_string(),
+        ))
+    })
+}
+
+fn encode_api_success<T>(response: T) -> NatsServiceResponse
+where
+    T: Serialize,
+{
+    encode_response(response, NatsServiceResponse::ok)
+}
+
+fn encode_api_domain_error<T>(response: T) -> NatsServiceResponse
+where
+    T: Serialize,
+{
+    encode_response(response, NatsServiceResponse::domain_error)
+}
+
+fn encode_response<T>(
+    response: T,
+    output: impl FnOnce(Vec<u8>) -> NatsServiceResponse,
+) -> NatsServiceResponse
+where
+    T: Serialize,
+{
+    match serde_json::to_vec(&response) {
+        Ok(payload) => output(payload),
         Err(error) => NatsServiceResponse::transport_error(NatsServiceHandlerError::internal(
             error.to_string(),
         )),
     }
 }
 
-fn encode_api_success(
-    response: DeploySubmitResponse,
-) -> Result<NatsServiceResponse, serde_json::Error> {
-    serde_json::to_vec(&response).map(NatsServiceResponse::ok)
-}
-
-fn encode_api_domain_error(
-    response: DeploySubmitResponse,
-) -> Result<NatsServiceResponse, serde_json::Error> {
-    serde_json::to_vec(&response).map(NatsServiceResponse::domain_error)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiServiceRuntimeError {
     Nats(NatsServiceRuntimeError),
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::services::api_service;
+    use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH};
+
+    #[test]
+    fn operation_api_service_advertises_only_bound_endpoints() {
+        assert_eq!(
+            api_service()
+                .endpoints
+                .into_iter()
+                .map(|endpoint| endpoint.subject)
+                .collect::<Vec<_>>(),
+            vec![API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH]
+        );
+    }
 }

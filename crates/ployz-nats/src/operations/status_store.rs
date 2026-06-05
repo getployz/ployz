@@ -193,13 +193,13 @@ impl AsyncNatsOperationStatusStore {
     pub async fn get(
         &self,
         operation_id: &ployz_core::ids::OperationId,
-    ) -> Result<Option<OperationStatus>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+    ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
+        let Some(payload) = with_status_read_timeout(
             "operation status get",
             self.bucket.get(operation_status_key(operation_id)),
         )
         .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
+        .map_err(|error| OperationStatusReadError::GetStatus {
             message: error.to_string(),
         })?
         else {
@@ -208,7 +208,7 @@ impl AsyncNatsOperationStatusStore {
 
         serde_json::from_slice(&payload)
             .map(Some)
-            .map_err(OperationStatusStoreError::DecodeStatus)
+            .map_err(OperationStatusReadError::DecodeStatus)
     }
 }
 
@@ -261,6 +261,13 @@ pub enum OperationStatusStoreError {
     },
 }
 
+#[derive(Debug)]
+pub enum OperationStatusReadError {
+    DecodeStatus(serde_json::Error),
+    GetStatus { message: String },
+    Timeout { operation: &'static str },
+}
+
 async fn with_status_timeout<T>(
     operation: &'static str,
     future: impl Future<Output = T>,
@@ -268,4 +275,13 @@ async fn with_status_timeout<T>(
     tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
         .await
         .map_err(|_| OperationStatusStoreError::Timeout { operation })
+}
+
+async fn with_status_read_timeout<T>(
+    operation: &'static str,
+    future: impl Future<Output = T>,
+) -> Result<T, OperationStatusReadError> {
+    tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
+        .await
+        .map_err(|_| OperationStatusReadError::Timeout { operation })
 }

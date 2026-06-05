@@ -38,6 +38,18 @@ pub struct DeploySubmitRequest {
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpsStatusRequest {
+    pub operation_id: OperationId,
+}
+
+pub type OpsStatusResponse = OperationApiResponse<OperationStatus, OpsStatusError>;
+
+pub type OpsWatchRequest = OperationEventReplayRequest;
+
+pub type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationApiResponse<T, E> {
     Ok { value: T },
@@ -76,17 +88,13 @@ pub enum DeploySubmitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploySubmitUnavailableSource {
-    StatusStore {
-        failure: DeploySubmitStatusStoreFailure,
-    },
-    EventLog {
-        failure: DeploySubmitEventLogFailure,
-    },
+    StatusStore { failure: DeploySubmitStatusFailure },
+    EventLog { failure: DeploySubmitEventFailure },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DeploySubmitStatusStoreFailure {
+pub enum DeploySubmitStatusFailure {
     OpenBucket,
     EncodeStatus,
     DecodeStatus,
@@ -99,7 +107,7 @@ pub enum DeploySubmitStatusStoreFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DeploySubmitEventLogFailure {
+pub enum DeploySubmitEventFailure {
     EncodeEvent,
     DecodeEvent,
     PublishRequest,
@@ -107,5 +115,59 @@ pub enum DeploySubmitEventLogFailure {
     ReadEvent,
     Timeout,
     InvalidAckSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpsStatusError {
+    NoSuchOperation {
+        operation_id: OperationId,
+    },
+    Unavailable {
+        operation_id: OperationId,
+        source: OpsStatusUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpsStatusUnavailableSource {
+    StatusStore { failure: StatusReadFailure },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusReadFailure {
+    DecodeStatus,
+    GetStatus,
+    Timeout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpsWatchError {
+    NoSuchOperation {
+        operation_id: OperationId,
+    },
+    Unavailable {
+        operation_id: OperationId,
+        source: OpsWatchUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpsWatchUnavailableSource {
+    StatusStore { failure: StatusReadFailure },
+    EventLog { failure: EventReplayFailure },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventReplayFailure {
+    DecodeEvent,
+    ReadEvent,
+    Timeout,
+    InvalidEventSequence,
     InvalidNextReplaySequence,
 }
