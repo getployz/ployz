@@ -11,6 +11,7 @@ pub mod deploy;
 pub mod ids;
 pub mod node;
 pub mod ops;
+pub mod roles;
 pub mod security;
 pub mod state;
 pub mod subjects;

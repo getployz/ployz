@@ -1269,6 +1269,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-keeper"
+version = "0.1.0"
+dependencies = [
+ "ployz-core",
+]
+
+[[package]]
 name = "ployz-nats"
 version = "0.1.0"
 dependencies = [

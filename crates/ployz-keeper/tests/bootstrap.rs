@@ -1,0 +1,164 @@
+use std::path::PathBuf;
+use std::{env, fs};
+
+use ployz_core::ids::NodeId;
+use ployz_core::roles::{DaemonProcessRole, TunnelSide};
+use ployz_keeper::artifacts::{
+    ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
+    KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+};
+use ployz_keeper::steps::{
+    BootstrapScriptTarget, HostPrerequisite, JoinToken, KeeperJoinTarget, KeeperStep,
+    NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, keeper_join_plan,
+};
+use ployz_keeper::systemd::{SupervisorUnitTarget, role_unit_name};
+
+#[test]
+fn bootstrap_script_installs_keeper_only() {
+    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact()));
+
+    assert!(plan.installs_artifact_kind(ArtifactKind::Keeper));
+    assert!(!plan.installs_artifact_kind(ArtifactKind::Ployzd));
+    assert!(!plan.writes_ployzd_role_units());
+    assert_eq!(
+        plan.steps(),
+        &[
+            KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+            KeeperStep::VerifyArtifact(ArtifactTarget::Keeper(keeper_artifact())),
+            KeeperStep::InstallArtifact(ArtifactTarget::Keeper(keeper_artifact())),
+            KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::Keeper),
+            KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
+        ]
+    );
+}
+
+#[test]
+fn bootstrap_script_file_installs_only_keeper() {
+    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts")
+        .join("ployz.sh");
+    let script = fs::read_to_string(script_path).expect("script is readable");
+
+    assert!(script.contains("ployz-keeper.service"));
+    assert!(script.contains("PLOYZ_KEEPER_URL"));
+    assert!(script.contains("uname -s"));
+    assert!(script.contains("id -u"));
+    assert!(!script.contains("ployzd"));
+    assert!(!script.contains("NATS"));
+}
+
+#[test]
+fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
+    let roles = vec![
+        DaemonProcessRole::Node(node_id("node_7")),
+        DaemonProcessRole::Gateway,
+        DaemonProcessRole::Tunnel(TunnelSide::Edge),
+    ];
+    let plan = keeper_join_plan(KeeperJoinTarget::new(
+        JoinToken::try_new("join_once").expect("valid join token"),
+        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
+        ployzd_artifact(),
+        NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
+    ));
+
+    assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
+    assert!(plan.writes_ployzd_role_units());
+    assert!(plan.steps().contains(&KeeperStep::RedeemJoinToken(
+        JoinToken::try_new("join_once").expect("valid join token")
+    )));
+    assert!(plan.steps().contains(&KeeperStep::StoreJoinMaterial(
+        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material")
+    )));
+
+    for role in roles {
+        let unit = SupervisorUnitTarget::PloyzdRole(role);
+        assert!(
+            plan.steps()
+                .contains(&KeeperStep::WriteSupervisorUnit(unit.clone()))
+        );
+        assert!(
+            plan.steps()
+                .contains(&KeeperStep::StartSupervisorUnit(unit))
+        );
+    }
+
+    assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
+        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Control)
+    )));
+    assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
+        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
+    )));
+}
+
+#[test]
+fn role_units_render_the_supervised_ployzd_commands() {
+    let node = DaemonProcessRole::Node(node_id("node_7"));
+    let tunnel = DaemonProcessRole::Tunnel(TunnelSide::Edge);
+
+    assert_eq!(role_unit_name(&node), "ployzd-node-node_7.service");
+    assert_eq!(node.command_args(), ["node", "--id", "node_7"]);
+    assert_eq!(role_unit_name(&tunnel), "ployzd-tunnel-edge.service");
+    assert_eq!(tunnel.command_args(), ["tunnel", "--side", "edge"]);
+}
+
+#[test]
+fn role_sets_reject_empty_and_duplicate_assignments() {
+    assert_eq!(NonEmptyRoleSet::try_new(vec![]), Err(RoleSetError::Empty));
+    assert_eq!(
+        NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Gateway, DaemonProcessRole::Gateway]),
+        Err(RoleSetError::Duplicate {
+            role: DaemonProcessRole::Gateway,
+        })
+    );
+}
+
+#[test]
+fn artifact_digest_must_be_sha256_hex() {
+    assert_eq!(
+        Sha256Digest::try_new("sha256:keeper"),
+        Err(ArtifactTargetError::InvalidSha256Digest {
+            value: "sha256:keeper".to_owned()
+        })
+    );
+    assert!(Sha256Digest::try_new(KEEPER_DIGEST).is_ok());
+}
+
+fn keeper_artifact() -> KeeperArtifactTarget {
+    KeeperArtifactTarget::new(
+        version("0.1.0"),
+        source("https://example.invalid/ployz-keeper"),
+        digest(KEEPER_DIGEST),
+        PathBuf::from("/usr/local/bin/ployz-keeper"),
+    )
+    .expect("valid keeper artifact")
+}
+
+fn ployzd_artifact() -> PloyzdArtifactTarget {
+    PloyzdArtifactTarget::new(
+        version("0.1.0"),
+        source("https://example.invalid/ployzd"),
+        digest(PLOYZD_DIGEST),
+        PathBuf::from("/usr/local/bin/ployzd"),
+    )
+    .expect("valid ployzd artifact")
+}
+
+fn version(value: &str) -> ArtifactVersion {
+    ArtifactVersion::try_new(value).expect("valid artifact version")
+}
+
+fn source(value: &str) -> ArtifactSource {
+    ArtifactSource::try_new(value).expect("valid artifact source")
+}
+
+fn digest(value: &str) -> Sha256Digest {
+    Sha256Digest::try_new(value).expect("valid artifact digest")
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
+}
+
+const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
