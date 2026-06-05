@@ -6,7 +6,8 @@ use std::num::{NonZeroU16, NonZeroU64};
 
 use crate::deploy::DeployPlan;
 use crate::ids::{
-    ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectToken, SubjectTokenError,
+    ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, SubjectToken,
+    SubjectTokenError,
 };
 
 mod projection;
@@ -164,6 +165,168 @@ pub enum OperationStatus {
         state: DeployOperationState,
         last_event_sequence: EventSequence,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationStatusSnapshot {
+    pub status: OperationStatus,
+    pub ownership: OperationOwnershipStatus,
+}
+
+impl OperationStatusSnapshot {
+    #[must_use]
+    pub fn new(status: OperationStatus, ownership: OperationOwnershipStatus) -> Self {
+        Self { status, ownership }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationOwnerLease {
+    pub operation_id: OperationId,
+    pub owner_id: OperationOwnerId,
+    pub expires_at: OperationLeaseExpiresAt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct OperationLeaseDurationSeconds(NonZeroU64);
+
+impl OperationLeaseDurationSeconds {
+    pub fn try_new(seconds: u64) -> Result<Self, OperationLeaseDurationError> {
+        let Some(value) = NonZeroU64::new(seconds) else {
+            return Err(OperationLeaseDurationError::Zero);
+        };
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u64> for OperationLeaseDurationSeconds {
+    type Error = OperationLeaseDurationError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<OperationLeaseDurationSeconds> for u64 {
+    fn from(value: OperationLeaseDurationSeconds) -> Self {
+        value.get()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationLeaseDurationError {
+    Zero,
+}
+
+impl fmt::Display for OperationLeaseDurationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => formatter.write_str("operation lease duration must be greater than zero"),
+        }
+    }
+}
+
+impl OperationOwnerLease {
+    #[must_use]
+    pub fn new(
+        operation_id: OperationId,
+        owner_id: OperationOwnerId,
+        expires_at: OperationLeaseExpiresAt,
+    ) -> Self {
+        Self {
+            operation_id,
+            owner_id,
+            expires_at,
+        }
+    }
+
+    #[must_use]
+    pub fn is_expired_at(&self, now: OperationLeaseExpiresAt) -> bool {
+        self.expires_at <= now
+    }
+
+    #[must_use]
+    pub fn renew_until(&self, expires_at: OperationLeaseExpiresAt) -> Self {
+        Self {
+            operation_id: self.operation_id.clone(),
+            owner_id: self.owner_id.clone(),
+            expires_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationOwnershipStatus {
+    Unclaimed,
+    Owned { lease: OperationOwnerLease },
+    Expired { lease: OperationOwnerLease },
+}
+
+impl OperationOwnershipStatus {
+    #[must_use]
+    pub fn from_lease_at(lease: OperationOwnerLease, now: OperationLeaseExpiresAt) -> Self {
+        if lease.is_expired_at(now) {
+            Self::Expired { lease }
+        } else {
+            Self::Owned { lease }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct OperationLeaseExpiresAt(NonZeroU64);
+
+impl OperationLeaseExpiresAt {
+    pub fn try_new(unix_seconds: u64) -> Result<Self, OperationLeaseExpiresAtError> {
+        let Some(value) = NonZeroU64::new(unix_seconds) else {
+            return Err(OperationLeaseExpiresAtError::Zero);
+        };
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn unix_seconds(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u64> for OperationLeaseExpiresAt {
+    type Error = OperationLeaseExpiresAtError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<OperationLeaseExpiresAt> for u64 {
+    fn from(value: OperationLeaseExpiresAt) -> Self {
+        value.unix_seconds()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationLeaseExpiresAtError {
+    Zero,
+}
+
+impl fmt::Display for OperationLeaseExpiresAtError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => formatter.write_str("operation lease expiry must be greater than zero"),
+        }
+    }
 }
 
 impl OperationStatus {

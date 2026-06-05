@@ -1,12 +1,12 @@
-use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::ops::EventSequence;
+use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
+use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::subjects::{
     API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_OPS_STATUS, API_OPS_WATCH,
     NodeServiceEndpoint,
 };
 use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
-use ployz_sdk_types::{OperationDispatch, OpsStatusError};
-use ployzd::operation_api::{ops_status_missing, queued_operation};
+use ployz_sdk_types::OpsStatusError;
+use ployzd::operation_api::{ops_status_missing, owned_operation};
 use ployzd::services::{DaemonServiceCatalog, NodeServiceCallError, node_endpoint_subject};
 
 #[test]
@@ -138,16 +138,13 @@ fn node_service_failures_map_actual_request_failures() {
 }
 
 #[test]
-fn mutating_service_acceptance_is_queued_not_inline_work() {
-    let accepted = queued_operation(operation_id("op_123"), event_sequence(11));
+fn mutating_service_acceptance_is_owned_not_inline_work() {
+    let lease = operation_lease("op_123", "control", 120);
+    let accepted = owned_operation(operation_id("op_123"), event_sequence(11), lease.clone());
 
-    assert_eq!(
-        accepted.dispatch,
-        OperationDispatch::Queued {
-            watch_subject: "plz.v1.op.op_123.>".to_owned(),
-            start_sequence: event_sequence(11),
-        }
-    );
+    assert_eq!(accepted.owner_lease, lease);
+    assert_eq!(accepted.watch_subject, "plz.v1.op.op_123.>".to_owned());
+    assert_eq!(accepted.start_sequence, event_sequence(11));
 }
 
 fn operation_id(value: &str) -> OperationId {
@@ -160,6 +157,14 @@ fn node_id(value: &str) -> NodeId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
+    OperationOwnerLease::new(
+        OperationId::try_new(operation_id).expect("valid operation id"),
+        OperationOwnerId::try_new(owner_id).expect("valid owner id"),
+        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
+    )
 }
 
 fn service_names(catalog: &DaemonServiceCatalog) -> Vec<&str> {

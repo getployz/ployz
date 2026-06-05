@@ -11,16 +11,18 @@ pub use ployz_core::deploy::{
     DeployRequest, ImageReference, ImageReferenceError, ReplicaCount, ReplicaCountError,
 };
 pub use ployz_core::ids::{
-    ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectTokenError,
+    ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, SubjectTokenError,
 };
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
     FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError,
     OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationSubject, OperatorHint,
-    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationLeaseExpiresAtError,
+    OperationOwnerLease, OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RouteTarget,
 };
 pub use ployz_core::ops::{DeployOperationFailure, DeployOperationState, DeployRunningStage};
 pub use ployz_core::state::{
@@ -43,7 +45,7 @@ pub struct OpsStatusRequest {
     pub operation_id: OperationId,
 }
 
-pub type OpsStatusResponse = OperationApiResponse<OperationStatus, OpsStatusError>;
+pub type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 pub type OpsWatchRequest = OperationEventReplayRequest;
 
@@ -60,16 +62,9 @@ pub enum OperationApiResponse<T, E> {
 #[serde(deny_unknown_fields)]
 pub struct AcceptedOperation {
     pub operation_id: OperationId,
-    pub dispatch: OperationDispatch,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationDispatch {
-    Queued {
-        watch_subject: String,
-        start_sequence: EventSequence,
-    },
+    pub watch_subject: String,
+    pub start_sequence: EventSequence,
+    pub owner_lease: OperationOwnerLease,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +85,7 @@ pub enum DeploySubmitError {
 pub enum DeploySubmitUnavailableSource {
     StatusStore { failure: DeploySubmitStatusFailure },
     EventLog { failure: DeploySubmitEventFailure },
+    Clock { failure: DeploySubmitClockFailure },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,8 +96,11 @@ pub enum DeploySubmitStatusFailure {
     DecodeStatus,
     EncodeSubmission,
     DecodeSubmission,
+    EncodeLease,
+    DecodeLease,
     CasConflict,
     GetStatus,
+    Clock,
     Timeout,
 }
 
@@ -115,6 +114,12 @@ pub enum DeploySubmitEventFailure {
     ReadEvent,
     Timeout,
     InvalidAckSequence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploySubmitClockFailure {
+    BeforeUnixEpoch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,7 +144,9 @@ pub enum OpsStatusUnavailableSource {
 #[serde(rename_all = "snake_case")]
 pub enum StatusReadFailure {
     DecodeStatus,
+    DecodeLease,
     GetStatus,
+    Clock,
     Timeout,
 }
 

@@ -40,6 +40,21 @@ impl OperationId {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
+pub struct OperationOwnerId(SubjectToken);
+
+impl OperationOwnerId {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
+        Ok(Self(SubjectToken::try_new(value)?))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct NodeId(SubjectToken);
 
 impl NodeId {

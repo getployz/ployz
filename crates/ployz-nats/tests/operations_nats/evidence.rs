@@ -12,7 +12,10 @@ async fn operation_repository_records_container_started_without_state_change() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -72,7 +75,10 @@ async fn operation_repository_records_health_check_started_without_state_change(
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -130,7 +136,10 @@ async fn operation_repository_records_plan_created_without_state_change() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -178,7 +187,10 @@ async fn operation_repository_rejects_plan_retry_with_different_steps() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -216,7 +228,10 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -305,7 +320,10 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -365,7 +383,10 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     repository
@@ -467,7 +488,10 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
     ));
 
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     let accepted = repository
@@ -587,7 +611,10 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
     ));
 
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     let accepted = repository
@@ -669,7 +696,10 @@ async fn operation_repository_rejects_plan_created_after_planning() {
     ));
 
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     let accepted = repository

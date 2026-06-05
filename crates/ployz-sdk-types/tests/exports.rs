@@ -2,11 +2,11 @@ use ployz_sdk_types::{
     AcceptedOperation, DeployOperationState, DeployRequest, DeployRunningStage,
     DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference,
     ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError, OperationApiResponse,
-    OperationDispatch, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationSubject, ReplicaCount, ReplicaCountError,
-    RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId,
-    SubjectTokenError,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
+    OperationSubject, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
+    RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
 };
 
 #[test]
@@ -65,11 +65,10 @@ fn sdk_exports_operation_api_wire_types() {
     };
     let response: DeploySubmitResponse = OperationApiResponse::Ok {
         value: AcceptedOperation {
-            operation_id,
-            dispatch: OperationDispatch::Queued {
-                watch_subject: "plz.v1.op.op_123.>".to_owned(),
-                start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
-            },
+            operation_id: operation_id.clone(),
+            watch_subject: "plz.v1.op.op_123.>".to_owned(),
+            start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
+            owner_lease: operation_lease("op_123", "control", 120),
         },
     };
 
@@ -79,19 +78,27 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_123","dispatch":{"kind":"queued","watch_subject":"plz.v1.op.op_123.>","start_sequence":1}}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.op.op_123.>","start_sequence":1,"owner_lease":{"operation_id":"op_123","owner_id":"control","expires_at":120}}}"#
     );
 
     let OperationApiResponse::Ok { value } = response else {
         panic!("response should be ok");
     };
+    assert_eq!(value.operation_id, operation_id);
+    assert_eq!(value.watch_subject, "plz.v1.op.op_123.>".to_owned());
     assert_eq!(
-        value.dispatch,
-        OperationDispatch::Queued {
-            watch_subject: "plz.v1.op.op_123.>".to_owned(),
-            start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
-        }
+        value.start_sequence,
+        EventSequence::try_new(1).expect("valid event sequence")
     );
+    assert_eq!(value.owner_lease, operation_lease("op_123", "control", 120));
+}
+
+fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
+    OperationOwnerLease::new(
+        ployz_sdk_types::OperationId::try_new(operation_id).expect("valid operation id"),
+        OperationOwnerId::try_new(owner_id).expect("valid owner id"),
+        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
+    )
 }
 
 #[test]

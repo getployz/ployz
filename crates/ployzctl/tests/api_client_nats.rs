@@ -1,6 +1,7 @@
-use ployz_core::ids::{OperationId, ServiceId};
+use ployz_core::ids::{OperationId, OperationOwnerId, ServiceId};
 use ployz_core::ops::{
     EventSequence, OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationLeaseExpiresAt, OperationOwnerLease,
 };
 use ployz_core::subjects::{
     API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, OperationApiEndpoint,
@@ -13,7 +14,7 @@ use ployz_nats::services::{
 };
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    OperationApiResponse, OperationDispatch, OpsStatusError, OpsStatusResponse,
+    OperationApiResponse, OpsStatusError, OpsStatusResponse,
 };
 use ployzctl::api_client::{
     OperationApiClient, OperationApiClientError, OperationApiRequestFailure,
@@ -40,10 +41,9 @@ async fn operation_api_client_decodes_successful_envelope() {
             let response: DeploySubmitResponse = OperationApiResponse::Ok {
                 value: AcceptedOperation {
                     operation_id: operation_id("op_123"),
-                    dispatch: OperationDispatch::Queued {
-                        watch_subject: "plz.v1.op.op_123.>".to_owned(),
-                        start_sequence: event_sequence(1),
-                    },
+                    watch_subject: "plz.v1.op.op_123.>".to_owned(),
+                    start_sequence: event_sequence(1),
+                    owner_lease: operation_lease("op_123", "control", 120),
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -61,10 +61,9 @@ async fn operation_api_client_decodes_successful_envelope() {
         accepted,
         AcceptedOperation {
             operation_id: operation_id("op_123"),
-            dispatch: OperationDispatch::Queued {
-                watch_subject: "plz.v1.op.op_123.>".to_owned(),
-                start_sequence: event_sequence(1),
-            },
+            watch_subject: "plz.v1.op.op_123.>".to_owned(),
+            start_sequence: event_sequence(1),
+            owner_lease: operation_lease("op_123", "control", 120),
         }
     );
 }
@@ -319,6 +318,14 @@ fn deploy_submit_request() -> DeploySubmitRequest {
 
 fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
+}
+
+fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
+    OperationOwnerLease::new(
+        OperationId::try_new(operation_id).expect("valid operation id"),
+        OperationOwnerId::try_new(owner_id).expect("valid owner id"),
+        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
+    )
 }
 
 fn event_sequence(value: u64) -> EventSequence {

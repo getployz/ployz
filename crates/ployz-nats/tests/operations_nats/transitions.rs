@@ -10,7 +10,10 @@ async fn operation_repository_records_transition_status_against_real_nats() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
 
@@ -49,7 +52,10 @@ async fn operation_repository_rejects_duplicate_failed_transition_payload_mismat
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     event_log
@@ -84,7 +90,10 @@ async fn operation_repository_rejects_duplicate_cancelled_transition_payload_mis
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(deploy_submission("op_123", "idem_1", "svc_api"))
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
         .await
         .expect("submit accepted");
     event_log

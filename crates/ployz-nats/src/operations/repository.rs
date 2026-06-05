@@ -1,8 +1,9 @@
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEvent, OperationEventProjection,
     OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, StatusProjectionError, project_operation_event,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
+    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
     validate_fresh_deploy_evidence,
 };
 
@@ -37,14 +38,29 @@ impl AsyncNatsOperationRepository {
     pub async fn submit_deploy(
         &self,
         submission: DeployOperationSubmission,
-    ) -> Result<StoredDeploySubmission, SubmitDeployError> {
+        owner: OperationLeaseClaim,
+    ) -> Result<AcceptedDeploySubmission, SubmitDeployError> {
         if let Some(existing) = self
             .status_store
             .deploy_submission(&submission.idempotency_key)
             .await
             .map_err(SubmitDeployError::StoreStatus)?
         {
-            return Ok(existing);
+            let lease = self
+                .status_store
+                .claim_owner_lease(
+                    &existing.operation_id,
+                    &owner.owner_id,
+                    owner.now,
+                    owner.expires_at,
+                )
+                .await
+                .map_err(SubmitDeployError::StoreStatus)?;
+            return Ok(AcceptedDeploySubmission {
+                operation_id: existing.operation_id,
+                start_sequence: existing.start_sequence,
+                lease,
+            });
         }
 
         let stored = self
@@ -86,10 +102,28 @@ impl AsyncNatsOperationRepository {
             start_sequence: stored.sequence,
         };
 
-        self.status_store
+        let submitted = self
+            .status_store
             .put_deploy_submission_if_absent(&submission.idempotency_key, &submitted)
             .await
-            .map_err(SubmitDeployError::StoreStatus)
+            .map_err(SubmitDeployError::StoreStatus)?;
+
+        let lease = self
+            .status_store
+            .claim_owner_lease(
+                &submitted.operation_id,
+                &owner.owner_id,
+                owner.now,
+                owner.expires_at,
+            )
+            .await
+            .map_err(SubmitDeployError::StoreStatus)?;
+
+        Ok(AcceptedDeploySubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            lease,
+        })
     }
 
     pub async fn record_deploy_transition(
@@ -123,6 +157,26 @@ impl AsyncNatsOperationRepository {
         operation_id: &OperationId,
     ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
         self.status_store.get(operation_id).await
+    }
+
+    pub async fn operation_status_snapshot(
+        &self,
+        operation_id: &OperationId,
+        now: OperationLeaseExpiresAt,
+    ) -> Result<Option<OperationStatusSnapshot>, OperationStatusStoreError> {
+        let Some(status) = self
+            .status_store
+            .get(operation_id)
+            .await
+            .map_err(OperationStatusStoreError::from_status_read)?
+        else {
+            return Ok(None);
+        };
+        let ownership = self
+            .status_store
+            .operation_ownership(operation_id, now)
+            .await?;
+        Ok(Some(OperationStatusSnapshot::new(status, ownership)))
     }
 
     pub async fn replay_operation_events(
@@ -421,10 +475,64 @@ pub struct DeployOperationSubmission {
     pub idempotency_key: OperationIdempotencyKey,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationLeaseClaim {
+    pub owner_id: OperationOwnerId,
+    pub now: OperationLeaseExpiresAt,
+    pub expires_at: OperationLeaseExpiresAt,
+}
+
+impl OperationLeaseClaim {
+    pub fn try_new(
+        owner_id: OperationOwnerId,
+        now: OperationLeaseExpiresAt,
+        expires_at: OperationLeaseExpiresAt,
+    ) -> Result<Self, OperationLeaseClaimError> {
+        if expires_at <= now {
+            return Err(OperationLeaseClaimError::AlreadyExpired { now, expires_at });
+        }
+
+        Ok(Self {
+            owner_id,
+            now,
+            expires_at,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationLeaseClaimError {
+    AlreadyExpired {
+        now: OperationLeaseExpiresAt,
+        expires_at: OperationLeaseExpiresAt,
+    },
+}
+
+impl std::fmt::Display for OperationLeaseClaimError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyExpired { now, expires_at } => write!(
+                formatter,
+                "operation lease expires at {} but now is {}",
+                expires_at.unix_seconds(),
+                now.unix_seconds(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedDeploySubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub lease: OperationOwnerLease,
+}
+
 #[derive(Debug)]
 pub enum SubmitDeployError {
     AppendEvent(OperationEventLogError),
     StoreStatus(OperationStatusStoreError),
+    Clock { message: String },
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
 

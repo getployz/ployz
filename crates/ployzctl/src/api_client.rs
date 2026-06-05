@@ -1,6 +1,6 @@
 //! Typed client for Ployz user-facing NATS services.
 
-use ployz_core::ops::{OperationEventReplayPage, OperationStatus};
+use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_protocol::{
     NatsServiceError, NatsServiceErrorHeaderDecodeError, decode_nats_service_error,
@@ -51,8 +51,8 @@ impl OperationApiClient {
     pub async fn ops_status(
         &self,
         request: &OpsStatusRequest,
-    ) -> Result<OperationStatus, OperationApiClientError<OpsStatusError>> {
-        self.request_api::<_, OperationStatus, OpsStatusError>(
+    ) -> Result<OperationStatusSnapshot, OperationApiClientError<OpsStatusError>> {
+        self.request_api::<_, OperationStatusSnapshot, OpsStatusError>(
             OperationApiEndpoint::OpsStatus,
             request,
         )

@@ -2,17 +2,17 @@ use std::error::Error;
 
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
-use ployz_core::ids::{OperationId, ServiceId};
+use ployz_core::ids::{OperationId, OperationOwnerId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnershipStatus, OperationStatus,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, KV_OPS_BUCKET, PLZ_OPS_STREAM,
+    DeployOperationSubmission, KV_OPS_BUCKET, OperationLeaseClaim, PLZ_OPS_STREAM,
 };
-use ployz_sdk_types::{DeploySubmitRequest, OperationDispatch, OpsStatusRequest};
+use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::controllers::OperationControllers;
 
@@ -41,11 +41,14 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
     let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
 
     let accepted = repository
-        .submit_deploy(DeployOperationSubmission {
-            operation_id: operation_id("op_123"),
-            service_id: service_id("svc_api"),
-            idempotency_key: idempotency_key("idem_1"),
-        })
+        .submit_deploy(
+            DeployOperationSubmission {
+                operation_id: operation_id("op_123"),
+                service_id: service_id("svc_api"),
+                idempotency_key: idempotency_key("idem_1"),
+            },
+            test_lease_claim(),
+        )
         .await
         .expect("submit deploy over real nats");
     repository
@@ -105,7 +108,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         .await
         .expect("open operation status store");
     let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
-    let controllers = OperationControllers::new(event_log, status_store);
+    let controllers = OperationControllers::for_test(event_log, status_store);
     let _runtime = ployzd::api_runtime::start_operation_api_service(client.clone(), controllers)
         .await
         .expect("api service starts");
@@ -119,13 +122,15 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let accepted = api.deploy_submit(&request).await?;
 
     assert_eq!(accepted.operation_id, operation_id("op_api_123"));
+    let lease = accepted.owner_lease;
+    assert_eq!(lease.operation_id, operation_id("op_api_123"));
     assert_eq!(
-        accepted.dispatch,
-        OperationDispatch::Queued {
-            watch_subject: "plz.v1.op.op_api_123.>".to_owned(),
-            start_sequence: event_sequence(1),
-        }
+        lease.owner_id,
+        OperationOwnerId::try_new("control").expect("valid owner id")
     );
+    assert!(lease.expires_at.unix_seconds() > 0);
+    assert_eq!(accepted.watch_subject, "plz.v1.op.op_api_123.>".to_owned());
+    assert_eq!(accepted.start_sequence, event_sequence(1));
     assert_eq!(
         repository
             .operation_status(&operation_id("op_api_123"))
@@ -143,13 +148,21 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     };
     let status = api.ops_status(&status_request).await?;
     assert_eq!(
-        status,
+        status.status,
         OperationStatus::Deploy {
             id: operation_id("op_api_123"),
             service_id: service_id("svc_api"),
             state: DeployOperationState::Accepted,
             last_event_sequence: event_sequence(1),
         }
+    );
+    let OperationOwnershipStatus::Owned { lease } = status.ownership else {
+        panic!("accepted operation should expose active ownership");
+    };
+    assert_eq!(lease.operation_id, operation_id("op_api_123"));
+    assert_eq!(
+        lease.owner_id,
+        OperationOwnerId::try_new("control").expect("valid owner id")
     );
 
     let watch_request = OperationEventReplayRequest {
@@ -226,4 +239,17 @@ fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
 
 fn idempotency_key(value: &str) -> OperationIdempotencyKey {
     OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
+}
+
+fn test_lease_claim() -> OperationLeaseClaim {
+    OperationLeaseClaim::try_new(
+        OperationOwnerId::try_new("control").expect("valid owner id"),
+        lease_time(100),
+        lease_time(160),
+    )
+    .expect("valid lease claim")
+}
+
+fn lease_time(value: u64) -> OperationLeaseExpiresAt {
+    OperationLeaseExpiresAt::try_new(value).expect("valid lease time")
 }

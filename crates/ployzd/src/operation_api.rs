@@ -2,7 +2,10 @@
 
 use crate::controllers::{DeploySubmitCommand, OperationControllers};
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{OperationEventReplayPage, OperationEventReplayRequest, OperationStatus};
+use ployz_core::ops::{
+    OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease,
+    OperationStatusSnapshot,
+};
 use ployz_core::subjects::op_watch;
 use ployz_nats::operations::{
     OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
@@ -10,24 +13,24 @@ use ployz_nats::operations::{
     SubmitDeployError as SubmitDeployRepositoryError,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitEventFailure, DeploySubmitRequest,
-    DeploySubmitStatusFailure, DeploySubmitUnavailableSource, EventReplayFailure,
-    OperationDispatch, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
+    AcceptedOperation, DeploySubmitClockFailure, DeploySubmitError, DeploySubmitEventFailure,
+    DeploySubmitRequest, DeploySubmitStatusFailure, DeploySubmitUnavailableSource,
+    EventReplayFailure, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
     OpsWatchUnavailableSource, StatusReadFailure,
 };
 
 #[must_use]
-pub fn queued_operation(
+pub fn owned_operation(
     operation_id: OperationId,
     start_sequence: ployz_core::ops::EventSequence,
+    lease: OperationOwnerLease,
 ) -> AcceptedOperation {
     let watch_subject = op_watch(&operation_id);
     AcceptedOperation {
         operation_id,
-        dispatch: OperationDispatch::Queued {
-            watch_subject,
-            start_sequence,
-        },
+        watch_subject,
+        start_sequence,
+        owner_lease: lease,
     }
 }
 
@@ -49,7 +52,13 @@ pub async fn deploy_submit(
     controllers
         .submit_deploy(command)
         .await
-        .map(|accepted| queued_operation(accepted.operation_id, accepted.start_sequence))
+        .map(|accepted| {
+            owned_operation(
+                accepted.operation_id,
+                accepted.start_sequence,
+                accepted.lease,
+            )
+        })
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))
 }
 
@@ -68,6 +77,12 @@ fn deploy_submit_error_from_submit_error(
             operation_id,
             source: DeploySubmitUnavailableSource::StatusStore {
                 failure: deploy_submit_status_failure(&source),
+            },
+        },
+        SubmitDeployRepositoryError::Clock { .. } => DeploySubmitError::Unavailable {
+            operation_id,
+            source: DeploySubmitUnavailableSource::Clock {
+                failure: DeploySubmitClockFailure::BeforeUnixEpoch,
             },
         },
         SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
@@ -89,14 +104,14 @@ pub fn ops_status_missing(operation_id: &OperationId) -> OpsStatusError {
 pub async fn ops_status(
     controllers: &OperationControllers,
     operation_id: OperationId,
-) -> Result<OperationStatus, OpsStatusError> {
-    match controllers.operation_status(&operation_id).await {
-        Ok(Some(status)) => Ok(status),
+) -> Result<OperationStatusSnapshot, OpsStatusError> {
+    match controllers.operation_status_snapshot(&operation_id).await {
+        Ok(Some(snapshot)) => Ok(snapshot),
         Ok(None) => Err(ops_status_missing(&operation_id)),
         Err(error) => Err(OpsStatusError::Unavailable {
             operation_id,
             source: OpsStatusUnavailableSource::StatusStore {
-                failure: status_read_failure(&error),
+                failure: status_store_read_failure(&error),
             },
         }),
     }
@@ -147,8 +162,11 @@ fn deploy_submit_status_failure(error: &OperationStatusStoreError) -> DeploySubm
         OperationStatusStoreError::DecodeSubmission(_) => {
             DeploySubmitStatusFailure::DecodeSubmission
         }
+        OperationStatusStoreError::EncodeLease(_) => DeploySubmitStatusFailure::EncodeLease,
+        OperationStatusStoreError::DecodeLease(_) => DeploySubmitStatusFailure::DecodeLease,
         OperationStatusStoreError::CasConflict { .. } => DeploySubmitStatusFailure::CasConflict,
         OperationStatusStoreError::GetStatus { .. } => DeploySubmitStatusFailure::GetStatus,
+        OperationStatusStoreError::Clock { .. } => DeploySubmitStatusFailure::Clock,
         OperationStatusStoreError::Timeout { .. } => DeploySubmitStatusFailure::Timeout,
     }
 }
@@ -172,6 +190,22 @@ fn status_read_failure(error: &OperationStatusReadError) -> StatusReadFailure {
         OperationStatusReadError::DecodeStatus(_) => StatusReadFailure::DecodeStatus,
         OperationStatusReadError::GetStatus { .. } => StatusReadFailure::GetStatus,
         OperationStatusReadError::Timeout { .. } => StatusReadFailure::Timeout,
+    }
+}
+
+fn status_store_read_failure(error: &OperationStatusStoreError) -> StatusReadFailure {
+    match error {
+        OperationStatusStoreError::DecodeStatus(_) => StatusReadFailure::DecodeStatus,
+        OperationStatusStoreError::DecodeLease(_) => StatusReadFailure::DecodeLease,
+        OperationStatusStoreError::GetStatus { .. } => StatusReadFailure::GetStatus,
+        OperationStatusStoreError::Clock { .. } => StatusReadFailure::Clock,
+        OperationStatusStoreError::Timeout { .. } => StatusReadFailure::Timeout,
+        OperationStatusStoreError::OpenBucket { .. }
+        | OperationStatusStoreError::EncodeStatus(_)
+        | OperationStatusStoreError::EncodeSubmission(_)
+        | OperationStatusStoreError::DecodeSubmission(_)
+        | OperationStatusStoreError::EncodeLease(_)
+        | OperationStatusStoreError::CasConflict { .. } => StatusReadFailure::GetStatus,
     }
 }
 

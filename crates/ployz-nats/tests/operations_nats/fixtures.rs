@@ -1,14 +1,14 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
-use ployz_core::ids::{OperationId, RevisionId, ServiceId};
+use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
-    OperationEventReplayLimit, OperationIdempotencyKey,
+    OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, KV_OPS_BUCKET, PLZ_OPS_STREAM,
+    DeployOperationSubmission, KV_OPS_BUCKET, OperationLeaseClaim, PLZ_OPS_STREAM,
 };
 
 pub(super) struct TestNats {
@@ -73,6 +73,19 @@ pub(super) fn deploy_submission(
     }
 }
 
+pub(super) fn lease_claim(owner_id: &str, now: u64, expires_at: u64) -> OperationLeaseClaim {
+    OperationLeaseClaim::try_new(
+        OperationOwnerId::try_new(owner_id).expect("valid operation owner id"),
+        lease_time(now),
+        lease_time(expires_at),
+    )
+    .expect("valid lease claim")
+}
+
+pub(super) fn default_lease_claim() -> OperationLeaseClaim {
+    lease_claim("control_a", 100, 160)
+}
+
 pub(super) fn deploy_plan() -> DeployPlan {
     deploy_plan_on("node_a")
 }
@@ -100,6 +113,10 @@ pub(super) fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
 }
 
+pub(super) fn owner_id(value: &str) -> OperationOwnerId {
+    OperationOwnerId::try_new(value).expect("valid operation owner id")
+}
+
 pub(super) fn revision_id(value: &str) -> RevisionId {
     RevisionId::try_new(value).expect("valid revision id")
 }
@@ -122,6 +139,10 @@ pub(super) fn event_sequence(value: u64) -> EventSequence {
 
 pub(super) fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
     OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
+}
+
+pub(super) fn lease_time(value: u64) -> OperationLeaseExpiresAt {
+    OperationLeaseExpiresAt::try_new(value).expect("valid lease time")
 }
 
 pub(super) fn idempotency_key(value: &str) -> OperationIdempotencyKey {

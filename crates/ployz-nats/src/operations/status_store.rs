@@ -1,9 +1,13 @@
 use async_nats::jetstream;
-use ployz_core::ops::{EventSequence, OperationIdempotencyKey, OperationStatus};
+use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::ops::{
+    EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
+    OperationOwnershipStatus, OperationStatus,
+};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 
-use super::keys::{deploy_submission_key, operation_status_key};
+use super::keys::{deploy_submission_key, operation_owner_lease_key, operation_status_key};
 use super::projection::{status_id, status_sequence};
 use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
 
@@ -156,6 +160,162 @@ impl AsyncNatsOperationStatusStore {
         }
     }
 
+    pub async fn claim_owner_lease(
+        &self,
+        operation_id: &OperationId,
+        owner_id: &OperationOwnerId,
+        now: OperationLeaseExpiresAt,
+        expires_at: OperationLeaseExpiresAt,
+    ) -> Result<OperationOwnerLease, OperationStatusStoreError> {
+        let key = operation_owner_lease_key(operation_id);
+        let candidate =
+            OperationOwnerLease::new(operation_id.clone(), owner_id.clone(), expires_at);
+        let payload =
+            serde_json::to_vec(&candidate).map_err(OperationStatusStoreError::EncodeLease)?;
+
+        let Some(existing) =
+            with_status_timeout("operation owner lease read", self.bucket.entry(key.clone()))
+                .await?
+                .map_err(|error| OperationStatusStoreError::GetStatus {
+                    message: error.to_string(),
+                })?
+        else {
+            return match with_status_timeout(
+                "operation owner lease create",
+                self.bucket.create(&key, payload.into()),
+            )
+            .await?
+            {
+                Ok(_) => Ok(candidate),
+                Err(error) => {
+                    self.claim_owner_lease_after_conflict(operation_id, now, error)
+                        .await
+                }
+            };
+        };
+
+        let current: OperationOwnerLease = serde_json::from_slice(&existing.value)
+            .map_err(OperationStatusStoreError::DecodeLease)?;
+        if !current.is_expired_at(now) {
+            return Ok(current);
+        }
+
+        match with_status_timeout(
+            "operation owner lease update",
+            self.bucket.update(&key, payload.into(), existing.revision),
+        )
+        .await?
+        {
+            Ok(_) => Ok(candidate),
+            Err(error) => {
+                self.claim_owner_lease_after_conflict(operation_id, now, error)
+                    .await
+            }
+        }
+    }
+
+    pub async fn renew_owner_lease(
+        &self,
+        operation_id: &OperationId,
+        owner_id: &OperationOwnerId,
+        now: OperationLeaseExpiresAt,
+        expires_at: OperationLeaseExpiresAt,
+    ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
+        let key = operation_owner_lease_key(operation_id);
+        let Some(existing) =
+            with_status_timeout("operation owner lease read", self.bucket.entry(key.clone()))
+                .await?
+                .map_err(|error| OperationStatusStoreError::GetStatus {
+                    message: error.to_string(),
+                })?
+        else {
+            return Ok(None);
+        };
+
+        let current: OperationOwnerLease = serde_json::from_slice(&existing.value)
+            .map_err(OperationStatusStoreError::DecodeLease)?;
+        if current.owner_id != *owner_id || current.is_expired_at(now) {
+            return Ok(None);
+        }
+
+        let renewed = current.renew_until(expires_at);
+        let payload =
+            serde_json::to_vec(&renewed).map_err(OperationStatusStoreError::EncodeLease)?;
+        match with_status_timeout(
+            "operation owner lease update",
+            self.bucket.update(&key, payload.into(), existing.revision),
+        )
+        .await?
+        {
+            Ok(_) => Ok(Some(renewed)),
+            Err(error) => {
+                if let Some(current) = self.operation_owner_lease(operation_id).await? {
+                    if current.owner_id == *owner_id && !current.is_expired_at(now) {
+                        Ok(Some(current))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    pub async fn operation_ownership(
+        &self,
+        operation_id: &OperationId,
+        now: OperationLeaseExpiresAt,
+    ) -> Result<OperationOwnershipStatus, OperationStatusStoreError> {
+        let Some(lease) = self.operation_owner_lease(operation_id).await? else {
+            return Ok(OperationOwnershipStatus::Unclaimed);
+        };
+
+        Ok(OperationOwnershipStatus::from_lease_at(lease, now))
+    }
+
+    async fn operation_owner_lease(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "operation owner lease get",
+            self.bucket.get(operation_owner_lease_key(operation_id)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeLease)
+    }
+
+    async fn claim_owner_lease_after_conflict(
+        &self,
+        operation_id: &OperationId,
+        now: OperationLeaseExpiresAt,
+        error: impl ToString,
+    ) -> Result<OperationOwnerLease, OperationStatusStoreError> {
+        let Some(current) = self.operation_owner_lease(operation_id).await? else {
+            return Err(OperationStatusStoreError::CasConflict {
+                message: error.to_string(),
+            });
+        };
+        if current.is_expired_at(now) {
+            return Err(OperationStatusStoreError::CasConflict {
+                message: error.to_string(),
+            });
+        }
+        Ok(current)
+    }
+
     async fn classify_write_conflict(
         &self,
         key: &str,
@@ -250,6 +410,8 @@ pub enum OperationStatusStoreError {
     DecodeStatus(serde_json::Error),
     EncodeSubmission(serde_json::Error),
     DecodeSubmission(serde_json::Error),
+    EncodeLease(serde_json::Error),
+    DecodeLease(serde_json::Error),
     CasConflict {
         message: String,
     },
@@ -259,6 +421,20 @@ pub enum OperationStatusStoreError {
     Timeout {
         operation: &'static str,
     },
+    Clock {
+        message: String,
+    },
+}
+
+impl OperationStatusStoreError {
+    #[must_use]
+    pub fn from_status_read(error: OperationStatusReadError) -> Self {
+        match error {
+            OperationStatusReadError::DecodeStatus(error) => Self::DecodeStatus(error),
+            OperationStatusReadError::GetStatus { message } => Self::GetStatus { message },
+            OperationStatusReadError::Timeout { operation } => Self::Timeout { operation },
+        }
+    }
 }
 
 #[derive(Debug)]
