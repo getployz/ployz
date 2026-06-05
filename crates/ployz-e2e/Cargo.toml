@@ -21,4 +21,4 @@ ployzctl = { path = "../ployzctl" }
 ployzd = { path = "../ployzd" }
 serde_json.workspace = true
 testcontainers-modules = { version = "0.15.0", default-features = false, features = ["nats", "ring"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
