@@ -73,7 +73,7 @@ pub struct DeployExecutionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployCompletionRecord {
     Recorded,
-    Missing {
+    Uncertain {
         reason: DeployCompletionRecordFailure,
     },
 }
@@ -88,7 +88,6 @@ pub enum DeployCompletionRecordFailure {
 pub enum DeployProgressWrite {
     Planning,
     Running { stage: DeployRunningStage },
-    Completed,
 }
 
 impl DeployProgressWrite {
@@ -105,7 +104,6 @@ impl DeployProgressWrite {
             Self::Running {
                 stage: DeployRunningStage::ActiveServiceCommit,
             } => "active_service_commit",
-            Self::Completed => "completed",
         }
     }
 }

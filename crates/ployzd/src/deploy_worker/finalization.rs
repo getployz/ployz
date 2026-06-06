@@ -2,17 +2,16 @@ use ployz_core::ops::DeployTransition;
 use ployz_core::state::{ActiveServiceCommit, ActiveServiceCommitRequest};
 use std::time::Duration;
 
-use super::failure::{DeployExecutionFailure, failure};
 use super::{
-    ActiveServiceCommitter, DeployCompletionRecord, DeployCompletionRecordFailure, DeployContainer,
-    DeployExecutionCommand, DeployExecutionError, DeployExecutionStep, DeployOperationRecorder,
+    ActiveServiceCommitter, DeployCompletionRecord, DeployCompletionRecordFailure,
+    DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
 };
 
 pub(super) async fn finalize_successful_deploy<A, R>(
     command: &DeployExecutionCommand,
     active_state: &mut A,
     recorder: &mut R,
-) -> Result<DeployCompletionRecord, DeployFinalizationError>
+) -> Result<DeployCompletionRecord, DeployExecutionError>
 where
     A: ActiveServiceCommitter,
     R: DeployOperationRecorder,
@@ -22,29 +21,9 @@ where
         command.step_timeout(),
         active_state,
     )
-    .await
-    .map_err(DeployFinalizationError::RecordFailed)?;
+    .await?;
 
-    Ok(record_deploy_completion(command, recorder)
-        .await
-        .unwrap_or_else(|reason| DeployCompletionRecord::Missing { reason }))
-}
-
-#[derive(Debug)]
-pub(super) enum DeployFinalizationError {
-    RecordFailed(DeployExecutionError),
-}
-
-impl DeployFinalizationError {
-    pub(super) fn into_execution_failure(
-        self,
-        command: &DeployExecutionCommand,
-        deploy_containers: &[DeployContainer],
-    ) -> DeployExecutionFailure {
-        match self {
-            Self::RecordFailed(source) => failure(command, source, deploy_containers),
-        }
-    }
+    Ok(record_deploy_completion(command, recorder).await)
 }
 
 async fn commit_active_service_with_timeout<A>(
@@ -63,29 +42,8 @@ where
     {
         Ok(result) => result,
         Err(_) => Err(DeployExecutionError::StepTimedOut {
-            step: DeployExecutionStep::CommitActiveService,
+            step: super::DeployExecutionStep::CommitActiveService,
             timeout,
-        }),
-    }
-}
-
-async fn record_deploy_completion<R>(
-    command: &DeployExecutionCommand,
-    recorder: &mut R,
-) -> Result<DeployCompletionRecord, DeployCompletionRecordFailure>
-where
-    R: DeployOperationRecorder,
-{
-    match tokio::time::timeout(
-        command.step_timeout(),
-        recorder.record_deploy_transition(&command.operation_id, DeployTransition::Completed),
-    )
-    .await
-    {
-        Ok(Ok(())) => Ok(DeployCompletionRecord::Recorded),
-        Ok(Err(_source)) => Err(DeployCompletionRecordFailure::RecordRejected),
-        Err(_) => Err(DeployCompletionRecordFailure::TimedOut {
-            timeout: command.step_timeout(),
         }),
     }
 }
@@ -112,5 +70,30 @@ where
             current_revision,
             attempted_revision,
         }),
+    }
+}
+
+async fn record_deploy_completion<R>(
+    command: &DeployExecutionCommand,
+    recorder: &mut R,
+) -> DeployCompletionRecord
+where
+    R: DeployOperationRecorder,
+{
+    match tokio::time::timeout(
+        command.step_timeout(),
+        recorder.record_deploy_transition(&command.operation_id, DeployTransition::Completed),
+    )
+    .await
+    {
+        Ok(Ok(())) => DeployCompletionRecord::Recorded,
+        Ok(Err(_)) => DeployCompletionRecord::Uncertain {
+            reason: DeployCompletionRecordFailure::RecordRejected,
+        },
+        Err(_) => DeployCompletionRecord::Uncertain {
+            reason: DeployCompletionRecordFailure::TimedOut {
+                timeout: command.step_timeout(),
+            },
+        },
     }
 }

@@ -13,13 +13,13 @@ use std::time::Duration;
 use crate::docker::labels::ManagedContainerLabels;
 
 use super::{
-    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, DeployProgressWrite,
+    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, types::DeployProgressWrite,
 };
 
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
-    pub(super) source: DeployExecutionError,
-    pub(super) operation_failure: DeployOperationFailure,
+    source: DeployExecutionError,
+    operation_failure: DeployOperationFailure,
 }
 
 impl DeployExecutionFailure {
@@ -198,6 +198,20 @@ impl DeployExecutionStep {
     }
 }
 
+impl DeployExecutionError {
+    fn record_failure(
+        command: &DeployExecutionCommand,
+        retained_artifacts: Vec<RetainedArtifact>,
+    ) -> DeployOperationFailure {
+        DeployOperationFailure::ControlPlaneCommitFailed {
+            service_id: command.request.service_id.clone(),
+            revision_id: command.request.target_revision.clone(),
+            message: failure_message("operation progress could not be recorded"),
+            retained_artifacts,
+        }
+    }
+}
+
 impl From<DeployHealthCheckError> for DeployExecutionError {
     fn from(value: DeployHealthCheckError) -> Self {
         Self::WaitHealthy(value)
@@ -221,12 +235,7 @@ impl DeployExecutionError {
                 step.deploy_timeout_failure(command, *timeout, retained_artifacts)
             }
             Self::RecordTransition(_) | Self::RecordEvidence(_) => {
-                DeployOperationFailure::ControlPlaneCommitFailed {
-                    service_id: command.request.service_id.clone(),
-                    revision_id: command.request.target_revision.clone(),
-                    message: failure_message("operation progress could not be recorded"),
-                    retained_artifacts,
-                }
+                Self::record_failure(command, retained_artifacts)
             }
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),

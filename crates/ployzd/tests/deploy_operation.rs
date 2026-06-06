@@ -499,14 +499,14 @@ async fn deploy_worker_times_out_hanging_steps() {
 }
 
 #[tokio::test]
-async fn deploy_worker_does_not_repair_missing_completion_after_active_commit() {
+async fn deploy_worker_reports_uncertain_completion_without_appending_failed_after_active_commit() {
     let mut recorder = RecordingOperations::fail_completed_transition_times(1);
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
-    let _outcome = execute_deploy(
+    let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -516,11 +516,11 @@ async fn deploy_worker_does_not_repair_missing_completion_after_active_commit() 
         },
     )
     .await
-    .expect("deploy succeeds after active state commit");
+    .expect("active commit succeeds even when completion record is uncertain");
 
     assert_eq!(
-        _outcome.completion_record,
-        DeployCompletionRecord::Missing {
+        outcome.completion_record,
+        DeployCompletionRecord::Uncertain {
             reason: DeployCompletionRecordFailure::RecordRejected,
         }
     );

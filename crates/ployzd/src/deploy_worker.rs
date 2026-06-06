@@ -149,7 +149,7 @@ where
     let completion_record =
         finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
             .await
-            .map_err(|source| source.into_execution_failure(command, &started_containers))?;
+            .map_err(|source| failure(command, source, &started_containers))?;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
@@ -172,7 +172,7 @@ where
     with_step_timeout(
         command,
         DeployExecutionStep::RecordProgress {
-            progress: DeployProgressWrite::Planning,
+            progress: types::DeployProgressWrite::Planning,
         },
         record(recorder, &command.operation_id, transition),
     )
@@ -187,12 +187,10 @@ async fn record_plan_created<R>(
 where
     R: DeployOperationRecorder,
 {
+    let evidence = DeployEvidence::PlanCreated { plan: plan.clone() };
     with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
         recorder
-            .record_deploy_evidence(
-                &command.operation_id,
-                DeployEvidence::PlanCreated { plan: plan.clone() },
-            )
+            .record_deploy_evidence(&command.operation_id, evidence)
             .await
             .map_err(DeployExecutionError::RecordEvidence)
     })
@@ -210,7 +208,7 @@ where
     with_step_timeout(
         command,
         DeployExecutionStep::RecordProgress {
-            progress: DeployProgressWrite::Running { stage },
+            progress: types::DeployProgressWrite::Running { stage },
         },
         record(
             recorder,
@@ -242,9 +240,10 @@ async fn record_health_check_started<R>(
 where
     R: DeployOperationRecorder,
 {
+    let evidence = DeployEvidence::HealthCheckStarted;
     with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
         recorder
-            .record_deploy_evidence(&command.operation_id, DeployEvidence::HealthCheckStarted)
+            .record_deploy_evidence(&command.operation_id, evidence)
             .await
             .map_err(DeployExecutionError::RecordEvidence)
     })
@@ -259,15 +258,13 @@ async fn record_container_started<R>(
 where
     R: DeployOperationRecorder,
 {
+    let evidence = DeployEvidence::ContainerStarted {
+        node_id: started.node_id.clone(),
+        container_id: started.container_id.clone(),
+    };
     with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
         recorder
-            .record_deploy_evidence(
-                &command.operation_id,
-                DeployEvidence::ContainerStarted {
-                    node_id: started.node_id.clone(),
-                    container_id: started.container_id.clone(),
-                },
-            )
+            .record_deploy_evidence(&command.operation_id, evidence)
             .await
             .map_err(DeployExecutionError::RecordEvidence)
     })
