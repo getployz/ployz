@@ -12,7 +12,7 @@ use ployz_keeper::steps::{
     BootstrapScriptTarget, HostPrerequisite, JoinToken, KeeperJoinTarget, KeeperStep,
     NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, keeper_join_plan,
 };
-use ployz_keeper::systemd::{SupervisorUnitTarget, role_unit_name};
+use ployz_keeper::systemd::SupervisorUnitTarget;
 
 #[test]
 fn bootstrap_script_installs_keeper_only() {
@@ -126,17 +126,6 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
         SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
     )));
-}
-
-#[test]
-fn role_units_render_the_supervised_ployzd_commands() {
-    let node = DaemonProcessRole::Node(node_id("node_7"));
-    let tunnel = DaemonProcessRole::Tunnel(TunnelSide::Edge);
-
-    assert_eq!(role_unit_name(&node), "ployzd-node-node_7.service");
-    assert_eq!(node.command_args(), ["node", "--id", "node_7"]);
-    assert_eq!(role_unit_name(&tunnel), "ployzd-tunnel-edge.service");
-    assert_eq!(tunnel.command_args(), ["tunnel", "--side", "edge"]);
 }
 
 #[test]

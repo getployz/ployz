@@ -70,7 +70,7 @@ pub struct KeeperArtifactTarget {
     pub version: ArtifactVersion,
     pub source: ArtifactSource,
     pub digest: Sha256Digest,
-    pub install_path: PathBuf,
+    install_path: PathBuf,
 }
 
 impl KeeperArtifactTarget {
@@ -80,13 +80,17 @@ impl KeeperArtifactTarget {
         digest: Sha256Digest,
         install_path: PathBuf,
     ) -> Result<Self, ArtifactTargetError> {
-        validate_install_path(&install_path)?;
         Ok(Self {
             version,
             source,
             digest,
-            install_path,
+            install_path: validate_install_path(install_path)?,
         })
+    }
+
+    #[must_use]
+    pub fn install_path(&self) -> &Path {
+        &self.install_path
     }
 }
 
@@ -95,7 +99,7 @@ pub struct PloyzdArtifactTarget {
     pub version: ArtifactVersion,
     pub source: ArtifactSource,
     pub digest: Sha256Digest,
-    pub install_path: PathBuf,
+    install_path: PathBuf,
 }
 
 impl PloyzdArtifactTarget {
@@ -105,13 +109,17 @@ impl PloyzdArtifactTarget {
         digest: Sha256Digest,
         install_path: PathBuf,
     ) -> Result<Self, ArtifactTargetError> {
-        validate_install_path(&install_path)?;
         Ok(Self {
             version,
             source,
             digest,
-            install_path,
+            install_path: validate_install_path(install_path)?,
         })
+    }
+
+    #[must_use]
+    pub fn install_path(&self) -> &Path {
+        &self.install_path
     }
 }
 
@@ -152,9 +160,9 @@ pub enum ArtifactTargetError {
     EmptyInstallPath,
 }
 
-fn validate_install_path(install_path: &Path) -> Result<(), ArtifactTargetError> {
+fn validate_install_path(install_path: PathBuf) -> Result<PathBuf, ArtifactTargetError> {
     if install_path.as_os_str().is_empty() {
         return Err(ArtifactTargetError::EmptyInstallPath);
     }
-    Ok(())
+    Ok(install_path)
 }
