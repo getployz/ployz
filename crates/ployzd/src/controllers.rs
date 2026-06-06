@@ -3,8 +3,8 @@
 use ployz_core::ids::{OperationId, OperationOwnerId, ServiceId};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationLeaseDurationSeconds, OperationLeaseExpiresAt,
-    OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
+    OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
+    OperationStatusSnapshot,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
@@ -15,9 +15,9 @@ use ployz_nats::operations::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
+use crate::operation_lease::OperationLeasePolicy;
 
-pub const DEFAULT_OPERATION_LEASE_SECONDS: u64 = 60;
+pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploySubmitCommand {
@@ -30,7 +30,7 @@ pub struct DeploySubmitCommand {
 pub struct OperationControllers {
     repository: AsyncNatsOperationRepository,
     owner_id: OperationOwnerId,
-    lease_seconds: OperationLeaseDurationSeconds,
+    lease_policy: OperationLeasePolicy,
 }
 
 impl OperationControllers {
@@ -40,10 +40,25 @@ impl OperationControllers {
         status_store: AsyncNatsOperationStatusStore,
         owner_id: OperationOwnerId,
     ) -> Self {
+        Self::with_owner_and_lease_policy(
+            event_log,
+            status_store,
+            owner_id,
+            OperationLeasePolicy::default_policy(),
+        )
+    }
+
+    #[must_use]
+    pub fn with_owner_and_lease_policy(
+        event_log: AsyncNatsOperationEventLog,
+        status_store: AsyncNatsOperationStatusStore,
+        owner_id: OperationOwnerId,
+        lease_policy: OperationLeasePolicy,
+    ) -> Self {
         Self {
             repository: AsyncNatsOperationRepository::new(event_log, status_store),
             owner_id,
-            lease_seconds: default_lease_seconds(),
+            lease_policy,
         }
     }
 
@@ -120,6 +135,19 @@ impl OperationControllers {
             .await
     }
 
+    pub async fn renew_owner_lease(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
+        self.repository
+            .renew_owner_lease(
+                operation_id,
+                self.build_lease_claim()
+                    .map_err(|message| OperationStatusStoreError::Clock { message })?,
+            )
+            .await
+    }
+
     pub async fn replay_operation_events(
         &self,
         request: OperationEventReplayRequest,
@@ -130,23 +158,20 @@ impl OperationControllers {
 
 impl OperationControllers {
     fn lease_claim(&self) -> Result<OperationLeaseClaim, SubmitDeployError> {
-        let now = self
-            .current_lease_time()
-            .map_err(|error| SubmitDeployError::Clock {
-                message: error.message,
-            })?;
-        let expires_at = OperationLeaseExpiresAt::try_new(
-            now.unix_seconds().saturating_add(self.lease_seconds.get()),
-        )
-        .map_err(|error| SubmitDeployError::Clock {
-            message: error.to_string(),
-        })?;
+        self.build_lease_claim()
+            .map_err(|message| SubmitDeployError::Clock { message })
+    }
 
-        OperationLeaseClaim::try_new(self.owner_id.clone(), now, expires_at).map_err(|error| {
-            SubmitDeployError::Clock {
-                message: error.to_string(),
-            }
-        })
+    fn build_lease_claim(&self) -> Result<OperationLeaseClaim, String> {
+        let now = self.current_lease_time().map_err(|error| error.message)?;
+        let expires_at = OperationLeaseExpiresAt::try_new(
+            now.unix_seconds()
+                .saturating_add(self.lease_policy.duration_seconds().get()),
+        )
+        .map_err(|error| error.to_string())?;
+
+        OperationLeaseClaim::try_new(self.owner_id.clone(), now, expires_at)
+            .map_err(|error| error.to_string())
     }
 
     fn current_lease_time(&self) -> Result<OperationLeaseExpiresAt, OperationLeaseClockError> {
@@ -165,13 +190,6 @@ fn test_owner_id() -> OperationOwnerId {
     match OperationOwnerId::try_new("control") {
         Ok(owner_id) => owner_id,
         Err(error) => panic!("test operation owner id is invalid: {error}"),
-    }
-}
-
-fn default_lease_seconds() -> OperationLeaseDurationSeconds {
-    match OperationLeaseDurationSeconds::try_new(DEFAULT_OPERATION_LEASE_SECONDS) {
-        Ok(duration) => duration,
-        Err(error) => panic!("default operation lease duration is invalid: {error}"),
     }
 }
 

@@ -237,6 +237,9 @@ impl AsyncNatsOperationStatusStore {
         if current.owner_id != *owner_id || current.is_expired_at(now) {
             return Ok(None);
         }
+        if expires_at <= current.expires_at {
+            return Ok(Some(current));
+        }
 
         let renewed = current.renew_until(expires_at);
         let payload =

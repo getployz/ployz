@@ -1,7 +1,8 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    DeployEvidence, DeployRunningStage, DeployTransition, OperatorHint, RetainedArtifact,
+    DeployEvidence, DeployRunningStage, DeployTransition, OperationLeaseExpiresAt,
+    OperationOwnerLease, OperatorHint, RetainedArtifact,
 };
 use ployz_core::state::{
     ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, CoreStateRevision,
@@ -13,6 +14,8 @@ use ployzd::deploy_worker::{
     DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
     NodeRunContainerOutcome, NodeRunContainerRequest,
 };
+use ployzd::operation_runner::OperationLeaseRenewer;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -217,6 +220,77 @@ impl DeployHealthChecker for HangingHealth {
     }
 }
 
+pub(super) struct SlowHealth {
+    delay: Duration,
+}
+
+impl SlowHealth {
+    pub(super) const fn new(delay: Duration) -> Self {
+        Self { delay }
+    }
+}
+
+impl DeployHealthChecker for SlowHealth {
+    async fn wait_healthy(
+        &mut self,
+        _containers: &[ployzd::deploy_worker::StartedDeployContainer],
+    ) -> Result<(), DeployHealthCheckError> {
+        tokio::time::sleep(self.delay).await;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct RecordingLeaseRenewer {
+    renewals: Arc<Mutex<Vec<OperationId>>>,
+    allow: bool,
+}
+
+impl RecordingLeaseRenewer {
+    pub(super) fn allowing() -> Self {
+        Self {
+            renewals: Arc::new(Mutex::new(Vec::new())),
+            allow: true,
+        }
+    }
+
+    pub(super) fn lost() -> Self {
+        Self {
+            renewals: Arc::new(Mutex::new(Vec::new())),
+            allow: false,
+        }
+    }
+
+    pub(super) fn renewals(&self) -> Vec<OperationId> {
+        self.renewals
+            .lock()
+            .expect("renewals lock is not poisoned")
+            .clone()
+    }
+}
+
+impl OperationLeaseRenewer for RecordingLeaseRenewer {
+    async fn renew_operation_lease(
+        &mut self,
+        operation_id: &OperationId,
+    ) -> Result<Option<OperationOwnerLease>, ployz_nats::operations::OperationStatusStoreError>
+    {
+        self.renewals
+            .lock()
+            .expect("renewals lock is not poisoned")
+            .push(operation_id.clone());
+        if self.allow {
+            Ok(Some(operation_lease(
+                operation_id.as_str(),
+                "control_a",
+                120,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StartedDeployContainerForAssert {
     node_id: NodeId,
@@ -312,6 +386,22 @@ pub(super) fn active_service_running() -> DeployRunningStage {
 
 pub(super) fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
+}
+
+pub(super) fn operation_owner_id(value: &str) -> ployz_core::ids::OperationOwnerId {
+    ployz_core::ids::OperationOwnerId::try_new(value).expect("valid operation owner id")
+}
+
+pub(super) fn operation_lease(
+    operation_id: &str,
+    owner_id: &str,
+    expires_at: u64,
+) -> OperationOwnerLease {
+    OperationOwnerLease::new(
+        self::operation_id(operation_id),
+        operation_owner_id(owner_id),
+        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
+    )
 }
 
 pub(super) fn service_id(value: &str) -> ServiceId {

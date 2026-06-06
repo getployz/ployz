@@ -7,13 +7,148 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use ployzd::deploy_worker::{
-    CompletionRecordAttemptError, DeployExecutionError, DeployExecutionPorts, DeployExecutionStep,
-    DeployHealthCheckError, DeployWorker, NodeContainerRuntimeError,
+    ActiveServiceCommitter, CompletionRecordAttemptError, DeployExecutionCommand,
+    DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
+    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployWorker,
+    NodeContainerRuntime, NodeContainerRuntimeError,
 };
+use ployzd::operation_runner::OwnedDeployRunner;
 use std::time::Duration;
 
 fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("test failure message is non-empty")
+}
+
+async fn execute_with_owned_worker<R, N, H, A>(
+    command: DeployExecutionCommand,
+    ports: DeployExecutionPorts<'_, R, N, H, A>,
+) -> Result<DeployExecutionOutcome, DeployExecutionError>
+where
+    R: DeployOperationRecorder,
+    N: NodeContainerRuntime,
+    H: DeployHealthChecker,
+    A: ActiveServiceCommitter,
+{
+    DeployWorker.execute(command, ports).await
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_deploy_runner_renews_lease_while_deploy_is_active() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = SlowHealth::new(Duration::from_secs(12));
+    let mut active_state = RecordingActiveState::stored();
+    let lease_renewer = RecordingLeaseRenewer::allowing();
+    let mut command = deploy_command(1);
+    command.step_timeout = Duration::from_secs(20);
+    let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
+        .expect("valid renewal interval");
+
+    runner
+        .run(
+            command,
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                node_runtime: &mut runtime,
+                health_checker: &mut health,
+                active_state: &mut active_state,
+            },
+            lease_renewer.clone(),
+        )
+        .await
+        .expect("deploy succeeds");
+
+    assert_eq!(
+        lease_renewer.renewals(),
+        vec![
+            operation_id("op_123"),
+            operation_id("op_123"),
+            operation_id("op_123"),
+        ]
+    );
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_deploy_runner_treats_lease_loss_as_advisory_while_deploy_runs() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = SlowHealth::new(Duration::from_secs(12));
+    let mut active_state = RecordingActiveState::stored();
+    let lease_renewer = RecordingLeaseRenewer::lost();
+    let mut command = deploy_command(1);
+    command.step_timeout = Duration::from_secs(20);
+    let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
+        .expect("valid renewal interval");
+
+    runner
+        .run(
+            command,
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                node_runtime: &mut runtime,
+                health_checker: &mut health,
+                active_state: &mut active_state,
+            },
+            lease_renewer.clone(),
+        )
+        .await
+        .expect("deploy succeeds despite advisory renewal loss");
+
+    assert_eq!(
+        lease_renewer.renewals(),
+        vec![
+            operation_id("op_123"),
+            operation_id("op_123"),
+            operation_id("op_123"),
+        ]
+    );
+    assert_eq!(runtime.requests.len(), 1);
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_deploy_runner_stops_renewing_when_runner_future_is_dropped() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = SlowHealth::new(Duration::from_secs(60));
+    let mut active_state = RecordingActiveState::stored();
+    let lease_renewer = RecordingLeaseRenewer::allowing();
+    let mut command = deploy_command(1);
+    command.step_timeout = Duration::from_secs(120);
+    let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
+        .expect("valid renewal interval");
+
+    let renewals_before_drop = {
+        let deploy = runner.run(
+            command,
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                node_runtime: &mut runtime,
+                health_checker: &mut health,
+                active_state: &mut active_state,
+            },
+            lease_renewer.clone(),
+        );
+        tokio::pin!(deploy);
+
+        tokio::select! {
+            result = &mut deploy => panic!("deploy should still be running: {result:?}"),
+            () = tokio::time::sleep(Duration::from_secs(6)) => {}
+        }
+
+        lease_renewer.renewals()
+    };
+
+    tokio::time::sleep(Duration::from_secs(20)).await;
+
+    assert_eq!(lease_renewer.renewals(), renewals_before_drop);
 }
 
 #[tokio::test]
@@ -24,18 +159,17 @@ async fn deploy_worker_runs_containers_then_completes() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
-    let outcome = DeployWorker
-        .execute(
-            command.clone(),
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect("deploy succeeds");
+    let outcome = execute_with_owned_worker(
+        command.clone(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds");
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
@@ -107,18 +241,17 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
-    let outcome = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect("reused operation-step container is idempotent progress");
+    let outcome = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("reused operation-step container is idempotent progress");
 
     assert_eq!(
         outcome
@@ -151,18 +284,17 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("deploy fails");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("deploy fails");
 
     assert!(matches!(
         error,
@@ -208,18 +340,17 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     let mut command = deploy_command(1);
     command.eligible_nodes.clear();
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("deploy fails while planning");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("deploy fails while planning");
 
     assert!(matches!(
         error,
@@ -255,18 +386,17 @@ async fn deploy_worker_waits_for_health_before_completing() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("deploy fails");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("deploy fails");
 
     assert!(matches!(
         error,
@@ -321,18 +451,17 @@ async fn deploy_worker_times_out_hanging_steps() {
     let mut command = deploy_command(1);
     command.step_timeout = Duration::from_millis(1);
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("health wait times out");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("health wait times out");
 
     assert!(matches!(
         error,
@@ -361,18 +490,17 @@ async fn deploy_worker_retries_completed_record_after_active_commit() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
-    let _outcome = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect("completion status is recorded");
+    let _outcome = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("completion status is recorded");
 
     assert_eq!(
         recorder.records,
@@ -408,18 +536,17 @@ async fn deploy_worker_records_terminal_failure_when_completion_cannot_be_record
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("completion record exhaustion marks the operation failed");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("completion record exhaustion marks the operation failed");
 
     assert!(matches!(
         error,
@@ -478,18 +605,17 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     let mut command = deploy_command(1);
     command.step_timeout = Duration::from_millis(1);
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("active commit timeout fails the operation");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("active commit timeout fails the operation");
 
     assert!(matches!(
         error,
@@ -544,18 +670,17 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
     let mut active_state = RecordingActiveState::stale_mismatch();
     let command = deploy_command(1);
 
-    let error = DeployWorker
-        .execute(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .expect_err("stale active commit fails");
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("stale active commit fails");
 
     assert!(matches!(
         error,

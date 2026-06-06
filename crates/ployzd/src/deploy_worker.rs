@@ -24,6 +24,7 @@ use finalization::finalize_successful_deploy;
 pub use ports::{
     ActiveServiceCommitter, DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime,
 };
+
 pub use types::{
     DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts, NodeRunContainerOutcome,
     NodeRunContainerRequest, StartedDeployContainer,

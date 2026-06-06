@@ -1,5 +1,5 @@
 use super::fixtures::*;
-use ployz_core::ops::OperationStatus;
+use ployz_core::ops::{OperationOwnerLease, OperationStatus};
 use ployz_nats::operations::{
     AsyncNatsOperationStatusStore, OperationStatusWrite, StoredDeploySubmission,
 };
@@ -82,4 +82,158 @@ async fn status_store_rejects_stale_write_against_real_nats() {
             .expect("status lookup succeeds"),
         Some(newer)
     );
+}
+
+#[tokio::test]
+async fn status_store_renews_current_owner_lease_against_real_nats() {
+    let nats = test_nats().await;
+    let store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open operation status store");
+    let operation_id = operation_id("op_123");
+    store
+        .claim_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(100),
+            lease_time(160),
+        )
+        .await
+        .expect("lease is claimed");
+
+    let renewed = store
+        .renew_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(120),
+            lease_time(190),
+        )
+        .await
+        .expect("lease renewal succeeds");
+
+    assert_eq!(
+        renewed,
+        Some(OperationOwnerLease::new(
+            operation_id,
+            owner_id("control_a"),
+            lease_time(190),
+        ))
+    );
+}
+
+#[tokio::test]
+async fn status_store_rejects_wrong_owner_lease_renewal_against_real_nats() {
+    let nats = test_nats().await;
+    let store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open operation status store");
+    let operation_id = operation_id("op_123");
+    let original = store
+        .claim_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(100),
+            lease_time(160),
+        )
+        .await
+        .expect("lease is claimed");
+
+    let renewed = store
+        .renew_owner_lease(
+            &operation_id,
+            &owner_id("control_b"),
+            lease_time(120),
+            lease_time(190),
+        )
+        .await
+        .expect("wrong owner renewal is classified");
+
+    assert_eq!(renewed, None);
+    assert_eq!(
+        store
+            .operation_ownership(&operation_id, lease_time(120))
+            .await
+            .expect("ownership reads"),
+        ployz_core::ops::OperationOwnershipStatus::Owned { lease: original }
+    );
+}
+
+#[tokio::test]
+async fn status_store_rejects_expired_owner_lease_renewal_against_real_nats() {
+    let nats = test_nats().await;
+    let store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open operation status store");
+    let operation_id = operation_id("op_123");
+    store
+        .claim_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(100),
+            lease_time(160),
+        )
+        .await
+        .expect("lease is claimed");
+
+    let renewed = store
+        .renew_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(161),
+            lease_time(220),
+        )
+        .await
+        .expect("expired owner renewal is classified");
+
+    assert_eq!(renewed, None);
+}
+
+#[tokio::test]
+async fn status_store_missing_owner_lease_renewal_returns_none_against_real_nats() {
+    let nats = test_nats().await;
+    let store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open operation status store");
+
+    let renewed = store
+        .renew_owner_lease(
+            &operation_id("op_missing"),
+            &owner_id("control_a"),
+            lease_time(120),
+            lease_time(190),
+        )
+        .await
+        .expect("missing owner renewal is classified");
+
+    assert_eq!(renewed, None);
+}
+
+#[tokio::test]
+async fn status_store_stale_owner_lease_renewal_does_not_shorten_lease_against_real_nats() {
+    let nats = test_nats().await;
+    let store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open operation status store");
+    let operation_id = operation_id("op_123");
+    let original = store
+        .claim_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(100),
+            lease_time(190),
+        )
+        .await
+        .expect("lease is claimed");
+
+    let renewed = store
+        .renew_owner_lease(
+            &operation_id,
+            &owner_id("control_a"),
+            lease_time(120),
+            lease_time(170),
+        )
+        .await
+        .expect("stale renewal succeeds without shortening");
+
+    assert_eq!(renewed, Some(original));
 }

@@ -50,9 +50,9 @@ impl AsyncNatsOperationRepository {
                 .status_store
                 .claim_owner_lease(
                     &existing.operation_id,
-                    &owner.owner_id,
-                    owner.now,
-                    owner.expires_at,
+                    owner.owner_id(),
+                    owner.now(),
+                    owner.expires_at(),
                 )
                 .await
                 .map_err(SubmitDeployError::StoreStatus)?;
@@ -112,9 +112,9 @@ impl AsyncNatsOperationRepository {
             .status_store
             .claim_owner_lease(
                 &submitted.operation_id,
-                &owner.owner_id,
-                owner.now,
-                owner.expires_at,
+                owner.owner_id(),
+                owner.now(),
+                owner.expires_at(),
             )
             .await
             .map_err(SubmitDeployError::StoreStatus)?;
@@ -177,6 +177,21 @@ impl AsyncNatsOperationRepository {
             .operation_ownership(operation_id, now)
             .await?;
         Ok(Some(OperationStatusSnapshot::new(status, ownership)))
+    }
+
+    pub async fn renew_owner_lease(
+        &self,
+        operation_id: &OperationId,
+        owner: OperationLeaseClaim,
+    ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
+        self.status_store
+            .renew_owner_lease(
+                operation_id,
+                owner.owner_id(),
+                owner.now(),
+                owner.expires_at(),
+            )
+            .await
     }
 
     pub async fn replay_operation_events(
@@ -477,9 +492,9 @@ pub struct DeployOperationSubmission {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationLeaseClaim {
-    pub owner_id: OperationOwnerId,
-    pub now: OperationLeaseExpiresAt,
-    pub expires_at: OperationLeaseExpiresAt,
+    owner_id: OperationOwnerId,
+    now: OperationLeaseExpiresAt,
+    expires_at: OperationLeaseExpiresAt,
 }
 
 impl OperationLeaseClaim {
@@ -497,6 +512,21 @@ impl OperationLeaseClaim {
             now,
             expires_at,
         })
+    }
+
+    #[must_use]
+    pub const fn now(&self) -> OperationLeaseExpiresAt {
+        self.now
+    }
+
+    #[must_use]
+    pub const fn expires_at(&self) -> OperationLeaseExpiresAt {
+        self.expires_at
+    }
+
+    #[must_use]
+    pub fn owner_id(&self) -> &OperationOwnerId {
+        &self.owner_id
     }
 }
 

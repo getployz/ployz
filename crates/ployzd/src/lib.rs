@@ -19,5 +19,7 @@ pub mod iroh_tunnel;
 pub mod nats_process;
 pub mod node_agent;
 pub mod operation_api;
+pub mod operation_lease;
+pub mod operation_runner;
 pub mod role;
 pub mod services;
