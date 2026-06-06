@@ -441,6 +441,10 @@ pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
 }
 
+pub(super) fn route_cutover_running() -> DeployRunningStage {
+    DeployRunningStage::RouteCutover
+}
+
 pub(super) fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
 }

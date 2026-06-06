@@ -11,6 +11,7 @@ pub mod api_runtime;
 pub mod app;
 pub mod config;
 pub mod controllers;
+pub mod deploy_launcher;
 pub mod deploy_worker;
 pub mod dns;
 pub mod docker;

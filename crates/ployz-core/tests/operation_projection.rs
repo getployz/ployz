@@ -89,7 +89,7 @@ fn deploy_completion_is_rejected_before_active_commit_stage() {
 }
 
 #[test]
-fn deploy_running_stages_must_advance_adjacent() {
+fn deploy_running_stages_reject_unmodeled_large_skips() {
     let planning = OperationStatus::Deploy {
         id: operation_id("op_123"),
         service_id: service_id("svc_api"),

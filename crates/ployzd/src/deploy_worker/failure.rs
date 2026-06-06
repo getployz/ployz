@@ -141,6 +141,7 @@ pub enum DeployExecutionStep {
     RecordHealthCheckStarted,
     RecordWaitingForHealth,
     WaitHealthy,
+    RecordRouteCutoverCheckpoint,
     RecordActiveServiceCommitCheckpoint,
     RecordCompleted,
     CommitActiveService,
@@ -165,6 +166,7 @@ impl DeployExecutionStep {
             Self::RecordHealthCheckStarted => "record_health_check_started",
             Self::RecordWaitingForHealth => "record_waiting_for_health",
             Self::WaitHealthy => "wait_healthy",
+            Self::RecordRouteCutoverCheckpoint => "record_route_cutover_checkpoint",
             Self::RecordActiveServiceCommitCheckpoint => "record_active_service_commit_checkpoint",
             Self::RecordCompleted => "record_completed",
             Self::CommitActiveService => "commit_active_service",
@@ -202,6 +204,7 @@ impl DeployExecutionStep {
             | Self::RecordContainerStarted
             | Self::RecordHealthCheckStarted
             | Self::RecordWaitingForHealth
+            | Self::RecordRouteCutoverCheckpoint
             | Self::RecordActiveServiceCommitCheckpoint
             | Self::RecordCompleted
             | Self::RecordFailed => DeployOperationFailure::ControlPlaneCommitFailed {

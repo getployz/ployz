@@ -199,6 +199,9 @@ async fn deploy_worker_runs_containers_then_completes() {
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
+                stage: route_cutover_running(),
+            }),
+            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
             RecordedOperation::Transition(DeployTransition::Completed),
@@ -286,6 +289,9 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
                 stage: DeployRunningStage::WaitingForHealth,
             }),
             RecordedOperation::HealthCheckStarted,
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: route_cutover_running(),
+            }),
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
@@ -623,6 +629,9 @@ async fn deploy_worker_retries_completed_record_after_active_commit() {
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
+                stage: route_cutover_running(),
+            }),
+            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
             RecordedOperation::Transition(DeployTransition::Completed),
@@ -683,6 +692,9 @@ async fn deploy_worker_records_terminal_failure_when_completion_cannot_be_record
                 stage: DeployRunningStage::WaitingForHealth,
             }),
             RecordedOperation::HealthCheckStarted,
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: route_cutover_running(),
+            }),
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
@@ -751,6 +763,9 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
+                stage: route_cutover_running(),
+            }),
+            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
@@ -808,6 +823,9 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
                 stage: DeployRunningStage::WaitingForHealth,
             }),
             RecordedOperation::HealthCheckStarted,
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: route_cutover_running(),
+            }),
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),

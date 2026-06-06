@@ -46,6 +46,9 @@ impl AsyncNatsOperationRepository {
             .await
             .map_err(SubmitDeployError::StoreStatus)?
         {
+            let target = self
+                .submitted_deploy_target(&existing.operation_id, existing.start_sequence)
+                .await?;
             let lease = self
                 .status_store
                 .claim_owner_lease(
@@ -59,6 +62,7 @@ impl AsyncNatsOperationRepository {
             return Ok(AcceptedDeploySubmission {
                 operation_id: existing.operation_id,
                 start_sequence: existing.start_sequence,
+                target,
                 lease,
             });
         }
@@ -93,7 +97,7 @@ impl AsyncNatsOperationRepository {
         };
         let status = OperationStatus::deploy_accepted(
             operation_id.clone(),
-            target.service_id,
+            target.service_id.clone(),
             stored.sequence,
         );
         self.status_store
@@ -110,6 +114,9 @@ impl AsyncNatsOperationRepository {
             .put_deploy_submission_if_absent(&submission.idempotency_key, &submitted)
             .await
             .map_err(SubmitDeployError::StoreStatus)?;
+        let target = self
+            .submitted_deploy_target(&submitted.operation_id, submitted.start_sequence)
+            .await?;
 
         let lease = self
             .status_store
@@ -125,8 +132,33 @@ impl AsyncNatsOperationRepository {
         Ok(AcceptedDeploySubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
+            target,
             lease,
         })
+    }
+
+    async fn submitted_deploy_target(
+        &self,
+        expected_operation_id: &OperationId,
+        sequence: EventSequence,
+    ) -> Result<ployz_core::deploy::DeployRequest, SubmitDeployError> {
+        let event = self
+            .event_log
+            .event_at_sequence(sequence)
+            .await
+            .map_err(SubmitDeployError::AppendEvent)?;
+        let OperationEvent::DeploySubmitted {
+            operation_id,
+            target,
+        } = event
+        else {
+            return Err(SubmitDeployError::DuplicateSequenceMismatch { sequence });
+        };
+        if &operation_id != expected_operation_id {
+            return Err(SubmitDeployError::DuplicateSequenceMismatch { sequence });
+        }
+
+        Ok(target)
     }
 
     pub async fn record_deploy_transition(
@@ -558,6 +590,7 @@ impl std::fmt::Display for OperationLeaseClaimError {
 pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
+    pub target: ployz_core::deploy::DeployRequest,
     pub lease: OperationOwnerLease,
 }
 

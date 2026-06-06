@@ -145,6 +145,17 @@ where
     .await
     .map_err(|source| failure(source, &started_containers))?;
 
+    // MVP deploys have no route work yet, but keep the operation stage order
+    // strict so future route-bearing deploys cannot skip the phase silently.
+    record_running_stage(
+        command,
+        &mut *ports.recorder,
+        DeployExecutionStep::RecordRouteCutoverCheckpoint,
+        DeployRunningStage::RouteCutover,
+    )
+    .await
+    .map_err(|source| failure(source, &started_containers))?;
+
     record_running_stage(
         command,
         &mut *ports.recorder,

@@ -90,8 +90,14 @@ impl OperationControllers {
         Ok(AcceptedDeployOperation {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
+            target: submitted.target,
             lease: submitted.lease,
         })
+    }
+
+    #[must_use]
+    pub fn owner_id(&self) -> &OperationOwnerId {
+        &self.owner_id
     }
 
     pub async fn record_deploy_transition(
@@ -184,6 +190,7 @@ impl OperationControllers {
 pub struct AcceptedDeployOperation {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
+    pub target: DeployRequest,
     pub lease: OperationOwnerLease,
 }
 
