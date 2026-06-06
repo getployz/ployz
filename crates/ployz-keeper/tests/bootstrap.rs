@@ -7,6 +7,7 @@ use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
     KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
+use ployz_keeper::cli::load_startup;
 use ployz_keeper::steps::{
     BootstrapScriptTarget, HostPrerequisite, JoinToken, KeeperJoinTarget, KeeperStep,
     NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, keeper_join_plan,
@@ -55,6 +56,33 @@ fn bootstrap_script_file_installs_only_keeper() {
     assert!(script.contains("id -u"));
     assert!(!script.contains("ployzd"));
     assert!(!script.contains("NATS"));
+}
+
+#[test]
+fn keeper_startup_consumes_join_token_file_without_leaking_secret() {
+    let token_file = unique_temp_path("ployz-keeper-join-token");
+    fs::write(&token_file, "join_once\n").expect("join token file can be written");
+
+    let startup = load_startup(vec![
+        "--join-token-file".into(),
+        token_file.as_os_str().to_os_string(),
+    ])
+    .expect("startup reads join token");
+    let token = startup.join_token.expect("join token is loaded");
+
+    assert_eq!(
+        token,
+        JoinToken::try_new("join_once").expect("expected token is valid")
+    );
+    assert_eq!(format!("{token:?}"), "JoinToken(\"[redacted]\")");
+    assert!(!token_file.exists());
+    assert!(
+        load_startup(vec![
+            "--join-token-file".into(),
+            token_file.as_os_str().to_os_string(),
+        ])
+        .is_err()
+    );
 }
 
 #[test]
@@ -167,6 +195,18 @@ fn digest(value: &str) -> Sha256Digest {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn unique_temp_path(prefix: &str) -> PathBuf {
+    let unique = format!(
+        "{}-{}",
+        prefix,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after unix epoch")
+            .as_nanos()
+    );
+    std::env::temp_dir().join(unique)
 }
 
 const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

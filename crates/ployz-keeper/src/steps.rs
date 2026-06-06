@@ -1,5 +1,7 @@
 //! Typed keeper step plans.
 
+use std::fmt;
+
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::roles::DaemonProcessRole;
 
@@ -63,7 +65,7 @@ pub enum HostPrerequisite {
     LinuxRootSystemd,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct JoinToken(String);
 
 impl JoinToken {
@@ -78,6 +80,15 @@ impl JoinToken {
     #[must_use]
     pub fn redacted(&self) -> &'static str {
         "[redacted]"
+    }
+}
+
+impl fmt::Debug for JoinToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("JoinToken")
+            .field(&self.redacted())
+            .finish()
     }
 }
 
