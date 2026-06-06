@@ -9,6 +9,7 @@ use crate::node::NodeContainerObservationSnapshot;
 use crate::state::{ActiveServiceState, ExpectedActiveService};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployRequest {
     pub service_id: ServiceId,
@@ -47,6 +48,7 @@ pub struct PreparedDeploy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployPlan {
     pub service_id: ServiceId,
@@ -55,6 +57,7 @@ pub struct DeployPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployPlanStep {
     UseExistingContainer {
@@ -69,6 +72,8 @@ pub enum DeployPlanStep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"ReplicaSlot\">"))]
 #[serde(try_from = "u16", into = "u16")]
 pub struct ReplicaSlot(u16);
 
@@ -245,6 +250,8 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ImageReference\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct ImageReference(String);
 
@@ -306,6 +313,8 @@ impl fmt::Display for ImageReferenceError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "SafeInteger<\"ReplicaCount\">"))]
 #[serde(try_from = "u16", into = "u16")]
 pub struct ReplicaCount(NonZeroU16);
 

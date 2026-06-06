@@ -6,6 +6,9 @@
 //! not contain orchestration logic.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+pub mod typescript;
 
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
@@ -13,16 +16,17 @@ pub use ployz_core::cert::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
 };
 pub use ployz_core::deploy::{
-    DeployRequest, ImageReference, ImageReferenceError, ReplicaCount, ReplicaCountError,
+    DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ImageReferenceError, ReplicaCount,
+    ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
     SubjectTokenError,
 };
 pub use ployz_core::ops::{
-    ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
-    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    ActiveServiceCommitFailure, ArtifactUnavailableReason, CancellationReason, EventSequence,
+    EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationLeaseExpiresAtError,
     OperationOwnerLease, OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
@@ -38,7 +42,7 @@ pub use ployz_core::state::{
     ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DeploySubmitRequest {
     pub operation_id: OperationId,
@@ -48,7 +52,7 @@ pub struct DeploySubmitRequest {
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct OpsStatusRequest {
     pub operation_id: OperationId,
@@ -60,14 +64,14 @@ pub type OpsWatchRequest = OperationEventReplayRequest;
 
 pub type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationApiResponse<T, E> {
     Ok { value: T },
     DomainError { error: E },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptedOperation {
     pub operation_id: OperationId,
@@ -76,7 +80,7 @@ pub struct AcceptedOperation {
     pub owner_lease: OperationOwnerLease,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploySubmitError {
     Unavailable {
@@ -89,7 +93,7 @@ pub enum DeploySubmitError {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploySubmitUnavailableSource {
     StatusStore { failure: DeploySubmitStatusFailure },
@@ -97,7 +101,7 @@ pub enum DeploySubmitUnavailableSource {
     Clock { failure: DeploySubmitClockFailure },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploySubmitStatusFailure {
     OpenBucket,
@@ -113,7 +117,7 @@ pub enum DeploySubmitStatusFailure {
     Timeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploySubmitEventFailure {
     EncodeEvent,
@@ -125,13 +129,13 @@ pub enum DeploySubmitEventFailure {
     InvalidAckSequence,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploySubmitClockFailure {
     BeforeUnixEpoch,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpsStatusError {
     NoSuchOperation {
@@ -143,13 +147,13 @@ pub enum OpsStatusError {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpsStatusUnavailableSource {
     StatusStore { failure: StatusReadFailure },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusReadFailure {
     DecodeStatus,
@@ -159,7 +163,7 @@ pub enum StatusReadFailure {
     Timeout,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpsWatchError {
     NoSuchOperation {
@@ -171,14 +175,14 @@ pub enum OpsWatchError {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpsWatchUnavailableSource {
     StatusStore { failure: StatusReadFailure },
     EventLog { failure: EventReplayFailure },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum EventReplayFailure {
     DecodeEvent,

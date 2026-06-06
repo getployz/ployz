@@ -24,6 +24,8 @@ impl fmt::Display for SubjectTokenError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"OperationId\">"))]
 #[serde(transparent)]
 pub struct OperationId(SubjectToken);
 
@@ -39,6 +41,11 @@ impl OperationId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"OperationOwnerId\">")
+)]
 #[serde(transparent)]
 pub struct OperationOwnerId(SubjectToken);
 
@@ -54,6 +61,8 @@ impl OperationOwnerId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"NodeId\">"))]
 #[serde(transparent)]
 pub struct NodeId(SubjectToken);
 
@@ -69,6 +78,8 @@ impl NodeId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ServiceId\">"))]
 #[serde(transparent)]
 pub struct ServiceId(SubjectToken);
 
@@ -84,6 +95,8 @@ impl ServiceId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"RevisionId\">"))]
 #[serde(transparent)]
 pub struct RevisionId(SubjectToken);
 
@@ -99,6 +112,8 @@ impl RevisionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ContainerId\">"))]
 #[serde(transparent)]
 pub struct ContainerId(SubjectToken);
 
@@ -114,6 +129,8 @@ impl ContainerId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"CertId\">"))]
 #[serde(transparent)]
 pub struct CertId(SubjectToken);
 

@@ -1,0 +1,18 @@
+{
+  "name": "@ployz/sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate:types": "cargo run -p ployz-sdk-types --bin export-typescript > src/generated.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/operations.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

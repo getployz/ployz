@@ -1,3 +1,3 @@
 fn main() {
-    println!("ployzctl skeleton");
+    println!("{}", ployzctl::commands::USAGE);
 }

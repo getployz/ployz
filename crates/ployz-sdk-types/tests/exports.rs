@@ -7,9 +7,10 @@ use ployz_sdk_types::{
     NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
     OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationSubject, ReplicaCount,
-    ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    ServiceId, SubjectTokenError,
+    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
+    RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId,
+    SubjectTokenError,
 };
 
 #[test]
@@ -52,7 +53,7 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
-        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":1}"#
+        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":"1"}"#
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
@@ -95,11 +96,11 @@ fn sdk_exports_cert_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
-        r#"{"kind":"cert","id":"op_cert","cert_id":"cert_api","state":{"state":"running","stage":"validation_started"},"last_event_sequence":3}"#
+        r#"{"kind":"cert","id":"op_cert","cert_id":"cert_api","state":{"state":"running","stage":"validation_started"},"last_event_sequence":"3"}"#
     );
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"obj://PLZ_CERTS/cert_api/rev_1","validity":{"not_before":1700000000,"not_after":1707776000}}}"#
+        r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"obj://PLZ_CERTS/cert_api/rev_1","validity":{"not_before":"1700000000","not_after":"1707776000"}}}"#
     );
     assert_eq!(challenge.ttl_seconds().get(), 60);
 }
@@ -132,7 +133,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.op.op_123.>","start_sequence":1,"owner_lease":{"operation_id":"op_123","owner_id":"control","expires_at":120}}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.op.op_123.>","start_sequence":"1","owner_lease":{"operation_id":"op_123","owner_id":"control","expires_at":"120"}}}"#
     );
 
     let OperationApiResponse::Ok { value } = response else {
@@ -145,6 +146,45 @@ fn sdk_exports_operation_api_wire_types() {
         EventSequence::try_new(1).expect("valid event sequence")
     );
     assert_eq!(value.owner_lease, operation_lease("op_123", "control", 120));
+}
+
+#[test]
+fn typescript_contract_fixture_matches_rust_wire_types() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../packages/ployz-sdk/test/fixtures/operation-contract.json"
+    ))
+    .expect("fixture is json");
+
+    assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
+    assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
+    assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
+    assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
+    assert_fixture::<OperationStatusSnapshot>(&fixture, "operation_status_snapshot");
+    assert_fixture::<OpsStatusResponse>(&fixture, "ops_status_response");
+    assert_fixture::<OperationEventReplayPage>(&fixture, "operation_event_replay_page");
+    assert_fixture::<OpsWatchResponse>(&fixture, "ops_watch_response");
+    assert_fixture::<OpsStatusResponse>(&fixture, "ops_status_error_response");
+}
+
+#[test]
+fn package_typescript_contract_is_generated_from_rust_crate() {
+    assert_eq!(
+        include_str!("../../../packages/ployz-sdk/src/generated.ts"),
+        ployz_sdk_types::typescript::generated_typescript()
+    );
+}
+
+fn assert_fixture<T>(fixture: &serde_json::Value, key: &'static str)
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let value = fixture.get(key).expect("fixture key exists").clone();
+    let decoded: T = serde_json::from_value(value.clone()).expect("fixture matches rust type");
+
+    assert_eq!(
+        serde_json::to_value(decoded).expect("fixture serializes through rust type"),
+        value
+    );
 }
 
 fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {

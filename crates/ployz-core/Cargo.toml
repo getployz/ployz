@@ -8,8 +8,13 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+typescript = ["dep:ts-rs"]
+
 [dependencies]
 serde.workspace = true
+ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

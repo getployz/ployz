@@ -1,0 +1,133 @@
+{
+  "deploy_submit_request": {
+    "operation_id": "op_123",
+    "idempotency_key": "idem_123",
+    "target": {
+      "service_id": "svc_api",
+      "target_revision": "rev_2",
+      "image": "ghcr.io/acme/api:rev-2",
+      "replicas": 2
+    }
+  },
+  "ops_watch_request": {
+    "operation_id": "op_123",
+    "start_sequence": "1",
+    "limit": 100
+  },
+  "accepted_operation": {
+    "operation_id": "op_123",
+    "watch_subject": "plz.v1.op.op_123.>",
+    "start_sequence": "1",
+    "owner_lease": {
+      "operation_id": "op_123",
+      "owner_id": "control",
+      "expires_at": "120"
+    }
+  },
+  "deploy_submit_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_123",
+      "watch_subject": "plz.v1.op.op_123.>",
+      "start_sequence": "1",
+      "owner_lease": {
+        "operation_id": "op_123",
+        "owner_id": "control",
+        "expires_at": "120"
+      }
+    }
+  },
+  "operation_status_snapshot": {
+    "status": {
+      "kind": "deploy",
+      "id": "op_123",
+      "service_id": "svc_api",
+      "state": {
+        "state": "accepted"
+      },
+      "last_event_sequence": "1"
+    },
+    "ownership": {
+      "state": "owned",
+      "lease": {
+        "operation_id": "op_123",
+        "owner_id": "control",
+        "expires_at": "120"
+      }
+    }
+  },
+  "ops_status_response": {
+    "status": "ok",
+    "value": {
+      "status": {
+        "kind": "deploy",
+        "id": "op_123",
+        "service_id": "svc_api",
+        "state": {
+          "state": "accepted"
+        },
+        "last_event_sequence": "1"
+      },
+      "ownership": {
+        "state": "owned",
+        "lease": {
+          "operation_id": "op_123",
+          "owner_id": "control",
+          "expires_at": "120"
+        }
+      }
+    }
+  },
+  "operation_event_replay_page": {
+    "events": [
+      {
+        "sequence": "1",
+        "event": {
+          "event": "deploy_submitted",
+          "operation_id": "op_123",
+          "target": {
+            "service_id": "svc_api",
+            "target_revision": "rev_2",
+            "image": "ghcr.io/acme/api:rev-2",
+            "replicas": 2
+          }
+        }
+      }
+    ],
+    "cursor": {
+      "state": "more",
+      "next_start_sequence": "2"
+    }
+  },
+  "ops_watch_response": {
+    "status": "ok",
+    "value": {
+      "events": [
+        {
+          "sequence": "1",
+          "event": {
+            "event": "deploy_submitted",
+            "operation_id": "op_123",
+            "target": {
+              "service_id": "svc_api",
+              "target_revision": "rev_2",
+              "image": "ghcr.io/acme/api:rev-2",
+              "replicas": 2
+            }
+          }
+        }
+      ],
+      "cursor": {
+        "state": "more",
+        "next_start_sequence": "2"
+      }
+    }
+  },
+  "ops_status_error_response": {
+    "status": "domain_error",
+    "error": {
+      "error": "no_such_operation",
+      "operation_id": "op_missing"
+    }
+  }
+}

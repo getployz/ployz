@@ -9,8 +9,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-ployz-core.workspace = true
+ployz-core = { workspace = true, features = ["typescript"] }
 serde.workspace = true
+ts-rs.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

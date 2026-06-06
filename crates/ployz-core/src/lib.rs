@@ -17,3 +17,4 @@ pub mod security;
 pub mod state;
 pub mod subjects;
 pub mod time;
+pub(crate) mod wire;

@@ -7,6 +7,7 @@ use crate::ids::{NodeId, RevisionId, ServiceId};
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveServiceState {
     pub service_id: ServiceId,
@@ -47,6 +48,7 @@ impl CoreStateRevision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveServiceCommitRequest {
     pub service_id: ServiceId,
@@ -55,6 +57,7 @@ pub struct ActiveServiceCommitRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ExpectedActiveService {
     Absent,

@@ -6,12 +6,14 @@ use std::num::NonZeroU64;
 
 use crate::ids::CertId;
 use crate::ops::RouteHostname;
+use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
 
 pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ActiveCertState {
     pub cert_id: CertId,
@@ -66,6 +68,7 @@ impl AcmeChallengeStateKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(try_from = "AcmeHttp01ChallengeWire", into = "AcmeHttp01ChallengeWire")]
 pub struct AcmeHttp01Challenge {
     hostname: RouteHostname,
@@ -161,6 +164,7 @@ impl fmt::Display for AcmeChallengeError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct CertValidityWindow {
     pub not_before: CertValidAt,
@@ -187,7 +191,9 @@ impl CertValidityWindow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "u64", into = "u64")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"CertValidAt\">"))]
+#[serde(try_from = "String", into = "String")]
 pub struct CertValidAt(NonZeroU64);
 
 impl CertValidAt {
@@ -219,9 +225,30 @@ impl From<CertValidAt> for u64 {
     }
 }
 
+impl TryFrom<String> for CertValidAt {
+    type Error = CertValidAtError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match parse_positive_u64_string(value) {
+            Ok(value) => Self::try_new(value),
+            Err(PositiveU64StringError::Zero) => Err(CertValidAtError::Zero),
+            Err(PositiveU64StringError::Invalid { value }) => {
+                Err(CertValidAtError::InvalidWireValue { value })
+            }
+        }
+    }
+}
+
+impl From<CertValidAt> for String {
+    fn from(value: CertValidAt) -> Self {
+        format_u64_string(value.unix_seconds())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertValidAtError {
     Zero,
+    InvalidWireValue { value: String },
 }
 
 impl fmt::Display for CertValidAtError {
@@ -230,6 +257,10 @@ impl fmt::Display for CertValidAtError {
             Self::Zero => {
                 formatter.write_str("certificate validity timestamp must be greater than zero")
             }
+            Self::InvalidWireValue { value } => write!(
+                formatter,
+                "certificate validity timestamp {value:?} must be a positive integer string"
+            ),
         }
     }
 }
@@ -253,7 +284,12 @@ impl fmt::Display for CertValidityError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "u64", into = "u64")]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"AcmeChallengeTtlSeconds\">")
+)]
+#[serde(try_from = "String", into = "String")]
 pub struct AcmeChallengeTtlSeconds(NonZeroU64);
 
 impl AcmeChallengeTtlSeconds {
@@ -285,20 +321,50 @@ impl From<AcmeChallengeTtlSeconds> for u64 {
     }
 }
 
+impl TryFrom<String> for AcmeChallengeTtlSeconds {
+    type Error = AcmeChallengeTtlError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match parse_positive_u64_string(value) {
+            Ok(value) => Self::try_new(value),
+            Err(PositiveU64StringError::Zero) => Err(AcmeChallengeTtlError::Zero),
+            Err(PositiveU64StringError::Invalid { value }) => {
+                Err(AcmeChallengeTtlError::InvalidWireValue { value })
+            }
+        }
+    }
+}
+
+impl From<AcmeChallengeTtlSeconds> for String {
+    fn from(value: AcmeChallengeTtlSeconds) -> Self {
+        format_u64_string(value.get())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcmeChallengeTtlError {
     Zero,
+    InvalidWireValue { value: String },
 }
 
 impl fmt::Display for AcmeChallengeTtlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Zero => formatter.write_str("ACME challenge TTL must be greater than zero"),
+            Self::InvalidWireValue { value } => write!(
+                formatter,
+                "ACME challenge TTL {value:?} must be a positive integer string"
+            ),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"AcmeChallengeToken\">")
+)]
 #[serde(try_from = "String", into = "String")]
 pub struct AcmeChallengeToken(String);
 
@@ -341,6 +407,11 @@ impl From<AcmeChallengeToken> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"AcmeChallengeValue\">")
+)]
 #[serde(try_from = "String", into = "String")]
 pub struct AcmeChallengeValue(String);
 
@@ -379,6 +450,8 @@ impl From<AcmeChallengeValue> for String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"CertBundleRef\">"))]
 #[serde(try_from = "String", into = "String")]
 pub struct CertBundleRef(String);
 

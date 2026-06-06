@@ -91,7 +91,7 @@ fn operation_status_subject_is_variant_specific_data() {
 
     assert_eq!(
         serde_json::to_string(&status).expect("status serializes"),
-        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":42}"#
+        r#"{"kind":"deploy","id":"op_123","service_id":"svc_api","state":{"state":"accepted"},"last_event_sequence":"42"}"#
     );
 }
 
@@ -111,7 +111,7 @@ fn operation_event_replay_request_round_trips_through_json() {
     );
     assert_eq!(
         json,
-        r#"{"operation_id":"op_123","start_sequence":3,"limit":50}"#
+        r#"{"operation_id":"op_123","start_sequence":"3","limit":50}"#
     );
 }
 
@@ -129,7 +129,7 @@ fn operation_event_replay_page_carries_explicit_cursor() {
 
     assert_eq!(
         serde_json::to_string(&page).expect("page serializes"),
-        r#"{"events":[{"sequence":4,"event":{"event":"deploy_planning_started","operation_id":"op_123"}}],"cursor":{"state":"more","next_start_sequence":5}}"#
+        r#"{"events":[{"sequence":"4","event":{"event":"deploy_planning_started","operation_id":"op_123"}}],"cursor":{"state":"more","next_start_sequence":"5"}}"#
     );
     assert_eq!(
         OperationEventReplayPage::caught_up(Vec::new()).cursor,
@@ -146,6 +146,23 @@ fn operation_event_replay_limit_rejects_zero_and_oversized_wire_values() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn public_u64_wire_values_are_string_encoded_without_narrowing_core_values() {
+    let max_sequence = EventSequence::try_new(u64::MAX).expect("max u64 is valid internally");
+
+    assert_eq!(
+        serde_json::to_string(&max_sequence).expect("sequence serializes"),
+        r#""18446744073709551615""#
+    );
+    assert_eq!(
+        serde_json::from_str::<EventSequence>(r#""18446744073709551615""#)
+            .expect("sequence deserializes")
+            .get(),
+        u64::MAX
+    );
+    assert!(serde_json::from_str::<EventSequence>("1").is_err());
 }
 
 #[test]
@@ -194,7 +211,7 @@ fn operation_status_rejects_missing_or_zero_event_sequence() {
         "id": "op_123",
         "service_id": "svc_api",
         "state": { "state": "accepted" },
-        "last_event_sequence": 0
+        "last_event_sequence": "0"
     }"#;
 
     assert!(serde_json::from_str::<OperationStatus>(zero_sequence).is_err());
@@ -268,7 +285,7 @@ fn wire_models_reject_unknown_fields() {
         "id": "op_123",
         "service_id": "svc_api",
         "state": { "state": "accepted" },
-        "last_event_sequence": 1,
+        "last_event_sequence": "1",
         "unsupported": true
     }"#;
 
