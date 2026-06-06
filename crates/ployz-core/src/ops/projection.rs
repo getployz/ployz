@@ -43,18 +43,12 @@ pub fn validate_fresh_deploy_evidence(
     let OperationStatus::Deploy { id, state, .. } = current;
     let valid = match evidence {
         DeployEvidence::PlanCreated { .. } => matches!(state, DeployOperationState::Planning),
-        DeployEvidence::ContainerStarted { .. } => matches!(
-            state,
-            DeployOperationState::Running {
-                stage: DeployRunningStage::StartingContainers
-            }
-        ),
-        DeployEvidence::HealthCheckStarted => matches!(
-            state,
-            DeployOperationState::Running {
-                stage: DeployRunningStage::WaitingForHealth
-            }
-        ),
+        DeployEvidence::ContainerStarted { .. } => {
+            evidence_is_current_or_past_running_stage(state, DeployRunningStage::StartingContainers)
+        }
+        DeployEvidence::HealthCheckStarted => {
+            evidence_is_current_or_past_running_stage(state, DeployRunningStage::WaitingForHealth)
+        }
     };
     if valid {
         return Ok(());
@@ -65,6 +59,17 @@ pub fn validate_fresh_deploy_evidence(
         current: Box::new(state.clone()),
         attempted: Box::new(deploy_evidence_required_state(evidence)),
     })
+}
+
+fn evidence_is_current_or_past_running_stage(
+    state: &DeployOperationState,
+    evidence_stage: DeployRunningStage,
+) -> bool {
+    let DeployOperationState::Running { stage } = state else {
+        return false;
+    };
+
+    deploy_stage_rank(*stage) >= deploy_stage_rank(evidence_stage)
 }
 
 fn deploy_evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
@@ -350,7 +355,7 @@ fn deploy_transition_allowed(
         | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. }) => true,
         (
             DeployOperationState::Running {
-                stage: DeployRunningStage::ActiveServiceCommit | DeployRunningStage::CleaningUp,
+                stage: DeployRunningStage::ActiveServiceCommit,
             },
             DeployOperationState::Completed,
         ) => true,
@@ -377,9 +382,7 @@ fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::StartingContainers => 0,
         DeployRunningStage::WaitingForHealth => 1,
-        DeployRunningStage::RouteCutover => 2,
-        DeployRunningStage::ActiveServiceCommit => 3,
-        DeployRunningStage::CleaningUp => 4,
+        DeployRunningStage::ActiveServiceCommit => 2,
     }
 }
 
@@ -391,13 +394,7 @@ fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningSta
             DeployRunningStage::WaitingForHealth
         ) | (
             DeployRunningStage::WaitingForHealth,
-            DeployRunningStage::RouteCutover
-        ) | (
-            DeployRunningStage::RouteCutover,
             DeployRunningStage::ActiveServiceCommit
-        ) | (
-            DeployRunningStage::ActiveServiceCommit,
-            DeployRunningStage::CleaningUp
         )
     )
 }

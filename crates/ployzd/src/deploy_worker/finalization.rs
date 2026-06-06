@@ -4,9 +4,8 @@ use std::time::Duration;
 
 use super::failure::{DeployExecutionFailure, failure};
 use super::{
-    ActiveServiceCommitRejection, ActiveServiceCommitter, DeployCompletionRecord,
-    DeployCompletionRecordFailure, DeployContainer, DeployExecutionCommand, DeployExecutionError,
-    DeployExecutionStep, DeployOperationRecorder,
+    ActiveServiceCommitter, DeployCompletionRecord, DeployCompletionRecordFailure, DeployContainer,
+    DeployExecutionCommand, DeployExecutionError, DeployExecutionStep, DeployOperationRecorder,
 };
 
 pub(super) async fn finalize_successful_deploy<A, R>(
@@ -39,10 +38,11 @@ pub(super) enum DeployFinalizationError {
 impl DeployFinalizationError {
     pub(super) fn into_execution_failure(
         self,
+        command: &DeployExecutionCommand,
         deploy_containers: &[DeployContainer],
     ) -> DeployExecutionFailure {
         match self {
-            Self::RecordFailed(source) => failure(source, deploy_containers),
+            Self::RecordFailed(source) => failure(command, source, deploy_containers),
         }
     }
 }
@@ -103,21 +103,14 @@ where
         .map_err(DeployExecutionError::CommitActiveService)?
     {
         ActiveServiceCommit::Stored { .. } | ActiveServiceCommit::AlreadyCommitted { .. } => Ok(()),
-        ActiveServiceCommit::Stale { reason } => {
-            Err(DeployExecutionError::ActiveServiceCommitRejected {
-                reason: ActiveServiceCommitRejection::Stale { reason },
-            })
-        }
-        ActiveServiceCommit::Contended {
+        ActiveServiceCommit::ActiveServiceChanged {
+            expected_current,
             current_revision,
             attempted_revision,
-            expected_current,
         } => Err(DeployExecutionError::ActiveServiceCommitRejected {
-            reason: ActiveServiceCommitRejection::Contended {
-                current_revision,
-                attempted_revision,
-                expected_current,
-            },
+            expected_current,
+            current_revision,
+            attempted_revision,
         }),
     }
 }

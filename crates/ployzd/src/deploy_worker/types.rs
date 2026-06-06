@@ -103,14 +103,8 @@ impl DeployProgressWrite {
                 stage: DeployRunningStage::WaitingForHealth,
             } => "waiting_for_health",
             Self::Running {
-                stage: DeployRunningStage::RouteCutover,
-            } => "route_cutover",
-            Self::Running {
                 stage: DeployRunningStage::ActiveServiceCommit,
             } => "active_service_commit",
-            Self::Running {
-                stage: DeployRunningStage::CleaningUp,
-            } => "cleaning_up",
             Self::Completed => "completed",
         }
     }

@@ -5,6 +5,11 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
+use crate::node::{
+    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    NodeContainerObservationSnapshot,
+};
+use crate::state::{ActiveServiceState, ExpectedActiveService};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +31,22 @@ pub struct DeployPlanningInput {
 pub struct ExistingServiceReplica {
     pub node_id: NodeId,
     pub container_id: ContainerId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployPreparationInput {
+    pub request: DeployRequest,
+    pub active_service: Option<ActiveServiceState>,
+    pub eligible_nodes: Vec<NodeId>,
+    pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedDeploy {
+    pub request: DeployRequest,
+    pub expected_active: ExpectedActiveService,
+    pub eligible_nodes: Vec<NodeId>,
+    pub existing_replicas: Vec<ExistingServiceReplica>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +120,89 @@ impl fmt::Display for ReplicaSlotError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanError {
     NoEligibleNodes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployPreparationError {
+    ActiveServiceMismatch {
+        expected_service_id: ServiceId,
+        actual_service_id: ServiceId,
+    },
+}
+
+impl fmt::Display for DeployPreparationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ActiveServiceMismatch {
+                expected_service_id,
+                actual_service_id,
+            } => write!(
+                formatter,
+                "active service state belongs to {}, not {}",
+                actual_service_id.as_str(),
+                expected_service_id.as_str()
+            ),
+        }
+    }
+}
+
+pub fn prepare_deploy(
+    input: DeployPreparationInput,
+) -> Result<PreparedDeploy, DeployPreparationError> {
+    let expected_active = expected_active_service(&input.request, input.active_service)?;
+    let existing_replicas = existing_replicas(&input.request, &input.observed_nodes);
+
+    Ok(PreparedDeploy {
+        request: input.request,
+        expected_active,
+        eligible_nodes: input.eligible_nodes,
+        existing_replicas,
+    })
+}
+
+fn expected_active_service(
+    request: &DeployRequest,
+    active_service: Option<ActiveServiceState>,
+) -> Result<ExpectedActiveService, DeployPreparationError> {
+    let Some(active_service) = active_service else {
+        return Ok(ExpectedActiveService::Absent);
+    };
+
+    if active_service.service_id != request.service_id {
+        return Err(DeployPreparationError::ActiveServiceMismatch {
+            expected_service_id: request.service_id.clone(),
+            actual_service_id: active_service.service_id,
+        });
+    }
+
+    Ok(ExpectedActiveService::Revision(
+        active_service.active_revision,
+    ))
+}
+
+fn existing_replicas(
+    request: &DeployRequest,
+    observed_nodes: &[NodeContainerObservationSnapshot],
+) -> Vec<ExistingServiceReplica> {
+    observed_nodes
+        .iter()
+        .flat_map(NodeContainerObservationSnapshot::containers)
+        .filter(|container| is_running_target_service_container(container, request))
+        .map(|container| ExistingServiceReplica {
+            node_id: container.node_id.clone(),
+            container_id: container.container_id.clone(),
+        })
+        .collect()
+}
+
+fn is_running_target_service_container(
+    container: &ManagedContainerObservation,
+    request: &DeployRequest,
+) -> bool {
+    container.kind == ManagedContainerKind::Service
+        && container.state == ContainerRuntimeState::Running
+        && container.service_id == request.service_id
+        && container.revision_id == request.target_revision
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {

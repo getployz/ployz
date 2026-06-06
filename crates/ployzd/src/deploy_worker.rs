@@ -21,9 +21,9 @@ pub use facts::{
     ObservationReadFailure, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
-    ActiveServiceCommitError, ActiveServiceCommitRejection, DeployExecutionError,
-    DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
-    DeployOperationRecordError, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
+    ActiveServiceCommitError, DeployExecutionError, DeployExecutionStep, DeployFailureRecordError,
+    DeployHealthCheckError, DeployOperationRecordError, NodeContainerRuntimeError,
+    NodeRuntimeUnavailableReason,
 };
 use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
 use finalization::finalize_successful_deploy;
@@ -71,23 +71,23 @@ where
     let mut started_containers = Vec::new();
     record_stage(command, &mut *ports.recorder, DeployTransition::Planning)
         .await
-        .map_err(|source| failure(source, &started_containers))?;
+        .map_err(|source| failure(command, source, &started_containers))?;
     let plan = plan_service_deploy(DeployPlanningInput {
         request: command.request.clone(),
         eligible_nodes: command.eligible_nodes.clone(),
         existing_replicas: command.existing_replicas.clone(),
     })
-    .map_err(|source| failure(source.into(), &started_containers))?;
+    .map_err(|source| failure(command, source.into(), &started_containers))?;
     record_plan_created(command, &mut *ports.recorder, &plan)
         .await
-        .map_err(|source| failure(source, &started_containers))?;
+        .map_err(|source| failure(command, source, &started_containers))?;
     record_running_stage(
         command,
         &mut *ports.recorder,
         DeployRunningStage::StartingContainers,
     )
     .await
-    .map_err(|source| failure(source, &started_containers))?;
+    .map_err(|source| failure(command, source, &started_containers))?;
 
     for step in &plan.steps {
         match step {
@@ -108,12 +108,12 @@ where
                     run_deploy_step(&mut *ports.node_runtime, command, node_id, *slot),
                 )
                 .await
-                .map_err(|source| failure(source, &started_containers))?;
+                .map_err(|source| failure(command, source, &started_containers))?;
                 containers.push(started.clone());
                 started_containers.push(started.clone());
                 record_container_started(&mut *ports.recorder, command, &started)
                     .await
-                    .map_err(|source| failure(source, &started_containers))?;
+                    .map_err(|source| failure(command, source, &started_containers))?;
             }
         }
     }
@@ -124,11 +124,11 @@ where
         DeployRunningStage::WaitingForHealth,
     )
     .await
-    .map_err(|source| failure(source, &started_containers))?;
+    .map_err(|source| failure(command, source, &started_containers))?;
 
     record_health_check_started(command, &mut *ports.recorder)
         .await
-        .map_err(|source| failure(source, &started_containers))?;
+        .map_err(|source| failure(command, source, &started_containers))?;
 
     with_step_timeout(
         command,
@@ -136,17 +136,7 @@ where
         (*ports.health_checker).wait_healthy(&containers),
     )
     .await
-    .map_err(|source| failure(source, &started_containers))?;
-
-    // MVP deploys have no route work yet, but keep the operation stage order
-    // strict so future route-bearing deploys cannot skip the phase silently.
-    record_running_stage(
-        command,
-        &mut *ports.recorder,
-        DeployRunningStage::RouteCutover,
-    )
-    .await
-    .map_err(|source| failure(source, &started_containers))?;
+    .map_err(|source| failure(command, source, &started_containers))?;
 
     record_running_stage(
         command,
@@ -154,12 +144,12 @@ where
         DeployRunningStage::ActiveServiceCommit,
     )
     .await
-    .map_err(|source| failure(source, &started_containers))?;
+    .map_err(|source| failure(command, source, &started_containers))?;
 
     let completion_record =
         finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
             .await
-            .map_err(|source| source.into_execution_failure(&started_containers))?;
+            .map_err(|source| source.into_execution_failure(command, &started_containers))?;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,

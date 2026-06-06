@@ -4,8 +4,8 @@ use crate::kv::KV_CORE_BUCKET;
 use async_nats::jetstream;
 use ployz_core::ids::ServiceId;
 use ployz_core::state::{
-    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, ActiveServiceState,
-    ActiveServiceStateKey, CoreStateRevision, ExpectedActiveService,
+    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
+    CoreStateRevision, ExpectedActiveService,
 };
 use std::fmt;
 use std::future::Future;
@@ -184,10 +184,10 @@ fn classify_active_service_preflight(
         return match expected_current {
             ExpectedActiveService::Absent => ActiveServiceCommitDecision::Create,
             ExpectedActiveService::Revision(expected) => {
-                ActiveServiceCommitDecision::Complete(ActiveServiceCommit::Stale {
-                    reason: ActiveServiceStaleReason::Missing {
-                        expected_revision: expected.clone(),
-                    },
+                ActiveServiceCommitDecision::Complete(ActiveServiceCommit::ActiveServiceChanged {
+                    expected_current: ExpectedActiveService::Revision(expected.clone()),
+                    current_revision: None,
+                    attempted_revision: attempted.active_revision.clone(),
                 })
             }
         };
@@ -202,18 +202,17 @@ fn classify_active_service_preflight(
 
     match expected_current {
         ExpectedActiveService::Absent => {
-            ActiveServiceCommitDecision::Complete(ActiveServiceCommit::Stale {
-                reason: ActiveServiceStaleReason::UnexpectedCurrent {
-                    current_revision: current_revision.clone(),
-                },
+            ActiveServiceCommitDecision::Complete(ActiveServiceCommit::ActiveServiceChanged {
+                expected_current: ExpectedActiveService::Absent,
+                current_revision: Some(current_revision.clone()),
+                attempted_revision: attempted.active_revision.clone(),
             })
         }
         ExpectedActiveService::Revision(expected) if current_revision != expected => {
-            ActiveServiceCommitDecision::Complete(ActiveServiceCommit::Stale {
-                reason: ActiveServiceStaleReason::Mismatch {
-                    expected_revision: expected.clone(),
-                    current_revision: current_revision.clone(),
-                },
+            ActiveServiceCommitDecision::Complete(ActiveServiceCommit::ActiveServiceChanged {
+                expected_current: ExpectedActiveService::Revision(expected.clone()),
+                current_revision: Some(current_revision.clone()),
+                attempted_revision: attempted.active_revision.clone(),
             })
         }
         ExpectedActiveService::Revision(_) => ActiveServiceCommitDecision::Update {
@@ -233,10 +232,10 @@ fn classify_active_service_write_conflict(
         };
     }
 
-    ActiveServiceCommit::Contended {
-        current_revision: current.state.active_revision.clone(),
-        attempted_revision: attempted.active_revision.clone(),
+    ActiveServiceCommit::ActiveServiceChanged {
         expected_current: expected_current.clone(),
+        current_revision: Some(current.state.active_revision.clone()),
+        attempted_revision: attempted.active_revision.clone(),
     }
 }
 
@@ -388,10 +387,10 @@ mod tests {
                 &ExpectedActiveService::Revision(rev_1.clone()),
                 &attempted,
             ),
-            ActiveServiceCommit::Contended {
-                current_revision: rev_2,
-                attempted_revision: rev_3,
-                expected_current: ExpectedActiveService::Revision(rev_1)
+            ActiveServiceCommit::ActiveServiceChanged {
+                expected_current: ExpectedActiveService::Revision(rev_1),
+                current_revision: Some(rev_2),
+                attempted_revision: rev_3
             }
         );
     }

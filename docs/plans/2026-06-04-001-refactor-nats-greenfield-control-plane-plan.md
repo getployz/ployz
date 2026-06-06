@@ -26,10 +26,10 @@ The target shape is:
 - **JetStream KV** for current state.
 - **JetStream streams** for operation history, durable job triggers, audit,
   observation transitions, and schedules.
-- **Owned operation runners** in the `ployzd` process that accepts each
-  mutating command, with advisory leases for visibility and fencing.
+- **Direct owned operation execution** in the `ployzd` process that accepts
+  each mutating command, with advisory leases for visibility and fencing.
 - **Durable pull consumers and queue groups** deferred for later automatic
-  takeover of expired owned work, not the v1 operation runner.
+  takeover of expired owned work, not the v1 execution path.
 - **Object Store** for deploy bundles, diagnostics, rendered specs, cert
   bundles, and backup manifests.
 - **Message schedules** for cron/delayed work where the pinned NATS version
@@ -195,8 +195,8 @@ commands over iroh.
 - R21. Public TCP/WebSocket NATS exposure is an optional advanced mode, not the
   default node transport.
 - R21a. Separate control plane from data plane. `ployzd control` assures the
-  system, responds to product services, runs owned operation runners, and
-  performs mutations. `ployzd node` owns node RPC and observations. Neither
+  system, responds to product services, runs direct owned operation execution,
+  and performs mutations. `ployzd node` owns node RPC and observations. Neither
   role is in the steady-state serving path for already-running workloads,
   gateway routing, DNS answers, or NATS client connectivity.
 - R21b. Data-plane components are independently supervised NATS clients.
@@ -279,8 +279,8 @@ commands over iroh.
 
 - KTD3. **Control role is not the data plane.** `ployzd control` is the
   control-plane assurance/service process: bootstrap, health checks, repair,
-  service responders, and owned operation runners. `ployzd node` owns node RPC
-  and observations. `ployzd gateway`, `ployzd dns`, `ployzd tunnel`,
+  service responders, and direct owned operation execution. `ployzd node` owns
+  node RPC and observations. `ployzd gateway`, `ployzd dns`, `ployzd tunnel`,
   `nats-server`, and workloads are independently supervised data-plane or
   substrate processes. Only core nodes run `nats-server`.
 
@@ -333,8 +333,8 @@ commands over iroh.
 - KTD8. **Mutating services create owned operations.** The `ployzd` process
   that accepts `plz.v1.svc.api.deploy.submit` validates, creates the
   operation, records durable evidence, acquires an owner lease, starts local
-  owned execution, and returns the operation id quickly. The operation runner
-  renews the owner lease while it works.
+  owned execution, and returns the operation id quickly. A tiny advisory lease
+  helper renews the owner lease while the bounded operation future runs.
 
 - KTD9. **KV current state is not desired-state reconciliation.** `KV_CORE`
   records active successful state. Pending/failed targets live in `KV_OPS` and
@@ -440,7 +440,7 @@ flowchart TB
   KV["KV_CORE / KV_OPS / KV_OBS / KV_LOCKS"]
   Streams["PLZ_OPS / PLZ_JOBS / PLZ_AUDIT / PLZ_OBS_TRANSITIONS / PLZ_SCHEDULES"]
   Objects["Object Store buckets"]
-  OwnedOps["owned operation runners"]
+  DirectOps["direct owned operation execution"]
   Agents["ployzd node"]
   Docker["Docker"]
   Gateway["ployzd gateway"]
@@ -455,10 +455,10 @@ flowchart TB
   NATS --> KV
   NATS --> Streams
   NATS --> Objects
-  PloyzdControl --> OwnedOps
-  OwnedOps --> KV
-  OwnedOps --> Streams
-  OwnedOps --> Services
+  PloyzdControl --> DirectOps
+  DirectOps --> KV
+  DirectOps --> Streams
+  DirectOps --> Services
   Services --> Agents
   Agents --> Docker
   Agents --> KV
@@ -474,17 +474,17 @@ Every machine can run the shared `ployzd` artifact in one or more roles:
 `nats-server`. Gateway, DNS, and tunnel roles are independent NATS
 clients/processes supervised outside `ployzd control`, but they use the same
 `ployzd` binary version. `ployz-keeper` is the separately versioned local
-installer/updater that manages the `ployzd` artifact and role units.
-Owned operation runners usually run on whichever `ployzd control` process
-accepted the mutating command. Authority comes from credentials, operation owner
-leases, and resource locks, not implicit process identity.
+installer/updater that manages the `ployzd` artifact and role units. Direct
+owned operation execution usually runs on whichever `ployzd control` process
+accepted the mutating command. Authority comes from credentials, operation
+owner leases, and resource locks, not implicit process identity.
 
 ### Control Plane And Data Plane
 
 ```text
 control plane:
   ployzd control service responders
-  owned operation runners
+  direct owned operation execution
   ployzd node RPC services
   bootstrap, health checks, repair, config rendering
 
@@ -502,7 +502,7 @@ data plane:
 ```
 
 `ployzd control` failure stops new mutations that need core service responders
-or owned operation runners. `ployzd node` failure stops that node's RPC and
+or direct owned execution. `ployzd node` failure stops that node's RPC and
 observations. Neither failure automatically stops `ployzd gateway`,
 `ployzd dns`, `ployzd tunnel`, NATS clients, or existing workloads. If NATS
 state changes while `ployzd control` is down, gateway and DNS role processes
@@ -661,11 +661,11 @@ PLZ_SCHEDULES
   plz.v1.sched.>
 ```
 
-`PLZ_OPS` is retained operation history. Owned operation runners append to it
-while they work; v1 does not consume operation timelines as the primary workflow
-queue. Generic scheduled/internal jobs use `PLZ_JOBS` so trigger retention,
-retry semantics, permissions, and compaction can diverge from operation
-timelines.
+`PLZ_OPS` is retained operation history. Direct owned operation execution
+appends to it while it works; v1 does not consume operation timelines as the
+primary workflow queue. Generic scheduled/internal jobs use `PLZ_JOBS` so
+trigger retention, retry semantics, permissions, and compaction can diverge
+from operation timelines.
 
 `PLZ_OBS_TRANSITIONS` stores important transitions only. Latest health goes to
 `KV_OBS`; health ticks do not flood replicated durable history.
@@ -821,10 +821,10 @@ Rules:
 - `ployz-transport` owns iroh endpoint identity, NATS byte tunnels, and join
   bundle encoding.
 - `ployzd` is one main runtime artifact. It wires process roles, credentials,
-  service handlers, owned operation runners, node agent, Docker, gateway, DNS,
-  NATS tunnel, and assurance/repair checks.
-- `ployzd control` runs core services, owned operation runners, and bootstrap
-  assurance.
+  service handlers, direct owned operation execution, node agent, Docker,
+  gateway, DNS, NATS tunnel, and assurance/repair checks.
+- `ployzd control` runs core services, direct owned operation execution, and
+  bootstrap assurance.
 - `ployzd node` runs node-local services, observation, and Docker integration.
 - `ployzd gateway` is a data-plane NATS client process that watches
   route/container/cert state and serves last-known-good routes independently of
@@ -1044,19 +1044,18 @@ started:
   `ployzctl` owns the caller-facing typed operation client.
 - U4/U4a: operation status, event replay, durable event append/idempotency, and
   real NATS operation adapters are substantially represented, but any durable
-  consumer workflow runner should be removed or deferred.
+  consumer workflow path should be removed or deferred.
 - U5: permission profile rendering exists and is covered by tests.
 - U6: node-agent idempotency and Docker observation/label models are started.
 - U7: the first deploy proof exists against fake Docker-style execution and
   active-state commit behavior.
 
 Remaining work should avoid redoing those pieces unless current tests reveal a
-real gap. The immediate gap is a hard simplification pass that converts
-operation execution to owned local runners and advisory leases. The major
-remaining gaps after that are keeper/install/update behavior, real Docker
-execution depth, gateway/DNS data-plane projection as `ployzd` roles, CLI/SDK
-ergonomics, cert projection, HA promotion, backup/restore, and broader
-end-to-end failure coverage.
+real gap. U11 has now converted deploy execution to direct owned operation
+functions under advisory leases. The major remaining gaps are
+keeper/install/update behavior, real Docker execution depth, gateway/DNS
+data-plane projection as `ployzd` roles, CLI/SDK ergonomics, cert projection,
+HA promotion, backup/restore, and broader end-to-end failure coverage.
 
 ### Execution And Review Loop
 
@@ -1265,8 +1264,8 @@ Pipeline finish:
 - **Approach:** Register services with names, versions, endpoints, and
   metadata. Implement `ops.status`, `ops.watch`, and `node.inspect` first.
   Mutating service handlers call the operation acceptor, create an owner lease,
-  and start a local owned runner before returning the operation id. They do not
-  block the service response on long-running work.
+  and start direct owned execution before returning the operation id. They do
+  not block the service response on long-running work.
 - **Test scenarios:**
   - `$SRV.PING` can discover registered Ployz services.
   - `ops.status` returns no such operation for unknown ids.
@@ -1276,7 +1275,7 @@ Pipeline finish:
     finishes.
 - **Verification:** `cargo test -p ployzd --test services`
 
-### U4. Operation Contract, Status Projection, And Owned Runner
+### U4. Operation Contract, Status Projection, And Advisory Ownership
 
 - **Goal:** Prove the core operation contract and projection rules with a
   NATS-shaped contract harness.
@@ -1285,18 +1284,18 @@ Pipeline finish:
 - **Files:**
   - `crates/ployz-core/src/ops.rs`
   - `crates/ployz-nats/src/streams.rs`
-  - `crates/ployzd/src/operation_runner.rs`
+  - `crates/ployzd/src/operation_lease.rs`
   - `crates/ployzd/src/services.rs`
   - `crates/ployzd/tests/operation_spine.rs`
 - **Approach:** `deploy.submit` publishes a submitted event with NATS-style
   message idempotency, projects `KV_OPS`-shaped status through core transition
-  rules, creates an owner lease, starts a local owned runner, and returns
-  `op_id`. The fake runner moves the operation through a small state machine
-  while renewing the owner lease. This U proves the business contract; the
+  rules, creates an owner lease, starts direct owned execution, and returns
+  `op_id`. The execution path records durable progress while the advisory
+  lease helper renews ownership. This U proves the business contract; the
   production NATS adapter boundary lands in U4a.
 - **Test scenarios:**
   - Duplicate submit with the same idempotency key returns the same operation.
-  - Owned runner renews the operation lease while the operation is active.
+  - Advisory lease renewal runs while the operation future is active.
   - Expired owner lease makes operation ownership visible as expired or
     recoverable without changing deploy lifecycle state.
   - `ops.watch` replays events from `start_sequence`.
@@ -1313,7 +1312,7 @@ Pipeline finish:
 - **Files:**
   - `crates/ployz-nats/src/streams.rs`
   - `crates/ployz-nats/src/kv.rs`
-  - `crates/ployzd/src/operation_runner.rs`
+  - `crates/ployzd/src/operation_lease.rs`
   - `crates/ployzd/tests/operation_spine.rs`
 - **Approach:** Keep core projection policy unchanged. Introduce narrow ports
   for append/replay, status get/put, owner lease create/renew/expire, and
@@ -1346,21 +1345,23 @@ Pipeline finish:
   - `crates/ployzd/tests/operation_spine.rs`
   - `crates/ployzd/tests/substrate_worker.rs`
 - **Approach:** Delete or demote durable operation consumers and worker ack
-  policy from the v1 workflow path. Add an owned-operation runner abstraction
-  small enough to express: create operation, acquire owner lease, run named
-  steps, record durable progress, renew lease, and finish terminally. Keep
-  stream append/replay and status projection. Treat expired leases as visible
+  policy from the v1 workflow path. Keep operation execution as plain async
+  business functions wrapped by a tiny advisory lease helper: create operation,
+  acquire owner lease, run named steps, record durable progress, renew lease,
+  and finish terminally when the terminal record is durably written. Keep stream
+  append/replay and status projection. Treat expired leases as visible
   ownership state, not terminal operation state or automatic transfer triggers.
 - **Test scenarios:**
   - Accepting `ployzd` owns a deploy-shaped operation and records progress
     without a durable consumer.
-  - Owner lease renews every active tick and stops after terminal status.
+  - Owner lease renews while the bounded operation future is active and stops
+    when the future returns.
   - Expired owner lease reports expired/recoverable ownership without invoking
     node side effects.
   - Duplicate submit with the same idempotency key returns the original
-    operation rather than starting a second runner.
+    operation rather than starting a second execution.
   - Existing durable consumer substrate/deploy tests are removed, rewritten as
-    owned-runner tests, or moved to a deferred automatic-resume test module.
+    direct execution tests, or moved to a deferred automatic-resume test module.
 - **Verification:** `cargo test -p ployz-core -p ployz-nats -p ployzd operation_spine`
 
 ### U5. Permission Profiles And Credentials
@@ -1706,13 +1707,13 @@ Do not build these in v1:
 15. U9 CLI/SDK ergonomics.
 16. U10 HA/backup.
 
-The first proof should be Pre-U0 through U4 with a fake owned runner over the
-operation contract harness. The second proof should be U0-U4a over real local
-NATS with operation owner leases. The third proof should add U11 and prove no
-durable workflow worker is required for deploy/substrate ownership. The fourth
-proof should be U0-U4a through the iroh NATS tunnel. The fifth proof should be
-U0-U7 with fake Docker. The sixth proof should be U0-U7a with `ployz.sh`
-installing keeper and keeper installing/restarting `ployzd` role units. The
-first production-shaped proof is U0-U8 with real Docker on one node plus one
-edge node connected through iroh, with gateway/DNS roles serving independently
-of `ployzd control`.
+The first proof should be Pre-U0 through U4 with a fake direct execution path
+over the operation contract harness. The second proof should be U0-U4a over
+real local NATS with operation owner leases. The third proof should add U11 and
+prove no durable workflow worker is required for deploy/substrate ownership.
+The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
+should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with
+`ployz.sh` installing keeper and keeper installing/restarting `ployzd` role
+units. The first production-shaped proof is U0-U8 with real Docker on one node
+plus one edge node connected through iroh, with gateway/DNS roles serving
+independently of `ployzd control`.

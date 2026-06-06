@@ -303,7 +303,6 @@ impl AsyncNatsOperationRepository {
         operation_id: &OperationId,
         attempted_append: OperationEventAppend,
     ) -> Result<RecordDeployEventOutcome, RecordDeployEventError> {
-        let attempted_event = attempted_append.payload().clone();
         let Some(current) = self
             .status_store
             .get(operation_id)
@@ -315,26 +314,49 @@ impl AsyncNatsOperationRepository {
             });
         };
 
-        if let Some((stored, event)) = self
-            .event_log
-            .event_at_subject(attempted_append.subject())
-            .await
-            .map_err(RecordDeployEventError::AppendEvent)?
+        let attempted_event = attempted_append.payload().clone();
+        if current.is_terminal()
+            && let Some(evidence) = deploy_evidence_from_event(&attempted_event)
         {
-            validate_stored_deploy_event(operation_id, &attempted_event, &event, stored.sequence)?;
-            return self
-                .project_recorded_deploy_event(event, stored, current)
-                .await;
+            if let Some((stored, event)) = self
+                .event_log
+                .event_at_subject(attempted_append.subject())
+                .await
+                .map_err(RecordDeployEventError::AppendEvent)?
+            {
+                validate_stored_deploy_event(
+                    operation_id,
+                    &attempted_event,
+                    &event,
+                    stored.sequence,
+                )?;
+                return self
+                    .project_recorded_deploy_event(event, stored, current)
+                    .await;
+            }
+
+            validate_fresh_deploy_evidence(&current, &evidence)
+                .map_err(RecordDeployEventError::ProjectStatus)?;
         }
 
-        validate_fresh_deploy_event_record(operation_id, &current, &attempted_event)?;
-        let preview_sequence = next_event_sequence(&current);
-        let preview = project_operation_event(&current, attempted_event.clone(), preview_sequence)
-            .map_err(RecordDeployEventError::ProjectStatus)?;
-        if matches!(preview, OperationEventProjection::AlreadySatisfied) {
-            return Ok(RecordDeployEventOutcome::AlreadySatisfied {
-                current_sequence: status_sequence(&current),
-            });
+        match project_operation_event(
+            &current,
+            attempted_event.clone(),
+            next_event_sequence(&current),
+        )
+        .map_err(RecordDeployEventError::ProjectStatus)?
+        {
+            OperationEventProjection::StatusChanged { .. } => {}
+            OperationEventProjection::AlreadySatisfied => {
+                if let Some(evidence) = deploy_evidence_from_event(&attempted_event) {
+                    validate_fresh_deploy_evidence(&current, &evidence)
+                        .map_err(RecordDeployEventError::ProjectStatus)?;
+                }
+
+                return Ok(RecordDeployEventOutcome::AlreadySatisfied {
+                    current_sequence: status_sequence(&current),
+                });
+            }
         }
 
         let stored = self
@@ -368,6 +390,14 @@ impl AsyncNatsOperationRepository {
         stored: StoredOperationEvent,
         current: OperationStatus,
     ) -> Result<RecordDeployEventOutcome, RecordDeployEventError> {
+        if current.is_terminal()
+            && stored.sequence > status_sequence(&current)
+            && let Some(evidence) = deploy_evidence_from_event(&event)
+        {
+            validate_fresh_deploy_evidence(&current, &evidence)
+                .map_err(RecordDeployEventError::ProjectStatus)?;
+        }
+
         let projection = project_operation_event(&current, event, stored.sequence)
             .map_err(RecordDeployEventError::ProjectStatus)?;
         match projection {
@@ -436,26 +466,6 @@ enum RecordDeployEventError {
     StatusProjectionContended,
 }
 
-fn validate_fresh_deploy_event_record(
-    operation_id: &OperationId,
-    current: &OperationStatus,
-    event: &OperationEvent,
-) -> Result<(), RecordDeployEventError> {
-    let Some(evidence) = deploy_evidence_from_event(event).map_err(|()| {
-        RecordDeployEventError::StoredEventMismatch {
-            operation_id: operation_id.clone(),
-            sequence: status_sequence(current),
-            plan_mismatch: false,
-        }
-    })?
-    else {
-        return Ok(());
-    };
-
-    validate_fresh_deploy_evidence(current, &evidence)
-        .map_err(RecordDeployEventError::ProjectStatus)
-}
-
 fn validate_stored_deploy_event(
     operation_id: &OperationId,
     attempted_event: &OperationEvent,
@@ -493,28 +503,26 @@ fn deploy_plan_mismatch(
     )
 }
 
-fn deploy_evidence_from_event(event: &OperationEvent) -> Result<Option<DeployEvidence>, ()> {
+fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> {
     match event {
         OperationEvent::DeployPlanCreated { plan, .. } => {
-            Ok(Some(DeployEvidence::PlanCreated { plan: plan.clone() }))
+            Some(DeployEvidence::PlanCreated { plan: plan.clone() })
         }
         OperationEvent::DeployContainerStarted {
             node_id,
             container_id,
             ..
-        } => Ok(Some(DeployEvidence::ContainerStarted {
+        } => Some(DeployEvidence::ContainerStarted {
             node_id: node_id.clone(),
             container_id: container_id.clone(),
-        })),
-        OperationEvent::DeployHealthCheckStarted { .. } => {
-            Ok(Some(DeployEvidence::HealthCheckStarted))
-        }
-        OperationEvent::DeployPlanningStarted { .. }
+        }),
+        OperationEvent::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),
+        OperationEvent::DeploySubmitted { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployCompleted { .. }
         | OperationEvent::DeployFailed { .. }
-        | OperationEvent::Cancelled { .. } => Ok(None),
-        OperationEvent::DeploySubmitted { .. } => Err(()),
+        | OperationEvent::Cancelled { .. } => None,
     }
 }
 

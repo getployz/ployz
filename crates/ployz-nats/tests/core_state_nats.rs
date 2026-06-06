@@ -1,8 +1,8 @@
 use async_nats::jetstream;
 use ployz_core::ids::{RevisionId, ServiceId};
 use ployz_core::state::{
-    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, ActiveServiceState,
-    ActiveServiceStateKey, ExpectedActiveService,
+    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
+    ExpectedActiveService,
 };
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -80,11 +80,10 @@ async fn active_service_commit_rejects_stale_previous_revision() {
             ))
             .await
             .expect("stale commit is classified"),
-        ActiveServiceCommit::Stale {
-            reason: ActiveServiceStaleReason::Mismatch {
-                expected_revision: rev_1,
-                current_revision: rev_2.clone()
-            }
+        ActiveServiceCommit::ActiveServiceChanged {
+            expected_current: ExpectedActiveService::Revision(rev_1),
+            current_revision: Some(rev_2.clone()),
+            attempted_revision: rev_3
         }
     );
 
@@ -236,10 +235,10 @@ async fn active_service_commit_reports_missing_expected_revision() {
             ))
             .await
             .expect("missing expected revision is classified"),
-        ActiveServiceCommit::Stale {
-            reason: ActiveServiceStaleReason::Missing {
-                expected_revision: expected
-            }
+        ActiveServiceCommit::ActiveServiceChanged {
+            expected_current: ExpectedActiveService::Revision(expected),
+            current_revision: None,
+            attempted_revision: revision
         }
     );
 }

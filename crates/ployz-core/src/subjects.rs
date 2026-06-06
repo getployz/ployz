@@ -130,9 +130,7 @@ impl DeployRunningStage {
         match self {
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
-            Self::RouteCutover => "route_cutover",
             Self::ActiveServiceCommit => "active_service_commit",
-            Self::CleaningUp => "cleaning_up",
         }
     }
 }

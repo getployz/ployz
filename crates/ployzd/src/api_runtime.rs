@@ -9,9 +9,10 @@ use ployz_nats::service_runtime::{
     decode_json_request, start_nats_service,
 };
 use ployz_sdk_types::{
-    DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchRequest, OpsWatchResponse,
+    DeploySubmitRequest, OperationApiResponse, OpsStatusRequest, OpsWatchRequest,
 };
+use serde::{Serialize, de::DeserializeOwned};
+use std::future::Future;
 use std::sync::Arc;
 
 pub async fn start_operation_api_service(
@@ -76,57 +77,55 @@ async fn handle_deploy_submit(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match decode_json_request::<DeploySubmitRequest>(&request) {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
-    match deploy_submit(controllers, request.into()).await {
-        Ok(value) => {
-            let response: DeploySubmitResponse = OperationApiResponse::Ok { value };
-            NatsServiceResponse::json_ok(&response)
-        }
-        Err(error) => {
-            let response: DeploySubmitResponse = OperationApiResponse::DomainError { error };
-            NatsServiceResponse::json_domain_error(&response)
-        }
-    }
+    operation_api_response::<DeploySubmitRequest, _, _, _>(request, |request| async move {
+        deploy_submit(controllers, request.into()).await
+    })
+    .await
 }
 
 async fn handle_ops_status(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match decode_json_request::<OpsStatusRequest>(&request) {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
-    match ops_status(controllers, request.operation_id).await {
-        Ok(value) => {
-            let response: OpsStatusResponse = OperationApiResponse::Ok { value };
-            NatsServiceResponse::json_ok(&response)
-        }
-        Err(error) => {
-            let response: OpsStatusResponse = OperationApiResponse::DomainError { error };
-            NatsServiceResponse::json_domain_error(&response)
-        }
-    }
+    operation_api_response::<OpsStatusRequest, _, _, _>(request, |request| async move {
+        ops_status(controllers, request.operation_id).await
+    })
+    .await
 }
 
 async fn handle_ops_watch(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match decode_json_request::<OpsWatchRequest>(&request) {
+    operation_api_response::<OpsWatchRequest, _, _, _>(request, |request| async move {
+        ops_watch(controllers, request).await
+    })
+    .await
+}
+
+async fn operation_api_response<Request, Value, Error, Fut>(
+    request: NatsServiceRequest,
+    handler: impl FnOnce(Request) -> Fut,
+) -> NatsServiceResponse
+where
+    Request: DeserializeOwned,
+    Value: Serialize,
+    Error: Serialize,
+    Fut: Future<Output = Result<Value, Error>>,
+{
+    let request = match decode_json_request::<Request>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
-    match ops_watch(controllers, request).await {
+
+    match handler(request).await {
         Ok(value) => {
-            let response: OpsWatchResponse = OperationApiResponse::Ok { value };
+            let response: OperationApiResponse<Value, Error> = OperationApiResponse::Ok { value };
             NatsServiceResponse::json_ok(&response)
         }
         Err(error) => {
-            let response: OpsWatchResponse = OperationApiResponse::DomainError { error };
+            let response: OperationApiResponse<Value, Error> =
+                OperationApiResponse::DomainError { error };
             NatsServiceResponse::json_domain_error(&response)
         }
     }

@@ -8,7 +8,7 @@ use ployz_core::ops::{
     DeployEvidence, DeployRunningStage, DeployTransition, OperatorHint, RetainedArtifact,
 };
 use ployz_core::state::{
-    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, CoreStateRevision,
+    ActiveServiceCommit, ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveService,
 };
 use ployzd::deploy_worker::{
     ActiveServiceCommitError, ActiveServiceCommitter, DeployExecutionCommand, DeployExecutionFacts,
@@ -125,11 +125,10 @@ impl RecordingActiveState {
     pub(super) fn stale_mismatch() -> Self {
         Self {
             requests: Vec::new(),
-            outcome: ActiveServiceCommit::Stale {
-                reason: ActiveServiceStaleReason::Mismatch {
-                    expected_revision: revision_id("rev_old"),
-                    current_revision: revision_id("rev_other"),
-                },
+            outcome: ActiveServiceCommit::ActiveServiceChanged {
+                expected_current: ExpectedActiveService::Revision(revision_id("rev_old")),
+                current_revision: Some(revision_id("rev_other")),
+                attempted_revision: revision_id("rev_2"),
             },
         }
     }
@@ -410,10 +409,6 @@ fn observed_service_container(
 
 pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
-}
-
-pub(super) fn route_cutover_running() -> DeployRunningStage {
-    DeployRunningStage::RouteCutover
 }
 
 pub(super) fn operation_id(value: &str) -> OperationId {

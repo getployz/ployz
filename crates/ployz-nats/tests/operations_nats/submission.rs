@@ -140,7 +140,6 @@ async fn operation_repository_replay_marks_terminal_operation_caught_up_as_termi
     for stage in [
         DeployRunningStage::StartingContainers,
         DeployRunningStage::WaitingForHealth,
-        DeployRunningStage::RouteCutover,
         DeployRunningStage::ActiveServiceCommit,
     ] {
         repository

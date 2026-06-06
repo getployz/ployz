@@ -111,9 +111,6 @@ async fn deploy_worker_runs_containers_then_completes() {
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: route_cutover_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
             RecordedOperation::Transition(DeployTransition::Completed),
@@ -201,9 +198,6 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
                 stage: DeployRunningStage::WaitingForHealth,
             }),
             RecordedOperation::HealthCheckStarted,
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: route_cutover_running(),
-            }),
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
@@ -548,9 +542,6 @@ async fn deploy_worker_does_not_repair_missing_completion_after_active_commit() 
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: route_cutover_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
         ]
@@ -610,9 +601,6 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: route_cutover_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
@@ -671,18 +659,18 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
             }),
             RecordedOperation::HealthCheckStarted,
             RecordedOperation::Transition(DeployTransition::Running {
-                stage: route_cutover_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::ActiveServiceCommitRejected {
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_2"),
-                    reason: ployz_core::ops::ActiveServiceCommitFailure::RevisionMismatch {
-                        expected_revision: revision_id("rev_old"),
-                        current_revision: revision_id("rev_other"),
+                    reason: ployz_core::ops::ActiveServiceCommitFailure::ActiveServiceChanged {
+                        expected_current: ployz_core::state::ExpectedActiveService::Revision(
+                            revision_id("rev_old"),
+                        ),
+                        current_revision: Some(revision_id("rev_other")),
+                        attempted_revision: revision_id("rev_2"),
                     },
                     retained_artifacts: vec![retained_container("node_a", "ctr_1")],
                 }

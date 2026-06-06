@@ -1,10 +1,10 @@
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, StepId, SubjectTokenError};
 use ployz_core::ops::{
-    ActiveServiceCommitFailure, DeployOperationFailure, ExpectedActiveServiceFailure,
-    FailureMessage, HealthCheckFailure, OperatorHint, RetainedArtifact,
+    ActiveServiceCommitFailure, DeployOperationFailure, FailureMessage, HealthCheckFailure,
+    OperatorHint, RetainedArtifact,
 };
-use ployz_core::state::{ActiveServiceStaleReason, ExpectedActiveService};
+use ployz_core::state::ExpectedActiveService;
 use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use std::future::Future;
@@ -19,23 +19,30 @@ use super::{
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
     pub(super) source: DeployExecutionError,
-    pub(super) deploy_containers: Vec<DeployContainer>,
+    pub(super) operation_failure: DeployOperationFailure,
 }
 
 impl DeployExecutionFailure {
-    fn new(source: DeployExecutionError, deploy_containers: &[DeployContainer]) -> Self {
+    fn new(
+        command: &DeployExecutionCommand,
+        source: DeployExecutionError,
+        deploy_containers: &[DeployContainer],
+    ) -> Self {
+        let operation_failure =
+            source.deploy_failure(command, retained_artifacts(deploy_containers));
         Self {
             source,
-            deploy_containers: deploy_containers.to_vec(),
+            operation_failure,
         }
     }
 }
 
 pub(super) fn failure(
+    command: &DeployExecutionCommand,
     source: DeployExecutionError,
     deploy_containers: &[DeployContainer],
 ) -> DeployExecutionFailure {
-    DeployExecutionFailure::new(source, deploy_containers)
+    DeployExecutionFailure::new(command, source, deploy_containers)
 }
 
 pub(super) async fn fail_deploy<R>(
@@ -46,19 +53,16 @@ pub(super) async fn fail_deploy<R>(
 where
     R: DeployOperationRecorder,
 {
-    let operation_failure = failure
-        .source
-        .deploy_failure(&command, retained_artifacts(&failure.deploy_containers));
     let failure_record_error = record_failed_transition(
         command.step_timeout(),
         recorder,
         &command,
-        &operation_failure,
+        &failure.operation_failure,
     )
     .await;
 
     Err(DeployExecutionError::Failed {
-        failure: operation_failure,
+        failure: failure.operation_failure,
         source: Box::new(failure.source),
         failure_record_error,
     })
@@ -120,7 +124,9 @@ pub enum DeployExecutionError {
     WaitHealthy(DeployHealthCheckError),
     CommitActiveService(ActiveServiceCommitError),
     ActiveServiceCommitRejected {
-        reason: ActiveServiceCommitRejection,
+        expected_current: ExpectedActiveService,
+        current_revision: Option<RevisionId>,
+        attempted_revision: RevisionId,
     },
     Failed {
         failure: DeployOperationFailure,
@@ -225,14 +231,20 @@ impl DeployExecutionError {
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
             Self::CommitActiveService(error) => error.deploy_failure(command, retained_artifacts),
-            Self::ActiveServiceCommitRejected { reason } => {
-                DeployOperationFailure::ActiveServiceCommitRejected {
-                    service_id: command.request.service_id.clone(),
-                    revision_id: command.request.target_revision.clone(),
-                    reason: reason.clone().into_failure(),
-                    retained_artifacts,
-                }
-            }
+            Self::ActiveServiceCommitRejected {
+                expected_current,
+                current_revision,
+                attempted_revision,
+            } => DeployOperationFailure::ActiveServiceCommitRejected {
+                service_id: command.request.service_id.clone(),
+                revision_id: command.request.target_revision.clone(),
+                reason: ActiveServiceCommitFailure::ActiveServiceChanged {
+                    expected_current: expected_current.clone(),
+                    current_revision: current_revision.clone(),
+                    attempted_revision: attempted_revision.clone(),
+                },
+                retained_artifacts,
+            },
             Self::Failed { failure, .. } => failure.clone(),
         }
     }
@@ -261,49 +273,6 @@ impl ActiveServiceCommitError {
                 revision_id: command.request.target_revision.clone(),
                 message: failure_message("active service state could not be committed"),
                 retained_artifacts,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveServiceCommitRejection {
-    Stale {
-        reason: ActiveServiceStaleReason,
-    },
-    Contended {
-        current_revision: RevisionId,
-        attempted_revision: RevisionId,
-        expected_current: ExpectedActiveService,
-    },
-}
-
-impl ActiveServiceCommitRejection {
-    pub(crate) fn into_failure(self) -> ActiveServiceCommitFailure {
-        match self {
-            Self::Stale { reason } => match reason {
-                ActiveServiceStaleReason::Missing { expected_revision } => {
-                    ActiveServiceCommitFailure::MissingExpectedRevision { expected_revision }
-                }
-                ActiveServiceStaleReason::Mismatch {
-                    expected_revision,
-                    current_revision,
-                } => ActiveServiceCommitFailure::RevisionMismatch {
-                    expected_revision,
-                    current_revision,
-                },
-                ActiveServiceStaleReason::UnexpectedCurrent { current_revision } => {
-                    ActiveServiceCommitFailure::UnexpectedCurrentRevision { current_revision }
-                }
-            },
-            Self::Contended {
-                current_revision,
-                attempted_revision,
-                expected_current,
-            } => ActiveServiceCommitFailure::Contended {
-                current_revision,
-                attempted_revision,
-                expected_current: expected_active_service_failure(expected_current),
             },
         }
     }
@@ -513,17 +482,6 @@ fn retained_artifacts(containers: &[DeployContainer]) -> Vec<RetainedArtifact> {
 
 fn failure_message(message: &'static str) -> FailureMessage {
     FailureMessage::try_new(message).expect("internal failure message is non-empty")
-}
-
-fn expected_active_service_failure(
-    expected_current: ExpectedActiveService,
-) -> ExpectedActiveServiceFailure {
-    match expected_current {
-        ExpectedActiveService::Absent => ExpectedActiveServiceFailure::Absent,
-        ExpectedActiveService::Revision(revision_id) => {
-            ExpectedActiveServiceFailure::Revision { revision_id }
-        }
-    }
 }
 
 fn timeout_failure_message(scope: &'static str, timeout: Duration) -> FailureMessage {

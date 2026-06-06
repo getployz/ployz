@@ -9,6 +9,7 @@ use crate::ids::{
     ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, SubjectToken,
     SubjectTokenError,
 };
+use crate::state::ExpectedActiveService;
 
 mod projection;
 
@@ -24,9 +25,7 @@ pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 pub enum DeployRunningStage {
     StartingContainers,
     WaitingForHealth,
-    RouteCutover,
     ActiveServiceCommit,
-    CleaningUp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,28 +93,11 @@ pub enum DeployOperationFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActiveServiceCommitFailure {
-    MissingExpectedRevision {
-        expected_revision: RevisionId,
-    },
-    RevisionMismatch {
-        expected_revision: RevisionId,
-        current_revision: RevisionId,
-    },
-    UnexpectedCurrentRevision {
-        current_revision: RevisionId,
-    },
-    Contended {
-        current_revision: RevisionId,
+    ActiveServiceChanged {
+        expected_current: ExpectedActiveService,
+        current_revision: Option<RevisionId>,
         attempted_revision: RevisionId,
-        expected_current: ExpectedActiveServiceFailure,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ExpectedActiveServiceFailure {
-    Absent,
-    Revision { revision_id: RevisionId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
