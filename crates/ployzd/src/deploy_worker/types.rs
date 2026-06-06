@@ -1,6 +1,6 @@
 use ployz_core::deploy::{DeployRequest, ExistingServiceReplica};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
-use ployz_core::ops::{OperatorHint, RetainedArtifact};
+use ployz_core::ops::{DeployRunningStage, OperatorHint, RetainedArtifact};
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use std::time::Duration;
 
@@ -67,6 +67,53 @@ pub struct DeployExecutionOutcome {
     pub service_id: ployz_core::ids::ServiceId,
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
+    pub completion_record: DeployCompletionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployCompletionRecord {
+    Recorded,
+    Missing {
+        reason: DeployCompletionRecordFailure,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployCompletionRecordFailure {
+    RecordRejected,
+    TimedOut { timeout: Duration },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployProgressWrite {
+    Planning,
+    Running { stage: DeployRunningStage },
+    Completed,
+}
+
+impl DeployProgressWrite {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Planning => "planning",
+            Self::Running {
+                stage: DeployRunningStage::StartingContainers,
+            } => "starting_containers",
+            Self::Running {
+                stage: DeployRunningStage::WaitingForHealth,
+            } => "waiting_for_health",
+            Self::Running {
+                stage: DeployRunningStage::RouteCutover,
+            } => "route_cutover",
+            Self::Running {
+                stage: DeployRunningStage::ActiveServiceCommit,
+            } => "active_service_commit",
+            Self::Running {
+                stage: DeployRunningStage::CleaningUp,
+            } => "cleaning_up",
+            Self::Completed => "completed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

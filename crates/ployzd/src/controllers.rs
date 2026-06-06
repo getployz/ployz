@@ -100,6 +100,11 @@ impl OperationControllers {
         &self.owner_id
     }
 
+    #[must_use]
+    pub const fn lease_policy(&self) -> OperationLeasePolicy {
+        self.lease_policy
+    }
+
     pub async fn record_deploy_transition(
         &self,
         operation_id: &OperationId,

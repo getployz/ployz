@@ -21,8 +21,8 @@ pub use facts::{
     ObservationReadFailure, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
-    ActiveServiceCommitError, ActiveServiceCommitRejection, CompletionRecordAttemptError,
-    DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
+    ActiveServiceCommitError, ActiveServiceCommitRejection, DeployExecutionError,
+    DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
     DeployOperationRecordError, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
 };
 use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
@@ -36,29 +36,24 @@ pub use preparation::{
 
 pub use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
 pub use types::{
-    DeployContainer, DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
+    DeployCompletionRecord, DeployCompletionRecordFailure, DeployContainer, DeployExecutionCommand,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployProgressWrite,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeployWorker;
-
-impl DeployWorker {
-    pub async fn execute<R, N, H, A>(
-        &self,
-        command: DeployExecutionCommand,
-        ports: DeployExecutionPorts<'_, R, N, H, A>,
-    ) -> Result<DeployExecutionOutcome, DeployExecutionError>
-    where
-        R: DeployOperationRecorder,
-        N: NodeContainerRuntime,
-        H: DeployHealthChecker,
-        A: ActiveServiceCommitter,
-    {
-        let mut ports = ports;
-        match execute_deploy(&command, &mut ports).await {
-            Ok(outcome) => Ok(outcome),
-            Err(failure) => fail_deploy(command, &mut *ports.recorder, failure).await,
-        }
+pub async fn execute_deploy_operation<R, N, H, A>(
+    command: DeployExecutionCommand,
+    ports: DeployExecutionPorts<'_, R, N, H, A>,
+) -> Result<DeployExecutionOutcome, DeployExecutionError>
+where
+    R: DeployOperationRecorder,
+    N: NodeContainerRuntime,
+    H: DeployHealthChecker,
+    A: ActiveServiceCommitter,
+{
+    let mut ports = ports;
+    match execute_deploy(&command, &mut ports).await {
+        Ok(outcome) => Ok(outcome),
+        Err(failure) => fail_deploy(command, &mut *ports.recorder, failure).await,
     }
 }
 
@@ -89,7 +84,6 @@ where
     record_running_stage(
         command,
         &mut *ports.recorder,
-        DeployExecutionStep::RecordExecutingPlan,
         DeployRunningStage::StartingContainers,
     )
     .await
@@ -127,7 +121,6 @@ where
     record_running_stage(
         command,
         &mut *ports.recorder,
-        DeployExecutionStep::RecordWaitingForHealth,
         DeployRunningStage::WaitingForHealth,
     )
     .await
@@ -150,7 +143,6 @@ where
     record_running_stage(
         command,
         &mut *ports.recorder,
-        DeployExecutionStep::RecordRouteCutoverCheckpoint,
         DeployRunningStage::RouteCutover,
     )
     .await
@@ -159,21 +151,22 @@ where
     record_running_stage(
         command,
         &mut *ports.recorder,
-        DeployExecutionStep::RecordActiveServiceCommitCheckpoint,
         DeployRunningStage::ActiveServiceCommit,
     )
     .await
     .map_err(|source| failure(source, &started_containers))?;
 
+    let completion_record =
+        finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
+            .await
+            .map_err(|source| source.into_execution_failure(&started_containers))?;
+
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
         target_revision: plan.target_revision,
         containers,
+        completion_record,
     };
-
-    finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
-        .await
-        .map_err(|source| source.into_execution_failure(&started_containers))?;
 
     Ok(outcome)
 }
@@ -188,7 +181,9 @@ where
 {
     with_step_timeout(
         command,
-        DeployExecutionStep::RecordPlanning,
+        DeployExecutionStep::RecordProgress {
+            progress: DeployProgressWrite::Planning,
+        },
         record(recorder, &command.operation_id, transition),
     )
     .await
@@ -202,7 +197,7 @@ async fn record_plan_created<R>(
 where
     R: DeployOperationRecorder,
 {
-    with_step_timeout(command, DeployExecutionStep::RecordPlanCreated, async {
+    with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
         recorder
             .record_deploy_evidence(
                 &command.operation_id,
@@ -217,7 +212,6 @@ where
 async fn record_running_stage<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
-    step: DeployExecutionStep,
     stage: DeployRunningStage,
 ) -> Result<(), DeployExecutionError>
 where
@@ -225,7 +219,9 @@ where
 {
     with_step_timeout(
         command,
-        step,
+        DeployExecutionStep::RecordProgress {
+            progress: DeployProgressWrite::Running { stage },
+        },
         record(
             recorder,
             &command.operation_id,
@@ -256,16 +252,12 @@ async fn record_health_check_started<R>(
 where
     R: DeployOperationRecorder,
 {
-    with_step_timeout(
-        command,
-        DeployExecutionStep::RecordHealthCheckStarted,
-        async {
-            recorder
-                .record_deploy_evidence(&command.operation_id, DeployEvidence::HealthCheckStarted)
-                .await
-                .map_err(DeployExecutionError::RecordEvidence)
-        },
-    )
+    with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
+        recorder
+            .record_deploy_evidence(&command.operation_id, DeployEvidence::HealthCheckStarted)
+            .await
+            .map_err(DeployExecutionError::RecordEvidence)
+    })
     .await
 }
 
@@ -277,22 +269,18 @@ async fn record_container_started<R>(
 where
     R: DeployOperationRecorder,
 {
-    with_step_timeout(
-        command,
-        DeployExecutionStep::RecordContainerStarted,
-        async {
-            recorder
-                .record_deploy_evidence(
-                    &command.operation_id,
-                    DeployEvidence::ContainerStarted {
-                        node_id: started.node_id.clone(),
-                        container_id: started.container_id.clone(),
-                    },
-                )
-                .await
-                .map_err(DeployExecutionError::RecordEvidence)
-        },
-    )
+    with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
+        recorder
+            .record_deploy_evidence(
+                &command.operation_id,
+                DeployEvidence::ContainerStarted {
+                    node_id: started.node_id.clone(),
+                    container_id: started.container_id.clone(),
+                },
+            )
+            .await
+            .map_err(DeployExecutionError::RecordEvidence)
+    })
     .await
 }
 

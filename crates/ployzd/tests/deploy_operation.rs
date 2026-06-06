@@ -7,19 +7,19 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use ployzd::deploy_worker::{
-    ActiveServiceCommitter, CompletionRecordAttemptError, DeployExecutionCommand,
-    DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
-    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployWorker,
-    NodeContainerRuntime, NodeContainerRuntimeError,
+    ActiveServiceCommitter, DeployCompletionRecord, DeployCompletionRecordFailure,
+    DeployExecutionCommand, DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts,
+    DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
+    NodeContainerRuntime, NodeContainerRuntimeError, execute_deploy_operation,
 };
-use ployzd::operation_runner::OwnedDeployRunner;
+use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
 
 fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("test failure message is non-empty")
 }
 
-async fn execute_with_owned_worker<R, N, H, A>(
+async fn execute_deploy<R, N, H, A>(
     command: DeployExecutionCommand,
     ports: DeployExecutionPorts<'_, R, N, H, A>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
@@ -29,123 +29,34 @@ where
     H: DeployHealthChecker,
     A: ActiveServiceCommitter,
 {
-    DeployWorker.execute(command, ports).await
+    execute_deploy_operation(command, ports).await
 }
 
 #[tokio::test(start_paused = true)]
-async fn owned_deploy_runner_renews_lease_while_deploy_is_active() {
-    let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = SlowHealth::new(Duration::from_secs(12));
-    let mut active_state = RecordingActiveState::stored();
-    let lease_renewer = RecordingLeaseRenewer::allowing();
-    let command = deploy_command(1).with_step_timeout(Duration::from_secs(20));
-    let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
-        .expect("valid renewal interval");
-
-    runner
-        .run(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-            lease_renewer.clone(),
-        )
-        .await
-        .expect("deploy succeeds");
-
-    assert_eq!(
-        lease_renewer.renewals(),
-        vec![
-            operation_id("op_123"),
-            operation_id("op_123"),
-            operation_id("op_123"),
-        ]
-    );
-    assert_eq!(
-        recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Completed))
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn owned_deploy_runner_treats_lease_loss_as_advisory_while_deploy_runs() {
-    let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = SlowHealth::new(Duration::from_secs(12));
-    let mut active_state = RecordingActiveState::stored();
+async fn advisory_lease_renews_without_controlling_work_result() {
     let lease_renewer = RecordingLeaseRenewer::lost();
-    let command = deploy_command(1).with_step_timeout(Duration::from_secs(20));
-    let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
-        .expect("valid renewal interval");
+    let policy = OperationLeasePolicy::try_new(
+        ployz_core::ops::OperationLeaseDurationSeconds::try_new(60).expect("valid lease duration"),
+        Duration::from_secs(5),
+    )
+    .expect("valid renewal interval");
 
-    runner
-        .run(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-            lease_renewer.clone(),
-        )
-        .await
-        .expect("deploy succeeds despite advisory renewal loss");
+    let outcome = with_advisory_operation_lease(
+        operation_id("op_123"),
+        policy,
+        lease_renewer.clone(),
+        async {
+            tokio::time::sleep(Duration::from_secs(12)).await;
+            "done"
+        },
+    )
+    .await;
 
+    assert_eq!(outcome, "done");
     assert_eq!(
         lease_renewer.renewals(),
-        vec![
-            operation_id("op_123"),
-            operation_id("op_123"),
-            operation_id("op_123"),
-        ]
+        vec![operation_id("op_123"), operation_id("op_123")]
     );
-    assert_eq!(runtime.requests.len(), 1);
-    assert_eq!(
-        recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Completed))
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn owned_deploy_runner_stops_renewing_when_runner_future_is_dropped() {
-    let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = SlowHealth::new(Duration::from_secs(60));
-    let mut active_state = RecordingActiveState::stored();
-    let lease_renewer = RecordingLeaseRenewer::allowing();
-    let command = deploy_command(1).with_step_timeout(Duration::from_secs(120));
-    let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
-        .expect("valid renewal interval");
-
-    let renewals_before_drop = {
-        let deploy = runner.run(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                node_runtime: &mut runtime,
-                health_checker: &mut health,
-                active_state: &mut active_state,
-            },
-            lease_renewer.clone(),
-        );
-        tokio::pin!(deploy);
-
-        tokio::select! {
-            result = &mut deploy => panic!("deploy should still be running: {result:?}"),
-            () = tokio::time::sleep(Duration::from_secs(6)) => {}
-        }
-
-        lease_renewer.renewals()
-    };
-
-    tokio::time::sleep(Duration::from_secs(20)).await;
-
-    assert_eq!(lease_renewer.renewals(), renewals_before_drop);
 }
 
 #[tokio::test]
@@ -156,7 +67,7 @@ async fn deploy_worker_runs_containers_then_completes() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
-    let outcome = execute_with_owned_worker(
+    let outcome = execute_deploy(
         command.clone(),
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -170,6 +81,7 @@ async fn deploy_worker_runs_containers_then_completes() {
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
+    assert_eq!(outcome.completion_record, DeployCompletionRecord::Recorded);
     assert_eq!(
         outcome
             .containers
@@ -241,7 +153,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command_with_existing_container(2, "node_b", "ctr_existing");
 
-    let outcome = execute_with_owned_worker(
+    let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -308,7 +220,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command_with_existing_container(1, "node_b", "ctr_existing");
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -349,7 +261,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
-    let outcome = execute_with_owned_worker(
+    let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -392,7 +304,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -447,7 +359,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command_without_eligible_nodes(1);
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -493,7 +405,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -561,7 +473,7 @@ async fn deploy_worker_times_out_hanging_steps() {
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -593,14 +505,14 @@ async fn deploy_worker_times_out_hanging_steps() {
 }
 
 #[tokio::test]
-async fn deploy_worker_retries_completed_record_after_active_commit() {
-    let mut recorder = RecordingOperations::fail_completed_transition_times(2);
+async fn deploy_worker_does_not_repair_missing_completion_after_active_commit() {
+    let mut recorder = RecordingOperations::fail_completed_transition_times(1);
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
-    let _outcome = execute_with_owned_worker(
+    let _outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -610,7 +522,14 @@ async fn deploy_worker_retries_completed_record_after_active_commit() {
         },
     )
     .await
-    .expect("completion status is recorded");
+    .expect("deploy succeeds after active state commit");
+
+    assert_eq!(
+        _outcome.completion_record,
+        DeployCompletionRecord::Missing {
+            reason: DeployCompletionRecordFailure::RecordRejected,
+        }
+    );
 
     assert_eq!(
         recorder.records,
@@ -634,82 +553,10 @@ async fn deploy_worker_retries_completed_record_after_active_commit() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
-            RecordedOperation::Transition(DeployTransition::Completed),
         ]
     );
     assert_eq!(active_state.requests.len(), 1);
-    assert_eq!(recorder.completed_transition_attempts, 2);
-}
-
-#[tokio::test]
-async fn deploy_worker_records_terminal_failure_when_completion_cannot_be_recorded() {
-    let mut recorder = RecordingOperations::fail_completed_transition_times(3);
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::healthy();
-    let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command(1);
-
-    let error = execute_with_owned_worker(
-        command,
-        DeployExecutionPorts {
-            recorder: &mut recorder,
-            node_runtime: &mut runtime,
-            health_checker: &mut health,
-            active_state: &mut active_state,
-        },
-    )
-    .await
-    .expect_err("completion record exhaustion marks the operation failed");
-
-    assert!(matches!(
-        error,
-        DeployExecutionError::Failed {
-            failure: DeployOperationFailure::CompletionRecordFailedAfterActiveCommit { .. },
-            source,
-            ..
-        } if matches!(
-            *source,
-            DeployExecutionError::CompletionRecordPending {
-                attempts: 3,
-                last_error: CompletionRecordAttemptError::Record(_),
-            }
-        )
-    ));
-
-    assert_eq!(
-        recorder.records,
-        vec![
-            RecordedOperation::Transition(DeployTransition::Planning),
-            RecordedOperation::PlanCreated { replica_count: 1 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
-                container_id: container_id("ctr_1"),
-            },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            }),
-            RecordedOperation::HealthCheckStarted,
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: route_cutover_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: active_service_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::CompletionRecordFailedAfterActiveCommit {
-                    service_id: service_id("svc_api"),
-                    revision_id: revision_id("rev_2"),
-                    message: failure_message("completion record could not be recorded"),
-                    retained_artifacts: vec![retained_container("node_a", "ctr_1")],
-                }
-            }),
-        ]
-    );
-    assert_eq!(active_state.requests.len(), 1);
-    assert_eq!(recorder.completed_transition_attempts, 3);
+    assert_eq!(recorder.completed_transition_attempts, 1);
 }
 
 #[tokio::test]
@@ -720,7 +567,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     let mut active_state = HangingActiveState;
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
@@ -788,7 +635,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
     let mut active_state = RecordingActiveState::stale_mismatch();
     let command = deploy_command(1);
 
-    let error = execute_with_owned_worker(
+    let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,

@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use crate::docker::labels::ManagedContainerLabels;
 
-use super::{DeployContainer, DeployExecutionCommand, DeployOperationRecorder};
+use super::{
+    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, DeployProgressWrite,
+};
 
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
@@ -120,10 +122,6 @@ pub enum DeployExecutionError {
     ActiveServiceCommitRejected {
         reason: ActiveServiceCommitRejection,
     },
-    CompletionRecordPending {
-        attempts: usize,
-        last_error: CompletionRecordAttemptError,
-    },
     Failed {
         failure: DeployOperationFailure,
         source: Box<DeployExecutionError>,
@@ -133,19 +131,11 @@ pub enum DeployExecutionError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
-    RecordPlanning,
-    RecordPlanCreated,
-    RecordExecutingPlan,
+    RecordProgress { progress: DeployProgressWrite },
+    RecordEvidence,
     RunContainer { node_id: NodeId },
-    RecordContainerStarted,
-    RecordHealthCheckStarted,
-    RecordWaitingForHealth,
     WaitHealthy,
-    RecordRouteCutoverCheckpoint,
-    RecordActiveServiceCommitCheckpoint,
-    RecordCompleted,
     CommitActiveService,
-    RecordFailed,
 }
 
 impl From<DeployPlanError> for DeployExecutionError {
@@ -158,19 +148,11 @@ impl DeployExecutionStep {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::RecordPlanning => "record_planning",
-            Self::RecordPlanCreated => "record_plan_created",
-            Self::RecordExecutingPlan => "record_executing_plan",
+            Self::RecordProgress { progress } => progress.as_str(),
+            Self::RecordEvidence => "record_evidence",
             Self::RunContainer { .. } => "run_container",
-            Self::RecordContainerStarted => "record_container_started",
-            Self::RecordHealthCheckStarted => "record_health_check_started",
-            Self::RecordWaitingForHealth => "record_waiting_for_health",
             Self::WaitHealthy => "wait_healthy",
-            Self::RecordRouteCutoverCheckpoint => "record_route_cutover_checkpoint",
-            Self::RecordActiveServiceCommitCheckpoint => "record_active_service_commit_checkpoint",
-            Self::RecordCompleted => "record_completed",
             Self::CommitActiveService => "commit_active_service",
-            Self::RecordFailed => "record_failed",
         }
     }
 
@@ -198,21 +180,14 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("active service commit", timeout),
                 retained_artifacts,
             },
-            Self::RecordPlanning
-            | Self::RecordPlanCreated
-            | Self::RecordExecutingPlan
-            | Self::RecordContainerStarted
-            | Self::RecordHealthCheckStarted
-            | Self::RecordWaitingForHealth
-            | Self::RecordRouteCutoverCheckpoint
-            | Self::RecordActiveServiceCommitCheckpoint
-            | Self::RecordCompleted
-            | Self::RecordFailed => DeployOperationFailure::ControlPlaneCommitFailed {
-                service_id: command.request.service_id.clone(),
-                revision_id: command.request.target_revision.clone(),
-                message: timeout_failure_message(self.as_str(), timeout),
-                retained_artifacts,
-            },
+            Self::RecordProgress { .. } | Self::RecordEvidence => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    service_id: command.request.service_id.clone(),
+                    revision_id: command.request.target_revision.clone(),
+                    message: timeout_failure_message(self.as_str(), timeout),
+                    retained_artifacts,
+                }
+            }
         }
     }
 }
@@ -258,23 +233,9 @@ impl DeployExecutionError {
                     retained_artifacts,
                 }
             }
-            Self::CompletionRecordPending { .. } => {
-                DeployOperationFailure::CompletionRecordFailedAfterActiveCommit {
-                    service_id: command.request.service_id.clone(),
-                    revision_id: command.request.target_revision.clone(),
-                    message: failure_message("completion record could not be recorded"),
-                    retained_artifacts,
-                }
-            }
             Self::Failed { failure, .. } => failure.clone(),
         }
     }
-}
-
-#[derive(Debug)]
-pub enum CompletionRecordAttemptError {
-    TimedOut { timeout: Duration },
-    Record(DeployOperationRecordError),
 }
 
 impl From<ActiveServiceCommitError> for DeployExecutionError {

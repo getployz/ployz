@@ -17,11 +17,10 @@ use ployz_nats::operations::{
 };
 use ployzd::controllers::{DeploySubmitCommand, IdempotencyKey, OperationControllers};
 use ployzd::deploy_launcher::{
-    DeployLaunchError, DeployLaunchPorts, DeployLaunchStores, launch_accepted_deploy,
+    DeployLaunchError, DeployLaunchPorts, DeployLaunchStores, run_deploy_operation,
 };
 use ployzd::deploy_worker::DeployExecutionNodeScope;
 use ployzd::operation_lease::OperationLeasePolicy;
-use ployzd::operation_runner::OwnedDeployRunner;
 use std::time::Duration;
 
 #[tokio::test]
@@ -42,7 +41,7 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
-    let outcome = launch_accepted_deploy(
+    let outcome = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
         DeployLaunchStores {
@@ -54,7 +53,6 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
-        OwnedDeployRunner::new(),
         Duration::from_secs(5),
     )
     .await
@@ -107,7 +105,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::unhealthy("node_a", "ctr_1");
 
-    let error = launch_accepted_deploy(
+    let error = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
         DeployLaunchStores {
@@ -119,7 +117,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
-        OwnedDeployRunner::new(),
         Duration::from_secs(5),
     )
     .await
@@ -174,7 +171,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
-    let error = launch_accepted_deploy(
+    let error = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
         DeployLaunchStores {
@@ -186,7 +183,6 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
-        OwnedDeployRunner::new(),
         Duration::from_secs(5),
     )
     .await
@@ -244,7 +240,7 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
-    let error = launch_accepted_deploy(
+    let error = run_deploy_operation(
         duplicate,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
         DeployLaunchStores {
@@ -256,7 +252,6 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
-        OwnedDeployRunner::new(),
         Duration::from_secs(5),
     )
     .await
@@ -303,7 +298,7 @@ async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
-    let error = launch_accepted_deploy(
+    let error = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
         DeployLaunchStores {
@@ -315,7 +310,6 @@ async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
-        OwnedDeployRunner::new(),
         Duration::from_secs(5),
     )
     .await
@@ -418,4 +412,8 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         image: image("registry.example/api:rev_2"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
     }
+}
+
+fn operation_owner_id(value: &str) -> ployz_core::ids::OperationOwnerId {
+    ployz_core::ids::OperationOwnerId::try_new(value).expect("valid operation owner id")
 }

@@ -4,9 +4,10 @@ use crate::controllers::{AcceptedDeployOperation, OperationControllers};
 use crate::deploy_worker::{
     DeployCommandPreparationError, DeployExecutionError, DeployExecutionNodeScope,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthChecker,
-    NodeContainerRuntime, load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    NodeContainerRuntime, execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
-use crate::operation_runner::OwnedDeployRunner;
+use crate::operation_lease::with_advisory_operation_lease;
 use ployz_core::ids::OperationOwnerId;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperationOwnerLease,
@@ -16,12 +17,11 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{OperationStatusStoreError, RecordDeployTransitionError};
 use std::time::Duration;
 
-pub async fn launch_accepted_deploy<N, H>(
+pub async fn run_deploy_operation<N, H>(
     accepted: AcceptedDeployOperation,
     node_scope: DeployExecutionNodeScope,
     stores: DeployLaunchStores,
     ports: DeployLaunchPorts<'_, N, H>,
-    runner: OwnedDeployRunner,
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployLaunchError>
 where
@@ -40,54 +40,57 @@ where
     renew_launch_owner_lease(&controllers, &accepted)
         .await
         .map_err(DeployLaunchError::LeaseNotHeld)?;
+    let lease_policy = controllers.lease_policy();
+    let lease_renewer = controllers.clone();
+    let operation_id = accepted.operation_id.clone();
     let request = accepted.target.clone();
 
-    let facts = match load_deploy_execution_facts_from_nats(
-        &request,
-        node_scope,
-        &core_state,
-        &observations,
-        step_timeout,
-    )
-    .await
-    {
-        Ok(facts) => facts,
-        Err(source) => {
-            let failure_record_error = record_launch_failure(
-                &controllers,
-                &accepted,
-                fact_load_failure(&request, &source),
-            )
-            .await
-            .err();
-            return Err(DeployLaunchError::LoadFacts {
-                source,
-                failure_record_error,
-            });
-        }
-    };
-    let command = match prepare_deploy_execution_command(
-        accepted.operation_id.clone(),
-        request.clone(),
-        facts,
-    ) {
-        Ok(command) => command,
-        Err(source) => {
-            let failure_record_error =
-                record_launch_failure(&controllers, &accepted, preparation_failure(&request))
-                    .await
-                    .err();
-            return Err(DeployLaunchError::PrepareCommand {
-                source,
-                failure_record_error,
-            });
-        }
-    };
-    let mut recorder = controllers.clone();
-    let mut active_state = core_state;
+    with_advisory_operation_lease(operation_id, lease_policy, lease_renewer, async move {
+        let facts = match load_deploy_execution_facts_from_nats(
+            &request,
+            node_scope,
+            &core_state,
+            &observations,
+            step_timeout,
+        )
+        .await
+        {
+            Ok(facts) => facts,
+            Err(source) => {
+                let failure_record_error = record_launch_failure(
+                    &controllers,
+                    &accepted,
+                    fact_load_failure(&request, &source),
+                )
+                .await
+                .err();
+                return Err(DeployLaunchError::LoadFacts {
+                    source,
+                    failure_record_error,
+                });
+            }
+        };
+        let command = match prepare_deploy_execution_command(
+            accepted.operation_id.clone(),
+            request.clone(),
+            facts,
+        ) {
+            Ok(command) => command,
+            Err(source) => {
+                let failure_record_error =
+                    record_launch_failure(&controllers, &accepted, preparation_failure(&request))
+                        .await
+                        .err();
+                return Err(DeployLaunchError::PrepareCommand {
+                    source,
+                    failure_record_error,
+                });
+            }
+        };
+        let mut recorder = controllers;
+        let mut active_state = core_state;
 
-    runner
-        .run(
+        execute_deploy_operation(
             command,
             DeployExecutionPorts {
                 recorder: &mut recorder,
@@ -95,10 +98,11 @@ where
                 health_checker,
                 active_state: &mut active_state,
             },
-            controllers,
         )
         .await
         .map_err(DeployLaunchError::Execute)
+    })
+    .await
 }
 
 async fn renew_launch_owner_lease(

@@ -78,12 +78,6 @@ pub enum DeployOperationFailure {
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
-    CompletionRecordFailedAfterActiveCommit {
-        service_id: ServiceId,
-        revision_id: RevisionId,
-        message: FailureMessage,
-        retained_artifacts: Vec<RetainedArtifact>,
-    },
     ActiveServiceCommitRejected {
         service_id: ServiceId,
         revision_id: RevisionId,

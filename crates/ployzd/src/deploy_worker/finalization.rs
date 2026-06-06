@@ -4,19 +4,16 @@ use std::time::Duration;
 
 use super::failure::{DeployExecutionFailure, failure};
 use super::{
-    ActiveServiceCommitRejection, ActiveServiceCommitter, CompletionRecordAttemptError,
-    DeployContainer, DeployExecutionCommand, DeployExecutionError, DeployExecutionStep,
-    DeployOperationRecorder,
+    ActiveServiceCommitRejection, ActiveServiceCommitter, DeployCompletionRecord,
+    DeployCompletionRecordFailure, DeployContainer, DeployExecutionCommand, DeployExecutionError,
+    DeployExecutionStep, DeployOperationRecorder,
 };
-
-const COMPLETION_RECORD_RETRY_DELAY: Duration = Duration::from_millis(10);
-const MAX_COMPLETION_RECORD_ATTEMPTS: usize = 3;
 
 pub(super) async fn finalize_successful_deploy<A, R>(
     command: &DeployExecutionCommand,
     active_state: &mut A,
     recorder: &mut R,
-) -> Result<(), DeployFinalizationError>
+) -> Result<DeployCompletionRecord, DeployFinalizationError>
 where
     A: ActiveServiceCommitter,
     R: DeployOperationRecorder,
@@ -29,9 +26,9 @@ where
     .await
     .map_err(DeployFinalizationError::RecordFailed)?;
 
-    record_deploy_completion(command, recorder)
+    Ok(record_deploy_completion(command, recorder)
         .await
-        .map_err(DeployFinalizationError::RecordFailed)
+        .unwrap_or_else(|reason| DeployCompletionRecord::Missing { reason }))
 }
 
 #[derive(Debug)]
@@ -75,39 +72,22 @@ where
 async fn record_deploy_completion<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
-) -> Result<(), DeployExecutionError>
+) -> Result<DeployCompletionRecord, DeployCompletionRecordFailure>
 where
     R: DeployOperationRecorder,
 {
-    let mut last_error = None;
-    for _ in 1..=MAX_COMPLETION_RECORD_ATTEMPTS {
-        match tokio::time::timeout(
-            command.step_timeout(),
-            recorder.record_deploy_transition(&command.operation_id, DeployTransition::Completed),
-        )
-        .await
-        {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(source)) => {
-                last_error = Some(CompletionRecordAttemptError::Record(source));
-            }
-            Err(_) => {
-                last_error = Some(CompletionRecordAttemptError::TimedOut {
-                    timeout: command.step_timeout(),
-                });
-            }
-        }
-
-        tokio::time::sleep(COMPLETION_RECORD_RETRY_DELAY).await;
+    match tokio::time::timeout(
+        command.step_timeout(),
+        recorder.record_deploy_transition(&command.operation_id, DeployTransition::Completed),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(DeployCompletionRecord::Recorded),
+        Ok(Err(_source)) => Err(DeployCompletionRecordFailure::RecordRejected),
+        Err(_) => Err(DeployCompletionRecordFailure::TimedOut {
+            timeout: command.step_timeout(),
+        }),
     }
-
-    let Some(last_error) = last_error else {
-        unreachable!("completion record attempts always run at least once");
-    };
-    Err(DeployExecutionError::CompletionRecordPending {
-        attempts: MAX_COMPLETION_RECORD_ATTEMPTS,
-        last_error,
-    })
 }
 
 async fn commit_active_service_request<A>(
