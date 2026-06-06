@@ -54,6 +54,24 @@ pub struct ManagedContainerObservation {
     pub state: ContainerRuntimeState,
 }
 
+impl ManagedContainerObservation {
+    #[must_use]
+    pub fn is_running_service(&self) -> bool {
+        self.kind == ManagedContainerKind::Service && self.state == ContainerRuntimeState::Running
+    }
+
+    #[must_use]
+    pub fn is_running_service_revision(
+        &self,
+        service_id: &ServiceId,
+        revision_id: &RevisionId,
+    ) -> bool {
+        self.is_running_service()
+            && self.service_id == *service_id
+            && self.revision_id == *revision_id
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     try_from = "NodeContainerObservationSnapshotWire",

@@ -5,10 +5,7 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
-use crate::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
-};
+use crate::node::NodeContainerObservationSnapshot;
 use crate::state::{ActiveServiceState, ExpectedActiveService};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,22 +184,14 @@ fn existing_replicas(
     observed_nodes
         .iter()
         .flat_map(NodeContainerObservationSnapshot::containers)
-        .filter(|container| is_running_target_service_container(container, request))
+        .filter(|container| {
+            container.is_running_service_revision(&request.service_id, &request.target_revision)
+        })
         .map(|container| ExistingServiceReplica {
             node_id: container.node_id.clone(),
             container_id: container.container_id.clone(),
         })
         .collect()
-}
-
-fn is_running_target_service_container(
-    container: &ManagedContainerObservation,
-    request: &DeployRequest,
-) -> bool {
-    container.kind == ManagedContainerKind::Service
-        && container.state == ContainerRuntimeState::Running
-        && container.service_id == request.service_id
-        && container.revision_id == request.target_revision
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {

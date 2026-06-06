@@ -731,7 +731,7 @@ impl From<OperatorHint> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteTarget {
     pub hostname: RouteHostname,
@@ -745,7 +745,7 @@ impl RouteTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RouteHostname(String);
 
@@ -770,7 +770,7 @@ impl RouteHostname {
             return Err(RouteHostnameError::Invalid { value });
         }
 
-        Ok(Self(value))
+        Ok(Self(value.to_ascii_lowercase()))
     }
 
     #[must_use]
@@ -808,7 +808,7 @@ impl fmt::Display for RouteHostnameError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "u16", into = "u16")]
 pub struct RoutePort(NonZeroU16);
 

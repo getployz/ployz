@@ -25,5 +25,6 @@ pub mod node_runtime_types;
 pub mod node_service_runtime;
 pub mod operation_api;
 pub mod operation_lease;
+pub mod projection;
 pub mod role;
 pub mod services;
