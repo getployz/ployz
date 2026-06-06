@@ -7,11 +7,17 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use ployz_core::cert::{
+    AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
+    AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
+    CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
+};
 pub use ployz_core::deploy::{
     DeployRequest, ImageReference, ImageReferenceError, ReplicaCount, ReplicaCountError,
 };
 pub use ployz_core::ids::{
-    ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, SubjectTokenError,
+    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
+    SubjectTokenError,
 };
 pub use ployz_core::ops::{
     ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
@@ -24,7 +30,10 @@ pub use ployz_core::ops::{
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RouteTarget,
 };
-pub use ployz_core::ops::{DeployOperationFailure, DeployOperationState, DeployRunningStage};
+pub use ployz_core::ops::{
+    CertOperationFailure, CertOperationState, CertRunningStage, DeployOperationFailure,
+    DeployOperationState, DeployRunningStage,
+};
 pub use ployz_core::state::{
     ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
 };

@@ -1,8 +1,10 @@
 use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
 };
-use ployz_core::ids::{OperationId, RevisionId, ServiceId};
-use ployz_core::ops::{DeployRunningStage, DeployTransition, EventSequence, OperationEvent};
+use ployz_core::ids::{CertId, OperationId, RevisionId, ServiceId};
+use ployz_core::ops::{
+    DeployRunningStage, DeployTransition, EventSequence, OperationEvent, OperationIdempotencyKey,
+};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::{MessageId, OperationEventStream};
 
@@ -110,6 +112,25 @@ fn deploy_plan_created_append_uses_stable_message_id() {
 }
 
 #[test]
+fn cert_submitted_append_uses_stable_message_id() {
+    let append = OperationEventAppend::cert_submitted(
+        operation_id("op_cert"),
+        cert_id("cert_api"),
+        &idempotency_key("idem_cert"),
+    );
+
+    assert_eq!(append.subject(), "plz.v1.op.op_cert.cert.submitted");
+    assert_eq!(append.message_id().as_str(), "cert.submit.idem_cert");
+    assert_eq!(
+        append.payload(),
+        &OperationEvent::CertRenewalSubmitted {
+            operation_id: operation_id("op_cert"),
+            cert_id: cert_id("cert_api"),
+        }
+    );
+}
+
+#[test]
 fn operation_stream_replays_matching_operation_events_from_start_sequence() {
     let mut stream = OperationEventStream::default();
     stream.append(
@@ -176,6 +197,10 @@ fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
 
+fn cert_id(value: &str) -> CertId {
+    CertId::try_new(value).expect("valid cert id")
+}
+
 fn node_id(value: &str) -> ployz_core::ids::NodeId {
     ployz_core::ids::NodeId::try_new(value).expect("valid node id")
 }
@@ -205,6 +230,10 @@ fn active_service_running() -> DeployRunningStage {
 
 fn revision_id(value: &str) -> RevisionId {
     RevisionId::try_new(value).expect("valid revision id")
+}
+
+fn idempotency_key(value: &str) -> OperationIdempotencyKey {
+    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
 }
 
 fn image(value: &str) -> ImageReference {

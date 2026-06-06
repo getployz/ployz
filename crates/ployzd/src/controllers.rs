@@ -1,5 +1,7 @@
 //! Controller wiring for operation execution.
 
+pub mod cert;
+
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::ops::{

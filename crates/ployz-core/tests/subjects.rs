@@ -1,7 +1,9 @@
-use ployz_core::ids::{NodeId, OperationId, SubjectTokenError};
+use ployz_core::ids::{CertId, NodeId, OperationId, SubjectTokenError};
 use ployz_core::ops::DeployRunningStage;
 use ployz_core::subjects::{
-    NodeObservationEvent, NodeServiceEndpoint, node_observation, node_service, op_deploy_completed,
+    NodeObservationEvent, NodeServiceEndpoint, cert_renewal_job, cert_renewal_schedule,
+    node_observation, node_service, op_cert_challenge_published, op_cert_completed, op_cert_failed,
+    op_cert_submitted, op_cert_validation_started, op_deploy_completed,
     op_deploy_container_started, op_deploy_health_check_started, op_deploy_plan_created,
     op_deploy_planning_started, op_deploy_running, op_deploy_submitted, op_watch,
 };
@@ -53,6 +55,40 @@ fn node_subjects_use_known_endpoint_and_event_tokens() {
         node_observation(&node_id, NodeObservationEvent::ContainerRunning),
         "plz.v1.obs.node.node_7.container.running"
     );
+}
+
+#[test]
+fn cert_schedule_subjects_target_the_cert_job_subject() {
+    let cert_id = CertId::try_new("cert_api").expect("valid cert id");
+
+    assert_eq!(
+        cert_renewal_schedule(&cert_id),
+        "plz.v1.sched.cert.renew.cert_api"
+    );
+    assert_eq!(cert_renewal_job(&cert_id), "plz.v1.job.cert.renew.cert_api");
+}
+
+#[test]
+fn cert_operation_subjects_use_validated_operation_ids() {
+    let op_id = OperationId::try_new("op_cert").expect("valid operation id");
+
+    assert_eq!(
+        op_cert_submitted(&op_id),
+        "plz.v1.op.op_cert.cert.submitted"
+    );
+    assert_eq!(
+        op_cert_challenge_published(&op_id),
+        "plz.v1.op.op_cert.cert.challenge.published"
+    );
+    assert_eq!(
+        op_cert_validation_started(&op_id),
+        "plz.v1.op.op_cert.cert.validation.started"
+    );
+    assert_eq!(
+        op_cert_completed(&op_id),
+        "plz.v1.op.op_cert.cert.completed"
+    );
+    assert_eq!(op_cert_failed(&op_id), "plz.v1.op.op_cert.cert.failed");
 }
 
 #[test]

@@ -3,16 +3,18 @@ use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::{ContainerId, NodeId, OperationId};
+use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
 use ployz_core::ops::{
-    DeployEvidence, DeployTransition, EventSequence, EventSequenceError, OperationEvent,
-    OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
+    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, EventSequenceError,
+    OperationEvent, OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
     ReplayedOperationEvent,
 };
 use ployz_core::subjects::{
-    op_cancelled, op_deploy_completed, op_deploy_container_started, op_deploy_failed,
-    op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
-    op_deploy_running, op_deploy_submitted, op_watch,
+    op_cancelled, op_cert_challenge_published, op_cert_completed, op_cert_failed,
+    op_cert_submitted, op_cert_validation_started, op_deploy_completed,
+    op_deploy_container_started, op_deploy_failed, op_deploy_health_check_started,
+    op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
+    op_watch,
 };
 use std::future::Future;
 
@@ -95,6 +97,76 @@ impl OperationEventAppend {
     #[must_use]
     pub fn deploy_health_check_started(operation_id: &OperationId) -> Self {
         Self::deploy_evidence(operation_id, &DeployEvidence::HealthCheckStarted)
+    }
+
+    #[must_use]
+    pub fn cert_submitted(
+        operation_id: OperationId,
+        cert_id: CertId,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("cert.submit.{}", idempotency_key.as_str())),
+            OperationEvent::CertRenewalSubmitted {
+                operation_id,
+                cert_id,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn cert_challenge_published(
+        operation_id: &OperationId,
+        cert_id: &CertId,
+        challenge: ployz_core::cert::AcmeHttp01Challenge,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!(
+                "cert.challenge.published.{}",
+                operation_id.as_str()
+            )),
+            OperationEvent::CertChallengePublished {
+                operation_id: operation_id.clone(),
+                cert_id: cert_id.clone(),
+                challenge,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn cert_validation_started(operation_id: &OperationId, cert_id: &CertId) -> Self {
+        Self::from_event(
+            MessageId::new(format!("cert.validation.started.{}", operation_id.as_str())),
+            OperationEvent::CertValidationStarted {
+                operation_id: operation_id.clone(),
+                cert_id: cert_id.clone(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn cert_completed(
+        operation_id: &OperationId,
+        active_cert: ployz_core::cert::ActiveCertState,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("cert.completed.{}", operation_id.as_str())),
+            OperationEvent::CertCompleted {
+                operation_id: operation_id.clone(),
+                active_cert,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn cert_failed(operation_id: &OperationId, failure: CertOperationFailure) -> Self {
+        Self::from_event(
+            MessageId::new(format!("cert.failed.{}", operation_id.as_str())),
+            OperationEvent::CertFailed {
+                operation_id: operation_id.clone(),
+                failure,
+            },
+        )
     }
 
     #[must_use]
@@ -360,6 +432,17 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         }
         OperationEvent::DeployCompleted { operation_id, .. } => op_deploy_completed(operation_id),
         OperationEvent::DeployFailed { operation_id, .. } => op_deploy_failed(operation_id),
+        OperationEvent::CertRenewalSubmitted { operation_id, .. } => {
+            op_cert_submitted(operation_id)
+        }
+        OperationEvent::CertChallengePublished { operation_id, .. } => {
+            op_cert_challenge_published(operation_id)
+        }
+        OperationEvent::CertValidationStarted { operation_id, .. } => {
+            op_cert_validation_started(operation_id)
+        }
+        OperationEvent::CertCompleted { operation_id, .. } => op_cert_completed(operation_id),
+        OperationEvent::CertFailed { operation_id, .. } => op_cert_failed(operation_id),
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }
 }

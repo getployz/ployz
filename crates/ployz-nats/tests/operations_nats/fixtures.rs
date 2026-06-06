@@ -1,16 +1,21 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
+use ployz_core::cert::{
+    AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
+    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+};
 use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
 };
-use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ids::{CertId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
-    OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt, RouteHostname,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, KV_OPS_BUCKET, OperationLeaseClaim, PLZ_OPS_STREAM,
+    CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET, OperationLeaseClaim,
+    PLZ_OPS_STREAM,
 };
 
 pub(super) struct TestNats {
@@ -75,6 +80,18 @@ pub(super) fn deploy_submission(
     }
 }
 
+pub(super) fn cert_submission(
+    operation_id: &str,
+    idempotency_key: &str,
+    cert_id: &str,
+) -> CertOperationSubmission {
+    CertOperationSubmission {
+        operation_id: self::operation_id(operation_id),
+        cert_id: self::cert_id(cert_id),
+        idempotency_key: self::idempotency_key(idempotency_key),
+    }
+}
+
 pub(super) fn lease_claim(owner_id: &str, now: u64, expires_at: u64) -> OperationLeaseClaim {
     OperationLeaseClaim::try_new(
         OperationOwnerId::try_new(owner_id).expect("valid operation owner id"),
@@ -125,6 +142,10 @@ pub(super) fn revision_id(value: &str) -> RevisionId {
 
 pub(super) fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
+}
+
+pub(super) fn cert_id(value: &str) -> CertId {
+    CertId::try_new(value).expect("valid cert id")
 }
 
 pub(super) fn deploy_target(service_id: &str) -> DeployRequest {
@@ -178,4 +199,29 @@ pub(super) fn cancellation_reason(value: &str) -> CancellationReason {
 
 pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
+}
+
+pub(super) fn cert_challenge(hostname: &str) -> AcmeHttp01Challenge {
+    AcmeHttp01Challenge::try_new(
+        RouteHostname::try_new(hostname).expect("valid hostname"),
+        AcmeChallengeToken::try_new("token_123").expect("valid challenge token"),
+        AcmeChallengeValue::try_new("token_123.thumbprint_456").expect("valid challenge value"),
+        AcmeChallengeTtlSeconds::try_new(60).expect("valid challenge ttl"),
+    )
+    .expect("valid challenge")
+}
+
+pub(super) fn active_cert(cert_id: &str, hostname: &str) -> ActiveCertState {
+    ActiveCertState {
+        cert_id: self::cert_id(cert_id),
+        hostname: RouteHostname::try_new(hostname).expect("valid hostname"),
+        bundle_ref: CertBundleRef::try_new(format!("obj://PLZ_CERTS/{cert_id}/rev_1"))
+            .expect("valid bundle ref"),
+        validity: CertValidityWindow::try_new(valid_at(1_700_000_000), valid_at(1_707_776_000))
+            .expect("valid validity"),
+    }
+}
+
+fn valid_at(value: u64) -> CertValidAt {
+    CertValidAt::try_new(value).expect("valid cert timestamp")
 }

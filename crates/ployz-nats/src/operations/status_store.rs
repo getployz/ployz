@@ -7,7 +7,9 @@ use ployz_core::ops::{
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 
-use super::keys::{deploy_submission_key, operation_owner_lease_key, operation_status_key};
+use super::keys::{
+    cert_submission_key, deploy_submission_key, operation_owner_lease_key, operation_status_key,
+};
 use super::projection::{status_id, status_sequence};
 use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
 
@@ -18,6 +20,12 @@ pub struct AsyncNatsOperationStatusStore {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredDeploySubmission {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub start_sequence: EventSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCertSubmission {
     pub operation_id: ployz_core::ids::OperationId,
     pub start_sequence: EventSequence,
 }
@@ -150,6 +158,58 @@ impl AsyncNatsOperationStatusStore {
             Ok(_) => Ok(submission.clone()),
             Err(error) => {
                 if let Some(existing) = self.deploy_submission(idempotency_key).await? {
+                    Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    pub async fn cert_submission(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredCertSubmission>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "cert submission get",
+            self.bucket.get(cert_submission_key(idempotency_key)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeSubmission)
+    }
+
+    pub async fn put_cert_submission_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredCertSubmission,
+    ) -> Result<StoredCertSubmission, OperationStatusStoreError> {
+        if let Some(existing) = self.cert_submission(idempotency_key).await? {
+            return Ok(existing);
+        }
+
+        let key = cert_submission_key(idempotency_key);
+        let payload =
+            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "cert submission create",
+            self.bucket.create(&key, payload.into()),
+        )
+        .await?
+        {
+            Ok(_) => Ok(submission.clone()),
+            Err(error) => {
+                if let Some(existing) = self.cert_submission(idempotency_key).await? {
                     Ok(existing)
                 } else {
                     Err(OperationStatusStoreError::CasConflict {

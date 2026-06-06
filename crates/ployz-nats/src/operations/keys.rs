@@ -15,3 +15,8 @@ pub fn operation_owner_lease_key(operation_id: &OperationId) -> String {
 pub fn deploy_submission_key(idempotency_key: &OperationIdempotencyKey) -> String {
     format!("deploy_submissions.{}", idempotency_key.as_str())
 }
+
+#[must_use]
+pub fn cert_submission_key(idempotency_key: &OperationIdempotencyKey) -> String {
+    format!("cert_submissions.{}", idempotency_key.as_str())
+}

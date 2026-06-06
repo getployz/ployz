@@ -7,6 +7,7 @@
 //! own process wiring, NATS clients, iroh endpoints, Docker clients, or CLI
 //! presentation.
 
+pub mod cert;
 pub mod deploy;
 pub mod ids;
 pub mod node;

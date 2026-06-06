@@ -3,13 +3,17 @@ use ployz_core::ops::{EventSequence, OperationStatus};
 
 pub(super) fn status_id(status: &OperationStatus) -> &OperationId {
     match status {
-        OperationStatus::Deploy { id, .. } => id,
+        OperationStatus::Deploy { id, .. } | OperationStatus::Cert { id, .. } => id,
     }
 }
 
 pub(super) fn status_sequence(status: &OperationStatus) -> EventSequence {
     match status {
         OperationStatus::Deploy {
+            last_event_sequence,
+            ..
+        }
+        | OperationStatus::Cert {
             last_event_sequence,
             ..
         } => *last_event_sequence,

@@ -4,18 +4,21 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
+use crate::cert::{AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::deploy::{DeployPlan, DeployRequest};
 use crate::ids::{
-    ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, SubjectToken,
-    SubjectTokenError,
+    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
+    SubjectToken, SubjectTokenError,
 };
 use crate::state::ExpectedActiveService;
 
 mod projection;
 
 pub use projection::{
-    DeployProjection, OperationEventProjection, StatusProjectionError, project_deploy_transition,
-    project_operation_event, validate_deploy_transition, validate_fresh_deploy_evidence,
+    CertProjection, DeployProjection, OperationEventProjection, OperationSubjectRef,
+    ProjectionOperationState, StatusProjectionError, project_cert_transition,
+    project_deploy_transition, project_operation_event, validate_cert_transition,
+    validate_deploy_transition, validate_fresh_deploy_evidence,
 };
 
 pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
@@ -26,6 +29,13 @@ pub enum DeployRunningStage {
     StartingContainers,
     WaitingForHealth,
     ActiveServiceCommit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertRunningStage {
+    ChallengePublished,
+    ValidationStarted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +55,26 @@ impl DeployOperationState {
         match self {
             Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
             Self::Accepted | Self::Planning | Self::Running { .. } => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertOperationState {
+    Accepted,
+    Running { stage: CertRunningStage },
+    Completed,
+    Failed { failure: CertOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl CertOperationState {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        match self {
+            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Accepted | Self::Running { .. } => false,
         }
     }
 }
@@ -88,6 +118,38 @@ pub enum DeployOperationFailure {
         reason: RouteCutoverFailureReason,
         retained_artifacts: Vec<RetainedArtifact>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertOperationFailure {
+    ChallengePublishFailed {
+        cert_id: CertId,
+        message: FailureMessage,
+    },
+    AcmeValidationFailed {
+        cert_id: CertId,
+        message: FailureMessage,
+        retained_active_cert: Option<ActiveCertState>,
+    },
+    ActiveCertCommitFailed {
+        cert_id: CertId,
+        bundle_ref: CertBundleRef,
+        validity: CertValidityWindow,
+        message: FailureMessage,
+        retained_active_cert: Option<ActiveCertState>,
+    },
+}
+
+impl CertOperationFailure {
+    #[must_use]
+    pub const fn cert_id(&self) -> &CertId {
+        match self {
+            Self::ChallengePublishFailed { cert_id, .. }
+            | Self::AcmeValidationFailed { cert_id, .. }
+            | Self::ActiveCertCommitFailed { cert_id, .. } => cert_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +208,12 @@ pub enum OperationStatus {
         id: OperationId,
         service_id: ServiceId,
         state: DeployOperationState,
+        last_event_sequence: EventSequence,
+    },
+    Cert {
+        id: OperationId,
+        cert_id: CertId,
+        state: CertOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -328,9 +396,20 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn cert_accepted(id: OperationId, cert_id: CertId, event_sequence: EventSequence) -> Self {
+        Self::Cert {
+            id,
+            cert_id,
+            state: CertOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
+            Self::Cert { state, .. } => state.is_terminal(),
         }
     }
 }
@@ -354,6 +433,30 @@ pub enum DeployEvidence {
         container_id: ContainerId,
     },
     HealthCheckStarted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertTransition {
+    Running { stage: CertRunningStage },
+    Completed,
+    Failed { failure: CertOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl CertTransition {
+    #[must_use]
+    pub fn state(&self) -> CertOperationState {
+        match self {
+            Self::Running { stage } => CertOperationState::Running { stage: *stage },
+            Self::Completed => CertOperationState::Completed,
+            Self::Failed { failure } => CertOperationState::Failed {
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => CertOperationState::Cancelled {
+                reason: reason.clone(),
+            },
+        }
+    }
 }
 
 impl DeployEvidence {
@@ -585,6 +688,7 @@ pub struct ReplayedOperationEvent {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationSubject {
     Deploy { service_id: ServiceId },
+    Cert { cert_id: CertId },
     MachineAdd { node_id: NodeId },
     MachineDrain { node_id: NodeId },
     ServiceRemove { service_id: ServiceId },
@@ -622,6 +726,27 @@ pub enum OperationEvent {
     DeployFailed {
         operation_id: OperationId,
         failure: DeployOperationFailure,
+    },
+    CertRenewalSubmitted {
+        operation_id: OperationId,
+        cert_id: CertId,
+    },
+    CertChallengePublished {
+        operation_id: OperationId,
+        cert_id: CertId,
+        challenge: AcmeHttp01Challenge,
+    },
+    CertValidationStarted {
+        operation_id: OperationId,
+        cert_id: CertId,
+    },
+    CertCompleted {
+        operation_id: OperationId,
+        active_cert: ActiveCertState,
+    },
+    CertFailed {
+        operation_id: OperationId,
+        failure: CertOperationFailure,
     },
     Cancelled {
         operation_id: OperationId,

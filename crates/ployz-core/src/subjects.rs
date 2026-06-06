@@ -1,6 +1,6 @@
 //! NATS subject construction helpers.
 
-use crate::ids::{ContainerId, NodeId, OperationId};
+use crate::ids::{CertId, ContainerId, NodeId, OperationId};
 use crate::ops::DeployRunningStage;
 
 pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
@@ -108,6 +108,47 @@ pub fn op_deploy_failed(operation_id: &OperationId) -> String {
 #[must_use]
 pub fn op_cancelled(operation_id: &OperationId) -> String {
     format!("plz.v1.op.{}.cancelled", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_cert_submitted(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.cert.submitted", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_cert_challenge_published(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.cert.challenge.published",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn op_cert_validation_started(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.cert.validation.started",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn op_cert_completed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.cert.completed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_cert_failed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.cert.failed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn cert_renewal_schedule(cert_id: &CertId) -> String {
+    format!("plz.v1.sched.cert.renew.{}", cert_id.as_str())
+}
+
+#[must_use]
+pub fn cert_renewal_job(cert_id: &CertId) -> String {
+    format!("plz.v1.job.cert.renew.{}", cert_id.as_str())
 }
 
 #[must_use]

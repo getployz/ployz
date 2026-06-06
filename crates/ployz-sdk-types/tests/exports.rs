@@ -1,12 +1,15 @@
 use ployz_sdk_types::{
-    AcceptedOperation, DeployOperationState, DeployRequest, DeployRunningStage,
-    DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference,
-    ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError, OperationApiResponse,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
-    OperationSubject, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
+    AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
+    AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertId, CertOperationState,
+    CertRunningStage, CertTextError, CertValidAt, CertValidityWindow, DeployOperationState,
+    DeployRequest, DeployRunningStage, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
+    EventSequenceError, ImageReference, ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationSubject, ReplicaCount,
+    ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    ServiceId, SubjectTokenError,
 };
 
 #[test]
@@ -53,6 +56,52 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
+}
+
+#[test]
+fn sdk_exports_cert_wire_types() {
+    let cert_id = CertId::try_new("cert_api").expect("valid cert id");
+    let active_cert = ActiveCertState {
+        cert_id: cert_id.clone(),
+        hostname: RouteHostname::try_new("api.example.com").expect("valid hostname"),
+        bundle_ref: CertBundleRef::try_new("obj://PLZ_CERTS/cert_api/rev_1")
+            .expect("valid bundle ref"),
+        validity: CertValidityWindow::try_new(valid_at(1_700_000_000), valid_at(1_707_776_000))
+            .expect("valid validity window"),
+    };
+    let status = OperationStatus::Cert {
+        id: ployz_sdk_types::OperationId::try_new("op_cert").expect("valid operation id"),
+        cert_id: cert_id.clone(),
+        state: CertOperationState::Running {
+            stage: CertRunningStage::ValidationStarted,
+        },
+        last_event_sequence: EventSequence::try_new(3).expect("valid event sequence"),
+    };
+    let event = OperationEvent::CertCompleted {
+        operation_id: ployz_sdk_types::OperationId::try_new("op_cert").expect("valid operation id"),
+        active_cert,
+    };
+    let challenge = AcmeHttp01Challenge::try_new(
+        RouteHostname::try_new("api.example.com").expect("valid hostname"),
+        AcmeChallengeToken::try_new("token_123").expect("valid challenge token"),
+        AcmeChallengeValue::try_new("token_123.thumbprint_456").expect("valid challenge value"),
+        AcmeChallengeTtlSeconds::try_new(60).expect("valid challenge ttl"),
+    )
+    .expect("valid challenge");
+
+    assert_eq!(
+        serde_json::to_string(&OperationSubject::Cert { cert_id }).expect("subject serializes"),
+        r#"{"kind":"cert","cert_id":"cert_api"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&status).expect("status serializes"),
+        r#"{"kind":"cert","id":"op_cert","cert_id":"cert_api","state":{"state":"running","stage":"validation_started"},"last_event_sequence":3}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&event).expect("event serializes"),
+        r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"obj://PLZ_CERTS/cert_api/rev_1","validity":{"not_before":1700000000,"not_after":1707776000}}}"#
+    );
+    assert_eq!(challenge.ttl_seconds().get(), 60);
 }
 
 #[test]
@@ -137,8 +186,20 @@ fn sdk_exports_constructor_error_types() {
         Err(NonEmptyTextError::Empty)
     ));
     assert!(matches!(
+        AcmeChallengeValue::try_new("missing_thumbprint"),
+        Err(CertTextError::InvalidAcmeChallengeValue { .. })
+    ));
+    assert!(matches!(
+        CertBundleRef::try_new("file://PLZ_CERTS/cert_api/rev_1"),
+        Err(CertTextError::InvalidBundleRef { .. })
+    ));
+    assert!(matches!(
         RouteHostname::try_new("-api.example.com"),
         Err(RouteHostnameError::Invalid { .. })
     ));
     assert!(matches!(RoutePort::try_new(0), Err(RoutePortError::Zero)));
+}
+
+fn valid_at(value: u64) -> CertValidAt {
+    CertValidAt::try_new(value).expect("valid cert timestamp")
 }

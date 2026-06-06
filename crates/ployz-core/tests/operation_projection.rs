@@ -2,8 +2,8 @@ use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployProjection, DeployRunningStage, DeployTransition, EventSequence,
-    OperationEvent, OperationEventProjection, OperationStatus, StatusProjectionError,
-    project_deploy_transition, project_operation_event,
+    OperationEvent, OperationEventProjection, OperationStatus, ProjectionOperationState,
+    StatusProjectionError, project_deploy_transition, project_operation_event,
 };
 
 #[test]
@@ -21,12 +21,12 @@ fn deploy_transition_updates_status_sequence() {
     assert_eq!(
         projection,
         DeployProjection::Updated {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Planning,
                 last_event_sequence: event_sequence(2),
-            },
+            }),
         }
     );
 }
@@ -59,8 +59,10 @@ fn terminal_operation_status_cannot_return_to_running() {
         project_deploy_transition(&completed, fake_running_transition(), event_sequence(5)),
         Err(StatusProjectionError::TerminalState {
             operation_id: operation_id("op_123"),
-            current: Box::new(DeployOperationState::Completed),
-            attempted: Box::new(fake_running_state()),
+            current: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Completed
+            )),
+            attempted: Box::new(ProjectionOperationState::Deploy(fake_running_state())),
         })
     );
 }
@@ -80,10 +82,14 @@ fn deploy_completion_is_rejected_before_active_commit_stage() {
         project_deploy_transition(&waiting, DeployTransition::Completed, event_sequence(5)),
         Err(StatusProjectionError::InvalidTransition {
             operation_id: operation_id("op_123"),
-            current: Box::new(DeployOperationState::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            }),
-            attempted: Box::new(DeployOperationState::Completed),
+            current: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Running {
+                    stage: DeployRunningStage::WaitingForHealth,
+                }
+            )),
+            attempted: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Completed
+            )),
         })
     );
 }
@@ -107,10 +113,14 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
         ),
         Err(StatusProjectionError::InvalidTransition {
             operation_id: operation_id("op_123"),
-            current: Box::new(DeployOperationState::Planning),
-            attempted: Box::new(DeployOperationState::Running {
-                stage: active_service_running(),
-            }),
+            current: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Planning
+            )),
+            attempted: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Running {
+                    stage: active_service_running(),
+                }
+            )),
         })
     );
 
@@ -133,12 +143,16 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
         ),
         Err(StatusProjectionError::InvalidTransition {
             operation_id: operation_id("op_123"),
-            current: Box::new(DeployOperationState::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            attempted: Box::new(DeployOperationState::Running {
-                stage: active_service_running(),
-            }),
+            current: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Running {
+                    stage: DeployRunningStage::StartingContainers,
+                }
+            )),
+            attempted: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Running {
+                    stage: active_service_running(),
+                }
+            )),
         })
     );
 }
@@ -157,12 +171,12 @@ fn deploy_completion_is_allowed_after_active_commit_checkpoint() {
     assert_eq!(
         project_deploy_transition(&committing, DeployTransition::Completed, event_sequence(6)),
         Ok(DeployProjection::Updated {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Completed,
                 last_event_sequence: event_sequence(6),
-            },
+            }),
         })
     );
 }
@@ -179,8 +193,12 @@ fn invalid_deploy_transitions_are_rejected() {
         project_deploy_transition(&accepted, DeployTransition::Completed, event_sequence(2)),
         Err(StatusProjectionError::InvalidTransition {
             operation_id: operation_id("op_123"),
-            current: Box::new(DeployOperationState::Accepted),
-            attempted: Box::new(DeployOperationState::Completed),
+            current: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Accepted
+            )),
+            attempted: Box::new(ProjectionOperationState::Deploy(
+                DeployOperationState::Completed
+            )),
         })
     );
 }
@@ -199,14 +217,14 @@ fn container_started_event_records_without_changing_status() {
     assert_eq!(
         project_operation_event(&starting, container_started_event(), event_sequence(4)),
         Ok(OperationEventProjection::StatusChanged {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::StartingContainers,
                 },
                 last_event_sequence: event_sequence(4),
-            },
+            }),
         })
     );
 }
@@ -225,14 +243,14 @@ fn health_check_started_event_records_without_changing_status() {
     assert_eq!(
         project_operation_event(&waiting, health_check_started_event(), event_sequence(4)),
         Ok(OperationEventProjection::StatusChanged {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::WaitingForHealth,
                 },
                 last_event_sequence: event_sequence(4),
-            },
+            }),
         })
     );
 }
@@ -249,12 +267,12 @@ fn plan_created_event_records_without_changing_status() {
     assert_eq!(
         project_operation_event(&planning, plan_created_event(), event_sequence(3)),
         Ok(OperationEventProjection::StatusChanged {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Planning,
                 last_event_sequence: event_sequence(3),
-            },
+            }),
         })
     );
 }
@@ -273,14 +291,14 @@ fn plan_created_event_after_execution_starts_records_without_changing_status() {
     assert_eq!(
         project_operation_event(&executing, plan_created_event(), event_sequence(5)),
         Ok(OperationEventProjection::StatusChanged {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: DeployRunningStage::StartingContainers,
                 },
                 last_event_sequence: event_sequence(5),
-            },
+            }),
         })
     );
 }
@@ -316,14 +334,14 @@ fn fresh_container_started_event_after_later_stage_records_without_changing_stat
     assert_eq!(
         project_operation_event(&waiting, container_started_event(), event_sequence(6)),
         Ok(OperationEventProjection::StatusChanged {
-            status: OperationStatus::Deploy {
+            status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Running {
                     stage: active_service_running(),
                 },
                 last_event_sequence: event_sequence(6),
-            },
+            }),
         })
     );
 }

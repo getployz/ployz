@@ -1,10 +1,11 @@
-use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
+use ployz_core::ids::{CertId, OperationId, OperationOwnerId};
 use ployz_core::ops::{
-    DeployEvidence, DeployTransition, EventSequence, OperationEvent, OperationEventProjection,
-    OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
-    validate_fresh_deploy_evidence,
+    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, OperationEvent,
+    OperationEventProjection, OperationEventReplayCursor, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationOwnerLease, OperationStatus, OperationStatusSnapshot, StatusProjectionError,
+    project_operation_event, validate_fresh_deploy_evidence,
 };
 
 use super::events::{
@@ -14,7 +15,7 @@ use super::events::{
 use super::projection::{next_event_sequence, status_sequence};
 use super::status_store::{
     AsyncNatsOperationStatusStore, OperationStatusReadError, OperationStatusStoreError,
-    OperationStatusWrite, StoredDeploySubmission,
+    OperationStatusWrite, StoredCertSubmission, StoredDeploySubmission,
 };
 
 #[derive(Debug, Clone)]
@@ -137,6 +138,104 @@ impl AsyncNatsOperationRepository {
         })
     }
 
+    pub async fn submit_cert(
+        &self,
+        submission: CertOperationSubmission,
+        owner: OperationLeaseClaim,
+    ) -> Result<AcceptedCertSubmission, SubmitCertError> {
+        if let Some(existing) = self
+            .status_store
+            .cert_submission(&submission.idempotency_key)
+            .await
+            .map_err(SubmitCertError::StoreStatus)?
+        {
+            let cert_id = self
+                .submitted_cert_id(&existing.operation_id, existing.start_sequence)
+                .await?;
+            let lease = self
+                .status_store
+                .claim_owner_lease(
+                    &existing.operation_id,
+                    owner.owner_id(),
+                    owner.now(),
+                    owner.expires_at(),
+                )
+                .await
+                .map_err(SubmitCertError::StoreStatus)?;
+            return Ok(AcceptedCertSubmission {
+                operation_id: existing.operation_id,
+                start_sequence: existing.start_sequence,
+                cert_id,
+                lease,
+            });
+        }
+
+        let stored = self
+            .event_log
+            .append(OperationEventAppend::cert_submitted(
+                submission.operation_id.clone(),
+                submission.cert_id.clone(),
+                &submission.idempotency_key,
+            ))
+            .await
+            .map_err(SubmitCertError::AppendEvent)?;
+        let (operation_id, cert_id) = if stored.duplicate {
+            let original = self
+                .event_log
+                .event_at_sequence(stored.sequence)
+                .await
+                .map_err(SubmitCertError::AppendEvent)?;
+            let OperationEvent::CertRenewalSubmitted {
+                operation_id,
+                cert_id,
+            } = original
+            else {
+                return Err(SubmitCertError::DuplicateSequenceMismatch {
+                    sequence: stored.sequence,
+                });
+            };
+            (operation_id, cert_id)
+        } else {
+            (submission.operation_id, submission.cert_id)
+        };
+        let status =
+            OperationStatus::cert_accepted(operation_id.clone(), cert_id.clone(), stored.sequence);
+        self.status_store
+            .put_if_newer(&status)
+            .await
+            .map_err(SubmitCertError::StoreStatus)?;
+        let submitted = StoredCertSubmission {
+            operation_id,
+            start_sequence: stored.sequence,
+        };
+
+        let submitted = self
+            .status_store
+            .put_cert_submission_if_absent(&submission.idempotency_key, &submitted)
+            .await
+            .map_err(SubmitCertError::StoreStatus)?;
+        let cert_id = self
+            .submitted_cert_id(&submitted.operation_id, submitted.start_sequence)
+            .await?;
+        let lease = self
+            .status_store
+            .claim_owner_lease(
+                &submitted.operation_id,
+                owner.owner_id(),
+                owner.now(),
+                owner.expires_at(),
+            )
+            .await
+            .map_err(SubmitCertError::StoreStatus)?;
+
+        Ok(AcceptedCertSubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            cert_id,
+            lease,
+        })
+    }
+
     async fn submitted_deploy_target(
         &self,
         expected_operation_id: &OperationId,
@@ -161,6 +260,30 @@ impl AsyncNatsOperationRepository {
         Ok(target)
     }
 
+    async fn submitted_cert_id(
+        &self,
+        expected_operation_id: &OperationId,
+        sequence: EventSequence,
+    ) -> Result<CertId, SubmitCertError> {
+        let event = self
+            .event_log
+            .event_at_sequence(sequence)
+            .await
+            .map_err(SubmitCertError::AppendEvent)?;
+        let OperationEvent::CertRenewalSubmitted {
+            operation_id,
+            cert_id,
+        } = event
+        else {
+            return Err(SubmitCertError::DuplicateSequenceMismatch { sequence });
+        };
+        if &operation_id != expected_operation_id {
+            return Err(SubmitCertError::DuplicateSequenceMismatch { sequence });
+        }
+
+        Ok(cert_id)
+    }
+
     pub async fn record_deploy_transition(
         &self,
         operation_id: &OperationId,
@@ -169,7 +292,7 @@ impl AsyncNatsOperationRepository {
         let attempted_append = OperationEventAppend::deploy_transition(operation_id, &transition);
         self.record_deploy_event(operation_id, attempted_append)
             .await
-            .map(RecordDeployEventOutcome::into_status_write)
+            .map(RecordOperationEventOutcome::into_status_write)
             .map_err(RecordDeployTransitionError::from_event_record)
     }
 
@@ -183,8 +306,65 @@ impl AsyncNatsOperationRepository {
             OperationEventAppend::deploy_evidence(operation_id, &evidence),
         )
         .await
-        .map(RecordDeployEventOutcome::stored_event)
+        .map(RecordOperationEventOutcome::stored_event)
         .map_err(RecordDeployEvidenceError::from_event_record)
+    }
+
+    pub async fn record_cert_challenge_published(
+        &self,
+        operation_id: &OperationId,
+        cert_id: &CertId,
+        challenge: AcmeHttp01Challenge,
+    ) -> Result<OperationStatusWrite, RecordCertEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::cert_challenge_published(operation_id, cert_id, challenge),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordCertEventError::from_event_record)
+    }
+
+    pub async fn record_cert_validation_started(
+        &self,
+        operation_id: &OperationId,
+        cert_id: &CertId,
+    ) -> Result<OperationStatusWrite, RecordCertEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::cert_validation_started(operation_id, cert_id),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordCertEventError::from_event_record)
+    }
+
+    pub async fn record_cert_completed(
+        &self,
+        operation_id: &OperationId,
+        active_cert: ActiveCertState,
+    ) -> Result<OperationStatusWrite, RecordCertEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::cert_completed(operation_id, active_cert),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordCertEventError::from_event_record)
+    }
+
+    pub async fn record_cert_failed(
+        &self,
+        operation_id: &OperationId,
+        failure: CertOperationFailure,
+    ) -> Result<OperationStatusWrite, RecordCertEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::cert_failed(operation_id, failure),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordCertEventError::from_event_record)
     }
 
     pub async fn operation_status(
@@ -264,7 +444,7 @@ impl AsyncNatsOperationRepository {
     async fn put_projected_status(
         &self,
         status: &OperationStatus,
-    ) -> Result<OperationStatusWrite, RecordDeployEventError> {
+    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
         const MAX_STATUS_PROJECTION_ATTEMPTS: usize = 3;
 
         for _ in 0..MAX_STATUS_PROJECTION_ATTEMPTS {
@@ -272,7 +452,7 @@ impl AsyncNatsOperationRepository {
                 .status_store
                 .put_if_newer(status)
                 .await
-                .map_err(RecordDeployEventError::StoreStatus)?
+                .map_err(RecordOperationEventError::StoreStatus)?
             {
                 OperationStatusWrite::Stored { revision } => {
                     return Ok(OperationStatusWrite::Stored { revision });
@@ -295,21 +475,78 @@ impl AsyncNatsOperationRepository {
             }
         }
 
-        Err(RecordDeployEventError::StatusProjectionContended)
+        Err(RecordOperationEventError::StatusProjectionContended)
+    }
+
+    async fn record_operation_event(
+        &self,
+        operation_id: &OperationId,
+        attempted_append: OperationEventAppend,
+    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
+        let Some(current) = self
+            .status_store
+            .get(operation_id)
+            .await
+            .map_err(RecordOperationEventError::LoadStatus)?
+        else {
+            return Err(RecordOperationEventError::MissingOperation {
+                operation_id: operation_id.clone(),
+            });
+        };
+
+        let attempted_event = attempted_append.payload().clone();
+        match project_operation_event(
+            &current,
+            attempted_event.clone(),
+            next_event_sequence(&current),
+        )
+        .map_err(RecordOperationEventError::ProjectStatus)?
+        {
+            OperationEventProjection::StatusChanged { .. } => {}
+            OperationEventProjection::AlreadySatisfied => {
+                return Ok(RecordOperationEventOutcome::AlreadySatisfied {
+                    current_sequence: status_sequence(&current),
+                });
+            }
+        }
+
+        let stored = self
+            .event_log
+            .append(attempted_append)
+            .await
+            .map_err(RecordOperationEventError::AppendEvent)?;
+        let event = if stored.duplicate {
+            self.event_log
+                .event_at_sequence(stored.sequence)
+                .await
+                .map_err(RecordOperationEventError::AppendEvent)?
+        } else {
+            attempted_event.clone()
+        };
+        validate_stored_operation_event(operation_id, &attempted_event, &event, stored.sequence)?;
+
+        let current = self
+            .status_store
+            .get(operation_id)
+            .await
+            .map_err(RecordOperationEventError::LoadStatus)?
+            .unwrap_or(current);
+        self.project_recorded_operation_event(event, stored, current)
+            .await
     }
 
     async fn record_deploy_event(
         &self,
         operation_id: &OperationId,
         attempted_append: OperationEventAppend,
-    ) -> Result<RecordDeployEventOutcome, RecordDeployEventError> {
+    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
         let Some(current) = self
             .status_store
             .get(operation_id)
             .await
-            .map_err(RecordDeployEventError::LoadStatus)?
+            .map_err(RecordOperationEventError::LoadStatus)?
         else {
-            return Err(RecordDeployEventError::MissingOperation {
+            return Err(RecordOperationEventError::MissingOperation {
                 operation_id: operation_id.clone(),
             });
         };
@@ -322,21 +559,21 @@ impl AsyncNatsOperationRepository {
                 .event_log
                 .event_at_subject(attempted_append.subject())
                 .await
-                .map_err(RecordDeployEventError::AppendEvent)?
+                .map_err(RecordOperationEventError::AppendEvent)?
             {
-                validate_stored_deploy_event(
+                validate_stored_operation_event(
                     operation_id,
                     &attempted_event,
                     &event,
                     stored.sequence,
                 )?;
                 return self
-                    .project_recorded_deploy_event(event, stored, current)
+                    .project_recorded_operation_event(event, stored, current)
                     .await;
             }
 
             validate_fresh_deploy_evidence(&current, &evidence)
-                .map_err(RecordDeployEventError::ProjectStatus)?;
+                .map_err(RecordOperationEventError::ProjectStatus)?;
         }
 
         match project_operation_event(
@@ -344,16 +581,16 @@ impl AsyncNatsOperationRepository {
             attempted_event.clone(),
             next_event_sequence(&current),
         )
-        .map_err(RecordDeployEventError::ProjectStatus)?
+        .map_err(RecordOperationEventError::ProjectStatus)?
         {
             OperationEventProjection::StatusChanged { .. } => {}
             OperationEventProjection::AlreadySatisfied => {
                 if let Some(evidence) = deploy_evidence_from_event(&attempted_event) {
                     validate_fresh_deploy_evidence(&current, &evidence)
-                        .map_err(RecordDeployEventError::ProjectStatus)?;
+                        .map_err(RecordOperationEventError::ProjectStatus)?;
                 }
 
-                return Ok(RecordDeployEventOutcome::AlreadySatisfied {
+                return Ok(RecordOperationEventOutcome::AlreadySatisfied {
                     current_sequence: status_sequence(&current),
                 });
             }
@@ -363,52 +600,52 @@ impl AsyncNatsOperationRepository {
             .event_log
             .append(attempted_append)
             .await
-            .map_err(RecordDeployEventError::AppendEvent)?;
+            .map_err(RecordOperationEventError::AppendEvent)?;
         let event = if stored.duplicate {
             self.event_log
                 .event_at_sequence(stored.sequence)
                 .await
-                .map_err(RecordDeployEventError::AppendEvent)?
+                .map_err(RecordOperationEventError::AppendEvent)?
         } else {
             attempted_event.clone()
         };
-        validate_stored_deploy_event(operation_id, &attempted_event, &event, stored.sequence)?;
+        validate_stored_operation_event(operation_id, &attempted_event, &event, stored.sequence)?;
 
         let current = self
             .status_store
             .get(operation_id)
             .await
-            .map_err(RecordDeployEventError::LoadStatus)?
+            .map_err(RecordOperationEventError::LoadStatus)?
             .unwrap_or(current);
-        self.project_recorded_deploy_event(event, stored, current)
+        self.project_recorded_operation_event(event, stored, current)
             .await
     }
 
-    async fn project_recorded_deploy_event(
+    async fn project_recorded_operation_event(
         &self,
         event: OperationEvent,
         stored: StoredOperationEvent,
         current: OperationStatus,
-    ) -> Result<RecordDeployEventOutcome, RecordDeployEventError> {
+    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
         if current.is_terminal()
             && stored.sequence > status_sequence(&current)
             && let Some(evidence) = deploy_evidence_from_event(&event)
         {
             validate_fresh_deploy_evidence(&current, &evidence)
-                .map_err(RecordDeployEventError::ProjectStatus)?;
+                .map_err(RecordOperationEventError::ProjectStatus)?;
         }
 
         let projection = project_operation_event(&current, event, stored.sequence)
-            .map_err(RecordDeployEventError::ProjectStatus)?;
+            .map_err(RecordOperationEventError::ProjectStatus)?;
         match projection {
             OperationEventProjection::StatusChanged { status } => {
                 let status_write = self.put_projected_status(&status).await?;
-                Ok(RecordDeployEventOutcome::Stored {
+                Ok(RecordOperationEventOutcome::Stored {
                     stored,
                     status_write,
                 })
             }
-            OperationEventProjection::AlreadySatisfied => Ok(RecordDeployEventOutcome::Stored {
+            OperationEventProjection::AlreadySatisfied => Ok(RecordOperationEventOutcome::Stored {
                 stored,
                 status_write: OperationStatusWrite::AlreadySatisfied {
                     current_sequence: status_sequence(&current),
@@ -418,7 +655,7 @@ impl AsyncNatsOperationRepository {
     }
 }
 
-enum RecordDeployEventOutcome {
+enum RecordOperationEventOutcome {
     AlreadySatisfied {
         current_sequence: EventSequence,
     },
@@ -428,7 +665,7 @@ enum RecordDeployEventOutcome {
     },
 }
 
-impl RecordDeployEventOutcome {
+impl RecordOperationEventOutcome {
     fn into_status_write(self) -> OperationStatusWrite {
         match self {
             Self::AlreadySatisfied { current_sequence } => {
@@ -450,7 +687,7 @@ impl RecordDeployEventOutcome {
 }
 
 #[derive(Debug)]
-enum RecordDeployEventError {
+enum RecordOperationEventError {
     LoadStatus(OperationStatusReadError),
     StoreStatus(OperationStatusStoreError),
     MissingOperation {
@@ -466,17 +703,17 @@ enum RecordDeployEventError {
     StatusProjectionContended,
 }
 
-fn validate_stored_deploy_event(
+fn validate_stored_operation_event(
     operation_id: &OperationId,
     attempted_event: &OperationEvent,
     stored_event: &OperationEvent,
     sequence: EventSequence,
-) -> Result<(), RecordDeployEventError> {
+) -> Result<(), RecordOperationEventError> {
     if attempted_event == stored_event {
         return Ok(());
     }
 
-    Err(RecordDeployEventError::StoredEventMismatch {
+    Err(RecordOperationEventError::StoredEventMismatch {
         operation_id: operation_id.clone(),
         sequence,
         plan_mismatch: deploy_plan_mismatch(operation_id, attempted_event, stored_event),
@@ -522,6 +759,11 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployCompleted { .. }
         | OperationEvent::DeployFailed { .. }
+        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertChallengePublished { .. }
+        | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertCompleted { .. }
+        | OperationEvent::CertFailed { .. }
         | OperationEvent::Cancelled { .. } => None,
     }
 }
@@ -530,6 +772,13 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
 pub struct DeployOperationSubmission {
     pub operation_id: OperationId,
     pub target: ployz_core::deploy::DeployRequest,
+    pub idempotency_key: OperationIdempotencyKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertOperationSubmission {
+    pub operation_id: OperationId,
+    pub cert_id: CertId,
     pub idempotency_key: OperationIdempotencyKey,
 }
 
@@ -602,11 +851,26 @@ pub struct AcceptedDeploySubmission {
     pub lease: OperationOwnerLease,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCertSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub cert_id: CertId,
+    pub lease: OperationOwnerLease,
+}
+
 #[derive(Debug)]
 pub enum SubmitDeployError {
     AppendEvent(OperationEventLogError),
     StoreStatus(OperationStatusStoreError),
     Clock { message: String },
+    DuplicateSequenceMismatch { sequence: EventSequence },
+}
+
+#[derive(Debug)]
+pub enum SubmitCertError {
+    AppendEvent(OperationEventLogError),
+    StoreStatus(OperationStatusStoreError),
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
 
@@ -624,16 +888,16 @@ pub enum RecordDeployTransitionError {
 }
 
 impl RecordDeployTransitionError {
-    fn from_event_record(error: RecordDeployEventError) -> Self {
+    fn from_event_record(error: RecordOperationEventError) -> Self {
         match error {
-            RecordDeployEventError::LoadStatus(error) => Self::LoadStatus(error),
-            RecordDeployEventError::StoreStatus(error) => Self::StoreStatus(error),
-            RecordDeployEventError::MissingOperation { operation_id } => {
+            RecordOperationEventError::LoadStatus(error) => Self::LoadStatus(error),
+            RecordOperationEventError::StoreStatus(error) => Self::StoreStatus(error),
+            RecordOperationEventError::MissingOperation { operation_id } => {
                 Self::ProjectStatus(StatusProjectionError::MissingOperation { operation_id })
             }
-            RecordDeployEventError::ProjectStatus(error) => Self::ProjectStatus(error),
-            RecordDeployEventError::AppendEvent(error) => Self::AppendEvent(error),
-            RecordDeployEventError::StoredEventMismatch {
+            RecordOperationEventError::ProjectStatus(error) => Self::ProjectStatus(error),
+            RecordOperationEventError::AppendEvent(error) => Self::AppendEvent(error),
+            RecordOperationEventError::StoredEventMismatch {
                 operation_id,
                 sequence,
                 ..
@@ -641,7 +905,7 @@ impl RecordDeployTransitionError {
                 operation_id,
                 sequence,
             },
-            RecordDeployEventError::StatusProjectionContended => Self::StatusProjectionContended,
+            RecordOperationEventError::StatusProjectionContended => Self::StatusProjectionContended,
         }
     }
 }
@@ -659,31 +923,60 @@ pub enum RecordDeployEvidenceError {
 }
 
 #[derive(Debug)]
+pub enum RecordCertEventError {
+    LoadStatus(OperationStatusReadError),
+    StoreStatus(OperationStatusStoreError),
+    MissingOperation { operation_id: OperationId },
+    ProjectStatus(StatusProjectionError),
+    AppendEvent(OperationEventLogError),
+    StoredEventMismatch { operation_id: OperationId },
+    StatusCursorContended,
+}
+
+#[derive(Debug)]
 pub enum ReplayOperationEventsError {
     LoadStatus(OperationStatusReadError),
     ReadEvents(OperationEventReplayReadError),
     MissingOperation { operation_id: OperationId },
 }
 
-impl RecordDeployEvidenceError {
-    fn from_event_record(error: RecordDeployEventError) -> Self {
+impl RecordCertEventError {
+    fn from_event_record(error: RecordOperationEventError) -> Self {
         match error {
-            RecordDeployEventError::LoadStatus(error) => Self::LoadStatus(error),
-            RecordDeployEventError::StoreStatus(error) => Self::StoreStatus(error),
-            RecordDeployEventError::MissingOperation { operation_id } => {
+            RecordOperationEventError::LoadStatus(error) => Self::LoadStatus(error),
+            RecordOperationEventError::StoreStatus(error) => Self::StoreStatus(error),
+            RecordOperationEventError::MissingOperation { operation_id } => {
                 Self::MissingOperation { operation_id }
             }
-            RecordDeployEventError::ProjectStatus(error) => Self::ProjectStatus(error),
-            RecordDeployEventError::AppendEvent(error) => Self::AppendEvent(error),
-            RecordDeployEventError::StoredEventMismatch {
+            RecordOperationEventError::ProjectStatus(error) => Self::ProjectStatus(error),
+            RecordOperationEventError::AppendEvent(error) => Self::AppendEvent(error),
+            RecordOperationEventError::StoredEventMismatch { operation_id, .. } => {
+                Self::StoredEventMismatch { operation_id }
+            }
+            RecordOperationEventError::StatusProjectionContended => Self::StatusCursorContended,
+        }
+    }
+}
+
+impl RecordDeployEvidenceError {
+    fn from_event_record(error: RecordOperationEventError) -> Self {
+        match error {
+            RecordOperationEventError::LoadStatus(error) => Self::LoadStatus(error),
+            RecordOperationEventError::StoreStatus(error) => Self::StoreStatus(error),
+            RecordOperationEventError::MissingOperation { operation_id } => {
+                Self::MissingOperation { operation_id }
+            }
+            RecordOperationEventError::ProjectStatus(error) => Self::ProjectStatus(error),
+            RecordOperationEventError::AppendEvent(error) => Self::AppendEvent(error),
+            RecordOperationEventError::StoredEventMismatch {
                 operation_id,
                 plan_mismatch: true,
                 ..
             } => Self::PlanMismatch { operation_id },
-            RecordDeployEventError::StoredEventMismatch { operation_id, .. } => {
+            RecordOperationEventError::StoredEventMismatch { operation_id, .. } => {
                 Self::StoredEventMismatch { operation_id }
             }
-            RecordDeployEventError::StatusProjectionContended => Self::StatusCursorContended,
+            RecordOperationEventError::StatusProjectionContended => Self::StatusCursorContended,
         }
     }
 }
