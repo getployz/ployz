@@ -34,9 +34,9 @@ pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
 };
 
+pub use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
 pub use types::{
     DeployContainer, DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
-    NodeRunContainerOutcome, NodeRunContainerRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

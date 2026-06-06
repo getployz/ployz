@@ -5,14 +5,13 @@ use crate::operation_api::{deploy_submit, ops_status, ops_watch};
 use crate::services::{api_endpoint_spec, api_service};
 use ployz_core::subjects::{OPERATION_API_ENDPOINTS, OperationApiEndpoint};
 use ployz_nats::service_runtime::{
-    NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
-    RunningNatsService, start_nats_service,
+    NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
+    decode_json_request, start_nats_service,
 };
 use ployz_sdk_types::{
     DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse, OpsStatusRequest,
     OpsStatusResponse, OpsWatchRequest, OpsWatchResponse,
 };
-use serde::Serialize;
 use std::sync::Arc;
 
 pub async fn start_operation_api_service(
@@ -77,18 +76,18 @@ async fn handle_deploy_submit(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match decode_request::<DeploySubmitRequest>(&request) {
+    let request = match decode_json_request::<DeploySubmitRequest>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
     match deploy_submit(controllers, request.into()).await {
         Ok(value) => {
             let response: DeploySubmitResponse = OperationApiResponse::Ok { value };
-            encode_api_success(response)
+            NatsServiceResponse::json_ok(&response)
         }
         Err(error) => {
             let response: DeploySubmitResponse = OperationApiResponse::DomainError { error };
-            encode_api_domain_error(response)
+            NatsServiceResponse::json_domain_error(&response)
         }
     }
 }
@@ -97,18 +96,18 @@ async fn handle_ops_status(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match decode_request::<OpsStatusRequest>(&request) {
+    let request = match decode_json_request::<OpsStatusRequest>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
     match ops_status(controllers, request.operation_id).await {
         Ok(value) => {
             let response: OpsStatusResponse = OperationApiResponse::Ok { value };
-            encode_api_success(response)
+            NatsServiceResponse::json_ok(&response)
         }
         Err(error) => {
             let response: OpsStatusResponse = OperationApiResponse::DomainError { error };
-            encode_api_domain_error(response)
+            NatsServiceResponse::json_domain_error(&response)
         }
     }
 }
@@ -117,56 +116,18 @@ async fn handle_ops_watch(
     controllers: &OperationControllers,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
-    let request = match decode_request::<OpsWatchRequest>(&request) {
+    let request = match decode_json_request::<OpsWatchRequest>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
     match ops_watch(controllers, request).await {
         Ok(value) => {
             let response: OpsWatchResponse = OperationApiResponse::Ok { value };
-            encode_api_success(response)
+            NatsServiceResponse::json_ok(&response)
         }
         Err(error) => {
             let response: OpsWatchResponse = OperationApiResponse::DomainError { error };
-            encode_api_domain_error(response)
-        }
-    }
-}
-
-fn decode_request<T>(request: &NatsServiceRequest) -> Result<T, NatsServiceResponse>
-where
-    T: serde::de::DeserializeOwned,
-{
-    serde_json::from_slice::<T>(&request.payload).map_err(|error| {
-        NatsServiceResponse::transport_error(NatsServiceError::bad_request(error.to_string()))
-    })
-}
-
-fn encode_api_success<T>(response: T) -> NatsServiceResponse
-where
-    T: Serialize,
-{
-    encode_response(response, NatsServiceResponse::ok)
-}
-
-fn encode_api_domain_error<T>(response: T) -> NatsServiceResponse
-where
-    T: Serialize,
-{
-    encode_response(response, NatsServiceResponse::domain_error)
-}
-
-fn encode_response<T>(
-    response: T,
-    output: impl FnOnce(Vec<u8>) -> NatsServiceResponse,
-) -> NatsServiceResponse
-where
-    T: Serialize,
-{
-    match serde_json::to_vec(&response) {
-        Ok(payload) => output(payload),
-        Err(error) => {
-            NatsServiceResponse::transport_error(NatsServiceError::internal(error.to_string()))
+            NatsServiceResponse::json_domain_error(&response)
         }
     }
 }

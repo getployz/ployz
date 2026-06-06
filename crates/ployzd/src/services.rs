@@ -121,29 +121,53 @@ pub const fn api_endpoint_execution(endpoint: OperationApiEndpoint) -> EndpointE
 
 #[must_use]
 pub fn node_runtime_service(node_id: &NodeId) -> NatsServiceSpec {
+    node_runtime_service_spec(
+        node_id,
+        vec![
+            node_endpoint_spec(node_id, NodeServiceEndpoint::Inspect),
+            node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerRun),
+            node_endpoint_spec(node_id, NodeServiceEndpoint::LogsTail),
+        ],
+    )
+}
+
+#[must_use]
+pub fn node_runtime_service_base(node_id: &NodeId) -> NatsServiceSpec {
+    node_runtime_service_spec(node_id, Vec::new())
+}
+
+#[must_use]
+pub fn node_endpoint_spec(
+    node_id: &NodeId,
+    endpoint: NodeServiceEndpoint,
+) -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        node_endpoint_name(endpoint),
+        node_service(node_id, endpoint),
+        EndpointExecution::NodeRpc,
+    )
+}
+
+#[must_use]
+pub const fn node_endpoint_name(endpoint: NodeServiceEndpoint) -> &'static str {
+    match endpoint {
+        NodeServiceEndpoint::Inspect => "node.inspect",
+        NodeServiceEndpoint::ContainerRun => "node.container.run",
+        NodeServiceEndpoint::LogsTail => "node.logs.tail",
+    }
+}
+
+fn node_runtime_service_spec(
+    node_id: &NodeId,
+    endpoints: Vec<NatsServiceEndpointSpec>,
+) -> NatsServiceSpec {
     NatsServiceSpec::new(
         format!("{NODE_SERVICE_NAME}.{}", node_id.as_str()),
         NODE_SERVICE_NAME,
         SERVICE_VERSION,
         NODE_SERVICE_DESCRIPTION,
         ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new("node_id", node_id.as_str())]),
-        vec![
-            NatsServiceEndpointSpec::new(
-                "node.inspect",
-                node_service(node_id, NodeServiceEndpoint::Inspect),
-                EndpointExecution::NodeRpc,
-            ),
-            NatsServiceEndpointSpec::new(
-                "node.container.run",
-                node_service(node_id, NodeServiceEndpoint::ContainerRun),
-                EndpointExecution::NodeRpc,
-            ),
-            NatsServiceEndpointSpec::new(
-                "node.logs.tail",
-                node_service(node_id, NodeServiceEndpoint::LogsTail),
-                EndpointExecution::NodeRpc,
-            ),
-        ],
+        endpoints,
     )
 }
 

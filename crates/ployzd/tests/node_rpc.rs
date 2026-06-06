@@ -8,10 +8,10 @@ use ployzd::deploy_worker::{
     NodeRunContainerRequest, NodeRuntimeUnavailableReason,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::node_rpc::{
-    NatsNodeContainerRuntime, NodeContainerRunDomainError, NodeContainerRunRpcRequest,
-    NodeContainerRunRpcResponse,
+use ployzd::node_protocol::{
+    NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
 };
+use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::services::{node_endpoint_subject, node_runtime_service};
 use std::sync::{Arc, Mutex};
 

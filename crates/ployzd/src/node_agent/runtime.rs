@@ -1,3 +1,6 @@
+use std::future::Future;
+
+use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 
 use crate::docker::labels::ManagedContainerLabels;
@@ -6,6 +9,29 @@ use crate::docker::labels::ManagedContainerLabels;
 pub struct ExistingManagedContainer {
     pub container_id: ContainerId,
     pub labels: ManagedContainerLabels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateManagedContainer {
+    pub image: ImageReference,
+    pub labels: ManagedContainerLabels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeContainerRunnerError {
+    ListExisting { message: String },
+    Create { message: String },
+}
+
+pub trait NodeContainerRunner {
+    fn existing_managed_containers(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError>> + Send;
+
+    fn create_managed_container(
+        &self,
+        command: CreateManagedContainer,
+    ) -> impl Future<Output = Result<ContainerId, NodeContainerRunnerError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

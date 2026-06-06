@@ -1,20 +1,19 @@
 //! Request-side NATS adapters for node-local services.
 
 use crate::deploy_worker::{
-    NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason,
+    NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
 };
-use crate::docker::labels::ManagedContainerLabels;
+use crate::node_protocol::{
+    NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
+};
+use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
 use crate::services::node_endpoint_subject;
-use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
-use ployz_core::ops::{FailureMessage, OperatorHint};
+use ployz_core::ids::NodeId;
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub const DEFAULT_NODE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -78,55 +77,6 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeContainerRunRpcRequest {
-    pub image: ImageReference,
-    pub labels: ManagedContainerLabels,
-}
-
-impl From<NodeRunContainerRequest> for NodeContainerRunRpcRequest {
-    fn from(value: NodeRunContainerRequest) -> Self {
-        Self {
-            image: value.image,
-            labels: value.labels,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeContainerRunRpcResponse {
-    Ok {
-        node_id: NodeId,
-        outcome: NodeRunContainerOutcome,
-    },
-    DomainError {
-        node_id: NodeId,
-        error: NodeContainerRunDomainError,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NodeContainerRunDomainError {
-    OperationStepConflict {
-        container_id: ContainerId,
-        expected: ManagedContainerLabels,
-        actual: ManagedContainerLabels,
-    },
-    OperationStepAmbiguous {
-        operation_id: OperationId,
-        step_id: StepId,
-        container_ids: Vec<ContainerId>,
-    },
-    StartedContainerUnhealthy {
-        container_id: ContainerId,
-        message: FailureMessage,
-        log_hint: OperatorHint,
-    },
 }
 
 impl NodeContainerRunDomainError {

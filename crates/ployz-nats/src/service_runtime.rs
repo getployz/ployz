@@ -320,6 +320,46 @@ impl NatsServiceResponse {
     pub fn transport_error(error: NatsServiceError) -> Self {
         Self::TransportError { error }
     }
+
+    #[must_use]
+    pub fn json_ok<T>(response: &T) -> Self
+    where
+        T: Serialize,
+    {
+        json_response(response, Self::ok)
+    }
+
+    #[must_use]
+    pub fn json_domain_error<T>(response: &T) -> Self
+    where
+        T: Serialize,
+    {
+        json_response(response, Self::domain_error)
+    }
+}
+
+pub fn decode_json_request<T>(request: &NatsServiceRequest) -> Result<T, NatsServiceResponse>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_slice::<T>(&request.payload).map_err(|error| {
+        NatsServiceResponse::transport_error(NatsServiceError::bad_request(error.to_string()))
+    })
+}
+
+fn json_response<T>(
+    response: &T,
+    output: impl FnOnce(Vec<u8>) -> NatsServiceResponse,
+) -> NatsServiceResponse
+where
+    T: Serialize,
+{
+    match serde_json::to_vec(response) {
+        Ok(payload) => output(payload),
+        Err(error) => {
+            NatsServiceResponse::transport_error(NatsServiceError::internal(error.to_string()))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
