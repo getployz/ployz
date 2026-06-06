@@ -3,14 +3,14 @@
 mod failure;
 mod finalization;
 mod ports;
+mod preparation;
 mod types;
 
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployPlanningInput, ExistingServiceReplica, ReplicaSlot,
-    plan_service_deploy,
+    DeployPlan, DeployPlanStep, DeployPlanningInput, ReplicaSlot, plan_service_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
-use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition};
 
 use crate::docker::labels::ManagedContainerLabels;
@@ -24,6 +24,9 @@ use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
 use finalization::finalize_successful_deploy;
 pub use ports::{
     ActiveServiceCommitter, DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime,
+};
+pub use preparation::{
+    DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
 };
 
 pub use types::{
@@ -72,7 +75,7 @@ where
     let plan = plan_service_deploy(DeployPlanningInput {
         request: command.request.clone(),
         eligible_nodes: command.eligible_nodes.clone(),
-        existing_replicas: existing_replicas(command),
+        existing_replicas: command.existing_replicas.clone(),
     })
     .map_err(|source| failure(source.into(), &started_containers))?;
     record_plan_created(command, &mut *ports.recorder, &plan)
@@ -157,28 +160,6 @@ where
         .map_err(|source| source.into_execution_failure(&started_containers))?;
 
     Ok(outcome)
-}
-
-fn existing_replicas(command: &DeployExecutionCommand) -> Vec<ExistingServiceReplica> {
-    command
-        .observed_containers
-        .iter()
-        .filter(|container| is_running_target_service_container(container, command))
-        .map(|container| ExistingServiceReplica {
-            node_id: container.node_id.clone(),
-            container_id: container.container_id.clone(),
-        })
-        .collect()
-}
-
-fn is_running_target_service_container(
-    container: &ManagedContainerObservation,
-    command: &DeployExecutionCommand,
-) -> bool {
-    container.kind == ManagedContainerKind::Service
-        && container.state == ContainerRuntimeState::Running
-        && container.service_id == command.request.service_id
-        && container.revision_id == command.request.target_revision
 }
 
 async fn record_stage<R>(

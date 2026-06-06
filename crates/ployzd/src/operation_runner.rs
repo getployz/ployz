@@ -53,7 +53,7 @@ impl OwnedDeployRunner {
         L: OperationLeaseRenewer + Send + 'static,
     {
         let lease_task = AdvisoryLeaseTask::start(
-            command.operation_id.clone(),
+            command.operation_id().clone(),
             self.lease_policy,
             lease_renewer,
         );

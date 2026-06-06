@@ -1,19 +1,21 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId};
-use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::node::{
+    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    NodeContainerObservationSnapshot,
+};
 use ployz_core::ops::{
     DeployEvidence, DeployRunningStage, DeployTransition, OperationLeaseExpiresAt,
     OperationOwnerLease, OperatorHint, RetainedArtifact,
 };
 use ployz_core::state::{
     ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, CoreStateRevision,
-    ExpectedActiveService,
 };
 use ployzd::deploy_worker::{
-    ActiveServiceCommitError, ActiveServiceCommitter, DeployExecutionCommand,
+    ActiveServiceCommitError, ActiveServiceCommitter, DeployExecutionCommand, DeployExecutionFacts,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
     DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
-    NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeRunContainerOutcome, NodeRunContainerRequest, prepare_deploy_execution_command,
 };
 use ployzd::operation_runner::OperationLeaseRenewer;
 use std::sync::{Arc, Mutex};
@@ -367,18 +369,71 @@ impl NodeContainerRuntime for RecordingRuntime {
 }
 
 pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
-    DeployExecutionCommand {
-        operation_id: operation_id("op_123"),
-        request: DeployRequest {
+    prepared_deploy_command(
+        replicas,
+        vec![node_id("node_a"), node_id("node_b")],
+        Vec::new(),
+    )
+}
+
+pub(super) fn deploy_command_without_eligible_nodes(replicas: u16) -> DeployExecutionCommand {
+    prepared_deploy_command(replicas, Vec::new(), Vec::new())
+}
+
+pub(super) fn deploy_command_with_existing_container(
+    replicas: u16,
+    node_id: &str,
+    container_id: &str,
+) -> DeployExecutionCommand {
+    let snapshot = NodeContainerObservationSnapshot::try_new(
+        self::node_id(node_id),
+        [observed_service_container(node_id, container_id, "rev_2")],
+    )
+    .expect("valid node observation snapshot");
+    prepared_deploy_command(
+        replicas,
+        vec![self::node_id("node_a"), self::node_id("node_b")],
+        vec![snapshot],
+    )
+}
+
+fn prepared_deploy_command(
+    replicas: u16,
+    eligible_nodes: Vec<NodeId>,
+    observed_nodes: Vec<NodeContainerObservationSnapshot>,
+) -> DeployExecutionCommand {
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        DeployRequest {
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_2"),
             image: image("registry.example/api:rev_2"),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         },
-        expected_active: ExpectedActiveService::Absent,
-        eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
-        observed_containers: Vec::new(),
-        step_timeout: Duration::from_secs(5),
+        DeployExecutionFacts {
+            active_service: None,
+            eligible_nodes,
+            observed_nodes,
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+    .expect("deploy command preparation succeeds")
+}
+
+fn observed_service_container(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+) -> ManagedContainerObservation {
+    ManagedContainerObservation {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        service_id: service_id("svc_api"),
+        revision_id: self::revision_id(revision_id),
+        operation_id: operation_id("op_existing"),
+        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
+        kind: ManagedContainerKind::Service,
+        state: ContainerRuntimeState::Running,
     }
 }
 
@@ -424,45 +479,6 @@ pub(super) fn container_id(value: &str) -> ContainerId {
 
 pub(super) fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image")
-}
-
-pub(super) fn observed_service_container(
-    node_id: &str,
-    container_id: &str,
-    revision_id: &str,
-) -> ManagedContainerObservation {
-    ManagedContainerObservation {
-        node_id: self::node_id(node_id),
-        container_id: self::container_id(container_id),
-        service_id: service_id("svc_api"),
-        revision_id: self::revision_id(revision_id),
-        operation_id: operation_id("op_existing"),
-        step_id: ployz_core::ids::StepId::try_new(format!("existing_{container_id}"))
-            .expect("valid step id"),
-        kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::Running,
-    }
-}
-
-pub(super) fn observed_service_container_with_service(
-    node_id: &str,
-    container_id: &str,
-    revision_id: &str,
-    service_id: &str,
-) -> ManagedContainerObservation {
-    let mut observation = observed_service_container(node_id, container_id, revision_id);
-    observation.service_id = self::service_id(service_id);
-    observation
-}
-
-pub(super) fn exited_observed_service_container(
-    node_id: &str,
-    container_id: &str,
-    revision_id: &str,
-) -> ManagedContainerObservation {
-    let mut observation = observed_service_container(node_id, container_id, revision_id);
-    observation.state = ContainerRuntimeState::Exited;
-    observation
 }
 
 pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedArtifact {

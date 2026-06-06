@@ -39,8 +39,7 @@ async fn owned_deploy_runner_renews_lease_while_deploy_is_active() {
     let mut health = SlowHealth::new(Duration::from_secs(12));
     let mut active_state = RecordingActiveState::stored();
     let lease_renewer = RecordingLeaseRenewer::allowing();
-    let mut command = deploy_command(1);
-    command.step_timeout = Duration::from_secs(20);
+    let command = deploy_command(1).with_step_timeout(Duration::from_secs(20));
     let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
         .expect("valid renewal interval");
 
@@ -79,8 +78,7 @@ async fn owned_deploy_runner_treats_lease_loss_as_advisory_while_deploy_runs() {
     let mut health = SlowHealth::new(Duration::from_secs(12));
     let mut active_state = RecordingActiveState::stored();
     let lease_renewer = RecordingLeaseRenewer::lost();
-    let mut command = deploy_command(1);
-    command.step_timeout = Duration::from_secs(20);
+    let command = deploy_command(1).with_step_timeout(Duration::from_secs(20));
     let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
         .expect("valid renewal interval");
 
@@ -120,8 +118,7 @@ async fn owned_deploy_runner_stops_renewing_when_runner_future_is_dropped() {
     let mut health = SlowHealth::new(Duration::from_secs(60));
     let mut active_state = RecordingActiveState::stored();
     let lease_renewer = RecordingLeaseRenewer::allowing();
-    let mut command = deploy_command(1);
-    command.step_timeout = Duration::from_secs(120);
+    let command = deploy_command(1).with_step_timeout(Duration::from_secs(120));
     let runner = OwnedDeployRunner::try_with_renew_every(Duration::from_secs(5))
         .expect("valid renewal interval");
 
@@ -239,12 +236,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
     let mut health = RecordingHealth::healthy();
     let mut active_state = RecordingActiveState::stored();
-    let mut command = deploy_command(2);
-    command.observed_containers = vec![observed_service_container(
-        "node_b",
-        "ctr_existing",
-        "rev_2",
-    )];
+    let command = deploy_command_with_existing_container(2, "node_b", "ctr_existing");
 
     let outcome = execute_with_owned_worker(
         command,
@@ -303,58 +295,12 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
 }
 
 #[tokio::test]
-async fn deploy_worker_ignores_observed_containers_that_are_not_running_target_services() {
-    let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
-    let mut health = RecordingHealth::healthy();
-    let mut active_state = RecordingActiveState::stored();
-    let mut command = deploy_command(1);
-    command.observed_containers = vec![
-        observed_service_container("node_a", "ctr_old", "rev_old"),
-        observed_service_container_with_service(
-            "node_a",
-            "ctr_other_service",
-            "rev_2",
-            "svc_worker",
-        ),
-        exited_observed_service_container("node_a", "ctr_stopped", "rev_2"),
-    ];
-
-    let outcome = execute_with_owned_worker(
-        command,
-        DeployExecutionPorts {
-            recorder: &mut recorder,
-            node_runtime: &mut runtime,
-            health_checker: &mut health,
-            active_state: &mut active_state,
-        },
-    )
-    .await
-    .expect("deploy starts missing target replica");
-
-    assert_eq!(
-        outcome
-            .containers
-            .iter()
-            .map(|container| container.container_id.clone())
-            .collect::<Vec<_>>(),
-        vec![container_id("ctr_new")]
-    );
-    assert_eq!(runtime.requests.len(), 1);
-}
-
-#[tokio::test]
 async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers([]);
     let mut health = RecordingHealth::unhealthy("node_b", "ctr_existing");
     let mut active_state = RecordingActiveState::stored();
-    let mut command = deploy_command(1);
-    command.observed_containers = vec![observed_service_container(
-        "node_b",
-        "ctr_existing",
-        "rev_2",
-    )];
+    let command = deploy_command_with_existing_container(1, "node_b", "ctr_existing");
 
     let error = execute_with_owned_worker(
         command,
@@ -493,8 +439,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut active_state = RecordingActiveState::stored();
-    let mut command = deploy_command(1);
-    command.eligible_nodes.clear();
+    let command = deploy_command_without_eligible_nodes(1);
 
     let error = execute_with_owned_worker(
         command,
@@ -608,8 +553,7 @@ async fn deploy_worker_times_out_hanging_steps() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = HangingHealth;
     let mut active_state = RecordingActiveState::stored();
-    let mut command = deploy_command(1);
-    command.step_timeout = Duration::from_millis(1);
+    let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
     let error = execute_with_owned_worker(
         command,
@@ -762,8 +706,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut active_state = HangingActiveState;
-    let mut command = deploy_command(1);
-    command.step_timeout = Duration::from_millis(1);
+    let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
     let error = execute_with_owned_worker(
         command,

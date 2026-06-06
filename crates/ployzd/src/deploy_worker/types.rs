@@ -1,6 +1,5 @@
-use ployz_core::deploy::{DeployRequest, ImageReference};
+use ployz_core::deploy::{DeployRequest, ExistingServiceReplica, ImageReference};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
-use ployz_core::node::ManagedContainerObservation;
 use ployz_core::ops::{OperatorHint, RetainedArtifact};
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use std::time::Duration;
@@ -11,15 +10,36 @@ const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {
-    pub operation_id: OperationId,
-    pub request: DeployRequest,
-    pub expected_active: ExpectedActiveService,
-    pub eligible_nodes: Vec<NodeId>,
-    pub observed_containers: Vec<ManagedContainerObservation>,
-    pub step_timeout: Duration,
+    pub(super) operation_id: OperationId,
+    pub(super) request: DeployRequest,
+    pub(super) expected_active: ExpectedActiveService,
+    pub(super) eligible_nodes: Vec<NodeId>,
+    pub(super) existing_replicas: Vec<ExistingServiceReplica>,
+    pub(super) step_timeout: Duration,
 }
 
 impl DeployExecutionCommand {
+    #[must_use]
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
+    #[must_use]
+    pub fn expected_active(&self) -> &ExpectedActiveService {
+        &self.expected_active
+    }
+
+    #[must_use]
+    pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
+        &self.existing_replicas
+    }
+
+    #[must_use]
+    pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
+        self.step_timeout = step_timeout;
+        self
+    }
+
     #[must_use]
     pub fn step_timeout(&self) -> Duration {
         if self.step_timeout.is_zero() {
