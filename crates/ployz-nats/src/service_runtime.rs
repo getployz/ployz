@@ -7,6 +7,7 @@ pub use crate::service_protocol::{
 use crate::services::{NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata};
 use async_nats::service::ServiceExt;
 use futures_util::StreamExt;
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -17,6 +18,86 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 pub type NatsClient = async_nats::Client;
+
+pub async fn request_json<Request, Response>(
+    client: &async_nats::Client,
+    subject: String,
+    request: &Request,
+    request_timeout: Duration,
+) -> Result<Response, NatsJsonServiceRequestError>
+where
+    Request: Serialize + ?Sized,
+    Response: DeserializeOwned,
+{
+    let payload = serde_json::to_vec(request).map_err(|error| {
+        NatsJsonServiceRequestError::EncodeRequest {
+            message: error.to_string(),
+        }
+    })?;
+    let nats_request = async_nats::Request::new()
+        .payload(payload.into())
+        .timeout(Some(request_timeout));
+    let response = client
+        .send_request(subject, nats_request)
+        .await
+        .map_err(|error| NatsJsonServiceRequestError::Request {
+            failure: request_failure(error),
+        })?;
+
+    match decode_nats_service_error(response.headers.as_ref()) {
+        Ok(Some(failure)) => return Err(NatsJsonServiceRequestError::Service { failure }),
+        Ok(None) => {}
+        Err(error) => return Err(NatsJsonServiceRequestError::ServiceProtocol { error }),
+    }
+
+    serde_json::from_slice::<Response>(&response.payload).map_err(|error| {
+        NatsJsonServiceRequestError::DecodeResponse {
+            message: error.to_string(),
+        }
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NatsJsonServiceRequestError {
+    EncodeRequest {
+        message: String,
+    },
+    Request {
+        failure: NatsServiceRequestFailure,
+    },
+    Service {
+        failure: NatsServiceError,
+    },
+    ServiceProtocol {
+        error: NatsServiceErrorHeaderDecodeError,
+    },
+    DecodeResponse {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NatsServiceRequestFailure {
+    TimedOut,
+    NoResponders,
+    InvalidSubject,
+    MaxPayloadExceeded,
+    Other { message: String },
+}
+
+fn request_failure(error: async_nats::RequestError) -> NatsServiceRequestFailure {
+    match error.kind() {
+        async_nats::RequestErrorKind::TimedOut => NatsServiceRequestFailure::TimedOut,
+        async_nats::RequestErrorKind::NoResponders => NatsServiceRequestFailure::NoResponders,
+        async_nats::RequestErrorKind::InvalidSubject => NatsServiceRequestFailure::InvalidSubject,
+        async_nats::RequestErrorKind::MaxPayloadExceeded => {
+            NatsServiceRequestFailure::MaxPayloadExceeded
+        }
+        async_nats::RequestErrorKind::Other => NatsServiceRequestFailure::Other {
+            message: error.to_string(),
+        },
+    }
+}
 
 #[derive(Debug)]
 pub struct RunningNatsService {

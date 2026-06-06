@@ -429,7 +429,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
                 failure: DeployOperationFailure::RuntimeUnavailable {
                     node_id: node_id("node_b"),
                     message: ployz_core::ops::FailureMessage::try_new(
-                        "node runtime unavailable while starting container",
+                        "node runtime request failed: synthetic runtime failure",
                     )
                     .expect("valid failure message"),
                     retained_artifacts: vec![retained_container("node_a", "ctr_1")],

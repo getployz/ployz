@@ -15,7 +15,8 @@ use ployzd::deploy_worker::{
     ActiveServiceCommitError, ActiveServiceCommitter, DeployExecutionCommand, DeployExecutionFacts,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
     DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
-    NodeRunContainerOutcome, NodeRunContainerRequest, prepare_deploy_execution_command,
+    NodeRunContainerOutcome, NodeRunContainerRequest, NodeRuntimeUnavailableReason,
+    prepare_deploy_execution_command,
 };
 use ployzd::operation_runner::OperationLeaseRenewer;
 use std::sync::{Arc, Mutex};
@@ -351,12 +352,18 @@ impl NodeContainerRuntime for RecordingRuntime {
         if self.fail_after_first && self.requests.len() > 1 {
             return Err(NodeContainerRuntimeError::Unavailable {
                 node_id: request.node_id,
+                reason: NodeRuntimeUnavailableReason::RequestFailed {
+                    message: "synthetic runtime failure".to_owned(),
+                },
             });
         }
 
         let Some(container_id) = self.containers.pop() else {
             return Err(NodeContainerRuntimeError::Unavailable {
                 node_id: request.node_id,
+                reason: NodeRuntimeUnavailableReason::RequestFailed {
+                    message: "synthetic missing container id".to_owned(),
+                },
             });
         };
 

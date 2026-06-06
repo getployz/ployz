@@ -1,11 +1,13 @@
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NATS_SERVICE_ERROR_CODE_HEADER, NATS_SERVICE_ERROR_HEADER,
-    NatsServiceError, NatsServiceErrorCode, NatsServiceErrorHeaderDecodeError, NatsServiceResponse,
-    decode_nats_service_error, start_nats_service,
+    NatsJsonServiceRequestError, NatsServiceError, NatsServiceErrorCode,
+    NatsServiceErrorHeaderDecodeError, NatsServiceResponse, decode_nats_service_error,
+    request_json, start_nats_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -35,6 +37,82 @@ async fn service_runtime_responds_to_bound_endpoint() {
         .expect("service responds");
 
     assert_eq!(response.payload.as_ref(), b"hello");
+}
+
+#[tokio::test]
+async fn request_json_round_trips_typed_payloads() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.json");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |request| async move {
+            NatsServiceResponse::ok(request.payload)
+        })
+        .await
+        .expect("endpoint binds");
+
+    let response: TestJsonPayload = request_json(
+        &client,
+        "plz.v1.svc.test.json".to_owned(),
+        &TestJsonPayload {
+            value: "hello".to_owned(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("json request responds");
+
+    assert_eq!(
+        response,
+        TestJsonPayload {
+            value: "hello".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn request_json_returns_service_error_headers() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_service_spec("plz.v1.svc.test.json_fail");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            NatsServiceResponse::transport_error(NatsServiceError::conflict("already exists"))
+        })
+        .await
+        .expect("endpoint binds");
+
+    let error = request_json::<_, TestJsonPayload>(
+        &client,
+        "plz.v1.svc.test.json_fail".to_owned(),
+        &TestJsonPayload {
+            value: "hello".to_owned(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("service error headers fail request");
+
+    assert_eq!(
+        error,
+        NatsJsonServiceRequestError::Service {
+            failure: NatsServiceError::conflict("already exists"),
+        }
+    );
 }
 
 #[tokio::test]
@@ -216,6 +294,12 @@ fn test_service_spec(subject: &str) -> NatsServiceSpec {
             EndpointExecution::Query,
         )],
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestJsonPayload {
+    value: String,
 }
 
 #[test]

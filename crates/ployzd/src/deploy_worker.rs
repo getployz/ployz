@@ -23,7 +23,7 @@ pub use facts::{
 pub use failure::{
     ActiveServiceCommitError, ActiveServiceCommitRejection, CompletionRecordAttemptError,
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,
-    DeployOperationRecordError, NodeContainerRuntimeError,
+    DeployOperationRecordError, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
 };
 use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
 use finalization::finalize_successful_deploy;

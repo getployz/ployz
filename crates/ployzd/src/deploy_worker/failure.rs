@@ -365,6 +365,7 @@ pub enum DeployFailureRecordError {
 pub enum NodeContainerRuntimeError {
     Unavailable {
         node_id: NodeId,
+        reason: NodeRuntimeUnavailableReason,
     },
     OperationStepConflict {
         node_id: NodeId,
@@ -393,9 +394,9 @@ impl NodeContainerRuntimeError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
-            Self::Unavailable { node_id } => DeployOperationFailure::RuntimeUnavailable {
+            Self::Unavailable { node_id, reason } => DeployOperationFailure::RuntimeUnavailable {
                 node_id: node_id.clone(),
-                message: failure_message("node runtime unavailable while starting container"),
+                message: reason.failure_message(),
                 retained_artifacts,
             },
             Self::OperationStepConflict { node_id, .. } => {
@@ -443,6 +444,67 @@ impl NodeContainerRuntimeError {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeRuntimeUnavailableReason {
+    EncodeRequest { message: String },
+    RequestTimedOut,
+    NoResponders,
+    InvalidSubject,
+    MaxPayloadExceeded,
+    RequestFailed { message: String },
+    ServiceBadRequest { message: String },
+    ServiceConflict { message: String },
+    ServiceUnavailable { message: String },
+    ServiceTimedOut { message: String },
+    ServiceInternal { message: String },
+    MalformedServiceError { message: String },
+    DecodeResponse { message: String },
+    WrongResponder { actual_node_id: NodeId },
+}
+
+impl NodeRuntimeUnavailableReason {
+    fn failure_message(&self) -> FailureMessage {
+        let message = match self {
+            Self::EncodeRequest { message } => {
+                format!("node runtime request could not be encoded: {message}")
+            }
+            Self::RequestTimedOut => "node runtime request timed out".to_owned(),
+            Self::NoResponders => "node runtime has no responders".to_owned(),
+            Self::InvalidSubject => "node runtime subject was invalid".to_owned(),
+            Self::MaxPayloadExceeded => "node runtime request exceeded NATS max payload".to_owned(),
+            Self::RequestFailed { message } => format!("node runtime request failed: {message}"),
+            Self::ServiceBadRequest { message } => {
+                format!("node runtime rejected the request: {message}")
+            }
+            Self::ServiceConflict { message } => {
+                format!("node runtime reported a conflict: {message}")
+            }
+            Self::ServiceUnavailable { message } => {
+                format!("node runtime service unavailable: {message}")
+            }
+            Self::ServiceTimedOut { message } => {
+                format!("node runtime service timed out: {message}")
+            }
+            Self::ServiceInternal { message } => {
+                format!("node runtime service failed internally: {message}")
+            }
+            Self::MalformedServiceError { message } => {
+                format!("node runtime returned malformed service error headers: {message}")
+            }
+            Self::DecodeResponse { message } => {
+                format!("node runtime response could not be decoded: {message}")
+            }
+            Self::WrongResponder { actual_node_id } => {
+                format!(
+                    "node runtime replied for a different node: {}",
+                    actual_node_id.as_str()
+                )
+            }
+        };
+        FailureMessage::try_new(message).expect("generated runtime failure message is non-empty")
     }
 }
 

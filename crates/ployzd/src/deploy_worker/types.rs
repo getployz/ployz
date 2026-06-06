@@ -2,6 +2,7 @@ use ployz_core::deploy::{DeployRequest, ExistingServiceReplica, ImageReference};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
 use ployz_core::ops::{OperatorHint, RetainedArtifact};
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::docker::labels::ManagedContainerLabels;
@@ -88,14 +89,16 @@ impl DeployContainer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeRunContainerRequest {
     pub node_id: NodeId,
     pub image: ImageReference,
     pub labels: ManagedContainerLabels,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeRunContainerOutcome {
     Created { container_id: ContainerId },
     Reused { container_id: ContainerId },

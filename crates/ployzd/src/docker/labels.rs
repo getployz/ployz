@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
+use serde::{Deserialize, Serialize};
 
 pub const MANAGED_LABEL: &str = "plz.managed";
 pub const SERVICE_ID_LABEL: &str = "plz.service_id";
@@ -10,7 +11,8 @@ pub const OPERATION_ID_LABEL: &str = "plz.operation_id";
 pub const STEP_ID_LABEL: &str = "plz.step_id";
 pub const CONTAINER_TYPE_LABEL: &str = "plz.container_type";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManagedContainerLabels {
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
