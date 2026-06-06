@@ -158,11 +158,17 @@ pub enum ArtifactTargetError {
     EmptyDigest,
     InvalidSha256Digest { value: String },
     EmptyInstallPath,
+    RelativeInstallPath { value: PathBuf },
 }
 
 fn validate_install_path(install_path: PathBuf) -> Result<PathBuf, ArtifactTargetError> {
     if install_path.as_os_str().is_empty() {
         return Err(ArtifactTargetError::EmptyInstallPath);
+    }
+    if !install_path.is_absolute() {
+        return Err(ArtifactTargetError::RelativeInstallPath {
+            value: install_path,
+        });
     }
     Ok(install_path)
 }

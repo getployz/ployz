@@ -49,7 +49,7 @@ impl PloyzdRoleUnit {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.process_name(),
             self.exec_start,
         )
@@ -89,10 +89,14 @@ fn render_exec_token(value: impl Into<String>) -> Result<String, SupervisorUnitF
 
     let mut escaped = String::with_capacity(escaped_percent.len());
     for character in escaped_percent.chars() {
-        if matches!(character, '\\' | '"' | '$' | '`') {
-            escaped.push('\\');
+        match character {
+            '$' => escaped.push_str("$$"),
+            '\\' | '"' | '`' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            _ => escaped.push(character),
         }
-        escaped.push(character);
     }
     Ok(format!("\"{escaped}\""))
 }

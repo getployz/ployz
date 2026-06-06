@@ -150,6 +150,30 @@ fn artifact_digest_must_be_sha256_hex() {
     assert!(Sha256Digest::try_new(KEEPER_DIGEST).is_ok());
 }
 
+#[test]
+fn artifact_install_paths_must_be_absolute() {
+    assert_eq!(
+        KeeperArtifactTarget::new(
+            version("0.1.0"),
+            source("https://example.invalid/ployz-keeper"),
+            digest(KEEPER_DIGEST),
+            PathBuf::new(),
+        ),
+        Err(ArtifactTargetError::EmptyInstallPath)
+    );
+    assert_eq!(
+        PloyzdArtifactTarget::new(
+            version("0.1.0"),
+            source("https://example.invalid/ployzd"),
+            digest(PLOYZD_DIGEST),
+            PathBuf::from("bin/ployzd"),
+        ),
+        Err(ArtifactTargetError::RelativeInstallPath {
+            value: PathBuf::from("bin/ployzd"),
+        })
+    );
+}
+
 fn keeper_artifact() -> KeeperArtifactTarget {
     KeeperArtifactTarget::new(
         version("0.1.0"),
