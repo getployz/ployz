@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+futures-util.workspace = true
 ployz-core.workspace = true
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
@@ -18,6 +19,8 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "nuid", "server_2_14", "service"] }
+nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]

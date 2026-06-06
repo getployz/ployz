@@ -1,5 +1,6 @@
 //! Deploy operation execution over explicit runtime ports.
 
+mod facts;
 mod failure;
 mod finalization;
 mod ports;
@@ -15,6 +16,10 @@ use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition};
 
 use crate::docker::labels::ManagedContainerLabels;
 
+pub use facts::{
+    ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
+    ObservationReadFailure, load_deploy_execution_facts_from_nats,
+};
 pub use failure::{
     ActiveServiceCommitError, ActiveServiceCommitRejection, CompletionRecordAttemptError,
     DeployExecutionError, DeployExecutionStep, DeployFailureRecordError, DeployHealthCheckError,

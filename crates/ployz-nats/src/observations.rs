@@ -4,6 +4,7 @@ use async_nats::jetstream;
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::{ManagedContainerObservation, NodeContainerObservationSnapshot};
 use ployz_core::state::NodeContainerObservationKey;
+use std::fmt;
 use std::future::Future;
 
 pub const KV_OBS_BUCKET: &str = "KV_OBS";
@@ -110,6 +111,21 @@ pub enum ObservationStoreError {
     Timeout {
         operation: &'static str,
     },
+}
+
+impl fmt::Display for ObservationStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenBucket { bucket, message } => {
+                write!(formatter, "open bucket {bucket}: {message}")
+            }
+            Self::Encode(error) => write!(formatter, "encode observation snapshot: {error}"),
+            Self::Decode(error) => write!(formatter, "decode observation snapshot: {error}"),
+            Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
+            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+        }
+    }
 }
 
 async fn with_observation_timeout<T>(

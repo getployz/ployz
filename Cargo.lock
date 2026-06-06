@@ -1322,6 +1322,9 @@ dependencies = [
 name = "ployzd"
 version = "0.1.0"
 dependencies = [
+ "async-nats",
+ "futures-util",
+ "nats-server",
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",

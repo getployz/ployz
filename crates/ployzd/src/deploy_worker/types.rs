@@ -35,6 +35,11 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    pub fn eligible_nodes(&self) -> &[NodeId] {
+        &self.eligible_nodes
+    }
+
+    #[must_use]
     pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
         self.step_timeout = step_timeout;
         self

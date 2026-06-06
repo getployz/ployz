@@ -7,6 +7,7 @@ use ployz_core::state::{
     ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceStaleReason, ActiveServiceState,
     ActiveServiceStateKey, CoreStateRevision, ExpectedActiveService,
 };
+use std::fmt;
 use std::future::Future;
 
 const NATS_CORE_STATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -262,6 +263,32 @@ pub enum CoreStateStoreError {
     Timeout {
         operation: &'static str,
     },
+}
+
+impl fmt::Display for CoreStateStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenBucket { bucket, message } => {
+                write!(formatter, "open bucket {bucket}: {message}")
+            }
+            Self::Encode(error) => write!(formatter, "encode active service state: {error}"),
+            Self::Decode(error) => write!(formatter, "decode active service state: {error}"),
+            Self::CasConflict { message } => write!(formatter, "cas conflict: {message}"),
+            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::CorruptActiveServiceState {
+                key,
+                expected_service_id,
+                actual_service_id,
+            } => write!(
+                formatter,
+                "active service state at {} belongs to {}, not {}",
+                key,
+                actual_service_id.as_str(),
+                expected_service_id.as_str()
+            ),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+        }
+    }
 }
 
 fn loaded_active_service_state(

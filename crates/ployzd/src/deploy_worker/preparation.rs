@@ -1,7 +1,7 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{DeployRequest, ExistingServiceReplica};
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::{NodeId, OperationId, ServiceId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
@@ -85,8 +85,8 @@ fn is_running_target_service_container(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployCommandPreparationError {
     ActiveServiceMismatch {
-        expected_service_id: ployz_core::ids::ServiceId,
-        actual_service_id: ployz_core::ids::ServiceId,
+        expected_service_id: ServiceId,
+        actual_service_id: ServiceId,
     },
 }
 
