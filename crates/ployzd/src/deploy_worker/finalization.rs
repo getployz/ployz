@@ -5,8 +5,8 @@ use std::time::Duration;
 use super::failure::{DeployExecutionFailure, failure};
 use super::{
     ActiveServiceCommitRejection, ActiveServiceCommitter, CompletionRecordAttemptError,
-    DeployExecutionCommand, DeployExecutionError, DeployExecutionStep, DeployOperationRecorder,
-    StartedDeployContainer,
+    DeployContainer, DeployExecutionCommand, DeployExecutionError, DeployExecutionStep,
+    DeployOperationRecorder,
 };
 
 const COMPLETION_RECORD_RETRY_DELAY: Duration = Duration::from_millis(10);
@@ -42,10 +42,10 @@ pub(super) enum DeployFinalizationError {
 impl DeployFinalizationError {
     pub(super) fn into_execution_failure(
         self,
-        started_containers: &[StartedDeployContainer],
+        deploy_containers: &[DeployContainer],
     ) -> DeployExecutionFailure {
         match self {
-            Self::RecordFailed(source) => failure(source, started_containers),
+            Self::RecordFailed(source) => failure(source, deploy_containers),
         }
     }
 }

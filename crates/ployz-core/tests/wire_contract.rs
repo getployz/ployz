@@ -204,13 +204,14 @@ fn operation_status_rejects_missing_or_zero_event_sequence() {
 fn failure_payloads_reject_empty_operator_text() {
     let empty_log_hint = r#"{
         "kind": "health_check_failed",
-        "health_check": { "reason": "probe_failed", "message": "health check failed" },
-        "retained_artifacts": [{
-            "type": "started_container",
+        "health_check": {
+            "reason": "probe_failed",
             "node_id": "node_7",
             "container_id": "ctr_123",
+            "message": "health check failed",
             "log_hint": ""
-        }]
+        },
+        "retained_artifacts": []
     }"#;
 
     assert!(serde_json::from_str::<DeployOperationFailure>(empty_log_hint).is_err());

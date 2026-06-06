@@ -1,5 +1,6 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId};
+use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{
     DeployEvidence, DeployRunningStage, DeployTransition, OperationLeaseExpiresAt,
     OperationOwnerLease, OperatorHint, RetainedArtifact,
@@ -158,7 +159,7 @@ impl ActiveServiceCommitter for HangingActiveState {
 
 #[derive(Default)]
 pub(super) struct RecordingHealth {
-    pub(super) checked: Vec<Vec<StartedDeployContainerForAssert>>,
+    pub(super) checked: Vec<Vec<DeployContainerForAssert>>,
     failure: Option<DeployHealthCheckError>,
 }
 
@@ -187,13 +188,13 @@ impl RecordingHealth {
 impl DeployHealthChecker for RecordingHealth {
     async fn wait_healthy(
         &mut self,
-        containers: &[ployzd::deploy_worker::StartedDeployContainer],
+        containers: &[ployzd::deploy_worker::DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
         self.checked.push(
             containers
                 .iter()
                 .map(|container| {
-                    StartedDeployContainerForAssert::from_started(
+                    DeployContainerForAssert::from_container(
                         container.node_id.clone(),
                         container.container_id.clone(),
                     )
@@ -213,7 +214,7 @@ pub(super) struct HangingHealth;
 impl DeployHealthChecker for HangingHealth {
     async fn wait_healthy(
         &mut self,
-        _containers: &[ployzd::deploy_worker::StartedDeployContainer],
+        _containers: &[ployzd::deploy_worker::DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
@@ -233,7 +234,7 @@ impl SlowHealth {
 impl DeployHealthChecker for SlowHealth {
     async fn wait_healthy(
         &mut self,
-        _containers: &[ployzd::deploy_worker::StartedDeployContainer],
+        _containers: &[ployzd::deploy_worker::DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
         tokio::time::sleep(self.delay).await;
         Ok(())
@@ -292,17 +293,17 @@ impl OperationLeaseRenewer for RecordingLeaseRenewer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct StartedDeployContainerForAssert {
+pub(super) struct DeployContainerForAssert {
     node_id: NodeId,
     container_id: ContainerId,
 }
 
-impl StartedDeployContainerForAssert {
+impl DeployContainerForAssert {
     pub(super) fn new(node_id: &str, container_id: &str) -> Self {
-        Self::from_started(self::node_id(node_id), self::container_id(container_id))
+        Self::from_container(self::node_id(node_id), self::container_id(container_id))
     }
 
-    const fn from_started(node_id: NodeId, container_id: ContainerId) -> Self {
+    const fn from_container(node_id: NodeId, container_id: ContainerId) -> Self {
         Self {
             node_id,
             container_id,
@@ -376,6 +377,7 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
         },
         expected_active: ExpectedActiveService::Absent,
         eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
+        observed_containers: Vec::new(),
         step_timeout: Duration::from_secs(5),
     }
 }
@@ -422,6 +424,45 @@ pub(super) fn container_id(value: &str) -> ContainerId {
 
 pub(super) fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image")
+}
+
+pub(super) fn observed_service_container(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+) -> ManagedContainerObservation {
+    ManagedContainerObservation {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        service_id: service_id("svc_api"),
+        revision_id: self::revision_id(revision_id),
+        operation_id: operation_id("op_existing"),
+        step_id: ployz_core::ids::StepId::try_new(format!("existing_{container_id}"))
+            .expect("valid step id"),
+        kind: ManagedContainerKind::Service,
+        state: ContainerRuntimeState::Running,
+    }
+}
+
+pub(super) fn observed_service_container_with_service(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+    service_id: &str,
+) -> ManagedContainerObservation {
+    let mut observation = observed_service_container(node_id, container_id, revision_id);
+    observation.service_id = self::service_id(service_id);
+    observation
+}
+
+pub(super) fn exited_observed_service_container(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+) -> ManagedContainerObservation {
+    let mut observation = observed_service_container(node_id, container_id, revision_id);
+    observation.state = ContainerRuntimeState::Exited;
+    observation
 }
 
 pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedArtifact {

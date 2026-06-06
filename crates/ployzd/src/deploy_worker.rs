@@ -6,10 +6,11 @@ mod ports;
 mod types;
 
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployPlanningInput, ReplicaSlot, plan_new_service_deploy,
+    DeployPlan, DeployPlanStep, DeployPlanningInput, ExistingServiceReplica, ReplicaSlot,
+    plan_service_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition};
 
 use crate::docker::labels::ManagedContainerLabels;
@@ -26,8 +27,8 @@ pub use ports::{
 };
 
 pub use types::{
-    DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts, NodeRunContainerOutcome,
-    NodeRunContainerRequest, StartedDeployContainer,
+    DeployContainer, DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
+    NodeRunContainerOutcome, NodeRunContainerRequest,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,17 +65,19 @@ where
     A: ActiveServiceCommitter,
 {
     let mut containers = Vec::new();
+    let mut started_containers = Vec::new();
     record_stage(command, &mut *ports.recorder, DeployTransition::Planning)
         .await
-        .map_err(|source| failure(source, &containers))?;
-    let plan = plan_new_service_deploy(DeployPlanningInput {
+        .map_err(|source| failure(source, &started_containers))?;
+    let plan = plan_service_deploy(DeployPlanningInput {
         request: command.request.clone(),
         eligible_nodes: command.eligible_nodes.clone(),
+        existing_replicas: existing_replicas(command),
     })
-    .map_err(|source| failure(source.into(), &containers))?;
+    .map_err(|source| failure(source.into(), &started_containers))?;
     record_plan_created(command, &mut *ports.recorder, &plan)
         .await
-        .map_err(|source| failure(source, &containers))?;
+        .map_err(|source| failure(source, &started_containers))?;
     record_running_stage(
         command,
         &mut *ports.recorder,
@@ -82,20 +85,35 @@ where
         DeployRunningStage::StartingContainers,
     )
     .await
-    .map_err(|source| failure(source, &containers))?;
+    .map_err(|source| failure(source, &started_containers))?;
 
     for step in &plan.steps {
-        let started = with_step_timeout(
-            command,
-            deploy_step_timeout_step(step),
-            run_deploy_step(&mut *ports.node_runtime, command, step),
-        )
-        .await
-        .map_err(|source| failure(source, &containers))?;
-        containers.push(started.clone());
-        record_container_started(&mut *ports.recorder, command, &started)
-            .await
-            .map_err(|source| failure(source, &containers))?;
+        match step {
+            DeployPlanStep::UseExistingContainer {
+                node_id,
+                container_id,
+                ..
+            } => containers.push(DeployContainer {
+                node_id: node_id.clone(),
+                container_id: container_id.clone(),
+            }),
+            DeployPlanStep::RunContainer { node_id, slot } => {
+                let started = with_step_timeout(
+                    command,
+                    DeployExecutionStep::RunContainer {
+                        node_id: node_id.clone(),
+                    },
+                    run_deploy_step(&mut *ports.node_runtime, command, node_id, *slot),
+                )
+                .await
+                .map_err(|source| failure(source, &started_containers))?;
+                containers.push(started.clone());
+                started_containers.push(started.clone());
+                record_container_started(&mut *ports.recorder, command, &started)
+                    .await
+                    .map_err(|source| failure(source, &started_containers))?;
+            }
+        }
     }
 
     record_running_stage(
@@ -105,11 +123,11 @@ where
         DeployRunningStage::WaitingForHealth,
     )
     .await
-    .map_err(|source| failure(source, &containers))?;
+    .map_err(|source| failure(source, &started_containers))?;
 
     record_health_check_started(command, &mut *ports.recorder)
         .await
-        .map_err(|source| failure(source, &containers))?;
+        .map_err(|source| failure(source, &started_containers))?;
 
     with_step_timeout(
         command,
@@ -117,7 +135,7 @@ where
         (*ports.health_checker).wait_healthy(&containers),
     )
     .await
-    .map_err(|source| failure(source, &containers))?;
+    .map_err(|source| failure(source, &started_containers))?;
 
     record_running_stage(
         command,
@@ -126,7 +144,7 @@ where
         DeployRunningStage::ActiveServiceCommit,
     )
     .await
-    .map_err(|source| failure(source, &containers))?;
+    .map_err(|source| failure(source, &started_containers))?;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
@@ -136,9 +154,31 @@ where
 
     finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
         .await
-        .map_err(|source| source.into_execution_failure(&outcome.containers))?;
+        .map_err(|source| source.into_execution_failure(&started_containers))?;
 
     Ok(outcome)
+}
+
+fn existing_replicas(command: &DeployExecutionCommand) -> Vec<ExistingServiceReplica> {
+    command
+        .observed_containers
+        .iter()
+        .filter(|container| is_running_target_service_container(container, command))
+        .map(|container| ExistingServiceReplica {
+            node_id: container.node_id.clone(),
+            container_id: container.container_id.clone(),
+        })
+        .collect()
+}
+
+fn is_running_target_service_container(
+    container: &ManagedContainerObservation,
+    command: &DeployExecutionCommand,
+) -> bool {
+    container.kind == ManagedContainerKind::Service
+        && container.state == ContainerRuntimeState::Running
+        && container.service_id == command.request.service_id
+        && container.revision_id == command.request.target_revision
 }
 
 async fn record_stage<R>(
@@ -235,7 +275,7 @@ where
 async fn record_container_started<R>(
     recorder: &mut R,
     command: &DeployExecutionCommand,
-    started: &StartedDeployContainer,
+    started: &DeployContainer,
 ) -> Result<(), DeployExecutionError>
 where
     R: DeployOperationRecorder,
@@ -262,13 +302,13 @@ where
 async fn run_deploy_step<N>(
     node_runtime: &mut N,
     command: &DeployExecutionCommand,
-    step: &DeployPlanStep,
-) -> Result<StartedDeployContainer, DeployExecutionError>
+    node_id: &ployz_core::ids::NodeId,
+    slot: ReplicaSlot,
+) -> Result<DeployContainer, DeployExecutionError>
 where
     N: NodeContainerRuntime,
 {
-    let DeployPlanStep::RunContainer { node_id, slot } = step;
-    let step_id = deploy_step_id(*slot).map_err(DeployExecutionError::StepId)?;
+    let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let request = NodeRunContainerRequest {
         node_id: node_id.clone(),
         image: command.request.image.clone(),
@@ -284,7 +324,7 @@ where
     node_runtime
         .run_container(request)
         .await
-        .map(|outcome| StartedDeployContainer {
+        .map(|outcome| DeployContainer {
             node_id: node_id.clone(),
             container_id: outcome.container_id().clone(),
         })
@@ -293,12 +333,4 @@ where
 
 fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {
     StepId::try_new(format!("run_{}", slot.get()))
-}
-
-fn deploy_step_timeout_step(step: &DeployPlanStep) -> DeployExecutionStep {
-    match step {
-        DeployPlanStep::RunContainer { node_id, .. } => DeployExecutionStep::RunContainer {
-            node_id: node_id.clone(),
-        },
-    }
 }

@@ -134,8 +134,15 @@ pub enum ArtifactUnavailableReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HealthCheckFailure {
-    ProbeFailed { message: FailureMessage },
-    TimedOut { timeout_seconds: u32 },
+    ProbeFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    TimedOut {
+        timeout_seconds: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

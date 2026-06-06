@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU16;
 
-use crate::ids::{NodeId, RevisionId, ServiceId};
+use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +19,13 @@ pub struct DeployRequest {
 pub struct DeployPlanningInput {
     pub request: DeployRequest,
     pub eligible_nodes: Vec<NodeId>,
+    pub existing_replicas: Vec<ExistingServiceReplica>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingServiceReplica {
+    pub node_id: NodeId,
+    pub container_id: ContainerId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +39,15 @@ pub struct DeployPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployPlanStep {
-    RunContainer { node_id: NodeId, slot: ReplicaSlot },
+    UseExistingContainer {
+        node_id: NodeId,
+        container_id: ContainerId,
+        slot: ReplicaSlot,
+    },
+    RunContainer {
+        node_id: NodeId,
+        slot: ReplicaSlot,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -86,26 +101,48 @@ pub enum DeployPlanError {
     NoEligibleNodes,
 }
 
-pub fn plan_new_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
-    if input.eligible_nodes.is_empty() {
+pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
+    let target_replicas = usize::from(input.request.replicas.get());
+    let mut existing_replicas = input.existing_replicas;
+    existing_replicas.sort_by(|left, right| {
+        left.node_id
+            .cmp(&right.node_id)
+            .then_with(|| left.container_id.cmp(&right.container_id))
+    });
+    existing_replicas.dedup_by(|left, right| {
+        left.node_id == right.node_id && left.container_id == right.container_id
+    });
+    let mut steps = existing_replicas
+        .into_iter()
+        .take(target_replicas)
+        .enumerate()
+        .map(|(index, replica)| DeployPlanStep::UseExistingContainer {
+            node_id: replica.node_id,
+            container_id: replica.container_id,
+            slot: ReplicaSlot((index + 1) as u16),
+        })
+        .collect::<Vec<_>>();
+    let missing_replicas = target_replicas.saturating_sub(steps.len());
+    if missing_replicas > 0 && input.eligible_nodes.is_empty() {
         return Err(DeployPlanError::NoEligibleNodes);
     }
 
-    let target_replicas = usize::from(input.request.replicas.get());
-    let steps = input
-        .eligible_nodes
-        .iter()
-        .cycle()
-        .take(target_replicas)
-        .enumerate()
-        .map(|(index, node_id)| {
-            let slot = ReplicaSlot((index + 1) as u16);
-            DeployPlanStep::RunContainer {
-                node_id: node_id.clone(),
-                slot,
-            }
-        })
-        .collect();
+    let existing_replicas = steps.len();
+    steps.extend(
+        input
+            .eligible_nodes
+            .iter()
+            .cycle()
+            .take(missing_replicas)
+            .enumerate()
+            .map(|(index, node_id)| {
+                let slot = ReplicaSlot((existing_replicas + index + 1) as u16);
+                DeployPlanStep::RunContainer {
+                    node_id: node_id.clone(),
+                    slot,
+                }
+            }),
+    );
 
     Ok(DeployPlan {
         service_id: input.request.service_id,

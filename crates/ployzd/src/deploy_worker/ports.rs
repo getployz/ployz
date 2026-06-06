@@ -5,9 +5,8 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use std::future::Future;
 
 use super::{
-    ActiveServiceCommitError, DeployHealthCheckError, DeployOperationRecordError,
+    ActiveServiceCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
     NodeContainerRuntimeError, NodeRunContainerOutcome, NodeRunContainerRequest,
-    StartedDeployContainer,
 };
 
 pub trait DeployOperationRecorder {
@@ -34,7 +33,7 @@ pub trait NodeContainerRuntime {
 pub trait DeployHealthChecker {
     fn wait_healthy(
         &mut self,
-        containers: &[StartedDeployContainer],
+        containers: &[DeployContainer],
     ) -> impl Future<Output = Result<(), DeployHealthCheckError>> + Send;
 }
 

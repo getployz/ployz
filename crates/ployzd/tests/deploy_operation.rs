@@ -219,8 +219,8 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(
         health.checked,
         vec![vec![
-            StartedDeployContainerForAssert::new("node_a", "ctr_1"),
-            StartedDeployContainerForAssert::new("node_b", "ctr_2"),
+            DeployContainerForAssert::new("node_a", "ctr_1"),
+            DeployContainerForAssert::new("node_b", "ctr_2"),
         ]]
     );
     let [first_request, second_request] = runtime.requests.as_slice() else {
@@ -231,6 +231,162 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.labels.step_id.as_str(), "run_1");
     assert_eq!(second_request.node_id, node_id("node_b"));
     assert_eq!(second_request.labels.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn deploy_worker_reuses_running_target_containers_from_observed_reality() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut active_state = RecordingActiveState::stored();
+    let mut command = deploy_command(2);
+    command.observed_containers = vec![observed_service_container(
+        "node_b",
+        "ctr_existing",
+        "rev_2",
+    )];
+
+    let outcome = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds with an existing target container");
+
+    assert_eq!(
+        outcome
+            .containers
+            .iter()
+            .map(|container| container.container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_existing"), container_id("ctr_new")]
+    );
+    assert_eq!(runtime.requests.len(), 1);
+    let [request] = runtime.requests.as_slice() else {
+        panic!("expected one runtime request");
+    };
+    assert_eq!(request.node_id, node_id("node_a"));
+    assert_eq!(
+        health.checked,
+        vec![vec![
+            DeployContainerForAssert::new("node_b", "ctr_existing"),
+            DeployContainerForAssert::new("node_a", "ctr_new"),
+        ]]
+    );
+    assert_eq!(
+        recorder.records,
+        vec![
+            RecordedOperation::Transition(DeployTransition::Planning),
+            RecordedOperation::PlanCreated { replica_count: 2 },
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::StartingContainers,
+            }),
+            RecordedOperation::ContainerStarted {
+                node_id: node_id("node_a"),
+                container_id: container_id("ctr_new"),
+            },
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::WaitingForHealth,
+            }),
+            RecordedOperation::HealthCheckStarted,
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: active_service_running(),
+            }),
+            RecordedOperation::Transition(DeployTransition::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn deploy_worker_ignores_observed_containers_that_are_not_running_target_services() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut active_state = RecordingActiveState::stored();
+    let mut command = deploy_command(1);
+    command.observed_containers = vec![
+        observed_service_container("node_a", "ctr_old", "rev_old"),
+        observed_service_container_with_service(
+            "node_a",
+            "ctr_other_service",
+            "rev_2",
+            "svc_worker",
+        ),
+        exited_observed_service_container("node_a", "ctr_stopped", "rev_2"),
+    ];
+
+    let outcome = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy starts missing target replica");
+
+    assert_eq!(
+        outcome
+            .containers
+            .iter()
+            .map(|container| container.container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_new")]
+    );
+    assert_eq!(runtime.requests.len(), 1);
+}
+
+#[tokio::test]
+async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers([]);
+    let mut health = RecordingHealth::unhealthy("node_b", "ctr_existing");
+    let mut active_state = RecordingActiveState::stored();
+    let mut command = deploy_command(1);
+    command.observed_containers = vec![observed_service_container(
+        "node_b",
+        "ctr_existing",
+        "rev_2",
+    )];
+
+    let error = execute_with_owned_worker(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("existing unhealthy target container fails deploy");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            failure: DeployOperationFailure::HealthCheckFailed {
+                health_check:
+                    ployz_core::ops::HealthCheckFailure::ProbeFailed {
+                        node_id: failed_node_id,
+                        container_id: failed_container_id,
+                        ..
+                    },
+                retained_artifacts,
+            },
+            ..
+        } if failed_node_id == node_id("node_b")
+            && failed_container_id == container_id("ctr_existing")
+            && retained_artifacts.is_empty()
+    ));
+    assert!(runtime.requests.is_empty());
+    assert!(active_state.requests.is_empty());
 }
 
 #[tokio::test]
@@ -428,8 +584,12 @@ async fn deploy_worker_waits_for_health_before_completing() {
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::HealthCheckFailed {
                     health_check: ployz_core::ops::HealthCheckFailure::ProbeFailed {
+                        node_id: node_id("node_b"),
+                        container_id: container_id("ctr_2"),
                         message: ployz_core::ops::FailureMessage::try_new("probe failed")
                             .expect("valid failure message"),
+                        log_hint: ployz_core::ops::OperatorHint::try_new("ployz logs ctr_2")
+                            .expect("valid log hint"),
                     },
                     retained_artifacts: vec![
                         retained_container("node_a", "ctr_1"),

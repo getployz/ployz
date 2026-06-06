@@ -1,5 +1,6 @@
 use ployz_core::deploy::{DeployRequest, ImageReference};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
+use ployz_core::node::ManagedContainerObservation;
 use ployz_core::ops::{OperatorHint, RetainedArtifact};
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use std::time::Duration;
@@ -14,6 +15,7 @@ pub struct DeployExecutionCommand {
     pub request: DeployRequest,
     pub expected_active: ExpectedActiveService,
     pub eligible_nodes: Vec<NodeId>,
+    pub observed_containers: Vec<ManagedContainerObservation>,
     pub step_timeout: Duration,
 }
 
@@ -41,16 +43,16 @@ impl DeployExecutionCommand {
 pub struct DeployExecutionOutcome {
     pub service_id: ployz_core::ids::ServiceId,
     pub target_revision: RevisionId,
-    pub containers: Vec<StartedDeployContainer>,
+    pub containers: Vec<DeployContainer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StartedDeployContainer {
+pub struct DeployContainer {
     pub node_id: NodeId,
     pub container_id: ContainerId,
 }
 
-impl StartedDeployContainer {
+impl DeployContainer {
     pub(super) fn retained_artifact(&self) -> RetainedArtifact {
         RetainedArtifact::StartedContainer {
             node_id: self.node_id.clone(),

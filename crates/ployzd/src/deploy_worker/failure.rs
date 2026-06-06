@@ -12,28 +12,28 @@ use std::time::Duration;
 
 use crate::docker::labels::ManagedContainerLabels;
 
-use super::{DeployExecutionCommand, DeployOperationRecorder, StartedDeployContainer};
+use super::{DeployContainer, DeployExecutionCommand, DeployOperationRecorder};
 
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
     pub(super) source: DeployExecutionError,
-    pub(super) started_containers: Vec<StartedDeployContainer>,
+    pub(super) deploy_containers: Vec<DeployContainer>,
 }
 
 impl DeployExecutionFailure {
-    fn new(source: DeployExecutionError, started_containers: &[StartedDeployContainer]) -> Self {
+    fn new(source: DeployExecutionError, deploy_containers: &[DeployContainer]) -> Self {
         Self {
             source,
-            started_containers: started_containers.to_vec(),
+            deploy_containers: deploy_containers.to_vec(),
         }
     }
 }
 
 pub(super) fn failure(
     source: DeployExecutionError,
-    started_containers: &[StartedDeployContainer],
+    deploy_containers: &[DeployContainer],
 ) -> DeployExecutionFailure {
-    DeployExecutionFailure::new(source, started_containers)
+    DeployExecutionFailure::new(source, deploy_containers)
 }
 
 pub(super) async fn fail_deploy<R>(
@@ -46,7 +46,7 @@ where
 {
     let operation_failure = failure
         .source
-        .deploy_failure(&command, retained_artifacts(&failure.started_containers));
+        .deploy_failure(&command, retained_artifacts(&failure.deploy_containers));
     let failure_record_error = record_failed_transition(
         command.step_timeout(),
         recorder,
@@ -431,7 +431,10 @@ impl NodeContainerRuntimeError {
 
                 DeployOperationFailure::HealthCheckFailed {
                     health_check: HealthCheckFailure::ProbeFailed {
+                        node_id: node_id.clone(),
+                        container_id: container_id.clone(),
                         message: message.clone(),
+                        log_hint: log_hint.clone(),
                     },
                     retained_artifacts,
                 }
@@ -454,7 +457,7 @@ impl DeployHealthCheckError {
     #[must_use]
     pub fn deploy_failure(
         &self,
-        mut retained_artifacts: Vec<RetainedArtifact>,
+        retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
             Self::Unhealthy {
@@ -462,31 +465,23 @@ impl DeployHealthCheckError {
                 container_id,
                 message,
                 log_hint,
-            } => {
-                let failing_artifact = RetainedArtifact::StartedContainer {
+            } => DeployOperationFailure::HealthCheckFailed {
+                health_check: HealthCheckFailure::ProbeFailed {
                     node_id: node_id.clone(),
                     container_id: container_id.clone(),
+                    message: message.clone(),
                     log_hint: log_hint.clone(),
-                };
-                if !retained_artifacts.contains(&failing_artifact) {
-                    retained_artifacts.push(failing_artifact);
-                }
-
-                DeployOperationFailure::HealthCheckFailed {
-                    health_check: HealthCheckFailure::ProbeFailed {
-                        message: message.clone(),
-                    },
-                    retained_artifacts,
-                }
-            }
+                },
+                retained_artifacts,
+            },
         }
     }
 }
 
-fn retained_artifacts(containers: &[StartedDeployContainer]) -> Vec<RetainedArtifact> {
+fn retained_artifacts(containers: &[DeployContainer]) -> Vec<RetainedArtifact> {
     containers
         .iter()
-        .map(StartedDeployContainer::retained_artifact)
+        .map(DeployContainer::retained_artifact)
         .collect()
 }
 
