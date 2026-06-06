@@ -241,8 +241,9 @@ pub fn substrate_rollout_plan(target: SubstrateRolloutTarget) -> KeeperStepPlan 
     ];
 
     for role in target.roles.roles {
-        let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
-        steps.push(KeeperStep::RestartSupervisorUnit(unit));
+        steps.push(KeeperStep::RestartSupervisorUnit(
+            SupervisorUnitTarget::PloyzdRole(role.clone()),
+        ));
         steps.push(KeeperStep::HealthCheck(RoleHealthGate::new(role, 60)));
         steps.push(KeeperStep::ReportProgress(target.operation_id.clone()));
     }

@@ -40,8 +40,17 @@ fn bootstrap_script_file_installs_only_keeper() {
         .join("ployz.sh");
     let script = fs::read_to_string(script_path).expect("script is readable");
 
-    assert!(script.contains("ployz-keeper.service"));
+    assert_eq!(
+        shell_keeper_unit_template(&script),
+        "[Unit]\nDescription=Ployz Keeper\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${keeper_bin}${keeper_args}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+    );
     assert!(script.contains("PLOYZ_KEEPER_URL"));
+    assert!(script.contains("PLOYZ_JOIN_TOKEN"));
+    assert!(script.contains("join-token"));
+    assert!(script.contains("not both"));
+    assert!(script.contains("[join-token]"));
+    assert!(script.contains("install -d -m 0700"));
+    assert!(script.contains("umask 077"));
     assert!(script.contains("uname -s"));
     assert!(script.contains("id -u"));
     assert!(!script.contains("ployzd"));
@@ -162,3 +171,16 @@ fn node_id(value: &str) -> NodeId {
 
 const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn shell_keeper_unit_template(script: &str) -> &str {
+    let start = script
+        .find("cat > \"$keeper_unit\" <<UNIT\n")
+        .expect("keeper unit heredoc starts")
+        + "cat > \"$keeper_unit\" <<UNIT\n".len();
+    let end = script[start..]
+        .find("\nUNIT\n")
+        .expect("keeper unit heredoc ends")
+        + start
+        + 1;
+    &script[start..end]
+}
