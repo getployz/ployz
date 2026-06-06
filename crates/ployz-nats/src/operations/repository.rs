@@ -67,12 +67,12 @@ impl AsyncNatsOperationRepository {
             .event_log
             .append(OperationEventAppend::deploy_submitted(
                 submission.operation_id.clone(),
-                submission.service_id.clone(),
+                submission.target.clone(),
                 &submission.idempotency_key,
             ))
             .await
             .map_err(SubmitDeployError::AppendEvent)?;
-        let (operation_id, service_id) = if stored.duplicate {
+        let (operation_id, target) = if stored.duplicate {
             let original = self
                 .event_log
                 .event_at_sequence(stored.sequence)
@@ -80,19 +80,22 @@ impl AsyncNatsOperationRepository {
                 .map_err(SubmitDeployError::AppendEvent)?;
             let OperationEvent::DeploySubmitted {
                 operation_id,
-                service_id,
+                target,
             } = original
             else {
                 return Err(SubmitDeployError::DuplicateSequenceMismatch {
                     sequence: stored.sequence,
                 });
             };
-            (operation_id, service_id)
+            (operation_id, target)
         } else {
-            (submission.operation_id, submission.service_id)
+            (submission.operation_id, submission.target)
         };
-        let status =
-            OperationStatus::deploy_accepted(operation_id.clone(), service_id, stored.sequence);
+        let status = OperationStatus::deploy_accepted(
+            operation_id.clone(),
+            target.service_id,
+            stored.sequence,
+        );
         self.status_store
             .put_if_newer(&status)
             .await
@@ -486,7 +489,7 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Result<Option<DeployEvi
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployOperationSubmission {
     pub operation_id: OperationId,
-    pub service_id: ployz_core::ids::ServiceId,
+    pub target: ployz_core::deploy::DeployRequest,
     pub idempotency_key: OperationIdempotencyKey,
 }
 

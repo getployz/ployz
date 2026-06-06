@@ -1,5 +1,7 @@
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
-use ployz_core::ids::{OperationId, ServiceId};
+use ployz_core::deploy::{
+    DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
+};
+use ployz_core::ids::{OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{DeployRunningStage, DeployTransition, EventSequence, OperationEvent};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::{MessageId, OperationEventStream};
@@ -14,12 +16,11 @@ fn operation_status_key_uses_token_safe_operation_id() {
 #[test]
 fn operation_event_append_carries_nats_message_id() {
     let operation_id = OperationId::try_new("op_123").expect("valid operation id");
-    let service_id = ServiceId::try_new("svc_api").expect("valid service id");
     let append = OperationEventAppend::from_event(
         MessageId::new("deploy.submit.idem_1"),
         OperationEvent::DeploySubmitted {
             operation_id,
-            service_id,
+            target: deploy_target("svc_api"),
         },
     );
 
@@ -116,7 +117,7 @@ fn operation_stream_replays_matching_operation_events_from_start_sequence() {
         MessageId::new("op_123.submitted"),
         OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_123"),
-            service_id: service_id("svc_api"),
+            target: deploy_target("svc_api"),
         },
     );
     stream.append(
@@ -124,7 +125,7 @@ fn operation_stream_replays_matching_operation_events_from_start_sequence() {
         MessageId::new("op_456.submitted"),
         OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_456"),
-            service_id: service_id("svc_worker"),
+            target: deploy_target("svc_worker"),
         },
     );
 
@@ -138,7 +139,7 @@ fn operation_stream_replays_matching_operation_events_from_start_sequence() {
         event.payload,
         OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_123"),
-            service_id: service_id("svc_api"),
+            target: deploy_target("svc_api"),
         }
     );
 }
@@ -151,7 +152,7 @@ fn operation_stream_deduplicates_by_message_id() {
         MessageId::new("deploy.submit.idem_1"),
         OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_123"),
-            service_id: service_id("svc_api"),
+            target: deploy_target("svc_api"),
         },
     );
     let duplicate = stream.append(
@@ -159,7 +160,7 @@ fn operation_stream_deduplicates_by_message_id() {
         MessageId::new("deploy.submit.idem_1"),
         OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_456"),
-            service_id: service_id("svc_worker"),
+            target: deploy_target("svc_worker"),
         },
     );
 
@@ -200,4 +201,25 @@ fn event_sequence(value: u64) -> EventSequence {
 
 fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
+}
+
+fn revision_id(value: &str) -> RevisionId {
+    RevisionId::try_new(value).expect("valid revision id")
+}
+
+fn image(value: &str) -> ImageReference {
+    ImageReference::try_new(value).expect("valid image")
+}
+
+fn replicas(value: u16) -> ReplicaCount {
+    ReplicaCount::try_new(value).expect("valid replica count")
+}
+
+fn deploy_target(service_id: &str) -> DeployRequest {
+    DeployRequest {
+        service_id: self::service_id(service_id),
+        target_revision: revision_id("rev_2"),
+        image: image("ghcr.io/acme/api:rev-2"),
+        replicas: replicas(1),
+    }
 }

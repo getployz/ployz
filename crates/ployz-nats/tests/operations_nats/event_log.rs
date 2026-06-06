@@ -10,7 +10,7 @@ async fn operation_event_log_deduplicates_submits_by_message_id() {
     let first = event_log
         .append(OperationEventAppend::deploy_submitted(
             operation_id("op_123"),
-            service_id("svc_api"),
+            deploy_target("svc_api"),
             &idempotency_key("idem_1"),
         ))
         .await
@@ -18,7 +18,7 @@ async fn operation_event_log_deduplicates_submits_by_message_id() {
     let second = event_log
         .append(OperationEventAppend::deploy_submitted(
             operation_id("op_456"),
-            service_id("svc_other"),
+            deploy_target("svc_other"),
             &idempotency_key("idem_1"),
         ))
         .await
@@ -34,7 +34,7 @@ async fn operation_event_log_deduplicates_submits_by_message_id() {
             .expect("original event can be loaded"),
         OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_123"),
-            service_id: service_id("svc_api"),
+            target: deploy_target("svc_api"),
         }
     );
 }
@@ -49,7 +49,7 @@ async fn operation_event_log_replays_only_the_requested_operation() {
     let submitted = event_log
         .append(OperationEventAppend::deploy_submitted(
             requested.clone(),
-            service_id("svc_api"),
+            deploy_target("svc_api"),
             &idempotency_key("idem_1"),
         ))
         .await
@@ -57,7 +57,7 @@ async fn operation_event_log_replays_only_the_requested_operation() {
     event_log
         .append(OperationEventAppend::deploy_submitted(
             other.clone(),
-            service_id("svc_other"),
+            deploy_target("svc_other"),
             &idempotency_key("idem_2"),
         ))
         .await
@@ -89,7 +89,7 @@ async fn operation_event_log_replays_only_the_requested_operation() {
         vec![
             OperationEvent::DeploySubmitted {
                 operation_id: requested.clone(),
-                service_id: service_id("svc_api"),
+                target: deploy_target("svc_api"),
             },
             OperationEvent::DeployPlanningStarted {
                 operation_id: requested,
@@ -107,7 +107,7 @@ async fn operation_event_log_replay_respects_start_sequence_and_limit() {
     event_log
         .append(OperationEventAppend::deploy_submitted(
             operation_id.clone(),
-            service_id("svc_api"),
+            deploy_target("svc_api"),
             &idempotency_key("idem_1"),
         ))
         .await

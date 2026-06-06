@@ -1,6 +1,8 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
+use ployz_core::deploy::{
+    DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
+};
 use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
@@ -68,7 +70,7 @@ pub(super) fn deploy_submission(
 ) -> DeployOperationSubmission {
     DeployOperationSubmission {
         operation_id: self::operation_id(operation_id),
-        service_id: self::service_id(service_id),
+        target: deploy_target(service_id),
         idempotency_key: self::idempotency_key(idempotency_key),
     }
 }
@@ -123,6 +125,23 @@ pub(super) fn revision_id(value: &str) -> RevisionId {
 
 pub(super) fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
+}
+
+pub(super) fn deploy_target(service_id: &str) -> DeployRequest {
+    DeployRequest {
+        service_id: self::service_id(service_id),
+        target_revision: revision_id("rev_2"),
+        image: image("ghcr.io/acme/api:rev-2"),
+        replicas: replicas(1),
+    }
+}
+
+fn image(value: &str) -> ImageReference {
+    ImageReference::try_new(value).expect("valid image")
+}
+
+fn replicas(value: u16) -> ReplicaCount {
+    ReplicaCount::try_new(value).expect("valid replica count")
 }
 
 pub(super) fn node_id(value: &str) -> ployz_core::ids::NodeId {

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
-use crate::deploy::DeployPlan;
+use crate::deploy::{DeployPlan, DeployRequest};
 use crate::ids::{
     ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, SubjectToken,
     SubjectTokenError,
@@ -612,7 +612,7 @@ pub enum OperationSubject {
 pub enum OperationEvent {
     DeploySubmitted {
         operation_id: OperationId,
-        service_id: ServiceId,
+        target: DeployRequest,
     },
     DeployPlanningStarted {
         operation_id: OperationId,

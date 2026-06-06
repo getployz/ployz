@@ -39,7 +39,7 @@ impl From<DeploySubmitRequest> for DeploySubmitCommand {
         Self {
             operation_id: value.operation_id,
             idempotency_key: value.idempotency_key,
-            service_id: value.service_id,
+            target: value.target,
         }
     }
 }

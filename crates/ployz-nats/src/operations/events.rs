@@ -2,7 +2,8 @@ use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
-use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
+use ployz_core::deploy::DeployRequest;
+use ployz_core::ids::{ContainerId, NodeId, OperationId};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, EventSequenceError, OperationEvent,
     OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
@@ -39,14 +40,14 @@ impl OperationEventAppend {
     #[must_use]
     pub fn deploy_submitted(
         operation_id: OperationId,
-        service_id: ServiceId,
+        target: DeployRequest,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Self {
         Self::from_event(
             MessageId::new(format!("deploy.submit.{}", idempotency_key.as_str())),
             OperationEvent::DeploySubmitted {
                 operation_id,
-                service_id,
+                target,
             },
         )
     }

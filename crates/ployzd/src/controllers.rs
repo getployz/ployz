@@ -1,6 +1,7 @@
 //! Controller wiring for operation execution.
 
-use ployz_core::ids::{OperationId, OperationOwnerId, ServiceId};
+use ployz_core::deploy::DeployRequest;
+use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
     OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
@@ -23,7 +24,7 @@ pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
 pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
-    pub service_id: ServiceId,
+    pub target: DeployRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +80,7 @@ impl OperationControllers {
             .submit_deploy(
                 DeployOperationSubmission {
                     operation_id: command.operation_id,
-                    service_id: command.service_id,
+                    target: command.target,
                     idempotency_key: command.idempotency_key,
                 },
                 self.lease_claim()?,

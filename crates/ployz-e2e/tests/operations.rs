@@ -2,7 +2,8 @@ use std::error::Error;
 
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
-use ployz_core::ids::{OperationId, OperationOwnerId, ServiceId};
+use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
@@ -44,7 +45,7 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
         .submit_deploy(
             DeployOperationSubmission {
                 operation_id: operation_id("op_123"),
-                service_id: service_id("svc_api"),
+                target: deploy_target("svc_api"),
                 idempotency_key: idempotency_key("idem_1"),
             },
             test_lease_claim(),
@@ -80,7 +81,7 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
         vec![
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id("op_123"),
-                service_id: service_id("svc_api"),
+                target: deploy_target("svc_api"),
             },
             OperationEvent::DeployPlanningStarted {
                 operation_id: operation_id("op_123"),
@@ -115,7 +116,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let api = OperationApiClient::new(client.clone());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_api_123"),
-        service_id: service_id("svc_api"),
+        target: deploy_target("svc_api"),
         idempotency_key: idempotency_key("idem_api_1"),
     };
 
@@ -178,7 +179,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
             .collect::<Vec<_>>(),
         vec![OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_api_123"),
-            service_id: service_id("svc_api"),
+            target: deploy_target("svc_api"),
         }]
     );
     assert_eq!(page.cursor, OperationEventReplayCursor::CaughtUp);
@@ -227,6 +228,27 @@ fn operation_id(value: &str) -> OperationId {
 
 fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
+}
+
+fn revision_id(value: &str) -> RevisionId {
+    RevisionId::try_new(value).expect("valid revision id")
+}
+
+fn image(value: &str) -> ImageReference {
+    ImageReference::try_new(value).expect("valid image reference")
+}
+
+fn replicas(value: u16) -> ReplicaCount {
+    ReplicaCount::try_new(value).expect("valid replica count")
+}
+
+fn deploy_target(service_id: &str) -> DeployRequest {
+    DeployRequest {
+        service_id: self::service_id(service_id),
+        target_revision: revision_id("rev_2"),
+        image: image("ghcr.io/acme/api:rev-2"),
+        replicas: replicas(1),
+    }
 }
 
 fn event_sequence(value: u64) -> EventSequence {

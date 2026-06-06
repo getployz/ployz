@@ -34,7 +34,7 @@ pub use ployz_core::state::{
 pub struct DeploySubmitRequest {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
-    pub service_id: ServiceId,
+    pub target: DeployRequest,
 }
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;

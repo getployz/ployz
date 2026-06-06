@@ -1,4 +1,5 @@
-use ployz_core::ids::{OperationId, OperationOwnerId, ServiceId};
+use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId};
 use ployz_core::ops::{
     EventSequence, OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationLeaseExpiresAt, OperationOwnerLease,
@@ -312,7 +313,16 @@ fn deploy_submit_request() -> DeploySubmitRequest {
     DeploySubmitRequest {
         operation_id: operation_id("op_123"),
         idempotency_key: OperationIdempotencyKey::try_new("idem_1").expect("valid idempotency key"),
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+        target: deploy_target("svc_api"),
+    }
+}
+
+fn deploy_target(service_id: &str) -> DeployRequest {
+    DeployRequest {
+        service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
+        target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
+        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+        replicas: ReplicaCount::try_new(1).expect("valid replica count"),
     }
 }
 

@@ -61,7 +61,12 @@ fn sdk_exports_operation_api_wire_types() {
     let request = DeploySubmitRequest {
         operation_id: operation_id.clone(),
         idempotency_key: OperationIdempotencyKey::try_new("idem_1").expect("valid idempotency key"),
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+        target: DeployRequest {
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        },
     };
     let response: DeploySubmitResponse = OperationApiResponse::Ok {
         value: AcceptedOperation {
@@ -74,7 +79,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"operation_id":"op_123","idempotency_key":"idem_1","service_id":"svc_api"}"#
+        r#"{"operation_id":"op_123","idempotency_key":"idem_1","target":{"service_id":"svc_api","target_revision":"rev_1","image":"ghcr.io/acme/api:rev-1","replicas":1}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),
