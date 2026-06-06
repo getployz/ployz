@@ -1,6 +1,7 @@
 export type * from "./generated.ts";
 export {
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
+  OPERATION_API_CONTRACTS,
 } from "./generated.ts";
 export {
   acmeChallengeToken,
@@ -28,6 +29,9 @@ export {
   serviceId,
 } from "./primitives.ts";
 
+import {
+  OPERATION_API_CONTRACTS,
+} from "./generated.ts";
 import {
   imageReference,
   operationEventReplayLimit,
@@ -75,7 +79,7 @@ export class PloyzApiError<E> extends Error {
   }
 }
 
-export type PloyzApiEndpoint = "deploy.submit" | "ops.status" | "ops.watch";
+export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
 
 export interface PloyzDeployInput {
   operationId: string;

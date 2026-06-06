@@ -1052,10 +1052,12 @@ started:
 
 Remaining work should avoid redoing those pieces unless current tests reveal a
 real gap. U11 has now converted deploy execution to direct owned operation
-functions under advisory leases. The major remaining gaps are
-keeper/install/update behavior, real Docker execution depth, gateway/DNS
-data-plane projection as `ployzd` roles, CLI/SDK ergonomics, cert projection,
-HA promotion, backup/restore, and broader end-to-end failure coverage.
+functions under advisory leases. U9 added CLI/SDK ergonomics and U9a
+centralizes the user-facing operation API contract so service catalog, runtime
+binding, Rust client calls, and generated TypeScript metadata share one
+endpoint registry. The major remaining gaps are keeper/install/update behavior,
+real Docker execution depth, deeper gateway/DNS data-plane integration, HA
+promotion, backup/restore, and broader end-to-end failure coverage.
 
 ### Execution And Review Loop
 
@@ -1565,6 +1567,35 @@ Pipeline finish:
   - SDK does not call node services directly.
 - **Verification:** `cargo test -p ployzctl && pnpm --dir packages/ployz-sdk test`
 
+### U9a. Operation API Contract Registry
+
+- **Goal:** Keep endpoint names, subjects, execution kind, request type,
+  success type, error type, Rust client calls, daemon service binding, and
+  TypeScript metadata from drifting.
+- **Requirements:** R5, R7, R22, R25
+- **Dependencies:** U3, U9
+- **Files:**
+  - `crates/ployz-sdk-types/src/operation_api.rs`
+  - `crates/ployz-sdk-types/src/typescript.rs`
+  - `crates/ployzd/src/services.rs`
+  - `crates/ployzd/src/api_runtime.rs`
+  - `crates/ployzctl/src/api_client.rs`
+  - `packages/ployz-sdk/src/index.ts`
+- **Approach:** Define one small operation API registry in Rust with marker
+  types for each user-facing endpoint. Each marker owns its request, success,
+  and error associated types. Use the registry for NATS service specs, daemon
+  endpoint binding, typed CLI client request/response decoding, and generated
+  TypeScript endpoint metadata. Do not introduce a generic operation framework;
+  handlers remain plain named functions.
+- **Test scenarios:**
+  - Adding or changing an endpoint requires updating one registry entry.
+  - NATS service specs use registry subjects and execution kind.
+  - CLI client decodes success/domain/error envelopes through registry marker
+    types.
+  - Generated TypeScript aliases and `OPERATION_API_CONTRACTS` match the Rust
+    registry.
+- **Verification:** `cargo test -p ployz-sdk-types --test exports && cargo test -p ployzd --test services && cargo test -p ployzctl --test api_client_nats && pnpm --dir packages/ployz-sdk test`
+
 ### U10. HA Promotion And Backup
 
 - **Goal:** Support the 1-node to 3-core transition without hiding HA
@@ -1705,7 +1736,8 @@ Do not build these in v1:
 13. U7a keeper, `ployz.sh`, and substrate rollouts.
 14. U8 gateway/DNS/cert projection.
 15. U9 CLI/SDK ergonomics.
-16. U10 HA/backup.
+16. U9a operation API contract registry.
+17. U10 HA/backup.
 
 The first proof should be Pre-U0 through U4 with a fake direct execution path
 over the operation contract harness. The second proof should be U0-U4a over

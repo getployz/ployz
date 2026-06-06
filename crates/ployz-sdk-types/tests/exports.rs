@@ -1,17 +1,20 @@
+use ployz_core::subjects::{OPERATION_API_ENDPOINTS, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertId, CertOperationState,
     CertRunningStage, CertTextError, CertValidAt, CertValidityWindow, DeployOperationState,
-    DeployRequest, DeployRunningStage, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
-    EventSequenceError, ImageReference, ImageReferenceError, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
-    RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId,
-    SubjectTokenError,
+    DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
+    DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
+    OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse,
+    OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
+    RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
+    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
+use ts_rs::{Config, TS};
 
 #[test]
 fn sdk_exports_core_wire_types() {
@@ -174,6 +177,52 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
     );
 }
 
+#[test]
+fn operation_api_contract_registry_owns_endpoint_shapes() {
+    assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
+    assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
+    assert_contract::<
+        OpsWatchApi,
+        OperationEventReplayRequest,
+        OperationEventReplayPage,
+        ployz_sdk_types::OpsWatchError,
+    >();
+
+    assert_eq!(operation_api_contract_endpoints(), OPERATION_API_ENDPOINTS);
+    assert_eq!(
+        operation_api_contract_rows(),
+        vec![
+            (
+                "deploy.submit",
+                "plz.v1.svc.api.deploy.submit",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "DeploySubmitRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "DeploySubmitError".to_owned(),
+                "DeploySubmitResponse",
+            ),
+            (
+                "ops.status",
+                "plz.v1.svc.api.ops.status",
+                OperationApiEndpointExecution::Query,
+                "OpsStatusRequest".to_owned(),
+                "OperationStatusSnapshot".to_owned(),
+                "OpsStatusError".to_owned(),
+                "OpsStatusResponse",
+            ),
+            (
+                "ops.watch",
+                "plz.v1.svc.api.ops.watch",
+                OperationApiEndpointExecution::Query,
+                "OpsWatchRequest".to_owned(),
+                "OperationEventReplayPage".to_owned(),
+                "OpsWatchError".to_owned(),
+                "OpsWatchResponse",
+            ),
+        ]
+    );
+}
+
 fn assert_fixture<T>(fixture: &serde_json::Value, key: &'static str)
 where
     T: serde::de::DeserializeOwned + serde::Serialize,
@@ -185,6 +234,74 @@ where
         serde_json::to_value(decoded).expect("fixture serializes through rust type"),
         value
     );
+}
+
+fn assert_contract<C, Request, Success, Error>()
+where
+    C: OperationApiContract<Request = Request, Success = Success, Error = Error>,
+    Request: TS,
+    Success: TS,
+    Error: TS,
+{
+}
+
+fn operation_api_contract_endpoints() -> Vec<ployz_core::subjects::OperationApiEndpoint> {
+    let mut endpoints = Vec::new();
+    macro_rules! push_endpoints {
+        ($($contract:ty),+ $(,)?) => {
+            $(endpoints.push(<$contract as OperationApiContract>::ENDPOINT);)+
+        };
+    }
+    ployz_sdk_types::operation_api_contracts!(push_endpoints);
+    endpoints
+}
+
+fn operation_api_contract_rows() -> Vec<(
+    &'static str,
+    &'static str,
+    OperationApiEndpointExecution,
+    String,
+    String,
+    String,
+    &'static str,
+)> {
+    let config = Config::new().with_large_int("number");
+    let mut rows = Vec::new();
+    macro_rules! push_rows {
+        ($($contract:ty),+ $(,)?) => {
+            $(rows.push(contract_row_for::<$contract>(&config));)+
+        };
+    }
+    ployz_sdk_types::operation_api_contracts!(push_rows);
+    rows
+}
+
+fn contract_row_for<C>(
+    config: &Config,
+) -> (
+    &'static str,
+    &'static str,
+    OperationApiEndpointExecution,
+    String,
+    String,
+    String,
+    &'static str,
+)
+where
+    C: OperationApiContract,
+    C::Request: TS,
+    C::Success: TS,
+    C::Error: TS,
+{
+    (
+        C::ENDPOINT.name(),
+        C::ENDPOINT.subject(),
+        C::ENDPOINT.execution(),
+        C::REQUEST_ALIAS.map_or_else(|| C::Request::name(config), str::to_owned),
+        C::Success::name(config),
+        C::Error::name(config),
+        C::RESPONSE_ALIAS,
+    )
 }
 
 fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {

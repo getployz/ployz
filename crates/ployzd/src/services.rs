@@ -2,7 +2,8 @@
 
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
-    NodeServiceEndpoint, OPERATION_API_ENDPOINTS, OperationApiEndpoint, node_service,
+    NodeServiceEndpoint, OPERATION_API_ENDPOINTS, OperationApiEndpoint,
+    OperationApiEndpointExecution, node_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsRequestFailure, NatsServiceEndpointSpec, NatsServiceSpec,
@@ -94,28 +95,17 @@ pub fn api_ops_watch_endpoint() -> NatsServiceEndpointSpec {
 #[must_use]
 pub fn api_endpoint_spec(endpoint: OperationApiEndpoint) -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new(
-        api_endpoint_name(endpoint),
+        endpoint.name(),
         endpoint.subject(),
-        api_endpoint_execution(endpoint),
+        api_endpoint_execution(endpoint.execution()),
     )
 }
 
 #[must_use]
-pub const fn api_endpoint_name(endpoint: OperationApiEndpoint) -> &'static str {
-    match endpoint {
-        OperationApiEndpoint::DeploySubmit => "deploy.submit",
-        OperationApiEndpoint::OpsStatus => "ops.status",
-        OperationApiEndpoint::OpsWatch => "ops.watch",
-    }
-}
-
-#[must_use]
-pub const fn api_endpoint_execution(endpoint: OperationApiEndpoint) -> EndpointExecution {
-    match endpoint {
-        OperationApiEndpoint::DeploySubmit => EndpointExecution::AcceptsOperation,
-        OperationApiEndpoint::OpsStatus | OperationApiEndpoint::OpsWatch => {
-            EndpointExecution::Query
-        }
+pub const fn api_endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
+    match execution {
+        OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+        OperationApiEndpointExecution::Query => EndpointExecution::Query,
     }
 }
 

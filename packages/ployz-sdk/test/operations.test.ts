@@ -9,6 +9,7 @@ import {
   deploySubmitRequest,
   eventSequence,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
+  OPERATION_API_CONTRACTS,
   operationId,
   operationEventReplayLimit,
   operationLeaseExpiresAt,
@@ -179,6 +180,38 @@ test("sdk exports operation subjects", () => {
   };
 
   assert.deepEqual(subject, { kind: "deploy", service_id: "svc_api" });
+});
+
+test("sdk exports the Rust operation API contract registry", () => {
+  assert.deepEqual(OPERATION_API_CONTRACTS, [
+    {
+      name: "deploy.submit",
+      subject: "plz.v1.svc.api.deploy.submit",
+      execution: "accepts_operation",
+      request: "DeploySubmitRequest",
+      success: "AcceptedOperation",
+      error: "DeploySubmitError",
+      response: "DeploySubmitResponse",
+    },
+    {
+      name: "ops.status",
+      subject: "plz.v1.svc.api.ops.status",
+      execution: "query",
+      request: "OpsStatusRequest",
+      success: "OperationStatusSnapshot",
+      error: "OpsStatusError",
+      response: "OpsStatusResponse",
+    },
+    {
+      name: "ops.watch",
+      subject: "plz.v1.svc.api.ops.watch",
+      execution: "query",
+      request: "OpsWatchRequest",
+      success: "OperationEventReplayPage",
+      error: "OpsWatchError",
+      response: "OpsWatchResponse",
+    },
+  ]);
 });
 
 test("sdk helpers enforce public primitive boundaries", () => {

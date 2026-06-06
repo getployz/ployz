@@ -8,6 +8,7 @@ use ployz_nats::service_protocol::{
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, OperationApiResponse,
     OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::error::Error;
@@ -41,47 +42,35 @@ impl OperationApiClient {
         &self,
         request: &DeploySubmitRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<DeploySubmitError>> {
-        self.request_api::<_, AcceptedOperation, DeploySubmitError>(
-            OperationApiEndpoint::DeploySubmit,
-            request,
-        )
-        .await
+        self.request_api::<DeploySubmitApi>(request).await
     }
 
     pub async fn ops_status(
         &self,
         request: &OpsStatusRequest,
     ) -> Result<OperationStatusSnapshot, OperationApiClientError<OpsStatusError>> {
-        self.request_api::<_, OperationStatusSnapshot, OpsStatusError>(
-            OperationApiEndpoint::OpsStatus,
-            request,
-        )
-        .await
+        self.request_api::<OpsStatusApi>(request).await
     }
 
     pub async fn ops_watch(
         &self,
         request: &OpsWatchRequest,
     ) -> Result<OperationEventReplayPage, OperationApiClientError<OpsWatchError>> {
-        self.request_api::<_, OperationEventReplayPage, OpsWatchError>(
-            OperationApiEndpoint::OpsWatch,
-            request,
-        )
-        .await
+        self.request_api::<OpsWatchApi>(request).await
     }
 
-    async fn request_api<Request, Value, DomainError>(
+    async fn request_api<C>(
         &self,
-        endpoint: OperationApiEndpoint,
-        request: &Request,
-    ) -> Result<Value, OperationApiClientError<DomainError>>
+        request: &C::Request,
+    ) -> Result<C::Success, OperationApiClientError<C::Error>>
     where
-        Request: Serialize,
-        OperationApiResponse<Value, DomainError>: DeserializeOwned,
+        C: OperationApiContract,
+        C::Request: Serialize,
+        OperationApiResponse<C::Success, C::Error>: DeserializeOwned,
     {
         let payload = serde_json::to_vec(request).map_err(|error| {
             OperationApiClientError::EncodeRequest {
-                endpoint,
+                endpoint: C::ENDPOINT,
                 message: error.to_string(),
             }
         })?;
@@ -90,32 +79,41 @@ impl OperationApiClient {
             .timeout(Some(self.request_timeout));
         let response = self
             .client
-            .send_request(endpoint.subject(), nats_request)
+            .send_request(C::ENDPOINT.subject(), nats_request)
             .await
             .map_err(|error| OperationApiClientError::Request {
-                endpoint,
+                endpoint: C::ENDPOINT,
                 failure: request_failure(error),
             })?;
 
         match decode_nats_service_error(response.headers.as_ref()) {
             Ok(Some(failure)) => {
-                return Err(OperationApiClientError::Service { endpoint, failure });
+                return Err(OperationApiClientError::Service {
+                    endpoint: C::ENDPOINT,
+                    failure,
+                });
             }
             Ok(None) => {}
             Err(error) => {
-                return Err(OperationApiClientError::ServiceProtocol { endpoint, error });
+                return Err(OperationApiClientError::ServiceProtocol {
+                    endpoint: C::ENDPOINT,
+                    error,
+                });
             }
         }
 
-        match serde_json::from_slice::<OperationApiResponse<Value, DomainError>>(&response.payload)
-            .map_err(|error| OperationApiClientError::DecodeResponse {
-                endpoint,
-                message: error.to_string(),
-            })? {
+        match serde_json::from_slice::<OperationApiResponse<C::Success, C::Error>>(
+            &response.payload,
+        )
+        .map_err(|error| OperationApiClientError::DecodeResponse {
+            endpoint: C::ENDPOINT,
+            message: error.to_string(),
+        })? {
             OperationApiResponse::Ok { value } => Ok(value),
-            OperationApiResponse::DomainError { error } => {
-                Err(OperationApiClientError::Domain { endpoint, error })
-            }
+            OperationApiResponse::DomainError { error } => Err(OperationApiClientError::Domain {
+                endpoint: C::ENDPOINT,
+                error,
+            }),
         }
     }
 }

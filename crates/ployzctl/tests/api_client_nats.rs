@@ -4,9 +4,7 @@ use ployz_core::ops::{
     EventSequence, OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationLeaseExpiresAt, OperationOwnerLease,
 };
-use ployz_core::subjects::{
-    API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH, OperationApiEndpoint,
-};
+use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
 };
@@ -16,6 +14,7 @@ use ployz_nats::services::{
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     OperationApiResponse, OpsStatusError, OpsStatusResponse,
+    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
 use ployzctl::api_client::{
     OperationApiClient, OperationApiClientError, OperationApiRequestFailure,
@@ -27,11 +26,7 @@ async fn operation_api_client_decodes_successful_envelope() {
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let spec = test_api_service(
-        "deploy.submit",
-        API_DEPLOY_SUBMIT,
-        EndpointExecution::AcceptsOperation,
-    );
+    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -75,11 +70,7 @@ async fn operation_api_client_returns_service_error_headers_as_transport_failure
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let spec = test_api_service(
-        "deploy.submit",
-        API_DEPLOY_SUBMIT,
-        EndpointExecution::AcceptsOperation,
-    );
+    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -116,11 +107,7 @@ async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() 
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let spec = test_api_service(
-        "deploy.submit",
-        API_DEPLOY_SUBMIT,
-        EndpointExecution::AcceptsOperation,
-    );
+    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -163,11 +150,7 @@ async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let spec = test_api_service(
-        "deploy.submit",
-        API_DEPLOY_SUBMIT,
-        EndpointExecution::AcceptsOperation,
-    );
+    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -201,7 +184,7 @@ async fn operation_api_client_routes_ops_status_domain_errors() {
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let spec = test_api_service("ops.status", API_OPS_STATUS, EndpointExecution::Query);
+    let spec = test_api_service(OpsStatusApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -244,7 +227,7 @@ async fn operation_api_client_routes_ops_watch_decode_failures() {
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let spec = test_api_service("ops.watch", API_OPS_WATCH, EndpointExecution::Query);
+    let spec = test_api_service(OpsWatchApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -294,19 +277,26 @@ async fn operation_api_client_reports_no_responders_as_typed_request_failure() {
     );
 }
 
-fn test_api_service(
-    name: &'static str,
-    subject: &str,
-    execution: EndpointExecution,
-) -> NatsServiceSpec {
+fn test_api_service(endpoint: OperationApiEndpoint) -> NatsServiceSpec {
     NatsServiceSpec::new(
         "plz-api.test",
         "plz-api",
         ServiceVersion::new(0, 1, 0),
         "test API service",
         ServiceMetadata::empty(),
-        vec![NatsServiceEndpointSpec::new(name, subject, execution)],
+        vec![NatsServiceEndpointSpec::new(
+            endpoint.name(),
+            endpoint.subject(),
+            endpoint_execution(endpoint.execution()),
+        )],
     )
+}
+
+const fn endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
+    match execution {
+        OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+        OperationApiEndpointExecution::Query => EndpointExecution::Query,
+    }
 }
 
 fn deploy_submit_request() -> DeploySubmitRequest {

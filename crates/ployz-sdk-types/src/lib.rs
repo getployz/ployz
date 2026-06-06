@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub mod operation_api;
 pub mod typescript;
 
 pub use ployz_core::cert::{

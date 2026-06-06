@@ -1,5 +1,6 @@
 //! TypeScript contract export owned by the Rust SDK type crate.
 
+use crate::operation_api::OperationApiContract;
 use crate::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, ActiveServiceCommitFailure, ActiveServiceCommitRequest,
@@ -18,6 +19,7 @@ use crate::{
     ReplayedOperationEvent, ReplicaCount, ReplicaSlot, RetainedArtifact, RevisionId,
     RouteCutoverFailureReason, RouteHostname, RoutePort, RouteTarget, ServiceId, StatusReadFailure,
 };
+use ployz_core::subjects::OperationApiEndpointExecution;
 use ts_rs::{Config, TS};
 
 #[must_use]
@@ -35,16 +37,7 @@ pub fn generated_typescript() -> String {
 
     push_contract_decls(&mut output, &config);
 
-    output.push_str(
-        "export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;\n\n",
-    );
-    output.push_str(
-        "export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;\n\n",
-    );
-    output.push_str("export type OpsWatchRequest = OperationEventReplayRequest;\n\n");
-    output.push_str(
-        "export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;\n",
-    );
+    push_operation_api_contracts(&mut output, &config);
 
     output
 }
@@ -140,4 +133,78 @@ fn push_decl<T: TS>(output: &mut String, config: &Config) {
     output.push_str("export ");
     output.push_str(&T::decl(config));
     output.push_str("\n\n");
+}
+
+fn push_operation_api_contracts(output: &mut String, config: &Config) {
+    macro_rules! push_aliases {
+        ($($contract:ty),+ $(,)?) => {
+            $(push_operation_api_aliases_for::<$contract>(output, config);)+
+        };
+    }
+    crate::operation_api_contracts!(push_aliases);
+
+    output.push_str("export const OPERATION_API_CONTRACTS = [\n");
+    macro_rules! push_rows {
+        ($($contract:ty),+ $(,)?) => {
+            $(push_operation_api_contract_row_for::<$contract>(output, config);)+
+        };
+    }
+    crate::operation_api_contracts!(push_rows);
+    output.push_str("] as const;\n");
+}
+
+fn push_operation_api_aliases_for<C>(output: &mut String, config: &Config)
+where
+    C: OperationApiContract,
+    C::Request: TS,
+    C::Success: TS,
+    C::Error: TS,
+{
+    if let Some(alias) = C::REQUEST_ALIAS {
+        output.push_str(&format!(
+            "export type {} = {};\n\n",
+            alias,
+            C::Request::name(config)
+        ));
+    }
+    output.push_str(&format!(
+        "export type {} = OperationApiResponse<{}, {}>;\n\n",
+        C::RESPONSE_ALIAS,
+        C::Success::name(config),
+        C::Error::name(config)
+    ));
+}
+
+fn push_operation_api_contract_row_for<C>(output: &mut String, config: &Config)
+where
+    C: OperationApiContract,
+    C::Request: TS,
+    C::Success: TS,
+    C::Error: TS,
+{
+    output.push_str(&format!(
+        "  {{ name: \"{}\", subject: \"{}\", execution: \"{}\", request: \"{}\", success: \"{}\", error: \"{}\", response: \"{}\" }},\n",
+        C::ENDPOINT.name(),
+        C::ENDPOINT.subject(),
+        operation_api_execution_name(C::ENDPOINT.execution()),
+        operation_api_request_name_for::<C>(config),
+        C::Success::name(config),
+        C::Error::name(config),
+        C::RESPONSE_ALIAS,
+    ));
+}
+
+fn operation_api_request_name_for<C>(config: &Config) -> String
+where
+    C: OperationApiContract,
+    C::Request: TS,
+{
+    C::REQUEST_ALIAS.map_or_else(|| C::Request::name(config), str::to_owned)
+}
+
+const fn operation_api_execution_name(execution: OperationApiEndpointExecution) -> &'static str {
+    match execution {
+        OperationApiEndpointExecution::AcceptsOperation => "accepts_operation",
+        OperationApiEndpointExecution::Query => "query",
+    }
 }

@@ -1,0 +1,66 @@
+//! User-facing operation API contract registry.
+
+use crate::{
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, OperationStatusSnapshot,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+};
+use ployz_core::ops::OperationEventReplayPage;
+use ployz_core::subjects::OperationApiEndpoint;
+
+pub trait OperationApiContract {
+    type Request;
+    type Success;
+    type Error;
+
+    const ENDPOINT: OperationApiEndpoint;
+    const REQUEST_ALIAS: Option<&'static str> = None;
+    const RESPONSE_ALIAS: &'static str;
+}
+
+#[macro_export]
+macro_rules! operation_api_contracts {
+    ($macro:ident) => {
+        $macro!(
+            $crate::operation_api::DeploySubmitApi,
+            $crate::operation_api::OpsStatusApi,
+            $crate::operation_api::OpsWatchApi
+        );
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeploySubmitApi;
+
+impl OperationApiContract for DeploySubmitApi {
+    type Request = DeploySubmitRequest;
+    type Success = AcceptedOperation;
+    type Error = DeploySubmitError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeploySubmit;
+    const RESPONSE_ALIAS: &'static str = "DeploySubmitResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpsStatusApi;
+
+impl OperationApiContract for OpsStatusApi {
+    type Request = OpsStatusRequest;
+    type Success = OperationStatusSnapshot;
+    type Error = OpsStatusError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::OpsStatus;
+    const RESPONSE_ALIAS: &'static str = "OpsStatusResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpsWatchApi;
+
+impl OperationApiContract for OpsWatchApi {
+    type Request = OpsWatchRequest;
+    type Success = OperationEventReplayPage;
+    type Error = OpsWatchError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::OpsWatch;
+    const REQUEST_ALIAS: Option<&'static str> = Some("OpsWatchRequest");
+    const RESPONSE_ALIAS: &'static str = "OpsWatchResponse";
+}

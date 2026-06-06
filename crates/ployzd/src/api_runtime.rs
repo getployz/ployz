@@ -9,7 +9,8 @@ use ployz_nats::service_runtime::{
     decode_json_request, start_nats_service,
 };
 use ployz_sdk_types::{
-    DeploySubmitRequest, OperationApiResponse, OpsStatusRequest, OpsWatchRequest,
+    OperationApiResponse,
+    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::future::Future;
@@ -26,7 +27,7 @@ pub async fn start_operation_api_service(
     let controllers = Arc::new(controllers);
 
     for endpoint in OPERATION_API_ENDPOINTS {
-        bind_operation_endpoint(&mut runtime, endpoint, Arc::clone(&controllers)).await?;
+        bind_operation_endpoint(&mut runtime, Arc::clone(&controllers), endpoint).await?;
     }
 
     Ok(runtime)
@@ -34,97 +35,89 @@ pub async fn start_operation_api_service(
 
 async fn bind_operation_endpoint(
     runtime: &mut RunningNatsService,
-    endpoint: OperationApiEndpoint,
     controllers: Arc<OperationControllers>,
+    endpoint: OperationApiEndpoint,
 ) -> Result<(), ApiServiceRuntimeError> {
     match endpoint {
-        OperationApiEndpoint::DeploySubmit => {
-            let spec = api_endpoint_spec(endpoint);
-            runtime
-                .bind_endpoint(&spec, move |request| {
-                    let controllers = Arc::clone(&controllers);
-                    async move { handle_deploy_submit(&controllers, request).await }
-                })
-                .await
-                .map_err(ApiServiceRuntimeError::Nats)?;
-        }
+        OperationApiEndpoint::DeploySubmit => bind_operation_contract::<DeploySubmitApi, _, _>(
+            runtime,
+            controllers,
+            |controllers, request| async move { deploy_submit(&controllers, request.into()).await },
+        )
+        .await,
         OperationApiEndpoint::OpsStatus => {
-            let spec = api_endpoint_spec(endpoint);
-            runtime
-                .bind_endpoint(&spec, move |request| {
-                    let controllers = Arc::clone(&controllers);
-                    async move { handle_ops_status(&controllers, request).await }
-                })
-                .await
-                .map_err(ApiServiceRuntimeError::Nats)?;
+            bind_operation_contract::<OpsStatusApi, _, _>(
+                runtime,
+                controllers,
+                |controllers, request| async move {
+                    ops_status(&controllers, request.operation_id).await
+                },
+            )
+            .await
         }
         OperationApiEndpoint::OpsWatch => {
-            let spec = api_endpoint_spec(endpoint);
-            runtime
-                .bind_endpoint(&spec, move |request| {
-                    let controllers = Arc::clone(&controllers);
-                    async move { handle_ops_watch(&controllers, request).await }
-                })
-                .await
-                .map_err(ApiServiceRuntimeError::Nats)?;
+            bind_operation_contract::<OpsWatchApi, _, _>(
+                runtime,
+                controllers,
+                |controllers, request| async move { ops_watch(&controllers, request).await },
+            )
+            .await
         }
     }
-
-    Ok(())
 }
 
-async fn handle_deploy_submit(
-    controllers: &OperationControllers,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    operation_api_response::<DeploySubmitRequest, _, _, _>(request, |request| async move {
-        deploy_submit(controllers, request.into()).await
-    })
-    .await
+async fn bind_operation_contract<C, H, F>(
+    runtime: &mut RunningNatsService,
+    controllers: Arc<OperationControllers>,
+    handler: H,
+) -> Result<(), ApiServiceRuntimeError>
+where
+    C: OperationApiContract + 'static,
+    C::Request: DeserializeOwned + 'static,
+    C::Success: Serialize + 'static,
+    C::Error: Serialize + 'static,
+    H: Fn(Arc<OperationControllers>, C::Request) -> F + Send + Sync + 'static,
+    F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
+{
+    let spec = api_endpoint_spec(C::ENDPOINT);
+    let handler = Arc::new(handler);
+    runtime
+        .bind_endpoint(&spec, move |request| {
+            let controllers = Arc::clone(&controllers);
+            let handler = Arc::clone(&handler);
+            operation_api_response::<C, _, _>(request, {
+                move |request| handler(controllers, request)
+            })
+        })
+        .await
+        .map_err(ApiServiceRuntimeError::Nats)
 }
 
-async fn handle_ops_status(
-    controllers: &OperationControllers,
+async fn operation_api_response<C, H, Fut>(
     request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    operation_api_response::<OpsStatusRequest, _, _, _>(request, |request| async move {
-        ops_status(controllers, request.operation_id).await
-    })
-    .await
-}
-
-async fn handle_ops_watch(
-    controllers: &OperationControllers,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse {
-    operation_api_response::<OpsWatchRequest, _, _, _>(request, |request| async move {
-        ops_watch(controllers, request).await
-    })
-    .await
-}
-
-async fn operation_api_response<Request, Value, Error, Fut>(
-    request: NatsServiceRequest,
-    handler: impl FnOnce(Request) -> Fut,
+    handler: H,
 ) -> NatsServiceResponse
 where
-    Request: DeserializeOwned,
-    Value: Serialize,
-    Error: Serialize,
-    Fut: Future<Output = Result<Value, Error>>,
+    C: OperationApiContract,
+    C::Request: DeserializeOwned,
+    C::Success: Serialize,
+    C::Error: Serialize,
+    H: FnOnce(C::Request) -> Fut,
+    Fut: Future<Output = Result<C::Success, C::Error>>,
 {
-    let request = match decode_json_request::<Request>(&request) {
+    let request = match decode_json_request::<C::Request>(&request) {
         Ok(request) => request,
         Err(response) => return response,
     };
 
     match handler(request).await {
         Ok(value) => {
-            let response: OperationApiResponse<Value, Error> = OperationApiResponse::Ok { value };
+            let response: OperationApiResponse<C::Success, C::Error> =
+                OperationApiResponse::Ok { value };
             NatsServiceResponse::json_ok(&response)
         }
         Err(error) => {
-            let response: OperationApiResponse<Value, Error> =
+            let response: OperationApiResponse<C::Success, C::Error> =
                 OperationApiResponse::DomainError { error };
             NatsServiceResponse::json_domain_error(&response)
         }
@@ -139,7 +132,7 @@ pub enum ApiServiceRuntimeError {
 #[cfg(test)]
 mod tests {
     use crate::services::api_service;
-    use ployz_core::subjects::{API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH};
+    use ployz_core::subjects::OPERATION_API_ENDPOINTS;
 
     #[test]
     fn operation_api_service_advertises_only_bound_endpoints() {
@@ -149,7 +142,10 @@ mod tests {
                 .into_iter()
                 .map(|endpoint| endpoint.subject)
                 .collect::<Vec<_>>(),
-            vec![API_DEPLOY_SUBMIT, API_OPS_STATUS, API_OPS_WATCH]
+            OPERATION_API_ENDPOINTS
+                .iter()
+                .map(|endpoint| endpoint.subject().to_owned())
+                .collect::<Vec<_>>()
         );
     }
 }

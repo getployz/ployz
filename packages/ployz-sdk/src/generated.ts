@@ -153,3 +153,9 @@ export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, Op
 export type OpsWatchRequest = OperationEventReplayRequest;
 
 export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
+
+export const OPERATION_API_CONTRACTS = [
+  { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
+  { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
+  { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
+] as const;
