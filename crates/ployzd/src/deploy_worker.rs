@@ -29,6 +29,7 @@ use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
 use finalization::finalize_successful_deploy;
 pub use ports::{
     ActiveServiceCommitter, DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime,
+    WireGuardEbpfPreparer,
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
@@ -40,12 +41,13 @@ pub use types::{
     DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
 };
 
-pub async fn execute_deploy_operation<R, N, H, A>(
+pub async fn execute_deploy_operation<R, D, N, H, A>(
     command: DeployExecutionCommand,
-    ports: DeployExecutionPorts<'_, R, N, H, A>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, A>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
+    D: WireGuardEbpfPreparer,
     N: NodeContainerRuntime,
     H: DeployHealthChecker,
     A: ActiveServiceCommitter,
@@ -57,12 +59,13 @@ where
     }
 }
 
-async fn execute_deploy<R, N, H, A>(
+async fn execute_deploy<R, D, N, H, A>(
     command: &DeployExecutionCommand,
-    ports: &mut DeployExecutionPorts<'_, R, N, H, A>,
+    ports: &mut DeployExecutionPorts<'_, R, D, N, H, A>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
+    D: WireGuardEbpfPreparer,
     N: NodeContainerRuntime,
     H: DeployHealthChecker,
     A: ActiveServiceCommitter,
@@ -79,6 +82,16 @@ where
     })
     .map_err(|source| failure(command, source.into(), &started_containers))?;
     record_plan_created(command, &mut *ports.recorder, &plan)
+        .await
+        .map_err(|source| failure(command, source, &started_containers))?;
+    record_running_stage(
+        command,
+        &mut *ports.recorder,
+        DeployRunningStage::PreparingWireGuardEbpf,
+    )
+    .await
+    .map_err(|source| failure(command, source, &started_containers))?;
+    prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
         .await
         .map_err(|source| failure(command, source, &started_containers))?;
     record_running_stage(
@@ -159,6 +172,25 @@ where
     };
 
     Ok(outcome)
+}
+
+async fn prepare_wireguard_ebpf<D>(
+    command: &DeployExecutionCommand,
+    plan: &DeployPlan,
+    wireguard_ebpf: &mut D,
+) -> Result<(), DeployExecutionError>
+where
+    D: WireGuardEbpfPreparer,
+{
+    let request = command.wireguard_ebpf_prepare_request(plan);
+    with_step_timeout(
+        command,
+        DeployExecutionStep::PrepareWireGuardEbpf {
+            nodes: request.nodes.clone(),
+        },
+        wireguard_ebpf.prepare_wireguard_ebpf(request),
+    )
+    .await
 }
 
 async fn record_stage<R>(

@@ -56,6 +56,23 @@ pub struct DeployPlan {
     pub steps: Vec<DeployPlanStep>,
 }
 
+impl DeployPlan {
+    #[must_use]
+    pub fn target_nodes(&self) -> Vec<NodeId> {
+        let mut nodes = self
+            .steps
+            .iter()
+            .map(|step| match step {
+                DeployPlanStep::UseExistingContainer { node_id, .. }
+                | DeployPlanStep::RunContainer { node_id, .. } => node_id.clone(),
+            })
+            .collect::<Vec<_>>();
+        nodes.sort();
+        nodes.dedup();
+        nodes
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]

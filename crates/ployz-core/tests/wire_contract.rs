@@ -1,3 +1,4 @@
+use ployz_core::dataplane::WireGuardEbpfComponent;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
@@ -18,6 +19,18 @@ fn operation_state_serializes_with_stable_wire_names() {
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
         r#"{"state":"running","stage":"active_service_commit"}"#
+    );
+}
+
+#[test]
+fn wireguard_ebpf_running_stage_has_stable_wire_name() {
+    let state = DeployOperationState::Running {
+        stage: DeployRunningStage::PreparingWireGuardEbpf,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&state).expect("state serializes"),
+        r#"{"state":"running","stage":"preparing_wireguard_ebpf"}"#
     );
 }
 
@@ -55,6 +68,35 @@ fn retained_artifact_carries_variant_specific_failure_data() {
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
         r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifacts":[{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"}]}"#
+    );
+}
+
+#[test]
+fn wireguard_ebpf_failures_are_distinct_from_runtime_failures() {
+    let failure = DeployOperationFailure::WireGuardEbpfUnavailable {
+        node_id: node_id("node_7"),
+        component: WireGuardEbpfComponent::EbpfForwarding,
+        message: failure_message("bpf route install failed"),
+        retained_artifacts: Vec::new(),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"wireguard_ebpf_unavailable","node_id":"node_7","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
+    );
+}
+
+#[test]
+fn wireguard_ebpf_timeout_failures_keep_node_scope() {
+    let failure = DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
+        nodes: vec![node_id("node_7"), node_id("node_8")],
+        timeout_seconds: 30,
+        retained_artifacts: Vec::new(),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"wireguard_ebpf_preparation_timed_out","nodes":["node_7","node_8"],"timeout_seconds":30,"retained_artifacts":[]}"#
     );
 }
 

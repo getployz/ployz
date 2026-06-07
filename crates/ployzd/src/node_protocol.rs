@@ -2,6 +2,9 @@
 
 use crate::docker::labels::ManagedContainerLabels;
 use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
+use ployz_core::dataplane::{
+    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+};
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::ops::{FailureMessage, OperatorHint};
@@ -54,4 +57,51 @@ pub enum NodeContainerRunDomainError {
         message: FailureMessage,
         log_hint: OperatorHint,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeWireGuardEbpfPrepareRpcRequest {
+    pub operation_id: OperationId,
+    pub nodes: Vec<NodeId>,
+}
+
+impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
+    fn from(value: WireGuardEbpfPrepareRequest) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            nodes: value.nodes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeWireGuardEbpfPrepareRpcResponse {
+    Ok {
+        node_id: NodeId,
+    },
+    DomainError {
+        node_id: NodeId,
+        error: NodeWireGuardEbpfPrepareDomainError,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeWireGuardEbpfPrepareDomainError {
+    Unavailable {
+        component: WireGuardEbpfComponent,
+        message: FailureMessage,
+    },
+}
+
+impl From<WireGuardEbpfPrepareError> for NodeWireGuardEbpfPrepareDomainError {
+    fn from(value: WireGuardEbpfPrepareError) -> Self {
+        match value {
+            WireGuardEbpfPrepareError::Unavailable {
+                component, message, ..
+            } => Self::Unavailable { component, message },
+        }
+    }
 }

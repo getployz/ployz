@@ -841,6 +841,7 @@ async fn operation_repository_replay_marks_terminal_operation_caught_up_as_termi
         .await
         .expect("planning recorded");
     for stage in [
+        DeployRunningStage::PreparingWireGuardEbpf,
         DeployRunningStage::StartingContainers,
         DeployRunningStage::WaitingForHealth,
         DeployRunningStage::ActiveServiceCommit,

@@ -1,16 +1,23 @@
+use ployz_core::dataplane::{
+    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+};
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::ManagedContainerKind;
+use ployz_core::ops::FailureMessage;
 use ployzd::deploy_worker::{
     NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason,
+    NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner, NodeContainerRunnerError,
 };
-use ployzd::node_rpc::NatsNodeContainerRuntime;
-use ployzd::node_service_runtime::start_node_runtime_service;
+use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use ployzd::node_service_runtime::{
+    NodeWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_node_runtime_service,
+    start_node_wireguard_ebpf_service,
+};
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -137,6 +144,65 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
     );
 }
 
+#[tokio::test]
+async fn node_wireguard_ebpf_service_calls_local_preparer() {
+    let nats = test_nats().await;
+    let state = RecordingWireGuardEbpfState::default();
+    let _service = start_node_wireguard_ebpf_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingWireGuardEbpf::new(state.clone()),
+    )
+    .await
+    .expect("node wireguard ebpf service starts");
+    let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
+
+    client
+        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a"]))
+        .await
+        .expect("wireguard ebpf prepare succeeds");
+
+    assert_eq!(
+        state.requests(),
+        vec![WireGuardEbpfPrepareRequest {
+            operation_id: operation_id("op_123"),
+            nodes: vec![node_id("node_a")],
+        }]
+    );
+}
+
+#[tokio::test]
+async fn node_wireguard_ebpf_service_preserves_prepare_failure() {
+    let nats = test_nats().await;
+    let state = RecordingWireGuardEbpfState::default();
+    let _service = start_node_wireguard_ebpf_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingWireGuardEbpf::new(state).with_failure(WireGuardEbpfPrepareError::Unavailable {
+            node_id: node_id("node_a"),
+            component: WireGuardEbpfComponent::EbpfForwarding,
+            message: failure_message("ebpf program missing"),
+        }),
+    )
+    .await
+    .expect("node wireguard ebpf service starts");
+    let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
+
+    let error = client
+        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a"]))
+        .await
+        .expect_err("wireguard ebpf prepare failure is returned");
+
+    assert_eq!(
+        error,
+        WireGuardEbpfPrepareError::Unavailable {
+            node_id: node_id("node_a"),
+            component: WireGuardEbpfComponent::EbpfForwarding,
+            message: failure_message("ebpf program missing"),
+        }
+    );
+}
+
 #[derive(Clone, Default)]
 struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
@@ -220,6 +286,65 @@ impl NodeContainerRunner for RecordingRunner {
     }
 }
 
+#[derive(Clone, Default)]
+struct RecordingWireGuardEbpfState {
+    inner: Arc<Mutex<RecordingWireGuardEbpfInner>>,
+}
+
+impl RecordingWireGuardEbpfState {
+    fn requests(&self) -> Vec<WireGuardEbpfPrepareRequest> {
+        self.inner
+            .lock()
+            .expect("recording wireguard ebpf lock is not poisoned")
+            .requests
+            .clone()
+    }
+}
+
+#[derive(Default)]
+struct RecordingWireGuardEbpfInner {
+    requests: Vec<WireGuardEbpfPrepareRequest>,
+}
+
+#[derive(Clone)]
+struct RecordingWireGuardEbpf {
+    state: RecordingWireGuardEbpfState,
+    failure: Option<WireGuardEbpfPrepareError>,
+}
+
+impl RecordingWireGuardEbpf {
+    fn new(state: RecordingWireGuardEbpfState) -> Self {
+        Self {
+            state,
+            failure: None,
+        }
+    }
+
+    fn with_failure(mut self, failure: WireGuardEbpfPrepareError) -> Self {
+        self.failure = Some(failure);
+        self
+    }
+}
+
+impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
+    async fn prepare_wireguard_ebpf(
+        &self,
+        request: WireGuardEbpfPrepareRequest,
+    ) -> Result<(), WireGuardEbpfPrepareError> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording wireguard ebpf lock is not poisoned")
+            .requests
+            .push(request);
+
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+}
+
 struct TestNats {
     _server: nats_server::Server,
     client: async_nats::Client,
@@ -247,6 +372,17 @@ fn run_request(node_id: &str) -> NodeRunContainerRequest {
         image: image("registry.example/api:rev_2"),
         labels: managed_labels(),
     }
+}
+
+fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
+    WireGuardEbpfPrepareRequest {
+        operation_id: operation_id("op_123"),
+        nodes: nodes.iter().map(|node| node_id(node)).collect(),
+    }
+}
+
+fn failure_message(value: &str) -> FailureMessage {
+    FailureMessage::try_new(value).expect("valid failure message")
 }
 
 fn existing_container(

@@ -124,6 +124,7 @@ pub fn node_runtime_service(node_id: &NodeId) -> NatsServiceSpec {
         vec![
             node_endpoint_spec(node_id, NodeServiceEndpoint::Inspect),
             node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerRun),
+            node_endpoint_spec(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare),
             node_endpoint_spec(node_id, NodeServiceEndpoint::LogsTail),
         ],
     )
@@ -151,6 +152,7 @@ pub const fn node_endpoint_name(endpoint: NodeServiceEndpoint) -> &'static str {
     match endpoint {
         NodeServiceEndpoint::Inspect => "node.inspect",
         NodeServiceEndpoint::ContainerRun => "node.container.run",
+        NodeServiceEndpoint::WireGuardEbpfPrepare => "node.wireguard_ebpf.prepare",
         NodeServiceEndpoint::LogsTail => "node.logs.tail",
     }
 }

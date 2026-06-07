@@ -933,7 +933,7 @@ fn deploy_transition_allowed(
         (
             DeployOperationState::Planning,
             DeployOperationState::Running {
-                stage: DeployRunningStage::StartingContainers,
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
             },
         ) => true,
         (
@@ -951,9 +951,10 @@ fn deploy_transition_allowed(
 
 fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
-        DeployRunningStage::StartingContainers => 0,
-        DeployRunningStage::WaitingForHealth => 1,
-        DeployRunningStage::ActiveServiceCommit => 2,
+        DeployRunningStage::PreparingWireGuardEbpf => 0,
+        DeployRunningStage::StartingContainers => 1,
+        DeployRunningStage::WaitingForHealth => 2,
+        DeployRunningStage::ActiveServiceCommit => 3,
     }
 }
 
@@ -961,6 +962,9 @@ fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningSta
     matches!(
         (current, attempted),
         (
+            DeployRunningStage::PreparingWireGuardEbpf,
+            DeployRunningStage::StartingContainers
+        ) | (
             DeployRunningStage::StartingContainers,
             DeployRunningStage::WaitingForHealth
         ) | (

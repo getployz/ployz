@@ -86,7 +86,7 @@ export type FirstNodeGateway = "install" | "skip";
 
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed" } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
-export type DeployRunningStage = "starting_containers" | "waiting_for_health" | "active_service_commit";
+export type DeployRunningStage = "preparing_wireguard_ebpf" | "starting_containers" | "waiting_for_health" | "active_service_commit";
 
 export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -108,13 +108,15 @@ export type RetainedArtifact = { "type": "started_container", node_id: NodeId, c
 
 export type HealthCheckFailure = { "reason": "probe_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
 
+export type WireGuardEbpfComponent = "wireguard" | "ebpf_forwarding";
+
 export type ActiveServiceCommitFailure = { "reason": "active_service_changed", expected_current: ExpectedActiveService, current_revision: RevisionId | null, attempted_revision: RevisionId, };
 
 export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, };
 
 export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", node_id: NodeId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
-export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "runtime_unavailable", node_id: NodeId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "wireguard_ebpf_unavailable", node_id: NodeId, component: WireGuardEbpfComponent, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "wireguard_ebpf_preparation_timed_out", nodes: Array<NodeId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", node_id: NodeId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 

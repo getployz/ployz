@@ -27,6 +27,15 @@ async fn operation_repository_records_container_started_without_state_change() {
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
         )
@@ -66,7 +75,7 @@ async fn operation_repository_records_container_started_without_state_change() {
             state: DeployOperationState::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
-            last_event_sequence: event_sequence(4),
+            last_event_sequence: event_sequence(5),
         })
     );
 }
@@ -86,6 +95,15 @@ async fn operation_repository_records_health_check_started_without_state_change(
         .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
         .await
         .expect("planning transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
     repository
         .record_deploy_transition(
             &operation_id("op_123"),
@@ -127,7 +145,7 @@ async fn operation_repository_records_health_check_started_without_state_change(
             state: DeployOperationState::Running {
                 stage: DeployRunningStage::WaitingForHealth,
             },
-            last_event_sequence: event_sequence(5),
+            last_event_sequence: event_sequence(6),
         })
     );
 }
@@ -243,6 +261,15 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
         )
@@ -301,7 +328,7 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
             state: DeployOperationState::Running {
                 stage: active_service_running(),
             },
-            last_event_sequence: event_sequence(6),
+            last_event_sequence: event_sequence(7),
         })
     );
 }
@@ -322,6 +349,15 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
         .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
         .await
         .expect("planning transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
     repository
         .record_deploy_transition(
             &operation_id("op_123"),
@@ -364,7 +400,7 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
             state: DeployOperationState::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
-            last_event_sequence: event_sequence(4),
+            last_event_sequence: event_sequence(5),
         })
     );
 }
@@ -385,6 +421,15 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
         .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
         .await
         .expect("planning transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
     repository
         .record_deploy_transition(
             &operation_id("op_123"),
@@ -445,7 +490,7 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
             state: DeployOperationState::Running {
                 stage: active_service_running(),
             },
-            last_event_sequence: event_sequence(6),
+            last_event_sequence: event_sequence(7),
         })
     );
 }
@@ -500,6 +545,15 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
         )
@@ -533,7 +587,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         )
         .await
         .expect("late container evidence records while operation is still running");
-    assert_eq!(late.sequence, event_sequence(6));
+    assert_eq!(late.sequence, event_sequence(7));
     assert!(!late.duplicate);
     assert_eq!(
         repository
@@ -546,7 +600,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
             state: DeployOperationState::Running {
                 stage: active_service_running(),
             },
-            last_event_sequence: event_sequence(6),
+            last_event_sequence: event_sequence(7),
         })
     );
 
@@ -564,7 +618,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
         )
         .await
         .expect("already-durable evidence remains idempotent after terminal state");
-    assert_eq!(terminal_duplicate.sequence, event_sequence(6));
+    assert_eq!(terminal_duplicate.sequence, event_sequence(7));
     assert!(terminal_duplicate.duplicate);
 }
 
@@ -609,6 +663,15 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
         )
@@ -636,7 +699,7 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
         .record_deploy_evidence(&operation_id("op_123"), DeployEvidence::HealthCheckStarted)
         .await
         .expect("late health evidence records while operation is still running");
-    assert_eq!(late.sequence, event_sequence(6));
+    assert_eq!(late.sequence, event_sequence(7));
     assert!(!late.duplicate);
     assert_eq!(
         repository
@@ -649,7 +712,7 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
             state: DeployOperationState::Running {
                 stage: active_service_running(),
             },
-            last_event_sequence: event_sequence(6),
+            last_event_sequence: event_sequence(7),
         })
     );
 }
@@ -702,6 +765,15 @@ async fn operation_repository_rejects_plan_created_after_planning() {
         .record_deploy_transition(
             &operation_id("op_123"),
             DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
         )
@@ -716,7 +788,7 @@ async fn operation_repository_rejects_plan_created_after_planning() {
         )
         .await
         .expect("late plan evidence records after execution starts");
-    assert_eq!(late.sequence, event_sequence(4));
+    assert_eq!(late.sequence, event_sequence(5));
     assert!(!late.duplicate);
     assert_eq!(
         repository
@@ -729,7 +801,7 @@ async fn operation_repository_rejects_plan_created_after_planning() {
             state: DeployOperationState::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
-            last_event_sequence: event_sequence(4),
+            last_event_sequence: event_sequence(5),
         })
     );
 }
@@ -838,6 +910,15 @@ async fn record_active_commit_stage(repository: &AsyncNatsOperationRepository, o
         .record_deploy_transition(&operation_id(operation), DeployTransition::Planning)
         .await
         .expect("planning transition records");
+    repository
+        .record_deploy_transition(
+            &operation_id(operation),
+            DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("wireguard ebpf transition records");
     repository
         .record_deploy_transition(
             &operation_id(operation),

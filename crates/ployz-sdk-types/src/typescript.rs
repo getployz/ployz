@@ -29,6 +29,7 @@ use crate::{
     OpsStatusRequest, OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource,
     ReplayedOperationEvent, ReplicaCount, ReplicaSlot, RetainedArtifact, RevisionId,
     RouteCutoverFailureReason, RouteHostname, RoutePort, RouteTarget, ServiceId, StatusReadFailure,
+    WireGuardEbpfComponent,
 };
 use ployz_core::subjects::OperationApiEndpointExecution;
 use ts_rs::{Config, TS};
@@ -106,6 +107,7 @@ macro_rules! exported_types {
             RouteTarget,
             RetainedArtifact,
             HealthCheckFailure,
+            WireGuardEbpfComponent,
             ActiveServiceCommitFailure,
             ArtifactUnavailableReason,
             RouteCutoverFailureReason,

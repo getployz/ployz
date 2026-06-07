@@ -1,3 +1,4 @@
+use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{DeployEvidence, DeployTransition};
 use ployz_core::state::{ActiveServiceCommit, ActiveServiceCommitRequest};
@@ -28,6 +29,13 @@ pub trait NodeContainerRuntime {
         &mut self,
         request: NodeRunContainerRequest,
     ) -> impl Future<Output = Result<NodeRunContainerOutcome, NodeContainerRuntimeError>> + Send;
+}
+
+pub trait WireGuardEbpfPreparer {
+    fn prepare_wireguard_ebpf(
+        &mut self,
+        request: WireGuardEbpfPrepareRequest,
+    ) -> impl Future<Output = Result<(), WireGuardEbpfPrepareError>> + Send;
 }
 
 pub trait DeployHealthChecker {

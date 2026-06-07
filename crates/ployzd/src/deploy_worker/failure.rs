@@ -1,3 +1,4 @@
+use ployz_core::dataplane::WireGuardEbpfPrepareError;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, StepId, SubjectTokenError};
 use ployz_core::ops::{
@@ -118,6 +119,7 @@ pub enum DeployExecutionError {
     },
     RecordTransition(DeployOperationRecordError),
     RecordEvidence(DeployOperationRecordError),
+    PrepareWireGuardEbpf(WireGuardEbpfPrepareError),
     RunContainer(NodeContainerRuntimeError),
     WaitHealthy(DeployHealthCheckError),
     CommitActiveService(ActiveServiceCommitError),
@@ -136,6 +138,7 @@ pub enum DeployExecutionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
     RecordOperationEvent,
+    PrepareWireGuardEbpf { nodes: Vec<NodeId> },
     RunContainer { node_id: NodeId },
     WaitHealthy,
     CommitActiveService,
@@ -152,6 +155,7 @@ impl DeployExecutionStep {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::RecordOperationEvent => "record_operation_event",
+            Self::PrepareWireGuardEbpf { .. } => "prepare_wireguard_ebpf",
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
             Self::CommitActiveService => "commit_active_service",
@@ -170,6 +174,13 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("node runtime", timeout),
                 retained_artifacts,
             },
+            Self::PrepareWireGuardEbpf { nodes } => {
+                DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
+                    nodes: nodes.clone(),
+                    timeout_seconds: timeout_seconds(timeout),
+                    retained_artifacts,
+                }
+            }
             Self::WaitHealthy => DeployOperationFailure::HealthCheckFailed {
                 health_check: HealthCheckFailure::TimedOut {
                     timeout_seconds: timeout_seconds(timeout),
@@ -212,6 +223,12 @@ impl From<DeployHealthCheckError> for DeployExecutionError {
     }
 }
 
+impl From<WireGuardEbpfPrepareError> for DeployExecutionError {
+    fn from(value: WireGuardEbpfPrepareError) -> Self {
+        Self::PrepareWireGuardEbpf(value)
+    }
+}
+
 impl DeployExecutionError {
     #[must_use]
     pub fn deploy_failure(
@@ -230,6 +247,9 @@ impl DeployExecutionError {
             }
             Self::RecordTransition(_) | Self::RecordEvidence(_) => {
                 Self::record_failure(command, retained_artifacts)
+            }
+            Self::PrepareWireGuardEbpf(error) => {
+                wireguard_ebpf_deploy_failure(error, retained_artifacts)
             }
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
@@ -250,6 +270,24 @@ impl DeployExecutionError {
             },
             Self::Failed { failure, .. } => failure.clone(),
         }
+    }
+}
+
+fn wireguard_ebpf_deploy_failure(
+    error: &WireGuardEbpfPrepareError,
+    retained_artifacts: Vec<RetainedArtifact>,
+) -> DeployOperationFailure {
+    match error {
+        WireGuardEbpfPrepareError::Unavailable {
+            node_id,
+            component,
+            message,
+        } => DeployOperationFailure::WireGuardEbpfUnavailable {
+            node_id: node_id.clone(),
+            component: *component,
+            message: message.clone(),
+            retained_artifacts,
+        },
     }
 }
 
@@ -399,7 +437,7 @@ pub enum NodeRuntimeUnavailableReason {
 }
 
 impl NodeRuntimeUnavailableReason {
-    fn failure_message(&self) -> FailureMessage {
+    pub(crate) fn failure_message(&self) -> FailureMessage {
         let message = match self {
             Self::EncodeRequest { message } => {
                 format!("node runtime request could not be encoded: {message}")

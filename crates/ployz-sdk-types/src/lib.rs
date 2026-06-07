@@ -17,6 +17,7 @@ pub use ployz_core::cert::{
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
 };
+pub use ployz_core::dataplane::WireGuardEbpfComponent;
 pub use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ImageReferenceError, ReplicaCount,
     ReplicaCountError, ReplicaSlot,

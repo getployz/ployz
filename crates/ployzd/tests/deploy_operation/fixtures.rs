@@ -1,3 +1,6 @@
+use ployz_core::dataplane::{
+    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+};
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
@@ -15,7 +18,7 @@ use ployzd::deploy_worker::{
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
     DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
     NodeRunContainerOutcome, NodeRunContainerRequest, NodeRuntimeUnavailableReason,
-    prepare_deploy_execution_command,
+    WireGuardEbpfPreparer, prepare_deploy_execution_command,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
 use std::sync::{Arc, Mutex};
@@ -105,6 +108,43 @@ pub(super) struct RecordingRuntime {
     containers: Vec<ContainerId>,
     fail_after_first: bool,
     reuse_existing: bool,
+}
+
+#[derive(Default)]
+pub(super) struct RecordingWireGuardEbpf {
+    pub(super) requests: Vec<WireGuardEbpfPrepareRequest>,
+    failure: Option<WireGuardEbpfPrepareError>,
+}
+
+impl RecordingWireGuardEbpf {
+    pub(super) fn ready() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn wireguard_failed(node_id: &str) -> Self {
+        Self {
+            requests: Vec::new(),
+            failure: Some(WireGuardEbpfPrepareError::Unavailable {
+                node_id: self::node_id(node_id),
+                component: WireGuardEbpfComponent::WireGuard,
+                message: ployz_core::ops::FailureMessage::try_new("wireguard interface failed")
+                    .expect("valid failure message"),
+            }),
+        }
+    }
+}
+
+impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
+    async fn prepare_wireguard_ebpf(
+        &mut self,
+        request: WireGuardEbpfPrepareRequest,
+    ) -> Result<(), WireGuardEbpfPrepareError> {
+        self.requests.push(request);
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
 }
 
 pub(super) struct RecordingActiveState {

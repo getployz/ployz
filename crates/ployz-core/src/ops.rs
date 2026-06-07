@@ -5,6 +5,7 @@ use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertValidityWindow};
+use crate::dataplane::WireGuardEbpfComponent;
 use crate::deploy::{DeployPlan, DeployRequest};
 use crate::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
@@ -37,6 +38,8 @@ pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
+    #[serde(rename = "preparing_wireguard_ebpf")]
+    PreparingWireGuardEbpf,
     StartingContainers,
     WaitingForHealth,
     ActiveServiceCommit,
@@ -113,6 +116,19 @@ pub enum DeployOperationFailure {
         service_id: ServiceId,
         revision_id: RevisionId,
         reason: ArtifactUnavailableReason,
+    },
+    #[serde(rename = "wireguard_ebpf_unavailable")]
+    WireGuardEbpfUnavailable {
+        node_id: NodeId,
+        component: WireGuardEbpfComponent,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    #[serde(rename = "wireguard_ebpf_preparation_timed_out")]
+    WireGuardEbpfPreparationTimedOut {
+        nodes: Vec<NodeId>,
+        timeout_seconds: u32,
+        retained_artifacts: Vec<RetainedArtifact>,
     },
     RuntimeUnavailable {
         node_id: NodeId,

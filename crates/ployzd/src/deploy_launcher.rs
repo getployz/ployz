@@ -4,8 +4,8 @@ use crate::controllers::{AcceptedDeployOperation, OperationControllers};
 use crate::deploy_worker::{
     DeployCommandPreparationError, DeployExecutionError, DeployExecutionNodeScope,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthChecker,
-    NodeContainerRuntime, execute_deploy_operation, load_deploy_execution_facts_from_nats,
-    prepare_deploy_execution_command,
+    NodeContainerRuntime, WireGuardEbpfPreparer, execute_deploy_operation,
+    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
 use crate::operation_lease::with_advisory_operation_lease;
 use ployz_core::ids::OperationOwnerId;
@@ -17,14 +17,15 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{OperationStatusStoreError, RecordDeployTransitionError};
 use std::time::Duration;
 
-pub async fn run_deploy_operation<N, H>(
+pub async fn run_deploy_operation<D, N, H>(
     accepted: AcceptedDeployOperation,
     node_scope: DeployExecutionNodeScope,
     stores: DeployLaunchStores,
-    ports: DeployLaunchPorts<'_, N, H>,
+    ports: DeployLaunchPorts<'_, D, N, H>,
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployLaunchError>
 where
+    D: WireGuardEbpfPreparer,
     N: NodeContainerRuntime,
     H: DeployHealthChecker,
 {
@@ -34,6 +35,7 @@ where
         controllers,
     } = stores;
     let DeployLaunchPorts {
+        wireguard_ebpf,
         node_runtime,
         health_checker,
     } = ports;
@@ -94,6 +96,7 @@ where
             command,
             DeployExecutionPorts {
                 recorder: &mut recorder,
+                wireguard_ebpf,
                 node_runtime,
                 health_checker,
                 active_state: &mut active_state,
@@ -193,7 +196,8 @@ pub struct DeployLaunchStores {
     pub controllers: OperationControllers,
 }
 
-pub struct DeployLaunchPorts<'a, N, H> {
+pub struct DeployLaunchPorts<'a, D, N, H> {
+    pub wireguard_ebpf: &'a mut D,
     pub node_runtime: &'a mut N,
     pub health_checker: &'a mut H,
 }

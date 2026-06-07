@@ -233,6 +233,7 @@ impl DeployRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
         match self {
+            Self::PreparingWireGuardEbpf => "preparing_wireguard_ebpf",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
             Self::ActiveServiceCommit => "active_service_commit",
@@ -258,6 +259,7 @@ pub fn node_observation_scope(node_id: &NodeId) -> String {
 pub enum NodeServiceEndpoint {
     Inspect,
     ContainerRun,
+    WireGuardEbpfPrepare,
     LogsTail,
 }
 
@@ -267,6 +269,7 @@ impl NodeServiceEndpoint {
         match self {
             Self::Inspect => "inspect",
             Self::ContainerRun => "container.run",
+            Self::WireGuardEbpfPrepare => "wireguard_ebpf.prepare",
             Self::LogsTail => "logs.tail",
         }
     }

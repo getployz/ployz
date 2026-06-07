@@ -6,9 +6,11 @@ use crate::node_agent::runtime::{
 };
 use crate::node_protocol::{
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
+    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::NodeRunContainerOutcome;
 use crate::services::{node_endpoint_spec, node_runtime_service_base};
+use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::{
@@ -35,6 +37,32 @@ where
             let node_id = node_id.clone();
             let runner = runner.clone();
             async move { handle_container_run(node_id, runner, request).await }
+        })
+        .await
+        .map_err(NodeServiceRuntimeError::Nats)?;
+
+    Ok(runtime)
+}
+
+pub async fn start_node_wireguard_ebpf_service<P>(
+    client: ployz_nats::service_runtime::NatsClient,
+    node_id: NodeId,
+    preparer: P,
+) -> Result<RunningNatsService, NodeServiceRuntimeError>
+where
+    P: Clone + NodeWireGuardEbpfPreparer + Send + Sync + 'static,
+{
+    let spec = node_runtime_service_base(&node_id);
+    let endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
+    let mut runtime = start_nats_service(client, &spec)
+        .await
+        .map_err(NodeServiceRuntimeError::Nats)?;
+
+    runtime
+        .bind_endpoint(&endpoint, move |request| {
+            let node_id = node_id.clone();
+            let preparer = preparer.clone();
+            async move { handle_wireguard_ebpf_prepare(node_id, preparer, request).await }
         })
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
@@ -141,11 +169,11 @@ fn container_ambiguous_response(
     }
 }
 
-fn node_success(response: NodeContainerRunRpcResponse) -> NatsServiceResponse {
+fn node_success(response: impl serde::Serialize) -> NatsServiceResponse {
     NatsServiceResponse::json_ok(&response)
 }
 
-fn node_domain_error(response: NodeContainerRunRpcResponse) -> NatsServiceResponse {
+fn node_domain_error(response: impl serde::Serialize) -> NatsServiceResponse {
     NatsServiceResponse::json_domain_error(&response)
 }
 
@@ -157,6 +185,40 @@ fn runner_error(error: NodeContainerRunnerError) -> NatsServiceResponse {
         NodeContainerRunnerError::Create { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container create failed: {message}")),
         ),
+    }
+}
+
+pub trait NodeWireGuardEbpfPreparer {
+    fn prepare_wireguard_ebpf(
+        &self,
+        request: WireGuardEbpfPrepareRequest,
+    ) -> impl std::future::Future<Output = Result<(), WireGuardEbpfPrepareError>> + Send;
+}
+
+async fn handle_wireguard_ebpf_prepare<P>(
+    node_id: NodeId,
+    preparer: P,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    P: NodeWireGuardEbpfPreparer,
+{
+    let request = match decode_json_request::<NodeWireGuardEbpfPrepareRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    let request = WireGuardEbpfPrepareRequest {
+        operation_id: request.operation_id,
+        nodes: request.nodes,
+    };
+
+    match preparer.prepare_wireguard_ebpf(request).await {
+        Ok(()) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok { node_id }),
+        Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+            node_id,
+            error: error.into(),
+        }),
     }
 }
 

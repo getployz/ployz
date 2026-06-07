@@ -1,4 +1,5 @@
-use ployz_core::deploy::{DeployRequest, ExistingServiceReplica};
+use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
+use ployz_core::deploy::{DeployPlan, DeployRequest, ExistingServiceReplica};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
 use ployz_core::ops::{OperatorHint, RetainedArtifact};
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
@@ -60,6 +61,11 @@ impl DeployExecutionCommand {
             target_revision: self.request.target_revision.clone(),
         }
     }
+
+    #[must_use]
+    pub fn wireguard_ebpf_prepare_request(&self, plan: &DeployPlan) -> WireGuardEbpfPrepareRequest {
+        WireGuardEbpfPrepareRequest::for_deploy_plan(self.operation_id.clone(), plan)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,8 +107,9 @@ impl DeployContainer {
     }
 }
 
-pub struct DeployExecutionPorts<'a, R, N, H, A> {
+pub struct DeployExecutionPorts<'a, R, D, N, H, A> {
     pub recorder: &'a mut R,
+    pub wireguard_ebpf: &'a mut D,
     pub node_runtime: &'a mut N,
     pub health_checker: &'a mut H,
     pub active_state: &'a mut A,

@@ -2,12 +2,18 @@
 
 use crate::deploy_worker::{
     NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
+    WireGuardEbpfPreparer,
 };
 use crate::node_protocol::{
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
+    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
+    NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
 use crate::services::node_endpoint_subject;
+use ployz_core::dataplane::{
+    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+};
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
@@ -22,6 +28,28 @@ pub const DEFAULT_NODE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct NatsNodeContainerRuntime {
     client: async_nats::Client,
     request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsNodeWireGuardEbpfPreparer {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+impl NatsNodeWireGuardEbpfPreparer {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_NODE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
 }
 
 impl NatsNodeContainerRuntime {
@@ -116,6 +144,70 @@ impl NodeContainerRunDomainError {
     }
 }
 
+impl WireGuardEbpfPreparer for NatsNodeWireGuardEbpfPreparer {
+    async fn prepare_wireguard_ebpf(
+        &mut self,
+        request: WireGuardEbpfPrepareRequest,
+    ) -> Result<(), WireGuardEbpfPrepareError> {
+        let rpc_request = NodeWireGuardEbpfPrepareRpcRequest::from(request.clone());
+        for node_id in &request.nodes {
+            prepare_node_wireguard_ebpf(self, node_id, &rpc_request).await?;
+        }
+
+        Ok(())
+    }
+}
+
+async fn prepare_node_wireguard_ebpf(
+    preparer: &NatsNodeWireGuardEbpfPreparer,
+    node_id: &NodeId,
+    request: &NodeWireGuardEbpfPrepareRpcRequest,
+) -> Result<(), WireGuardEbpfPrepareError> {
+    let subject = node_endpoint_subject(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
+    let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
+        &preparer.client,
+        subject,
+        request,
+        preparer.request_timeout,
+    )
+    .await
+    .map_err(|error| wireguard_ebpf_request_error(node_id, error))?;
+
+    match response {
+        NodeWireGuardEbpfPrepareRpcResponse::Ok {
+            node_id: actual_node_id,
+        } => match wrong_response_node(node_id, actual_node_id) {
+            Some(reason) => Err(wireguard_ebpf_unavailable(
+                node_id,
+                reason.failure_message(),
+            )),
+            None => Ok(()),
+        },
+        NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+            node_id: actual_node_id,
+            error,
+        } => match wrong_response_node(node_id, actual_node_id) {
+            Some(reason) => Err(wireguard_ebpf_unavailable(
+                node_id,
+                reason.failure_message(),
+            )),
+            None => Err(error.into_prepare_error(node_id.clone())),
+        },
+    }
+}
+
+impl NodeWireGuardEbpfPrepareDomainError {
+    fn into_prepare_error(self, node_id: NodeId) -> WireGuardEbpfPrepareError {
+        match self {
+            Self::Unavailable { component, message } => WireGuardEbpfPrepareError::Unavailable {
+                node_id,
+                component,
+                message,
+            },
+        }
+    }
+}
+
 fn wrong_response_node(
     requested_node_id: &NodeId,
     actual_node_id: NodeId,
@@ -186,5 +278,39 @@ fn node_service_failure_reason(error: NatsServiceError) -> NodeRuntimeUnavailabl
         NatsServiceErrorCode::Internal => NodeRuntimeUnavailableReason::ServiceInternal {
             message: error.message,
         },
+    }
+}
+
+fn wireguard_ebpf_request_error(
+    node_id: &NodeId,
+    error: NatsJsonServiceRequestError,
+) -> WireGuardEbpfPrepareError {
+    let reason = match error {
+        NatsJsonServiceRequestError::EncodeRequest { message } => {
+            NodeRuntimeUnavailableReason::EncodeRequest { message }
+        }
+        NatsJsonServiceRequestError::Request { failure } => node_request_failure_reason(failure),
+        NatsJsonServiceRequestError::Service { failure } => node_service_failure_reason(failure),
+        NatsJsonServiceRequestError::ServiceProtocol { error } => {
+            NodeRuntimeUnavailableReason::MalformedServiceError {
+                message: error.to_string(),
+            }
+        }
+        NatsJsonServiceRequestError::DecodeResponse { message } => {
+            NodeRuntimeUnavailableReason::DecodeResponse { message }
+        }
+    };
+
+    wireguard_ebpf_unavailable(node_id, reason.failure_message())
+}
+
+fn wireguard_ebpf_unavailable(
+    node_id: &NodeId,
+    message: ployz_core::ops::FailureMessage,
+) -> WireGuardEbpfPrepareError {
+    WireGuardEbpfPrepareError::Unavailable {
+        node_id: node_id.clone(),
+        component: WireGuardEbpfComponent::WireGuard,
+        message,
     }
 }

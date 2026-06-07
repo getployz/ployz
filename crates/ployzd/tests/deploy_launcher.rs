@@ -38,6 +38,7 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
         .submit_deploy(deploy_submit_command(deploy_request))
         .await
         .expect("deploy operation accepted");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
@@ -50,6 +51,7 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
             controllers: controllers.clone(),
         },
         DeployLaunchPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -102,6 +104,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         .submit_deploy(deploy_submit_command(deploy_request))
         .await
         .expect("deploy operation accepted");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::unhealthy("node_a", "ctr_1");
 
@@ -114,6 +117,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             controllers: controllers.clone(),
         },
         DeployLaunchPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -168,6 +172,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         .delete_key_value(KV_OBS_BUCKET)
         .await
         .expect("delete observations bucket");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
@@ -180,6 +185,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
             controllers: controllers.clone(),
         },
         DeployLaunchPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -237,6 +243,7 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
         .submit_deploy(deploy_submit_command(deploy_request))
         .await
         .expect("duplicate deploy operation accepted");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
@@ -249,6 +256,7 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
             controllers: owner_b,
         },
         DeployLaunchPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
@@ -295,6 +303,7 @@ async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
         .await
         .expect("deploy operation accepted");
     tokio::time::sleep(Duration::from_millis(1100)).await;
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
 
@@ -307,6 +316,7 @@ async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
             controllers,
         },
         DeployLaunchPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
         },
