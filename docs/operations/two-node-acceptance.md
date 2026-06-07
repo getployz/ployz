@@ -7,7 +7,7 @@ The rule is blunt: Hetzner is not an architecture slice. If the product cannot
 install, join a node, deploy, route traffic, and expose operation status through
 normal Ployz commands, this proof fails.
 
-The proof bar is:
+The proof bar is one disposable command:
 
 - create two fresh Hetzner machines,
 - prove SSH is ready,
@@ -16,7 +16,9 @@ The proof bar is:
 - hit one smoke service through ingress,
 - destroy the machines.
 
-That is the whole job. The harness must not become a second orchestration path.
+That is the whole job. If install, join, deploy, routing, operation status,
+NATS-over-iroh, or the eBPF/WireGuard data plane needs extra help, fix Ployz.
+Do not make the Hetzner harness smarter.
 
 ## Harness Boundary
 
@@ -33,9 +35,9 @@ Hetzner-specific behavior stops at:
 - capture command output,
 - destroy server.
 
-Everything after SSH is ready is just normal Ployz install/product behavior.
-Do not add Hetzner-specific Rust code, provider abstractions, provider
-readiness models, provider operation states, retries, recovery, diagnostics, or
+Everything after SSH is ready is normal Ployz install/product behavior. Do not
+add Hetzner-specific Rust code, provider abstractions, provider readiness
+models, provider operation states, provider diagnostics, retries, recovery, or
 provider-aware install policy. The harness may wait for SSH and command
 completion; product readiness comes from product commands and operation output.
 

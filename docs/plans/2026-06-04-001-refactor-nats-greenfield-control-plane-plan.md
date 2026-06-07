@@ -244,8 +244,7 @@ commands over iroh.
 
 - R39. H0 is only a disposable outside-world smoke proof. Hetzner is just a
   cheap host allocator for the proof. It is not a product concept, provider
-  layer, reusable harness, architecture slice, or place to hide missing Ployz
-  behavior.
+  layer, reusable harness, architecture slice, or substrate abstraction.
 - R40. The H0 script may only create hosts, wait for SSH, stage artifacts, run
   product commands, capture output, curl the smoke service, and delete hosts.
   The whole proof is:
@@ -259,14 +258,15 @@ commands over iroh.
   ```
 
   If another primitive is needed to pass that path, add the primitive to Ployz.
-  If the product path is missing, H0 fails. The script must not compensate with
-  provider-specific install, readiness, routing, deploy, recovery, or health
-  behavior.
+  If install, join, deploy, routing, operation status, iroh/NATS connectivity,
+  or the eBPF/WireGuard data plane is missing, H0 fails. The script must not
+  compensate with provider-specific product behavior.
 - R41. The script may shortcut artifact distribution with a local binary,
-  pre-staged release artifact, or explicit source path. It may have minimal
-  shell hygiene for cleanup and diagnostics. It must not add Hetzner-specific
-  Rust, provider abstractions, readiness models, retry workflows, product
-  probes, or a second orchestration path.
+  pre-staged release artifact, or explicit source path. It may have only enough
+  shell hygiene to clean up hosts and print failing command output. It must not
+  add Hetzner-specific Rust, provider abstractions, readiness models, retry
+  workflows, product probes, diagnostics systems, or a second orchestration
+  path.
 - R42. H0 passes when fresh hosts install Ployz, join the second node, connect
   NATS over iroh, deploy one smoke service, record successful operations, and
   serve one request through the real route/data-plane path. Product readiness
@@ -1665,15 +1665,16 @@ Pipeline finish:
 ### H0. Disposable Product Smoke Proof
 
 - **Goal:** Prove that install and the actual product path work on disposable
-  Linux hosts with one disposable command.
+  Linux hosts with one disposable command. Hetzner is only the source of fresh
+  machines.
 - **Requirements:** R39-R43
 - **Dependencies:** U1-U9a, U11
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
-- **Approach:** Add one shell script using `hcloud` and plain SSH. The script
-  exists only to rent two fresh Linux boxes, put the current artifacts on them,
-  run normal Ployz commands, keep enough output to debug a failure, and delete
-  the boxes.
+- **Approach:** Add one shell script using `hcloud` and plain SSH. It rents two
+  fresh Linux boxes, stages the selected artifacts, runs the normal Ployz
+  install/product commands, curls the smoke service, and deletes the boxes.
+  That is the whole Hetzner scope.
 
   This is the complete H0 flow:
 
@@ -1689,14 +1690,23 @@ Pipeline finish:
   Passing H0 means the already-built install path, machine join path,
   NATS-over-iroh connectivity, deploy path, and required eBPF/WireGuard data
   plane work together on fresh machines. H0 must stay dumb enough that a
-  product failure is still a product failure.
+  product failure is still a product failure. If the script needs product
+  knowledge to pass, the product is missing a primitive.
 - **Script behavior:**
   - Missing `hcloud` token or SSH key fails before creating hosts.
   - Host creation or SSH readiness failure prints the cleanup command.
   - Product failure prints the failing command, command output path, cleanup
     command, and whatever operation id/node ids Ployz already emitted.
-  - The script does not implement retries, readiness probes, routing checks,
-    install fallback logic, or provider-specific recovery beyond basic cleanup.
+  - The script does not implement retries beyond SSH availability, readiness
+    probes, routing checks, install fallback logic, provider diagnostics, or
+    provider-specific recovery beyond basic cleanup.
+- **Non-goals:**
+  - No Hetzner Rust crate.
+  - No provider trait.
+  - No reusable lab runner.
+  - No hcloud wrapper library.
+  - No provider-aware operation states.
+  - No Hetzner-specific product readiness model.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
   end-to-end against two fresh disposable machines. This is a smoke assertion:
   install, machine add, deploy, NATS-over-iroh, and the required
@@ -1841,11 +1851,10 @@ real local NATS with operation owner leases. The third proof should add U11 and
 prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
-real install path on one machine. H0 then proves the actual product path on two
-fresh disposable machines. The harness creates hosts, waits for SSH, runs
-product commands, captures output, and deletes hosts. Ployz itself installs the
-cluster, joins the second node, records operation evidence, uses the old
+real install path on one machine. H0 then proves the same product path on two
+fresh disposable machines. Hetzner creates and deletes hosts; Ployz installs
+the cluster, joins the second node, records operation evidence, uses the old
 eBPF/WireGuard data plane through the normal product path once, and serves the
-smoke service through ingress. Artifact download may be shortcut; the
-eBPF/WireGuard data plane should not be. If the harness starts making product
-decisions, stop and move that primitive back into Ployz.
+smoke service through ingress. Artifact download may be shortcut; the product
+path and eBPF/WireGuard data plane should not be. If the harness starts making
+product decisions, stop and move that primitive back into Ployz.
