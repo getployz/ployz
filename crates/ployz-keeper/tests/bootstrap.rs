@@ -10,8 +10,8 @@ use ployz_keeper::artifacts::{
 use ployz_keeper::cli::load_startup;
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinToken, KeeperJoinTarget,
-    KeeperStep, NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan,
-    first_node_install_plan, keeper_join_plan,
+    KeeperStep, KeeperStepFailure, KeeperStepFailureReason, NonEmptyRoleSet, RedactedJoinMaterial,
+    RoleSetError, bootstrap_script_plan, first_node_install_plan, keeper_join_plan,
 };
 use ployz_keeper::systemd::SupervisorUnitTarget;
 
@@ -199,6 +199,18 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
         Err(RoleSetError::Duplicate {
             role: DaemonProcessRole::Gateway,
         })
+    );
+}
+
+#[test]
+fn keeper_step_failure_is_bootstrap_scoped_and_typed() {
+    let step = KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper);
+    assert_eq!(
+        KeeperStepFailure::new(step.clone(), KeeperStepFailureReason::SupervisorStartFailed),
+        KeeperStepFailure {
+            step,
+            reason: KeeperStepFailureReason::SupervisorStartFailed,
+        }
     );
 }
 

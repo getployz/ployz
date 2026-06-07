@@ -8,7 +8,6 @@ use ployzctl::commands::deploy::DetachedDeployOutput;
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{MachineAddOutput, MachineBootstrapUrl, MachineJoinToken};
 use ployzctl::commands::ops::WatchOutput;
-use ployzctl::commands::upgrade::{UpgradeComponent, UpgradeOutput};
 
 #[test]
 fn init_first_node_reports_supervised_product_roles() {
@@ -152,21 +151,6 @@ fn machine_add_rejects_join_tokens_with_shell_invisible_characters() {
     assert!(MachineJoinToken::try_new("").is_err());
     assert!(MachineJoinToken::try_new("join token").is_err());
     assert!(MachineJoinToken::try_new("join\ntoken").is_err());
-}
-
-#[test]
-fn upgrade_ployzd_reports_rollout_operation() {
-    let output = UpgradeOutput {
-        component: UpgradeComponent::Ployzd,
-        version: "0.2.0".to_owned(),
-        accepted: accepted_operation("op_upgrade"),
-    }
-    .render();
-
-    assert_eq!(
-        output,
-        "operation op_upgrade\nupgrade ployzd 0.2.0\nwatch ployzctl ops watch op_upgrade\n"
-    );
 }
 
 fn accepted_operation(operation_id: &str) -> AcceptedOperation {

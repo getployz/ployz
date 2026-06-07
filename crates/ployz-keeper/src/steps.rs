@@ -2,11 +2,10 @@
 
 use std::fmt;
 
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::NodeId;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
-use crate::health::{KeeperStepFailureReason, RoleHealthGate};
 use crate::systemd::SupervisorUnitTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,10 +63,8 @@ pub enum KeeperStep {
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
-    HealthCheck(RoleHealthGate),
     RedeemJoinToken(JoinToken),
     StoreJoinMaterial(RedactedJoinMaterial),
-    ReportProgress(OperationId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,28 +188,6 @@ impl FirstNodeInstallTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubstrateRolloutTarget {
-    pub operation_id: OperationId,
-    pub ployzd_artifact: PloyzdArtifactTarget,
-    pub roles: NonEmptyRoleSet,
-}
-
-impl SubstrateRolloutTarget {
-    #[must_use]
-    pub fn new(
-        operation_id: OperationId,
-        ployzd_artifact: PloyzdArtifactTarget,
-        roles: NonEmptyRoleSet,
-    ) -> Self {
-        Self {
-            operation_id,
-            ployzd_artifact,
-            roles,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NonEmptyRoleSet {
     roles: Vec<DaemonProcessRole>,
 }
@@ -295,25 +270,6 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     KeeperStepPlan::new(steps)
 }
 
-#[must_use]
-pub fn substrate_rollout_plan(target: SubstrateRolloutTarget) -> KeeperStepPlan {
-    let mut steps = vec![
-        KeeperStep::ReportProgress(target.operation_id.clone()),
-        KeeperStep::VerifyArtifact(target.ployzd_artifact.clone().into()),
-        KeeperStep::InstallArtifact(target.ployzd_artifact.into()),
-    ];
-
-    for role in target.roles.roles {
-        steps.push(KeeperStep::RestartSupervisorUnit(
-            SupervisorUnitTarget::PloyzdRole(role.clone()),
-        ));
-        steps.push(KeeperStep::HealthCheck(RoleHealthGate::new(role, 60)));
-        steps.push(KeeperStep::ReportProgress(target.operation_id.clone()));
-    }
-
-    KeeperStepPlan::new(steps)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepFailure {
     pub step: KeeperStep,
@@ -328,13 +284,12 @@ impl KeeperStepFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeeperRolloutStatus {
-    Running,
-    Paused { failure: KeeperStepFailure },
-    Completed,
-}
-
-#[must_use]
-pub const fn pause_rollout_on_failure(failure: KeeperStepFailure) -> KeeperRolloutStatus {
-    KeeperRolloutStatus::Paused { failure }
+pub enum KeeperStepFailureReason {
+    HostPrerequisiteFailed,
+    ArtifactVerificationFailed,
+    ArtifactInstallFailed,
+    SupervisorWriteFailed,
+    SupervisorStartFailed,
+    JoinTokenRedeemFailed,
+    JoinMaterialStoreFailed,
 }

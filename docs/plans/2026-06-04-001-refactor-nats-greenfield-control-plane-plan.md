@@ -40,8 +40,8 @@ The target shape is:
 - **One shared `ployzd` runtime artifact** with separately supervised
   `control`, `node`, `gateway`, `dns`, and `tunnel` role processes.
 - **A tiny independently versioned `ployz-keeper`** for node-local bootstrap,
-  artifact install/update, supervisor unit management, and substrate rollout
-  progress reporting.
+  artifact install, and supervisor unit management. Upgrade rollouts are later,
+  after the two-node product proof is boring.
 
 This is not "NATS as the database". Docker remains execution reality. KV is the
 small current-state projection. Streams are durable timelines and job triggers.
@@ -339,11 +339,12 @@ commands over iroh.
   artifact keeps runtime compatibility and rollout logic simple; separate
   process supervision keeps failure domains explicit.
 
-- KTD5c. **Keeper is separate because it upgrades `ployzd`.** `ployz-keeper`
-  is the tiny node-local substrate manager that installs and updates the main
-  `ployzd` artifact, writes supervisor units, verifies artifacts, and reports
-  bootstrap/update progress. It is versioned independently so it can survive
-  and manage `ployzd` upgrades.
+- KTD5c. **Keeper is separate because it owns local install.** `ployz-keeper`
+  is the tiny node-local substrate manager that installs the main `ployzd`
+  artifact, writes supervisor units, verifies artifacts, and reports bootstrap
+  progress. It is versioned independently so it can later survive and manage
+  `ployzd` upgrades, but rollout logic is deferred until the product proof is
+  repeatable.
 
 - KTD6. **NATS security still matters over iroh.** iroh authenticates and
   encrypts the tunnel, but NATS credentials and subject permissions remain the
@@ -733,8 +734,6 @@ plz.v1.svc.api.service.scale
 plz.v1.svc.api.machine.add
 plz.v1.svc.api.machine.list
 plz.v1.svc.api.machine.inspect
-plz.v1.svc.api.substrate.upgrade
-plz.v1.svc.api.substrate.status
 plz.v1.svc.api.cert.ensure
 ```
 
@@ -975,15 +974,17 @@ request/reply, KV, streams, Object Store, schedules, permissions, and future
 consumer-based jobs behave as normal NATS features. The tunnel is part of NATS
 connectivity, not `ployzd control` service response.
 
-### Substrate Updates And Rollouts
+### Deferred Substrate Updates And Rollouts
 
-Substrate updates are explicit operations executed locally by keeper:
+Substrate updates are not part of the first product proof. They should become
+explicit operations executed locally by keeper after install, machine add,
+deploy, and the real data plane are proven:
 
 ```text
-ployzctl upgrade ployzd --version 0.2.0
-  call plz.v1.svc.api.substrate.upgrade
+future substrate-update command
+  call future substrate-update service
   receive op_id
-  accepting ployzd owns the rollout operation under a lease
+  accepting ployzd owns the future substrate-update operation under a lease
   owner writes rollout target and first batch assignment
   assigned keepers see target
   each keeper downloads and verifies staged artifact
@@ -994,13 +995,14 @@ ployzctl upgrade ployzd --version 0.2.0
   owner advances, pauses, rolls back, or fails the operation
 ```
 
-The rollout target can cover the shared `ployzd` artifact, `ployz-keeper`
-self-update, host prerequisites, or rendered supervisor/config material. Keeper
-may reconcile every minute, but it acts only against an approved bootstrap or
-substrate-update target. It must not silently change product truth such as
-active service state, route ownership, cert state, or machine membership.
+The future rollout target can cover the shared `ployzd` artifact,
+`ployz-keeper` self-update, host prerequisites, or rendered supervisor/config
+material. Keeper may reconcile every minute, but it acts only against an
+approved bootstrap or substrate-update target. It must not silently change
+product truth such as active service state, route ownership, cert state, or
+machine membership.
 
-Rollouts should support canary and batch gates:
+Future rollouts should support canary and batch gates:
 
 ```text
 batch 1: one node
@@ -1009,9 +1011,10 @@ batch 3: larger percentage
 batch 4: remaining nodes
 ```
 
-The owner stops or pauses the rollout when health checks fail, too many keepers
-report typed failures, `ployzd gateway` or `ployzd dns` serving degrades,
-tunnel connectivity becomes ambiguous, or a keeper reports unknown local state.
+The owner stops or pauses the future rollout when health checks fail, too many
+keepers report typed failures, `ployzd gateway` or `ployzd dns` serving
+degrades, tunnel connectivity becomes ambiguous, or a keeper reports unknown
+local state.
 
 ---
 
@@ -1492,7 +1495,6 @@ Pipeline finish:
   - `crates/ployz-keeper/src/steps.rs`
   - `crates/ployz-keeper/src/artifacts.rs`
   - `crates/ployz-keeper/src/systemd.rs`
-  - `crates/ployz-keeper/src/health.rs`
   - `crates/ployz-keeper/tests/bootstrap.rs`
   - `scripts/ployz.sh`
 - **Approach:** Add `ployz-keeper` as a tiny, independently versioned binary.
@@ -1549,7 +1551,6 @@ Pipeline finish:
   - `crates/ployzctl/src/commands/deploy.rs`
   - `crates/ployzctl/src/commands/ops.rs`
   - `crates/ployzctl/src/commands/machine.rs`
-  - `crates/ployzctl/src/commands/upgrade.rs`
   - `crates/ployzctl/src/api_client.rs`
   - `crates/ployzctl/tests/api_client_nats.rs`
   - `crates/ployz-sdk-types/src/lib.rs`
@@ -1560,9 +1561,9 @@ Pipeline finish:
   ergonomic `OperationHandle` over generated types: submit, watch, status,
   cancel. `ployzctl machine add` creates a machine bootstrap operation and
   prints an authenticated `ployz.sh` command or URL containing only the
-  short-lived join token. `ployzctl upgrade` creates substrate rollout
-  operations; it does not SSH into nodes or update binaries directly. Complex
-  cloud workflows remain in Inngest calling core primitives.
+  short-lived join token. Upgrade commands are deferred until the install,
+  deploy, and data-plane proof is repeatable. Complex cloud workflows remain
+  in Inngest calling core primitives.
 - **Test scenarios:**
   - Generated TypeScript types match Rust schemas.
   - SDK deploy returns an operation handle with `watch()` and `status()`.
@@ -1570,8 +1571,6 @@ Pipeline finish:
   - CLI `ops watch <op_id>` replays persisted events.
   - CLI `machine add` prints a one-time `ployz.sh` bootstrap command without
     exposing NATS credentials.
-  - CLI `upgrade ployzd` creates a substrate update operation and reports the
-    rollout operation id.
   - SDK does not call node services directly.
 - **Verification:** `cargo test -p ployzctl && pnpm --dir packages/ployz-sdk test`
 
@@ -1742,8 +1741,6 @@ Pipeline finish:
 | DNS loses NATS | Last good answers stay active; degraded status is visible | `crates/ployzd/tests/dns_projection.rs` |
 | Route KV changes while `ployzd control` is down | `ployzd gateway` applies the NATS change because it watches NATS directly | `crates/ployzd/tests/gateway_projection.rs` |
 | DNS KV changes while `ployzd control` is down | `ployzd dns` applies the NATS change because it watches NATS directly | `crates/ployzd/tests/dns_projection.rs` |
-| Keeper fails a substrate update step | Rollout pauses or fails with typed failure and affected node evidence | `crates/ployz-keeper/tests/rollout.rs` |
-| Keeper upgrades shared `ployzd` artifact | Role units restart or reload under health gates; other roles keep last-known-good where applicable | `crates/ployzd/tests/substrate_rollout.rs` |
 | Operation owner dies before completion | Owner lease expires; ownership is visible as expired/recoverable | `crates/ployzd/tests/operation_spine.rs` |
 | Owner dies after container create | Failed/in-progress evidence remains; later deploy plans from reality | `crates/ployzd/tests/deploy_operation.rs` |
 | No responder for node command | Operation marks node unavailable or ambiguous with audience | `crates/ployzd/tests/node_unavailable.rs` |
@@ -1828,9 +1825,9 @@ Do not build these in v1:
 - AE7. A new node is bootstrapped by a short-lived `ployz.sh` command that
   installs only `ployz-keeper`; keeper installs the shared `ployzd` artifact,
   writes role units, and reports durable bootstrap progress.
-- AE8. A `ployzd` substrate upgrade rolls out through keeper-managed batches,
-  restarts/reloads role units under health gates, and stops visibly on typed
-  failure.
+- AE8. Deferred: a future `ployzd` substrate upgrade rolls out through
+  keeper-managed batches, restarts/reloads role units under health gates, and
+  stops visibly on typed failure.
 - AE9. A developer runs the two-node Hetzner acceptance flow, joins a second
   machine with one command, deploys a service across both machines, verifies
   container-to-container WireGuard reachability, and reaches the service
