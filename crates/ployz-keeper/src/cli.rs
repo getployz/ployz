@@ -8,7 +8,7 @@ use ployz_core::ids::SubjectTokenError;
 
 use crate::artifacts::ArtifactTargetError;
 use crate::first_node_install_cli::parse_first_node_install_args;
-use crate::join::{JoinTokenFileError, consume_join_token_file};
+use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::steps::{FirstNodeInstallTarget, JoinToken};
 use crate::systemd::SupervisorUnitFileError;
 
@@ -20,7 +20,13 @@ pub enum KeeperCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStartup {
-    pub join_token: Option<JoinToken>,
+    pub join: Option<StartupJoinToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupJoinToken {
+    pub token: JoinToken,
+    pub file: PathBuf,
 }
 
 pub fn load_command(
@@ -29,11 +35,14 @@ pub fn load_command(
     let parsed = parse_keeper_args(args)?;
     match parsed {
         ParsedKeeperCommand::Start { join_token_file } => {
-            let join_token = match join_token_file {
-                Some(path) => Some(consume_join_token_file(&path)?),
+            let join = match join_token_file {
+                Some(path) => Some(StartupJoinToken {
+                    token: read_join_token_file(&path)?,
+                    file: path,
+                }),
                 None => None,
             };
-            Ok(KeeperCommand::Start(KeeperStartup { join_token }))
+            Ok(KeeperCommand::Start(KeeperStartup { join }))
         }
         ParsedKeeperCommand::FirstNodeInstall(target) => {
             Ok(KeeperCommand::FirstNodeInstall(target))
@@ -45,12 +54,15 @@ pub fn load_startup(
     args: impl IntoIterator<Item = OsString>,
 ) -> Result<KeeperStartup, KeeperCliError> {
     let join_token_file = parse_startup_args(args)?;
-    let join_token = match join_token_file {
-        Some(path) => Some(consume_join_token_file(&path)?),
+    let join = match join_token_file {
+        Some(path) => Some(StartupJoinToken {
+            token: read_join_token_file(&path)?,
+            file: path,
+        }),
         None => None,
     };
 
-    Ok(KeeperStartup { join_token })
+    Ok(KeeperStartup { join })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

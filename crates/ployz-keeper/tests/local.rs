@@ -12,11 +12,14 @@ use ployz_keeper::executor::{
     execute_keeper_plan,
 };
 use ployz_keeper::join::JOIN_MATERIAL_FILE;
+use ployz_keeper::join_executor::{
+    KeeperJoinRedeemer, KeeperJoinTokenConsumer, execute_keeper_join,
+};
 use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, FirstNodeInstallTarget, KeeperJoinTarget, KeeperStep, KeeperStepFailure,
-    KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, RedactedJoinMaterial,
-    bootstrap_script_plan, first_node_install_plan, keeper_join_plan,
+    BootstrapScriptTarget, FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, KeeperStep,
+    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
+    RedactedJoinMaterial, bootstrap_script_plan, first_node_install_plan,
 };
 use ployz_keeper::systemd::{NatsServerUnitTarget, SupervisorUnitTarget};
 
@@ -368,35 +371,59 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
 }
 
 #[test]
-fn local_effects_do_not_silently_accept_unwired_join_token_redemption() {
-    let root = temp_dir("ployz-keeper-local-join-unwired");
+fn local_join_redeems_token_then_installs_assigned_roles() {
+    let root = temp_dir("ployz-keeper-local-join");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = keeper_join_plan(KeeperJoinTarget::new(
-        ployz_keeper::steps::JoinToken::try_new("join_once").expect("valid join token"),
+    let source = root.join("ployzd-source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let target = KeeperJoinTarget::new(
         RedactedJoinMaterial::new(node_id("node_2"), "prod").expect("valid join material"),
-        ployzd_artifact(&root.join("ployzd-source"), &root.join("join/bin/ployzd")),
+        ployzd_artifact(&source, &root.join("join/bin/ployzd")),
         NonEmptyRoleSet::try_new(vec![ployz_core::roles::DaemonProcessRole::Node(node_id(
             "node_2",
         ))])
         .expect("non-empty role set"),
-    ));
+    );
+    let mut redeemer = StaticJoinRedeemer {
+        expected_token: JoinToken::try_new("join_once").expect("valid join token"),
+        target,
+    };
+    let mut token_consumer = RecordingTokenConsumer::default();
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner::root_linux(),
     );
     let mut recorder = RecordingRecorder::default();
 
-    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let execution = execute_keeper_join(
+        &JoinToken::try_new("join_once").expect("valid join token"),
+        &mut redeemer,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
 
-    assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
-            step: KeeperStepLabel::RedeemJoinToken,
-            reason: KeeperStepFailureReason::JoinTokenRedeemFailed,
-            message,
-        })) if message.as_str() == "join token redemption is not wired to NATS yet"
-    ));
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(
+        fs::read_to_string(root.join("state").join(JOIN_MATERIAL_FILE))
+            .expect("join material is stored"),
+        "node_id=node_2\ncluster_name=prod\n"
+    );
+    assert!(root.join("join/bin/ployzd").exists());
+    assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
+    assert_eq!(token_consumer.consumed, 1);
+    assert_eq!(
+        effects.runner().systemctl_calls,
+        vec![
+            vec!["daemon-reload".to_owned()],
+            vec![
+                "enable".to_owned(),
+                "--now".to_owned(),
+                "ployzd-node-node_2.service".to_owned(),
+            ],
+        ]
+    );
 }
 
 #[test]
@@ -423,6 +450,34 @@ fn local_effects_store_redacted_join_material() {
             .expect("join material is stored"),
         "node_id=node_2\ncluster_name=prod\n"
     );
+}
+
+#[derive(Debug, Default)]
+struct RecordingTokenConsumer {
+    consumed: usize,
+}
+
+impl KeeperJoinTokenConsumer for RecordingTokenConsumer {
+    fn consume_join_token(&mut self) -> Result<(), FailureMessage> {
+        self.consumed += 1;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct StaticJoinRedeemer {
+    expected_token: JoinToken,
+    target: KeeperJoinTarget,
+}
+
+impl KeeperJoinRedeemer for StaticJoinRedeemer {
+    fn redeem_join_token(&mut self, token: &JoinToken) -> Result<KeeperJoinTarget, FailureMessage> {
+        if *token != self.expected_token {
+            return Err(failure_message("unexpected join token"));
+        }
+
+        Ok(self.target.clone())
+    }
 }
 
 #[derive(Debug)]

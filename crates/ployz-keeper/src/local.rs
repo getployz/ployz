@@ -61,9 +61,6 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
             KeeperStep::RestartSupervisorUnit(target) => {
                 self.restart_supervisor_unit(target).map_err(Into::into)
             }
-            KeeperStep::RedeemJoinToken(_) => {
-                Err(failure_message("join token redemption is not wired to NATS yet").into())
-            }
             KeeperStep::StoreJoinMaterial(material) => self.store_join_material(material),
         }
     }

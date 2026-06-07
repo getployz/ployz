@@ -8,7 +8,7 @@ use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
 
-pub fn consume_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
+pub fn read_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
     let contents = fs::read_to_string(path).map_err(|error| JoinTokenFileError::ReadFailed {
         path: path.to_path_buf(),
         message: error.to_string(),
@@ -26,11 +26,19 @@ pub fn consume_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileEr
             },
         )?;
 
+    Ok(token)
+}
+
+pub fn remove_join_token_file(path: &Path) -> Result<(), JoinTokenFileError> {
     fs::remove_file(path).map_err(|error| JoinTokenFileError::ConsumeFailed {
         path: path.to_path_buf(),
         message: error.to_string(),
-    })?;
+    })
+}
 
+pub fn consume_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
+    let token = read_join_token_file(path)?;
+    remove_join_token_file(path)?;
     Ok(token)
 }
 

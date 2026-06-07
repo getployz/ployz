@@ -3,7 +3,8 @@
 use ployz_core::ops::FailureMessage;
 
 use crate::steps::{
-    KeeperStep, KeeperStepEffectError, KeeperStepFailure, KeeperStepLabel, KeeperStepPlan,
+    KeeperStep, KeeperStepEffectError, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel,
+    KeeperStepPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,46 @@ pub trait KeeperStepRecorder {
 pub struct KeeperRecordFailure {
     pub event: KeeperStepEvent,
     pub message: FailureMessage,
+}
+
+pub(crate) fn execute_labeled_action<T>(
+    events: &mut Vec<KeeperStepEvent>,
+    recorder: &mut impl KeeperStepRecorder,
+    label: KeeperStepLabel,
+    reason: KeeperStepFailureReason,
+    action: impl FnOnce() -> Result<T, FailureMessage>,
+) -> Result<T, Box<KeeperPlanExecution>> {
+    let started = KeeperStepEvent::Started {
+        step: label.clone(),
+    };
+    if let Err(message) = record_event(events, recorder, started.clone()) {
+        return Err(Box::new(failed_recording(events.clone(), started, message)));
+    }
+
+    match action() {
+        Ok(value) => {
+            let succeeded = KeeperStepEvent::Succeeded { step: label };
+            record_event(events, recorder, succeeded.clone()).map_err(|message| {
+                Box::new(failed_recording(events.clone(), succeeded, message))
+            })?;
+            Ok(value)
+        }
+        Err(message) => {
+            let failure = KeeperStepFailure {
+                step: label,
+                reason,
+                message,
+            };
+            let failed = KeeperStepEvent::Failed(failure.clone());
+            if let Err(message) = record_event(events, recorder, failed.clone()) {
+                return Err(Box::new(failed_recording(events.clone(), failed, message)));
+            }
+            Err(Box::new(KeeperPlanExecution {
+                events: events.clone(),
+                terminal: KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(failure)),
+            }))
+        }
+    }
 }
 
 #[must_use]
@@ -89,7 +130,7 @@ pub fn execute_keeper_plan(
     }
 }
 
-fn record_event(
+pub(crate) fn record_event(
     events: &mut Vec<KeeperStepEvent>,
     recorder: &mut impl KeeperStepRecorder,
     event: KeeperStepEvent,
@@ -99,7 +140,7 @@ fn record_event(
     Ok(())
 }
 
-fn failed_recording(
+pub(crate) fn failed_recording(
     events: Vec<KeeperStepEvent>,
     event: KeeperStepEvent,
     message: FailureMessage,

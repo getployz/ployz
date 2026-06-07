@@ -14,11 +14,14 @@ use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperRecordFailure, KeeperStepEffects, KeeperStepEvent,
     KeeperStepRecorder, execute_keeper_plan,
 };
+use ployz_keeper::join_executor::{
+    KeeperJoinRedeemer, KeeperJoinTokenConsumer, execute_keeper_join,
+};
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
     KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
     KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError,
-    bootstrap_script_plan, first_node_install_plan, keeper_join_plan,
+    bootstrap_script_plan, first_node_install_plan, keeper_join_local_install_plan,
 };
 use ployz_keeper::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -92,7 +95,7 @@ fn bootstrap_script_rejects_join_token_from_flag_and_env() {
 }
 
 #[test]
-fn keeper_startup_consumes_join_token_file_without_leaking_secret() {
+fn keeper_startup_reads_join_token_file_without_consuming_it() {
     let token_file = unique_temp_path("ployz-keeper-join-token");
     fs::write(&token_file, "join_once\n").expect("join token file can be written");
 
@@ -101,21 +104,16 @@ fn keeper_startup_consumes_join_token_file_without_leaking_secret() {
         token_file.as_os_str().to_os_string(),
     ])
     .expect("startup reads join token");
-    let token = startup.join_token.expect("join token is loaded");
+    let join = startup.join.as_ref().expect("join token is loaded");
 
     assert_eq!(
-        token,
-        JoinToken::try_new("join_once").expect("expected token is valid")
+        &join.token,
+        &JoinToken::try_new("join_once").expect("expected token is valid")
     );
-    assert_eq!(format!("{token:?}"), "JoinToken(\"[redacted]\")");
-    assert!(!token_file.exists());
-    assert!(
-        load_startup(vec![
-            "--join-token-file".into(),
-            token_file.as_os_str().to_os_string(),
-        ])
-        .is_err()
-    );
+    assert_eq!(join.file, token_file);
+    assert_eq!(format!("{:?}", join.token), "JoinToken(\"[redacted]\")");
+    assert!(token_file.exists());
+    fs::remove_file(token_file).expect("test token file can be removed");
 }
 
 #[test]
@@ -125,8 +123,7 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         DaemonProcessRole::Gateway,
         DaemonProcessRole::Tunnel(TunnelSide::Edge),
     ];
-    let plan = keeper_join_plan(KeeperJoinTarget::new(
-        JoinToken::try_new("join_once").expect("valid join token"),
+    let plan = keeper_join_local_install_plan(KeeperJoinTarget::new(
         RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
         ployzd_artifact(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
@@ -134,9 +131,6 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
     assert!(plan.writes_ployzd_role_units());
-    assert!(plan.steps().contains(&KeeperStep::RedeemJoinToken(
-        JoinToken::try_new("join_once").expect("valid join token")
-    )));
     assert!(plan.steps().contains(&KeeperStep::StoreJoinMaterial(
         RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material")
     )));
@@ -198,7 +192,7 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
         !plan
             .steps()
             .iter()
-            .any(|step| matches!(step, KeeperStep::RedeemJoinToken(_)))
+            .any(|step| matches!(step, KeeperStep::StoreJoinMaterial(_)))
     );
 }
 
@@ -338,22 +332,25 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
 }
 
 #[test]
-fn keeper_plan_executor_redacts_join_token_from_progress() {
-    let plan = keeper_join_plan(KeeperJoinTarget::new(
-        JoinToken::try_new("join_secret").expect("valid join token"),
-        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
-        ployzd_artifact(),
-        NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
-            .expect("non-empty role set"),
-    ));
+fn keeper_join_executor_redacts_join_token_from_progress() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer {
+        fail_message: Some("simulated join token redeem failure"),
+        ..RecordingJoinRedeemer::default()
+    };
     let mut effects = RecordingEffects {
-        fail_on: Some(KeeperStepLabel::RedeemJoinToken),
-        fail_message: "simulated join token redeem failure",
         ..RecordingEffects::default()
     };
+    let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
 
-    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let execution = execute_keeper_join(
+        &token,
+        &mut redeemer,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
     let rendered = format!("{execution:?}");
 
     assert!(matches!(
@@ -367,9 +364,74 @@ fn keeper_plan_executor_redacts_join_token_from_progress() {
     ));
     assert!(!rendered.contains("join_secret"));
     assert_eq!(
-        effects.redeemed_tokens,
+        redeemer.redeemed_tokens,
         vec![JoinToken::try_new("join_secret").expect("valid join token")]
     );
+    assert_eq!(token_consumer.consumed, 0);
+}
+
+#[test]
+fn keeper_join_keeps_token_when_material_store_fails() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let material =
+        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut effects = RecordingEffects {
+        fail_on: Some(KeeperStepLabel::StoreJoinMaterial(material.clone())),
+        ..RecordingEffects::default()
+    };
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_join(
+        &token,
+        &mut redeemer,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::StoreJoinMaterial(failed_material),
+            reason: KeeperStepFailureReason::JoinMaterialStoreFailed,
+            ..
+        })) if failed_material == material
+    ));
+    assert_eq!(token_consumer.consumed, 0);
+}
+
+#[test]
+fn keeper_join_consumes_token_after_material_store_before_install() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut effects = RecordingEffects {
+        fail_on: Some(KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(
+            ployzd_artifact(),
+        ))),
+        ..RecordingEffects::default()
+    };
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_join(
+        &token,
+        &mut redeemer,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(_)),
+            reason: KeeperStepFailureReason::ArtifactInstallFailed,
+            ..
+        }))
+    ));
+    assert_eq!(token_consumer.consumed, 1);
 }
 
 #[test]
@@ -462,7 +524,6 @@ fn artifact_install_paths_must_be_absolute() {
 
 struct RecordingEffects {
     calls: Vec<KeeperStepLabel>,
-    redeemed_tokens: Vec<JoinToken>,
     fail_on: Option<KeeperStepLabel>,
     fail_message: &'static str,
 }
@@ -479,10 +540,46 @@ impl RecordingEffects {
 
 impl KeeperStepEffects for RecordingEffects {
     fn apply_step(&mut self, step: &KeeperStep) -> Result<(), KeeperStepEffectError> {
-        if let KeeperStep::RedeemJoinToken(token) = step {
-            self.redeemed_tokens.push(token.clone());
-        }
         self.record(KeeperStepLabel::from_step(step))
+    }
+}
+
+#[derive(Default)]
+struct RecordingJoinRedeemer {
+    redeemed_tokens: Vec<JoinToken>,
+    fail_message: Option<&'static str>,
+}
+
+#[derive(Default)]
+struct RecordingTokenConsumer {
+    consumed: usize,
+    fail_message: Option<&'static str>,
+}
+
+impl KeeperJoinTokenConsumer for RecordingTokenConsumer {
+    fn consume_join_token(&mut self) -> Result<(), FailureMessage> {
+        self.consumed += 1;
+        if let Some(message) = self.fail_message {
+            return Err(failure_message(message));
+        }
+
+        Ok(())
+    }
+}
+
+impl KeeperJoinRedeemer for RecordingJoinRedeemer {
+    fn redeem_join_token(&mut self, token: &JoinToken) -> Result<KeeperJoinTarget, FailureMessage> {
+        self.redeemed_tokens.push(token.clone());
+        if let Some(message) = self.fail_message {
+            return Err(failure_message(message));
+        }
+
+        Ok(KeeperJoinTarget::new(
+            RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
+            ployzd_artifact(),
+            NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
+                .expect("non-empty role set"),
+        ))
     }
 }
 
@@ -507,7 +604,6 @@ impl Default for RecordingEffects {
     fn default() -> Self {
         Self {
             calls: Vec::new(),
-            redeemed_tokens: Vec::new(),
             fail_on: None,
             fail_message: "simulated keeper step failure",
         }

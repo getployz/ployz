@@ -57,7 +57,6 @@ pub enum KeeperStep {
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
-    RedeemJoinToken(JoinToken),
     StoreJoinMaterial(RedactedJoinMaterial),
 }
 
@@ -69,6 +68,7 @@ pub enum KeeperStepLabel {
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
     RedeemJoinToken,
+    ConsumeJoinTokenFile,
     StoreJoinMaterial(RedactedJoinMaterial),
 }
 
@@ -83,7 +83,6 @@ impl KeeperStepLabel {
             KeeperStep::RestartSupervisorUnit(target) => {
                 Self::RestartSupervisorUnit(target.clone())
             }
-            KeeperStep::RedeemJoinToken(_) => Self::RedeemJoinToken,
             KeeperStep::StoreJoinMaterial(material) => Self::StoreJoinMaterial(material.clone()),
         }
     }
@@ -170,7 +169,6 @@ impl BootstrapScriptTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperJoinTarget {
-    pub token: JoinToken,
     pub material: RedactedJoinMaterial,
     pub ployzd_artifact: PloyzdArtifactTarget,
     pub roles: NonEmptyRoleSet,
@@ -179,13 +177,11 @@ pub struct KeeperJoinTarget {
 impl KeeperJoinTarget {
     #[must_use]
     pub fn new(
-        token: JoinToken,
         material: RedactedJoinMaterial,
         ployzd_artifact: PloyzdArtifactTarget,
         roles: NonEmptyRoleSet,
     ) -> Self {
         Self {
-            token,
             material,
             ployzd_artifact,
             roles,
@@ -270,12 +266,30 @@ pub fn bootstrap_script_plan(target: BootstrapScriptTarget) -> KeeperStepPlan {
 }
 
 #[must_use]
-pub fn keeper_join_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
-    let mut steps = vec![
-        KeeperStep::RedeemJoinToken(target.token),
-        KeeperStep::StoreJoinMaterial(target.material),
-        KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
-    ];
+pub fn keeper_join_local_install_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
+    let mut steps = keeper_join_material_steps(&target);
+    steps.extend(keeper_join_install_steps(target));
+    KeeperStepPlan::new(steps)
+}
+
+#[must_use]
+pub(crate) fn keeper_join_material_plan(target: &KeeperJoinTarget) -> KeeperStepPlan {
+    KeeperStepPlan::new(keeper_join_material_steps(target))
+}
+
+#[must_use]
+pub(crate) fn keeper_join_install_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
+    KeeperStepPlan::new(keeper_join_install_steps(target))
+}
+
+fn keeper_join_material_steps(target: &KeeperJoinTarget) -> Vec<KeeperStep> {
+    vec![KeeperStep::StoreJoinMaterial(target.material.clone())]
+}
+
+fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
+    let mut steps = vec![KeeperStep::InstallArtifact(
+        target.ployzd_artifact.clone().into(),
+    )];
 
     for role in target.roles.roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
@@ -288,7 +302,7 @@ pub fn keeper_join_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
         steps.push(KeeperStep::StartSupervisorUnit(unit));
     }
 
-    KeeperStepPlan::new(steps)
+    steps
 }
 
 #[must_use]
@@ -391,6 +405,7 @@ pub enum KeeperStepFailureReason {
     SupervisorStartFailed,
     SupervisorRestartFailed,
     JoinTokenRedeemFailed,
+    JoinTokenConsumeFailed,
     JoinMaterialStoreFailed,
 }
 
@@ -403,7 +418,6 @@ impl KeeperStepFailureReason {
             KeeperStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             KeeperStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
             KeeperStep::RestartSupervisorUnit(_) => Self::SupervisorRestartFailed,
-            KeeperStep::RedeemJoinToken(_) => Self::JoinTokenRedeemFailed,
             KeeperStep::StoreJoinMaterial(_) => Self::JoinMaterialStoreFailed,
         }
     }

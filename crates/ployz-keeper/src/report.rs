@@ -63,6 +63,7 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
             format!("restart-unit {}", target.unit_name())
         }
         KeeperStepLabel::RedeemJoinToken => "redeem-join-token".to_owned(),
+        KeeperStepLabel::ConsumeJoinTokenFile => "consume-join-token-file".to_owned(),
         KeeperStepLabel::StoreJoinMaterial(material) => {
             format!("store-join-material {}", material.node_id.as_str())
         }
@@ -87,6 +88,7 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         KeeperStepFailureReason::SupervisorStartFailed => "supervisor-start-failed",
         KeeperStepFailureReason::SupervisorRestartFailed => "supervisor-restart-failed",
         KeeperStepFailureReason::JoinTokenRedeemFailed => "join-token-redeem-failed",
+        KeeperStepFailureReason::JoinTokenConsumeFailed => "join-token-consume-failed",
         KeeperStepFailureReason::JoinMaterialStoreFailed => "join-material-store-failed",
     }
 }
