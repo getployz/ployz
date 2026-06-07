@@ -38,6 +38,7 @@ import {
 import {
   imageReference,
   machineName,
+  machineJoinToken,
   nodeId,
   operationEventReplayLimit,
   operationId,
@@ -57,6 +58,9 @@ import type {
   MachineAddGateway,
   MachineAddRequest,
   MachineAddResponse,
+  MachineJoinRedeemRequest,
+  MachineJoinRedeemResponse,
+  MachineJoinRedeemed,
   OperationApiResponse,
   OperationEventReplayCursor,
   OperationEventReplayLimit,
@@ -74,6 +78,7 @@ import type {
 export interface PloyzOperationTransport {
   deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse>;
   machineAdd(request: MachineAddRequest): Promise<MachineAddResponse>;
+  machineJoinRedeem(request: MachineJoinRedeemRequest): Promise<MachineJoinRedeemResponse>;
   opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse>;
   opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse>;
 }
@@ -109,6 +114,10 @@ export interface PloyzMachineAddInput {
   gateway: MachineAddGateway;
 }
 
+export interface PloyzMachineJoinRedeemInput {
+  joinToken: string;
+}
+
 export class PloyzClient {
   readonly #transport: PloyzOperationTransport;
 
@@ -132,6 +141,13 @@ export class PloyzClient {
     );
     return new MachineAddHandle(this.#transport, accepted);
   }
+
+  async machineJoinRedeem(input: PloyzMachineJoinRedeemInput): Promise<MachineJoinRedeemed> {
+    return unwrapApiResponse(
+      "machine.join.redeem",
+      await this.#transport.machineJoinRedeem(machineJoinRedeemRequest(input)),
+    );
+  }
 }
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
@@ -154,6 +170,14 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     node_id: nodeId(input.nodeId),
     name: machineName(input.name),
     gateway: input.gateway,
+  };
+}
+
+export function machineJoinRedeemRequest(
+  input: PloyzMachineJoinRedeemInput,
+): MachineJoinRedeemRequest {
+  return {
+    join_token: machineJoinToken(input.joinToken),
   };
 }
 

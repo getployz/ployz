@@ -1,7 +1,9 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::controllers::OperationControllers;
-use crate::operation_api::{deploy_submit, machine_add, ops_status, ops_watch};
+use crate::operation_api::{
+    deploy_submit, machine_add, machine_join_redeem, ops_status, ops_watch,
+};
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_runtime::{
@@ -11,7 +13,8 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
+        OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -55,6 +58,16 @@ async fn bind_operation_endpoint(
             )
             .await
         }
+        OperationApiEndpoint::MachineJoinRedeem => bind_operation_contract::<
+            MachineJoinRedeemApi,
+            _,
+            _,
+        >(
+            runtime,
+            controllers,
+            |controllers, request| async move { machine_join_redeem(&controllers, request).await },
+        )
+        .await,
         OperationApiEndpoint::OpsStatus => {
             bind_operation_contract::<OpsStatusApi, _, _>(
                 runtime,

@@ -4,7 +4,9 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, MachineName, RawJoinToken};
+use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
+};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
     OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
@@ -13,10 +15,10 @@ use ployz_core::ops::{
 use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, MachineAddOperationSubmission, OperationLeaseClaim,
-    OperationStatusReadError, OperationStatusStoreError, OperationStatusWrite,
-    RecordDeployEvidenceError, RecordDeployTransitionError, ReplayOperationEventsError,
-    StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
+    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinRedemption,
+    OperationLeaseClaim, OperationStatusReadError, OperationStatusStoreError, OperationStatusWrite,
+    RecordDeployEvidenceError, RecordDeployTransitionError, RedeemMachineJoinTokenError,
+    ReplayOperationEventsError, StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -156,6 +158,15 @@ impl OperationControllers {
             raw_join_token: submitted.raw_join_token,
             lease: submitted.lease,
         })
+    }
+
+    pub async fn redeem_machine_join_token(
+        &self,
+        token: &RawJoinToken,
+    ) -> Result<MachineJoinRedemption, RedeemMachineJoinTokenError> {
+        self.repository
+            .redeem_machine_join_token(token, current_join_time()?)
+            .await
     }
 
     pub fn issue_machine_add_bootstrap_material(
@@ -323,6 +334,19 @@ fn current_lease_time() -> Result<OperationLeaseExpiresAt, OperationLeaseClockEr
         .as_secs();
 
     OperationLeaseExpiresAt::try_new(seconds).map_err(|error| OperationLeaseClockError {
+        message: error.to_string(),
+    })
+}
+
+fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenError> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| RedeemMachineJoinTokenError::Clock {
+            message: error.to_string(),
+        })?
+        .as_secs();
+
+    JoinTokenRedeemedAt::try_new(seconds).map_err(|error| RedeemMachineJoinTokenError::Clock {
         message: error.to_string(),
     })
 }

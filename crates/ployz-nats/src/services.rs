@@ -127,6 +127,7 @@ impl NatsServiceEndpointSpec {
 pub enum EndpointExecution {
     Query,
     AcceptsOperation,
+    MutatesOperation,
     NodeRpc,
 }
 

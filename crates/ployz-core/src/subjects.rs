@@ -17,18 +17,21 @@ pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
 pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
 pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
+pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
     MachineAdd,
+    MachineJoinRedeem,
     OpsStatus,
     OpsWatch,
 }
 
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 4] = [
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 5] = [
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::MachineAdd,
+    OperationApiEndpoint::MachineJoinRedeem,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
 ];
@@ -36,6 +39,7 @@ pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 4] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpointExecution {
     AcceptsOperation,
+    MutatesOperation,
     Query,
 }
 
@@ -45,6 +49,7 @@ impl OperationApiEndpoint {
         match self {
             Self::DeploySubmit => "deploy.submit",
             Self::MachineAdd => "machine.add",
+            Self::MachineJoinRedeem => "machine.join.redeem",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
         }
@@ -55,6 +60,7 @@ impl OperationApiEndpoint {
         match self {
             Self::DeploySubmit => API_DEPLOY_SUBMIT,
             Self::MachineAdd => API_MACHINE_ADD,
+            Self::MachineJoinRedeem => API_MACHINE_JOIN_REDEEM,
             Self::OpsStatus => API_OPS_STATUS,
             Self::OpsWatch => API_OPS_WATCH,
         }
@@ -66,6 +72,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit | Self::MachineAdd => {
                 OperationApiEndpointExecution::AcceptsOperation
             }
+            Self::MachineJoinRedeem => OperationApiEndpointExecution::MutatesOperation,
             Self::OpsStatus | Self::OpsWatch => OperationApiEndpointExecution::Query,
         }
     }

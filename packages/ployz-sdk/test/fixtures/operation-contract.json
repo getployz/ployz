@@ -62,6 +62,21 @@
       "join_token": "join_once_123"
     }
   },
+  "machine_join_redeem_request": {
+    "join_token": "join_once_123"
+  },
+  "machine_join_redeem_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_machine",
+      "node_id": "node_2",
+      "name": "edge_2",
+      "gateway": "skip",
+      "joined_at": "60",
+      "last_event_sequence": "8",
+      "result": "joined"
+    }
+  },
   "operation_status_snapshot": {
     "status": {
       "kind": "deploy",

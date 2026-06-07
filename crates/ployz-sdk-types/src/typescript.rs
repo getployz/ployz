@@ -13,8 +13,10 @@ use crate::{
     JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddFailure,
     MachineAddGateway, MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest,
-    MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinToken, MachineName,
-    MachineReadinessCheck, MachineReadinessEvidence, NodeId, OperationApiResponse, OperationEvent,
+    MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
+    MachineJoinRedeemed, MachineJoinToken, MachineName, MachineReadinessCheck,
+    MachineReadinessEvidence, NodeId, OperationApiResponse, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
     OperationEventReplayRequest, OperationId, OperationIdempotencyKey, OperationLeaseExpiresAt,
     OperationOwnerId, OperationOwnerLease, OperationOwnershipStatus, OperationStatus,
@@ -121,6 +123,11 @@ macro_rules! exported_types {
             MachineAddRequest,
             MachineAddGateway,
             MachineAddAccepted,
+            MachineJoinRedeemRequest,
+            MachineJoinRedeemed,
+            MachineJoinRedeemResult,
+            MachineJoinRedeemError,
+            MachineJoinRedeemUnavailableSource,
             OpsStatusRequest,
             AcceptedOperation,
             OperationApiResponse<AcceptedOperation, DeploySubmitError>,
@@ -228,6 +235,7 @@ where
 const fn operation_api_execution_name(execution: OperationApiEndpointExecution) -> &'static str {
     match execution {
         OperationApiEndpointExecution::AcceptsOperation => "accepts_operation",
+        OperationApiEndpointExecution::MutatesOperation => "mutates_operation",
         OperationApiEndpointExecution::Query => "query",
     }
 }

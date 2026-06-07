@@ -72,6 +72,9 @@ pub struct MachineAddRequest {
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
+pub type MachineJoinRedeemResponse =
+    OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineAddGateway {
@@ -86,6 +89,67 @@ pub struct MachineAddAccepted {
     pub node_id: NodeId,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_token: MachineJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinRedeemRequest {
+    pub join_token: MachineJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinRedeemed {
+    pub operation_id: OperationId,
+    pub node_id: NodeId,
+    pub name: MachineName,
+    pub gateway: FirstNodeGateway,
+    pub joined_at: JoinTokenRedeemedAt,
+    pub last_event_sequence: EventSequence,
+    pub result: MachineJoinRedeemResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineJoinRedeemResult {
+    Joined,
+    AlreadyJoined,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinRedeemError {
+    InvalidJoinToken,
+    UnknownJoinToken,
+    Rejected {
+        operation_id: OperationId,
+        failure: MachineAddFailure,
+    },
+    OperationNotPending {
+        operation_id: OperationId,
+        current: MachineAddOperationStateName,
+    },
+    Unavailable {
+        source: MachineJoinRedeemUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinRedeemUnavailableSource {
+    StatusRead {
+        failure: StatusReadFailure,
+    },
+    StatusWrite {
+        failure: OperationSubmitStatusFailure,
+    },
+    EventLog {
+        failure: OperationSubmitEventFailure,
+    },
+    Clock {
+        failure: OperationSubmitClockFailure,
+    },
+    OperationCorrupt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

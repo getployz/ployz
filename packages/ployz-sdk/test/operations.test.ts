@@ -10,7 +10,9 @@ import {
   eventSequence,
   machineAddRequest,
   machineBootstrapUrl,
+  machineJoinRedeemRequest,
   machineJoinToken,
+  machineName,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
   nodeId,
   OPERATION_API_CONTRACTS,
@@ -29,6 +31,9 @@ import type {
   MachineAddAccepted,
   MachineAddResponse,
   MachineAddRequest,
+  MachineJoinRedeemed,
+  MachineJoinRedeemResponse,
+  MachineJoinRedeemRequest,
   OperationEventReplayPage,
   OperationStatusSnapshot,
   OperationSubject,
@@ -81,6 +86,18 @@ test("machine add returns an operation handle with bootstrap material", async ()
   assert.deepEqual(transport.machineAddRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_machine" }]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
+});
+
+test("machine join redeem returns joined machine facts", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+  const input = { joinToken: "join_once_123" };
+  const request = machineJoinRedeemRequest(input);
+
+  const redeemed = await client.machineJoinRedeem(input);
+
+  assert.deepEqual(transport.machineJoinRedeemRequests, [request]);
+  assert.deepEqual(redeemed, defaultFixture().machine_join_redeem_response.value);
 });
 
 test("replay pages advance through replay cursors", async () => {
@@ -165,6 +182,10 @@ test("TypeScript DTOs match the Rust-emitted operation fixture", () => {
     status: "ok",
     value: fixture.machine_add_response.value,
   });
+  assert.deepEqual(fixture.machine_join_redeem_response, {
+    status: "ok",
+    value: fixture.machine_join_redeem_response.value,
+  });
   assert.deepEqual(fixture.ops_status_response, {
     status: "ok",
     value: fixture.operation_status_snapshot,
@@ -221,6 +242,16 @@ test("sdk maps raw machine add input to the wire request", () => {
   );
 });
 
+test("sdk maps raw machine join redeem input to the wire request", () => {
+  assert.deepEqual(machineJoinRedeemRequest({ joinToken: "join_once_123" }), {
+    join_token: "join_once_123",
+  });
+  assert.throws(
+    () => machineJoinRedeemRequest({ joinToken: "join token" }),
+    /join token/,
+  );
+});
+
 test("sdk exports operation subjects", () => {
   const subject: OperationSubject = {
     kind: "deploy",
@@ -249,6 +280,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "MachineAddAccepted",
       error: "MachineAddError",
       response: "MachineAddResponse",
+    },
+    {
+      name: "machine.join.redeem",
+      subject: "plz.v1.svc.api.machine.join.redeem",
+      execution: "mutates_operation",
+      request: "MachineJoinRedeemRequest",
+      success: "MachineJoinRedeemed",
+      error: "MachineJoinRedeemError",
+      response: "MachineJoinRedeemResponse",
     },
     {
       name: "ops.status",
@@ -289,21 +329,25 @@ test("sdk helpers enforce public primitive boundaries", () => {
 class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
+  readonly machineJoinRedeemRequests: MachineJoinRedeemRequest[] = [];
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
   readonly machineAddAccepted: MachineAddAccepted;
+  readonly machineJoinRedeemed: MachineJoinRedeemed;
   readonly status: OperationStatusSnapshot;
   readonly replay: OperationEventReplayPage;
   readonly replayPages: OperationEventReplayPage[] = [];
   deployResponse?: DeploySubmitResponse;
   machineAddResponse?: MachineAddResponse;
+  machineJoinRedeemResponse?: MachineJoinRedeemResponse;
   statusResponse?: OpsStatusResponse;
   watchResponse?: OpsWatchResponse;
 
   constructor(fixture: OperationFixture) {
     this.accepted = fixture.accepted_operation;
     this.machineAddAccepted = fixture.machine_add_response.value;
+    this.machineJoinRedeemed = fixture.machine_join_redeem_response.value;
     this.status = fixture.operation_status_snapshot;
     this.replay = fixture.operation_event_replay_page;
   }
@@ -316,6 +360,13 @@ class RecordingTransport implements PloyzOperationTransport {
   async machineAdd(request: MachineAddRequest): Promise<MachineAddResponse> {
     this.machineAddRequests.push(request);
     return this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted };
+  }
+
+  async machineJoinRedeem(
+    request: MachineJoinRedeemRequest,
+  ): Promise<MachineJoinRedeemResponse> {
+    this.machineJoinRedeemRequests.push(request);
+    return this.machineJoinRedeemResponse ?? { status: "ok", value: this.machineJoinRedeemed };
   }
 
   async opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse> {
@@ -336,6 +387,7 @@ class RecordingTransport implements PloyzOperationTransport {
 interface OperationFixture {
   accepted_operation: AcceptedOperation;
   machine_add_response: { status: "ok"; value: MachineAddAccepted };
+  machine_join_redeem_response: { status: "ok"; value: MachineJoinRedeemed };
   operation_status_snapshot: OperationStatusSnapshot;
   operation_event_replay_page: OperationEventReplayPage;
 }
@@ -353,6 +405,18 @@ function defaultFixture(): OperationFixture {
         node_id: nodeId("node_2"),
         bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
         join_token: machineJoinToken("join_once_123"),
+      },
+    },
+    machine_join_redeem_response: {
+      status: "ok",
+      value: {
+        operation_id: operationId("op_machine"),
+        node_id: nodeId("node_2"),
+        name: machineName("edge_2"),
+        gateway: "skip",
+        joined_at: "60" as MachineJoinRedeemed["joined_at"],
+        last_event_sequence: eventSequence(8),
+        result: "joined",
       },
     },
     operation_status_snapshot: {

@@ -150,6 +150,16 @@ export type MachineAddGateway = "install" | "skip";
 
 export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_token: MachineJoinToken, };
 
+export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
+
+export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+
+export type MachineJoinRedeemResult = "joined" | "already_joined";
+
+export type MachineJoinRedeemError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "rejected", operation_id: OperationId, failure: MachineAddFailure, } | { "error": "operation_not_pending", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", source: MachineJoinRedeemUnavailableSource, };
+
+export type MachineJoinRedeemUnavailableSource = { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "operation_corrupt" };
+
 export type OpsStatusRequest = { operation_id: OperationId, };
 
 export type AcceptedOperation = { operation_id: OperationId, watch_subject: string, start_sequence: EventSequence, owner_lease: OperationOwnerLease, };
@@ -188,6 +198,8 @@ export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, Deplo
 
 export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
+export type MachineJoinRedeemResponse = OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
+
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 export type OpsWatchRequest = OperationEventReplayRequest;
@@ -197,6 +209,7 @@ export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, Op
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
+  { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
 ] as const;

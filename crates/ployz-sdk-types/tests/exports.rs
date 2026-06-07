@@ -6,16 +6,18 @@ use ployz_sdk_types::{
     DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
-    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName,
-    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
-    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
-    RoutePortError, ServiceId, SubjectTokenError,
+    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+    MachineJoinRedeemed, MachineJoinToken, MachineName, NonEmptyTextError, OperationApiResponse,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
+        OpsWatchApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -187,6 +189,32 @@ fn sdk_exports_operation_api_wire_types() {
         serde_json::to_string(&machine_response).expect("response serializes"),
         r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7","owner_lease":{"operation_id":"op_machine","owner_id":"control","expires_at":"120"}},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","join_token":"join_once_123"}}"#
     );
+
+    let redeem_request = MachineJoinRedeemRequest {
+        join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+    };
+    let redeem_response: MachineJoinRedeemResponse = OperationApiResponse::Ok {
+        value: MachineJoinRedeemed {
+            operation_id: ployz_sdk_types::OperationId::try_new("op_machine")
+                .expect("valid operation id"),
+            node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: ployz_sdk_types::FirstNodeGateway::Skip,
+            joined_at: ployz_sdk_types::JoinTokenRedeemedAt::try_new(60)
+                .expect("valid redeemed timestamp"),
+            last_event_sequence: EventSequence::try_new(8).expect("valid event sequence"),
+            result: MachineJoinRedeemResult::Joined,
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_string(&redeem_request).expect("request serializes"),
+        r#"{"join_token":"join_once_123"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&redeem_response).expect("response serializes"),
+        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+    );
 }
 
 #[test]
@@ -198,10 +226,12 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
     assert_fixture::<MachineAddRequest>(&fixture, "machine_add_request");
+    assert_fixture::<MachineJoinRedeemRequest>(&fixture, "machine_join_redeem_request");
     assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
     assert_fixture::<MachineAddResponse>(&fixture, "machine_add_response");
+    assert_fixture::<MachineJoinRedeemResponse>(&fixture, "machine_join_redeem_response");
     assert_fixture::<OperationStatusSnapshot>(&fixture, "operation_status_snapshot");
     assert_fixture::<OpsStatusResponse>(&fixture, "ops_status_response");
     assert_fixture::<OperationEventReplayPage>(&fixture, "operation_event_replay_page");
@@ -221,6 +251,12 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
 fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
+    assert_contract::<
+        MachineJoinRedeemApi,
+        MachineJoinRedeemRequest,
+        MachineJoinRedeemed,
+        MachineJoinRedeemError,
+    >();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
         OpsWatchApi,
@@ -250,6 +286,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineAddAccepted".to_owned(),
                 "MachineAddError".to_owned(),
                 "MachineAddResponse",
+            ),
+            (
+                "machine.join.redeem",
+                "plz.v1.svc.api.machine.join.redeem",
+                OperationApiEndpointExecution::MutatesOperation,
+                "MachineJoinRedeemRequest".to_owned(),
+                "MachineJoinRedeemed".to_owned(),
+                "MachineJoinRedeemError".to_owned(),
+                "MachineJoinRedeemResponse",
             ),
             (
                 "ops.status",

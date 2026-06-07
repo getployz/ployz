@@ -109,6 +109,7 @@ fn test_api_service(endpoint: OperationApiEndpoint) -> NatsServiceSpec {
 const fn endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
     match execution {
         OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+        OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
         OperationApiEndpointExecution::Query => EndpointExecution::Query,
     }
 }

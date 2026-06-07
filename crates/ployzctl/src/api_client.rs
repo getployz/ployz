@@ -7,10 +7,11 @@ use ployz_nats::service_protocol::{
 };
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, OperationApiResponse, OpsStatusError, OpsStatusRequest, OpsWatchError,
-    OpsWatchRequest,
+    MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    OperationApiResponse, OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
+        OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -60,6 +61,13 @@ impl OperationApiClient {
         request: &MachineAddRequest,
     ) -> Result<MachineAddAccepted, OperationApiClientError<MachineAddError>> {
         self.request_api::<MachineAddApi>(request).await
+    }
+
+    pub async fn machine_join_redeem(
+        &self,
+        request: &MachineJoinRedeemRequest,
+    ) -> Result<MachineJoinRedeemed, OperationApiClientError<MachineJoinRedeemError>> {
+        self.request_api::<MachineJoinRedeemApi>(request).await
     }
 
     pub async fn ops_watch(

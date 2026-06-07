@@ -206,6 +206,9 @@ pub struct RedeemedMachineJoin {
 
 #[derive(Debug)]
 pub enum RedeemMachineJoinTokenError {
+    Clock {
+        message: String,
+    },
     InvalidJoinToken,
     UnknownJoinToken,
     LoadStatus(OperationStatusReadError),

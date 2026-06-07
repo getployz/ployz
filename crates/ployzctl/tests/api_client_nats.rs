@@ -1,9 +1,11 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId};
+use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
     EventSequence, OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationLeaseExpiresAt, OperationOwnerLease,
 };
+use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
@@ -14,10 +16,12 @@ use ployz_nats::services::{
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse, OpsStatusError,
-    OpsStatusResponse,
+    MachineBootstrapUrl, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
+    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken, MachineName,
+    OperationApiResponse, OpsStatusError, OpsStatusResponse,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
+        OpsWatchApi,
     },
 };
 use ployzctl::api_client::{
@@ -109,6 +113,47 @@ async fn operation_api_client_routes_machine_add_success() {
 
     assert_eq!(accepted.node_id, node_id("node_2"));
     assert_eq!(accepted.accepted.operation_id, operation_id("op_machine"));
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_machine_join_redeem_success() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_api_service(MachineJoinRedeemApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            let response: MachineJoinRedeemResponse = OperationApiResponse::Ok {
+                value: MachineJoinRedeemed {
+                    operation_id: operation_id("op_machine"),
+                    node_id: node_id("node_2"),
+                    name: MachineName::try_new("edge_2").expect("valid machine name"),
+                    gateway: FirstNodeGateway::Skip,
+                    joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),
+                    last_event_sequence: event_sequence(8),
+                    result: MachineJoinRedeemResult::Joined,
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let redeemed = api
+        .machine_join_redeem(&machine_join_redeem_request())
+        .await
+        .expect("machine join redeem responds");
+
+    assert_eq!(redeemed.operation_id, operation_id("op_machine"));
+    assert_eq!(redeemed.node_id, node_id("node_2"));
+    assert_eq!(redeemed.result, MachineJoinRedeemResult::Joined);
 }
 
 #[tokio::test]
@@ -342,6 +387,7 @@ fn test_api_service(endpoint: OperationApiEndpoint) -> NatsServiceSpec {
 const fn endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
     match execution {
         OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+        OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
         OperationApiEndpointExecution::Query => EndpointExecution::Query,
     }
 }
@@ -362,6 +408,12 @@ fn machine_add_request() -> MachineAddRequest {
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
+    }
+}
+
+fn machine_join_redeem_request() -> MachineJoinRedeemRequest {
+    MachineJoinRedeemRequest {
+        join_token: MachineJoinToken::try_new("join_token").expect("valid join token"),
     }
 }
 

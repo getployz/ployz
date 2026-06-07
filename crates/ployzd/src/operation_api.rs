@@ -5,6 +5,7 @@ use crate::controllers::{
     OperationControllers,
 };
 use ployz_core::ids::OperationId;
+use ployz_core::machine::RawJoinToken;
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease,
     OperationStatusSnapshot,
@@ -12,18 +13,20 @@ use ployz_core::ops::{
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::op_watch;
 use ployz_nats::operations::{
-    OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
-    OperationStatusStoreError, ReplayOperationEventsError,
-    SubmitDeployError as SubmitDeployRepositoryError,
+    MachineJoinRedemption, OperationEventLogError, OperationEventReplayReadError,
+    OperationStatusReadError, OperationStatusStoreError, RecordMachineAddEventError,
+    RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
+    ReplayOperationEventsError, SubmitDeployError as SubmitDeployRepositoryError,
     SubmitMachineAddError as SubmitMachineAddRepositoryError,
 };
 use ployz_sdk_types::{
     AcceptedOperation, BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinToken,
-    OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
-    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource,
-    StatusReadFailure,
+    MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
+    MachineJoinRedeemed, MachineJoinToken, OperationSubmitClockFailure,
+    OperationSubmitEventFailure, OperationSubmitStatusFailure, OpsStatusError,
+    OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
 };
 
 #[must_use]
@@ -122,6 +125,98 @@ pub async fn machine_add(
         })?,
         join_token: raw_token,
     })
+}
+
+pub async fn machine_join_redeem(
+    controllers: &OperationControllers,
+    request: MachineJoinRedeemRequest,
+) -> Result<MachineJoinRedeemed, MachineJoinRedeemError> {
+    let raw_token = RawJoinToken::try_new(request.join_token.as_str())
+        .map_err(|_| MachineJoinRedeemError::InvalidJoinToken)?;
+    let redeemed = controllers
+        .redeem_machine_join_token(&raw_token)
+        .await
+        .map_err(machine_join_redeem_error_from_repository_error)?;
+    Ok(machine_join_redeemed(redeemed))
+}
+
+fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeemed {
+    let (joined, result) = match redemption {
+        MachineJoinRedemption::Joined(joined) => (joined, MachineJoinRedeemResult::Joined),
+        MachineJoinRedemption::AlreadyJoined(joined) => {
+            (joined, MachineJoinRedeemResult::AlreadyJoined)
+        }
+    };
+
+    MachineJoinRedeemed {
+        operation_id: joined.operation_id,
+        node_id: joined.node_id,
+        name: joined.name,
+        gateway: joined.gateway,
+        joined_at: joined.joined_at,
+        last_event_sequence: joined.last_event_sequence,
+        result,
+    }
+}
+
+fn machine_join_redeem_error_from_repository_error(
+    error: RedeemMachineJoinTokenRepositoryError,
+) -> MachineJoinRedeemError {
+    match error {
+        RedeemMachineJoinTokenRepositoryError::Clock { .. } => {
+            MachineJoinRedeemError::Unavailable {
+                source: MachineJoinRedeemUnavailableSource::Clock {
+                    failure: OperationSubmitClockFailure::BeforeUnixEpoch,
+                },
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::InvalidJoinToken => {
+            MachineJoinRedeemError::InvalidJoinToken
+        }
+        RedeemMachineJoinTokenRepositoryError::UnknownJoinToken => {
+            MachineJoinRedeemError::UnknownJoinToken
+        }
+        RedeemMachineJoinTokenRepositoryError::LoadStatus(source) => {
+            MachineJoinRedeemError::Unavailable {
+                source: MachineJoinRedeemUnavailableSource::StatusRead {
+                    failure: status_read_failure(&source),
+                },
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::StoreStatus(source) => {
+            MachineJoinRedeemError::Unavailable {
+                source: MachineJoinRedeemUnavailableSource::StatusWrite {
+                    failure: operation_submit_status_failure(&source),
+                },
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::RecordMachineAddEvent(source) => {
+            MachineJoinRedeemError::Unavailable {
+                source: record_machine_add_event_unavailable_source(&source),
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::MissingOperation { .. }
+        | RedeemMachineJoinTokenRepositoryError::WrongOperationKind { .. }
+        | RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { .. } => {
+            MachineJoinRedeemError::Unavailable {
+                source: MachineJoinRedeemUnavailableSource::OperationCorrupt,
+            }
+        }
+        RedeemMachineJoinTokenRepositoryError::OperationNotPending {
+            operation_id,
+            current,
+        } => MachineJoinRedeemError::OperationNotPending {
+            operation_id,
+            current,
+        },
+        RedeemMachineJoinTokenRepositoryError::JoinRejected {
+            operation_id,
+            failure,
+        } => MachineJoinRedeemError::Rejected {
+            operation_id,
+            failure,
+        },
+    }
 }
 
 fn deploy_submit_error_from_submit_error(
@@ -285,6 +380,34 @@ fn operation_submit_event_failure(error: &OperationEventLogError) -> OperationSu
         OperationEventLogError::Timeout { .. } => OperationSubmitEventFailure::Timeout,
         OperationEventLogError::InvalidAckSequence { .. } => {
             OperationSubmitEventFailure::InvalidAckSequence
+        }
+    }
+}
+
+fn record_machine_add_event_unavailable_source(
+    error: &RecordMachineAddEventError,
+) -> MachineJoinRedeemUnavailableSource {
+    match error {
+        RecordMachineAddEventError::LoadStatus(error) => {
+            MachineJoinRedeemUnavailableSource::StatusRead {
+                failure: status_read_failure(error),
+            }
+        }
+        RecordMachineAddEventError::StoreStatus(error) => {
+            MachineJoinRedeemUnavailableSource::StatusWrite {
+                failure: operation_submit_status_failure(error),
+            }
+        }
+        RecordMachineAddEventError::AppendEvent(error) => {
+            MachineJoinRedeemUnavailableSource::EventLog {
+                failure: operation_submit_event_failure(error),
+            }
+        }
+        RecordMachineAddEventError::MissingOperation { .. }
+        | RecordMachineAddEventError::ProjectStatus(_)
+        | RecordMachineAddEventError::StoredEventMismatch { .. }
+        | RecordMachineAddEventError::StatusCursorContended => {
+            MachineJoinRedeemUnavailableSource::OperationCorrupt
         }
     }
 }

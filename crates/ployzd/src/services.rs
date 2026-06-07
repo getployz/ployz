@@ -16,9 +16,10 @@ pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
 pub const NODE_SERVICE_NAME: &str = "plz-node";
 pub const NODE_SERVICE_DESCRIPTION: &str = "Ployz node-local runtime service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
-pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 4] = [
+pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 5] = [
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::MachineAdd,
+    OperationApiEndpoint::MachineJoinRedeem,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
 ];
@@ -110,6 +111,7 @@ pub fn api_endpoint_spec(endpoint: OperationApiEndpoint) -> NatsServiceEndpointS
 pub const fn api_endpoint_execution(execution: OperationApiEndpointExecution) -> EndpointExecution {
     match execution {
         OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
+        OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
         OperationApiEndpointExecution::Query => EndpointExecution::Query,
     }
 }
