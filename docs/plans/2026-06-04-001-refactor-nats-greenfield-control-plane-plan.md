@@ -243,11 +243,12 @@ commands over iroh.
 ### Disposable Host Acceptance
 
 - R39. The final MVP proof runs on two real disposable Linux machines. Hetzner
-  is only a host allocator: create hosts, prove SSH, run product commands,
-  collect command output, and delete hosts. It is not a product concept.
-- R40. The acceptance script is a thin shell harness. It is allowed to create
-  hosts, SSH, copy or download artifacts, run the commands below, save output,
-  and destroy hosts:
+  is only a host allocator. It creates hosts, proves SSH, runs product
+  commands, collects command output, and deletes hosts. It is not a product
+  concept.
+- R40. The acceptance script is a thin shell harness. It may only do host
+  lifecycle, SSH, artifact staging, command execution, output capture, and
+  cleanup around this fixed product path:
 
   ```text
   ployzctl init ...
@@ -258,15 +259,15 @@ commands over iroh.
   ```
 
   That is the full Hetzner scope.
-- R41. The acceptance path may cut corners on artifact distribution by using a
+- R41. The acceptance path may cut corners on artifact distribution with a
   locally built binary, pre-staged release artifact, or explicit source path.
   It must not add provider abstractions, provider-specific Rust, provider
-  operation types, provider readiness models, recovery logic, retries, special
-  diagnostics, or extra Hetzner-only orchestration.
+  operation types, provider readiness models, provider recovery, Hetzner-only
+  diagnostics, or a second orchestration path.
 - R42. The host proof is intentionally tiny: install, init first node, add
   second node, connect NATS over iroh, deploy one smoke service, and prove the
-  service works through the product path. The harness may wait for SSH and
-  command completion; product readiness must come from product commands.
+  service responds through the product route. The harness may wait for SSH and
+  command completion. Product readiness must come from product commands.
 - R43. Reuse the old eBPF/WireGuard dataplane work from git history as a hard
   requirement for container networking. H0 only needs one assertion that the
   real data plane is in the path of the smoke deploy.
@@ -274,8 +275,8 @@ commands over iroh.
   deploys, records a successful operation, and serves a request through the
   real route/data-plane path once, the host proof is done.
 - R45. Failure output should be boring: active operation id, affected node ids,
-  the failing product command, and the cleanup command. No Hetzner-specific
-  diagnosis model.
+  the failing product command output path, and the cleanup command. No
+  Hetzner-specific diagnosis model.
 
 ### Simplicity And Readability
 
@@ -1675,12 +1676,12 @@ Pipeline finish:
   - `docs/operations/two-node-acceptance.md`
 - **Approach:** Use the official `hcloud` CLI and plain SSH only to create two
   disposable Linux boxes and run commands on them. The script is a host
-  allocator and command runner. It provisions hosts, waits for SSH, runs the
-  same install and product commands a user would run, saves command output on
-  failure, and tears the hosts down.
+  allocator and command runner. It provisions hosts, waits for SSH, stages the
+  chosen artifacts, runs the same install and product commands a user would
+  run, saves command output on failure, and tears the hosts down.
 
   H0 is not a Hetzner feature slice. After the boxes exist, the script only
-  runs product commands:
+  runs this fixed product smoke:
 
   ```text
   ployzctl init --node core-1 ...
@@ -1698,20 +1699,19 @@ Pipeline finish:
 
   Do not add Hetzner-specific Rust, provider abstractions, provider readiness
   state, provider operation types, provider install policy, provider-aware
-  controller code, or Hetzner-specific recovery behavior for H0.
-  If the smoke proof needs a decision about install, machine join, deploy,
-  routing, data plane, or cleanup, that decision belongs in Ployz product code,
-  not in the harness.
+  controller code, retries, or Hetzner-specific recovery behavior for H0. If
+  the smoke proof needs a decision about install, machine join, deploy,
+  routing, data plane, or cleanup, that decision belongs in Ployz product code.
 - **Test scenarios:**
-  - Script refuses to run without an explicit Hetzner token and SSH key.
-  - Failed host creation or SSH readiness destroys both servers or prints a
+  - Missing Hetzner token or SSH key fails before creating hosts.
+  - Host creation or SSH readiness failure destroys created servers or prints
+    the cleanup command.
+  - A clean run installs Ployz, joins the second machine, deploys one smoke
+    service through real product operations, proves one request through the
+    route/data-plane path, and destroys resources.
+  - Product failure prints the failing product command, active operation id
+    when one exists, affected node ids when known, command output path, and
     cleanup command.
-  - A clean run provisions two machines, installs Ployz, joins the second
-    machine, deploys one smoke service through real product operations, proves
-    one request through the route/data-plane path, and destroys resources.
-  - Failure prints the failing product command, active operation id when one
-    exists, affected node ids when known, command output path, and cleanup
-    command.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
   end-to-end against two fresh disposable machines. Passing H0 means install,
   machine add, deploy, NATS-over-iroh, and the required eBPF/WireGuard data

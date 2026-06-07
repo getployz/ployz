@@ -1,12 +1,12 @@
 # Disposable Product Smoke Proof
 
-This runbook proves Ployz on real machines. Hetzner is not part of the product
-shape; it only gives us two fresh Linux hosts, public IPs, SSH, and cleanup.
+This runbook proves that Ployz installs and runs its actual product path on
+fresh Linux machines. Hetzner only gives us two disposable hosts, public IPs,
+SSH, and cleanup.
 
-The rule is blunt: H0 is a substrate smoke check. If code would still matter
-after replacing Hetzner with a homelab box or another VPS provider, it belongs
-in Ployz. If it only exists to create or delete Hetzner servers, it stays in
-this shell harness.
+The rule is blunt: if behavior matters after replacing Hetzner with a homelab
+box or another VPS provider, it belongs in Ployz. If behavior only creates or
+deletes Hetzner servers, it stays in this shell harness.
 
 The proof bar is:
 
@@ -31,7 +31,9 @@ Hetzner-specific behavior stops at:
 - create server,
 - tag server for cleanup,
 - wait for SSH,
-- run shell commands,
+- stage the selected artifacts,
+- run product shell commands,
+- capture command output,
 - destroy server.
 
 Everything after SSH is ready must be normal Ployz install/product behavior.
@@ -39,9 +41,8 @@ Do not add Hetzner-specific Rust code, provider abstractions, provider
 readiness models, provider operation states, retries, recovery, diagnostics, or
 provider-aware install policy.
 
-The harness may wait for SSH and product command completion. Product readiness
-must come from product commands and operation output, not harness-side domain
-logic.
+The harness may wait for SSH and command completion. Product readiness must
+come from product commands and operation output, not harness-side domain logic.
 
 ## Disposable Host Setup
 
@@ -124,8 +125,7 @@ The disposable host setup proves:
 - SSH readiness on both machines,
 - teardown by cleanup label selector.
 
-Ployz product commands and operation state prove only the minimum real host
-path:
+Ployz product commands and operation state prove the real host path:
 
 - first-node install,
 - second-node add/join,
@@ -192,3 +192,13 @@ The joined node process shape is:
 - `ployzd tunnel --side edge`
 - `ployzd node --id <id>`
 - optional `ployzd gateway`
+
+## Done
+
+H0 is done when one command creates two fresh hosts, installs Ployz, joins the
+second node, deploys one smoke service, gets one successful response through
+the product route/data-plane path, and deletes the hosts.
+
+That pass is the only assertion. No provider abstraction, provider-specific
+Rust, provider operation state, provider recovery model, or Hetzner diagnostics
+are required for v1.
