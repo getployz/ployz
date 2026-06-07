@@ -19,21 +19,44 @@ pub struct KeeperFirstNodeInstall {
 
 impl KeeperFirstNodeInstall {
     #[must_use]
-    pub fn render_command(&self) -> String {
-        let mut command = format!(
-            "ployz-keeper first-node-install --node {} --ployzd-version {} --ployzd-source {} --ployzd-sha256 {} --ployzd-install-path {} --nats-binary {} --nats-config {}",
-            shell_quote(self.node_id.as_str()),
-            shell_quote(self.ployzd_version.as_str()),
-            shell_quote(self.ployzd_source.as_str()),
-            shell_quote(self.ployzd_sha256.as_str()),
-            shell_quote(self.ployzd_install_path.as_str()),
-            shell_quote(self.nats_binary.as_str()),
-            shell_quote(self.nats_config.as_str())
-        );
+    pub fn command_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "first-node-install".to_owned(),
+            "--node".to_owned(),
+            self.node_id.as_str().to_owned(),
+            "--ployzd-version".to_owned(),
+            self.ployzd_version.as_str().to_owned(),
+            "--ployzd-source".to_owned(),
+            self.ployzd_source.as_str().to_owned(),
+            "--ployzd-sha256".to_owned(),
+            self.ployzd_sha256.as_str().to_owned(),
+            "--ployzd-install-path".to_owned(),
+            self.ployzd_install_path.as_str().to_owned(),
+            "--nats-binary".to_owned(),
+            self.nats_binary.as_str().to_owned(),
+            "--nats-config".to_owned(),
+            self.nats_config.as_str().to_owned(),
+        ];
         if self.gateway == FirstNodeGateway::Install {
-            command.push_str(" --gateway");
+            args.push("--gateway".to_owned());
         }
-        command
+        args
+    }
+
+    #[must_use]
+    pub fn render_command(&self) -> String {
+        std::iter::once("ployz-keeper".to_owned())
+            .chain(self.command_args())
+            .enumerate()
+            .map(|(index, token)| {
+                if index == 0 || token == "first-node-install" || token.starts_with("--") {
+                    token
+                } else {
+                    shell_quote(&token)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 

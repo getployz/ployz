@@ -13,7 +13,8 @@ async fn main() -> ExitCode {
         .await
         {
             Ok(output) => {
-                print!("{output}");
+                print!("{}", output.stdout);
+                eprint!("{}", output.stderr);
                 ExitCode::SUCCESS
             }
             Err(error) => {

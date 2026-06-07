@@ -10,7 +10,7 @@ pub mod ops;
 pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
-ployzctl init --node <id> [--gateway] [--emit-keeper-install --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path>]
+ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--keeper-binary <path>]]
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port>]
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]
 ployzctl ops watch <operation_id>";
@@ -160,11 +160,26 @@ impl<'a> ArgCursor<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCliError {
-    MissingRequiredArgument { flag: &'static str },
-    MissingValue { flag: &'static str },
-    DuplicateArgument { flag: &'static str },
-    InvalidValue { flag: &'static str, message: String },
-    UnexpectedArgument { value: String },
+    MissingRequiredArgument {
+        flag: &'static str,
+    },
+    MissingValue {
+        flag: &'static str,
+    },
+    DuplicateArgument {
+        flag: &'static str,
+    },
+    ConflictingArguments {
+        first: &'static str,
+        second: &'static str,
+    },
+    InvalidValue {
+        flag: &'static str,
+        message: String,
+    },
+    UnexpectedArgument {
+        value: String,
+    },
 }
 
 impl fmt::Display for PloyzctlCliError {
@@ -173,6 +188,9 @@ impl fmt::Display for PloyzctlCliError {
             Self::MissingRequiredArgument { flag } => write!(formatter, "{flag} is required"),
             Self::MissingValue { flag } => write!(formatter, "{flag} requires a value"),
             Self::DuplicateArgument { flag } => write!(formatter, "{flag} was provided twice"),
+            Self::ConflictingArguments { first, second } => {
+                write!(formatter, "{first} and {second} cannot be used together")
+            }
             Self::InvalidValue { flag, message } => {
                 write!(formatter, "{flag} has an invalid value: {message}")
             }

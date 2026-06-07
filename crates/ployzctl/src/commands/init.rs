@@ -23,7 +23,20 @@ impl FirstNodeInitCommand {
     #[must_use]
     pub fn keeper_install(keeper_install: KeeperFirstNodeInstall) -> Self {
         Self {
-            mode: FirstNodeInitMode::KeeperInstall(keeper_install),
+            mode: FirstNodeInitMode::EmitKeeperInstall(keeper_install),
+        }
+    }
+
+    #[must_use]
+    pub fn run_keeper_install(
+        keeper_install: KeeperFirstNodeInstall,
+        keeper_binary: String,
+    ) -> Self {
+        Self {
+            mode: FirstNodeInitMode::RunKeeperInstall {
+                keeper_install,
+                keeper_binary,
+            },
         }
     }
 
@@ -31,7 +44,11 @@ impl FirstNodeInitCommand {
     pub fn node_id(&self) -> &NodeId {
         match &self.mode {
             FirstNodeInitMode::Summary { node_id, .. }
-            | FirstNodeInitMode::KeeperInstall(KeeperFirstNodeInstall { node_id, .. }) => node_id,
+            | FirstNodeInitMode::EmitKeeperInstall(KeeperFirstNodeInstall { node_id, .. })
+            | FirstNodeInitMode::RunKeeperInstall {
+                keeper_install: KeeperFirstNodeInstall { node_id, .. },
+                ..
+            } => node_id,
         }
     }
 
@@ -39,7 +56,11 @@ impl FirstNodeInitCommand {
     pub fn gateway(&self) -> FirstNodeGateway {
         match &self.mode {
             FirstNodeInitMode::Summary { gateway, .. }
-            | FirstNodeInitMode::KeeperInstall(KeeperFirstNodeInstall { gateway, .. }) => *gateway,
+            | FirstNodeInitMode::EmitKeeperInstall(KeeperFirstNodeInstall { gateway, .. })
+            | FirstNodeInitMode::RunKeeperInstall {
+                keeper_install: KeeperFirstNodeInstall { gateway, .. },
+                ..
+            } => *gateway,
         }
     }
 
@@ -62,7 +83,11 @@ pub enum FirstNodeInitMode {
         node_id: NodeId,
         gateway: FirstNodeGateway,
     },
-    KeeperInstall(KeeperFirstNodeInstall),
+    EmitKeeperInstall(KeeperFirstNodeInstall),
+    RunKeeperInstall {
+        keeper_install: KeeperFirstNodeInstall,
+        keeper_binary: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,11 +107,14 @@ impl FirstNodeInitOutput {
     pub fn render(&self) -> String {
         let (node_id, gateway, keeper_install) = match &self.mode {
             FirstNodeInitMode::Summary { node_id, gateway } => (node_id, *gateway, None),
-            FirstNodeInitMode::KeeperInstall(keeper_install) => (
+            FirstNodeInitMode::EmitKeeperInstall(keeper_install) => (
                 &keeper_install.node_id,
                 keeper_install.gateway,
                 Some(keeper_install),
             ),
+            FirstNodeInitMode::RunKeeperInstall { keeper_install, .. } => {
+                (&keeper_install.node_id, keeper_install.gateway, None)
+            }
         };
         let process_set = first_node_process_set(node_id, gateway);
         let roles = process_set
@@ -119,12 +147,11 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
 
     while !args.is_empty() {
         if args.take_flag("--emit-keeper-install") {
-            if parsed.emit_keeper_install {
-                return Err(PloyzctlCliError::DuplicateArgument {
-                    flag: "--emit-keeper-install",
-                });
-            }
-            parsed.emit_keeper_install = true;
+            parsed.set_keeper_install_mode(ParsedKeeperInstallMode::Emit)?;
+            continue;
+        }
+        if args.take_flag("--run-keeper-install") {
+            parsed.set_keeper_install_mode(ParsedKeeperInstallMode::Run)?;
             continue;
         }
         if args.take_flag("--gateway") {
@@ -166,6 +193,10 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
             set_once(&mut parsed.nats_config, value, "--nats-config")?;
             continue;
         }
+        if let Some(value) = args.take_value("--keeper-binary")? {
+            set_once(&mut parsed.keeper_binary, value, "--keeper-binary")?;
+            continue;
+        }
         return Err(args.unexpected());
     }
 
@@ -173,7 +204,7 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
 }
 
 struct ParsedInitArgs {
-    emit_keeper_install: bool,
+    keeper_install_mode: ParsedKeeperInstallMode,
     node_id: Option<String>,
     gateway: FirstNodeGateway,
     ployzd_version: Option<String>,
@@ -182,12 +213,13 @@ struct ParsedInitArgs {
     ployzd_install_path: Option<String>,
     nats_binary: Option<String>,
     nats_config: Option<String>,
+    keeper_binary: Option<String>,
 }
 
 impl Default for ParsedInitArgs {
     fn default() -> Self {
         Self {
-            emit_keeper_install: false,
+            keeper_install_mode: ParsedKeeperInstallMode::None,
             node_id: None,
             gateway: FirstNodeGateway::Skip,
             ployzd_version: None,
@@ -196,14 +228,50 @@ impl Default for ParsedInitArgs {
             ployzd_install_path: None,
             nats_binary: None,
             nats_config: None,
+            keeper_binary: None,
         }
     }
 }
 
 impl ParsedInitArgs {
+    fn set_keeper_install_mode(
+        &mut self,
+        mode: ParsedKeeperInstallMode,
+    ) -> Result<(), PloyzctlCliError> {
+        match mode {
+            ParsedKeeperInstallMode::None => unreachable!("install mode is set from a flag"),
+            ParsedKeeperInstallMode::Emit => match &self.keeper_install_mode {
+                ParsedKeeperInstallMode::None => {
+                    self.keeper_install_mode = ParsedKeeperInstallMode::Emit;
+                    Ok(())
+                }
+                ParsedKeeperInstallMode::Emit => Err(PloyzctlCliError::DuplicateArgument {
+                    flag: "--emit-keeper-install",
+                }),
+                ParsedKeeperInstallMode::Run => Err(PloyzctlCliError::ConflictingArguments {
+                    first: "--run-keeper-install",
+                    second: "--emit-keeper-install",
+                }),
+            },
+            ParsedKeeperInstallMode::Run => match &self.keeper_install_mode {
+                ParsedKeeperInstallMode::None => {
+                    self.keeper_install_mode = ParsedKeeperInstallMode::Run;
+                    Ok(())
+                }
+                ParsedKeeperInstallMode::Emit => Err(PloyzctlCliError::ConflictingArguments {
+                    first: "--emit-keeper-install",
+                    second: "--run-keeper-install",
+                }),
+                ParsedKeeperInstallMode::Run => Err(PloyzctlCliError::DuplicateArgument {
+                    flag: "--run-keeper-install",
+                }),
+            },
+        }
+    }
+
     fn into_command(self) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
         let Self {
-            emit_keeper_install,
+            keeper_install_mode,
             node_id,
             gateway,
             ployzd_version,
@@ -212,6 +280,7 @@ impl ParsedInitArgs {
             ployzd_install_path,
             nats_binary,
             nats_config,
+            keeper_binary,
         } = self;
         let keeper_install = ParsedKeeperInstallArgs {
             ployzd_version,
@@ -225,19 +294,44 @@ impl ParsedInitArgs {
         let node_id = NodeId::try_new(required(node_id, "--node")?)
             .map_err(|error| invalid_value("--node", error))?;
 
-        if !emit_keeper_install {
-            if has_keeper_install_value {
+        if keeper_install_mode == ParsedKeeperInstallMode::None {
+            if has_keeper_install_value || keeper_binary.is_some() {
                 return Err(PloyzctlCliError::MissingRequiredArgument {
-                    flag: "--emit-keeper-install",
+                    flag: "--emit-keeper-install or --run-keeper-install",
                 });
             }
             return Ok(FirstNodeInitCommand::summary(node_id, gateway));
         }
 
-        Ok(FirstNodeInitCommand::keeper_install(
-            keeper_install.into_keeper_install(node_id, gateway)?,
-        ))
+        let keeper_install = keeper_install.into_keeper_install(node_id, gateway)?;
+        if keeper_install_mode == ParsedKeeperInstallMode::Run {
+            let keeper_binary = keeper_binary.unwrap_or_else(|| "ployz-keeper".to_owned());
+            if keeper_binary.is_empty() {
+                return Err(PloyzctlCliError::InvalidValue {
+                    flag: "--keeper-binary",
+                    message: "keeper binary is empty".to_owned(),
+                });
+            }
+            return Ok(FirstNodeInitCommand::run_keeper_install(
+                keeper_install,
+                keeper_binary,
+            ));
+        }
+        if keeper_binary.is_some() {
+            return Err(PloyzctlCliError::MissingRequiredArgument {
+                flag: "--run-keeper-install",
+            });
+        }
+
+        Ok(FirstNodeInitCommand::keeper_install(keeper_install))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedKeeperInstallMode {
+    None,
+    Emit,
+    Run,
 }
 
 struct ParsedKeeperInstallArgs {

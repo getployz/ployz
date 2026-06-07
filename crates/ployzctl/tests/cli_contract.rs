@@ -1,3 +1,4 @@
+use std::fs;
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
@@ -88,7 +89,7 @@ fn cli_init_requires_explicit_keeper_install_mode() {
             .map(str::to_owned)
         ),
         Err(PloyzctlCliError::MissingRequiredArgument { flag })
-            if flag == "--emit-keeper-install"
+            if flag == "--emit-keeper-install or --run-keeper-install"
     ));
 }
 
@@ -355,7 +356,7 @@ fn binary_help_only_advertises_implemented_commands() {
     assert_eq!(stdout(&output), format!("{USAGE}\n"));
     assert!(stdout(&output).contains("ployzctl [--nats <url>] <command>"));
     assert!(stdout(&output).contains(
-        "ployzctl init --node <id> [--gateway] [--emit-keeper-install --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path>]"
+        "ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install)"
     ));
     assert!(stdout(&output).contains(
         "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
@@ -401,6 +402,165 @@ fn binary_init_can_print_keeper_first_node_install_command() {
     assert!(stdout(&output).contains("--node 'node_1'"));
     assert!(stdout(&output).contains("--gateway"));
     assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn binary_init_can_run_keeper_first_node_install_command() {
+    let temp = temp_dir("ployzctl-fake-keeper");
+    let keeper = temp.join("ployz-keeper");
+    let captured_args = temp.join("keeper-args");
+    fs::write(
+        &keeper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'keeper installed\\n'\n",
+            captured_args.display()
+        ),
+    )
+    .expect("fake keeper can be written");
+    make_executable(&keeper);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .args(init_with_keeper_run_arg_refs(
+            keeper.to_str().expect("keeper path is utf-8"),
+        ))
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "keeper installed\n");
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        fs::read_to_string(captured_args).expect("fake keeper captured args"),
+        "first-node-install\n--node\nnode_1\n--ployzd-version\n0.1.0\n--ployzd-source\n/tmp/ployzd\n--ployzd-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ployzd-install-path\n/usr/local/bin/ployzd\n--nats-binary\n/usr/local/bin/nats-server\n--nats-config\n/etc/nats/nats-server.conf\n--gateway\n"
+    );
+}
+
+#[test]
+fn binary_init_succeeds_when_keeper_output_is_truncated() {
+    let temp = temp_dir("ployzctl-verbose-keeper");
+    let keeper = temp.join("ployz-keeper");
+    fs::write(
+        &keeper,
+        "#!/bin/sh\npython3 - <<'PY'\nprint('x' * 70000)\nPY\n",
+    )
+    .expect("fake verbose keeper can be written");
+    make_executable(&keeper);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .args(init_with_keeper_run_arg_refs(
+            keeper.to_str().expect("keeper path is utf-8"),
+        ))
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(
+        output.status.success(),
+        "stdout length: {}\nstdout:\n{}\nstderr:\n{}",
+        output.stdout.len(),
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(output.stdout.len(), 64 * 1024);
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn cli_init_rejects_emit_and_run_together() {
+    assert!(matches!(
+        parse_command(
+            [
+                "init",
+                "--node",
+                "node_1",
+                "--emit-keeper-install",
+                "--run-keeper-install",
+                "--ployzd-version",
+                "0.1.0",
+                "--ployzd-source",
+                "/tmp/ployzd",
+                "--ployzd-sha256",
+                PLOYZ_NEWLINE_SHA256,
+                "--ployzd-install-path",
+                "/usr/local/bin/ployzd",
+                "--nats-binary",
+                "/usr/local/bin/nats-server",
+                "--nats-config",
+                "/etc/nats/nats-server.conf",
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::ConflictingArguments { first, second })
+            if first == "--emit-keeper-install" && second == "--run-keeper-install"
+    ));
+}
+
+#[test]
+fn cli_init_accepts_keeper_binary_before_run_flag() {
+    let command = parse_command(
+        [
+            "init",
+            "--node",
+            "node_1",
+            "--keeper-binary",
+            "/tmp/ployz-keeper",
+            "--run-keeper-install",
+            "--ployzd-version",
+            "0.1.0",
+            "--ployzd-source",
+            "/tmp/ployzd",
+            "--ployzd-sha256",
+            PLOYZ_NEWLINE_SHA256,
+            "--ployzd-install-path",
+            "/usr/local/bin/ployzd",
+            "--nats-binary",
+            "/usr/local/bin/nats-server",
+            "--nats-config",
+            "/etc/nats/nats-server.conf",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("init command accepts order-independent keeper binary");
+
+    let PloyzctlCommand::Init(command) = command else {
+        panic!("expected init command");
+    };
+    assert_eq!(command.node_id(), &node_id("node_1"));
+}
+
+#[test]
+fn cli_init_rejects_keeper_binary_with_emit_mode() {
+    assert!(matches!(
+        parse_command(
+            [
+                "init",
+                "--node",
+                "node_1",
+                "--emit-keeper-install",
+                "--keeper-binary",
+                "/tmp/ployz-keeper",
+                "--ployzd-version",
+                "0.1.0",
+                "--ployzd-source",
+                "/tmp/ployzd",
+                "--ployzd-sha256",
+                PLOYZ_NEWLINE_SHA256,
+                "--ployzd-install-path",
+                "/usr/local/bin/ployzd",
+                "--nats-binary",
+                "/usr/local/bin/nats-server",
+                "--nats-config",
+                "/etc/nats/nats-server.conf",
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag })
+            if flag == "--run-keeper-install"
+    ));
 }
 
 #[test]
@@ -727,6 +887,30 @@ fn init_with_keeper_install_arg_refs() -> [&'static str; 17] {
     ]
 }
 
+fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<&str> {
+    vec![
+        "init",
+        "--node",
+        "node_1",
+        "--gateway",
+        "--run-keeper-install",
+        "--ployzd-version",
+        "0.1.0",
+        "--ployzd-source",
+        "/tmp/ployzd",
+        "--ployzd-sha256",
+        PLOYZ_NEWLINE_SHA256,
+        "--ployzd-install-path",
+        "/usr/local/bin/ployzd",
+        "--nats-binary",
+        "/usr/local/bin/nats-server",
+        "--nats-config",
+        "/etc/nats/nats-server.conf",
+        "--keeper-binary",
+        keeper_binary,
+    ]
+}
+
 fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
 }
@@ -753,3 +937,24 @@ fn stdout(output: &Output) -> String {
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
+
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("{}-{}", name, std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("temp dir can be created");
+    dir
+}
+
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .expect("fake keeper metadata can be read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("fake keeper can be executable");
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &std::path::Path) {}
