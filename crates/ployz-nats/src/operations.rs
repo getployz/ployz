@@ -23,7 +23,8 @@ pub use repository::{
     AsyncNatsOperationRepository, CertOperationSubmission, DeployOperationSubmission,
     MachineAddOperationSubmission, OperationLeaseClaim, OperationLeaseClaimError,
     RecordCertEventError, RecordDeployEvidenceError, RecordDeployTransitionError,
-    ReplayOperationEventsError, SubmitCertError, SubmitDeployError, SubmitMachineAddError,
+    RecordLifecycleEventError, RecordMachineAddEventError, ReplayOperationEventsError,
+    SubmitCertError, SubmitDeployError, SubmitMachineAddError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,

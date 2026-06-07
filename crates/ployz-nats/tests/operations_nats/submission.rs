@@ -112,6 +112,60 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
 }
 
 #[tokio::test]
+async fn operation_repository_records_machine_add_joined_transition() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    let accepted = repository
+        .submit_machine_add(
+            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("machine add accepted");
+
+    repository
+        .record_machine_add_joined(&accepted.operation_id, &accepted.node_id, joined_at(50))
+        .await
+        .expect("joined transition records");
+
+    assert_eq!(
+        repository
+            .operation_status(&operation_id("op_machine"))
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::MachineAdd {
+            id: operation_id("op_machine"),
+            node_id: node_id("node_2"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: FirstNodeGateway::Skip,
+            state: ployz_core::machine::MachineAddOperationState::Joining {
+                joined_at: joined_at(50),
+            },
+            last_event_sequence: event_sequence(2),
+        })
+    );
+
+    let page = repository
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id: operation_id("op_machine"),
+            start_sequence: accepted.start_sequence,
+            limit: event_replay_limit(10),
+        })
+        .await
+        .expect("machine add replay succeeds");
+
+    assert_eq!(page.events.len(), 2);
+    assert_eq!(
+        page.events.last().map(|event| &event.event),
+        Some(&OperationEvent::MachineAddJoined {
+            operation_id: operation_id("op_machine"),
+            node_id: node_id("node_2"),
+            joined_at: joined_at(50),
+        })
+    );
+}
+
+#[tokio::test]
 async fn machine_add_retry_recovers_original_join_material_after_partial_submit() {
     let nats = test_nats().await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());

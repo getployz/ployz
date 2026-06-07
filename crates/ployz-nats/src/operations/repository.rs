@@ -1,4 +1,5 @@
 use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
+use ployz_core::machine::JoinTokenRedeemedAt;
 mod submission;
 
 pub use submission::{
@@ -8,7 +9,7 @@ pub use submission::{
     SubmitMachineAddError,
 };
 
-use ployz_core::ids::{CertId, OperationId};
+use ployz_core::ids::{CertId, NodeId, OperationId};
 use ployz_core::ops::{
     CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, OperationEvent,
     OperationEventProjection, OperationEventReplayCursor, OperationEventReplayPage,
@@ -126,6 +127,21 @@ impl AsyncNatsOperationRepository {
         .await
         .map(RecordOperationEventOutcome::into_status_write)
         .map_err(RecordCertEventError::from_event_record)
+    }
+
+    pub async fn record_machine_add_joined(
+        &self,
+        operation_id: &OperationId,
+        node_id: &NodeId,
+        joined_at: JoinTokenRedeemedAt,
+    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_add_joined(operation_id, node_id, joined_at),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordMachineAddEventError::from_event_record)
     }
 
     pub async fn operation_status(
@@ -581,8 +597,11 @@ pub enum RecordDeployEvidenceError {
     StatusCursorContended,
 }
 
+pub type RecordCertEventError = RecordLifecycleEventError;
+pub type RecordMachineAddEventError = RecordLifecycleEventError;
+
 #[derive(Debug)]
-pub enum RecordCertEventError {
+pub enum RecordLifecycleEventError {
     LoadStatus(OperationStatusReadError),
     StoreStatus(OperationStatusStoreError),
     MissingOperation { operation_id: OperationId },
@@ -599,7 +618,7 @@ pub enum ReplayOperationEventsError {
     MissingOperation { operation_id: OperationId },
 }
 
-impl RecordCertEventError {
+impl RecordLifecycleEventError {
     fn from_event_record(error: RecordOperationEventError) -> Self {
         match error {
             RecordOperationEventError::LoadStatus(error) => Self::LoadStatus(error),

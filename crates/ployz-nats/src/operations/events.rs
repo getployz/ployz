@@ -4,7 +4,7 @@ use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
-use ployz_core::machine::{IssuedJoinToken, MachineName};
+use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineName};
 use ployz_core::ops::{
     CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, EventSequenceError,
     OperationEvent, OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
@@ -134,6 +134,22 @@ impl OperationEventAppend {
                 name,
                 gateway,
                 join_token,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_add_joined(
+        operation_id: &OperationId,
+        node_id: &NodeId,
+        joined_at: JoinTokenRedeemedAt,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.add.joined.{}", operation_id.as_str())),
+            OperationEvent::MachineAddJoined {
+                operation_id: operation_id.clone(),
+                node_id: node_id.clone(),
+                joined_at,
             },
         )
     }

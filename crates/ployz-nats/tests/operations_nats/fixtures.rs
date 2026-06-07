@@ -209,6 +209,10 @@ pub(super) fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
 }
 
+pub(super) fn joined_at(value: u64) -> ployz_core::machine::JoinTokenRedeemedAt {
+    ployz_core::machine::JoinTokenRedeemedAt::try_new(value).expect("valid join time")
+}
+
 pub(super) fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
     OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
 }

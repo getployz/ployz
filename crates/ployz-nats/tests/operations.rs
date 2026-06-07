@@ -2,6 +2,7 @@ use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{CertId, OperationId, RevisionId, ServiceId};
+use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
     DeployRunningStage, DeployTransition, EventSequence, OperationEvent, OperationIdempotencyKey,
 };
@@ -131,6 +132,29 @@ fn cert_submitted_append_uses_stable_message_id() {
 }
 
 #[test]
+fn machine_add_joined_append_uses_stable_message_id() {
+    let append = OperationEventAppend::machine_add_joined(
+        &operation_id("op_machine"),
+        &node_id("node_2"),
+        joined_at(50),
+    );
+
+    assert_eq!(append.subject(), "plz.v1.op.op_machine.machine.add.joined");
+    assert_eq!(
+        append.message_id().as_str(),
+        "machine.add.joined.op_machine"
+    );
+    assert_eq!(
+        append.payload(),
+        &OperationEvent::MachineAddJoined {
+            operation_id: operation_id("op_machine"),
+            node_id: node_id("node_2"),
+            joined_at: joined_at(50),
+        }
+    );
+}
+
+#[test]
 fn operation_stream_replays_matching_operation_events_from_start_sequence() {
     let mut stream = OperationEventStream::default();
     stream.append(
@@ -199,6 +223,10 @@ fn service_id(value: &str) -> ServiceId {
 
 fn cert_id(value: &str) -> CertId {
     CertId::try_new(value).expect("valid cert id")
+}
+
+fn joined_at(value: u64) -> JoinTokenRedeemedAt {
+    JoinTokenRedeemedAt::try_new(value).expect("valid join time")
 }
 
 fn node_id(value: &str) -> ployz_core::ids::NodeId {
