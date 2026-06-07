@@ -246,6 +246,11 @@ commands over iroh.
   is only a host allocator. It creates hosts, proves SSH, runs product
   commands, collects command output, and deletes hosts. It is not a product
   concept.
+- R39a. H0 exists to prove the substrate and product path already built by
+  earlier slices. It must not become a place to design install policy,
+  readiness policy, recovery policy, provider modeling, or orchestration logic.
+  If the smoke proof needs product behavior, implement that behavior in the
+  normal product command path first.
 - R40. The acceptance script is a thin shell harness. It may only do host
   lifecycle, SSH, artifact staging, command execution, output capture, and
   cleanup around this fixed product path:
@@ -277,6 +282,10 @@ commands over iroh.
 - R45. Failure output should be boring: active operation id, affected node ids,
   the failing product command output path, and the cleanup command. No
   Hetzner-specific diagnosis model.
+- R46. H0 is not a CI harness family. There is one disposable two-node smoke
+  command for v1. More providers, matrix dimensions, retries, diagnostics,
+  performance assertions, and long soak behavior are deferred until the product
+  path itself is boring.
 
 ### Simplicity And Readability
 
@@ -1669,7 +1678,7 @@ Pipeline finish:
 
 - **Goal:** Prove that install and the actual product path work on disposable
   Linux hosts with one repeatable command.
-- **Requirements:** R39-R45
+- **Requirements:** R39-R46
 - **Dependencies:** U1-U9a, U11
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
@@ -1702,6 +1711,25 @@ Pipeline finish:
   controller code, retries, or Hetzner-specific recovery behavior for H0. If
   the smoke proof needs a decision about install, machine join, deploy,
   routing, data plane, or cleanup, that decision belongs in Ployz product code.
+
+  The script should stay boring even if that makes H0 less clever. One happy
+  path and blunt failure capture are enough:
+
+  ```text
+  create hosts
+  wait for SSH
+  stage artifacts
+  run init
+  run machine add
+  run deploy
+  curl once
+  delete hosts
+  ```
+
+  Do not add parallel host orchestration, provider retry workflows, adaptive
+  readiness probes, cloud inventory, host state machines, or reusable provider
+  libraries for v1. H0 is proof that the actual product substrate works, not a
+  substrate framework.
 - **Test scenarios:**
   - Missing Hetzner token or SSH key fails before creating hosts.
   - Host creation or SSH readiness failure destroys created servers or prints
