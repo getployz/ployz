@@ -2,8 +2,7 @@
 
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
-    NodeServiceEndpoint, OPERATION_API_ENDPOINTS, OperationApiEndpoint,
-    OperationApiEndpointExecution, node_service,
+    NodeServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution, node_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsRequestFailure, NatsServiceEndpointSpec, NatsServiceSpec,
@@ -17,6 +16,11 @@ pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
 pub const NODE_SERVICE_NAME: &str = "plz-node";
 pub const NODE_SERVICE_DESCRIPTION: &str = "Ployz node-local runtime service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
+pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 3] = [
+    OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::OpsStatus,
+    OperationApiEndpoint::OpsWatch,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonServiceCatalog {
@@ -70,7 +74,7 @@ pub fn api_service() -> NatsServiceSpec {
 
 #[must_use]
 pub fn api_endpoints() -> Vec<NatsServiceEndpointSpec> {
-    OPERATION_API_ENDPOINTS
+    IMPLEMENTED_OPERATION_API_ENDPOINTS
         .iter()
         .copied()
         .map(api_endpoint_spec)

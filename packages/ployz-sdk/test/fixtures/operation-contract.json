@@ -37,6 +37,31 @@
       }
     }
   },
+  "machine_add_request": {
+    "operation_id": "op_machine",
+    "idempotency_key": "idem_machine",
+    "node_id": "node_2",
+    "name": "edge_2",
+    "gateway": "skip"
+  },
+  "machine_add_response": {
+    "status": "ok",
+    "value": {
+      "accepted": {
+        "operation_id": "op_machine",
+        "watch_subject": "plz.v1.op.op_machine.>",
+        "start_sequence": "7",
+        "owner_lease": {
+          "operation_id": "op_machine",
+          "owner_id": "control",
+          "expires_at": "120"
+        }
+      },
+      "node_id": "node_2",
+      "bootstrap_url": "https://get.ployz.sh",
+      "join_token": "join_once_123"
+    }
+  },
   "operation_status_snapshot": {
     "status": {
       "kind": "deploy",

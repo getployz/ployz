@@ -6,6 +6,7 @@
 //! not contain orchestration logic.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use ts_rs::TS;
 
 pub mod operation_api;
@@ -24,6 +25,7 @@ pub use ployz_core::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
     SubjectTokenError,
 };
+pub use ployz_core::machine::MachineName;
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, CancellationReason, EventSequence,
     EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
@@ -52,6 +54,144 @@ pub struct DeploySubmitRequest {
 }
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineAddRequest {
+    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
+    pub node_id: NodeId,
+    pub name: MachineName,
+    pub gateway: MachineAddGateway,
+}
+
+pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineAddGateway {
+    Install,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineAddAccepted {
+    pub accepted: AcceptedOperation,
+    pub node_id: NodeId,
+    pub bootstrap_url: MachineBootstrapUrl,
+    pub join_token: MachineJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineAddError {
+    Unavailable {
+        operation_id: OperationId,
+        source: MachineAddUnavailableSource,
+    },
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineAddUnavailableSource {
+    StatusStore {
+        failure: OperationSubmitStatusFailure,
+    },
+    EventLog {
+        failure: OperationSubmitEventFailure,
+    },
+    Clock {
+        failure: OperationSubmitClockFailure,
+    },
+    BootstrapMaterial {
+        failure: BootstrapMaterialFailure,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum BootstrapMaterialFailure {
+    EncodeJoinBundle,
+    IssueJoinToken,
+    RenderBootstrapUrl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(type = "Brand<string, \"MachineBootstrapUrl\">")]
+#[serde(transparent)]
+pub struct MachineBootstrapUrl(String);
+
+impl MachineBootstrapUrl {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, BootstrapCommandError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(BootstrapCommandError::EmptyBootstrapUrl);
+        }
+        if !value.starts_with("https://")
+            || value
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(BootstrapCommandError::InvalidBootstrapUrl);
+        }
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(type = "Brand<string, \"MachineJoinToken\">")]
+#[serde(transparent)]
+pub struct MachineJoinToken(String);
+
+impl MachineJoinToken {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, BootstrapCommandError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(BootstrapCommandError::EmptyJoinToken);
+        }
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(BootstrapCommandError::InvalidJoinToken);
+        }
+
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MachineJoinToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("MachineJoinToken")
+            .field(&"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootstrapCommandError {
+    EmptyBootstrapUrl,
+    InvalidBootstrapUrl,
+    EmptyJoinToken,
+    InvalidJoinToken,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -97,14 +237,20 @@ pub enum DeploySubmitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeploySubmitUnavailableSource {
-    StatusStore { failure: DeploySubmitStatusFailure },
-    EventLog { failure: DeploySubmitEventFailure },
-    Clock { failure: DeploySubmitClockFailure },
+    StatusStore {
+        failure: OperationSubmitStatusFailure,
+    },
+    EventLog {
+        failure: OperationSubmitEventFailure,
+    },
+    Clock {
+        failure: OperationSubmitClockFailure,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum DeploySubmitStatusFailure {
+pub enum OperationSubmitStatusFailure {
     OpenBucket,
     EncodeStatus,
     DecodeStatus,
@@ -120,7 +266,7 @@ pub enum DeploySubmitStatusFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum DeploySubmitEventFailure {
+pub enum OperationSubmitEventFailure {
     EncodeEvent,
     DecodeEvent,
     PublishRequest,
@@ -132,7 +278,7 @@ pub enum DeploySubmitEventFailure {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum DeploySubmitClockFailure {
+pub enum OperationSubmitClockFailure {
     BeforeUnixEpoch,
 }
 

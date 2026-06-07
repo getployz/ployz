@@ -8,7 +8,11 @@ import {
   certBundleRef,
   deploySubmitRequest,
   eventSequence,
+  machineAddRequest,
+  machineBootstrapUrl,
+  machineJoinToken,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
+  nodeId,
   OPERATION_API_CONTRACTS,
   operationId,
   operationEventReplayLimit,
@@ -22,6 +26,9 @@ import type {
   AcceptedOperation,
   DeploySubmitResponse,
   DeploySubmitRequest,
+  MachineAddAccepted,
+  MachineAddResponse,
+  MachineAddRequest,
   OperationEventReplayPage,
   OperationStatusSnapshot,
   OperationSubject,
@@ -56,6 +63,24 @@ test("deploy returns an operation handle with status and replay helpers", async 
   ]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
   assert.deepEqual(page, defaultFixture().operation_event_replay_page);
+});
+
+test("machine add returns an operation handle with bootstrap material", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+  const input = machineAddInput();
+  const request = machineAddRequest(input);
+
+  const handle = await client.machineAdd(input);
+  const status = await handle.status();
+
+  assert.equal(handle.operationId, "op_machine");
+  assert.equal(handle.nodeId, "node_2");
+  assert.equal(handle.bootstrapUrl, "https://get.ployz.sh");
+  assert.equal(handle.joinToken, "join_once_123");
+  assert.deepEqual(transport.machineAddRequests, [request]);
+  assert.deepEqual(transport.statusRequests, [{ operation_id: "op_machine" }]);
+  assert.deepEqual(status, defaultFixture().operation_status_snapshot);
 });
 
 test("replay pages advance through replay cursors", async () => {
@@ -129,11 +154,16 @@ test("TypeScript DTOs match the Rust-emitted operation fixture", () => {
   const transport = new RecordingTransport(fixture);
 
   assert.deepEqual(transport.accepted, fixture.accepted_operation);
+  assert.deepEqual(transport.machineAddAccepted, fixture.machine_add_response.value);
   assert.deepEqual(transport.status, fixture.operation_status_snapshot);
   assert.deepEqual(transport.replay, fixture.operation_event_replay_page);
   assert.deepEqual(fixture.deploy_submit_response, {
     status: "ok",
     value: fixture.accepted_operation,
+  });
+  assert.deepEqual(fixture.machine_add_response, {
+    status: "ok",
+    value: fixture.machine_add_response.value,
   });
   assert.deepEqual(fixture.ops_status_response, {
     status: "ok",
@@ -173,6 +203,24 @@ test("sdk maps raw deploy input to the wire request", () => {
   );
 });
 
+test("sdk maps raw machine add input to the wire request", () => {
+  assert.deepEqual(machineAddRequest(machineAddInput()), {
+    operation_id: "op_machine",
+    idempotency_key: "idem_machine",
+    node_id: "node_2",
+    name: "edge_2",
+    gateway: "skip",
+  });
+  assert.throws(
+    () => machineAddRequest({ ...machineAddInput(), name: "edge.2" }),
+    /machine name/,
+  );
+  assert.throws(
+    () => machineAddRequest({ ...machineAddInput(), nodeId: "node.2" }),
+    /node id/,
+  );
+});
+
 test("sdk exports operation subjects", () => {
   const subject: OperationSubject = {
     kind: "deploy",
@@ -192,6 +240,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "AcceptedOperation",
       error: "DeploySubmitError",
       response: "DeploySubmitResponse",
+    },
+    {
+      name: "machine.add",
+      subject: "plz.v1.svc.api.machine.add",
+      execution: "accepts_operation",
+      request: "MachineAddRequest",
+      success: "MachineAddAccepted",
+      error: "MachineAddError",
+      response: "MachineAddResponse",
     },
     {
       name: "ops.status",
@@ -223,22 +280,30 @@ test("sdk helpers enforce public primitive boundaries", () => {
   assert.throws(() => eventSequence("18446744073709551616"));
   assert.equal(certBundleRef("obj://PLZ_CERTS/cert_api/rev_1"), "obj://PLZ_CERTS/cert_api/rev_1");
   assert.throws(() => certBundleRef("obj://PLZ_CERTS//rev_1"));
+  assert.equal(machineBootstrapUrl("https://get.ployz.sh"), "https://get.ployz.sh");
+  assert.throws(() => machineBootstrapUrl("http://get.ployz.sh"));
+  assert.equal(machineJoinToken("join_once_123"), "join_once_123");
+  assert.throws(() => machineJoinToken("join token"));
 });
 
 class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
+  readonly machineAddRequests: MachineAddRequest[] = [];
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
+  readonly machineAddAccepted: MachineAddAccepted;
   readonly status: OperationStatusSnapshot;
   readonly replay: OperationEventReplayPage;
   readonly replayPages: OperationEventReplayPage[] = [];
   deployResponse?: DeploySubmitResponse;
+  machineAddResponse?: MachineAddResponse;
   statusResponse?: OpsStatusResponse;
   watchResponse?: OpsWatchResponse;
 
   constructor(fixture: OperationFixture) {
     this.accepted = fixture.accepted_operation;
+    this.machineAddAccepted = fixture.machine_add_response.value;
     this.status = fixture.operation_status_snapshot;
     this.replay = fixture.operation_event_replay_page;
   }
@@ -246,6 +311,11 @@ class RecordingTransport implements PloyzOperationTransport {
   async deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse> {
     this.deployRequests.push(request);
     return this.deployResponse ?? { status: "ok", value: this.accepted };
+  }
+
+  async machineAdd(request: MachineAddRequest): Promise<MachineAddResponse> {
+    this.machineAddRequests.push(request);
+    return this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted };
   }
 
   async opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse> {
@@ -265,6 +335,7 @@ class RecordingTransport implements PloyzOperationTransport {
 
 interface OperationFixture {
   accepted_operation: AcceptedOperation;
+  machine_add_response: { status: "ok"; value: MachineAddAccepted };
   operation_status_snapshot: OperationStatusSnapshot;
   operation_event_replay_page: OperationEventReplayPage;
 }
@@ -272,6 +343,18 @@ interface OperationFixture {
 function defaultFixture(): OperationFixture {
   return {
     accepted_operation: acceptedOperation("op_123"),
+    machine_add_response: {
+      status: "ok",
+      value: {
+        accepted: {
+          ...acceptedOperation("op_machine"),
+          start_sequence: eventSequence(7),
+        },
+        node_id: nodeId("node_2"),
+        bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
+        join_token: machineJoinToken("join_once_123"),
+      },
+    },
     operation_status_snapshot: {
       status: {
         kind: "deploy",
@@ -304,6 +387,16 @@ function deployInput() {
     targetRevision: "rev_2",
     image: "ghcr.io/acme/api:rev-2",
     replicas: 1,
+  };
+}
+
+function machineAddInput() {
+  return {
+    operationId: "op_machine",
+    idempotencyKey: "idem_machine",
+    nodeId: "node_2",
+    name: "edge_2",
+    gateway: "skip" as const,
   };
 }
 

@@ -2,8 +2,8 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{deploy_submit, ops_status, ops_watch};
-use crate::services::{api_endpoint_spec, api_service};
-use ployz_core::subjects::{OPERATION_API_ENDPOINTS, OperationApiEndpoint};
+use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
+use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
     decode_json_request, start_nats_service,
@@ -26,7 +26,7 @@ pub async fn start_operation_api_service(
         .map_err(ApiServiceRuntimeError::Nats)?;
     let controllers = Arc::new(controllers);
 
-    for endpoint in OPERATION_API_ENDPOINTS {
+    for endpoint in IMPLEMENTED_OPERATION_API_ENDPOINTS {
         bind_operation_endpoint(&mut runtime, Arc::clone(&controllers), endpoint).await?;
     }
 
@@ -62,6 +62,9 @@ async fn bind_operation_endpoint(
                 |controllers, request| async move { ops_watch(&controllers, request).await },
             )
             .await
+        }
+        OperationApiEndpoint::MachineAdd => {
+            Err(ApiServiceRuntimeError::UnimplementedEndpoint { endpoint })
         }
     }
 }
@@ -127,12 +130,12 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiServiceRuntimeError {
     Nats(NatsServiceRuntimeError),
+    UnimplementedEndpoint { endpoint: OperationApiEndpoint },
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::services::api_service;
-    use ployz_core::subjects::OPERATION_API_ENDPOINTS;
+    use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_service};
 
     #[test]
     fn operation_api_service_advertises_only_bound_endpoints() {
@@ -142,7 +145,7 @@ mod tests {
                 .into_iter()
                 .map(|endpoint| endpoint.subject)
                 .collect::<Vec<_>>(),
-            OPERATION_API_ENDPOINTS
+            IMPLEMENTED_OPERATION_API_ENDPOINTS
                 .iter()
                 .map(|endpoint| endpoint.subject().to_owned())
                 .collect::<Vec<_>>()

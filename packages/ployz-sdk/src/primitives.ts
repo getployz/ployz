@@ -11,6 +11,9 @@ import {
   type EventSequence,
   type FailureMessage,
   type ImageReference,
+  type MachineBootstrapUrl,
+  type MachineJoinToken,
+  type MachineName,
   type NodeId,
   type OperationEventReplayLimit,
   type OperationId,
@@ -49,6 +52,32 @@ export function revisionId(value: string): RevisionId {
 
 export function nodeId(value: string): NodeId {
   return subjectToken(value, "node id") as NodeId;
+}
+
+export function machineName(value: string): MachineName {
+  return subjectToken(value, "machine name") as MachineName;
+}
+
+export function machineBootstrapUrl(value: string): MachineBootstrapUrl {
+  if (value.trim() === "") {
+    throw new RangeError("machine bootstrap URL must not be empty");
+  }
+  if (!value.startsWith("https://") || /[\s\p{C}]/u.test(value)) {
+    throw new RangeError("machine bootstrap URL must be HTTPS and contain no invisible characters");
+  }
+
+  return value as MachineBootstrapUrl;
+}
+
+export function machineJoinToken(value: string): MachineJoinToken {
+  if (value === "") {
+    throw new RangeError("machine join token must not be empty");
+  }
+  if (/[\s\p{C}]/u.test(value)) {
+    throw new RangeError("machine join token must contain no invisible characters");
+  }
+
+  return value as MachineJoinToken;
 }
 
 export function containerId(value: string): ContainerId {

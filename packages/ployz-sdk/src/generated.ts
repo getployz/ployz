@@ -24,6 +24,12 @@ export type ContainerId = Brand<string, "ContainerId">;
 
 export type CertId = Brand<string, "CertId">;
 
+export type MachineName = Brand<string, "MachineName">;
+
+export type MachineBootstrapUrl = Brand<string, "MachineBootstrapUrl">;
+
+export type MachineJoinToken = Brand<string, "MachineJoinToken">;
+
 export type ImageReference = Brand<string, "ImageReference">;
 
 export type ReplicaCount = SafeInteger<"ReplicaCount">;
@@ -118,6 +124,12 @@ export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_curre
 
 export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
 
+export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, };
+
+export type MachineAddGateway = "install" | "skip";
+
+export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_token: MachineJoinToken, };
+
 export type OpsStatusRequest = { operation_id: OperationId, };
 
 export type AcceptedOperation = { operation_id: OperationId, watch_subject: string, start_sequence: EventSequence, owner_lease: OperationOwnerLease, };
@@ -126,13 +138,19 @@ export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "stat
 
 export type DeploySubmitError = { "error": "unavailable", operation_id: OperationId, source: DeploySubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type DeploySubmitUnavailableSource = { "source": "status_store", failure: DeploySubmitStatusFailure, } | { "source": "event_log", failure: DeploySubmitEventFailure, } | { "source": "clock", failure: DeploySubmitClockFailure, };
+export type DeploySubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
 
-export type DeploySubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "encode_lease" | "decode_lease" | "cas_conflict" | "get_status" | "clock" | "timeout";
+export type OperationSubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "encode_lease" | "decode_lease" | "cas_conflict" | "get_status" | "clock" | "timeout";
 
-export type DeploySubmitEventFailure = "encode_event" | "decode_event" | "publish_request" | "publish_ack" | "read_event" | "timeout" | "invalid_ack_sequence";
+export type OperationSubmitEventFailure = "encode_event" | "decode_event" | "publish_request" | "publish_ack" | "read_event" | "timeout" | "invalid_ack_sequence";
 
-export type DeploySubmitClockFailure = "before_unix_epoch";
+export type OperationSubmitClockFailure = "before_unix_epoch";
+
+export type MachineAddError = { "error": "unavailable", operation_id: OperationId, source: MachineAddUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type MachineAddUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "bootstrap_material", failure: BootstrapMaterialFailure, };
+
+export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token" | "render_bootstrap_url";
 
 export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OpsStatusUnavailableSource, };
 
@@ -148,6 +166,8 @@ export type EventReplayFailure = "decode_event" | "read_event" | "timeout" | "in
 
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
+export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
+
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 export type OpsWatchRequest = OperationEventReplayRequest;
@@ -156,6 +176,7 @@ export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, Op
 
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
+  { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
 ] as const;

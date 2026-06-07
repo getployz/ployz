@@ -21,12 +21,14 @@ pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
+    MachineAdd,
     OpsStatus,
     OpsWatch,
 }
 
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 3] = [
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 4] = [
     OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
 ];
@@ -42,6 +44,7 @@ impl OperationApiEndpoint {
     pub const fn name(self) -> &'static str {
         match self {
             Self::DeploySubmit => "deploy.submit",
+            Self::MachineAdd => "machine.add",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
         }
@@ -51,6 +54,7 @@ impl OperationApiEndpoint {
     pub const fn subject(self) -> &'static str {
         match self {
             Self::DeploySubmit => API_DEPLOY_SUBMIT,
+            Self::MachineAdd => API_MACHINE_ADD,
             Self::OpsStatus => API_OPS_STATUS,
             Self::OpsWatch => API_OPS_WATCH,
         }
@@ -59,7 +63,9 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn execution(self) -> OperationApiEndpointExecution {
         match self {
-            Self::DeploySubmit => OperationApiEndpointExecution::AcceptsOperation,
+            Self::DeploySubmit | Self::MachineAdd => {
+                OperationApiEndpointExecution::AcceptsOperation
+            }
             Self::OpsStatus | Self::OpsWatch => OperationApiEndpointExecution::Query,
         }
     }

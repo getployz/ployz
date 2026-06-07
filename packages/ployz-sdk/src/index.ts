@@ -15,6 +15,9 @@ export {
   eventSequence,
   failureMessage,
   imageReference,
+  machineBootstrapUrl,
+  machineJoinToken,
+  machineName,
   nodeId,
   operationEventReplayLimit,
   operationId,
@@ -34,6 +37,8 @@ import {
 } from "./generated.ts";
 import {
   imageReference,
+  machineName,
+  nodeId,
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
@@ -47,6 +52,11 @@ import type {
   DeploySubmitRequest,
   DeploySubmitResponse,
   EventSequence,
+  MachineAddAccepted,
+  MachineAddError,
+  MachineAddGateway,
+  MachineAddRequest,
+  MachineAddResponse,
   OperationApiResponse,
   OperationEventReplayCursor,
   OperationEventReplayLimit,
@@ -63,6 +73,7 @@ import type {
 
 export interface PloyzOperationTransport {
   deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse>;
+  machineAdd(request: MachineAddRequest): Promise<MachineAddResponse>;
   opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse>;
   opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse>;
 }
@@ -90,6 +101,14 @@ export interface PloyzDeployInput {
   replicas: number;
 }
 
+export interface PloyzMachineAddInput {
+  operationId: string;
+  idempotencyKey: string;
+  nodeId: string;
+  name: string;
+  gateway: MachineAddGateway;
+}
+
 export class PloyzClient {
   readonly #transport: PloyzOperationTransport;
 
@@ -105,6 +124,14 @@ export class PloyzClient {
     );
     return new OperationHandle(this.#transport, accepted);
   }
+
+  async machineAdd(input: PloyzMachineAddInput): Promise<MachineAddHandle> {
+    const accepted = unwrapApiResponse(
+      "machine.add",
+      await this.#transport.machineAdd(machineAddRequest(input)),
+    );
+    return new MachineAddHandle(this.#transport, accepted);
+  }
 }
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
@@ -117,6 +144,16 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
       image: imageReference(input.image),
       replicas: replicaCount(input.replicas),
     },
+  };
+}
+
+export function machineAddRequest(input: PloyzMachineAddInput): MachineAddRequest {
+  return {
+    operation_id: operationId(input.operationId),
+    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
+    node_id: nodeId(input.nodeId),
+    name: machineName(input.name),
+    gateway: input.gateway,
   };
 }
 
@@ -174,6 +211,27 @@ export class OperationHandle {
   }
 }
 
+export class MachineAddHandle extends OperationHandle {
+  readonly machine: MachineAddAccepted;
+
+  constructor(transport: PloyzOperationTransport, machine: MachineAddAccepted) {
+    super(transport, machine.accepted);
+    this.machine = machine;
+  }
+
+  get nodeId(): MachineAddAccepted["node_id"] {
+    return this.machine.node_id;
+  }
+
+  get bootstrapUrl(): MachineAddAccepted["bootstrap_url"] {
+    return this.machine.bootstrap_url;
+  }
+
+  get joinToken(): MachineAddAccepted["join_token"] {
+    return this.machine.join_token;
+  }
+}
+
 function unwrapApiResponse<T, E>(
   endpoint: PloyzApiEndpoint,
   response: OperationApiResponse<T, E>,
@@ -188,5 +246,6 @@ function unwrapApiResponse<T, E>(
 
 export type PloyzOperationError =
   | PloyzApiError<DeploySubmitError>
+  | PloyzApiError<MachineAddError>
   | PloyzApiError<OpsStatusError>
   | PloyzApiError<OpsWatchError>;

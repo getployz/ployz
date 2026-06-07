@@ -5,14 +5,18 @@ use ployz_sdk_types::{
     CertRunningStage, CertTextError, CertValidAt, CertValidityWindow, DeployOperationState,
     DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, NonEmptyTextError, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse,
-    OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
-    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
+    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName,
+    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
+    RoutePortError, ServiceId, SubjectTokenError,
+    operation_api::{
+        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+    },
 };
 use ts_rs::{Config, TS};
 
@@ -149,6 +153,40 @@ fn sdk_exports_operation_api_wire_types() {
         EventSequence::try_new(1).expect("valid event sequence")
     );
     assert_eq!(value.owner_lease, operation_lease("op_123", "control", 120));
+
+    let machine_add = MachineAddRequest {
+        operation_id: ployz_sdk_types::OperationId::try_new("op_machine")
+            .expect("valid operation id"),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_machine")
+            .expect("valid idempotency key"),
+        node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
+        name: MachineName::try_new("edge_2").expect("valid machine name"),
+        gateway: MachineAddGateway::Skip,
+    };
+    let machine_response: MachineAddResponse = OperationApiResponse::Ok {
+        value: MachineAddAccepted {
+            accepted: AcceptedOperation {
+                operation_id: ployz_sdk_types::OperationId::try_new("op_machine")
+                    .expect("valid operation id"),
+                watch_subject: "plz.v1.op.op_machine.>".to_owned(),
+                start_sequence: EventSequence::try_new(7).expect("valid event sequence"),
+                owner_lease: operation_lease("op_machine", "control", 120),
+            },
+            node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
+            bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+                .expect("valid bootstrap url"),
+            join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_string(&machine_add).expect("request serializes"),
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&machine_response).expect("response serializes"),
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7","owner_lease":{"operation_id":"op_machine","owner_id":"control","expires_at":"120"}},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","join_token":"join_once_123"}}"#
+    );
 }
 
 #[test]
@@ -159,9 +197,11 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     .expect("fixture is json");
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
+    assert_fixture::<MachineAddRequest>(&fixture, "machine_add_request");
     assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
+    assert_fixture::<MachineAddResponse>(&fixture, "machine_add_response");
     assert_fixture::<OperationStatusSnapshot>(&fixture, "operation_status_snapshot");
     assert_fixture::<OpsStatusResponse>(&fixture, "ops_status_response");
     assert_fixture::<OperationEventReplayPage>(&fixture, "operation_event_replay_page");
@@ -180,6 +220,7 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
 #[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
+    assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
         OpsWatchApi,
@@ -200,6 +241,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "AcceptedOperation".to_owned(),
                 "DeploySubmitError".to_owned(),
                 "DeploySubmitResponse",
+            ),
+            (
+                "machine.add",
+                "plz.v1.svc.api.machine.add",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "MachineAddRequest".to_owned(),
+                "MachineAddAccepted".to_owned(),
+                "MachineAddError".to_owned(),
+                "MachineAddResponse",
             ),
             (
                 "ops.status",
@@ -355,6 +405,14 @@ fn sdk_exports_constructor_error_types() {
         Err(RouteHostnameError::Invalid { .. })
     ));
     assert!(matches!(RoutePort::try_new(0), Err(RoutePortError::Zero)));
+    assert!(matches!(
+        MachineBootstrapUrl::try_new("http://get.ployz.sh"),
+        Err(ployz_sdk_types::BootstrapCommandError::InvalidBootstrapUrl)
+    ));
+    assert!(matches!(
+        MachineJoinToken::try_new("join token"),
+        Err(ployz_sdk_types::BootstrapCommandError::InvalidJoinToken)
+    ));
 }
 
 fn valid_at(value: u64) -> CertValidAt {

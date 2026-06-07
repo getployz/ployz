@@ -1,8 +1,9 @@
 //! User-facing operation API contract registry.
 
 use crate::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, OperationStatusSnapshot,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, OperationStatusSnapshot, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -22,6 +23,7 @@ macro_rules! operation_api_contracts {
     ($macro:ident) => {
         $macro!(
             $crate::operation_api::DeploySubmitApi,
+            $crate::operation_api::MachineAddApi,
             $crate::operation_api::OpsStatusApi,
             $crate::operation_api::OpsWatchApi
         );
@@ -38,6 +40,18 @@ impl OperationApiContract for DeploySubmitApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeploySubmit;
     const RESPONSE_ALIAS: &'static str = "DeploySubmitResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineAddApi;
+
+impl OperationApiContract for MachineAddApi {
+    type Request = MachineAddRequest;
+    type Success = MachineAddAccepted;
+    type Error = MachineAddError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineAdd;
+    const RESPONSE_ALIAS: &'static str = "MachineAddResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

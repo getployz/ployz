@@ -13,9 +13,9 @@ use ployz_nats::operations::{
     SubmitDeployError as SubmitDeployRepositoryError,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitClockFailure, DeploySubmitError, DeploySubmitEventFailure,
-    DeploySubmitRequest, DeploySubmitStatusFailure, DeploySubmitUnavailableSource,
-    EventReplayFailure, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitUnavailableSource,
+    EventReplayFailure, OperationSubmitClockFailure, OperationSubmitEventFailure,
+    OperationSubmitStatusFailure, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
     OpsWatchUnavailableSource, StatusReadFailure,
 };
 
@@ -82,7 +82,7 @@ fn deploy_submit_error_from_submit_error(
         SubmitDeployRepositoryError::Clock { .. } => DeploySubmitError::Unavailable {
             operation_id,
             source: DeploySubmitUnavailableSource::Clock {
-                failure: DeploySubmitClockFailure::BeforeUnixEpoch,
+                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
             },
         },
         SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
@@ -151,36 +151,38 @@ pub async fn ops_watch(
         .map_err(|error| ops_watch_error_from_replay_error(operation_id, error))
 }
 
-fn deploy_submit_status_failure(error: &OperationStatusStoreError) -> DeploySubmitStatusFailure {
+fn deploy_submit_status_failure(error: &OperationStatusStoreError) -> OperationSubmitStatusFailure {
     match error {
-        OperationStatusStoreError::OpenBucket { .. } => DeploySubmitStatusFailure::OpenBucket,
-        OperationStatusStoreError::EncodeStatus(_) => DeploySubmitStatusFailure::EncodeStatus,
-        OperationStatusStoreError::DecodeStatus(_) => DeploySubmitStatusFailure::DecodeStatus,
+        OperationStatusStoreError::OpenBucket { .. } => OperationSubmitStatusFailure::OpenBucket,
+        OperationStatusStoreError::EncodeStatus(_) => OperationSubmitStatusFailure::EncodeStatus,
+        OperationStatusStoreError::DecodeStatus(_) => OperationSubmitStatusFailure::DecodeStatus,
         OperationStatusStoreError::EncodeSubmission(_) => {
-            DeploySubmitStatusFailure::EncodeSubmission
+            OperationSubmitStatusFailure::EncodeSubmission
         }
         OperationStatusStoreError::DecodeSubmission(_) => {
-            DeploySubmitStatusFailure::DecodeSubmission
+            OperationSubmitStatusFailure::DecodeSubmission
         }
-        OperationStatusStoreError::EncodeLease(_) => DeploySubmitStatusFailure::EncodeLease,
-        OperationStatusStoreError::DecodeLease(_) => DeploySubmitStatusFailure::DecodeLease,
-        OperationStatusStoreError::CasConflict { .. } => DeploySubmitStatusFailure::CasConflict,
-        OperationStatusStoreError::GetStatus { .. } => DeploySubmitStatusFailure::GetStatus,
-        OperationStatusStoreError::Clock { .. } => DeploySubmitStatusFailure::Clock,
-        OperationStatusStoreError::Timeout { .. } => DeploySubmitStatusFailure::Timeout,
+        OperationStatusStoreError::EncodeLease(_) => OperationSubmitStatusFailure::EncodeLease,
+        OperationStatusStoreError::DecodeLease(_) => OperationSubmitStatusFailure::DecodeLease,
+        OperationStatusStoreError::CasConflict { .. } => OperationSubmitStatusFailure::CasConflict,
+        OperationStatusStoreError::GetStatus { .. } => OperationSubmitStatusFailure::GetStatus,
+        OperationStatusStoreError::Clock { .. } => OperationSubmitStatusFailure::Clock,
+        OperationStatusStoreError::Timeout { .. } => OperationSubmitStatusFailure::Timeout,
     }
 }
 
-fn deploy_submit_event_failure(error: &OperationEventLogError) -> DeploySubmitEventFailure {
+fn deploy_submit_event_failure(error: &OperationEventLogError) -> OperationSubmitEventFailure {
     match error {
-        OperationEventLogError::EncodeEvent(_) => DeploySubmitEventFailure::EncodeEvent,
-        OperationEventLogError::DecodeEvent(_) => DeploySubmitEventFailure::DecodeEvent,
-        OperationEventLogError::PublishRequest { .. } => DeploySubmitEventFailure::PublishRequest,
-        OperationEventLogError::PublishAck { .. } => DeploySubmitEventFailure::PublishAck,
-        OperationEventLogError::ReadEvent { .. } => DeploySubmitEventFailure::ReadEvent,
-        OperationEventLogError::Timeout { .. } => DeploySubmitEventFailure::Timeout,
+        OperationEventLogError::EncodeEvent(_) => OperationSubmitEventFailure::EncodeEvent,
+        OperationEventLogError::DecodeEvent(_) => OperationSubmitEventFailure::DecodeEvent,
+        OperationEventLogError::PublishRequest { .. } => {
+            OperationSubmitEventFailure::PublishRequest
+        }
+        OperationEventLogError::PublishAck { .. } => OperationSubmitEventFailure::PublishAck,
+        OperationEventLogError::ReadEvent { .. } => OperationSubmitEventFailure::ReadEvent,
+        OperationEventLogError::Timeout { .. } => OperationSubmitEventFailure::Timeout,
         OperationEventLogError::InvalidAckSequence { .. } => {
-            DeploySubmitEventFailure::InvalidAckSequence
+            OperationSubmitEventFailure::InvalidAckSequence
         }
     }
 }
@@ -237,8 +239,8 @@ mod tests {
         SubmitDeployError as SubmitDeployRepositoryError,
     };
     use ployz_sdk_types::{
-        DeploySubmitError, DeploySubmitEventFailure, DeploySubmitStatusFailure,
-        DeploySubmitUnavailableSource, EventReplayFailure, OpsWatchError,
+        DeploySubmitError, DeploySubmitUnavailableSource, EventReplayFailure,
+        OperationSubmitEventFailure, OperationSubmitStatusFailure, OpsWatchError,
         OpsWatchUnavailableSource, StatusReadFailure,
     };
 
@@ -256,7 +258,7 @@ mod tests {
             DeploySubmitError::Unavailable {
                 operation_id,
                 source: DeploySubmitUnavailableSource::StatusStore {
-                    failure: DeploySubmitStatusFailure::CasConflict,
+                    failure: OperationSubmitStatusFailure::CasConflict,
                 },
             }
         );
@@ -276,7 +278,7 @@ mod tests {
             DeploySubmitError::Unavailable {
                 operation_id,
                 source: DeploySubmitUnavailableSource::EventLog {
-                    failure: DeploySubmitEventFailure::PublishRequest,
+                    failure: OperationSubmitEventFailure::PublishRequest,
                 },
             }
         );
