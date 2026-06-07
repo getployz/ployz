@@ -1322,6 +1322,7 @@ name = "ployz-keeper"
 version = "0.1.0"
 dependencies = [
  "ployz-core",
+ "sha2",
 ]
 
 [[package]]

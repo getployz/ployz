@@ -1,5 +1,9 @@
 //! Artifact targets installed by keeper.
 
+use sha2::{Digest, Sha256};
+use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +141,14 @@ impl ArtifactTarget {
             Self::Ployzd(_) => ArtifactKind::Ployzd,
         }
     }
+
+    #[must_use]
+    pub const fn digest(&self) -> &Sha256Digest {
+        match self {
+            Self::Keeper(target) => &target.digest,
+            Self::Ployzd(target) => &target.digest,
+        }
+    }
 }
 
 impl From<KeeperArtifactTarget> for ArtifactTarget {
@@ -172,3 +184,121 @@ fn validate_install_path(install_path: PathBuf) -> Result<PathBuf, ArtifactTarge
     }
     Ok(install_path)
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedArtifactFile {
+    pub path: PathBuf,
+    pub digest: Sha256Digest,
+}
+
+pub fn verify_artifact_file(
+    path: impl AsRef<Path>,
+    expected: &Sha256Digest,
+) -> Result<VerifiedArtifactFile, ArtifactVerificationError> {
+    let path = path.as_ref();
+    let actual = sha256_file(path)?;
+    if actual != *expected {
+        return Err(ArtifactVerificationError::DigestMismatch {
+            path: path.to_path_buf(),
+            expected: expected.clone(),
+            actual,
+        });
+    }
+
+    Ok(VerifiedArtifactFile {
+        path: path.to_path_buf(),
+        digest: actual,
+    })
+}
+
+fn sha256_file(path: &Path) -> Result<Sha256Digest, ArtifactVerificationError> {
+    let mut file = File::open(path).map_err(|error| ArtifactVerificationError::ReadFailed {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let bytes_read =
+            file.read(&mut buffer)
+                .map_err(|error| ArtifactVerificationError::ReadFailed {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+        let (chunk, _) = buffer.split_at(bytes_read);
+        hasher.update(chunk);
+    }
+
+    let digest = hasher.finalize();
+    Ok(Sha256Digest(format!("{digest:x}")))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactVerificationError {
+    ReadFailed {
+        path: PathBuf,
+        message: String,
+    },
+    DigestMismatch {
+        path: PathBuf,
+        expected: Sha256Digest,
+        actual: Sha256Digest,
+    },
+}
+
+impl fmt::Display for ArtifactVerificationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadFailed { path, message } => {
+                write!(
+                    formatter,
+                    "failed to read artifact {}: {message}",
+                    path.display()
+                )
+            }
+            Self::DigestMismatch {
+                path,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "artifact {} sha256 mismatch: expected {}, got {}",
+                path.display(),
+                expected.as_str(),
+                actual.as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ArtifactVerificationError {}
+
+impl fmt::Display for ArtifactTargetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyVersion => formatter.write_str("artifact version is empty"),
+            Self::EmptySource => formatter.write_str("artifact source is empty"),
+            Self::EmptyDigest => formatter.write_str("artifact sha256 digest is empty"),
+            Self::InvalidSha256Digest { value } => {
+                write!(
+                    formatter,
+                    "artifact sha256 digest {value:?} must be 64 hex characters"
+                )
+            }
+            Self::EmptyInstallPath => formatter.write_str("artifact install path is empty"),
+            Self::RelativeInstallPath { value } => {
+                write!(
+                    formatter,
+                    "artifact install path {} must be absolute",
+                    value.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ArtifactTargetError {}
