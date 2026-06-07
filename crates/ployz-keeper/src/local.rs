@@ -18,7 +18,7 @@ use crate::executor::KeeperStepEffects;
 use crate::join::{JOIN_MATERIAL_FILE, render_redacted_join_material};
 use crate::steps::{
     HostPrerequisite, KeeperStep, KeeperStepEffectError, KeeperStepFailureReason,
-    RedactedJoinMaterial,
+    NatsServerConfigTarget, RedactedJoinMaterial,
 };
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -52,6 +52,9 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
             KeeperStep::InstallArtifact(target) => self.install_artifact_source(target),
+            KeeperStep::WriteNatsServerConfig(target) => {
+                self.write_nats_server_config(target).map_err(Into::into)
+            }
             KeeperStep::WriteSupervisorUnit(target) => {
                 self.write_supervisor_unit(target).map_err(Into::into)
             }
@@ -90,13 +93,28 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
 
     fn write_supervisor_unit(&self, spec: &SupervisorUnitSpec) -> Result<(), FailureMessage> {
         let unit_name = spec.unit_name();
-        if let SupervisorUnitSpec::NatsServer(target) = spec {
-            validate_nats_config(target.config_path())?;
-        }
         let contents = spec
             .render()
             .map_err(|error| failure_message(error.to_string()))?;
         write_unit_file(&self.config.systemd_dir, &unit_name, contents.as_bytes())
+    }
+
+    fn write_nats_server_config(
+        &self,
+        target: &NatsServerConfigTarget,
+    ) -> Result<(), FailureMessage> {
+        fs::create_dir_all(target.config_dir()).map_err(|error| {
+            failure_message(format!(
+                "failed to create nats-server config directory {}: {error}",
+                target.config_dir().display()
+            ))
+        })?;
+        write_durable_file(
+            target.config_dir(),
+            target.config_file_name(),
+            "ployz-nats",
+            target.render_config().as_bytes(),
+        )
     }
 
     fn start_supervisor_unit(
@@ -477,16 +495,6 @@ fn ensure_directory(path: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     create_private_directory(path)
-}
-
-fn validate_nats_config(path: &Path) -> Result<(), FailureMessage> {
-    if path.is_file() {
-        return Ok(());
-    }
-    Err(failure_message(format!(
-        "nats-server config {} is missing",
-        path.display()
-    )))
 }
 
 fn write_unit_file(

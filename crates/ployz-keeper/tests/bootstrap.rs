@@ -170,6 +170,12 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
     assert!(plan.writes_nats_server_unit());
     assert!(plan.writes_ployzd_role_units());
+    assert!(
+        plan.steps()
+            .contains(&KeeperStep::WriteNatsServerConfig(first_node_nats_target(
+                node_id.clone()
+            )))
+    );
     assert!(plan_writes_unit(&plan, &SupervisorUnitTarget::NatsServer));
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
         SupervisorUnitTarget::NatsServer
@@ -281,6 +287,21 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     assert_eq!(
         *second,
         KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(ployzd_artifact()))
+    );
+    let [_, _, third, fourth, fifth, ..] = effects.calls.as_slice() else {
+        panic!("first-node plan records nats setup calls");
+    };
+    assert_eq!(
+        *third,
+        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+    );
+    assert_eq!(
+        *fourth,
+        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+    );
+    assert_eq!(
+        *fifth,
+        KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::NatsServer)
     );
     assert_eq!(
         execution.events,
@@ -763,6 +784,13 @@ fn plan_writes_unit(
 ) -> bool {
     plan.steps().iter().any(
         |step| matches!(step, KeeperStep::WriteSupervisorUnit(spec) if spec.target() == *target),
+    )
+}
+
+fn first_node_nats_target(node_id: NodeId) -> ployz_keeper::steps::NatsServerConfigTarget {
+    ployz_keeper::steps::NatsServerConfigTarget::for_first_node(
+        node_id,
+        &ployz_keeper::systemd::NatsServerUnitTarget::default_paths(),
     )
 }
 

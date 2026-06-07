@@ -53,6 +53,9 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::InstallArtifact(target) => {
             format!("install-artifact {}", render_artifact_target(target))
         }
+        KeeperStepLabel::WriteNatsServerConfig(target) => {
+            format!("write-nats-config {}", target.display_path().display())
+        }
         KeeperStepLabel::WriteSupervisorUnit(target) => {
             format!("write-unit {}", target.unit_name())
         }
@@ -85,6 +88,7 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         KeeperStepFailureReason::ArtifactDownloadFailed => "artifact-download-failed",
         KeeperStepFailureReason::ArtifactVerificationFailed => "artifact-verification-failed",
         KeeperStepFailureReason::ArtifactInstallFailed => "artifact-install-failed",
+        KeeperStepFailureReason::NatsConfigWriteFailed => "nats-config-write-failed",
         KeeperStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
         KeeperStepFailureReason::SupervisorStartFailed => "supervisor-start-failed",
         KeeperStepFailureReason::SupervisorRestartFailed => "supervisor-restart-failed",

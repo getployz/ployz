@@ -262,6 +262,7 @@ pub enum SupervisorUnitFileError {
     UnsupportedExecToken { value: String },
     EmptyPath,
     RelativePath { value: std::path::PathBuf },
+    MissingFileName { value: std::path::PathBuf },
 }
 
 impl fmt::Display for SupervisorUnitFileError {
@@ -276,6 +277,13 @@ impl fmt::Display for SupervisorUnitFileError {
                 write!(
                     formatter,
                     "systemd path {} must be absolute",
+                    value.display()
+                )
+            }
+            Self::MissingFileName { value } => {
+                write!(
+                    formatter,
+                    "systemd path {} needs a file name",
                     value.display()
                 )
             }
@@ -301,6 +309,14 @@ fn validate_supervisor_path(
     }
     if !path.is_absolute() {
         return Err(SupervisorUnitFileError::RelativePath { value: path });
+    }
+    if path.file_name().is_none() {
+        return Err(SupervisorUnitFileError::MissingFileName { value: path });
+    }
+    if path.to_str().is_none() {
+        return Err(SupervisorUnitFileError::UnsupportedExecToken {
+            value: path.display().to_string(),
+        });
     }
     Ok(path)
 }

@@ -1,8 +1,10 @@
 //! Typed keeper step plans.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use ployz_core::ids::NodeId;
+use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 
@@ -54,6 +56,7 @@ impl KeeperStepPlan {
 pub enum KeeperStep {
     VerifyHost(HostPrerequisite),
     InstallArtifact(ArtifactTarget),
+    WriteNatsServerConfig(NatsServerConfigTarget),
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
@@ -64,6 +67,7 @@ pub enum KeeperStep {
 pub enum KeeperStepLabel {
     VerifyHost(HostPrerequisite),
     InstallArtifact(ArtifactTarget),
+    WriteNatsServerConfig(NatsServerConfigTarget),
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
@@ -79,6 +83,9 @@ impl KeeperStepLabel {
         match step {
             KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
             KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
+            KeeperStep::WriteNatsServerConfig(target) => {
+                Self::WriteNatsServerConfig(target.clone())
+            }
             KeeperStep::WriteSupervisorUnit(spec) => Self::WriteSupervisorUnit(spec.target()),
             KeeperStep::StartSupervisorUnit(target) => Self::StartSupervisorUnit(target.clone()),
             KeeperStep::RestartSupervisorUnit(target) => {
@@ -210,11 +217,12 @@ impl FirstNodeInstallTarget {
         ployzd_artifact: PloyzdArtifactTarget,
         gateway: FirstNodeGateway,
     ) -> Self {
+        let nats_server_unit = NatsServerUnitTarget::default_paths();
         Self {
             node_id,
             ployzd_artifact,
             gateway,
-            nats_server_unit: NatsServerUnitTarget::default_paths(),
+            nats_server_unit,
         }
     }
 
@@ -222,6 +230,60 @@ impl FirstNodeInstallTarget {
     pub fn with_nats_server_unit(mut self, nats_server_unit: NatsServerUnitTarget) -> Self {
         self.nats_server_unit = nats_server_unit;
         self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsServerConfigTarget {
+    config_dir: PathBuf,
+    config_file_name: String,
+    rendered_config: String,
+}
+
+impl NatsServerConfigTarget {
+    #[must_use]
+    pub fn for_first_node(node_id: NodeId, unit: &NatsServerUnitTarget) -> Self {
+        let config_path = unit.config_path().to_path_buf();
+        let config_dir = config_path
+            .parent()
+            .expect("validated nats config path has a directory")
+            .to_path_buf();
+        let config_file_name = config_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .expect("validated nats config path has a UTF-8 file name")
+            .to_owned();
+
+        Self {
+            config_dir,
+            config_file_name,
+            rendered_config: NatsServerConfig::single_node(
+                node_id,
+                PathBuf::from("/var/lib/ployz/nats"),
+            )
+            .expect("first-node nats config is valid")
+            .render(),
+        }
+    }
+
+    #[must_use]
+    pub fn display_path(&self) -> PathBuf {
+        self.config_dir.join(&self.config_file_name)
+    }
+
+    #[must_use]
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    #[must_use]
+    pub fn config_file_name(&self) -> &str {
+        &self.config_file_name
+    }
+
+    #[must_use]
+    pub fn render_config(&self) -> String {
+        self.rendered_config.clone()
     }
 }
 
@@ -314,9 +376,12 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
 #[must_use]
 pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan {
     let process_set = first_node_process_set(&target.node_id, target.gateway);
+    let nats_server_config =
+        NatsServerConfigTarget::for_first_node(target.node_id.clone(), &target.nats_server_unit);
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
+        KeeperStep::WriteNatsServerConfig(nats_server_config),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
     ];
@@ -407,6 +472,7 @@ pub enum KeeperStepFailureReason {
     ArtifactDownloadFailed,
     ArtifactVerificationFailed,
     ArtifactInstallFailed,
+    NatsConfigWriteFailed,
     SupervisorWriteFailed,
     SupervisorStartFailed,
     SupervisorRestartFailed,
@@ -422,6 +488,7 @@ impl KeeperStepFailureReason {
         match step {
             KeeperStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
             KeeperStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
+            KeeperStep::WriteNatsServerConfig(_) => Self::NatsConfigWriteFailed,
             KeeperStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             KeeperStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
             KeeperStep::RestartSupervisorUnit(_) => Self::SupervisorRestartFailed,

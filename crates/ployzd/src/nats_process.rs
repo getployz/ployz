@@ -3,49 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ployz_core::ids::NodeId;
+pub use ployz_core::nats_config::{NatsServerConfig, NatsServerConfigError};
 use ployz_nats::connect::NatsClientEndpoint;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsServerConfig {
-    host: String,
-    port: u16,
-    server_name: String,
-    jetstream_store_dir: PathBuf,
-}
-
-impl NatsServerConfig {
-    pub fn single_node(
-        node_id: NodeId,
-        jetstream_store_dir: PathBuf,
-    ) -> Result<Self, NatsServerConfigError> {
-        let config = Self {
-            host: "127.0.0.1".to_owned(),
-            port: 4222,
-            server_name: node_id.as_str().to_owned(),
-            jetstream_store_dir,
-        };
-        config.validate()?;
-        Ok(config)
-    }
-
-    #[must_use]
-    pub fn render(&self) -> String {
-        NatsConfigRenderer::new(self).render()
-    }
-
-    #[must_use]
-    pub fn client_endpoint(&self) -> NatsClientEndpoint {
-        NatsClientEndpoint::tcp(&self.host, self.port)
-    }
-
-    fn validate(&self) -> Result<(), NatsServerConfigError> {
-        validate_config_token("server_name", &self.server_name)?;
-        validate_config_token("host", &self.host)?;
-        validate_config_path("jetstream_store_dir", &self.jetstream_store_dir)?;
-        Ok(())
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServerRuntime {
@@ -77,14 +36,14 @@ impl PreparedNatsServerService {
         config_path: PathBuf,
         config: NatsServerConfig,
     ) -> Result<Self, NatsServerConfigError> {
-        validate_config_path("binary_path", &binary_path)?;
-        validate_config_path("config_path", &config_path)?;
+        validate_process_path("binary_path", &binary_path)?;
+        validate_process_path("config_path", &config_path)?;
 
         Ok(Self {
             binary_path,
             config_path,
             rendered_config: config.render(),
-            client_endpoint: config.client_endpoint(),
+            client_endpoint: NatsClientEndpoint::tcp(config.host(), config.port()),
         })
     }
 
@@ -106,28 +65,7 @@ impl PreparedNatsServerService {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NatsServerConfigError {
-    InvalidToken { field: &'static str, value: String },
-    InvalidPath { field: &'static str, value: PathBuf },
-}
-
-fn validate_config_token(field: &'static str, value: &str) -> Result<(), NatsServerConfigError> {
-    if value.is_empty()
-        || value
-            .chars()
-            .any(|character| matches!(character, '"' | '\'' | '{' | '}' | '\n' | '\r'))
-    {
-        return Err(NatsServerConfigError::InvalidToken {
-            field,
-            value: value.to_owned(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_config_path(field: &'static str, value: &Path) -> Result<(), NatsServerConfigError> {
+fn validate_process_path(field: &'static str, value: &Path) -> Result<(), NatsServerConfigError> {
     let rendered = value.to_string_lossy();
     if rendered.is_empty()
         || rendered
@@ -141,36 +79,4 @@ fn validate_config_path(field: &'static str, value: &Path) -> Result<(), NatsSer
     }
 
     Ok(())
-}
-
-struct NatsConfigRenderer<'a> {
-    config: &'a NatsServerConfig,
-}
-
-impl<'a> NatsConfigRenderer<'a> {
-    const fn new(config: &'a NatsServerConfig) -> Self {
-        Self { config }
-    }
-
-    fn render(&self) -> String {
-        let store_dir = quote_nats_string(&self.config.jetstream_store_dir.to_string_lossy());
-        format!(
-            "server_name: {}\nhost: {}\nport: {}\njetstream {{\n  store_dir: {}\n}}\n",
-            self.config.server_name, self.config.host, self.config.port, store_dir
-        )
-    }
-}
-
-fn quote_nats_string(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => quoted.push_str("\\\""),
-            '\\' => quoted.push_str("\\\\"),
-            _ => quoted.push(character),
-        }
-    }
-    quoted.push('"');
-    quoted
 }

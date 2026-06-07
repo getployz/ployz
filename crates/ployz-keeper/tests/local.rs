@@ -72,7 +72,6 @@ fn local_effects_install_first_node_process_units() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
-    write_nats_config(&root);
 
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
     let plan = first_node_install_plan(
@@ -89,6 +88,10 @@ fn local_effects_install_first_node_process_units() {
 
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(fs::read_to_string(&install_path).unwrap(), "ployz\n");
+    assert_eq!(
+        fs::read_to_string(root.join("etc/nats-server.conf")).unwrap(),
+        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n"
+    );
     assert!(
         fs::read_to_string(systemd_dir.join("nats-server.service"))
             .unwrap()
@@ -268,8 +271,8 @@ fn local_effects_report_remote_artifact_digest_mismatch_as_verification_failure(
 }
 
 #[test]
-fn local_effects_reject_nats_unit_without_existing_config() {
-    let root = temp_dir("ployz-keeper-local-missing-nats-config");
+fn local_effects_write_nats_config_before_nats_unit() {
+    let root = temp_dir("ployz-keeper-local-nats-config");
     let source = root.join("ployzd-source");
     let install_path = root.join("bin/ployzd");
     let systemd_dir = root.join("systemd");
@@ -289,16 +292,38 @@ fn local_effects_reject_nats_unit_without_existing_config() {
 
     let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
 
-    assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
-            step: KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer),
-            reason: KeeperStepFailureReason::SupervisorWriteFailed,
-            message,
-        })) if message.as_str().contains("nats-server config")
-    ));
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert!(fs::read_to_string(&install_path).is_ok());
-    assert!(!systemd_dir.join("nats-server.service").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("etc/nats-server.conf")).unwrap(),
+        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n"
+    );
+    assert!(systemd_dir.join("nats-server.service").exists());
+    let config_write_position = recorder
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                KeeperStepEvent::Succeeded {
+                    step: KeeperStepLabel::WriteNatsServerConfig(_)
+                }
+            )
+        })
+        .expect("nats config write succeeded");
+    let unit_write_position = recorder
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                KeeperStepEvent::Started {
+                    step: KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+                }
+            )
+        })
+        .expect("nats unit write started");
+    assert!(config_write_position < unit_write_position);
 }
 
 #[test]
@@ -348,7 +373,6 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
-    write_nats_config(&root);
 
     let plan = first_node_install_plan(
         FirstNodeInstallTarget::new(
@@ -618,13 +642,6 @@ fn local_config(root: &Path, systemd_dir: &Path) -> KeeperLocalConfig {
         systemd_dir: systemd_dir.to_path_buf(),
         state_dir: root.join("state"),
     }
-}
-
-fn write_nats_config(root: &Path) {
-    let config_path = root.join("etc/nats-server.conf");
-    fs::create_dir_all(config_path.parent().expect("config path has parent"))
-        .expect("nats config parent can be created");
-    fs::write(config_path, "jetstream: true\n").expect("nats config can be written");
 }
 
 fn nats_unit(root: &Path) -> NatsServerUnitTarget {

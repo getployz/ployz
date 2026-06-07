@@ -15,6 +15,7 @@ pub mod ha;
 pub mod ids;
 pub mod install;
 pub mod machine;
+pub mod nats_config;
 pub mod node;
 pub mod ops;
 pub mod roles;
