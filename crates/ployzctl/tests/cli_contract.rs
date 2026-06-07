@@ -21,11 +21,7 @@ use ployzctl::commands::{
 #[test]
 fn init_first_node_reports_supervised_product_roles() {
     let node_id = NodeId::try_new("node_1").expect("valid node id");
-    let output = FirstNodeInitOutput {
-        node_id: node_id.clone(),
-        gateway: FirstNodeGateway::Skip,
-    }
-    .render();
+    let output = FirstNodeInitOutput::summary(node_id.clone(), FirstNodeGateway::Skip).render();
 
     assert_eq!(
         output,
@@ -39,6 +35,88 @@ fn init_first_node_reports_supervised_product_roles() {
             ployz_core::roles::DaemonProcessRole::Node(node_id),
         ]
     );
+}
+
+#[test]
+fn cli_init_can_emit_keeper_first_node_install_command() {
+    let command = parse_command(init_with_keeper_install_args()).expect("init command parses");
+
+    let PloyzctlCommand::Init(command) = command else {
+        panic!("expected init command");
+    };
+
+    assert_eq!(command.node_id(), &node_id("node_1"));
+    assert_eq!(command.gateway(), FirstNodeGateway::Install);
+    assert_eq!(
+        command.render(),
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\ninstall ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway\n"
+    );
+}
+
+#[test]
+fn cli_init_requires_complete_keeper_install_inputs() {
+    assert!(matches!(
+        parse_command(
+            [
+                "init",
+                "--node",
+                "node_1",
+                "--emit-keeper-install",
+                "--ployzd-version",
+                "0.1.0"
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag })
+            if flag == "--ployzd-source"
+    ));
+}
+
+#[test]
+fn cli_init_requires_explicit_keeper_install_mode() {
+    assert!(matches!(
+        parse_command(
+            [
+                "init",
+                "--node",
+                "node_1",
+                "--ployzd-version",
+                "0.1.0"
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag })
+            if flag == "--emit-keeper-install"
+    ));
+}
+
+#[test]
+fn cli_init_validates_keeper_install_inputs_before_rendering() {
+    assert!(matches!(
+        parse_command(
+            [
+                "init",
+                "--node",
+                "node_1",
+                "--emit-keeper-install",
+                "--ployzd-version",
+                "0.1.0",
+                "--ployzd-source",
+                "relative/ployzd",
+                "--ployzd-sha256",
+                PLOYZ_NEWLINE_SHA256,
+                "--ployzd-install-path",
+                "/usr/local/bin/ployzd",
+                "--nats-binary",
+                "/usr/local/bin/nats-server",
+                "--nats-config",
+                "/etc/nats/nats-server.conf",
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::InvalidValue { flag, .. })
+            if flag == "--ployzd-source"
+    ));
 }
 
 #[test]
@@ -287,7 +365,9 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert_eq!(stdout(&output), format!("{USAGE}\n"));
     assert!(stdout(&output).contains("ployzctl [--nats <url>] <command>"));
-    assert!(stdout(&output).contains("ployzctl init --node <id> [--gateway]"));
+    assert!(stdout(&output).contains(
+        "ployzctl init --node <id> [--gateway] [--emit-keeper-install --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path>]"
+    ));
     assert!(stdout(&output).contains(
         "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
     ));
@@ -312,6 +392,25 @@ fn binary_dispatches_init_first_node() {
         stdout(&output),
         "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
     );
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn binary_init_can_print_keeper_first_node_install_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .args(init_with_keeper_install_arg_refs())
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("install ployz-keeper first-node-install"));
+    assert!(stdout(&output).contains("--node 'node_1'"));
+    assert!(stdout(&output).contains("--gateway"));
     assert_eq!(stderr(&output), "");
 }
 
@@ -376,10 +475,10 @@ fn binary_ops_watch_requires_nats_url() {
 
 #[test]
 fn init_first_node_can_include_gateway_role() {
-    let output = FirstNodeInitOutput {
-        node_id: NodeId::try_new("node_1").expect("valid node id"),
-        gateway: FirstNodeGateway::Install,
-    }
+    let output = FirstNodeInitOutput::summary(
+        NodeId::try_new("node_1").expect("valid node id"),
+        FirstNodeGateway::Install,
+    )
     .render();
 
     assert_eq!(
@@ -556,6 +655,37 @@ fn detached_deploy_arg_refs() -> [&'static str; 14] {
         "op_deploy",
         "--idempotency-key",
         "idem_deploy",
+    ]
+}
+
+const PLOYZ_NEWLINE_SHA256: &str =
+    "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e";
+
+fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
+    init_with_keeper_install_arg_refs()
+        .into_iter()
+        .map(str::to_owned)
+}
+
+fn init_with_keeper_install_arg_refs() -> [&'static str; 17] {
+    [
+        "init",
+        "--node",
+        "node_1",
+        "--gateway",
+        "--emit-keeper-install",
+        "--ployzd-version",
+        "0.1.0",
+        "--ployzd-source",
+        "/tmp/ployzd",
+        "--ployzd-sha256",
+        PLOYZ_NEWLINE_SHA256,
+        "--ployzd-install-path",
+        "/usr/local/bin/ployzd",
+        "--nats-binary",
+        "/usr/local/bin/nats-server",
+        "--nats-config",
+        "/etc/nats/nats-server.conf",
     ]
 }
 

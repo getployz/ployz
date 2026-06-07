@@ -10,6 +10,7 @@ pub use ployz_sdk_types::MachineName;
 pub use ployz_sdk_types::{BootstrapCommandError, MachineBootstrapUrl, MachineJoinToken};
 
 use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+use crate::shell::shell_quote;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddCommand {
@@ -74,10 +75,6 @@ impl fmt::Debug for MachineAddOutput {
             .field("join_token", &self.join_token)
             .finish()
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, PloyzctlCliError> {

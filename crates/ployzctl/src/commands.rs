@@ -10,7 +10,7 @@ pub mod ops;
 pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
-ployzctl init --node <id> [--gateway]
+ployzctl init --node <id> [--gateway] [--emit-keeper-install --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path>]
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
 ployzctl ops watch <operation_id>";

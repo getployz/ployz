@@ -3,9 +3,10 @@
 This runbook proves Ployz on real machines. Hetzner is not part of the product
 shape; it only gives us two fresh Linux hosts, public IPs, SSH, and cleanup.
 
-The rule is blunt: if code would still matter after replacing Hetzner with a
-homelab box or another VPS provider, it belongs in Ployz. If it only exists to
-create or delete Hetzner servers, it stays in this shell harness.
+The rule is blunt: H0 is a substrate smoke check. If code would still matter
+after replacing Hetzner with a homelab box or another VPS provider, it belongs
+in Ployz. If it only exists to create or delete Hetzner servers, it stays in
+this shell harness.
 
 The proof bar is:
 
@@ -18,7 +19,7 @@ The proof bar is:
 
 That is the whole job. Hetzner is not a feature area; it is a disposable host
 source for proving the install path and actual product substrate on clean
-Linux.
+Linux. The harness must not become a second orchestration path.
 
 ## Harness Boundary
 
@@ -35,12 +36,12 @@ Hetzner-specific behavior stops at:
 
 Everything after SSH is ready must be normal Ployz install/product behavior.
 Do not add Hetzner-specific Rust code, provider abstractions, provider
-readiness models, provider operation states, retries, recovery, or
+readiness models, provider operation states, retries, recovery, diagnostics, or
 provider-aware install policy.
 
-The harness waits for product operation results. It must not learn Ployz
-internals. If the script needs more than "run product command, wait for product
-result, print product evidence," the product command needs a clearer primitive.
+The harness may wait for SSH and product command completion. Product readiness
+must come from product commands and operation output, not harness-side domain
+logic.
 
 ## Disposable Host Setup
 
@@ -123,8 +124,8 @@ The disposable host setup proves:
 - SSH readiness on both machines,
 - teardown by cleanup label selector.
 
-Ployz product commands and operation state then prove only the minimum real
-host path:
+Ployz product commands and operation state prove only the minimum real host
+path:
 
 - first-node install,
 - second-node add/join,
@@ -137,9 +138,9 @@ Anything that only exists because the machines came from Hetzner stays in the
 script. Anything that should work on a user VPS, homelab server, or another
 cloud must be expressed through normal Ployz commands and operation events.
 
-The script must not grow a second orchestration model. It should run product
-commands, wait for visible operation results, print the failing command output,
-print cleanup instructions, and clean up the hosts.
+The script must not grow a second orchestration model. It runs product
+commands, prints the failing command output, prints cleanup instructions, and
+cleans up the hosts.
 
 The product smoke sequence is fixed and small:
 
