@@ -16,9 +16,9 @@ use ployz_nats::services::{
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
-    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken, MachineName,
-    OperationApiResponse, OpsStatusError, OpsStatusResponse,
+    MachineBootstrapUrl, MachineJoinBundle, MachineJoinPloyzdArtifact, MachineJoinRedeemRequest,
+    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
+    MachineName, OperationApiResponse, OpsStatusError, OpsStatusResponse,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
         OpsWatchApi,
@@ -135,6 +135,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
                     node_id: node_id("node_2"),
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     gateway: FirstNodeGateway::Skip,
+                    join_bundle: machine_join_bundle(),
                     joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),
                     last_event_sequence: event_sequence(8),
                     result: MachineJoinRedeemResult::Joined,
@@ -408,12 +409,34 @@ fn machine_add_request() -> MachineAddRequest {
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
+        join_bundle: machine_join_bundle(),
     }
 }
 
 fn machine_join_redeem_request() -> MachineJoinRedeemRequest {
     MachineJoinRedeemRequest {
         join_token: MachineJoinToken::try_new("join_token").expect("valid join token"),
+    }
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+            .expect("valid cluster name"),
+        ployzd: MachineJoinPloyzdArtifact {
+            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                .expect("valid version"),
+            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                .expect("valid source"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("valid digest"),
+            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                "/usr/local/bin/ployzd",
+            )
+            .expect("valid install path"),
+        },
     }
 }
 

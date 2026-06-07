@@ -31,6 +31,7 @@ import type {
   MachineAddAccepted,
   MachineAddResponse,
   MachineAddRequest,
+  MachineJoinBundle,
   MachineJoinRedeemed,
   MachineJoinRedeemResponse,
   MachineJoinRedeemRequest,
@@ -231,6 +232,7 @@ test("sdk maps raw machine add input to the wire request", () => {
     node_id: "node_2",
     name: "edge_2",
     gateway: "skip",
+    join_bundle: machineJoinBundle(),
   });
   assert.throws(
     () => machineAddRequest({ ...machineAddInput(), name: "edge.2" }),
@@ -414,6 +416,7 @@ function defaultFixture(): OperationFixture {
         node_id: nodeId("node_2"),
         name: machineName("edge_2"),
         gateway: "skip",
+        join_bundle: machineJoinBundle(),
         joined_at: "60" as MachineJoinRedeemed["joined_at"],
         last_event_sequence: eventSequence(8),
         result: "joined",
@@ -461,6 +464,19 @@ function machineAddInput() {
     nodeId: "node_2",
     name: "edge_2",
     gateway: "skip" as const,
+    joinBundle: machineJoinBundle(),
+  };
+}
+
+function machineJoinBundle(): MachineJoinBundle {
+  return {
+    cluster_name: "prod",
+    ployzd: {
+      version: "0.1.0",
+      source: "/tmp/ployzd",
+      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      install_path: "/usr/local/bin/ployzd",
+    },
   };
 }
 

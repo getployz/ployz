@@ -1322,8 +1322,12 @@ dependencies = [
 name = "ployz-keeper"
 version = "0.1.0"
 dependencies = [
+ "async-nats",
  "ployz-core",
+ "ployz-nats",
+ "ployz-sdk-types",
  "sha2",
+ "tokio",
 ]
 
 [[package]]
@@ -1334,6 +1338,7 @@ dependencies = [
  "futures-util",
  "nats-server",
  "ployz-core",
+ "ployz-sdk-types",
  "serde",
  "serde_json",
  "tokio",

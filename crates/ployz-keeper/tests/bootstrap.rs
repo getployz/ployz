@@ -51,9 +51,11 @@ fn bootstrap_script_file_installs_only_keeper() {
 
     assert_eq!(
         shell_keeper_unit_template(&script),
-        "[Unit]\nDescription=Ployz Keeper\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${keeper_bin}${keeper_args}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz Keeper\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-${keeper_env_file}\nExecStart=${keeper_bin}${keeper_args}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
     assert!(script.contains("PLOYZ_KEEPER_URL"));
+    assert!(script.contains("PLOYZ_NATS_URL"));
+    assert!(script.contains("/etc/ployz"));
     assert!(script.contains("PLOYZ_JOIN_TOKEN"));
     assert!(script.contains("join-token"));
     assert!(script.contains("not both"));
@@ -64,7 +66,7 @@ fn bootstrap_script_file_installs_only_keeper() {
     assert!(script.contains("uname -s"));
     assert!(script.contains("id -u"));
     assert!(!script.contains("ployzd"));
-    assert!(!script.contains("NATS"));
+    assert!(!script.contains("NATS_CREDS"));
 }
 
 #[test]
@@ -403,7 +405,7 @@ fn keeper_join_keeps_token_when_material_store_fails() {
 }
 
 #[test]
-fn keeper_join_consumes_token_after_material_store_before_install() {
+fn keeper_join_keeps_token_when_install_fails_after_redemption() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
     let mut effects = RecordingEffects {
@@ -431,7 +433,7 @@ fn keeper_join_consumes_token_after_material_store_before_install() {
             ..
         }))
     ));
-    assert_eq!(token_consumer.consumed, 1);
+    assert_eq!(token_consumer.consumed, 0);
 }
 
 #[test]

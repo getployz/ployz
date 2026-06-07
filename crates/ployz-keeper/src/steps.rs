@@ -109,6 +109,11 @@ impl JoinToken {
     pub fn redacted(&self) -> &'static str {
         "[redacted]"
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Debug for JoinToken {

@@ -5,12 +5,12 @@ set -eu
 : "${PLOYZ_KEEPER_SHA256:?set PLOYZ_KEEPER_SHA256}"
 
 if [ "$#" -gt 2 ]; then
-  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... sh ployz.sh [--join-token <token>]" >&2
+  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... [PLOYZ_NATS_URL=...] sh ployz.sh [--join-token <token>]" >&2
   exit 1
 fi
 
 if [ "$#" -eq 1 ]; then
-  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... sh ployz.sh [--join-token <token>]" >&2
+  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... [PLOYZ_NATS_URL=...] sh ployz.sh [--join-token <token>]" >&2
   exit 1
 fi
 
@@ -43,9 +43,11 @@ command -v systemctl >/dev/null
 
 install_dir="/usr/local/bin"
 systemd_dir="/etc/systemd/system"
+config_dir="/etc/ployz"
 state_dir="/var/lib/ployz/keeper"
 keeper_bin="${install_dir}/ployz-keeper"
 keeper_unit="${systemd_dir}/ployz-keeper.service"
+keeper_env_file="${config_dir}/keeper.env"
 join_token_file="${state_dir}/join-token"
 tmp_file="$(mktemp)"
 
@@ -58,7 +60,7 @@ curl -fsSL "$PLOYZ_KEEPER_URL" -o "$tmp_file"
 printf '%s  %s\n' "$PLOYZ_KEEPER_SHA256" "$tmp_file" | sha256sum -c -
 
 install -d -m 0755 "$install_dir" "$systemd_dir"
-install -d -m 0700 "$state_dir"
+install -d -m 0700 "$config_dir" "$state_dir"
 install -m 0755 "$tmp_file" "$keeper_bin"
 
 keeper_args=""
@@ -66,6 +68,22 @@ if [ "${PLOYZ_JOIN_TOKEN:-}" ]; then
   umask 077
   printf '%s\n' "$PLOYZ_JOIN_TOKEN" > "$join_token_file"
   keeper_args=" --join-token-file ${join_token_file}"
+fi
+
+if [ "${PLOYZ_NATS_URL:-}" ]; then
+  newline='
+'
+  case "$PLOYZ_NATS_URL" in
+    *"$newline"*)
+      echo "PLOYZ_NATS_URL must be a single line" >&2
+      exit 1
+      ;;
+  esac
+  umask 077
+  rm -f "$keeper_env_file"
+  printf 'PLOYZ_NATS_URL=%s\n' "$PLOYZ_NATS_URL" > "$keeper_env_file"
+else
+  rm -f "$keeper_env_file"
 fi
 
 cat > "$keeper_unit" <<UNIT
@@ -76,6 +94,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=-${keeper_env_file}
 ExecStart=${keeper_bin}${keeper_args}
 Restart=always
 RestartSec=5

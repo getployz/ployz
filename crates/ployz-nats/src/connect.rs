@@ -1,6 +1,8 @@
 //! NATS client connection setup.
 
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsClientEndpoint {
@@ -49,3 +51,43 @@ impl NatsClientEndpoint {
         }
     }
 }
+
+pub async fn connect_with_timeout(
+    nats_url: &str,
+    timeout: Duration,
+) -> Result<async_nats::Client, NatsConnectError> {
+    match tokio::time::timeout(timeout, async_nats::connect(nats_url)).await {
+        Ok(Ok(client)) => Ok(client),
+        Ok(Err(error)) => Err(NatsConnectError::Connect {
+            url: nats_url.to_owned(),
+            message: error.to_string(),
+        }),
+        Err(_) => Err(NatsConnectError::Timeout {
+            url: nats_url.to_owned(),
+            timeout,
+        }),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NatsConnectError {
+    Connect { url: String, message: String },
+    Timeout { url: String, timeout: Duration },
+}
+
+impl fmt::Display for NatsConnectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connect { url, message } => {
+                write!(formatter, "failed to connect to NATS at {url}: {message}")
+            }
+            Self::Timeout { url, timeout } => write!(
+                formatter,
+                "failed to connect to NATS at {url} within {}ms",
+                timeout.as_millis()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NatsConnectError {}

@@ -1,4 +1,5 @@
 use ployz_core::ids::{CertId, NodeId, OperationId, OperationOwnerId};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationEvent, OperationIdempotencyKey, OperationLeaseExpiresAt,
@@ -230,6 +231,7 @@ impl AsyncNatsOperationRepository {
                     node_id: submission.node_id,
                     name: submission.name,
                     gateway: submission.gateway,
+                    join_bundle: submission.join_bundle,
                     join_token: submission.join_token,
                     raw_join_token: submission.raw_join_token,
                 },
@@ -261,6 +263,7 @@ impl AsyncNatsOperationRepository {
                 node_id: submitted.node_id,
                 name: submitted.name,
                 gateway: submitted.gateway,
+                join_bundle: submitted.join_bundle,
                 join_token: submitted.join_token,
                 raw_join_token: submitted.raw_join_token,
                 lease,
@@ -349,6 +352,7 @@ impl AsyncNatsOperationRepository {
             node_id: submitted.node_id,
             name: submitted.name,
             gateway: submitted.gateway,
+            join_bundle: submitted.join_bundle,
             join_token: submitted.join_token,
             raw_join_token: submitted.raw_join_token,
             lease,
@@ -457,6 +461,7 @@ pub struct MachineAddOperationSubmission {
     pub node_id: NodeId,
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
+    pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
     pub idempotency_key: OperationIdempotencyKey,
@@ -546,6 +551,7 @@ pub struct AcceptedMachineAddSubmission {
     pub node_id: NodeId,
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
+    pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
     pub lease: OperationOwnerLease,

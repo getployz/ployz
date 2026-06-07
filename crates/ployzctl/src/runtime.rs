@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::api_client::{OperationApiClient, OperationApiClientError};
 use crate::commands::{PloyzctlCommand, USAGE};
+use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
 use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -93,39 +94,16 @@ async fn operation_api_client(
         return Err(PloyzctlExecutionError::MissingNatsUrl);
     };
 
-    connect_nats(&nats_url, config.nats_connect_timeout())
+    connect_with_timeout(&nats_url, config.nats_connect_timeout())
         .await
         .map(OperationApiClient::new)
-}
-
-async fn connect_nats(
-    nats_url: &str,
-    timeout: Duration,
-) -> Result<async_nats::Client, PloyzctlExecutionError> {
-    match tokio::time::timeout(timeout, async_nats::connect(nats_url)).await {
-        Ok(Ok(client)) => Ok(client),
-        Ok(Err(error)) => Err(PloyzctlExecutionError::NatsConnect {
-            url: nats_url.to_owned(),
-            message: error.to_string(),
-        }),
-        Err(_) => Err(PloyzctlExecutionError::NatsConnectTimeout {
-            url: nats_url.to_owned(),
-            timeout,
-        }),
-    }
+        .map_err(PloyzctlExecutionError::NatsConnect)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlExecutionError {
     MissingNatsUrl,
-    NatsConnect {
-        url: String,
-        message: String,
-    },
-    NatsConnectTimeout {
-        url: String,
-        timeout: Duration,
-    },
+    NatsConnect(NatsConnectError),
     DeploySubmitApi {
         source: OperationApiClientError<DeploySubmitError>,
     },
@@ -141,14 +119,7 @@ impl fmt::Display for PloyzctlExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingNatsUrl => write!(formatter, "--nats or {PLOYZ_NATS_URL_ENV} is required"),
-            Self::NatsConnect { url, message } => {
-                write!(formatter, "failed to connect to NATS at {url}: {message}")
-            }
-            Self::NatsConnectTimeout { url, timeout } => write!(
-                formatter,
-                "failed to connect to NATS at {url} within {}ms",
-                timeout.as_millis()
-            ),
+            Self::NatsConnect(error) => write!(formatter, "{error}"),
             Self::DeploySubmitApi { source } => write!(formatter, "{source}"),
             Self::MachineAddApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),

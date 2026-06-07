@@ -58,6 +58,7 @@ import type {
   MachineAddGateway,
   MachineAddRequest,
   MachineAddResponse,
+  MachineJoinBundle,
   MachineJoinRedeemRequest,
   MachineJoinRedeemResponse,
   MachineJoinRedeemed,
@@ -112,6 +113,7 @@ export interface PloyzMachineAddInput {
   nodeId: string;
   name: string;
   gateway: MachineAddGateway;
+  joinBundle: MachineJoinBundle;
 }
 
 export interface PloyzMachineJoinRedeemInput {
@@ -170,6 +172,7 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     node_id: nodeId(input.nodeId),
     name: machineName(input.name),
     gateway: input.gateway,
+    join_bundle: input.joinBundle,
   };
 }
 

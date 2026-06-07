@@ -144,15 +144,29 @@ export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_curre
 
 export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
 
-export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, };
+export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, join_bundle: MachineJoinBundle, };
 
 export type MachineAddGateway = "install" | "skip";
 
 export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_token: MachineJoinToken, };
 
+export type MachineJoinClusterName = string;
+
+export type InstallArtifactVersion = string;
+
+export type InstallArtifactSource = string;
+
+export type InstallSha256Digest = string;
+
+export type AbsoluteInstallPath = string;
+
+export type MachineJoinBundle = { cluster_name: MachineJoinClusterName, ployzd: MachineJoinPloyzdArtifact, };
+
+export type MachineJoinPloyzdArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
+
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 
-export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_bundle: MachineJoinBundle, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
 export type MachineJoinRedeemResult = "joined" | "already_joined";
 

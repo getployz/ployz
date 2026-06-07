@@ -1,7 +1,7 @@
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    KeeperFirstNodeInstall,
+    KeeperFirstNodeInstall, MachineJoinBundle, MachineJoinClusterName, MachineJoinPloyzdArtifact,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -24,6 +24,9 @@ fn keeper_first_node_install_omits_gateway_when_skipped() {
 
 #[test]
 fn keeper_install_contract_validates_artifact_inputs() {
+    assert!(MachineJoinClusterName::try_new("").is_err());
+    assert!(MachineJoinClusterName::try_new("prod\nother").is_err());
+    assert!(MachineJoinClusterName::try_new("prod=west").is_err());
     assert!(InstallArtifactVersion::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
@@ -36,6 +39,39 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(AbsoluteInstallPath::try_new("/").is_err());
     assert!(AbsoluteInstallPath::try_new("/usr/local/bin/").is_err());
     assert!(AbsoluteInstallPath::try_new("/usr/local/bin/ployzd").is_ok());
+}
+
+#[test]
+fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
+    let value = serde_json::json!({
+        "cluster_name": "prod",
+        "ployzd": {
+            "version": "0.1.0",
+            "source": "relative/ployzd",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install_path": "/usr/local/bin/ployzd"
+        }
+    });
+
+    assert!(serde_json::from_value::<MachineJoinBundle>(value).is_err());
+}
+
+#[test]
+fn machine_join_bundle_wire_shape_stays_plain_json() {
+    let value = serde_json::to_value(machine_join_bundle()).expect("bundle serializes");
+
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "cluster_name": "prod",
+            "ployzd": {
+                "version": "0.1.0",
+                "source": "/tmp/ployzd",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/bin/ployzd"
+            }
+        })
+    );
 }
 
 fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
@@ -54,5 +90,21 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
             .expect("valid nats binary path"),
         nats_config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
             .expect("valid nats config path"),
+    }
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+        ployzd: MachineJoinPloyzdArtifact {
+            version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+            source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
+            sha256: InstallSha256Digest::try_new(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("valid digest"),
+            install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                .expect("valid install path"),
+        },
     }
 }

@@ -1,5 +1,6 @@
 use async_nats::jetstream;
 use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
@@ -40,6 +41,7 @@ pub struct StoredMachineAddSubmission {
     pub node_id: ployz_core::ids::NodeId,
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
+    pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
 }

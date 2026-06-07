@@ -4,6 +4,7 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
 };
@@ -43,6 +44,7 @@ pub struct MachineAddSubmitCommand {
     pub node_id: ployz_core::ids::NodeId,
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
+    pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
 }
@@ -140,6 +142,7 @@ impl OperationControllers {
                     node_id: command.node_id,
                     name: command.name,
                     gateway: command.gateway,
+                    join_bundle: command.join_bundle,
                     join_token: command.join_token,
                     raw_join_token: command.raw_join_token,
                     idempotency_key: command.idempotency_key,
@@ -154,6 +157,7 @@ impl OperationControllers {
             node_id: submitted.node_id,
             name: submitted.name,
             gateway: submitted.gateway,
+            join_bundle: submitted.join_bundle,
             join_token: submitted.join_token,
             raw_join_token: submitted.raw_join_token,
             lease: submitted.lease,
@@ -313,6 +317,7 @@ pub struct AcceptedMachineAddOperation {
     pub node_id: ployz_core::ids::NodeId,
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
+    pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
     pub lease: OperationOwnerLease,

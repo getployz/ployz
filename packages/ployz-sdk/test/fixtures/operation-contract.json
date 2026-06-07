@@ -42,7 +42,16 @@
     "idempotency_key": "idem_machine",
     "node_id": "node_2",
     "name": "edge_2",
-    "gateway": "skip"
+    "gateway": "skip",
+    "join_bundle": {
+      "cluster_name": "prod",
+      "ployzd": {
+        "version": "0.1.0",
+        "source": "/tmp/ployzd",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/bin/ployzd"
+      }
+    }
   },
   "machine_add_response": {
     "status": "ok",
@@ -72,6 +81,15 @@
       "node_id": "node_2",
       "name": "edge_2",
       "gateway": "skip",
+      "join_bundle": {
+        "cluster_name": "prod",
+        "ployzd": {
+          "version": "0.1.0",
+          "source": "/tmp/ployzd",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "install_path": "/usr/local/bin/ployzd"
+        }
+      },
       "joined_at": "60",
       "last_event_sequence": "8",
       "result": "joined"

@@ -11,7 +11,8 @@ use ployz_nats::services::{
 };
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
-    MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
+    MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle, MachineJoinPloyzdArtifact,
+    MachineJoinToken, MachineName, OperationApiResponse,
     operation_api::{MachineAddApi, OperationApiContract},
 };
 
@@ -43,6 +44,7 @@ async fn binary_machine_add_calls_nats_service() {
                 MachineName::try_new("edge_2").expect("valid machine name")
             );
             assert_eq!(request.gateway, MachineAddGateway::Skip);
+            assert_eq!(request.join_bundle, machine_join_bundle());
 
             let response: MachineAddResponse = OperationApiResponse::Ok {
                 value: MachineAddAccepted {
@@ -74,6 +76,16 @@ async fn binary_machine_add_calls_nats_service() {
             "op_machine",
             "--idempotency-key",
             "idem_machine",
+            "--cluster",
+            "prod",
+            "--ployzd-version",
+            "0.1.0",
+            "--ployzd-source",
+            "/tmp/ployzd",
+            "--ployzd-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--ployzd-install-path",
+            "/usr/local/bin/ployzd",
         ])
         .output()
         .expect("ployzctl binary runs");
@@ -124,6 +136,27 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
             OperationOwnerId::try_new("control").expect("valid owner id"),
             OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
         ),
+    }
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+            .expect("valid cluster name"),
+        ployzd: MachineJoinPloyzdArtifact {
+            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                .expect("valid version"),
+            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                .expect("valid source"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("valid digest"),
+            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                "/usr/local/bin/ployzd",
+            )
+            .expect("valid install path"),
+        },
     }
 }
 

@@ -6,8 +6,9 @@ use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
 };
-use ployz_sdk_types::AcceptedOperation;
-use ployz_sdk_types::MachineAddGateway;
+use ployz_sdk_types::{
+    AcceptedOperation, MachineAddGateway, MachineJoinBundle, MachineJoinPloyzdArtifact,
+};
 use ployzctl::commands::deploy::{DetachedDeployCommand, DetachedDeployOutput};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
@@ -249,23 +250,8 @@ fn cli_requires_ops_watch_operation_id() {
 
 #[test]
 fn cli_dispatches_machine_add_request() {
-    let command = parse_command(
-        [
-            "machine",
-            "add",
-            "--node",
-            "node_2",
-            "--name",
-            "edge_2",
-            "--gateway",
-            "--operation",
-            "op_machine",
-            "--idempotency-key",
-            "idem_machine",
-        ]
-        .map(str::to_owned),
-    )
-    .expect("machine add command parses");
+    let command =
+        parse_command(machine_add_args_with_gateway()).expect("machine add command parses");
 
     let PloyzctlCommand::MachineAdd(command) = command else {
         panic!("expected machine add command");
@@ -281,26 +267,16 @@ fn cli_dispatches_machine_add_request() {
         MachineName::try_new("edge_2").expect("valid machine name")
     );
     assert_eq!(command.gateway, MachineAddGateway::Install);
+    assert_eq!(command.join_bundle, machine_join_bundle());
 }
 
 #[test]
 fn cli_parses_global_nats_url() {
     let invocation = parse_invocation(
-        [
-            "--nats",
-            "nats://127.0.0.1:4222",
-            "machine",
-            "add",
-            "--node",
-            "node_2",
-            "--name",
-            "edge_2",
-            "--operation",
-            "op_machine",
-            "--idempotency-key",
-            "idem_machine",
-        ]
-        .map(str::to_owned),
+        ["--nats", "nats://127.0.0.1:4222"]
+            .into_iter()
+            .chain(machine_add_arg_refs())
+            .map(str::to_owned),
     )
     .expect("invocation parses");
 
@@ -315,17 +291,9 @@ fn cli_parses_global_nats_url() {
 fn cli_requires_machine_add_operation_id() {
     assert!(matches!(
         parse_command(
-            [
-                "machine",
-                "add",
-                "--node",
-                "node_2",
-                "--name",
-                "edge_2",
-                "--idempotency-key",
-                "idem_machine"
-            ]
-            .map(str::to_owned)
+            machine_add_arg_refs()
+                .filter(|value| *value != "--operation" && *value != "op_machine")
+                .map(str::to_owned)
         ),
         Err(PloyzctlCliError::MissingRequiredArgument { flag })
             if flag == "--operation"
@@ -336,17 +304,9 @@ fn cli_requires_machine_add_operation_id() {
 fn cli_requires_machine_add_idempotency_key() {
     assert!(matches!(
         parse_command(
-            [
-                "machine",
-                "add",
-                "--node",
-                "node_2",
-                "--name",
-                "edge_2",
-                "--operation",
-                "op_machine"
-            ]
-            .map(str::to_owned)
+            machine_add_arg_refs()
+                .filter(|value| *value != "--idempotency-key" && *value != "idem_machine")
+                .map(str::to_owned)
         ),
         Err(PloyzctlCliError::MissingRequiredArgument { flag })
             if flag == "--idempotency-key"
@@ -372,7 +332,7 @@ fn binary_help_only_advertises_implemented_commands() {
         "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
     ));
     assert!(stdout(&output).contains(
-        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]"
+        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
     ));
     assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
@@ -440,18 +400,7 @@ fn binary_deploy_requires_nats_url() {
 fn binary_machine_add_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
-        .args([
-            "machine",
-            "add",
-            "--node",
-            "node_2",
-            "--name",
-            "edge_2",
-            "--operation",
-            "op_machine",
-            "--idempotency-key",
-            "idem_machine",
-        ])
+        .args(machine_add_arg_refs())
         .output()
         .expect("ployzctl binary runs");
 
@@ -656,6 +605,57 @@ fn detached_deploy_arg_refs() -> [&'static str; 14] {
         "--idempotency-key",
         "idem_deploy",
     ]
+}
+
+fn machine_add_args_with_gateway() -> impl Iterator<Item = String> {
+    machine_add_arg_refs()
+        .chain(["--gateway"])
+        .map(str::to_owned)
+}
+
+fn machine_add_arg_refs() -> impl Iterator<Item = &'static str> {
+    [
+        "machine",
+        "add",
+        "--node",
+        "node_2",
+        "--name",
+        "edge_2",
+        "--operation",
+        "op_machine",
+        "--idempotency-key",
+        "idem_machine",
+        "--cluster",
+        "prod",
+        "--ployzd-version",
+        "0.1.0",
+        "--ployzd-source",
+        "/tmp/ployzd",
+        "--ployzd-sha256",
+        PLOYZ_NEWLINE_SHA256,
+        "--ployzd-install-path",
+        "/usr/local/bin/ployzd",
+    ]
+    .into_iter()
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+            .expect("valid cluster name"),
+        ployzd: MachineJoinPloyzdArtifact {
+            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                .expect("valid version"),
+            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                .expect("valid source"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new(PLOYZ_NEWLINE_SHA256)
+                .expect("valid digest"),
+            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                "/usr/local/bin/ployzd",
+            )
+            .expect("valid install path"),
+        },
+    }
 }
 
 const PLOYZ_NEWLINE_SHA256: &str =

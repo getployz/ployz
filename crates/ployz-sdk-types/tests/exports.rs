@@ -6,15 +6,16 @@ use ployz_sdk_types::{
     DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
-    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
-    MachineJoinRedeemed, MachineJoinToken, MachineName, NonEmptyTextError, OperationApiResponse,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
-    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
+    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle,
+    MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
+    MachineName, NonEmptyTextError, OperationApiResponse, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
+    OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse,
+    OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
+    RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
         OpsWatchApi,
@@ -164,6 +165,7 @@ fn sdk_exports_operation_api_wire_types() {
         node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
+        join_bundle: machine_join_bundle(),
     };
     let machine_response: MachineAddResponse = OperationApiResponse::Ok {
         value: MachineAddAccepted {
@@ -183,7 +185,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip"}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
@@ -200,6 +202,7 @@ fn sdk_exports_operation_api_wire_types() {
             node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             gateway: ployz_sdk_types::FirstNodeGateway::Skip,
+            join_bundle: machine_join_bundle(),
             joined_at: ployz_sdk_types::JoinTokenRedeemedAt::try_new(60)
                 .expect("valid redeemed timestamp"),
             last_event_sequence: EventSequence::try_new(8).expect("valid event sequence"),
@@ -213,7 +216,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
 }
 
@@ -405,6 +408,27 @@ fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> Opera
         OperationOwnerId::try_new(owner_id).expect("valid owner id"),
         OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
     )
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+            .expect("valid cluster name"),
+        ployzd: MachineJoinPloyzdArtifact {
+            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                .expect("valid version"),
+            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                .expect("valid source"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("valid digest"),
+            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                "/usr/local/bin/ployzd",
+            )
+            .expect("valid install path"),
+        },
+    }
 }
 
 #[test]

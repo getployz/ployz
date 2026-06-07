@@ -1,6 +1,12 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use ployz_core::ops::FailureMessage;
+use ployz_core::roles::joined_node_process_set;
+use ployz_keeper::artifacts::{
+    ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest,
+};
 use ployz_keeper::cli::{KeeperCliError, KeeperCommand, load_command};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::join_executor::{
@@ -9,8 +15,15 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects, SystemKeeperCommandRunner};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, first_node_install_plan,
+    FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, NonEmptyRoleSet, RedactedJoinMaterial,
+    first_node_install_plan,
 };
+use ployz_nats::connect::connect_with_timeout;
+use ployz_nats::operation_api_client::OperationApiClient;
+use ployz_sdk_types::{MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinToken};
+
+const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() -> ExitCode {
     match load_command(std::env::args_os().skip(1)) {
@@ -62,7 +75,7 @@ fn run_join(
     join_token_file: std::path::PathBuf,
     recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
 ) -> ployz_keeper::executor::KeeperPlanExecution {
-    let mut redeemer = SystemJoinRedeemer;
+    let mut redeemer = SystemJoinRedeemer::from_env();
     let mut token_consumer = StartupJoinTokenConsumer { join_token_file };
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
@@ -102,18 +115,76 @@ fn failure_summary(failure: &KeeperPlanFailure) -> &str {
     }
 }
 
-struct SystemJoinRedeemer;
+struct SystemJoinRedeemer {
+    nats_url: Option<String>,
+}
+
+impl SystemJoinRedeemer {
+    fn from_env() -> Self {
+        Self {
+            nats_url: std::env::var(PLOYZ_NATS_URL_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+        }
+    }
+}
 
 impl KeeperJoinRedeemer for SystemJoinRedeemer {
-    fn redeem_join_token(
-        &mut self,
-        _token: &JoinToken,
-    ) -> Result<KeeperJoinTarget, FailureMessage> {
-        Err(
-            FailureMessage::try_new("join token redemption is not wired to NATS yet")
-                .expect("static failure message is non-empty"),
-        )
+    fn redeem_join_token(&mut self, token: &JoinToken) -> Result<KeeperJoinTarget, FailureMessage> {
+        let Some(nats_url) = self.nats_url.clone() else {
+            return Err(failure_message(
+                "PLOYZ_NATS_URL is required to redeem join token",
+            ));
+        };
+        let join_token = MachineJoinToken::try_new(token.as_str())
+            .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| failure_message(&format!("failed to start async runtime: {error}")))?;
+
+        let redeemed = runtime.block_on(async move {
+            let client = connect_with_timeout(&nats_url, DEFAULT_NATS_CONNECT_TIMEOUT)
+                .await
+                .map_err(|error| failure_message(&error.to_string()))?;
+            OperationApiClient::new(client)
+                .machine_join_redeem(&MachineJoinRedeemRequest { join_token })
+                .await
+                .map_err(|error| failure_message(&format!("failed to redeem join token: {error}")))
+        })?;
+
+        keeper_join_target(redeemed)
     }
+}
+
+fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<KeeperJoinTarget, FailureMessage> {
+    let material = RedactedJoinMaterial::new(
+        redeemed.node_id.clone(),
+        redeemed.join_bundle.cluster_name.as_str().to_owned(),
+    )
+    .map_err(|error| failure_message(&format!("invalid join material: {error:?}")))?;
+    let artifact = PloyzdArtifactTarget::new(
+        ArtifactVersion::try_new(redeemed.join_bundle.ployzd.version.as_str())
+            .map_err(|error| failure_message(&format!("invalid ployzd version: {error}")))?,
+        ArtifactSource::try_new(redeemed.join_bundle.ployzd.source.as_str())
+            .map_err(|error| failure_message(&format!("invalid ployzd source: {error}")))?,
+        Sha256Digest::try_new(redeemed.join_bundle.ployzd.sha256.as_str())
+            .map_err(|error| failure_message(&format!("invalid ployzd digest: {error}")))?,
+        PathBuf::from(redeemed.join_bundle.ployzd.install_path.as_str()),
+    )
+    .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
+    let roles = NonEmptyRoleSet::try_new(
+        joined_node_process_set(&redeemed.node_id, redeemed.gateway)
+            .roles()
+            .to_vec(),
+    )
+    .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
+
+    Ok(KeeperJoinTarget::new(material, artifact, roles))
+}
+
+fn failure_message(message: &str) -> FailureMessage {
+    FailureMessage::try_new(message).expect("generated keeper failure message is non-empty")
 }
 
 struct StartupJoinTokenConsumer {

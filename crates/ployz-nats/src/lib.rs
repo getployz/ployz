@@ -13,6 +13,7 @@ pub mod core_state;
 pub mod kv;
 pub mod objects;
 pub mod observations;
+pub mod operation_api_client;
 pub mod operations;
 pub mod permissions;
 pub mod replication;

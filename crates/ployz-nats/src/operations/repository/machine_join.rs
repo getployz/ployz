@@ -1,4 +1,5 @@
 use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState,
     MachineAddOperationStateName, MachineName, RawJoinToken, redeem_pending_join_token,
@@ -64,6 +65,7 @@ impl AsyncNatsOperationRepository {
                     RedeemPendingMachineJoin {
                         operation_id: id,
                         node_id,
+                        join_bundle: submission.join_bundle,
                         join_token,
                     },
                     token,
@@ -77,6 +79,7 @@ impl AsyncNatsOperationRepository {
                     node_id,
                     name,
                     gateway,
+                    join_bundle: submission.join_bundle,
                     joined_at,
                     last_event_sequence,
                 }))
@@ -117,7 +120,7 @@ impl AsyncNatsOperationRepository {
                     .await
                     .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
                 let joined = self
-                    .redeemed_machine_join(&pending.operation_id)
+                    .redeemed_machine_join(&pending.operation_id, pending.join_bundle)
                     .await?
                     .ok_or_else(|| RedeemMachineJoinTokenError::MissingOperation {
                         operation_id: pending.operation_id.clone(),
@@ -143,6 +146,7 @@ impl AsyncNatsOperationRepository {
     async fn redeemed_machine_join(
         &self,
         operation_id: &OperationId,
+        join_bundle: MachineJoinBundle,
     ) -> Result<Option<RedeemedMachineJoin>, RedeemMachineJoinTokenError> {
         let Some(status) = self
             .operation_status(operation_id)
@@ -176,6 +180,7 @@ impl AsyncNatsOperationRepository {
             node_id,
             name,
             gateway,
+            join_bundle,
             joined_at,
             last_event_sequence,
         }))
@@ -186,6 +191,7 @@ struct RedeemPendingMachineJoin {
     operation_id: OperationId,
     node_id: NodeId,
     join_token: IssuedJoinToken,
+    join_bundle: MachineJoinBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +206,7 @@ pub struct RedeemedMachineJoin {
     pub node_id: NodeId,
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
+    pub join_bundle: MachineJoinBundle,
     pub joined_at: JoinTokenRedeemedAt,
     pub last_event_sequence: EventSequence,
 }

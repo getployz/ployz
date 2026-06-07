@@ -19,6 +19,7 @@ use ployz_nats::operations::{
     CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
     MachineAddOperationSubmission, OperationLeaseClaim, PLZ_OPS_STREAM,
 };
+use ployz_sdk_types::{MachineJoinBundle, MachineJoinPloyzdArtifact};
 
 pub(super) struct TestNats {
     _server: nats_server::Server,
@@ -105,9 +106,31 @@ pub(super) fn machine_add_submission(
         node_id: self::node_id(node_id),
         name: MachineName::try_new(machine_name).expect("valid machine name"),
         gateway: FirstNodeGateway::Skip,
+        join_bundle: machine_join_bundle(),
         raw_join_token: raw_join_token("join_token"),
         join_token: issued_join_token_for_raw("join_token"),
         idempotency_key: self::idempotency_key(idempotency_key),
+    }
+}
+
+pub(super) fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+            .expect("valid cluster name"),
+        ployzd: MachineJoinPloyzdArtifact {
+            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                .expect("valid version"),
+            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                .expect("valid source"),
+            sha256: ployz_core::install::InstallSha256Digest::try_new(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("valid digest"),
+            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                "/usr/local/bin/ployzd",
+            )
+            .expect("valid install path"),
+        },
     }
 }
 

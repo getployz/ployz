@@ -12,6 +12,7 @@ workspace = true
 async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "nuid", "server_2_14", "service"] }
 futures-util.workspace = true
 ployz-core.workspace = true
+ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }

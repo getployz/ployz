@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::ids::NodeId;
 use crate::roles::FirstNodeGateway;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperFirstNodeInstall {
@@ -36,7 +37,66 @@ impl KeeperFirstNodeInstall {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinBundle {
+    pub cluster_name: MachineJoinClusterName,
+    pub ployzd: MachineJoinPloyzdArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinPloyzdArtifact {
+    pub version: InstallArtifactVersion,
+    pub source: InstallArtifactSource,
+    pub sha256: InstallSha256Digest,
+    pub install_path: AbsoluteInstallPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinClusterName(String);
+
+impl MachineJoinClusterName {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InstallContractError::EmptyClusterName);
+        }
+        if value.contains(['\n', '\r', '=']) {
+            return Err(InstallContractError::InvalidClusterName { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineJoinClusterName {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinClusterName> for String {
+    fn from(value: MachineJoinClusterName) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
 pub struct InstallArtifactVersion(String);
 
 impl InstallArtifactVersion {
@@ -54,7 +114,24 @@ impl InstallArtifactVersion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl TryFrom<String> for InstallArtifactVersion {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<InstallArtifactVersion> for String {
+    fn from(value: InstallArtifactVersion) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
 pub struct InstallArtifactSource(String);
 
 impl InstallArtifactSource {
@@ -79,7 +156,24 @@ impl InstallArtifactSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl TryFrom<String> for InstallArtifactSource {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<InstallArtifactSource> for String {
+    fn from(value: InstallArtifactSource) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
 pub struct InstallSha256Digest(String);
 
 impl InstallSha256Digest {
@@ -100,7 +194,24 @@ impl InstallSha256Digest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl TryFrom<String> for InstallSha256Digest {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<InstallSha256Digest> for String {
+    fn from(value: InstallSha256Digest) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
 pub struct AbsoluteInstallPath(String);
 
 impl AbsoluteInstallPath {
@@ -128,8 +239,24 @@ impl AbsoluteInstallPath {
     }
 }
 
+impl TryFrom<String> for AbsoluteInstallPath {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<AbsoluteInstallPath> for String {
+    fn from(value: AbsoluteInstallPath) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallContractError {
+    EmptyClusterName,
+    InvalidClusterName { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -144,6 +271,13 @@ pub enum InstallContractError {
 impl fmt::Display for InstallContractError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyClusterName => formatter.write_str("cluster name is empty"),
+            Self::InvalidClusterName { value } => {
+                write!(
+                    formatter,
+                    "cluster name {value:?} contains unsupported characters"
+                )
+            }
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
             Self::RelativeArtifactSource { value } => {

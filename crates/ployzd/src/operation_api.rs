@@ -91,6 +91,7 @@ pub async fn machine_add(
         node_id: request.node_id,
         name: request.name,
         gateway: first_node_gateway(request.gateway),
+        join_bundle: request.join_bundle,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,
     };
@@ -153,6 +154,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         node_id: joined.node_id,
         name: joined.name,
         gateway: joined.gateway,
+        join_bundle: joined.join_bundle,
         joined_at: joined.joined_at,
         last_event_sequence: joined.last_event_sequence,
         result,

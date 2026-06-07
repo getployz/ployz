@@ -1,9 +1,14 @@
 use std::fmt;
 
 use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::{
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
+    MachineJoinClusterName,
+};
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
+    AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineJoinBundle,
+    MachineJoinPloyzdArtifact,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -19,6 +24,7 @@ pub struct MachineAddCommand {
     pub node_id: NodeId,
     pub name: MachineName,
     pub gateway: MachineAddGateway,
+    pub join_bundle: MachineJoinBundle,
 }
 
 impl MachineAddCommand {
@@ -30,6 +36,7 @@ impl MachineAddCommand {
             node_id: self.node_id,
             name: self.name,
             gateway: self.gateway,
+            join_bundle: self.join_bundle,
         }
     }
 }
@@ -83,6 +90,11 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
     let mut gateway = MachineAddGateway::Skip;
     let mut operation_id = None;
     let mut idempotency_key = None;
+    let mut cluster_name = None;
+    let mut ployzd_version = None;
+    let mut ployzd_source = None;
+    let mut ployzd_sha256 = None;
+    let mut ployzd_install_path = None;
     let mut args = ArgCursor::new(args);
 
     while !args.is_empty() {
@@ -116,8 +128,46 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
             set_once(&mut idempotency_key, parsed, "--idempotency-key")?;
             continue;
         }
+        if let Some(value) = args.take_value("--cluster")? {
+            set_once(&mut cluster_name, value, "--cluster")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ployzd-version")? {
+            set_once(&mut ployzd_version, value, "--ployzd-version")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ployzd-source")? {
+            set_once(&mut ployzd_source, value, "--ployzd-source")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ployzd-sha256")? {
+            set_once(&mut ployzd_sha256, value, "--ployzd-sha256")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ployzd-install-path")? {
+            set_once(&mut ployzd_install_path, value, "--ployzd-install-path")?;
+            continue;
+        }
         return Err(args.unexpected());
     }
+
+    let join_bundle = MachineJoinBundle {
+        cluster_name: MachineJoinClusterName::try_new(required(cluster_name, "--cluster")?)
+            .map_err(|error| invalid_value("--cluster", error))?,
+        ployzd: MachineJoinPloyzdArtifact {
+            version: InstallArtifactVersion::try_new(required(ployzd_version, "--ployzd-version")?)
+                .map_err(|error| invalid_value("--ployzd-version", error))?,
+            source: InstallArtifactSource::try_new(required(ployzd_source, "--ployzd-source")?)
+                .map_err(|error| invalid_value("--ployzd-source", error))?,
+            sha256: InstallSha256Digest::try_new(required(ployzd_sha256, "--ployzd-sha256")?)
+                .map_err(|error| invalid_value("--ployzd-sha256", error))?,
+            install_path: AbsoluteInstallPath::try_new(required(
+                ployzd_install_path,
+                "--ployzd-install-path",
+            )?)
+            .map_err(|error| invalid_value("--ployzd-install-path", error))?,
+        },
+    };
 
     Ok(MachineAddCommand {
         operation_id: required(operation_id, "--operation")?,
@@ -125,5 +175,6 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
         node_id: required(node_id, "--node")?,
         name: required(name, "--name")?,
         gateway,
+        join_bundle,
     })
 }

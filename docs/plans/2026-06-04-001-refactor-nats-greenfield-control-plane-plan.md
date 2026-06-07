@@ -244,7 +244,7 @@ commands over iroh.
 
 - R39. H0 is only a disposable outside-world smoke proof. Hetzner is just the
   host allocator. It is not a product concept, provider layer, reusable
-  harness, or architecture slice.
+  harness, or architecture slice. H0 must not introduce product concepts.
 - R40. The H0 script may only create hosts, wait for SSH, stage artifacts, run
   product commands, capture output, and delete hosts. The whole proof is:
 
@@ -257,7 +257,9 @@ commands over iroh.
   ```
 
   If another primitive is needed to pass that path, add the primitive to Ployz
-  before touching H0.
+  before touching H0. If the product path is missing, H0 fails; the script must
+  not compensate with provider-specific install, readiness, routing, or deploy
+  behavior.
 - R41. The script may shortcut artifact distribution with a local binary,
   pre-staged release artifact, or explicit source path. It must not add
   Hetzner-specific Rust, provider abstractions, readiness models, recovery
@@ -1683,7 +1685,7 @@ Pipeline finish:
   Passing H0 means the already-built install path, NATS-over-iroh connectivity,
   deploy path, and required eBPF/WireGuard data plane work on fresh Linux
   machines. It does not create a Hetzner feature, provider adapter, docs suite,
-  reusable harness, or second orchestration path.
+  reusable harness, fallback readiness system, or second orchestration path.
 - **Test scenarios:**
   - Missing Hetzner token or SSH key fails before creating hosts.
   - Host creation or SSH readiness failure prints the cleanup command.
@@ -1694,11 +1696,11 @@ Pipeline finish:
     cleanup command, and whatever operation id/node ids the product already
     emitted.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
-  end-to-end against two fresh disposable machines. Passing H0 means install,
-  machine add, deploy, NATS-over-iroh, and the required eBPF/WireGuard data
-  path work on real hosts through the product path. There is no separate unit
-  test, integration test target, provider abstraction, or documentation project
-  for Hetzner logic.
+  end-to-end against two fresh disposable machines. This is a smoke assertion,
+  not a new test harness layer: install, machine add, deploy, NATS-over-iroh,
+  and the required eBPF/WireGuard data path either work through normal product
+  operations or H0 fails. There is no separate unit test, integration test
+  target, provider abstraction, or documentation project for Hetzner logic.
 
 ---
 

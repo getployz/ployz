@@ -44,6 +44,17 @@ pub fn execute_keeper_join(
         };
     }
 
+    let mut plan_execution =
+        execute_keeper_plan(&keeper_join_install_plan(target), effects, recorder);
+    let plan_terminal = plan_execution.terminal.clone();
+    events.append(&mut plan_execution.events);
+    if plan_terminal != KeeperPlanTerminal::Completed {
+        return KeeperPlanExecution {
+            events,
+            terminal: plan_terminal,
+        };
+    }
+
     if let Err(execution) = execute_labeled_action(
         &mut events,
         recorder,
@@ -54,12 +65,9 @@ pub fn execute_keeper_join(
         return *execution;
     }
 
-    let mut plan_execution =
-        execute_keeper_plan(&keeper_join_install_plan(target), effects, recorder);
-    events.append(&mut plan_execution.events);
     KeeperPlanExecution {
         events,
-        terminal: plan_execution.terminal,
+        terminal: KeeperPlanTerminal::Completed,
     }
 }
 
