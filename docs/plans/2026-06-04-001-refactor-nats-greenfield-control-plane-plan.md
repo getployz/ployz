@@ -243,8 +243,8 @@ commands over iroh.
 ### Disposable Host Acceptance
 
 - R39. The final MVP proof runs on two real disposable Linux machines. Hetzner
-  is only a host source: create hosts, prove SSH, run product commands, collect
-  command output, and delete hosts.
+  is only a host allocator: create hosts, prove SSH, run product commands,
+  collect command output, and delete hosts. It is not a product concept.
 - R40. The acceptance script is a thin shell harness. It is allowed to create
   hosts, SSH, copy or download artifacts, run the commands below, save output,
   and destroy hosts:
@@ -260,9 +260,9 @@ commands over iroh.
   That is the full Hetzner scope.
 - R41. The acceptance path may cut corners on artifact distribution by using a
   locally built binary, pre-staged release artifact, or explicit source path.
-  It must not add provider abstractions, provider-specific Rust,
-  provider-specific operation types, provider readiness models, recovery logic,
-  retries, special diagnostics, or extra Hetzner-only orchestration.
+  It must not add provider abstractions, provider-specific Rust, provider
+  operation types, provider readiness models, recovery logic, retries, special
+  diagnostics, or extra Hetzner-only orchestration.
 - R42. The host proof is intentionally tiny: install, init first node, add
   second node, connect NATS over iroh, deploy one smoke service, and prove the
   service works through the product path. The harness may wait for SSH and
@@ -1667,20 +1667,20 @@ Pipeline finish:
 ### H0. Disposable Product Smoke Proof
 
 - **Goal:** Prove that install and the actual product path work on disposable
-  hosts with one repeatable command.
+  Linux hosts with one repeatable command.
 - **Requirements:** R39-R45
 - **Dependencies:** U1-U9a, U11
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
 - **Approach:** Use the official `hcloud` CLI and plain SSH only to create two
-  disposable Linux boxes and run commands on them. The script is not a product
-  component, provider adapter, orchestrator, or readiness model. It provisions
-  hosts, waits for SSH, runs the same install and product commands a user would
-  run, saves command output on failure, and tears the hosts down.
+  disposable Linux boxes and run commands on them. The script is a host
+  allocator and command runner. It provisions hosts, waits for SSH, runs the
+  same install and product commands a user would run, saves command output on
+  failure, and tears the hosts down.
 
-  H0 is the final substrate smoke check, not a feature slice. After the boxes
-  exist, the script only runs product commands:
+  H0 is not a Hetzner feature slice. After the boxes exist, the script only
+  runs product commands:
 
   ```text
   ployzctl init --node core-1 ...
@@ -1699,6 +1699,9 @@ Pipeline finish:
   Do not add Hetzner-specific Rust, provider abstractions, provider readiness
   state, provider operation types, provider install policy, provider-aware
   controller code, or Hetzner-specific recovery behavior for H0.
+  If the smoke proof needs a decision about install, machine join, deploy,
+  routing, data plane, or cleanup, that decision belongs in Ployz product code,
+  not in the harness.
 - **Test scenarios:**
   - Script refuses to run without an explicit Hetzner token and SSH key.
   - Failed host creation or SSH readiness destroys both servers or prints a
@@ -1853,9 +1856,10 @@ prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
 real install path on one machine. H0 then proves the actual product path on two
-fresh disposable machines. The harness creates hosts and runs product commands;
-Ployz itself installs the cluster, joins the second node, records operation
-evidence, uses the old eBPF/WireGuard data plane through the normal product
-path once, and serves the smoke service through ingress. Artifact download may
-be shortcut; the eBPF/WireGuard data plane should not be. If the harness starts
-making product decisions, stop and move that primitive back into Ployz.
+fresh disposable machines. The harness creates hosts, waits for SSH, runs
+product commands, captures output, and deletes hosts. Ployz itself installs the
+cluster, joins the second node, records operation evidence, uses the old
+eBPF/WireGuard data plane through the normal product path once, and serves the
+smoke service through ingress. Artifact download may be shortcut; the
+eBPF/WireGuard data plane should not be. If the harness starts making product
+decisions, stop and move that primitive back into Ployz.
