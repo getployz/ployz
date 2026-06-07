@@ -1,4 +1,4 @@
-# Disposable Two-Node Product Proof
+# Disposable Product Smoke Proof
 
 This runbook proves Ployz on real machines. Hetzner is not part of the product
 shape; it only gives us two fresh Linux hosts, public IPs, SSH, and cleanup.
@@ -11,14 +11,14 @@ The proof bar is:
 
 - create two fresh Hetzner machines,
 - prove SSH is ready,
-- install Ployz with the same commands users run,
-- add the second machine,
-- deploy a real smoke service,
-- hit the smoke service through ingress,
+- run the real Ployz install commands,
+- run the real Ployz product commands,
+- hit one smoke service through ingress,
 - destroy the machines.
 
-That is the whole job. Hetzner is not a feature area; it is a disposable way to
-prove the install path and real substrate on clean Linux hosts.
+That is the whole job. Hetzner is not a feature area; it is a disposable host
+source for proving the install path and actual product substrate on clean
+Linux.
 
 ## Harness Boundary
 
@@ -38,9 +38,9 @@ Do not add Hetzner-specific Rust code, provider abstractions, provider
 readiness models, provider operation states, retries, recovery, or
 provider-aware install policy.
 
-The harness waits for product operation results. It must not learn how Ployz
-internals converge. If the script needs more than "run command, wait for
-operation, print operation," the product command needs a clearer primitive.
+The harness waits for product operation results. It must not learn Ployz
+internals. If the script needs more than "run product command, wait for product
+result, print product evidence," the product command needs a clearer primitive.
 
 ## Disposable Host Setup
 
@@ -130,7 +130,7 @@ host path:
 - second-node add/join,
 - NATS over iroh,
 - WireGuard/eBPF data plane,
-- deploy placement,
+- deploy execution,
 - gateway routing.
 
 Anything that only exists because the machines came from Hetzner stays in the
@@ -140,6 +140,18 @@ cloud must be expressed through normal Ployz commands and operation events.
 The script must not grow a second orchestration model. It should run product
 commands, wait for visible operation results, print the failing command output,
 print cleanup instructions, and clean up the hosts.
+
+The product smoke sequence is fixed and small:
+
+```text
+ployzctl init --node core-1 ...
+ployzctl machine add --name edge-2 ...
+ployzctl deploy ...
+ployzctl ops watch ...
+curl ...
+```
+
+Do not add Hetzner-specific variants of those commands.
 
 ## First-Node Install Contract
 
@@ -153,8 +165,8 @@ exercises remotely:
 - `ployzd node --id <id>`
 - optional `ployzd gateway`
 
-Keeper owns the local step plan for this install. Hetzner glue should only
-create the host and call the product command.
+Keeper owns the local step plan for this install. Hetzner glue only creates
+the host and calls the product command.
 
 ## Machine Add Contract
 
