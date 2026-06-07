@@ -44,7 +44,7 @@ export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
 export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
 
-export type DeployRequest = { service_id: ServiceId, target_revision: RevisionId, image: ImageReference, replicas: ReplicaCount, };
+export type DeployRequest = { service_id: ServiceId, target_revision: RevisionId, image: ImageReference, replicas: ReplicaCount, route?: RouteTarget | null, };
 
 export type DeployPlan = { service_id: ServiceId, target_revision: RevisionId, steps: Array<DeployPlanStep>, };
 
@@ -114,7 +114,7 @@ export type ActiveServiceCommitFailure = { "reason": "active_service_changed", e
 
 export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, };
 
-export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", node_id: NodeId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
+export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", node_id: NodeId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
 export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "wireguard_ebpf_unavailable", node_id: NodeId, component: WireGuardEbpfComponent, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "wireguard_ebpf_preparation_timed_out", nodes: Array<NodeId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", node_id: NodeId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 

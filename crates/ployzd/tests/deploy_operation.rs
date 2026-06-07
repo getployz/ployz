@@ -5,13 +5,16 @@ use fixtures::*;
 use ployz_core::ops::{
     DeployOperationFailure, DeployRunningStage, DeployTransition, FailureMessage,
 };
-use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
+use ployz_core::state::{
+    ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveRoute,
+    ExpectedActiveService,
+};
 use ployzd::deploy_worker::{
-    ActiveServiceCommitter, DeployCompletedEventRecord, DeployCompletedEventRecordFailure,
-    DeployExecutionCommand, DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts,
-    DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
-    NodeContainerRuntime, NodeContainerRuntimeError, WireGuardEbpfPreparer,
-    execute_deploy_operation,
+    ActiveRouteCommitter, ActiveServiceCommitter, DeployCompletedEventRecord,
+    DeployCompletedEventRecordFailure, DeployExecutionCommand, DeployExecutionError,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
+    DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
+    WireGuardEbpfPreparer, execute_deploy_operation,
 };
 use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
@@ -20,15 +23,16 @@ fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("test failure message is non-empty")
 }
 
-async fn execute_deploy<R, D, N, H, A>(
+async fn execute_deploy<R, D, N, H, C, A>(
     command: DeployExecutionCommand,
-    ports: DeployExecutionPorts<'_, R, D, N, H, A>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, C, A>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     D: WireGuardEbpfPreparer,
     N: NodeContainerRuntime,
     H: DeployHealthChecker,
+    C: ActiveRouteCommitter,
     A: ActiveServiceCommitter,
 {
     execute_deploy_operation(command, ports).await
@@ -67,6 +71,7 @@ async fn deploy_worker_runs_containers_then_completes() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
@@ -77,6 +82,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -165,6 +171,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command_with_existing_container(2, "node_b", "ctr_existing");
 
@@ -175,6 +182,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -234,6 +242,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers([]);
     let mut health = RecordingHealth::unhealthy("node_b", "ctr_existing");
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command_with_existing_container(1, "node_b", "ctr_existing");
 
@@ -244,6 +253,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -277,6 +287,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::reusing_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
@@ -287,6 +298,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -322,6 +334,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::failing_after_first_container();
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
@@ -332,6 +345,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -382,6 +396,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command_without_eligible_nodes(1);
 
@@ -392,6 +407,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -430,6 +446,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
     let mut wireguard_ebpf = RecordingWireGuardEbpf::wireguard_failed("node_b");
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
@@ -440,6 +457,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -482,6 +500,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::unhealthy("node_b", "ctr_2");
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
 
@@ -492,6 +511,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -550,11 +570,100 @@ async fn deploy_worker_waits_for_health_before_completing() {
 }
 
 #[tokio::test]
+async fn routed_deploy_commits_route_before_completion() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = routed_deploy_command(1);
+
+    execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("routed deploy succeeds");
+
+    assert_eq!(
+        route_state.requests,
+        vec![ActiveRouteCommitRequest {
+            target: route_target("api.example.com", 443),
+            expected_current: ExpectedActiveRoute::Absent,
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_2"),
+        }]
+    );
+    assert_eq!(active_state.requests.len(), 1);
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+    );
+}
+
+#[tokio::test]
+async fn routed_deploy_fails_before_completion_when_route_is_stale() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stale_mismatch();
+    let mut active_state = RecordingActiveState::stored();
+    let command = routed_deploy_command(1);
+
+    let error = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("stale route cutover fails deploy");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            source,
+            failure:
+                DeployOperationFailure::RouteCutoverFailed {
+                    route,
+                    reason: ployz_core::ops::RouteCutoverFailureReason::RouteRejected { .. },
+                    retained_artifacts,
+                },
+            ..
+        } if matches!(*source, DeployExecutionError::ActiveRouteCommitRejected { .. })
+            && route == route_target("api.example.com", 443)
+            && retained_artifacts == vec![retained_container("node_a", "ctr_1")]
+    ));
+    assert_eq!(route_state.requests.len(), 1);
+    assert_eq!(active_state.requests.len(), 1);
+    assert!(
+        !recorder
+            .records
+            .contains(&RecordedOperation::Transition(DeployTransition::Completed))
+    );
+}
+
+#[tokio::test]
 async fn deploy_worker_times_out_hanging_steps() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = HangingHealth;
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
@@ -565,6 +674,7 @@ async fn deploy_worker_times_out_hanging_steps() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -596,6 +706,7 @@ async fn deploy_worker_ignores_completed_event_failure_after_active_commit() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
 
@@ -606,6 +717,7 @@ async fn deploy_worker_ignores_completed_event_failure_after_active_commit() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -655,6 +767,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = HangingActiveState;
     let command = deploy_command(1).with_step_timeout(Duration::from_millis(1));
 
@@ -665,6 +778,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )
@@ -725,6 +839,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stale_mismatch();
     let command = deploy_command(1);
 
@@ -735,6 +850,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
+            route_state: &mut route_state,
             active_state: &mut active_state,
         },
     )

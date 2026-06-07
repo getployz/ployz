@@ -1,8 +1,10 @@
 use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{DeployEvidence, DeployTransition};
-use ployz_core::state::{ActiveServiceCommit, ActiveServiceCommitRequest};
-use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_core::state::{
+    ActiveRouteCommit, ActiveRouteCommitRequest, ActiveServiceCommit, ActiveServiceCommitRequest,
+};
+use ployz_nats::core_state::{ActiveRouteWriteError, AsyncNatsCoreStateStore};
 use std::future::Future;
 
 use super::{
@@ -52,6 +54,13 @@ pub trait ActiveServiceCommitter {
     ) -> impl Future<Output = Result<ActiveServiceCommit, ActiveServiceCommitError>> + Send;
 }
 
+pub trait ActiveRouteCommitter {
+    fn commit_active_route(
+        &mut self,
+        request: ActiveRouteCommitRequest,
+    ) -> impl Future<Output = Result<ActiveRouteCommit, ActiveRouteCommitError>> + Send;
+}
+
 impl DeployOperationRecorder for crate::controllers::OperationControllers {
     async fn record_deploy_transition(
         &mut self,
@@ -82,6 +91,22 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
         .map(|_| ())
         .map_err(DeployOperationRecordError::RecordEvidence)
     }
+}
+
+impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
+    async fn commit_active_route(
+        &mut self,
+        request: ActiveRouteCommitRequest,
+    ) -> Result<ActiveRouteCommit, ActiveRouteCommitError> {
+        AsyncNatsCoreStateStore::commit_active_route(self, &request)
+            .await
+            .map_err(ActiveRouteCommitError::Store)
+    }
+}
+
+#[derive(Debug)]
+pub enum ActiveRouteCommitError {
+    Store(ActiveRouteWriteError),
 }
 
 impl ActiveServiceCommitter for AsyncNatsCoreStateStore {

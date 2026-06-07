@@ -9,16 +9,18 @@ use ployz_core::node::{
 };
 use ployz_core::ops::{
     DeployEvidence, DeployRunningStage, DeployTransition, OperatorHint, RetainedArtifact,
+    RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{
-    ActiveServiceCommit, ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveService,
+    ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceCommit,
+    ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveRoute, ExpectedActiveService,
 };
 use ployzd::deploy_worker::{
-    ActiveServiceCommitError, ActiveServiceCommitter, DeployExecutionCommand, DeployExecutionFacts,
-    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
-    DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
-    NodeRunContainerOutcome, NodeRunContainerRequest, NodeRuntimeUnavailableReason,
-    WireGuardEbpfPreparer, prepare_deploy_execution_command,
+    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
+    DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
+    DeployOperationRecordError, DeployOperationRecorder, NodeContainerRuntime,
+    NodeContainerRuntimeError, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeRuntimeUnavailableReason, WireGuardEbpfPreparer, prepare_deploy_execution_command,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
 use std::sync::{Arc, Mutex};
@@ -150,6 +152,52 @@ impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
 pub(super) struct RecordingActiveState {
     pub(super) requests: Vec<ActiveServiceCommitRequest>,
     outcome: ActiveServiceCommit,
+}
+
+pub(super) struct RecordingRouteState {
+    pub(super) requests: Vec<ActiveRouteCommitRequest>,
+    outcome: ActiveRouteCommit,
+}
+
+impl RecordingRouteState {
+    pub(super) fn stored() -> Self {
+        Self {
+            requests: Vec::new(),
+            outcome: ActiveRouteCommit::Stored {
+                revision: CoreStateRevision::new(1),
+            },
+        }
+    }
+
+    pub(super) fn stale_mismatch() -> Self {
+        let route = route_target("api.example.com", 443);
+        Self {
+            requests: Vec::new(),
+            outcome: ActiveRouteCommit::ActiveRouteChanged {
+                expected_current: ExpectedActiveRoute::Absent,
+                current: Some(ActiveRouteState {
+                    target: route.clone(),
+                    service_id: service_id("svc_other"),
+                    revision_id: revision_id("rev_other"),
+                }),
+                attempted: ActiveRouteState {
+                    target: route,
+                    service_id: service_id("svc_api"),
+                    revision_id: revision_id("rev_2"),
+                },
+            },
+        }
+    }
+}
+
+impl ActiveRouteCommitter for RecordingRouteState {
+    async fn commit_active_route(
+        &mut self,
+        request: ActiveRouteCommitRequest,
+    ) -> Result<ActiveRouteCommit, ActiveRouteCommitError> {
+        self.requests.push(request);
+        Ok(self.outcome.clone())
+    }
 }
 
 impl RecordingActiveState {
@@ -386,6 +434,27 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionCommand {
     )
 }
 
+pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        DeployRequest {
+            service_id: service_id("svc_api"),
+            target_revision: revision_id("rev_2"),
+            image: image("registry.example/api:rev_2"),
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            route: Some(route_target("api.example.com", 443)),
+        },
+        DeployExecutionFacts {
+            active_service: None,
+            active_route: None,
+            eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
+            observed_nodes: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+    .expect("routed deploy command preparation succeeds")
+}
+
 pub(super) fn deploy_command_without_eligible_nodes(replicas: u16) -> DeployExecutionCommand {
     prepared_deploy_command(replicas, Vec::new(), Vec::new())
 }
@@ -419,9 +488,11 @@ fn prepared_deploy_command(
             target_revision: revision_id("rev_2"),
             image: image("registry.example/api:rev_2"),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            route: None,
         },
         DeployExecutionFacts {
             active_service: None,
+            active_route: None,
             eligible_nodes,
             observed_nodes,
             step_timeout: Duration::from_secs(5),
@@ -473,6 +544,13 @@ pub(super) fn container_id(value: &str) -> ContainerId {
 
 pub(super) fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image")
+}
+
+pub(super) fn route_target(hostname: &str, port: u16) -> RouteTarget {
+    RouteTarget {
+        hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
+        port: RoutePort::try_new(port).expect("valid route port"),
+    }
 }
 
 pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedArtifact {

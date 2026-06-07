@@ -13,6 +13,7 @@ async fn ignores_observed_containers_that_are_not_running_target_services() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         active_service: None,
+        active_route: None,
         eligible_nodes: vec![node_id("node_a")],
         observed_nodes: vec![
             NodeContainerObservationSnapshot::try_new(
@@ -48,6 +49,7 @@ async fn uses_active_service_revision_and_target_replicas() {
             service_id: service_id("svc_api"),
             active_revision: revision_id("rev_1"),
         }),
+        active_route: None,
         eligible_nodes: vec![node_id("node_a")],
         observed_nodes: vec![
             NodeContainerObservationSnapshot::try_new(
@@ -83,6 +85,7 @@ async fn rejects_active_state_for_a_different_service() {
                 service_id: service_id("svc_worker"),
                 active_revision: revision_id("rev_1"),
             }),
+            active_route: None,
             eligible_nodes: vec![node_id("node_a")],
             observed_nodes: Vec::new(),
             step_timeout: Duration::from_secs(5),
@@ -107,6 +110,7 @@ fn deploy_request() -> DeployRequest {
         image: ImageReference::try_new("registry.example/api:rev_2")
             .expect("valid image reference"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        route: None,
     }
 }
 

@@ -231,6 +231,7 @@ pub enum HealthCheckFailure {
 pub enum RouteCutoverFailureReason {
     GatewayUnavailable { node_id: NodeId },
     RouteRejected { message: FailureMessage },
+    StateStoreFailed { message: FailureMessage },
     TimedOut { timeout_seconds: u32 },
 }
 

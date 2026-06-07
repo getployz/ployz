@@ -1,6 +1,6 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
-use ployz_core::ops::OperationIdempotencyKey;
+use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
 use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
@@ -13,6 +13,7 @@ pub struct DetachedDeployCommand {
     pub revision_id: RevisionId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
+    pub route: Option<RouteTarget>,
 }
 
 impl DetachedDeployCommand {
@@ -26,6 +27,7 @@ impl DetachedDeployCommand {
                 target_revision: self.revision_id,
                 image: self.image,
                 replicas: self.replicas,
+                route: self.route,
             },
         }
     }
@@ -60,6 +62,8 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
     let mut revision_id = None;
     let mut image = None;
     let mut replicas = None;
+    let mut route_hostname = None;
+    let mut route_port = None;
     let mut args = ArgCursor::new(args);
 
     while !args.is_empty() {
@@ -105,6 +109,17 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
             set_once(&mut replicas, parsed, "--replicas")?;
             continue;
         }
+        if let Some(value) = args.take_value("--route-hostname")? {
+            let parsed = RouteHostname::try_new(value)
+                .map_err(|error| invalid_value("--route-hostname", error))?;
+            set_once(&mut route_hostname, parsed, "--route-hostname")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--route-port")? {
+            let parsed = parse_route_port(value)?;
+            set_once(&mut route_port, parsed, "--route-port")?;
+            continue;
+        }
         return Err(args.unexpected());
     }
 
@@ -119,6 +134,7 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
         revision_id: required(revision_id, "--revision")?,
         image: required(image, "--image")?,
         replicas: required(replicas, "--replicas")?,
+        route: parse_route(route_hostname, route_port)?,
     })
 }
 
@@ -130,4 +146,30 @@ fn parse_replicas(value: String) -> Result<ReplicaCount, PloyzctlCliError> {
             message: error.to_string(),
         })?;
     ReplicaCount::try_new(value).map_err(|error| invalid_value("--replicas", error))
+}
+
+fn parse_route_port(value: String) -> Result<RoutePort, PloyzctlCliError> {
+    let value = value
+        .parse::<u16>()
+        .map_err(|error| PloyzctlCliError::InvalidValue {
+            flag: "--route-port",
+            message: error.to_string(),
+        })?;
+    RoutePort::try_new(value).map_err(|error| invalid_value("--route-port", error))
+}
+
+fn parse_route(
+    hostname: Option<RouteHostname>,
+    port: Option<RoutePort>,
+) -> Result<Option<RouteTarget>, PloyzctlCliError> {
+    match (hostname, port) {
+        (Some(hostname), Some(port)) => Ok(Some(RouteTarget { hostname, port })),
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(PloyzctlCliError::MissingRequiredArgument {
+            flag: "--route-port",
+        }),
+        (None, Some(_)) => Err(PloyzctlCliError::MissingRequiredArgument {
+            flag: "--route-hostname",
+        }),
+    }
 }

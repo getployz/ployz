@@ -11,7 +11,7 @@ pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
 ployzctl init --node <id> [--gateway] [--emit-keeper-install --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path>]
-ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>
+ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port>]
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]
 ployzctl ops watch <operation_id>";
 

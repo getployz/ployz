@@ -2,7 +2,9 @@ use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
 use ployz_core::deploy::{DeployPlan, DeployRequest, ExistingServiceReplica};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
 use ployz_core::ops::{OperatorHint, RetainedArtifact};
-use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
+use ployz_core::state::{
+    ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveService,
+};
 use std::time::Duration;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -12,6 +14,7 @@ pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
     pub(super) expected_active: ExpectedActiveService,
+    pub(super) route_commit: Option<ActiveRouteCommitRequest>,
     pub(super) eligible_nodes: Vec<NodeId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) step_timeout: Duration,
@@ -63,6 +66,11 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    pub fn active_route_commit_request(&self) -> Option<ActiveRouteCommitRequest> {
+        self.route_commit.clone()
+    }
+
+    #[must_use]
     pub fn wireguard_ebpf_prepare_request(&self, plan: &DeployPlan) -> WireGuardEbpfPrepareRequest {
         WireGuardEbpfPrepareRequest::for_deploy_plan(self.operation_id.clone(), plan)
     }
@@ -107,10 +115,11 @@ impl DeployContainer {
     }
 }
 
-pub struct DeployExecutionPorts<'a, R, D, N, H, A> {
+pub struct DeployExecutionPorts<'a, R, D, N, H, C, A> {
     pub recorder: &'a mut R,
     pub wireguard_ebpf: &'a mut D,
     pub node_runtime: &'a mut N,
     pub health_checker: &'a mut H,
+    pub route_state: &'a mut C,
     pub active_state: &'a mut A,
 }

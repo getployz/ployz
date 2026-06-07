@@ -215,6 +215,26 @@ test("sdk maps raw deploy input to the wire request", () => {
       replicas: 1,
     },
   });
+  assert.deepEqual(
+    deploySubmitRequest({
+      ...deployInput(),
+      route: { hostname: "api.example.com", port: 443 },
+    }),
+    {
+      operation_id: "op_123",
+      idempotency_key: "idem_123",
+      target: {
+        service_id: "svc_api",
+        target_revision: "rev_2",
+        image: "ghcr.io/acme/api:rev-2",
+        replicas: 1,
+        route: {
+          hostname: "api.example.com",
+          port: 443,
+        },
+      },
+    },
+  );
   assert.throws(
     () => deploySubmitRequest({ ...deployInput(), serviceId: "svc.api" }),
     /service id/,

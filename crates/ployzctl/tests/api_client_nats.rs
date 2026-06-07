@@ -446,6 +446,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
         target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        route: None,
     }
 }
 

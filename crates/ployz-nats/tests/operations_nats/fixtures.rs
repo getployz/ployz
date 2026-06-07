@@ -216,6 +216,7 @@ pub(super) fn deploy_target(service_id: &str) -> DeployRequest {
         target_revision: revision_id("rev_2"),
         image: image("ghcr.io/acme/api:rev-2"),
         replicas: replicas(1),
+        route: None,
     }
 }
 

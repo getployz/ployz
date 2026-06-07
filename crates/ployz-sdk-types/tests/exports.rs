@@ -37,6 +37,7 @@ fn sdk_exports_core_wire_types() {
         target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        route: None,
     };
     let status = OperationStatus::deploy_accepted(
         ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id"),
@@ -127,6 +128,7 @@ fn sdk_exports_operation_api_wire_types() {
             target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            route: None,
         },
     };
     let response: DeploySubmitResponse = OperationApiResponse::Ok {

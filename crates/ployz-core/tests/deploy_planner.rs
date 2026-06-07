@@ -8,7 +8,10 @@ use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
-use ployz_core::state::{ActiveServiceState, ExpectedActiveService};
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::state::{
+    ActiveRouteState, ActiveServiceState, ExpectedActiveRoute, ExpectedActiveService,
+};
 
 #[test]
 fn new_service_plan_runs_replicas_across_eligible_nodes() {
@@ -98,6 +101,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
             service_id: service_id("svc_api"),
             active_revision: revision_id("rev_old"),
         }),
+        active_route: None,
         eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
         observed_nodes: vec![observed_node(
             "node_b",
@@ -163,6 +167,7 @@ fn deploy_preparation_rejects_active_state_for_another_service() {
                 service_id: service_id("svc_other"),
                 active_revision: revision_id("rev_old"),
             }),
+            active_route: None,
             eligible_nodes: vec![node_id("node_a")],
             observed_nodes: Vec::new(),
         }),
@@ -171,6 +176,63 @@ fn deploy_preparation_rejects_active_state_for_another_service() {
             actual_service_id: service_id("svc_other"),
         })
     );
+}
+
+#[test]
+fn deploy_preparation_rejects_active_route_for_another_target() {
+    let mut request = deploy_request(1);
+    request.route = Some(route_target("api.example.com", 443));
+
+    assert_eq!(
+        prepare_deploy(DeployPreparationInput {
+            request,
+            active_service: None,
+            active_route: Some(ActiveRouteState {
+                target: route_target("admin.example.com", 443),
+                service_id: service_id("svc_api"),
+                revision_id: revision_id("rev_old"),
+            }),
+            eligible_nodes: vec![node_id("node_a")],
+            observed_nodes: Vec::new(),
+        }),
+        Err(DeployPreparationError::ActiveRouteMismatch {
+            expected_route: route_target("api.example.com", 443),
+            actual_route: route_target("admin.example.com", 443),
+        })
+    );
+}
+
+#[test]
+fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
+    let mut request = deploy_request(1);
+    request.route = Some(route_target("api.example.com", 443));
+
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request,
+        active_service: None,
+        active_route: Some(ActiveRouteState {
+            target: route_target("api.example.com", 443),
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_old"),
+        }),
+        eligible_nodes: vec![node_id("node_a")],
+        observed_nodes: Vec::new(),
+    })
+    .expect("routed deploy preparation succeeds");
+
+    let route_commit = prepared
+        .route_commit
+        .expect("routed deploy has route commit request");
+    assert_eq!(route_commit.target, route_target("api.example.com", 443));
+    assert_eq!(
+        route_commit.expected_current,
+        ExpectedActiveRoute::ServiceRevision(ployz_core::state::ExpectedActiveRouteRevision {
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_old"),
+        })
+    );
+    assert_eq!(route_commit.service_id, service_id("svc_api"));
+    assert_eq!(route_commit.revision_id, revision_id("rev_1"));
 }
 
 fn planning_input(
@@ -190,6 +252,7 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         target_revision: revision_id("rev_1"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        route: None,
     }
 }
 
@@ -230,6 +293,13 @@ fn operation_id(value: &str) -> OperationId {
 
 fn step_id(value: &str) -> StepId {
     StepId::try_new(value).expect("valid step id")
+}
+
+fn route_target(hostname: &str, port: u16) -> RouteTarget {
+    RouteTarget {
+        hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
+        port: RoutePort::try_new(port).expect("valid route port"),
+    }
 }
 
 fn existing_replica(node: &str, container: &str) -> ExistingServiceReplica {

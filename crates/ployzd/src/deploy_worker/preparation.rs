@@ -5,7 +5,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::node::NodeContainerObservationSnapshot;
-use ployz_core::state::ActiveServiceState;
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
 use std::time::Duration;
 
 use super::DeployExecutionCommand;
@@ -13,6 +13,7 @@ use super::DeployExecutionCommand;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionFacts {
     pub active_service: Option<ActiveServiceState>,
+    pub active_route: Option<ActiveRouteState>,
     pub eligible_nodes: Vec<NodeId>,
     pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
     pub step_timeout: Duration,
@@ -26,6 +27,7 @@ pub fn prepare_deploy_execution_command(
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         active_service: facts.active_service,
+        active_route: facts.active_route,
         eligible_nodes: facts.eligible_nodes,
         observed_nodes: facts.observed_nodes,
     })?;
@@ -34,6 +36,7 @@ pub fn prepare_deploy_execution_command(
         operation_id,
         request: prepared.request,
         expected_active: prepared.expected_active,
+        route_commit: prepared.route_commit,
         eligible_nodes: prepared.eligible_nodes,
         existing_replicas: prepared.existing_replicas,
         step_timeout: facts.step_timeout,

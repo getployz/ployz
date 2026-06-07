@@ -5,6 +5,7 @@ use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, Service
 use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
+    RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddGateway, MachineJoinBundle, MachineJoinPloyzdArtifact,
@@ -170,6 +171,34 @@ fn cli_dispatches_detached_deploy_request() {
         panic!("expected deploy command");
     };
     assert_eq!(command, detached_deploy_command());
+}
+
+#[test]
+fn cli_dispatches_detached_deploy_request_with_route() {
+    let command = parse_command(detached_deploy_args_with_route()).expect("deploy command parses");
+
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    assert_eq!(
+        command.route,
+        Some(RouteTarget {
+            hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
+            port: RoutePort::try_new(443).expect("valid route port"),
+        })
+    );
+}
+
+#[test]
+fn cli_requires_route_port_when_deploy_route_hostname_is_set() {
+    let args = detached_deploy_arg_refs()
+        .chain(["--route-hostname", "api.example.com"])
+        .map(str::to_owned);
+
+    assert!(matches!(
+        parse_command(args),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--route-port"
+    ));
 }
 
 #[test]
@@ -569,6 +598,7 @@ fn deploy_request() -> DeployRequest {
         target_revision: RevisionId::try_new("rev_2").expect("valid revision id"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        route: None,
     }
 }
 
@@ -581,14 +611,21 @@ fn detached_deploy_command() -> DetachedDeployCommand {
         revision_id: RevisionId::try_new("rev_2").expect("valid revision id"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replicas"),
+        route: None,
     }
 }
 
 fn detached_deploy_args() -> impl Iterator<Item = String> {
-    detached_deploy_arg_refs().into_iter().map(str::to_owned)
+    detached_deploy_arg_refs().map(str::to_owned)
 }
 
-fn detached_deploy_arg_refs() -> [&'static str; 14] {
+fn detached_deploy_args_with_route() -> impl Iterator<Item = String> {
+    detached_deploy_arg_refs()
+        .chain(["--route-hostname", "api.example.com", "--route-port", "443"])
+        .map(str::to_owned)
+}
+
+fn detached_deploy_arg_refs() -> impl Iterator<Item = &'static str> {
     [
         "deploy",
         "--detach",
@@ -605,6 +642,7 @@ fn detached_deploy_arg_refs() -> [&'static str; 14] {
         "--idempotency-key",
         "idem_deploy",
     ]
+    .into_iter()
 }
 
 fn machine_add_args_with_gateway() -> impl Iterator<Item = String> {

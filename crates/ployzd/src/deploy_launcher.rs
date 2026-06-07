@@ -90,6 +90,7 @@ where
             }
         };
         let mut recorder = controllers;
+        let mut route_state = core_state.clone();
         let mut active_state = core_state;
 
         execute_deploy_operation(
@@ -99,6 +100,7 @@ where
                 wireguard_ebpf,
                 node_runtime,
                 health_checker,
+                route_state: &mut route_state,
                 active_state: &mut active_state,
             },
         )
@@ -181,6 +183,7 @@ fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOpe
 fn fact_load_failure_message(source: &DeployFactLoadError) -> &'static str {
     match source {
         DeployFactLoadError::ActiveServiceRead { .. } => "active service state could not be loaded",
+        DeployFactLoadError::ActiveRouteRead { .. } => "active route state could not be loaded",
         DeployFactLoadError::NodeObservationRead { .. } => "node observations could not be loaded",
     }
 }

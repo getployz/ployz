@@ -3,9 +3,9 @@ use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, StepId, SubjectTokenError};
 use ployz_core::ops::{
     ActiveServiceCommitFailure, DeployOperationFailure, FailureMessage, HealthCheckFailure,
-    OperatorHint, RetainedArtifact,
+    OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
 };
-use ployz_core::state::ExpectedActiveService;
+use ployz_core::state::{ActiveRouteState, ExpectedActiveRoute, ExpectedActiveService};
 use ployz_nats::core_state::CoreStateStoreError;
 use ployz_nats::operations::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use std::future::Future;
@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use crate::docker::labels::ManagedContainerLabels;
 
-use super::{DeployContainer, DeployExecutionCommand, DeployOperationRecorder};
+use super::{
+    ActiveRouteCommitError, DeployContainer, DeployExecutionCommand, DeployOperationRecorder,
+};
 
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
@@ -122,7 +124,13 @@ pub enum DeployExecutionError {
     PrepareWireGuardEbpf(WireGuardEbpfPrepareError),
     RunContainer(NodeContainerRuntimeError),
     WaitHealthy(DeployHealthCheckError),
+    CommitRoute(ActiveRouteCommitError),
     CommitActiveService(ActiveServiceCommitError),
+    ActiveRouteCommitRejected {
+        expected_current: ExpectedActiveRoute,
+        current: Option<ActiveRouteState>,
+        attempted: ActiveRouteState,
+    },
     ActiveServiceCommitRejected {
         expected_current: ExpectedActiveService,
         current_revision: Option<RevisionId>,
@@ -141,6 +149,7 @@ pub enum DeployExecutionStep {
     PrepareWireGuardEbpf { nodes: Vec<NodeId> },
     RunContainer { node_id: NodeId },
     WaitHealthy,
+    CommitRoute { route: ployz_core::ops::RouteTarget },
     CommitActiveService,
 }
 
@@ -158,6 +167,7 @@ impl DeployExecutionStep {
             Self::PrepareWireGuardEbpf { .. } => "prepare_wireguard_ebpf",
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
+            Self::CommitRoute { .. } => "commit_route",
             Self::CommitActiveService => "commit_active_service",
         }
     }
@@ -183,6 +193,13 @@ impl DeployExecutionStep {
             }
             Self::WaitHealthy => DeployOperationFailure::HealthCheckFailed {
                 health_check: HealthCheckFailure::TimedOut {
+                    timeout_seconds: timeout_seconds(timeout),
+                },
+                retained_artifacts,
+            },
+            Self::CommitRoute { route } => DeployOperationFailure::RouteCutoverFailed {
+                route: route.clone(),
+                reason: RouteCutoverFailureReason::TimedOut {
                     timeout_seconds: timeout_seconds(timeout),
                 },
                 retained_artifacts,
@@ -253,7 +270,17 @@ impl DeployExecutionError {
             }
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
+            Self::CommitRoute(error) => error.deploy_failure(command, retained_artifacts),
             Self::CommitActiveService(error) => error.deploy_failure(command, retained_artifacts),
+            Self::ActiveRouteCommitRejected { attempted, .. } => {
+                DeployOperationFailure::RouteCutoverFailed {
+                    route: attempted.target.clone(),
+                    reason: RouteCutoverFailureReason::RouteRejected {
+                        message: failure_message("route changed before cutover"),
+                    },
+                    retained_artifacts,
+                }
+            }
             Self::ActiveServiceCommitRejected {
                 expected_current,
                 current_revision,
@@ -288,6 +315,35 @@ fn wireguard_ebpf_deploy_failure(
             message: message.clone(),
             retained_artifacts,
         },
+    }
+}
+
+impl From<ActiveRouteCommitError> for DeployExecutionError {
+    fn from(value: ActiveRouteCommitError) -> Self {
+        Self::CommitRoute(value)
+    }
+}
+
+impl ActiveRouteCommitError {
+    fn deploy_failure(
+        &self,
+        command: &DeployExecutionCommand,
+        retained_artifacts: Vec<RetainedArtifact>,
+    ) -> DeployOperationFailure {
+        let route = command
+            .request
+            .route
+            .clone()
+            .expect("route commit errors only occur for routed deploys");
+        match self {
+            Self::Store(error) => DeployOperationFailure::RouteCutoverFailed {
+                route,
+                reason: RouteCutoverFailureReason::StateStoreFailed {
+                    message: failure_message(format!("active route state write failed: {error}")),
+                },
+                retained_artifacts,
+            },
+        }
     }
 }
 
@@ -521,7 +577,7 @@ fn retained_artifacts(containers: &[DeployContainer]) -> Vec<RetainedArtifact> {
         .collect()
 }
 
-fn failure_message(message: &'static str) -> FailureMessage {
+fn failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message).expect("internal failure message is non-empty")
 }
 

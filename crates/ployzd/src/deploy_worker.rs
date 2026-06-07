@@ -28,8 +28,8 @@ pub use failure::{
 use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
 use finalization::finalize_successful_deploy;
 pub use ports::{
-    ActiveServiceCommitter, DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime,
-    WireGuardEbpfPreparer,
+    ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DeployHealthChecker,
+    DeployOperationRecorder, NodeContainerRuntime, WireGuardEbpfPreparer,
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
@@ -41,15 +41,16 @@ pub use types::{
     DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
 };
 
-pub async fn execute_deploy_operation<R, D, N, H, A>(
+pub async fn execute_deploy_operation<R, D, N, H, C, A>(
     command: DeployExecutionCommand,
-    ports: DeployExecutionPorts<'_, R, D, N, H, A>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, C, A>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     D: WireGuardEbpfPreparer,
     N: NodeContainerRuntime,
     H: DeployHealthChecker,
+    C: ActiveRouteCommitter,
     A: ActiveServiceCommitter,
 {
     let mut ports = ports;
@@ -59,15 +60,16 @@ where
     }
 }
 
-async fn execute_deploy<R, D, N, H, A>(
+async fn execute_deploy<R, D, N, H, C, A>(
     command: &DeployExecutionCommand,
-    ports: &mut DeployExecutionPorts<'_, R, D, N, H, A>,
+    ports: &mut DeployExecutionPorts<'_, R, D, N, H, C, A>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
     D: WireGuardEbpfPreparer,
     N: NodeContainerRuntime,
     H: DeployHealthChecker,
+    C: ActiveRouteCommitter,
     A: ActiveServiceCommitter,
 {
     let mut containers = Vec::new();
@@ -159,10 +161,14 @@ where
     .await
     .map_err(|source| failure(command, source, &started_containers))?;
 
-    let completed_event =
-        finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
-            .await
-            .map_err(|source| failure(command, source, &started_containers))?;
+    let completed_event = finalize_successful_deploy(
+        command,
+        &mut *ports.active_state,
+        &mut *ports.route_state,
+        &mut *ports.recorder,
+    )
+    .await
+    .map_err(|source| failure(command, source, &started_containers))?;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
@@ -172,6 +178,41 @@ where
     };
 
     Ok(outcome)
+}
+
+pub(super) async fn cutover_route<C>(
+    command: &DeployExecutionCommand,
+    route_state: &mut C,
+) -> Result<(), DeployExecutionError>
+where
+    C: ActiveRouteCommitter,
+{
+    let Some(request) = command.active_route_commit_request() else {
+        return Ok(());
+    };
+
+    let outcome = with_step_timeout(
+        command,
+        DeployExecutionStep::CommitRoute {
+            route: request.target.clone(),
+        },
+        route_state.commit_active_route(request),
+    )
+    .await?;
+
+    match outcome {
+        ployz_core::state::ActiveRouteCommit::Stored { .. }
+        | ployz_core::state::ActiveRouteCommit::AlreadyCommitted { .. } => Ok(()),
+        ployz_core::state::ActiveRouteCommit::ActiveRouteChanged {
+            expected_current,
+            current,
+            attempted,
+        } => Err(DeployExecutionError::ActiveRouteCommitRejected {
+            expected_current,
+            current,
+            attempted,
+        }),
+    }
 }
 
 async fn prepare_wireguard_ebpf<D>(

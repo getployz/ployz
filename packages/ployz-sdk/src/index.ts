@@ -45,6 +45,8 @@ import {
   operationIdempotencyKey,
   replicaCount,
   revisionId,
+  routeHostname,
+  routePort,
   serviceId,
 } from "./primitives.ts";
 import type {
@@ -105,6 +107,10 @@ export interface PloyzDeployInput {
   targetRevision: string;
   image: string;
   replicas: number;
+  route?: {
+    hostname: string;
+    port: number;
+  };
 }
 
 export interface PloyzMachineAddInput {
@@ -161,6 +167,14 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
       target_revision: revisionId(input.targetRevision),
       image: imageReference(input.image),
       replicas: replicaCount(input.replicas),
+      ...(input.route
+        ? {
+            route: {
+              hostname: routeHostname(input.route.hostname),
+              port: routePort(input.route.port),
+            },
+          }
+        : {}),
     },
   };
 }

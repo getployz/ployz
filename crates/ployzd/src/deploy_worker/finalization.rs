@@ -3,17 +3,20 @@ use ployz_core::state::{ActiveServiceCommit, ActiveServiceCommitRequest};
 use std::time::Duration;
 
 use super::{
-    ActiveServiceCommitter, DeployCompletedEventRecord, DeployCompletedEventRecordFailure,
-    DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
+    ActiveRouteCommitter, ActiveServiceCommitter, DeployCompletedEventRecord,
+    DeployCompletedEventRecordFailure, DeployExecutionCommand, DeployExecutionError,
+    DeployOperationRecorder, cutover_route,
 };
 
-pub(super) async fn finalize_successful_deploy<A, R>(
+pub(super) async fn finalize_successful_deploy<A, C, R>(
     command: &DeployExecutionCommand,
     active_state: &mut A,
+    route_state: &mut C,
     recorder: &mut R,
 ) -> Result<DeployCompletedEventRecord, DeployExecutionError>
 where
     A: ActiveServiceCommitter,
+    C: ActiveRouteCommitter,
     R: DeployOperationRecorder,
 {
     commit_active_service_with_timeout(
@@ -22,6 +25,8 @@ where
         active_state,
     )
     .await?;
+
+    cutover_route(command, route_state).await?;
 
     Ok(try_record_deploy_completion(command, recorder).await)
 }

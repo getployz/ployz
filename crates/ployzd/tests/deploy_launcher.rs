@@ -421,6 +421,7 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         target_revision: revision_id("rev_2"),
         image: image("registry.example/api:rev_2"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+        route: None,
     }
 }
 

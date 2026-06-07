@@ -6,7 +6,11 @@ use std::num::NonZeroU16;
 
 use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
 use crate::node::NodeContainerObservationSnapshot;
-use crate::state::{ActiveServiceState, ExpectedActiveService};
+use crate::ops::RouteTarget;
+use crate::state::{
+    ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceState, ExpectedActiveRoute,
+    ExpectedActiveRouteRevision, ExpectedActiveService,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -16,6 +20,8 @@ pub struct DeployRequest {
     pub target_revision: RevisionId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +41,7 @@ pub struct ExistingServiceReplica {
 pub struct DeployPreparationInput {
     pub request: DeployRequest,
     pub active_service: Option<ActiveServiceState>,
+    pub active_route: Option<ActiveRouteState>,
     pub eligible_nodes: Vec<NodeId>,
     pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
 }
@@ -43,6 +50,7 @@ pub struct DeployPreparationInput {
 pub struct PreparedDeploy {
     pub request: DeployRequest,
     pub expected_active: ExpectedActiveService,
+    pub route_commit: Option<ActiveRouteCommitRequest>,
     pub eligible_nodes: Vec<NodeId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
 }
@@ -147,6 +155,10 @@ pub enum DeployPreparationError {
         expected_service_id: ServiceId,
         actual_service_id: ServiceId,
     },
+    ActiveRouteMismatch {
+        expected_route: RouteTarget,
+        actual_route: RouteTarget,
+    },
 }
 
 impl fmt::Display for DeployPreparationError {
@@ -161,6 +173,14 @@ impl fmt::Display for DeployPreparationError {
                 actual_service_id.as_str(),
                 expected_service_id.as_str()
             ),
+            Self::ActiveRouteMismatch {
+                expected_route,
+                actual_route,
+            } => write!(
+                formatter,
+                "active route state belongs to {:?}, not {:?}",
+                actual_route, expected_route
+            ),
         }
     }
 }
@@ -169,11 +189,13 @@ pub fn prepare_deploy(
     input: DeployPreparationInput,
 ) -> Result<PreparedDeploy, DeployPreparationError> {
     let expected_active = expected_active_service(&input.request, input.active_service)?;
+    let route_commit = active_route_commit_request(&input.request, input.active_route)?;
     let existing_replicas = existing_replicas(&input.request, &input.observed_nodes);
 
     Ok(PreparedDeploy {
         request: input.request,
         expected_active,
+        route_commit,
         eligible_nodes: input.eligible_nodes,
         existing_replicas,
     })
@@ -214,6 +236,38 @@ fn existing_replicas(
             container_id: container.container_id.clone(),
         })
         .collect()
+}
+
+fn active_route_commit_request(
+    request: &DeployRequest,
+    active_route: Option<ActiveRouteState>,
+) -> Result<Option<ActiveRouteCommitRequest>, DeployPreparationError> {
+    let Some(target) = request.route.clone() else {
+        return Ok(None);
+    };
+
+    let expected_current = match active_route {
+        Some(route) => {
+            if route.target != target {
+                return Err(DeployPreparationError::ActiveRouteMismatch {
+                    expected_route: target,
+                    actual_route: route.target,
+                });
+            }
+            ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                service_id: route.service_id,
+                revision_id: route.revision_id,
+            })
+        }
+        None => ExpectedActiveRoute::Absent,
+    };
+
+    Ok(Some(ActiveRouteCommitRequest {
+        target,
+        expected_current,
+        service_id: request.service_id.clone(),
+        revision_id: request.target_revision.clone(),
+    }))
 }
 
 pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {

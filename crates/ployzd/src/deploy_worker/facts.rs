@@ -4,7 +4,7 @@ use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NodeId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::fmt;
 use std::time::Duration;
@@ -43,10 +43,21 @@ pub async fn load_deploy_execution_facts_from_nats(
             service_id: request.service_id.clone(),
             failure: active_service_read_failure(source),
         })?;
+    let active_route = match &request.route {
+        Some(route) => Some(core_state.active_route(route).await.map_err(|source| {
+            DeployFactLoadError::ActiveRouteRead {
+                route: route.clone(),
+                failure: active_route_read_failure(source),
+            }
+        })?),
+        None => None,
+    }
+    .flatten();
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
 
     Ok(DeployExecutionFacts {
         active_service,
+        active_route,
         eligible_nodes: node_scope.eligible_nodes,
         observed_nodes,
         step_timeout,
@@ -85,6 +96,10 @@ pub enum DeployFactLoadError {
         service_id: ServiceId,
         failure: ActiveServiceReadFailure,
     },
+    ActiveRouteRead {
+        route: ployz_core::ops::RouteTarget,
+        failure: ActiveRouteReadFailure,
+    },
     NodeObservationRead {
         node_id: NodeId,
         failure: ObservationReadFailure,
@@ -116,6 +131,15 @@ pub enum ActiveServiceReadFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveRouteReadFailure {
+    Decode { message: String },
+    ListKeys { message: String },
+    Get { key: String, message: String },
+    CorruptState { key: String, message: String },
+    Timeout { operation: &'static str },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservationReadFailure {
     OpenBucket {
         bucket: &'static str,
@@ -139,6 +163,35 @@ pub enum ObservationReadFailure {
         operation: &'static str,
     },
     UnexpectedWriteFailure,
+}
+
+fn active_route_read_failure(source: ActiveRouteReadError) -> ActiveRouteReadFailure {
+    match source {
+        ActiveRouteReadError::Decode(error) => ActiveRouteReadFailure::Decode {
+            message: error.to_string(),
+        },
+        ActiveRouteReadError::ListKeys { message } => ActiveRouteReadFailure::ListKeys { message },
+        ActiveRouteReadError::Get { key, message } => ActiveRouteReadFailure::Get { key, message },
+        ActiveRouteReadError::CorruptActiveRouteState {
+            key,
+            expected_target,
+            actual_target,
+        } => ActiveRouteReadFailure::CorruptState {
+            key,
+            message: format!(
+                "active route state belongs to {actual_target:?}, not {expected_target:?}"
+            ),
+        },
+        ActiveRouteReadError::CorruptActiveRouteKey { key, actual_key } => {
+            ActiveRouteReadFailure::CorruptState {
+                key,
+                message: format!("active route key does not match encoded target {actual_key}"),
+            }
+        }
+        ActiveRouteReadError::Timeout { operation } => {
+            ActiveRouteReadFailure::Timeout { operation }
+        }
+    }
 }
 
 fn active_service_read_failure(source: CoreStateStoreError) -> ActiveServiceReadFailure {
@@ -202,6 +255,11 @@ impl fmt::Display for DeployFactLoadError {
                 service_id.as_str(),
                 failure
             ),
+            Self::ActiveRouteRead { route, failure } => write!(
+                formatter,
+                "active route state for {:?} could not be read: {}",
+                route, failure
+            ),
             Self::NodeObservationRead { node_id, failure } => write!(
                 formatter,
                 "node observations for {} could not be read: {}",
@@ -237,6 +295,20 @@ impl fmt::Display for ActiveServiceReadFailure {
             Self::UnexpectedWriteFailure => {
                 formatter.write_str("unexpected write-path failure during read")
             }
+        }
+    }
+}
+
+impl fmt::Display for ActiveRouteReadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode { message } => write!(formatter, "decode active route state: {message}"),
+            Self::ListKeys { message } => write!(formatter, "list active route keys: {message}"),
+            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::CorruptState { key, message } => {
+                write!(formatter, "corrupt route state at {key}: {message}")
+            }
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
     }
 }
