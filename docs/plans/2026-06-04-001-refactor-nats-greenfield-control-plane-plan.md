@@ -213,48 +213,50 @@ commands over iroh.
   inferred into stored cluster truth and does not mutate current workload state
   without an operation owner.
 
-### Local Install And Substrate Updates
+### Local Install
 
 - R31. `ployz.sh` is a tiny bootstrapper: it verifies the host, downloads and
   verifies `ployz-keeper`, installs its supervisor unit, writes one-time join
   material, and starts the keeper. It does not install or configure the full
   cluster itself.
 - R32. `ployz-keeper` is a separate, small binary with an independent version
-  from `ployzd`. It owns node-local substrate install/update/reconcile steps
-  for the main `ployzd` artifact, supervisor units, host prerequisites, and
-  bootstrap material.
+  from `ployzd`. For v1 it owns only node-local bootstrap/install: host
+  prerequisites, verified artifacts, supervisor units, and join material.
 - R33. `ployzd` is one main runtime artifact. Control, node-agent, gateway,
   DNS, and NATS tunnel roles run as separate supervised processes/modes of
   that same binary unless a later hard boundary requires another split.
 - R34. Join tokens are short-lived, one-time, and scoped to bootstrap. They
   authorize redeeming join material, not general cluster mutation.
 - R35. Keeper steps are typed, versioned, and observable. Step progress and
-  failures are emitted to the active bootstrap or substrate-update operation.
-- R36. Keeper background reconciliation may change only local substrate state
-  and only against an approved bootstrap/update target. It must not silently
-  change product/runtime truth such as active services, routes, certs, or
-  cluster membership.
-- R37. `ployzd` does not update itself. Keeper installs staged, verified
-  `ployzd` artifacts and restarts/reloads role units with role-specific health
-  gates.
-- R38. Gateway, DNS, and tunnel updates preserve last-known-good serving or
-  connectivity behavior where applicable and expose degraded/failed rollout
-  state instead of rewriting cluster truth.
+  failures are emitted to the active bootstrap operation.
+- R36. Keeper background reconciliation is not part of v1. If keeper notices
+  drift after bootstrap, it reports local health/evidence and waits for an
+  explicit operation; it does not silently change product/runtime truth such as
+  active services, routes, certs, or cluster membership.
+- R37. `ployzd` does not update itself in v1. Upgrade and rollout behavior is
+  deferred until install, machine add, deploy, and the real data plane are
+  proven on disposable hosts.
+- R38. Gateway, DNS, tunnel, and workload processes keep their own supervised
+  failure domains. The install proof must show those processes can start,
+  stop, and report health independently of `ployzd control`.
 
-### Production-Shaped Acceptance
+### Disposable Host Acceptance
 
 - R39. The final MVP proof runs on two real Hetzner machines created through
-  the Hetzner API or CLI. Hetzner is only disposable host plumbing.
-- R40. The acceptance script proves the same product commands a user would run:
-  initialize the first machine, add a second machine, deploy a smoke service,
-  inspect the operation, and clean up the hosts.
+  the Hetzner CLI. Hetzner is only disposable host plumbing.
+- R40. The acceptance script is a thin shell harness around real product
+  commands: create two hosts, SSH in, install Ployz, initialize the first
+  machine, add the second machine, deploy a smoke service, inspect the
+  operation, and destroy the hosts.
 - R41. The acceptance path may cut corners on artifact distribution by using a
   locally built binary, pre-staged release artifact, or explicit source path.
-  It must not add provider abstractions, provider-specific operation states, or
-  extra Hetzner-only orchestration.
+  It must not add provider abstractions, provider-specific Rust, provider
+  readiness models, provider-specific operation states, or extra Hetzner-only
+  orchestration.
 - R42. The actual substrate is what is under test: NATS-over-iroh connectivity,
   independently supervised runtime processes, the eBPF/WireGuard container data
-  plane, and simple ingress. Provider setup is not under test beyond SSH access.
+  plane, and simple ingress. Provider setup is not under test beyond host
+  creation, SSH access, and cleanup.
 - R43. Reuse the old eBPF/WireGuard dataplane work from git history as a hard
   requirement for container networking. The proof can be thin, but the data
   plane must be real.
@@ -626,10 +628,6 @@ KV_CORE
   certs.<cert_id>
   certs.by_host.<encoded_hostname>
   schedules.<schedule_id>
-  substrate.ployzd.target
-  substrate.keeper.target
-  substrate.rollouts.<rollout_id>
-
 KV_OPS
   ops.<op_id>
 
@@ -856,9 +854,9 @@ Rules:
   and serves last-known-good answers independently of `ployzd control`.
 - `ployzd tunnel` is the independently supervised NATS-over-iroh byte
   forwarder role for edge loopback listeners and core tunnel endpoints.
-- `ployz-keeper` is a separate tiny binary that installs and updates the main
-  `ployzd` artifact, writes supervisor units, reconciles host prerequisites,
-  and reports bootstrap/substrate-update progress.
+- `ployz-keeper` is a separate tiny binary that installs the main `ployzd`
+  artifact, writes supervisor units, checks host prerequisites, and reports
+  bootstrap progress.
 - `ployzctl` is a client, not an orchestrator.
 - `ployz-sdk-types` is the public schema surface for generated TypeScript
   bindings.
@@ -974,47 +972,25 @@ request/reply, KV, streams, Object Store, schedules, permissions, and future
 consumer-based jobs behave as normal NATS features. The tunnel is part of NATS
 connectivity, not `ployzd control` service response.
 
-### Deferred Substrate Updates And Rollouts
+### Deferred Substrate Updates
 
-Substrate updates are not part of the first product proof. They should become
-explicit operations executed locally by keeper after install, machine add,
-deploy, and the real data plane are proven:
+Substrate updates are not part of the first product proof. Do not design a
+rollout system until install, machine add, deploy, and the real data plane are
+repeatable on disposable hosts.
 
 ```text
 future substrate-update command
   call future substrate-update service
   receive op_id
-  accepting ployzd owns the future substrate-update operation under a lease
-  owner writes rollout target and first batch assignment
-  assigned keepers see target
-  each keeper downloads and verifies staged artifact
-  each keeper updates local ployzd artifact
-  each keeper restarts/reloads assigned ployzd role units
-  role-specific health gates pass or fail
-  keeper reports step progress and failures to PLZ_OPS/KV_OPS
-  owner advances, pauses, rolls back, or fails the operation
+  keeper downloads and verifies one explicit artifact
+  keeper updates local supervised units
+  keeper reports progress and failures to PLZ_OPS/KV_OPS
 ```
 
-The future rollout target can cover the shared `ployzd` artifact,
-`ployz-keeper` self-update, host prerequisites, or rendered supervisor/config
-material. Keeper may reconcile every minute, but it acts only against an
-approved bootstrap or substrate-update target. It must not silently change
-product truth such as active service state, route ownership, cert state, or
-machine membership.
-
-Future rollouts should support canary and batch gates:
-
-```text
-batch 1: one node
-batch 2: small percentage
-batch 3: larger percentage
-batch 4: remaining nodes
-```
-
-The owner stops or pauses the future rollout when health checks fail, too many
-keepers report typed failures, `ployzd gateway` or `ployzd dns` serving
-degrades, tunnel connectivity becomes ambiguous, or a keeper reports unknown
-local state.
+That is enough of a future marker. Canary batches, health gates, rollback
+policy, and keeper self-update are later product decisions. The v1 install path
+only needs to make process ownership explicit and prove keeper can install the
+current artifact.
 
 ---
 
@@ -1678,52 +1654,35 @@ Pipeline finish:
   - Restore recreates KV/streams/object metadata needed for service inspect.
 - **Verification:** `cargo test -p ployzd ha_promotion backup_restore`
 
-### H0. Hetzner Host Smoke
-
-- **Goal:** Keep Hetzner as thin host plumbing: create two fresh machines,
-  prove SSH readiness, and destroy them. This proves only that we can get
-  disposable Linux hosts for the product proof.
-- **Requirements:** R39, R41
-- **Dependencies:** U9
-- **Files:**
-  - `scripts/hetzner-two-node-acceptance.sh`
-  - `docs/operations/two-node-acceptance.md`
-- **Approach:** Use the official `hcloud` CLI. The script owns deterministic
-  names, cleanup labels, SSH readiness, and teardown only. No Hetzner-specific
-  Rust. No provider abstractions. No provider readiness model. No operation
-  types.
-- **Test scenarios:**
-  - Script refuses to run without an explicit Hetzner token and SSH key.
-  - Created servers carry deterministic labels so cleanup can find them.
-  - Failed SSH readiness tears down both servers or prints a cleanup command.
-- **Verification:** The script creates two Hetzner servers, proves SSH
-  readiness, and tears both servers down.
-
-### H1. Two-Node Product Acceptance
+### H0. Disposable Two-Node Product Proof
 
 - **Goal:** Prove the actual product on two disposable hosts with one
-  repeatable command for humans and CI.
+  repeatable command.
 - **Requirements:** R39-R45
-- **Dependencies:** H0, U1-U9a, U11
+- **Dependencies:** U1-U9a, U11
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
-- **Approach:** Compose product commands into the host smoke. The script creates
-  hosts, SSHes in, runs the product install path, adds the second machine,
-  deploys the smoke service, verifies NATS-over-iroh, verifies the required
-  eBPF/WireGuard private data plane, verifies ingress, and destroys resources.
-  The script is not an orchestrator. It is a shell wrapper around real product
-  commands plus host cleanup. If a check matters after Hetzner is removed, it
-  belongs in the product command or operation events; otherwise it stays in the
-  throwaway script.
+- **Approach:** Use the official `hcloud` CLI and plain SSH. The script owns
+  deterministic names, cleanup labels, SSH readiness, and teardown. After that
+  it runs real product commands: install first node, initialize the cluster, add
+  the second machine, deploy the smoke service, inspect/watch the operation,
+  verify NATS-over-iroh, verify the required eBPF/WireGuard private data plane,
+  verify one ingress request, and destroy resources. The script is not an
+  orchestrator and contains no product policy. If a check matters after Hetzner
+  is removed, it belongs in a product command or operation event; otherwise it
+  stays in the throwaway script.
 - **Test scenarios:**
+  - Script refuses to run without an explicit Hetzner token and SSH key.
+  - Failed host creation or SSH readiness destroys both servers or prints a
+    cleanup command.
   - A clean run provisions two machines, installs Ployz, joins the second
     machine, deploys the smoke service, verifies data plane and ingress, and
     destroys resources.
   - Failure prints the active operation id, affected nodes, cleanup command,
     and retained evidence locations.
-- **Verification:** The final acceptance command completes end-to-end against
-  two fresh Hetzner machines.
+- **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
+  end-to-end against two fresh Hetzner machines.
 
 ---
 
@@ -1754,7 +1713,7 @@ Pipeline finish:
 | Schedule unsupported by server | Fallback scheduler publishes same job subject | `crates/ployzd/tests/scheduler_fallback.rs` |
 | 2-core HA requested | Command refuses final healthy state | `crates/ployzd/tests/ha_promotion.rs` |
 | 3-core one node down | Mutations continue if quorum remains | `crates/ployzd/tests/ha_promotion.rs` |
-| Hetzner host smoke fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
+| Disposable host setup fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
 | Second-node machine add fails | Machine operation fails with node/bootstrap evidence; machine is not active | `crates/ployz-core/tests/machine_lifecycle.rs` |
 | WireGuard setup fails | Deploy/join fails with network-prep evidence; no healthy dataplane is claimed | `crates/ployzd/tests/wireguard_dataplane.rs` |
 | Cross-node container traffic fails | Service remains visibly degraded; gateway does not claim healthy remote upstream | `crates/ployzd/tests/two_node_acceptance.rs` |
@@ -1825,9 +1784,8 @@ Do not build these in v1:
 - AE7. A new node is bootstrapped by a short-lived `ployz.sh` command that
   installs only `ployz-keeper`; keeper installs the shared `ployzd` artifact,
   writes role units, and reports durable bootstrap progress.
-- AE8. Deferred: a future `ployzd` substrate upgrade rolls out through
-  keeper-managed batches, restarts/reloads role units under health gates, and
-  stops visibly on typed failure.
+- AE8. Deferred: a future substrate update is an explicit operation after the
+  two-node product proof is repeatable. It is not part of v1 acceptance.
 - AE9. A developer runs the two-node Hetzner acceptance flow, joins a second
   machine with one command, deploys a service across both machines, verifies
   container-to-container WireGuard reachability, and reaches the service
@@ -1853,10 +1811,9 @@ Do not build these in v1:
 14. U8 minimal gateway projection skeleton.
 15. U9 CLI/SDK ergonomics.
 16. U9a operation API contract registry.
-17. H0 Hetzner host smoke.
-18. H1 two-node product acceptance.
-19. U10a HA/backup foundation.
-20. U10b HA promotion and backup commands.
+17. H0 disposable two-node product proof.
+18. U10a HA/backup foundation.
+19. U10b HA promotion and backup commands.
 
 The first proof should be Pre-U0 through U4 with a fake direct execution path
 over the operation contract harness. The second proof should be U0-U4a over
@@ -1864,9 +1821,9 @@ real local NATS with operation owner leases. The third proof should add U11 and
 prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
-real install path on one machine. The production-shaped proof is H0-H1 on two
-fresh Hetzner machines: the harness creates hosts, real product commands
-install the cluster, the second node joins, the old eBPF/WireGuard data plane
-is adapted into the new code path, deploy places containers on both nodes, and
-ingress reaches the smoke service. Artifact download may be shortcut; the
+real install path on one machine. H0 then proves the real product on two fresh
+Hetzner machines: the harness creates hosts, real product commands install the
+cluster, the second node joins, the old eBPF/WireGuard data plane is adapted
+into the new code path, deploy places containers on both nodes, and ingress
+reaches the smoke service. Artifact download may be shortcut; the
 eBPF/WireGuard data plane should not be.
