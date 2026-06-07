@@ -26,6 +26,14 @@ export type CertId = Brand<string, "CertId">;
 
 export type MachineName = Brand<string, "MachineName">;
 
+export type JoinTokenFingerprint = Brand<string, "JoinTokenFingerprint">;
+
+export type JoinTokenExpiresAt = Brand<string, "JoinTokenExpiresAt">;
+
+export type JoinTokenRedeemedAt = Brand<string, "JoinTokenRedeemedAt">;
+
+export type IssuedJoinToken = { fingerprint: JoinTokenFingerprint, expires_at: JoinTokenExpiresAt, };
+
 export type MachineBootstrapUrl = Brand<string, "MachineBootstrapUrl">;
 
 export type MachineJoinToken = Brand<string, "MachineJoinToken">;
@@ -56,13 +64,25 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, state: MachineAddOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, ownership: OperationOwnershipStatus, };
 
 export type OperationOwnershipStatus = { "state": "unclaimed" } | { "state": "owned", lease: OperationOwnerLease, } | { "state": "expired", lease: OperationOwnerLease, };
 
 export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "machine_drain", node_id: NodeId, } | { "kind": "service_remove", service_id: ServiceId, };
+
+export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
+
+export type MachineAddOperationStateName = "pending" | "joining" | "completed" | "failed" | "cancelled";
+
+export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, };
+
+export type MachineReadinessEvidence = { nats_tunnel: MachineReadinessCheck, heartbeat: MachineReadinessCheck, node_inspect: MachineReadinessCheck, };
+
+export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
+
+export type FirstNodeGateway = "install" | "skip";
 
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed" } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -72,7 +92,7 @@ export type CertOperationState = { "state": "accepted" } | { "state": "running",
 
 export type CertRunningStage = "challenge_published" | "validation_started";
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_completed", operation_id: OperationId, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_completed", operation_id: OperationId, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 

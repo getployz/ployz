@@ -6,9 +6,12 @@ use ployz_nats::service_protocol::{
     NatsServiceError, NatsServiceErrorHeaderDecodeError, decode_nats_service_error,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, OperationApiResponse,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
-    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
+    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, OperationApiResponse, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest,
+    operation_api::{
+        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+    },
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::error::Error;
@@ -50,6 +53,13 @@ impl OperationApiClient {
         request: &OpsStatusRequest,
     ) -> Result<OperationStatusSnapshot, OperationApiClientError<OpsStatusError>> {
         self.request_api::<OpsStatusApi>(request).await
+    }
+
+    pub async fn machine_add(
+        &self,
+        request: &MachineAddRequest,
+    ) -> Result<MachineAddAccepted, OperationApiClientError<MachineAddError>> {
+        self.request_api::<MachineAddApi>(request).await
     }
 
     pub async fn ops_watch(

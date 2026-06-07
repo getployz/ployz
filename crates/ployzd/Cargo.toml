@@ -17,6 +17,8 @@ ployz-sdk-types.workspace = true
 ployz-transport.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+nuid.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]

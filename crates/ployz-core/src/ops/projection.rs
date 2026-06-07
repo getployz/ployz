@@ -1,8 +1,9 @@
 use super::{
     CertId, CertOperationState, CertRunningStage, CertTransition, DeployEvidence,
-    DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
-    OperationId, OperationStatus,
+    DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, NodeId,
+    OperationEvent, OperationId, OperationStatus,
 };
+use crate::machine::MachineAddOperationState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployProjection {
@@ -57,17 +58,20 @@ pub enum StatusProjectionError {
 pub enum ProjectionOperationState {
     Deploy(DeployOperationState),
     Cert(CertOperationState),
+    MachineAdd(MachineAddOperationState),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     Deploy,
     Cert,
+    MachineAdd,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationSubjectRef {
     Cert(CertId),
+    MachineAdd(NodeId),
 }
 
 pub fn project_cert_transition(
@@ -217,27 +221,135 @@ pub fn project_operation_event(
         return Ok(OperationEventProjection::AlreadySatisfied);
     }
 
-    match (current, operation_event_kind(&event)) {
-        (OperationStatus::Deploy { state, .. }, Some(OperationKind::Deploy) | None) => {
+    let expected_kind = operation_status_kind(current);
+    if let Some(actual_kind) = operation_event_kind(&event)
+        && actual_kind != expected_kind
+    {
+        return Err(StatusProjectionError::OperationKindMismatch {
+            operation_id: current_operation_id.clone(),
+            expected: expected_kind,
+            actual: actual_kind,
+        });
+    }
+
+    match current {
+        OperationStatus::Deploy { state, .. } => {
             project_deploy_event(current, state, event, event_sequence)
         }
-        (OperationStatus::Cert { cert_id, .. }, Some(OperationKind::Cert) | None) => {
+        OperationStatus::Cert { cert_id, .. } => {
             project_cert_event(current, cert_id, event, event_sequence)
         }
-        (OperationStatus::Deploy { id, .. }, Some(OperationKind::Cert)) => {
-            Err(StatusProjectionError::OperationKindMismatch {
-                operation_id: id.clone(),
-                expected: OperationKind::Deploy,
-                actual: OperationKind::Cert,
-            })
+        OperationStatus::MachineAdd { node_id, .. } => {
+            project_machine_add_event(current, node_id, event, event_sequence)
         }
-        (OperationStatus::Cert { id, .. }, Some(OperationKind::Deploy)) => {
-            Err(StatusProjectionError::OperationKindMismatch {
-                operation_id: id.clone(),
-                expected: OperationKind::Cert,
-                actual: OperationKind::Deploy,
-            })
+    }
+}
+
+fn machine_add_event_state(event: OperationEvent) -> Option<MachineAddOperationState> {
+    match event {
+        OperationEvent::MachineAddJoined { joined_at, .. } => {
+            Some(MachineAddOperationState::Joining { joined_at })
         }
+        OperationEvent::MachineAddCompleted { .. } => Some(MachineAddOperationState::Completed),
+        OperationEvent::MachineAddFailed { failure, .. } => {
+            Some(MachineAddOperationState::Failed { failure })
+        }
+        OperationEvent::Cancelled { reason, .. } => {
+            Some(MachineAddOperationState::Cancelled { reason })
+        }
+        OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::DeploySubmitted { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
+        | OperationEvent::DeployPlanCreated { .. }
+        | OperationEvent::DeployRunning { .. }
+        | OperationEvent::DeployContainerStarted { .. }
+        | OperationEvent::DeployHealthCheckStarted { .. }
+        | OperationEvent::DeployCompleted { .. }
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertChallengePublished { .. }
+        | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertCompleted { .. }
+        | OperationEvent::CertFailed { .. } => None,
+    }
+}
+
+fn project_machine_add_state(
+    current: &OperationStatus,
+    attempted: MachineAddOperationState,
+    event_sequence: EventSequence,
+) -> Result<OperationEventProjection, StatusProjectionError> {
+    let OperationStatus::MachineAdd {
+        id,
+        node_id,
+        name,
+        gateway,
+        state,
+        ..
+    } = current
+    else {
+        unreachable!("operation kind is checked before machine-add projection")
+    };
+
+    if state == &attempted {
+        return Ok(OperationEventProjection::AlreadySatisfied);
+    }
+    if state.is_terminal() {
+        return Err(StatusProjectionError::TerminalState {
+            operation_id: id.clone(),
+            current: Box::new(ProjectionOperationState::MachineAdd(state.clone())),
+            attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
+        });
+    }
+    if !machine_add_transition_allowed(state, &attempted) {
+        return Err(StatusProjectionError::InvalidTransition {
+            operation_id: id.clone(),
+            current: Box::new(ProjectionOperationState::MachineAdd(state.clone())),
+            attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
+        });
+    }
+
+    Ok(OperationEventProjection::StatusChanged {
+        status: Box::new(OperationStatus::MachineAdd {
+            id: id.clone(),
+            node_id: node_id.clone(),
+            name: name.clone(),
+            gateway: *gateway,
+            state: attempted,
+            last_event_sequence: event_sequence,
+        }),
+    })
+}
+
+fn machine_add_transition_allowed(
+    current: &MachineAddOperationState,
+    attempted: &MachineAddOperationState,
+) -> bool {
+    match (current, attempted) {
+        (
+            MachineAddOperationState::Pending { .. },
+            MachineAddOperationState::Joining { .. }
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. },
+        )
+        | (
+            MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. },
+        ) => true,
+        (
+            MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Pending { .. },
+        )
+        | (MachineAddOperationState::Joining { .. }, MachineAddOperationState::Joining { .. })
+        | (MachineAddOperationState::Pending { .. }, MachineAddOperationState::Completed)
+        | (
+            MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. },
+            _,
+        ) => false,
     }
 }
 
@@ -313,7 +425,11 @@ fn project_deploy_event(
         | OperationEvent::CertChallengePublished { .. }
         | OperationEvent::CertValidationStarted { .. }
         | OperationEvent::CertCompleted { .. }
-        | OperationEvent::CertFailed { .. } => {
+        | OperationEvent::CertFailed { .. }
+        | OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. } => {
             unreachable!("operation kind is checked before deploy projection")
         }
     }
@@ -371,9 +487,85 @@ fn project_cert_event(
         | OperationEvent::DeployContainerStarted { .. }
         | OperationEvent::DeployHealthCheckStarted { .. }
         | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::DeployFailed { .. } => {
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. } => {
             unreachable!("operation kind is checked before cert projection")
         }
+    }
+}
+
+fn project_machine_add_event(
+    current: &OperationStatus,
+    expected_node_id: &NodeId,
+    event: OperationEvent,
+    event_sequence: EventSequence,
+) -> Result<OperationEventProjection, StatusProjectionError> {
+    if let Some(actual_subject) = machine_add_event_subject(&event)
+        && actual_subject != OperationSubjectRef::MachineAdd(expected_node_id.clone())
+    {
+        return Err(StatusProjectionError::OperationSubjectMismatch {
+            operation_id: operation_status_id(current).clone(),
+            expected: OperationSubjectRef::MachineAdd(expected_node_id.clone()),
+            actual: actual_subject,
+        });
+    }
+
+    match event {
+        OperationEvent::MachineAddSubmitted { .. } => {
+            Ok(OperationEventProjection::AlreadySatisfied)
+        }
+        OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. }
+        | OperationEvent::Cancelled { .. } => {
+            let Some(attempted) = machine_add_event_state(event) else {
+                unreachable!("machine-add transition events map to machine-add state")
+            };
+            project_machine_add_state(current, attempted, event_sequence)
+        }
+        OperationEvent::DeploySubmitted { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
+        | OperationEvent::DeployPlanCreated { .. }
+        | OperationEvent::DeployRunning { .. }
+        | OperationEvent::DeployContainerStarted { .. }
+        | OperationEvent::DeployHealthCheckStarted { .. }
+        | OperationEvent::DeployCompleted { .. }
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertChallengePublished { .. }
+        | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertCompleted { .. }
+        | OperationEvent::CertFailed { .. } => {
+            unreachable!("operation kind is checked before machine-add projection")
+        }
+    }
+}
+
+fn machine_add_event_subject(event: &OperationEvent) -> Option<OperationSubjectRef> {
+    match event {
+        OperationEvent::MachineAddSubmitted { node_id, .. }
+        | OperationEvent::MachineAddJoined { node_id, .. }
+        | OperationEvent::MachineAddCompleted { node_id, .. }
+        | OperationEvent::MachineAddFailed { node_id, .. } => {
+            Some(OperationSubjectRef::MachineAdd(node_id.clone()))
+        }
+        OperationEvent::Cancelled { .. }
+        | OperationEvent::DeploySubmitted { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
+        | OperationEvent::DeployPlanCreated { .. }
+        | OperationEvent::DeployRunning { .. }
+        | OperationEvent::DeployContainerStarted { .. }
+        | OperationEvent::DeployHealthCheckStarted { .. }
+        | OperationEvent::DeployCompleted { .. }
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertChallengePublished { .. }
+        | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertCompleted { .. }
+        | OperationEvent::CertFailed { .. } => None,
     }
 }
 
@@ -398,7 +590,11 @@ fn cert_event_subject(event: &OperationEvent) -> Option<OperationSubjectRef> {
         | OperationEvent::DeployContainerStarted { .. }
         | OperationEvent::DeployHealthCheckStarted { .. }
         | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::DeployFailed { .. } => None,
+        | OperationEvent::DeployFailed { .. }
+        | OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. } => None,
     }
 }
 
@@ -486,7 +682,11 @@ fn deploy_transition_from_event(event: OperationEvent) -> DeployTransition {
         | OperationEvent::CertChallengePublished { .. }
         | OperationEvent::CertValidationStarted { .. }
         | OperationEvent::CertCompleted { .. }
-        | OperationEvent::CertFailed { .. } => {
+        | OperationEvent::CertFailed { .. }
+        | OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. } => {
             unreachable!("non-transition operation event is handled before conversion")
         }
     }
@@ -507,6 +707,10 @@ fn operation_event_id(event: &OperationEvent) -> &OperationId {
         | OperationEvent::CertValidationStarted { operation_id, .. }
         | OperationEvent::CertCompleted { operation_id, .. }
         | OperationEvent::CertFailed { operation_id, .. }
+        | OperationEvent::MachineAddSubmitted { operation_id, .. }
+        | OperationEvent::MachineAddJoined { operation_id, .. }
+        | OperationEvent::MachineAddCompleted { operation_id, .. }
+        | OperationEvent::MachineAddFailed { operation_id, .. }
         | OperationEvent::Cancelled { operation_id, .. } => operation_id,
     }
 }
@@ -526,13 +730,19 @@ fn operation_event_kind(event: &OperationEvent) -> Option<OperationKind> {
         | OperationEvent::CertValidationStarted { .. }
         | OperationEvent::CertCompleted { .. }
         | OperationEvent::CertFailed { .. } => Some(OperationKind::Cert),
+        OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. } => Some(OperationKind::MachineAdd),
         OperationEvent::Cancelled { .. } => None,
     }
 }
 
 fn operation_status_id(status: &OperationStatus) -> &OperationId {
     match status {
-        OperationStatus::Deploy { id, .. } | OperationStatus::Cert { id, .. } => id,
+        OperationStatus::Deploy { id, .. }
+        | OperationStatus::Cert { id, .. }
+        | OperationStatus::MachineAdd { id, .. } => id,
     }
 }
 
@@ -540,6 +750,7 @@ fn operation_status_kind(status: &OperationStatus) -> OperationKind {
     match status {
         OperationStatus::Deploy { .. } => OperationKind::Deploy,
         OperationStatus::Cert { .. } => OperationKind::Cert,
+        OperationStatus::MachineAdd { .. } => OperationKind::MachineAdd,
     }
 }
 
@@ -550,6 +761,10 @@ fn operation_status_sequence(status: &OperationStatus) -> EventSequence {
             ..
         }
         | OperationStatus::Cert {
+            last_event_sequence,
+            ..
+        }
+        | OperationStatus::MachineAdd {
             last_event_sequence,
             ..
         } => *last_event_sequence,

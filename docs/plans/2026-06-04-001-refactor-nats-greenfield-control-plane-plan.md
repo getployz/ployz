@@ -1685,7 +1685,8 @@ Pipeline finish:
 ### H0. Hetzner Host Smoke
 
 - **Goal:** Keep Hetzner as thin host plumbing: create two fresh machines,
-  prove SSH readiness, and destroy them.
+  prove SSH readiness, and destroy them. This proves nothing about Ployz beyond
+  "we can get disposable Linux hosts."
 - **Requirements:** R39, R41
 - **Dependencies:** U9
 - **Files:**
@@ -1693,7 +1694,8 @@ Pipeline finish:
   - `docs/operations/two-node-acceptance.md`
 - **Approach:** Use the official `hcloud` CLI. The script owns deterministic
   names, cleanup labels, SSH readiness, and teardown only. Do not add
-  Hetzner-specific Rust or provider abstractions.
+  Hetzner-specific Rust, provider abstractions, readiness models, or operation
+  types.
 - **Test scenarios:**
   - Script refuses to run without an explicit Hetzner token and SSH key.
   - Created servers carry deterministic labels so cleanup can find them.
@@ -1703,7 +1705,8 @@ Pipeline finish:
 
 ### H1. Two-Node Product Acceptance
 
-- **Goal:** Make the whole proof one repeatable command for humans and CI.
+- **Goal:** Prove the actual product on two disposable hosts with one
+  repeatable command for humans and CI.
 - **Requirements:** R39-R45
 - **Dependencies:** H0, U1-U9a, U11
 - **Files:**
@@ -1713,8 +1716,10 @@ Pipeline finish:
   provisions two machines, runs first-node install, adds the second machine,
   deploys the smoke service, verifies NATS-over-iroh, verifies the required
   eBPF/WireGuard private data plane, verifies ingress, and destroys resources.
-  The script should stay glue; product behavior belongs in product commands
-  and operation events.
+  The script stays glue: no provider policy, no provider lifecycle model, no
+  extra orchestration layer. If a check matters after Hetzner is removed, it
+  belongs in the product command or operation events; otherwise it stays in the
+  throwaway script.
 - **Test scenarios:**
   - A clean run provisions two machines, installs Ployz, joins the second
     machine, deploys the smoke service, verifies data plane and ingress, and

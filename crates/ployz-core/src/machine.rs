@@ -158,6 +158,30 @@ impl fmt::Display for JoinTokenTimeError {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RawJoinToken(SubjectToken);
+
+impl RawJoinToken {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
+        Ok(Self(SubjectToken::try_new(value)?))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for RawJoinToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("RawJoinToken")
+            .field(&"[redacted]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]

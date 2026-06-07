@@ -5,7 +5,8 @@ use ployz_core::subjects::{
     node_observation, node_service, op_cert_challenge_published, op_cert_completed, op_cert_failed,
     op_cert_submitted, op_cert_validation_started, op_deploy_completed,
     op_deploy_container_started, op_deploy_health_check_started, op_deploy_plan_created,
-    op_deploy_planning_started, op_deploy_running, op_deploy_submitted, op_watch,
+    op_deploy_planning_started, op_deploy_running, op_deploy_submitted, op_machine_add_completed,
+    op_machine_add_failed, op_machine_add_joined, op_machine_add_submitted, op_watch,
 };
 
 #[test]
@@ -40,6 +41,28 @@ fn operation_subjects_use_validated_operation_ids() {
     assert_eq!(
         op_deploy_completed(&op_id),
         "plz.v1.op.op_123.deploy.completed"
+    );
+}
+
+#[test]
+fn machine_add_operation_subjects_use_validated_operation_ids() {
+    let op_id = OperationId::try_new("op_machine").expect("valid operation id");
+
+    assert_eq!(
+        op_machine_add_submitted(&op_id),
+        "plz.v1.op.op_machine.machine.add.submitted"
+    );
+    assert_eq!(
+        op_machine_add_joined(&op_id),
+        "plz.v1.op.op_machine.machine.add.joined"
+    );
+    assert_eq!(
+        op_machine_add_completed(&op_id),
+        "plz.v1.op.op_machine.machine.add.completed"
+    );
+    assert_eq!(
+        op_machine_add_failed(&op_id),
+        "plz.v1.op.op_machine.machine.add.failed"
     );
 }
 

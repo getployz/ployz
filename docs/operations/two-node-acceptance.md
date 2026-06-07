@@ -18,7 +18,8 @@ The acceptance bar is:
 
 The H0 script only provisions two machines and proves SSH readiness. It should
 stay provider glue. Do not add Hetzner-specific Rust code unless the actual
-product needs it.
+product needs it. Do not add Hetzner-specific operation states, readiness
+models, or provider abstractions.
 
 Required tools:
 
@@ -72,7 +73,7 @@ ployz_run=ci-42
 ployz_cleanup=true
 ```
 
-By default, a successful substrate smoke run deletes both machines after SSH is
+By default, a successful host smoke run deletes both machines after SSH is
 proved. To keep them for product install testing:
 
 ```sh
@@ -107,6 +108,10 @@ The complete acceptance flow proves the product on those hosts:
 - WireGuard/eBPF data plane,
 - deploy placement,
 - gateway routing.
+
+Anything that only exists because the machines came from Hetzner stays in the
+script. Anything that should work on a user VPS, homelab server, or another
+cloud must be expressed through normal Ployz commands and operation events.
 
 ## First-Node Install Contract
 

@@ -1,22 +1,29 @@
 //! User-facing operation service handlers.
 
-use crate::controllers::{DeploySubmitCommand, OperationControllers};
+use crate::controllers::{
+    DeploySubmitCommand, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
+    OperationControllers,
+};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease,
     OperationStatusSnapshot,
 };
+use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::op_watch;
 use ployz_nats::operations::{
     OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
     OperationStatusStoreError, ReplayOperationEventsError,
     SubmitDeployError as SubmitDeployRepositoryError,
+    SubmitMachineAddError as SubmitMachineAddRepositoryError,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitUnavailableSource,
-    EventReplayFailure, OperationSubmitClockFailure, OperationSubmitEventFailure,
-    OperationSubmitStatusFailure, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
-    OpsWatchUnavailableSource, StatusReadFailure,
+    AcceptedOperation, BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
+    DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinToken,
+    OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
+    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource,
+    StatusReadFailure,
 };
 
 #[must_use]
@@ -62,6 +69,61 @@ pub async fn deploy_submit(
         .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))
 }
 
+pub async fn machine_add(
+    controllers: &OperationControllers,
+    request: MachineAddRequest,
+) -> Result<MachineAddAccepted, MachineAddError> {
+    let operation_id = request.operation_id.clone();
+    let material = controllers
+        .issue_machine_add_bootstrap_material(&operation_id)
+        .map_err(|error| MachineAddError::Unavailable {
+            operation_id: operation_id.clone(),
+            source: MachineAddUnavailableSource::BootstrapMaterial {
+                failure: bootstrap_material_failure(error),
+            },
+        })?;
+    let command = MachineAddSubmitCommand {
+        operation_id: request.operation_id,
+        idempotency_key: request.idempotency_key,
+        node_id: request.node_id,
+        name: request.name,
+        gateway: first_node_gateway(request.gateway),
+        join_token: material.join_token,
+        raw_join_token: material.raw_join_token,
+    };
+
+    let accepted = controllers
+        .submit_machine_add(command)
+        .await
+        .map_err(|error| machine_add_error_from_submit_error(operation_id.clone(), error))?;
+    let raw_token = MachineJoinToken::try_new(accepted.raw_join_token.as_str()).map_err(|_| {
+        MachineAddError::Unavailable {
+            operation_id: operation_id.clone(),
+            source: MachineAddUnavailableSource::BootstrapMaterial {
+                failure: BootstrapMaterialFailure::IssueJoinToken,
+            },
+        }
+    })?;
+
+    Ok(MachineAddAccepted {
+        accepted: owned_operation(
+            accepted.operation_id,
+            accepted.start_sequence,
+            accepted.lease,
+        ),
+        node_id: accepted.node_id,
+        bootstrap_url: MachineBootstrapUrl::try_new(material.bootstrap_url).map_err(|_| {
+            MachineAddError::Unavailable {
+                operation_id: operation_id.clone(),
+                source: MachineAddUnavailableSource::BootstrapMaterial {
+                    failure: BootstrapMaterialFailure::RenderBootstrapUrl,
+                },
+            }
+        })?,
+        join_token: raw_token,
+    })
+}
+
 fn deploy_submit_error_from_submit_error(
     operation_id: OperationId,
     error: SubmitDeployRepositoryError,
@@ -70,13 +132,13 @@ fn deploy_submit_error_from_submit_error(
         SubmitDeployRepositoryError::AppendEvent(source) => DeploySubmitError::Unavailable {
             operation_id,
             source: DeploySubmitUnavailableSource::EventLog {
-                failure: deploy_submit_event_failure(&source),
+                failure: operation_submit_event_failure(&source),
             },
         },
         SubmitDeployRepositoryError::StoreStatus(source) => DeploySubmitError::Unavailable {
             operation_id,
             source: DeploySubmitUnavailableSource::StatusStore {
-                failure: deploy_submit_status_failure(&source),
+                failure: operation_submit_status_failure(&source),
             },
         },
         SubmitDeployRepositoryError::Clock { .. } => DeploySubmitError::Unavailable {
@@ -87,6 +149,38 @@ fn deploy_submit_error_from_submit_error(
         },
         SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
             DeploySubmitError::DuplicateSequenceMismatch {
+                operation_id,
+                sequence,
+            }
+        }
+    }
+}
+
+fn machine_add_error_from_submit_error(
+    operation_id: OperationId,
+    error: SubmitMachineAddRepositoryError,
+) -> MachineAddError {
+    match error {
+        SubmitMachineAddRepositoryError::AppendEvent(source) => MachineAddError::Unavailable {
+            operation_id,
+            source: MachineAddUnavailableSource::EventLog {
+                failure: operation_submit_event_failure(&source),
+            },
+        },
+        SubmitMachineAddRepositoryError::StoreStatus(source) => MachineAddError::Unavailable {
+            operation_id,
+            source: MachineAddUnavailableSource::StatusStore {
+                failure: operation_submit_status_failure(&source),
+            },
+        },
+        SubmitMachineAddRepositoryError::Clock { .. } => MachineAddError::Unavailable {
+            operation_id,
+            source: MachineAddUnavailableSource::Clock {
+                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
+            },
+        },
+        SubmitMachineAddRepositoryError::DuplicateSequenceMismatch { sequence } => {
+            MachineAddError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,
             }
@@ -151,7 +245,9 @@ pub async fn ops_watch(
         .map_err(|error| ops_watch_error_from_replay_error(operation_id, error))
 }
 
-fn deploy_submit_status_failure(error: &OperationStatusStoreError) -> OperationSubmitStatusFailure {
+fn operation_submit_status_failure(
+    error: &OperationStatusStoreError,
+) -> OperationSubmitStatusFailure {
     match error {
         OperationStatusStoreError::OpenBucket { .. } => OperationSubmitStatusFailure::OpenBucket,
         OperationStatusStoreError::EncodeStatus(_) => OperationSubmitStatusFailure::EncodeStatus,
@@ -171,7 +267,7 @@ fn deploy_submit_status_failure(error: &OperationStatusStoreError) -> OperationS
     }
 }
 
-fn deploy_submit_event_failure(error: &OperationEventLogError) -> OperationSubmitEventFailure {
+fn operation_submit_event_failure(error: &OperationEventLogError) -> OperationSubmitEventFailure {
     match error {
         OperationEventLogError::EncodeEvent(_) => OperationSubmitEventFailure::EncodeEvent,
         OperationEventLogError::DecodeEvent(_) => OperationSubmitEventFailure::DecodeEvent,
@@ -208,6 +304,22 @@ fn status_store_read_failure(error: &OperationStatusStoreError) -> StatusReadFai
         | OperationStatusStoreError::DecodeSubmission(_)
         | OperationStatusStoreError::EncodeLease(_)
         | OperationStatusStoreError::CasConflict { .. } => StatusReadFailure::GetStatus,
+    }
+}
+
+fn first_node_gateway(gateway: ployz_sdk_types::MachineAddGateway) -> FirstNodeGateway {
+    match gateway {
+        ployz_sdk_types::MachineAddGateway::Install => FirstNodeGateway::Install,
+        ployz_sdk_types::MachineAddGateway::Skip => FirstNodeGateway::Skip,
+    }
+}
+
+fn bootstrap_material_failure(error: MachineAddBootstrapMaterialError) -> BootstrapMaterialFailure {
+    match error {
+        MachineAddBootstrapMaterialError::Clock { .. }
+        | MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial => {
+            BootstrapMaterialFailure::IssueJoinToken
+        }
     }
 }
 

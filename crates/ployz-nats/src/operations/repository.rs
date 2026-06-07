@@ -1,11 +1,20 @@
 use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
-use ployz_core::ids::{CertId, OperationId, OperationOwnerId};
+mod submission;
+
+pub use submission::{
+    AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
+    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
+    OperationLeaseClaim, OperationLeaseClaimError, SubmitCertError, SubmitDeployError,
+    SubmitMachineAddError,
+};
+
+use ployz_core::ids::{CertId, OperationId};
 use ployz_core::ops::{
     CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, OperationEvent,
     OperationEventProjection, OperationEventReplayCursor, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnerLease, OperationStatus, OperationStatusSnapshot, StatusProjectionError,
-    project_operation_event, validate_fresh_deploy_evidence,
+    OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
+    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
+    validate_fresh_deploy_evidence,
 };
 
 use super::events::{
@@ -15,7 +24,7 @@ use super::events::{
 use super::projection::{next_event_sequence, status_sequence};
 use super::status_store::{
     AsyncNatsOperationStatusStore, OperationStatusReadError, OperationStatusStoreError,
-    OperationStatusWrite, StoredCertSubmission, StoredDeploySubmission,
+    OperationStatusWrite,
 };
 
 #[derive(Debug, Clone)]
@@ -34,254 +43,6 @@ impl AsyncNatsOperationRepository {
             event_log,
             status_store,
         }
-    }
-
-    pub async fn submit_deploy(
-        &self,
-        submission: DeployOperationSubmission,
-        owner: OperationLeaseClaim,
-    ) -> Result<AcceptedDeploySubmission, SubmitDeployError> {
-        if let Some(existing) = self
-            .status_store
-            .deploy_submission(&submission.idempotency_key)
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?
-        {
-            let target = self
-                .submitted_deploy_target(&existing.operation_id, existing.start_sequence)
-                .await?;
-            let lease = self
-                .status_store
-                .claim_owner_lease(
-                    &existing.operation_id,
-                    owner.owner_id(),
-                    owner.now(),
-                    owner.expires_at(),
-                )
-                .await
-                .map_err(SubmitDeployError::StoreStatus)?;
-            return Ok(AcceptedDeploySubmission {
-                operation_id: existing.operation_id,
-                start_sequence: existing.start_sequence,
-                target,
-                lease,
-            });
-        }
-
-        let stored = self
-            .event_log
-            .append(OperationEventAppend::deploy_submitted(
-                submission.operation_id.clone(),
-                submission.target.clone(),
-                &submission.idempotency_key,
-            ))
-            .await
-            .map_err(SubmitDeployError::AppendEvent)?;
-        let (operation_id, target) = if stored.duplicate {
-            let original = self
-                .event_log
-                .event_at_sequence(stored.sequence)
-                .await
-                .map_err(SubmitDeployError::AppendEvent)?;
-            let OperationEvent::DeploySubmitted {
-                operation_id,
-                target,
-            } = original
-            else {
-                return Err(SubmitDeployError::DuplicateSequenceMismatch {
-                    sequence: stored.sequence,
-                });
-            };
-            (operation_id, target)
-        } else {
-            (submission.operation_id, submission.target)
-        };
-        let status = OperationStatus::deploy_accepted(
-            operation_id.clone(),
-            target.service_id.clone(),
-            stored.sequence,
-        );
-        self.status_store
-            .put_if_newer(&status)
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?;
-        let submitted = StoredDeploySubmission {
-            operation_id,
-            start_sequence: stored.sequence,
-        };
-
-        let submitted = self
-            .status_store
-            .put_deploy_submission_if_absent(&submission.idempotency_key, &submitted)
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?;
-        let target = self
-            .submitted_deploy_target(&submitted.operation_id, submitted.start_sequence)
-            .await?;
-
-        let lease = self
-            .status_store
-            .claim_owner_lease(
-                &submitted.operation_id,
-                owner.owner_id(),
-                owner.now(),
-                owner.expires_at(),
-            )
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?;
-
-        Ok(AcceptedDeploySubmission {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            target,
-            lease,
-        })
-    }
-
-    pub async fn submit_cert(
-        &self,
-        submission: CertOperationSubmission,
-        owner: OperationLeaseClaim,
-    ) -> Result<AcceptedCertSubmission, SubmitCertError> {
-        if let Some(existing) = self
-            .status_store
-            .cert_submission(&submission.idempotency_key)
-            .await
-            .map_err(SubmitCertError::StoreStatus)?
-        {
-            let cert_id = self
-                .submitted_cert_id(&existing.operation_id, existing.start_sequence)
-                .await?;
-            let lease = self
-                .status_store
-                .claim_owner_lease(
-                    &existing.operation_id,
-                    owner.owner_id(),
-                    owner.now(),
-                    owner.expires_at(),
-                )
-                .await
-                .map_err(SubmitCertError::StoreStatus)?;
-            return Ok(AcceptedCertSubmission {
-                operation_id: existing.operation_id,
-                start_sequence: existing.start_sequence,
-                cert_id,
-                lease,
-            });
-        }
-
-        let stored = self
-            .event_log
-            .append(OperationEventAppend::cert_submitted(
-                submission.operation_id.clone(),
-                submission.cert_id.clone(),
-                &submission.idempotency_key,
-            ))
-            .await
-            .map_err(SubmitCertError::AppendEvent)?;
-        let (operation_id, cert_id) = if stored.duplicate {
-            let original = self
-                .event_log
-                .event_at_sequence(stored.sequence)
-                .await
-                .map_err(SubmitCertError::AppendEvent)?;
-            let OperationEvent::CertRenewalSubmitted {
-                operation_id,
-                cert_id,
-            } = original
-            else {
-                return Err(SubmitCertError::DuplicateSequenceMismatch {
-                    sequence: stored.sequence,
-                });
-            };
-            (operation_id, cert_id)
-        } else {
-            (submission.operation_id, submission.cert_id)
-        };
-        let status =
-            OperationStatus::cert_accepted(operation_id.clone(), cert_id.clone(), stored.sequence);
-        self.status_store
-            .put_if_newer(&status)
-            .await
-            .map_err(SubmitCertError::StoreStatus)?;
-        let submitted = StoredCertSubmission {
-            operation_id,
-            start_sequence: stored.sequence,
-        };
-
-        let submitted = self
-            .status_store
-            .put_cert_submission_if_absent(&submission.idempotency_key, &submitted)
-            .await
-            .map_err(SubmitCertError::StoreStatus)?;
-        let cert_id = self
-            .submitted_cert_id(&submitted.operation_id, submitted.start_sequence)
-            .await?;
-        let lease = self
-            .status_store
-            .claim_owner_lease(
-                &submitted.operation_id,
-                owner.owner_id(),
-                owner.now(),
-                owner.expires_at(),
-            )
-            .await
-            .map_err(SubmitCertError::StoreStatus)?;
-
-        Ok(AcceptedCertSubmission {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            cert_id,
-            lease,
-        })
-    }
-
-    async fn submitted_deploy_target(
-        &self,
-        expected_operation_id: &OperationId,
-        sequence: EventSequence,
-    ) -> Result<ployz_core::deploy::DeployRequest, SubmitDeployError> {
-        let event = self
-            .event_log
-            .event_at_sequence(sequence)
-            .await
-            .map_err(SubmitDeployError::AppendEvent)?;
-        let OperationEvent::DeploySubmitted {
-            operation_id,
-            target,
-        } = event
-        else {
-            return Err(SubmitDeployError::DuplicateSequenceMismatch { sequence });
-        };
-        if &operation_id != expected_operation_id {
-            return Err(SubmitDeployError::DuplicateSequenceMismatch { sequence });
-        }
-
-        Ok(target)
-    }
-
-    async fn submitted_cert_id(
-        &self,
-        expected_operation_id: &OperationId,
-        sequence: EventSequence,
-    ) -> Result<CertId, SubmitCertError> {
-        let event = self
-            .event_log
-            .event_at_sequence(sequence)
-            .await
-            .map_err(SubmitCertError::AppendEvent)?;
-        let OperationEvent::CertRenewalSubmitted {
-            operation_id,
-            cert_id,
-        } = event
-        else {
-            return Err(SubmitCertError::DuplicateSequenceMismatch { sequence });
-        };
-        if &operation_id != expected_operation_id {
-            return Err(SubmitCertError::DuplicateSequenceMismatch { sequence });
-        }
-
-        Ok(cert_id)
     }
 
     pub async fn record_deploy_transition(
@@ -764,114 +525,12 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::CertValidationStarted { .. }
         | OperationEvent::CertCompleted { .. }
         | OperationEvent::CertFailed { .. }
+        | OperationEvent::MachineAddSubmitted { .. }
+        | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCompleted { .. }
+        | OperationEvent::MachineAddFailed { .. }
         | OperationEvent::Cancelled { .. } => None,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeployOperationSubmission {
-    pub operation_id: OperationId,
-    pub target: ployz_core::deploy::DeployRequest,
-    pub idempotency_key: OperationIdempotencyKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertOperationSubmission {
-    pub operation_id: OperationId,
-    pub cert_id: CertId,
-    pub idempotency_key: OperationIdempotencyKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationLeaseClaim {
-    owner_id: OperationOwnerId,
-    now: OperationLeaseExpiresAt,
-    expires_at: OperationLeaseExpiresAt,
-}
-
-impl OperationLeaseClaim {
-    pub fn try_new(
-        owner_id: OperationOwnerId,
-        now: OperationLeaseExpiresAt,
-        expires_at: OperationLeaseExpiresAt,
-    ) -> Result<Self, OperationLeaseClaimError> {
-        if expires_at <= now {
-            return Err(OperationLeaseClaimError::AlreadyExpired { now, expires_at });
-        }
-
-        Ok(Self {
-            owner_id,
-            now,
-            expires_at,
-        })
-    }
-
-    #[must_use]
-    pub const fn now(&self) -> OperationLeaseExpiresAt {
-        self.now
-    }
-
-    #[must_use]
-    pub const fn expires_at(&self) -> OperationLeaseExpiresAt {
-        self.expires_at
-    }
-
-    #[must_use]
-    pub fn owner_id(&self) -> &OperationOwnerId {
-        &self.owner_id
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationLeaseClaimError {
-    AlreadyExpired {
-        now: OperationLeaseExpiresAt,
-        expires_at: OperationLeaseExpiresAt,
-    },
-}
-
-impl std::fmt::Display for OperationLeaseClaimError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AlreadyExpired { now, expires_at } => write!(
-                formatter,
-                "operation lease expires at {} but now is {}",
-                expires_at.unix_seconds(),
-                now.unix_seconds(),
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedDeploySubmission {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub target: ployz_core::deploy::DeployRequest,
-    pub lease: OperationOwnerLease,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedCertSubmission {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub cert_id: CertId,
-    pub lease: OperationOwnerLease,
-}
-
-#[derive(Debug)]
-pub enum SubmitDeployError {
-    AppendEvent(OperationEventLogError),
-    StoreStatus(OperationStatusStoreError),
-    Clock { message: String },
-    DuplicateSequenceMismatch { sequence: EventSequence },
-}
-
-#[derive(Debug)]
-pub enum SubmitCertError {
-    AppendEvent(OperationEventLogError),
-    StoreStatus(OperationStatusStoreError),
-    DuplicateSequenceMismatch { sequence: EventSequence },
 }
 
 #[derive(Debug)]

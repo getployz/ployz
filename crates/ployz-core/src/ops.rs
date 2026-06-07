@@ -10,6 +10,10 @@ use crate::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
     SubjectToken, SubjectTokenError,
 };
+use crate::machine::{
+    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState, MachineName,
+};
+use crate::roles::FirstNodeGateway;
 use crate::state::ExpectedActiveService;
 use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
 
@@ -231,6 +235,14 @@ pub enum OperationStatus {
         id: OperationId,
         cert_id: CertId,
         state: CertOperationState,
+        last_event_sequence: EventSequence,
+    },
+    MachineAdd {
+        id: OperationId,
+        node_id: NodeId,
+        name: MachineName,
+        gateway: FirstNodeGateway,
+        state: MachineAddOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -456,10 +468,30 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn machine_add_pending(
+        id: OperationId,
+        node_id: NodeId,
+        name: MachineName,
+        gateway: FirstNodeGateway,
+        join_token: IssuedJoinToken,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::MachineAdd {
+            id,
+            node_id,
+            name,
+            gateway,
+            state: MachineAddOperationState::Pending { join_token },
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
+            Self::MachineAdd { state, .. } => state.is_terminal(),
         }
     }
 }
@@ -840,6 +872,27 @@ pub enum OperationEvent {
     CertFailed {
         operation_id: OperationId,
         failure: CertOperationFailure,
+    },
+    MachineAddSubmitted {
+        operation_id: OperationId,
+        node_id: NodeId,
+        name: MachineName,
+        gateway: FirstNodeGateway,
+        join_token: IssuedJoinToken,
+    },
+    MachineAddJoined {
+        operation_id: OperationId,
+        node_id: NodeId,
+        joined_at: JoinTokenRedeemedAt,
+    },
+    MachineAddCompleted {
+        operation_id: OperationId,
+        node_id: NodeId,
+    },
+    MachineAddFailed {
+        operation_id: OperationId,
+        node_id: NodeId,
+        failure: MachineAddFailure,
     },
     Cancelled {
         operation_id: OperationId,

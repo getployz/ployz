@@ -1,7 +1,7 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::controllers::OperationControllers;
-use crate::operation_api::{deploy_submit, ops_status, ops_watch};
+use crate::operation_api::{deploy_submit, machine_add, ops_status, ops_watch};
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_runtime::{
@@ -10,7 +10,9 @@ use ployz_nats::service_runtime::{
 };
 use ployz_sdk_types::{
     OperationApiResponse,
-    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
+    operation_api::{
+        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+    },
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::future::Future;
@@ -45,6 +47,14 @@ async fn bind_operation_endpoint(
             |controllers, request| async move { deploy_submit(&controllers, request.into()).await },
         )
         .await,
+        OperationApiEndpoint::MachineAdd => {
+            bind_operation_contract::<MachineAddApi, _, _>(
+                runtime,
+                controllers,
+                |controllers, request| async move { machine_add(&controllers, request).await },
+            )
+            .await
+        }
         OperationApiEndpoint::OpsStatus => {
             bind_operation_contract::<OpsStatusApi, _, _>(
                 runtime,
@@ -62,9 +72,6 @@ async fn bind_operation_endpoint(
                 |controllers, request| async move { ops_watch(&controllers, request).await },
             )
             .await
-        }
-        OperationApiEndpoint::MachineAdd => {
-            Err(ApiServiceRuntimeError::UnimplementedEndpoint { endpoint })
         }
     }
 }
@@ -130,7 +137,6 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiServiceRuntimeError {
     Nats(NatsServiceRuntimeError),
-    UnimplementedEndpoint { endpoint: OperationApiEndpoint },
 }
 
 #[cfg(test)]

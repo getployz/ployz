@@ -1,5 +1,5 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId};
+use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId};
 use ployz_core::ops::{
     EventSequence, OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationLeaseExpiresAt, OperationOwnerLease,
@@ -13,8 +13,12 @@ use ployz_nats::services::{
 };
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    OperationApiResponse, OpsStatusError, OpsStatusResponse,
-    operation_api::{DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi},
+    MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineAddResponse,
+    MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse, OpsStatusError,
+    OpsStatusResponse,
+    operation_api::{
+        DeploySubmitApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+    },
 };
 use ployzctl::api_client::{
     OperationApiClient, OperationApiClientError, OperationApiRequestFailure,
@@ -62,6 +66,49 @@ async fn operation_api_client_decodes_successful_envelope() {
             owner_lease: operation_lease("op_123", "control", 120),
         }
     );
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_machine_add_success() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_api_service(MachineAddApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            let response: MachineAddResponse = OperationApiResponse::Ok {
+                value: MachineAddAccepted {
+                    accepted: AcceptedOperation {
+                        operation_id: operation_id("op_machine"),
+                        watch_subject: "plz.v1.op.op_machine.>".to_owned(),
+                        start_sequence: event_sequence(2),
+                        owner_lease: operation_lease("op_machine", "control", 120),
+                    },
+                    node_id: node_id("node_2"),
+                    bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
+                        .expect("valid bootstrap url"),
+                    join_token: MachineJoinToken::try_new("join_token").expect("valid join token"),
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let accepted = api
+        .machine_add(&machine_add_request())
+        .await
+        .expect("machine add responds");
+
+    assert_eq!(accepted.node_id, node_id("node_2"));
+    assert_eq!(accepted.accepted.operation_id, operation_id("op_machine"));
 }
 
 #[tokio::test]
@@ -307,6 +354,17 @@ fn deploy_submit_request() -> DeploySubmitRequest {
     }
 }
 
+fn machine_add_request() -> MachineAddRequest {
+    MachineAddRequest {
+        operation_id: operation_id("op_machine"),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_machine")
+            .expect("valid idempotency key"),
+        node_id: node_id("node_2"),
+        name: MachineName::try_new("edge_2").expect("valid machine name"),
+        gateway: MachineAddGateway::Skip,
+    }
+}
+
 fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
@@ -318,6 +376,10 @@ fn deploy_target(service_id: &str) -> DeployRequest {
 
 fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
 }
 
 fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {

@@ -8,14 +8,18 @@ use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{CertId, OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineName, RawJoinToken,
+};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt, RouteHostname,
 };
+use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET, OperationLeaseClaim,
-    PLZ_OPS_STREAM,
+    CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
+    MachineAddOperationSubmission, OperationLeaseClaim, PLZ_OPS_STREAM,
 };
 
 pub(super) struct TestNats {
@@ -90,6 +94,34 @@ pub(super) fn cert_submission(
         cert_id: self::cert_id(cert_id),
         idempotency_key: self::idempotency_key(idempotency_key),
     }
+}
+
+pub(super) fn machine_add_submission(
+    operation_id: &str,
+    idempotency_key: &str,
+    node_id: &str,
+    machine_name: &str,
+) -> MachineAddOperationSubmission {
+    MachineAddOperationSubmission {
+        operation_id: self::operation_id(operation_id),
+        node_id: self::node_id(node_id),
+        name: MachineName::try_new(machine_name).expect("valid machine name"),
+        gateway: FirstNodeGateway::Skip,
+        join_token: issued_join_token("join_hash"),
+        raw_join_token: raw_join_token("join_token"),
+        idempotency_key: self::idempotency_key(idempotency_key),
+    }
+}
+
+pub(super) fn issued_join_token(fingerprint: &str) -> IssuedJoinToken {
+    IssuedJoinToken::new(
+        JoinTokenFingerprint::try_new(fingerprint).expect("valid join token fingerprint"),
+        JoinTokenExpiresAt::try_new(700).expect("valid join token expiry"),
+    )
+}
+
+pub(super) fn raw_join_token(value: &str) -> RawJoinToken {
+    RawJoinToken::try_new(value).expect("valid raw join token")
 }
 
 pub(super) fn lease_claim(owner_id: &str, now: u64, expires_at: u64) -> OperationLeaseClaim {

@@ -4,29 +4,61 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineName, RawJoinToken,
+};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
     OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
     OperationStatusSnapshot,
 };
+use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, OperationLeaseClaim, OperationStatusReadError,
-    OperationStatusStoreError, OperationStatusWrite, RecordDeployEvidenceError,
-    RecordDeployTransitionError, ReplayOperationEventsError, StoredOperationEvent,
-    SubmitDeployError,
+    DeployOperationSubmission, MachineAddOperationSubmission, OperationLeaseClaim,
+    OperationStatusReadError, OperationStatusStoreError, OperationStatusWrite,
+    RecordDeployEvidenceError, RecordDeployTransitionError, ReplayOperationEventsError,
+    StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
 };
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::operation_lease::OperationLeasePolicy;
 
 pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
 
+pub const MACHINE_ADD_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
+const MACHINE_JOIN_TOKEN_TTL_SECONDS: u64 = 600;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
     pub target: DeployRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddSubmitCommand {
+    pub operation_id: OperationId,
+    pub idempotency_key: IdempotencyKey,
+    pub node_id: ployz_core::ids::NodeId,
+    pub name: MachineName,
+    pub gateway: FirstNodeGateway,
+    pub join_token: IssuedJoinToken,
+    pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddBootstrapMaterial {
+    pub raw_join_token: RawJoinToken,
+    pub join_token: IssuedJoinToken,
+    pub bootstrap_url: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineAddBootstrapMaterialError {
+    Clock { message: String },
+    InvalidJoinTokenMaterial,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +126,65 @@ impl OperationControllers {
             start_sequence: submitted.start_sequence,
             target: submitted.target,
             lease: submitted.lease,
+        })
+    }
+
+    pub async fn submit_machine_add(
+        &self,
+        command: MachineAddSubmitCommand,
+    ) -> Result<AcceptedMachineAddOperation, SubmitMachineAddError> {
+        let submitted = self
+            .repository
+            .submit_machine_add(
+                MachineAddOperationSubmission {
+                    operation_id: command.operation_id,
+                    node_id: command.node_id,
+                    name: command.name,
+                    gateway: command.gateway,
+                    join_token: command.join_token,
+                    raw_join_token: command.raw_join_token,
+                    idempotency_key: command.idempotency_key,
+                },
+                self.machine_add_lease_claim()?,
+            )
+            .await?;
+
+        Ok(AcceptedMachineAddOperation {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            node_id: submitted.node_id,
+            name: submitted.name,
+            gateway: submitted.gateway,
+            join_token: submitted.join_token,
+            raw_join_token: submitted.raw_join_token,
+            lease: submitted.lease,
+        })
+    }
+
+    pub fn issue_machine_add_bootstrap_material(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError> {
+        let now =
+            self.current_lease_time()
+                .map_err(|error| MachineAddBootstrapMaterialError::Clock {
+                    message: error.message,
+                })?;
+        let raw_join_token =
+            RawJoinToken::try_new(format!("join_{}_{}", operation_id.as_str(), nuid::next()))
+                .map_err(|_| MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial)?;
+        let fingerprint = JoinTokenFingerprint::try_new(sha256_hex(raw_join_token.as_str()))
+            .map_err(|_| MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial)?;
+        let expires_at = JoinTokenExpiresAt::try_new(
+            now.unix_seconds()
+                .saturating_add(MACHINE_JOIN_TOKEN_TTL_SECONDS),
+        )
+        .map_err(|_| MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial)?;
+
+        Ok(MachineAddBootstrapMaterial {
+            raw_join_token,
+            join_token: IssuedJoinToken::new(fingerprint, expires_at),
+            bootstrap_url: MACHINE_ADD_BOOTSTRAP_URL,
         })
     }
 
@@ -176,6 +267,11 @@ impl OperationControllers {
             .map_err(|message| SubmitDeployError::Clock { message })
     }
 
+    fn machine_add_lease_claim(&self) -> Result<OperationLeaseClaim, SubmitMachineAddError> {
+        self.build_lease_claim()
+            .map_err(|message| SubmitMachineAddError::Clock { message })
+    }
+
     fn build_lease_claim(&self) -> Result<OperationLeaseClaim, String> {
         let now = self.current_lease_time().map_err(|error| error.message)?;
         let expires_at = OperationLeaseExpiresAt::try_new(
@@ -201,6 +297,18 @@ pub struct AcceptedDeployOperation {
     pub lease: OperationOwnerLease,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedMachineAddOperation {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub node_id: ployz_core::ids::NodeId,
+    pub name: MachineName,
+    pub gateway: FirstNodeGateway,
+    pub join_token: IssuedJoinToken,
+    pub raw_join_token: RawJoinToken,
+    pub lease: OperationOwnerLease,
+}
+
 fn test_owner_id() -> OperationOwnerId {
     match OperationOwnerId::try_new("control") {
         Ok(owner_id) => owner_id,
@@ -219,6 +327,11 @@ fn current_lease_time() -> Result<OperationLeaseExpiresAt, OperationLeaseClockEr
     OperationLeaseExpiresAt::try_new(seconds).map_err(|error| OperationLeaseClockError {
         message: error.to_string(),
     })
+}
+
+fn sha256_hex(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    format!("{digest:x}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -20,3 +20,8 @@ pub fn deploy_submission_key(idempotency_key: &OperationIdempotencyKey) -> Strin
 pub fn cert_submission_key(idempotency_key: &OperationIdempotencyKey) -> String {
     format!("cert_submissions.{}", idempotency_key.as_str())
 }
+
+#[must_use]
+pub fn machine_add_submission_key(idempotency_key: &OperationIdempotencyKey) -> String {
+    format!("machine_add_submissions.{}", idempotency_key.as_str())
+}

@@ -25,7 +25,11 @@ pub use ployz_core::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
     SubjectTokenError,
 };
-pub use ployz_core::machine::MachineName;
+pub use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
+    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
+    MachineReadinessCheck, MachineReadinessEvidence,
+};
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, CancellationReason, EventSequence,
     EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
@@ -41,6 +45,7 @@ pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, DeployOperationFailure,
     DeployOperationState, DeployRunningStage,
 };
+pub use ployz_core::roles::FirstNodeGateway;
 pub use ployz_core::state::{
     ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
 };

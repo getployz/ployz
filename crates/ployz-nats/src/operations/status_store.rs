@@ -1,14 +1,17 @@
 use async_nats::jetstream;
 use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
     OperationOwnershipStatus, OperationStatus,
 };
+use ployz_core::roles::FirstNodeGateway;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 use super::keys::{
-    cert_submission_key, deploy_submission_key, operation_owner_lease_key, operation_status_key,
+    cert_submission_key, deploy_submission_key, machine_add_submission_key,
+    operation_owner_lease_key, operation_status_key,
 };
 use super::projection::{status_id, status_sequence};
 use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
@@ -28,6 +31,17 @@ pub struct StoredDeploySubmission {
 pub struct StoredCertSubmission {
     pub operation_id: ployz_core::ids::OperationId,
     pub start_sequence: EventSequence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredMachineAddSubmission {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub start_sequence: Option<EventSequence>,
+    pub node_id: ployz_core::ids::NodeId,
+    pub name: MachineName,
+    pub gateway: FirstNodeGateway,
+    pub join_token: IssuedJoinToken,
+    pub raw_join_token: RawJoinToken,
 }
 
 impl AsyncNatsOperationStatusStore {
@@ -211,6 +225,119 @@ impl AsyncNatsOperationStatusStore {
             Err(error) => {
                 if let Some(existing) = self.cert_submission(idempotency_key).await? {
                     Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    pub async fn machine_add_submission(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "machine add submission get",
+            self.bucket.get(machine_add_submission_key(idempotency_key)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeSubmission)
+    }
+
+    pub async fn put_machine_add_submission_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredMachineAddSubmission,
+    ) -> Result<StoredMachineAddSubmission, OperationStatusStoreError> {
+        if let Some(existing) = self.machine_add_submission(idempotency_key).await? {
+            return Ok(existing);
+        }
+
+        let key = machine_add_submission_key(idempotency_key);
+        let payload =
+            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "machine add submission create",
+            self.bucket.create(&key, payload.into()),
+        )
+        .await?
+        {
+            Ok(_) => Ok(submission.clone()),
+            Err(error) => {
+                if let Some(existing) = self.machine_add_submission(idempotency_key).await? {
+                    Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    pub async fn record_machine_add_submission_sequence(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        sequence: EventSequence,
+    ) -> Result<StoredMachineAddSubmission, OperationStatusStoreError> {
+        let key = machine_add_submission_key(idempotency_key);
+        let Some(existing) = with_status_timeout(
+            "machine add submission entry read",
+            self.bucket.entry(key.clone()),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Err(OperationStatusStoreError::CasConflict {
+                message: "machine add submission record is missing".to_owned(),
+            });
+        };
+        let mut submission: StoredMachineAddSubmission = serde_json::from_slice(&existing.value)
+            .map_err(OperationStatusStoreError::DecodeSubmission)?;
+        if submission.start_sequence == Some(sequence) {
+            return Ok(submission);
+        }
+        if let Some(start_sequence) = submission.start_sequence {
+            return Err(OperationStatusStoreError::CasConflict {
+                message: format!(
+                    "machine add submission sequence is {} but attempted {}",
+                    start_sequence.get(),
+                    sequence.get()
+                ),
+            });
+        }
+
+        submission.start_sequence = Some(sequence);
+        let payload =
+            serde_json::to_vec(&submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "machine add submission sequence update",
+            self.bucket.update(&key, payload.into(), existing.revision),
+        )
+        .await?
+        {
+            Ok(_) => Ok(submission),
+            Err(error) => {
+                let Some(current) = self.machine_add_submission(idempotency_key).await? else {
+                    return Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    });
+                };
+                if current.start_sequence == Some(sequence) {
+                    Ok(current)
                 } else {
                     Err(OperationStatusStoreError::CasConflict {
                         message: error.to_string(),

@@ -1,5 +1,6 @@
 //! Process roles for the shared `ployzd` runtime artifact.
 
+use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
 
 use crate::ids::NodeId;
@@ -62,7 +63,9 @@ impl TunnelSide {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
 pub enum FirstNodeGateway {
     Install,
     Skip,

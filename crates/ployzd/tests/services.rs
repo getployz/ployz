@@ -31,7 +31,7 @@ fn control_catalog_supports_srv_ping_discovery() {
     assert!(catalog.has_endpoint_subject(API_OPS_STATUS));
     assert!(catalog.has_endpoint_subject(API_OPS_WATCH));
     assert!(!catalog.has_endpoint_subject(API_DEPLOY_PLAN));
-    assert!(!catalog.has_endpoint_subject(API_MACHINE_ADD));
+    assert!(catalog.has_endpoint_subject(API_MACHINE_ADD));
     assert!(!catalog.has_endpoint_subject("plz.v1.svc.node.node_7.inspect"));
 
     let node_catalog = DaemonServiceCatalog::for_node(&node_id);
@@ -72,8 +72,14 @@ fn api_service_marks_mutations_as_operation_acceptors() {
         .iter()
         .find(|endpoint| endpoint.subject == API_DEPLOY_SUBMIT)
         .expect("deploy.submit endpoint is registered");
+    let machine_add = api
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == API_MACHINE_ADD)
+        .expect("machine.add endpoint is registered");
 
     assert_eq!(deploy_submit.execution, EndpointExecution::AcceptsOperation);
+    assert_eq!(machine_add.execution, EndpointExecution::AcceptsOperation);
 }
 
 #[test]

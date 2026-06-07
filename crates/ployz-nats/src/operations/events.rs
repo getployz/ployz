@@ -4,17 +4,20 @@ use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
+use ployz_core::machine::{IssuedJoinToken, MachineName};
 use ployz_core::ops::{
     CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, EventSequenceError,
     OperationEvent, OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
     ReplayedOperationEvent,
 };
+use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::{
     op_cancelled, op_cert_challenge_published, op_cert_completed, op_cert_failed,
     op_cert_submitted, op_cert_validation_started, op_deploy_completed,
     op_deploy_container_started, op_deploy_failed, op_deploy_health_check_started,
     op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
-    op_watch,
+    op_machine_add_completed, op_machine_add_failed, op_machine_add_joined,
+    op_machine_add_submitted, op_watch,
 };
 use std::future::Future;
 
@@ -110,6 +113,27 @@ impl OperationEventAppend {
             OperationEvent::CertRenewalSubmitted {
                 operation_id,
                 cert_id,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_add_submitted(
+        operation_id: OperationId,
+        node_id: NodeId,
+        name: MachineName,
+        gateway: FirstNodeGateway,
+        join_token: IssuedJoinToken,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.add.submit.{}", idempotency_key.as_str())),
+            OperationEvent::MachineAddSubmitted {
+                operation_id,
+                node_id,
+                name,
+                gateway,
+                join_token,
             },
         )
     }
@@ -443,6 +467,18 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         }
         OperationEvent::CertCompleted { operation_id, .. } => op_cert_completed(operation_id),
         OperationEvent::CertFailed { operation_id, .. } => op_cert_failed(operation_id),
+        OperationEvent::MachineAddSubmitted { operation_id, .. } => {
+            op_machine_add_submitted(operation_id)
+        }
+        OperationEvent::MachineAddJoined { operation_id, .. } => {
+            op_machine_add_joined(operation_id)
+        }
+        OperationEvent::MachineAddCompleted { operation_id, .. } => {
+            op_machine_add_completed(operation_id)
+        }
+        OperationEvent::MachineAddFailed { operation_id, .. } => {
+            op_machine_add_failed(operation_id)
+        }
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }
 }

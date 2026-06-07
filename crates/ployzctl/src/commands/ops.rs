@@ -46,6 +46,10 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CertValidationStarted { .. } => "cert.validation_started",
         OperationEvent::CertCompleted { .. } => "cert.completed",
         OperationEvent::CertFailed { .. } => "cert.failed",
+        OperationEvent::MachineAddSubmitted { .. } => "machine.add.submitted",
+        OperationEvent::MachineAddJoined { .. } => "machine.add.joined",
+        OperationEvent::MachineAddCompleted { .. } => "machine.add.completed",
+        OperationEvent::MachineAddFailed { .. } => "machine.add.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

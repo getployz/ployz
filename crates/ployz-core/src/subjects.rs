@@ -172,6 +172,26 @@ pub fn op_cert_failed(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
+pub fn op_machine_add_submitted(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.add.submitted", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_machine_add_joined(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.add.joined", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_machine_add_completed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.add.completed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_machine_add_failed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.machine.add.failed", operation_id.as_str())
+}
+
+#[must_use]
 pub fn cert_renewal_schedule(cert_id: &CertId) -> String {
     format!("plz.v1.sched.cert.renew.{}", cert_id.as_str())
 }
