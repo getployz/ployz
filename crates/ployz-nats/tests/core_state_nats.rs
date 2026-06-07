@@ -344,6 +344,51 @@ async fn active_route_state_round_trips_through_kv_core() {
 }
 
 #[tokio::test]
+async fn active_routes_lists_only_route_state_sorted_by_target() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let api = route_target("api.example.com", 443);
+    let www = route_target("www.example.com", 443);
+
+    store
+        .commit_active_service(&commit_request(
+            &service_id("svc_api"),
+            ExpectedActiveService::Absent,
+            &revision_id("rev_1"),
+        ))
+        .await
+        .expect("service state stores");
+    store
+        .commit_active_route(&route_commit_request(
+            &www,
+            ExpectedActiveRoute::Absent,
+            "svc_web",
+            "rev_1",
+        ))
+        .await
+        .expect("www route stores");
+    store
+        .commit_active_route(&route_commit_request(
+            &api,
+            ExpectedActiveRoute::Absent,
+            "svc_api",
+            "rev_2",
+        ))
+        .await
+        .expect("api route stores");
+
+    assert_eq!(
+        store.active_routes().await.expect("routes list"),
+        vec![
+            active_route_state(&api, "svc_api", "rev_2"),
+            active_route_state(&www, "svc_web", "rev_1"),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn active_route_commit_rejects_stale_previous_revision() {
     let nats = test_nats().await;
     let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
@@ -498,7 +543,9 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
             assert_eq!(actual_target, other_target);
         }
         other @ (ActiveRouteReadError::Decode(_)
+        | ActiveRouteReadError::ListKeys { .. }
         | ActiveRouteReadError::Get { .. }
+        | ActiveRouteReadError::CorruptActiveRouteKey { .. }
         | ActiveRouteReadError::Timeout { .. }) => {
             panic!("unexpected error: {other:?}");
         }

@@ -1,9 +1,12 @@
 use super::AsyncNatsCoreStateStore;
+use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
+use async_nats::jetstream::kv::Operation;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveRouteStateKey,
     CoreStateRevision, ExpectedActiveRoute, ExpectedActiveRouteRevision,
 };
+use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 
@@ -30,10 +33,7 @@ impl AsyncNatsCoreStateStore {
             key: key.as_str().to_owned(),
             message: error.to_string(),
         })?
-        .map(|entry| {
-            loaded_active_route_state(&request.target, &key, &entry.value, entry.revision)
-                .map_err(ActiveRouteWriteError::from_route_read)
-        })
+        .map(|entry| loaded_active_route_state_for_write(&request.target, &key, &entry))
         .transpose()?;
 
         match classify_active_route_preflight(existing.as_ref(), &request.expected_current, &state)
@@ -104,6 +104,28 @@ impl AsyncNatsCoreStateStore {
         decode_active_route_state(target, &key, &payload).map(Some)
     }
 
+    pub async fn active_routes(&self) -> Result<Vec<ActiveRouteState>, ActiveRouteReadError> {
+        let route_key_prefix = format!("{}.", ployz_core::state::ACTIVE_ROUTE_STATE_PREFIX);
+        let entries = bounded_bucket_key_scan_entries_with_prefix(
+            &self.bucket,
+            &route_key_prefix,
+            NATS_ROUTE_STATE_TIMEOUT,
+        )
+        .await
+        .map_err(|error| ActiveRouteReadError::ListKeys {
+            message: error.message,
+        })?;
+        let current_entries = current_kv_entries(entries);
+        let mut routes = Vec::new();
+
+        for entry in current_entries.into_values() {
+            routes.push(decode_active_route_state_for_key(&entry.key, &entry.value)?);
+        }
+
+        routes.sort_by(|left, right| left.target.cmp(&right.target));
+        Ok(routes)
+    }
+
     async fn classify_active_route_commit_conflict(
         &self,
         target: &RouteTarget,
@@ -127,14 +149,32 @@ impl AsyncNatsCoreStateStore {
             });
         };
 
-        let current = loaded_active_route_state(target, key, &existing.value, existing.revision)
-            .map_err(ActiveRouteWriteError::from_route_read)?;
+        let current = loaded_active_route_state_for_write(target, key, &existing)?;
         Ok(classify_active_route_write_conflict(
             &current,
             expected_current,
             attempted,
         ))
     }
+}
+
+fn current_kv_entries(
+    entries: impl IntoIterator<Item = async_nats::jetstream::kv::Entry>,
+) -> BTreeMap<String, async_nats::jetstream::kv::Entry> {
+    let mut current = BTreeMap::new();
+
+    for entry in entries {
+        match entry.operation {
+            Operation::Put => {
+                current.insert(entry.key.clone(), entry);
+            }
+            Operation::Delete | Operation::Purge => {
+                current.remove(&entry.key);
+            }
+        }
+    }
+
+    current
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,6 +280,9 @@ fn active_route_state_matches(current: &ActiveRouteState, attempted: &ActiveRout
 #[derive(Debug)]
 pub enum ActiveRouteReadError {
     Decode(serde_json::Error),
+    ListKeys {
+        message: String,
+    },
     Get {
         key: String,
         message: String,
@@ -248,6 +291,10 @@ pub enum ActiveRouteReadError {
         key: String,
         expected_target: RouteTarget,
         actual_target: RouteTarget,
+    },
+    CorruptActiveRouteKey {
+        key: String,
+        actual_key: String,
     },
     Timeout {
         operation: &'static str,
@@ -258,6 +305,7 @@ impl fmt::Display for ActiveRouteReadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Decode(error) => write!(formatter, "decode active route state: {error}"),
+            Self::ListKeys { message } => write!(formatter, "list active route keys: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::CorruptActiveRouteState {
                 key,
@@ -267,6 +315,11 @@ impl fmt::Display for ActiveRouteReadError {
                 formatter,
                 "active route state at {} belongs to {:?}, not {:?}",
                 key, actual_target, expected_target
+            ),
+            Self::CorruptActiveRouteKey { key, actual_key } => write!(
+                formatter,
+                "active route state key {} does not match encoded target key {}",
+                key, actual_key
             ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
@@ -315,34 +368,14 @@ impl fmt::Display for ActiveRouteWriteError {
     }
 }
 
-impl ActiveRouteWriteError {
-    fn from_route_read(error: ActiveRouteReadError) -> Self {
-        match error {
-            ActiveRouteReadError::Decode(error) => Self::Decode(error),
-            ActiveRouteReadError::Get { key, message } => Self::Get { key, message },
-            ActiveRouteReadError::CorruptActiveRouteState {
-                key,
-                expected_target,
-                actual_target,
-            } => Self::CorruptActiveRouteState {
-                key,
-                expected_target,
-                actual_target,
-            },
-            ActiveRouteReadError::Timeout { operation } => Self::Timeout { operation },
-        }
-    }
-}
-
-fn loaded_active_route_state(
+fn loaded_active_route_state_for_write(
     expected_target: &RouteTarget,
     key: &ActiveRouteStateKey,
-    payload: &[u8],
-    revision: u64,
-) -> Result<LoadedActiveRouteState, ActiveRouteReadError> {
+    entry: &async_nats::jetstream::kv::Entry,
+) -> Result<LoadedActiveRouteState, ActiveRouteWriteError> {
     Ok(LoadedActiveRouteState {
-        state: decode_active_route_state(expected_target, key, payload)?,
-        revision: CoreStateRevision::new(revision),
+        state: decode_active_route_state_for_write(expected_target, key, &entry.value)?,
+        revision: CoreStateRevision::new(entry.revision),
     })
 }
 
@@ -358,6 +391,41 @@ fn decode_active_route_state(
             key: key.as_str().to_owned(),
             expected_target: expected_target.clone(),
             actual_target: state.target,
+        });
+    }
+
+    Ok(state)
+}
+
+fn decode_active_route_state_for_write(
+    expected_target: &RouteTarget,
+    key: &ActiveRouteStateKey,
+    payload: &[u8],
+) -> Result<ActiveRouteState, ActiveRouteWriteError> {
+    let state: ActiveRouteState =
+        serde_json::from_slice(payload).map_err(ActiveRouteWriteError::Decode)?;
+    if state.target != *expected_target {
+        return Err(ActiveRouteWriteError::CorruptActiveRouteState {
+            key: key.as_str().to_owned(),
+            expected_target: expected_target.clone(),
+            actual_target: state.target,
+        });
+    }
+
+    Ok(state)
+}
+
+fn decode_active_route_state_for_key(
+    key: &str,
+    payload: &[u8],
+) -> Result<ActiveRouteState, ActiveRouteReadError> {
+    let state: ActiveRouteState =
+        serde_json::from_slice(payload).map_err(ActiveRouteReadError::Decode)?;
+    let actual_key = ActiveRouteStateKey::from_target(&state.target);
+    if key != actual_key.as_str() {
+        return Err(ActiveRouteReadError::CorruptActiveRouteKey {
+            key: key.to_owned(),
+            actual_key: actual_key.as_str().to_owned(),
         });
     }
 

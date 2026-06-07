@@ -3,7 +3,6 @@
 use ployz_core::ids::{ContainerId, NodeId, RevisionId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
 use ployz_core::ops::RouteTarget;
-use ployz_core::state::ActiveRouteState;
 
 use crate::projection::ProjectionState;
 
@@ -14,16 +13,6 @@ pub struct GatewayRoute {
     pub target: RouteTarget,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
-}
-
-impl From<ActiveRouteState> for GatewayRoute {
-    fn from(state: ActiveRouteState) -> Self {
-        Self {
-            target: state.target,
-            service_id: state.service_id,
-            revision_id: state.revision_id,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,7 +76,7 @@ impl GatewayUpstreamKey {
 pub enum GatewayProjectionUpdate {
     SourceAvailable(GatewayProjectionInput),
     SourceInvalid(GatewayProjectionError),
-    SourceUnavailable,
+    SourceUnavailable(GatewayProjectionError),
 }
 
 pub type GatewayProjectionState = ProjectionState<GatewayProjection, GatewayProjectionError>;
@@ -96,6 +85,7 @@ pub type GatewayProjectionState = ProjectionState<GatewayProjection, GatewayProj
 pub enum GatewayProjectionError {
     DuplicateRouteTarget { target: RouteTarget },
     InvalidSource { message: String },
+    SourceUnavailable { message: String },
 }
 
 #[must_use]
@@ -109,7 +99,9 @@ pub fn apply_gateway_update(
             Err(error) => previous.source_failed(error),
         },
         GatewayProjectionUpdate::SourceInvalid(error) => previous.source_failed(error),
-        GatewayProjectionUpdate::SourceUnavailable => previous.source_unavailable(),
+        GatewayProjectionUpdate::SourceUnavailable(error) => {
+            previous.source_unavailable_with_error(error)
+        }
     }
 }
 

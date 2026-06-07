@@ -124,9 +124,16 @@ pub enum ObservationReadFailure {
     Decode {
         message: String,
     },
+    ListKeys {
+        message: String,
+    },
     Get {
         key: String,
         message: String,
+    },
+    CorruptSnapshotKey {
+        key: String,
+        actual_key: String,
     },
     Timeout {
         operation: &'static str,
@@ -169,7 +176,11 @@ fn observation_read_failure(source: ObservationStoreError) -> ObservationReadFai
         ObservationStoreError::Decode(error) => ObservationReadFailure::Decode {
             message: error.to_string(),
         },
+        ObservationStoreError::ListKeys { message } => ObservationReadFailure::ListKeys { message },
         ObservationStoreError::Get { key, message } => ObservationReadFailure::Get { key, message },
+        ObservationStoreError::CorruptNodeSnapshotKey { key, actual_key } => {
+            ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
+        }
         ObservationStoreError::Timeout { operation } => {
             ObservationReadFailure::Timeout { operation }
         }
@@ -239,7 +250,13 @@ impl fmt::Display for ObservationReadFailure {
             Self::Decode { message } => {
                 write!(formatter, "decode observation snapshot: {message}")
             }
+            Self::ListKeys { message } => write!(formatter, "list observation keys: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::CorruptSnapshotKey { key, actual_key } => write!(
+                formatter,
+                "snapshot key {} does not match decoded snapshot key {}",
+                key, actual_key
+            ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
             Self::UnexpectedWriteFailure => {
                 formatter.write_str("unexpected write-path failure during read")

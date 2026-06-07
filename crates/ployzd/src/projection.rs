@@ -29,6 +29,31 @@ impl<Projection, Error> ProjectionState<Projection, Error> {
     }
 
     #[must_use]
+    pub fn source_unavailable_with_error(self, error: Error) -> Self {
+        match self {
+            Self::Current(projection) | Self::LastKnownGood(projection) => {
+                Self::ProjectionFailedRetained {
+                    retained: projection,
+                    error,
+                }
+            }
+            Self::ProjectionFailedRetained {
+                retained: projection,
+                error: existing_error,
+            } => Self::ProjectionFailedRetained {
+                retained: projection,
+                error: existing_error,
+            },
+            Self::ProjectionFailedUnavailable {
+                error: existing_error,
+            } => Self::ProjectionFailedUnavailable {
+                error: existing_error,
+            },
+            Self::Unavailable => Self::ProjectionFailedUnavailable { error },
+        }
+    }
+
+    #[must_use]
     pub fn source_failed(self, error: Error) -> Self {
         match self {
             Self::Current(projection)

@@ -68,6 +68,56 @@ async fn container_observation_snapshot_removes_stale_node_containers() {
 }
 
 #[tokio::test]
+async fn node_observation_snapshots_list_sorted_current_snapshots() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    let node_7 = node_snapshot_for(
+        "node_7",
+        [managed_observation_for(
+            "node_7",
+            "ctr_7",
+            ContainerRuntimeState::Running,
+        )],
+    );
+    let node_8 = node_snapshot_for(
+        "node_8",
+        [managed_observation_for(
+            "node_8",
+            "ctr_8_old",
+            ContainerRuntimeState::Exited,
+        )],
+    );
+    let node_8_current = node_snapshot_for(
+        "node_8",
+        [managed_observation_for(
+            "node_8",
+            "ctr_8",
+            ContainerRuntimeState::Running,
+        )],
+    );
+
+    store
+        .replace_node_containers(&node_8)
+        .await
+        .expect("old node 8 snapshot stores");
+    store
+        .replace_node_containers(&node_7)
+        .await
+        .expect("node 7 snapshot stores");
+    store
+        .replace_node_containers(&node_8_current)
+        .await
+        .expect("node 8 snapshot replaces old");
+
+    assert_eq!(
+        store.node_snapshots().await.expect("snapshots list"),
+        vec![node_7, node_8_current]
+    );
+}
+
+#[tokio::test]
 async fn container_observation_snapshot_rejects_wrong_node_before_store_write() {
     let mut wrong_node = managed_observation("ctr_456", ContainerRuntimeState::Running);
     wrong_node.node_id = node_id("node_8");
@@ -127,8 +177,16 @@ fn managed_observation(
     container_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
+    managed_observation_for("node_7", container_id_value, state)
+}
+
+fn managed_observation_for(
+    node_id_value: &str,
+    container_id_value: &str,
+    state: ContainerRuntimeState,
+) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id("node_7"),
+        node_id: node_id(node_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
@@ -142,7 +200,14 @@ fn managed_observation(
 fn node_snapshot(
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
 ) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(node_id("node_7"), containers)
+    node_snapshot_for("node_7", containers)
+}
+
+fn node_snapshot_for(
+    node_id_value: &str,
+    containers: impl IntoIterator<Item = ManagedContainerObservation>,
+) -> NodeContainerObservationSnapshot {
+    NodeContainerObservationSnapshot::try_new(node_id(node_id_value), containers)
         .expect("matching node snapshot")
 }
 

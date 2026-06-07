@@ -74,6 +74,7 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
 
 #[test]
 fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
+    let error = source_unavailable();
     let last_good = GatewayProjection {
         routes: vec![GatewayProjectedRoute {
             target: route_target("api.example.com", 443),
@@ -87,24 +88,29 @@ fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
     assert_eq!(
         apply_gateway_update(
             GatewayProjectionState::Current(last_good),
-            GatewayProjectionUpdate::SourceUnavailable,
+            GatewayProjectionUpdate::SourceUnavailable(error.clone()),
         ),
-        GatewayProjectionState::LastKnownGood(GatewayProjection {
-            routes: vec![GatewayProjectedRoute {
-                target: route_target("api.example.com", 443),
-                upstreams: vec![GatewayUpstream {
-                    node_id: node_id("node_1"),
-                    container_id: container_id("api_good"),
+        GatewayProjectionState::ProjectionFailedRetained {
+            retained: GatewayProjection {
+                routes: vec![GatewayProjectedRoute {
+                    target: route_target("api.example.com", 443),
+                    upstreams: vec![GatewayUpstream {
+                        node_id: node_id("node_1"),
+                        container_id: container_id("api_good"),
+                    }],
                 }],
-            }],
-        })
+            },
+            error,
+        }
     );
     assert_eq!(
         apply_gateway_update(
             GatewayProjectionState::Unavailable,
-            GatewayProjectionUpdate::SourceUnavailable,
+            GatewayProjectionUpdate::SourceUnavailable(source_unavailable()),
         ),
-        GatewayProjectionState::Unavailable
+        GatewayProjectionState::ProjectionFailedUnavailable {
+            error: source_unavailable(),
+        }
     );
 }
 
@@ -232,7 +238,10 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
     );
 
     assert_eq!(
-        apply_gateway_update(failed, GatewayProjectionUpdate::SourceUnavailable),
+        apply_gateway_update(
+            failed,
+            GatewayProjectionUpdate::SourceUnavailable(source_unavailable()),
+        ),
         GatewayProjectionState::ProjectionFailedRetained {
             retained: GatewayProjection {
                 routes: vec![GatewayProjectedRoute {
@@ -361,6 +370,12 @@ fn operation_id(value: &str) -> OperationId {
 
 fn step_id(value: &str) -> StepId {
     StepId::try_new(value).expect("valid step id")
+}
+
+fn source_unavailable() -> GatewayProjectionError {
+    GatewayProjectionError::SourceUnavailable {
+        message: "kv read timed out".to_owned(),
+    }
 }
 
 fn running() -> ContainerRuntimeState {
