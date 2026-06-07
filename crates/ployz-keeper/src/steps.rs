@@ -7,7 +7,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
-use crate::systemd::SupervisorUnitTarget;
+use crate::systemd::{NatsServerUnitTarget, SupervisorUnitSpec, SupervisorUnitTarget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepPlan {
@@ -38,20 +38,14 @@ impl KeeperStepPlan {
     #[must_use]
     pub fn writes_ployzd_role_units(&self) -> bool {
         self.steps.iter().any(|step| {
-            matches!(
-                step,
-                KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::PloyzdRole(_))
-            )
+            matches!(step, KeeperStep::WriteSupervisorUnit(spec) if matches!(spec.target(), SupervisorUnitTarget::PloyzdRole(_)))
         })
     }
 
     #[must_use]
     pub fn writes_nats_server_unit(&self) -> bool {
         self.steps.iter().any(|step| {
-            matches!(
-                step,
-                KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
-            )
+            matches!(step, KeeperStep::WriteSupervisorUnit(spec) if spec.target() == SupervisorUnitTarget::NatsServer)
         })
     }
 }
@@ -61,7 +55,7 @@ pub enum KeeperStep {
     VerifyHost(HostPrerequisite),
     VerifyArtifact(ArtifactTarget),
     InstallArtifact(ArtifactTarget),
-    WriteSupervisorUnit(SupervisorUnitTarget),
+    WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
     RedeemJoinToken(JoinToken),
@@ -87,7 +81,7 @@ impl KeeperStepLabel {
             KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
             KeeperStep::VerifyArtifact(target) => Self::VerifyArtifact(target.clone()),
             KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
-            KeeperStep::WriteSupervisorUnit(target) => Self::WriteSupervisorUnit(target.clone()),
+            KeeperStep::WriteSupervisorUnit(spec) => Self::WriteSupervisorUnit(spec.target()),
             KeeperStep::StartSupervisorUnit(target) => Self::StartSupervisorUnit(target.clone()),
             KeeperStep::RestartSupervisorUnit(target) => {
                 Self::RestartSupervisorUnit(target.clone())
@@ -201,6 +195,7 @@ pub struct FirstNodeInstallTarget {
     pub node_id: NodeId,
     pub ployzd_artifact: PloyzdArtifactTarget,
     pub gateway: FirstNodeGateway,
+    pub nats_server_unit: NatsServerUnitTarget,
 }
 
 impl FirstNodeInstallTarget {
@@ -214,7 +209,14 @@ impl FirstNodeInstallTarget {
             node_id,
             ployzd_artifact,
             gateway,
+            nats_server_unit: NatsServerUnitTarget::default_paths(),
         }
+    }
+
+    #[must_use]
+    pub fn with_nats_server_unit(mut self, nats_server_unit: NatsServerUnitTarget) -> Self {
+        self.nats_server_unit = nats_server_unit;
+        self
     }
 }
 
@@ -257,8 +259,10 @@ pub fn bootstrap_script_plan(target: BootstrapScriptTarget) -> KeeperStepPlan {
     KeeperStepPlan::new(vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         KeeperStep::VerifyArtifact(target.keeper_artifact.clone().into()),
-        KeeperStep::InstallArtifact(target.keeper_artifact.into()),
-        KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::Keeper),
+        KeeperStep::InstallArtifact(target.keeper_artifact.clone().into()),
+        KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::Keeper {
+            artifact: target.keeper_artifact,
+        }),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
     ])
 }
@@ -269,12 +273,17 @@ pub fn keeper_join_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
         KeeperStep::RedeemJoinToken(target.token),
         KeeperStep::StoreJoinMaterial(target.material),
         KeeperStep::VerifyArtifact(target.ployzd_artifact.clone().into()),
-        KeeperStep::InstallArtifact(target.ployzd_artifact.into()),
+        KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
     ];
 
     for role in target.roles.roles {
-        let unit = SupervisorUnitTarget::PloyzdRole(role);
-        steps.push(KeeperStep::WriteSupervisorUnit(unit.clone()));
+        let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
+        steps.push(KeeperStep::WriteSupervisorUnit(
+            SupervisorUnitSpec::PloyzdRole {
+                role,
+                artifact: target.ployzd_artifact.clone(),
+            },
+        ));
         steps.push(KeeperStep::StartSupervisorUnit(unit));
     }
 
@@ -287,14 +296,19 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         KeeperStep::VerifyArtifact(target.ployzd_artifact.clone().into()),
-        KeeperStep::InstallArtifact(target.ployzd_artifact.into()),
-        KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer),
+        KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
+        KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
     ];
 
     for role in process_set.roles() {
         let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
-        steps.push(KeeperStep::WriteSupervisorUnit(unit.clone()));
+        steps.push(KeeperStep::WriteSupervisorUnit(
+            SupervisorUnitSpec::PloyzdRole {
+                role: role.clone(),
+                artifact: target.ployzd_artifact.clone(),
+            },
+        ));
         steps.push(KeeperStep::StartSupervisorUnit(unit));
     }
 

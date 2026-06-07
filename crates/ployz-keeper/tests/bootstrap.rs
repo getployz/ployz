@@ -19,7 +19,7 @@ use ployz_keeper::steps::{
     RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, first_node_install_plan,
     keeper_join_plan,
 };
-use ployz_keeper::systemd::SupervisorUnitTarget;
+use ployz_keeper::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
 #[test]
 fn bootstrap_script_installs_keeper_only() {
@@ -34,7 +34,9 @@ fn bootstrap_script_installs_keeper_only() {
             KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
             KeeperStep::VerifyArtifact(ArtifactTarget::Keeper(keeper_artifact())),
             KeeperStep::InstallArtifact(ArtifactTarget::Keeper(keeper_artifact())),
-            KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::Keeper),
+            KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::Keeper {
+                artifact: keeper_artifact(),
+            }),
             KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
         ]
     );
@@ -117,22 +119,21 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
 
     for role in roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
-        assert!(
-            plan.steps()
-                .contains(&KeeperStep::WriteSupervisorUnit(unit.clone()))
-        );
+        assert!(plan_writes_unit(&plan, &unit));
         assert!(
             plan.steps()
                 .contains(&KeeperStep::StartSupervisorUnit(unit))
         );
     }
 
-    assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
-        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Control)
-    )));
-    assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
-        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
-    )));
+    assert!(!plan_writes_unit(
+        &plan,
+        &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Control)
+    ));
+    assert!(!plan_writes_unit(
+        &plan,
+        &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
+    ));
 }
 
 #[test]
@@ -147,9 +148,7 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
     assert!(plan.writes_nats_server_unit());
     assert!(plan.writes_ployzd_role_units());
-    assert!(plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
-        SupervisorUnitTarget::NatsServer
-    )));
+    assert!(plan_writes_unit(&plan, &SupervisorUnitTarget::NatsServer));
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
         SupervisorUnitTarget::NatsServer
     )));
@@ -160,19 +159,17 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
         DaemonProcessRole::Node(node_id),
     ] {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
-        assert!(
-            plan.steps()
-                .contains(&KeeperStep::WriteSupervisorUnit(unit.clone()))
-        );
+        assert!(plan_writes_unit(&plan, &unit));
         assert!(
             plan.steps()
                 .contains(&KeeperStep::StartSupervisorUnit(unit))
         );
     }
 
-    assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
-        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
-    )));
+    assert!(!plan_writes_unit(
+        &plan,
+        &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
+    ));
     assert!(
         !plan
             .steps()
@@ -189,9 +186,10 @@ fn first_node_install_can_include_gateway_role() {
         FirstNodeGateway::Install,
     ));
 
-    assert!(plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
-        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
-    )));
+    assert!(plan_writes_unit(
+        &plan,
+        &SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
+    ));
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
         SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
     )));
@@ -504,6 +502,15 @@ fn digest(value: &str) -> Sha256Digest {
 
 fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("valid failure message")
+}
+
+fn plan_writes_unit(
+    plan: &ployz_keeper::steps::KeeperStepPlan,
+    target: &SupervisorUnitTarget,
+) -> bool {
+    plan.steps().iter().any(
+        |step| matches!(step, KeeperStep::WriteSupervisorUnit(spec) if spec.target() == *target),
+    )
 }
 
 fn node_id(value: &str) -> NodeId {

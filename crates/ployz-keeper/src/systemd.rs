@@ -1,8 +1,9 @@
 //! Supervisor units managed by keeper.
 
+use std::fmt;
 use std::path::Path;
 
-use crate::artifacts::PloyzdArtifactTarget;
+use crate::artifacts::{KeeperArtifactTarget, PloyzdArtifactTarget};
 use ployz_core::roles::{DaemonProcessRole, TunnelSide};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,113 @@ impl SupervisorUnitTarget {
             Self::NatsServer => "nats-server.service".to_owned(),
             Self::PloyzdRole(role) => role_unit_name(role),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SupervisorUnitSpec {
+    Keeper {
+        artifact: KeeperArtifactTarget,
+    },
+    NatsServer(NatsServerUnitTarget),
+    PloyzdRole {
+        role: DaemonProcessRole,
+        artifact: PloyzdArtifactTarget,
+    },
+}
+
+impl SupervisorUnitSpec {
+    #[must_use]
+    pub fn target(&self) -> SupervisorUnitTarget {
+        match self {
+            Self::Keeper { .. } => SupervisorUnitTarget::Keeper,
+            Self::NatsServer(_) => SupervisorUnitTarget::NatsServer,
+            Self::PloyzdRole { role, .. } => SupervisorUnitTarget::PloyzdRole(role.clone()),
+        }
+    }
+
+    #[must_use]
+    pub fn unit_name(&self) -> String {
+        self.target().unit_name()
+    }
+
+    pub fn render(&self) -> Result<String, SupervisorUnitFileError> {
+        match self {
+            Self::Keeper { artifact } => Ok(KeeperUnit::new(artifact.install_path())?.render()),
+            Self::NatsServer(target) => {
+                Ok(NatsServerUnit::new(target.binary_path(), target.config_path())?.render())
+            }
+            Self::PloyzdRole { role, artifact } => {
+                Ok(PloyzdRoleUnit::new(role.clone(), artifact)?.render())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperUnit {
+    exec_start: String,
+}
+
+impl KeeperUnit {
+    pub fn new(binary_path: impl AsRef<Path>) -> Result<Self, SupervisorUnitFileError> {
+        let exec_start = render_exec_start(binary_path.as_ref(), [])?;
+        Ok(Self { exec_start })
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> SupervisorUnitTarget {
+        SupervisorUnitTarget::Keeper
+    }
+
+    #[must_use]
+    pub fn unit_name(&self) -> String {
+        self.target().unit_name()
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "[Unit]\nDescription=Ployz Keeper\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            self.exec_start,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsServerUnitTarget {
+    binary_path: std::path::PathBuf,
+    config_path: std::path::PathBuf,
+}
+
+impl NatsServerUnitTarget {
+    pub fn new(
+        binary_path: std::path::PathBuf,
+        config_path: std::path::PathBuf,
+    ) -> Result<Self, SupervisorUnitFileError> {
+        Ok(Self {
+            binary_path: validate_supervisor_path(binary_path)?,
+            config_path: validate_supervisor_path(config_path)?,
+        })
+    }
+
+    #[must_use]
+    pub fn default_paths() -> Self {
+        Self::new(
+            std::path::PathBuf::from("/usr/local/bin/nats-server"),
+            std::path::PathBuf::from("/etc/nats/nats-server.conf"),
+        )
+        .expect("default nats-server unit paths are valid")
+    }
+
+    #[must_use]
+    pub fn binary_path(&self) -> &Path {
+        &self.binary_path
+    }
+
+    #[must_use]
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 }
 
@@ -152,7 +260,30 @@ fn render_exec_token(value: impl Into<String>) -> Result<String, SupervisorUnitF
 pub enum SupervisorUnitFileError {
     EmptyExecToken,
     UnsupportedExecToken { value: String },
+    EmptyPath,
+    RelativePath { value: std::path::PathBuf },
 }
+
+impl fmt::Display for SupervisorUnitFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyExecToken => formatter.write_str("systemd exec token is empty"),
+            Self::UnsupportedExecToken { value } => {
+                write!(formatter, "systemd exec token {value:?} is unsupported")
+            }
+            Self::EmptyPath => formatter.write_str("systemd path is empty"),
+            Self::RelativePath { value } => {
+                write!(
+                    formatter,
+                    "systemd path {} must be absolute",
+                    value.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SupervisorUnitFileError {}
 
 fn is_plain_systemd_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
@@ -160,6 +291,18 @@ fn is_plain_systemd_token_byte(byte: u8) -> bool {
             byte,
             b'/' | b'.' | b'_' | b'-' | b':' | b'=' | b'@' | b'+' | b'%'
         )
+}
+
+fn validate_supervisor_path(
+    path: std::path::PathBuf,
+) -> Result<std::path::PathBuf, SupervisorUnitFileError> {
+    if path.as_os_str().is_empty() {
+        return Err(SupervisorUnitFileError::EmptyPath);
+    }
+    if !path.is_absolute() {
+        return Err(SupervisorUnitFileError::RelativePath { value: path });
+    }
+    Ok(path)
 }
 
 #[must_use]

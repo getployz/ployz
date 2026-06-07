@@ -9,5 +9,6 @@ pub mod artifacts;
 pub mod cli;
 pub mod executor;
 pub mod join;
+pub mod local;
 pub mod steps;
 pub mod systemd;

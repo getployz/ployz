@@ -53,7 +53,13 @@ impl Sha256Digest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArtifactSource(String);
+pub struct ArtifactSource(ArtifactSourceKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ArtifactSourceKind {
+    LocalPath(PathBuf),
+    RemoteUrl(String),
+}
 
 impl ArtifactSource {
     pub fn try_new(value: impl Into<String>) -> Result<Self, ArtifactTargetError> {
@@ -61,12 +67,23 @@ impl ArtifactSource {
         if value.is_empty() {
             return Err(ArtifactTargetError::EmptySource);
         }
-        Ok(Self(value))
+        if value.starts_with("https://") || value.starts_with("http://") {
+            return Ok(Self(ArtifactSourceKind::RemoteUrl(value)));
+        }
+
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(ArtifactTargetError::RelativeSourcePath { value: path });
+        }
+        Ok(Self(ArtifactSourceKind::LocalPath(path)))
     }
 
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn local_path(&self) -> Option<&Path> {
+        match &self.0 {
+            ArtifactSourceKind::LocalPath(path) => Some(path),
+            ArtifactSourceKind::RemoteUrl(_) => None,
+        }
     }
 }
 
@@ -152,6 +169,14 @@ impl ArtifactTarget {
     }
 
     #[must_use]
+    pub const fn source(&self) -> &ArtifactSource {
+        match self {
+            Self::Keeper(target) => &target.source,
+            Self::Ployzd(target) => &target.source,
+        }
+    }
+
+    #[must_use]
     pub fn install_path(&self) -> &Path {
         match self {
             Self::Keeper(target) => target.install_path(),
@@ -176,6 +201,7 @@ impl From<PloyzdArtifactTarget> for ArtifactTarget {
 pub enum ArtifactTargetError {
     EmptyVersion,
     EmptySource,
+    RelativeSourcePath { value: PathBuf },
     EmptyDigest,
     InvalidSha256Digest { value: String },
     EmptyInstallPath,
@@ -658,6 +684,13 @@ impl fmt::Display for ArtifactTargetError {
         match self {
             Self::EmptyVersion => formatter.write_str("artifact version is empty"),
             Self::EmptySource => formatter.write_str("artifact source is empty"),
+            Self::RelativeSourcePath { value } => {
+                write!(
+                    formatter,
+                    "artifact source path {} must be absolute",
+                    value.display()
+                )
+            }
             Self::EmptyDigest => formatter.write_str("artifact sha256 digest is empty"),
             Self::InvalidSha256Digest { value } => {
                 write!(
