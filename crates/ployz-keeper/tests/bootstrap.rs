@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::NodeId;
@@ -44,11 +45,7 @@ fn bootstrap_script_installs_keeper_only() {
 
 #[test]
 fn bootstrap_script_file_installs_only_keeper() {
-    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("scripts")
-        .join("ployz.sh");
-    let script = fs::read_to_string(script_path).expect("script is readable");
+    let script = fs::read_to_string(bootstrap_script_path()).expect("script is readable");
 
     assert_eq!(
         shell_keeper_unit_template(&script),
@@ -58,13 +55,41 @@ fn bootstrap_script_file_installs_only_keeper() {
     assert!(script.contains("PLOYZ_JOIN_TOKEN"));
     assert!(script.contains("join-token"));
     assert!(script.contains("not both"));
-    assert!(script.contains("[join-token]"));
+    assert!(script.contains("--join-token <token>"));
+    assert!(script.contains("unknown ployz installer argument"));
     assert!(script.contains("install -d -m 0700"));
     assert!(script.contains("umask 077"));
     assert!(script.contains("uname -s"));
     assert!(script.contains("id -u"));
     assert!(!script.contains("ployzd"));
     assert!(!script.contains("NATS"));
+}
+
+#[test]
+fn bootstrap_script_rejects_positional_join_token() {
+    let output = run_bootstrap_script(&["join_once"], None);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "--join-token <token>");
+}
+
+#[test]
+fn bootstrap_script_rejects_unknown_join_token_flag() {
+    let output = run_bootstrap_script(&["--token", "join_once"], None);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "unknown ployz installer argument: --token");
+}
+
+#[test]
+fn bootstrap_script_rejects_join_token_from_flag_and_env() {
+    let output = run_bootstrap_script(&["--join-token", "join_once"], Some("join_env"));
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "set join token as either --join-token or PLOYZ_JOIN_TOKEN, not both",
+    );
 }
 
 #[test]
@@ -527,6 +552,41 @@ fn unique_temp_path(prefix: &str) -> PathBuf {
             .as_nanos()
     );
     std::env::temp_dir().join(unique)
+}
+
+fn bootstrap_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts")
+        .join("ployz.sh")
+}
+
+fn run_bootstrap_script(args: &[&str], join_token_env: Option<&str>) -> Output {
+    let mut command = Command::new("sh");
+    command
+        .arg(bootstrap_script_path())
+        .args(args)
+        .env("PLOYZ_KEEPER_URL", "https://example.invalid/ployz-keeper")
+        .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST);
+
+    match join_token_env {
+        Some(token) => {
+            command.env("PLOYZ_JOIN_TOKEN", token);
+        }
+        None => {
+            command.env_remove("PLOYZ_JOIN_TOKEN");
+        }
+    }
+
+    command.output().expect("bootstrap script can run")
+}
+
+fn assert_stderr_contains(output: &Output, expected: &str) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(expected),
+        "stderr should contain {expected:?}, got {stderr:?}"
+    );
 }
 
 const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

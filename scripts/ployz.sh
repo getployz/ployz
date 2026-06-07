@@ -4,18 +4,26 @@ set -eu
 : "${PLOYZ_KEEPER_URL:?set PLOYZ_KEEPER_URL}"
 : "${PLOYZ_KEEPER_SHA256:?set PLOYZ_KEEPER_SHA256}"
 
-if [ "$#" -gt 1 ]; then
-  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... sh ployz.sh [join-token]" >&2
-  exit 1
-fi
-
-if [ "$#" -eq 1 ] && [ "${PLOYZ_JOIN_TOKEN:-}" ]; then
-  echo "set join token as either an argument or PLOYZ_JOIN_TOKEN, not both" >&2
+if [ "$#" -gt 2 ]; then
+  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... sh ployz.sh [--join-token <token>]" >&2
   exit 1
 fi
 
 if [ "$#" -eq 1 ]; then
-  PLOYZ_JOIN_TOKEN="$1"
+  echo "usage: PLOYZ_KEEPER_URL=... PLOYZ_KEEPER_SHA256=... sh ployz.sh [--join-token <token>]" >&2
+  exit 1
+fi
+
+if [ "$#" -eq 2 ]; then
+  if [ "$1" != "--join-token" ]; then
+    echo "unknown ployz installer argument: $1" >&2
+    exit 1
+  fi
+  if [ "${PLOYZ_JOIN_TOKEN:-}" ]; then
+    echo "set join token as either --join-token or PLOYZ_JOIN_TOKEN, not both" >&2
+    exit 1
+  fi
+  PLOYZ_JOIN_TOKEN="$2"
 fi
 
 if [ "$(uname -s)" != "Linux" ]; then
