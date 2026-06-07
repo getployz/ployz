@@ -519,7 +519,7 @@ substrate:
   nats-server
   JetStream KV/streams/Object Store
   ployzd tunnel NATS forwarding
-  ployz-keeper local substrate install/update
+  ployz-keeper local bootstrap/install
 
 data plane:
   Docker containers
@@ -1062,9 +1062,9 @@ centralizes the user-facing operation API contract so service catalog, runtime
 binding, Rust client calls, and generated TypeScript metadata share one
 endpoint registry. U10a now models core topology/quorum, R1/R3 NATS resource
 manifests, and the canonical control-plane backup scope. The major remaining
-gaps are keeper/install/update behavior, real Docker execution depth, deeper
-gateway/DNS data-plane integration, HA promotion commands, backup/restore
-execution, and broader end-to-end failure coverage.
+gaps are keeper bootstrap/install execution, real Docker execution depth,
+deeper gateway/DNS data-plane integration, HA promotion commands,
+backup/restore execution, and broader end-to-end failure coverage.
 
 ### Execution And Review Loop
 
@@ -1477,8 +1477,8 @@ Pipeline finish:
   `ployz.sh` installs only keeper. Keeper redeems one-time join material,
   downloads and verifies the main `ployzd` artifact, writes systemd units for
   assigned `ployzd` roles, starts those roles, and reports bootstrap progress
-  to the active operation. Substrate update batches and keeper self-update are
-  a later slice after the two-node Hetzner proof is repeatable.
+  to the active operation. Substrate updates and keeper self-update are later
+  product decisions after the two-node proof is repeatable.
 - **Test scenarios:**
   - `ployz.sh` installs `ployz-keeper` only and does not write NATS
     credentials or `ployzd` role configs.
@@ -1493,7 +1493,7 @@ Pipeline finish:
   - A failed keeper step fails the bootstrap operation with typed failure
     details.
   - Keeper cannot mutate `KV_CORE` service state, route ownership, cert state,
-    or cluster membership except through the scoped bootstrap/update operation.
+    or cluster membership during bootstrap.
 - **Verification:** `cargo test -p ployz-keeper`
 
 ### U8. Minimal Gateway Projection Skeleton

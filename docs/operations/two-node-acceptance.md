@@ -1,4 +1,4 @@
-# Two-Node Product Smoke On Hetzner
+# Disposable Two-Node Product Proof On Hetzner
 
 This runbook proves Ployz on real machines. Hetzner is not part of the product
 shape; it only gives us two fresh Linux hosts, public IPs, SSH, and cleanup.
@@ -17,12 +17,12 @@ The acceptance bar is:
 - prove cross-node networking and ingress,
 - destroy the machines.
 
-## Host Smoke
+## Disposable Host Setup
 
-The H0 script only provisions two machines and proves SSH readiness. It should
-stay provider glue. Do not add Hetzner-specific Rust code unless the actual
-product needs it. Do not add Hetzner-specific operation states, readiness
-models, or provider abstractions.
+The script provisions two machines, proves SSH readiness, runs real product
+commands, and cleans up. The Hetzner parts should stay provider glue. Do not
+add Hetzner-specific Rust code unless the actual product needs it. Do not add
+Hetzner-specific operation states, readiness models, or provider abstractions.
 
 Required tools:
 
@@ -55,7 +55,7 @@ export PLOYZ_SSH_USER=root
 export PLOYZ_SSH_READY_TIMEOUT_SECONDS=300
 ```
 
-Create two machines and wait for SSH:
+Create two machines and run the proof:
 
 ```sh
 scripts/hetzner-two-node-acceptance.sh up --run-id ci-42
@@ -76,8 +76,8 @@ ployz_run=ci-42
 ployz_cleanup=true
 ```
 
-By default, a successful host smoke run deletes both machines after SSH is
-proved. To keep them for product install testing:
+By default, a successful run deletes both machines. To keep them for product
+install testing:
 
 ```sh
 PLOYZ_ACCEPTANCE_KEEP=1 scripts/hetzner-two-node-acceptance.sh up --run-id ci-42
@@ -94,7 +94,7 @@ automatically. If that cleanup fails, it prints the cleanup command.
 
 ## Scope
 
-The host smoke proves:
+The disposable host setup proves:
 
 - explicit Hetzner token and SSH key inputs,
 - deterministic server names,
@@ -103,7 +103,7 @@ The host smoke proves:
 - SSH readiness on both machines,
 - teardown by cleanup label selector.
 
-The complete acceptance flow proves the product on those hosts:
+The product proof then proves:
 
 - first-node install,
 - second-node add/join,
@@ -122,8 +122,9 @@ failure, and clean up the hosts.
 
 ## First-Node Install Contract
 
-`ployzctl init --node <id>` is the product surface for H1. It must install the
-same supervised shape locally that the Hetzner proof later exercises remotely:
+`ployzctl init --node <id>` is the product surface for the first machine. It
+must install the same supervised shape locally that the Hetzner proof later
+exercises remotely:
 
 - `nats-server`
 - `ployzd tunnel --side core`

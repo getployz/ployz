@@ -126,7 +126,7 @@ on_exit() {
     rm -f "$known_hosts_file"
   fi
   if [ "$status" -ne 0 ] && [ "${command:-}" = "up" ]; then
-    echo "substrate smoke failed; attempting cleanup for run ${run_id}" >&2
+    echo "two-node proof failed; attempting cleanup for run ${run_id}" >&2
     if ! cleanup_servers; then
       echo "automatic cleanup failed; run:" >&2
       cleanup_command >&2
@@ -169,13 +169,13 @@ case "$command" in
     wait_for_ssh "$core_ip" || die "ssh readiness failed for ${core_name} (${core_ip})"
     wait_for_ssh "$edge_ip" || die "ssh readiness failed for ${edge_name} (${edge_ip})"
 
-    echo "substrate ready:"
+    echo "disposable hosts ready:"
     echo "  ${core_name} ${core_ip}"
     echo "  ${edge_name} ${edge_ip}"
 
     if [ "${PLOYZ_ACCEPTANCE_KEEP:-0}" != "1" ]; then
       cleanup_servers
-      echo "substrate cleanup complete"
+      echo "disposable host cleanup complete"
     else
       echo "cleanup command: $(cleanup_command)"
     fi
