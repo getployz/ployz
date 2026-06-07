@@ -1,3 +1,5 @@
+use std::process::{Command, Output};
+
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
@@ -8,6 +10,7 @@ use ployzctl::commands::deploy::DetachedDeployOutput;
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{MachineAddOutput, MachineBootstrapUrl, MachineJoinToken};
 use ployzctl::commands::ops::WatchOutput;
+use ployzctl::commands::{PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, render_command};
 
 #[test]
 fn init_first_node_reports_supervised_product_roles() {
@@ -30,6 +33,79 @@ fn init_first_node_reports_supervised_product_roles() {
             ployz_core::roles::DaemonProcessRole::Node(node_id),
         ]
     );
+}
+
+#[test]
+fn cli_dispatches_init_first_node() {
+    let command = parse_command(["init", "--gateway", "--node", "node_1"].map(str::to_owned))
+        .expect("init command parses");
+
+    assert_eq!(
+        render_command(command),
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
+    );
+}
+
+#[test]
+fn cli_rejects_init_without_node() {
+    assert!(matches!(
+        parse_command(["init"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--node"
+    ));
+}
+
+#[test]
+fn cli_rejects_option_like_init_node_values() {
+    assert!(matches!(
+        parse_command(["init", "--node", "--gateway"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingValue { flag }) if flag == "--node"
+    ));
+    assert!(matches!(
+        parse_command(["init", "--node", "--help"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingValue { flag }) if flag == "--node"
+    ));
+}
+
+#[test]
+fn cli_renders_help_for_no_args() {
+    assert_eq!(
+        parse_command(std::iter::empty::<String>()).expect("no args renders help"),
+        PloyzctlCommand::Help
+    );
+}
+
+#[test]
+fn binary_help_only_advertises_implemented_commands() {
+    let output = run_ployzctl(&[]);
+
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), format!("{USAGE}\n"));
+    assert!(stdout(&output).contains("ployzctl init --node <id> [--gateway]"));
+    assert!(!stdout(&output).contains("deploy"));
+    assert!(!stdout(&output).contains("machine add"));
+    assert!(!stdout(&output).contains("ops watch"));
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn binary_dispatches_init_first_node() {
+    let output = run_ployzctl(&["init", "--node", "node_1", "--gateway"]);
+
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
+    );
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn binary_rejects_unimplemented_commands() {
+    let output = run_ployzctl(&["deploy"]);
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "unexpected argument: deploy\n");
 }
 
 #[test]
@@ -188,4 +264,19 @@ fn operation_id(value: &str) -> OperationId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn run_ployzctl(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .args(args)
+        .output()
+        .expect("ployzctl binary runs")
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
