@@ -10,7 +10,7 @@ use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
     OperationStatusStoreError, StoredCertSubmission, StoredDeploySubmission,
-    StoredMachineAddSubmission,
+    StoredMachineAddJoinToken, StoredMachineAddSubmission,
 };
 
 impl AsyncNatsOperationRepository {
@@ -219,6 +219,7 @@ impl AsyncNatsOperationRepository {
         submission: MachineAddOperationSubmission,
         owner: OperationLeaseClaim,
     ) -> Result<AcceptedMachineAddSubmission, SubmitMachineAddError> {
+        validate_machine_add_join_material(&submission.raw_join_token, &submission.join_token)?;
         let submitted = self
             .status_store
             .put_machine_add_submission_if_absent(
@@ -235,6 +236,14 @@ impl AsyncNatsOperationRepository {
             )
             .await
             .map_err(SubmitMachineAddError::StoreStatus)?;
+        let fingerprint =
+            validate_machine_add_join_material(&submitted.raw_join_token, &submitted.join_token)?;
+        self.index_machine_add_join_token(
+            &fingerprint,
+            &submitted.operation_id,
+            &submission.idempotency_key,
+        )
+        .await?;
         if let Some(start_sequence) = submitted.start_sequence {
             let lease = self
                 .status_store
@@ -346,6 +355,25 @@ impl AsyncNatsOperationRepository {
         })
     }
 
+    async fn index_machine_add_join_token(
+        &self,
+        fingerprint: &ployz_core::machine::JoinTokenFingerprint,
+        operation_id: &OperationId,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<(), SubmitMachineAddError> {
+        self.status_store
+            .put_machine_add_join_token_if_absent(
+                fingerprint,
+                &StoredMachineAddJoinToken {
+                    operation_id: operation_id.clone(),
+                    idempotency_key: idempotency_key.clone(),
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(SubmitMachineAddError::StoreStatus)
+    }
+
     async fn submitted_deploy_target(
         &self,
         expected_operation_id: &OperationId,
@@ -392,6 +420,20 @@ impl AsyncNatsOperationRepository {
         }
 
         Ok(cert_id)
+    }
+}
+
+fn validate_machine_add_join_material(
+    raw_join_token: &RawJoinToken,
+    join_token: &IssuedJoinToken,
+) -> Result<ployz_core::machine::JoinTokenFingerprint, SubmitMachineAddError> {
+    let fingerprint = raw_join_token
+        .fingerprint()
+        .map_err(|_| SubmitMachineAddError::JoinTokenMismatch)?;
+    if join_token.matches(&fingerprint) {
+        Ok(fingerprint)
+    } else {
+        Err(SubmitMachineAddError::JoinTokenMismatch)
     }
 }
 
@@ -530,4 +572,5 @@ pub enum SubmitMachineAddError {
     StoreStatus(OperationStatusStoreError),
     Clock { message: String },
     DuplicateSequenceMismatch { sequence: EventSequence },
+    JoinTokenMismatch,
 }

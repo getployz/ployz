@@ -1,13 +1,14 @@
 use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddOperationState,
-    MachineName,
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure,
+    MachineAddOperationState, MachineName, MachineReadinessCheck, MachineReadinessEvidence,
 };
 use ployz_core::ops::{
     DeployOperationState, DeployProjection, DeployRunningStage, DeployTransition, EventSequence,
-    OperationEvent, OperationEventProjection, OperationStatus, ProjectionOperationState,
-    StatusProjectionError, project_deploy_transition, project_operation_event,
+    FailureMessage, OperationEvent, OperationEventProjection, OperationStatus,
+    ProjectionOperationState, StatusProjectionError, project_deploy_transition,
+    project_operation_event,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -490,6 +491,86 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
 }
 
 #[test]
+fn machine_add_join_token_failure_after_join_is_rejected() {
+    let joined_at =
+        ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
+    let joined = OperationStatus::MachineAdd {
+        id: operation_id("op_machine"),
+        node_id: node_id("node_2"),
+        name: machine_name("edge_2"),
+        gateway: FirstNodeGateway::Skip,
+        state: MachineAddOperationState::Joining { joined_at },
+        last_event_sequence: event_sequence(8),
+    };
+
+    assert_eq!(
+        project_operation_event(
+            &joined,
+            OperationEvent::MachineAddFailed {
+                operation_id: operation_id("op_machine"),
+                node_id: node_id("node_2"),
+                failure: MachineAddFailure::JoinTokenExpired {
+                    expired_at: JoinTokenExpiresAt::try_new(600).expect("valid expiry"),
+                },
+            },
+            event_sequence(9),
+        ),
+        Err(StatusProjectionError::InvalidTransition {
+            operation_id: operation_id("op_machine"),
+            current: Box::new(ProjectionOperationState::MachineAdd(
+                MachineAddOperationState::Joining { joined_at },
+            )),
+            attempted: Box::new(ProjectionOperationState::MachineAdd(
+                MachineAddOperationState::Failed {
+                    failure: MachineAddFailure::JoinTokenExpired {
+                        expired_at: JoinTokenExpiresAt::try_new(600).expect("valid expiry"),
+                    },
+                },
+            )),
+        })
+    );
+}
+
+#[test]
+fn machine_add_readiness_failure_after_join_is_allowed() {
+    let joined_at =
+        ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
+    let joined = OperationStatus::MachineAdd {
+        id: operation_id("op_machine"),
+        node_id: node_id("node_2"),
+        name: machine_name("edge_2"),
+        gateway: FirstNodeGateway::Skip,
+        state: MachineAddOperationState::Joining { joined_at },
+        last_event_sequence: event_sequence(8),
+    };
+    let failure = MachineAddFailure::ReadinessFailed {
+        evidence: missing_heartbeat_readiness(),
+    };
+
+    assert_eq!(
+        project_operation_event(
+            &joined,
+            OperationEvent::MachineAddFailed {
+                operation_id: operation_id("op_machine"),
+                node_id: node_id("node_2"),
+                failure: failure.clone(),
+            },
+            event_sequence(9),
+        ),
+        Ok(OperationEventProjection::StatusChanged {
+            status: Box::new(OperationStatus::MachineAdd {
+                id: operation_id("op_machine"),
+                node_id: node_id("node_2"),
+                name: machine_name("edge_2"),
+                gateway: FirstNodeGateway::Skip,
+                state: MachineAddOperationState::Failed { failure },
+                last_event_sequence: event_sequence(9),
+            }),
+        })
+    );
+}
+
+#[test]
 fn machine_add_completed_before_join_is_rejected() {
     let pending = machine_add_pending_status();
 
@@ -514,6 +595,16 @@ fn machine_add_completed_before_join_is_rejected() {
             )),
         })
     );
+}
+
+fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
+    MachineReadinessEvidence {
+        nats_tunnel: MachineReadinessCheck::Confirmed,
+        heartbeat: MachineReadinessCheck::Missing {
+            reason: FailureMessage::try_new("heartbeat missing").expect("valid failure message"),
+        },
+        node_inspect: MachineReadinessCheck::Confirmed,
+    }
 }
 
 fn operation_id(value: &str) -> OperationId {

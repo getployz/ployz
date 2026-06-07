@@ -1,6 +1,6 @@
 use async_nats::jetstream;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
+use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
     OperationOwnershipStatus, OperationStatus,
@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 use super::keys::{
-    cert_submission_key, deploy_submission_key, machine_add_submission_key,
-    operation_owner_lease_key, operation_status_key,
+    cert_submission_key, deploy_submission_key, machine_add_join_token_key,
+    machine_add_submission_key, operation_owner_lease_key, operation_status_key,
 };
 use super::projection::{status_id, status_sequence};
 use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
@@ -42,6 +42,12 @@ pub struct StoredMachineAddSubmission {
     pub gateway: FirstNodeGateway,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredMachineAddJoinToken {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
 }
 
 impl AsyncNatsOperationStatusStore {
@@ -284,6 +290,92 @@ impl AsyncNatsOperationStatusStore {
                 }
             }
         }
+    }
+
+    pub async fn put_machine_add_join_token_if_absent(
+        &self,
+        fingerprint: &JoinTokenFingerprint,
+        token: &StoredMachineAddJoinToken,
+    ) -> Result<StoredMachineAddJoinToken, OperationStatusStoreError> {
+        if let Some(existing) = self.machine_add_join_token(fingerprint).await? {
+            if existing == *token {
+                return Ok(existing);
+            }
+            return Err(OperationStatusStoreError::CasConflict {
+                message: "join token fingerprint is already assigned".to_owned(),
+            });
+        }
+
+        let key = machine_add_join_token_key(fingerprint);
+        let payload =
+            serde_json::to_vec(token).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "machine add join token index create",
+            self.bucket.create(&key, payload.into()),
+        )
+        .await?
+        {
+            Ok(_) => Ok(token.clone()),
+            Err(error) => {
+                let Some(existing) = self.machine_add_join_token(fingerprint).await? else {
+                    return Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    });
+                };
+                if existing == *token {
+                    Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: "join token fingerprint is already assigned".to_owned(),
+                    })
+                }
+            }
+        }
+    }
+
+    pub async fn machine_add_submission_for_join_token(
+        &self,
+        fingerprint: &JoinTokenFingerprint,
+    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        let Some(index) = self.machine_add_join_token(fingerprint).await? else {
+            return Ok(None);
+        };
+        let Some(submission) = self.machine_add_submission(&index.idempotency_key).await? else {
+            return Err(OperationStatusStoreError::CasConflict {
+                message: "join token index points at a missing machine add submission".to_owned(),
+            });
+        };
+        if submission.operation_id != index.operation_id {
+            return Err(OperationStatusStoreError::CasConflict {
+                message: "join token index points at a different operation".to_owned(),
+            });
+        }
+        if submission.start_sequence.is_none() {
+            return Ok(None);
+        }
+
+        Ok(Some(submission))
+    }
+
+    async fn machine_add_join_token(
+        &self,
+        fingerprint: &JoinTokenFingerprint,
+    ) -> Result<Option<StoredMachineAddJoinToken>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "machine add join token index get",
+            self.bucket.get(machine_add_join_token_key(fingerprint)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeSubmission)
     }
 
     pub async fn record_machine_add_submission_sequence(

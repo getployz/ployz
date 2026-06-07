@@ -179,6 +179,12 @@ fn machine_add_error_from_submit_error(
                 failure: OperationSubmitClockFailure::BeforeUnixEpoch,
             },
         },
+        SubmitMachineAddRepositoryError::JoinTokenMismatch => MachineAddError::Unavailable {
+            operation_id,
+            source: MachineAddUnavailableSource::BootstrapMaterial {
+                failure: BootstrapMaterialFailure::IssueJoinToken,
+            },
+        },
         SubmitMachineAddRepositoryError::DuplicateSequenceMismatch { sequence } => {
             MachineAddError::DuplicateSequenceMismatch {
                 operation_id,

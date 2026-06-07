@@ -1,6 +1,7 @@
 //! Machine state and machine-add operation policy.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{fmt, num::NonZeroU64};
 
 use crate::ids::{NodeId, OperationId, SubjectToken, SubjectTokenError};
@@ -53,6 +54,11 @@ pub struct JoinTokenFingerprint(SubjectToken);
 impl JoinTokenFingerprint {
     pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
         Ok(Self(SubjectToken::try_new(value)?))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -170,6 +176,11 @@ impl RawJoinToken {
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+
+    pub fn fingerprint(&self) -> Result<JoinTokenFingerprint, SubjectTokenError> {
+        let digest = Sha256::digest(self.as_str().as_bytes());
+        JoinTokenFingerprint::try_new(format!("{digest:x}"))
     }
 }
 
@@ -308,6 +319,24 @@ pub enum MachineJoinOutcome {
     Rejected(MachineTransitionRejected),
 }
 
+pub fn redeem_pending_join_token(
+    join_token: &IssuedJoinToken,
+    presented: &JoinTokenFingerprint,
+    now: JoinTokenRedeemedAt,
+) -> Result<JoinTokenRedeemedAt, MachineAddFailure> {
+    if !join_token.matches(presented) {
+        return Err(MachineAddFailure::InvalidJoinToken);
+    }
+
+    if join_token.expires_at.unix_seconds() <= now.unix_seconds() {
+        return Err(MachineAddFailure::JoinTokenExpired {
+            expired_at: join_token.expires_at,
+        });
+    }
+
+    Ok(now)
+}
+
 #[must_use]
 pub fn redeem_join_token(
     operation: MachineAddOperationState,
@@ -320,21 +349,12 @@ pub fn redeem_join_token(
         });
     };
 
-    if !join_token.matches(presented) {
-        return MachineJoinOutcome::Failed(MachineAddOperationState::Failed {
-            failure: MachineAddFailure::InvalidJoinToken,
-        });
+    match redeem_pending_join_token(&join_token, presented, now) {
+        Ok(joined_at) => {
+            MachineJoinOutcome::Redeemed(MachineAddOperationState::Joining { joined_at })
+        }
+        Err(failure) => MachineJoinOutcome::Failed(MachineAddOperationState::Failed { failure }),
     }
-
-    if join_token.expires_at.unix_seconds() <= now.unix_seconds() {
-        return MachineJoinOutcome::Failed(MachineAddOperationState::Failed {
-            failure: MachineAddFailure::JoinTokenExpired {
-                expired_at: join_token.expires_at,
-            },
-        });
-    }
-
-    MachineJoinOutcome::Redeemed(MachineAddOperationState::Joining { joined_at: now })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

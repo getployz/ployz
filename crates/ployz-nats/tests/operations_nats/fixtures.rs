@@ -8,9 +8,7 @@ use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{CertId, OperationId, OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineName, RawJoinToken,
-};
+use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, MachineName, RawJoinToken};
 use ployz_core::ops::{
     CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt, RouteHostname,
@@ -107,16 +105,25 @@ pub(super) fn machine_add_submission(
         node_id: self::node_id(node_id),
         name: MachineName::try_new(machine_name).expect("valid machine name"),
         gateway: FirstNodeGateway::Skip,
-        join_token: issued_join_token("join_hash"),
         raw_join_token: raw_join_token("join_token"),
+        join_token: issued_join_token_for_raw("join_token"),
         idempotency_key: self::idempotency_key(idempotency_key),
     }
 }
 
-pub(super) fn issued_join_token(fingerprint: &str) -> IssuedJoinToken {
+pub(super) fn issued_join_token_for_raw(value: &str) -> IssuedJoinToken {
+    issued_join_token_for_raw_with_expiry(value, 700)
+}
+
+pub(super) fn issued_join_token_for_raw_with_expiry(
+    value: &str,
+    expires_at: u64,
+) -> IssuedJoinToken {
     IssuedJoinToken::new(
-        JoinTokenFingerprint::try_new(fingerprint).expect("valid join token fingerprint"),
-        JoinTokenExpiresAt::try_new(700).expect("valid join token expiry"),
+        raw_join_token(value)
+            .fingerprint()
+            .expect("test raw join token fingerprints"),
+        self::expires_at(expires_at),
     )
 }
 
@@ -211,6 +218,10 @@ pub(super) fn event_sequence(value: u64) -> EventSequence {
 
 pub(super) fn joined_at(value: u64) -> ployz_core::machine::JoinTokenRedeemedAt {
     ployz_core::machine::JoinTokenRedeemedAt::try_new(value).expect("valid join time")
+}
+
+pub(super) fn expires_at(value: u64) -> JoinTokenExpiresAt {
+    JoinTokenExpiresAt::try_new(value).expect("valid join token expiry")
 }
 
 pub(super) fn event_replay_limit(value: u16) -> OperationEventReplayLimit {

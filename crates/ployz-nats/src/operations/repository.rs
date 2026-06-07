@@ -1,7 +1,9 @@
 use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
-use ployz_core::machine::JoinTokenRedeemedAt;
+use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure};
+mod machine_join;
 mod submission;
 
+pub use machine_join::{MachineJoinRedemption, RedeemMachineJoinTokenError, RedeemedMachineJoin};
 pub use submission::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
@@ -135,9 +137,25 @@ impl AsyncNatsOperationRepository {
         node_id: &NodeId,
         joined_at: JoinTokenRedeemedAt,
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
-        self.record_operation_event(
+        self.record_operation_event_with_validator(
             operation_id,
             OperationEventAppend::machine_add_joined(operation_id, node_id, joined_at),
+            validate_stored_machine_add_joined_event,
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordMachineAddEventError::from_event_record)
+    }
+
+    pub async fn record_machine_add_failed(
+        &self,
+        operation_id: &OperationId,
+        node_id: &NodeId,
+        failure: MachineAddFailure,
+    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_add_failed(operation_id, node_id, failure),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -260,6 +278,25 @@ impl AsyncNatsOperationRepository {
         operation_id: &OperationId,
         attempted_append: OperationEventAppend,
     ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
+        self.record_operation_event_with_validator(
+            operation_id,
+            attempted_append,
+            validate_stored_operation_event,
+        )
+        .await
+    }
+
+    async fn record_operation_event_with_validator(
+        &self,
+        operation_id: &OperationId,
+        attempted_append: OperationEventAppend,
+        validate_stored: impl Fn(
+            &OperationId,
+            &OperationEvent,
+            &OperationEvent,
+            EventSequence,
+        ) -> Result<(), RecordOperationEventError>,
+    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
         let Some(current) = self
             .status_store
             .get(operation_id)
@@ -300,7 +337,7 @@ impl AsyncNatsOperationRepository {
         } else {
             attempted_event.clone()
         };
-        validate_stored_operation_event(operation_id, &attempted_event, &event, stored.sequence)?;
+        validate_stored(operation_id, &attempted_event, &event, stored.sequence)?;
 
         let current = self
             .status_store
@@ -494,6 +531,43 @@ fn validate_stored_operation_event(
         operation_id: operation_id.clone(),
         sequence,
         plan_mismatch: deploy_plan_mismatch(operation_id, attempted_event, stored_event),
+    })
+}
+
+fn validate_stored_machine_add_joined_event(
+    operation_id: &OperationId,
+    attempted_event: &OperationEvent,
+    stored_event: &OperationEvent,
+    sequence: EventSequence,
+) -> Result<(), RecordOperationEventError> {
+    if attempted_event == stored_event {
+        return Ok(());
+    }
+
+    if matches!(
+        (attempted_event, stored_event),
+        (
+            OperationEvent::MachineAddJoined {
+                operation_id: attempted_operation_id,
+                node_id: attempted_node_id,
+                ..
+            },
+            OperationEvent::MachineAddJoined {
+                operation_id: stored_operation_id,
+                node_id: stored_node_id,
+                ..
+            },
+        ) if attempted_operation_id == operation_id
+            && stored_operation_id == operation_id
+            && attempted_node_id == stored_node_id
+    ) {
+        return Ok(());
+    }
+
+    Err(RecordOperationEventError::StoredEventMismatch {
+        operation_id: operation_id.clone(),
+        sequence,
+        plan_mismatch: false,
     })
 }
 

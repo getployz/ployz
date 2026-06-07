@@ -521,22 +521,54 @@ fn machine_add_transition_allowed(
     match (current, attempted) {
         (
             MachineAddOperationState::Pending { .. },
-            MachineAddOperationState::Joining { .. }
-            | MachineAddOperationState::Failed { .. }
-            | MachineAddOperationState::Cancelled { .. },
+            MachineAddOperationState::Joining { .. } | MachineAddOperationState::Cancelled { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },
-            MachineAddOperationState::Completed
-            | MachineAddOperationState::Failed { .. }
-            | MachineAddOperationState::Cancelled { .. },
+            MachineAddOperationState::Completed | MachineAddOperationState::Cancelled { .. },
         ) => true,
+        (
+            MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+            MachineAddOperationState::Failed { failure },
+        ) => machine_add_failure_allowed(current, failure),
         (
             MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
             MachineAddOperationState::Pending { .. },
         )
         | (MachineAddOperationState::Joining { .. }, MachineAddOperationState::Joining { .. })
         | (MachineAddOperationState::Pending { .. }, MachineAddOperationState::Completed)
+        | (
+            MachineAddOperationState::Completed
+            | MachineAddOperationState::Failed { .. }
+            | MachineAddOperationState::Cancelled { .. },
+            _,
+        ) => false,
+    }
+}
+
+fn machine_add_failure_allowed(
+    current: &MachineAddOperationState,
+    failure: &crate::machine::MachineAddFailure,
+) -> bool {
+    match (current, failure) {
+        (
+            MachineAddOperationState::Pending { .. },
+            crate::machine::MachineAddFailure::InvalidJoinToken
+            | crate::machine::MachineAddFailure::JoinTokenExpired { .. },
+        )
+        | (
+            MachineAddOperationState::Joining { .. },
+            crate::machine::MachineAddFailure::ReadinessFailed { .. },
+        ) => true,
+        (
+            MachineAddOperationState::Pending { .. },
+            crate::machine::MachineAddFailure::ReadinessFailed { .. },
+        )
+        | (
+            MachineAddOperationState::Joining { .. },
+            crate::machine::MachineAddFailure::InvalidJoinToken
+            | crate::machine::MachineAddFailure::JoinTokenExpired { .. },
+        )
         | (
             MachineAddOperationState::Completed
             | MachineAddOperationState::Failed { .. }

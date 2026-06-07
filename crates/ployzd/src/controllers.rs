@@ -4,9 +4,7 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineName, RawJoinToken,
-};
+use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, MachineName, RawJoinToken};
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
     OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
@@ -20,7 +18,6 @@ use ployz_nats::operations::{
     RecordDeployEvidenceError, RecordDeployTransitionError, ReplayOperationEventsError,
     StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
 };
-use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::operation_lease::OperationLeasePolicy;
@@ -173,7 +170,8 @@ impl OperationControllers {
         let raw_join_token =
             RawJoinToken::try_new(format!("join_{}_{}", operation_id.as_str(), nuid::next()))
                 .map_err(|_| MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial)?;
-        let fingerprint = JoinTokenFingerprint::try_new(sha256_hex(raw_join_token.as_str()))
+        let fingerprint = raw_join_token
+            .fingerprint()
             .map_err(|_| MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial)?;
         let expires_at = JoinTokenExpiresAt::try_new(
             now.unix_seconds()
@@ -327,11 +325,6 @@ fn current_lease_time() -> Result<OperationLeaseExpiresAt, OperationLeaseClockEr
     OperationLeaseExpiresAt::try_new(seconds).map_err(|error| OperationLeaseClockError {
         message: error.to_string(),
     })
-}
-
-fn sha256_hex(value: &str) -> String {
-    let digest = Sha256::digest(value.as_bytes());
-    format!("{digest:x}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

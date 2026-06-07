@@ -11,8 +11,8 @@ pub use events::{
     OperationEventReplayReadError, StoredOperationEvent,
 };
 pub use keys::{
-    cert_submission_key, deploy_submission_key, machine_add_submission_key,
-    operation_owner_lease_key, operation_status_key,
+    cert_submission_key, deploy_submission_key, machine_add_join_token_key,
+    machine_add_submission_key, operation_owner_lease_key, operation_status_key,
 };
 pub use ployz_core::ops::{
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
@@ -21,14 +21,16 @@ pub use ployz_core::ops::{
 pub use repository::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     AsyncNatsOperationRepository, CertOperationSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission, OperationLeaseClaim, OperationLeaseClaimError,
-    RecordCertEventError, RecordDeployEvidenceError, RecordDeployTransitionError,
-    RecordLifecycleEventError, RecordMachineAddEventError, ReplayOperationEventsError,
-    SubmitCertError, SubmitDeployError, SubmitMachineAddError,
+    MachineAddOperationSubmission, MachineJoinRedemption, OperationLeaseClaim,
+    OperationLeaseClaimError, RecordCertEventError, RecordDeployEvidenceError,
+    RecordDeployTransitionError, RecordLifecycleEventError, RecordMachineAddEventError,
+    RedeemMachineJoinTokenError, RedeemedMachineJoin, ReplayOperationEventsError, SubmitCertError,
+    SubmitDeployError, SubmitMachineAddError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
-    OperationStatusWrite, StoredCertSubmission, StoredDeploySubmission, StoredMachineAddSubmission,
+    OperationStatusWrite, StoredCertSubmission, StoredDeploySubmission, StoredMachineAddJoinToken,
+    StoredMachineAddSubmission,
 };
 
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";
