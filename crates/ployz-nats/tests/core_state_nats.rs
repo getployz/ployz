@@ -1,10 +1,12 @@
 use async_nats::jetstream;
 use ployz_core::ids::{RevisionId, ServiceId};
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{
+    ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveRouteStateKey,
     ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService,
+    ExpectedActiveRoute, ExpectedActiveRouteRevision, ExpectedActiveService,
 };
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
 
 #[tokio::test]
@@ -309,11 +311,213 @@ async fn missing_active_service_state_returns_none() {
     );
 }
 
+#[tokio::test]
+async fn active_route_state_round_trips_through_kv_core() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let target = route_target("API.example.com", 443);
+
+    let commit = store
+        .commit_active_route(&route_commit_request(
+            &target,
+            ExpectedActiveRoute::Absent,
+            "svc_api",
+            "rev_1",
+        ))
+        .await
+        .expect("route state stores");
+    assert!(matches!(commit, ActiveRouteCommit::Stored { .. }));
+
+    assert_eq!(
+        store
+            .active_route(&target)
+            .await
+            .expect("active route loads"),
+        Some(ActiveRouteState {
+            target,
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_1"),
+        })
+    );
+}
+
+#[tokio::test]
+async fn active_route_commit_rejects_stale_previous_revision() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let target = route_target("api.example.com", 443);
+
+    assert!(matches!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::Absent,
+                "svc_api",
+                "rev_1",
+            ))
+            .await
+            .expect("first route commit stores"),
+        ActiveRouteCommit::Stored { .. }
+    ));
+    assert!(matches!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                    service_id: service_id("svc_api"),
+                    revision_id: revision_id("rev_1"),
+                }),
+                "svc_api",
+                "rev_2",
+            ))
+            .await
+            .expect("second route commit stores"),
+        ActiveRouteCommit::Stored { .. }
+    ));
+
+    assert_eq!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                    service_id: service_id("svc_api"),
+                    revision_id: revision_id("rev_1"),
+                }),
+                "svc_api",
+                "rev_3",
+            ))
+            .await
+            .expect("stale route commit is classified"),
+        ActiveRouteCommit::ActiveRouteChanged {
+            expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                service_id: service_id("svc_api"),
+                revision_id: revision_id("rev_1"),
+            }),
+            current: Some(active_route_state(&target, "svc_api", "rev_2")),
+            attempted: active_route_state(&target, "svc_api", "rev_3"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn active_route_same_target_revision_is_idempotent() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let target = route_target("api.example.com", 443);
+
+    assert!(matches!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::Absent,
+                "svc_api",
+                "rev_1",
+            ))
+            .await
+            .expect("first route commit stores"),
+        ActiveRouteCommit::Stored { .. }
+    ));
+
+    assert_eq!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::Absent,
+                "svc_api",
+                "rev_1",
+            ))
+            .await
+            .expect("same route commit is idempotent"),
+        ActiveRouteCommit::AlreadyCommitted {
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_1"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn missing_active_route_state_returns_none() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+
+    assert_eq!(
+        store
+            .active_route(&route_target("missing.example.com", 443))
+            .await
+            .expect("missing route lookup succeeds"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn active_route_state_rejects_payload_for_wrong_route_key() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let target = route_target("api.example.com", 443);
+    let other_target = route_target("www.example.com", 443);
+    let key = ActiveRouteStateKey::from_target(&target);
+    let bucket = nats
+        .jetstream
+        .get_key_value(KV_CORE_BUCKET)
+        .await
+        .expect("open test KV_CORE bucket");
+
+    let wrong_payload = serde_json::to_vec(&ActiveRouteState {
+        target: other_target.clone(),
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_1"),
+    })
+    .expect("encode wrong route state");
+    bucket
+        .put(key.as_str(), wrong_payload.into())
+        .await
+        .expect("write corrupt route state");
+
+    let error = store
+        .active_route(&target)
+        .await
+        .expect_err("wrong route payload is rejected");
+    match error {
+        ActiveRouteReadError::CorruptActiveRouteState {
+            key: actual_key,
+            expected_target,
+            actual_target,
+        } => {
+            assert_eq!(actual_key, key.as_str());
+            assert_eq!(expected_target, target);
+            assert_eq!(actual_target, other_target);
+        }
+        other @ (ActiveRouteReadError::Decode(_)
+        | ActiveRouteReadError::Get { .. }
+        | ActiveRouteReadError::Timeout { .. }) => {
+            panic!("unexpected error: {other:?}");
+        }
+    }
+}
+
 #[test]
 fn active_service_state_key_matches_kv_core_path() {
     assert_eq!(
         ActiveServiceStateKey::from_service_id(&service_id("svc_api")).as_str(),
         "services.svc_api"
+    );
+}
+
+#[test]
+fn active_route_state_key_matches_kv_core_path() {
+    assert_eq!(
+        ActiveRouteStateKey::from_target(&route_target("API.example.com", 443)).as_str(),
+        "routes.6170692e6578616d706c652e636f6d.443"
     );
 }
 
@@ -350,6 +554,26 @@ fn revision_id(value: &str) -> RevisionId {
     RevisionId::try_new(value).expect("valid revision id")
 }
 
+fn route_target(hostname: &str, port: u16) -> RouteTarget {
+    RouteTarget::try_new(route_hostname(hostname), route_port(port))
+}
+
+fn route_hostname(value: &str) -> RouteHostname {
+    RouteHostname::try_new(value).expect("valid route hostname")
+}
+
+fn route_port(value: u16) -> RoutePort {
+    RoutePort::try_new(value).expect("valid route port")
+}
+
+fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> ActiveRouteState {
+    ActiveRouteState {
+        target: target.clone(),
+        service_id: service_id(service),
+        revision_id: revision_id(revision),
+    }
+}
+
 fn commit_request(
     service_id: &ServiceId,
     expected_current: ExpectedActiveService,
@@ -359,5 +583,19 @@ fn commit_request(
         service_id: service_id.clone(),
         expected_current,
         target_revision: target_revision.clone(),
+    }
+}
+
+fn route_commit_request(
+    target: &RouteTarget,
+    expected_current: ExpectedActiveRoute,
+    service: &str,
+    revision: &str,
+) -> ActiveRouteCommitRequest {
+    ActiveRouteCommitRequest {
+        target: target.clone(),
+        expected_current,
+        service_id: service_id(service),
+        revision_id: revision_id(revision),
     }
 }

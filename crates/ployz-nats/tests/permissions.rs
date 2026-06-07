@@ -5,8 +5,8 @@ use ployz_core::subjects::{
     OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
 };
 use ployz_nats::permissions::{
-    NatsPermissionProfile, ResponsePermission, active_service_state_kv_write_scope,
-    lock_kv_write_scope, operation_status_kv_write_scope,
+    NatsPermissionProfile, ResponsePermission, active_route_state_kv_write_scope,
+    active_service_state_kv_write_scope, lock_kv_write_scope, operation_status_kv_write_scope,
 };
 
 #[test]
@@ -44,6 +44,7 @@ fn controller_credential_renders_owner_and_node_service_scopes() {
             JOBS_STREAM_SUBJECT.to_owned(),
             AUDIT_STREAM_SUBJECT.to_owned(),
             active_service_state_kv_write_scope(),
+            active_route_state_kv_write_scope(),
             operation_status_kv_write_scope(),
             lock_kv_write_scope(),
         ]

@@ -3,7 +3,7 @@
 use crate::kv::KV_CORE_BUCKET;
 use crate::operations::KV_OPS_BUCKET;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::ACTIVE_SERVICE_STATE_PREFIX;
+use ployz_core::state::{ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX};
 use ployz_core::subjects::{
     API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT, JOBS_STREAM_SUBJECT, NODE_SERVICE_SCOPE,
     OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
@@ -18,6 +18,11 @@ const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 #[must_use]
 pub fn active_service_state_kv_write_scope() -> String {
     format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_SERVICE_STATE_PREFIX}.*")
+}
+
+#[must_use]
+pub fn active_route_state_kv_write_scope() -> String {
+    format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_ROUTE_STATE_PREFIX}.*.*")
 }
 
 #[must_use]
@@ -57,6 +62,7 @@ impl NatsPermissionProfile {
                     JOBS_STREAM_SUBJECT.to_owned(),
                     AUDIT_STREAM_SUBJECT.to_owned(),
                     active_service_state_kv_write_scope(),
+                    active_route_state_kv_write_scope(),
                     operation_status_kv_write_scope(),
                     lock_kv_write_scope(),
                 ]),

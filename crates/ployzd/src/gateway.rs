@@ -3,6 +3,7 @@
 use ployz_core::ids::{ContainerId, NodeId, RevisionId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
 use ployz_core::ops::RouteTarget;
+use ployz_core::state::ActiveRouteState;
 
 use crate::projection::ProjectionState;
 
@@ -13,6 +14,16 @@ pub struct GatewayRoute {
     pub target: RouteTarget,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
+}
+
+impl From<ActiveRouteState> for GatewayRoute {
+    fn from(state: ActiveRouteState) -> Self {
+        Self {
+            target: state.target,
+            service_id: state.service_id,
+            revision_id: state.revision_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
