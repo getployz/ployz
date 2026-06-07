@@ -244,29 +244,26 @@ commands over iroh.
 ### Production-Shaped Acceptance
 
 - R39. The final MVP proof runs on two real Hetzner machines created through
-  the Hetzner API or CLI, not only on localhost or fake process harnesses.
-- R40. A user can initialize one machine, then run one command from the local
-  developer machine that SSHes to a second machine, installs Keeper, and joins
-  it to the cluster.
+  the Hetzner API or CLI. Hetzner is only disposable host plumbing.
+- R40. The acceptance script proves the same product commands a user would run:
+  initialize the first machine, add a second machine, deploy a smoke service,
+  inspect the operation, and clean up the hosts.
 - R41. The acceptance path may cut corners on artifact distribution by using a
-  locally built binary, pre-staged release artifact, or explicit source path,
-  but Keeper must still install and supervise the same production-shaped role
-  services.
-- R42. The actual data plane is production-ish: supervised WireGuard networking
-  connects nodes, containers can reach containers on other nodes over the
-  private network, and service networking does not depend on `ployzd control`
-  staying alive.
+  locally built binary, pre-staged release artifact, or explicit source path.
+  It must not add provider abstractions, provider-specific operation states, or
+  extra Hetzner-only orchestration.
+- R42. The actual substrate is what is under test: NATS-over-iroh connectivity,
+  independently supervised runtime processes, the eBPF/WireGuard container data
+  plane, and simple ingress. Provider setup is not under test beyond SSH access.
 - R43. Reuse the old eBPF/WireGuard dataplane work from git history as a hard
-  requirement for container networking. Adapt the old dataplane into the
-  NATS/Keeper shape rather than rebuilding container networking from scratch or
-  replacing it with a purely user-space shortcut.
+  requirement for container networking. The proof can be thin, but the data
+  plane must be real.
 - R44. Deploy placement proves multi-node execution by running service
-  containers on both machines and preserving operation evidence when a node
-  fails to prepare networking, start a container, or become reachable.
-- R45. Pingora ingress is good enough for the acceptance proof: traffic may
-  enter either node and route to the node running the container. The gateway
-  implementation can be intentionally simple because it will be redesigned
-  later, but it must exercise the real cross-node data-plane path.
+  containers on both machines and preserving operation evidence when substrate
+  setup, container start, or node reachability fails.
+- R45. Ingress only needs to prove that traffic can enter a public node and
+  reach the smoke service over the real cross-node path. Do not build a
+  provider-aware ingress acceptance framework.
 
 ### Simplicity And Readability
 
@@ -1685,16 +1682,16 @@ Pipeline finish:
 ### H0. Hetzner Host Smoke
 
 - **Goal:** Keep Hetzner as thin host plumbing: create two fresh machines,
-  prove SSH readiness, and destroy them. This proves nothing about Ployz beyond
-  "we can get disposable Linux hosts."
+  prove SSH readiness, and destroy them. This proves only that we can get
+  disposable Linux hosts for the product proof.
 - **Requirements:** R39, R41
 - **Dependencies:** U9
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
 - **Approach:** Use the official `hcloud` CLI. The script owns deterministic
-  names, cleanup labels, SSH readiness, and teardown only. Do not add
-  Hetzner-specific Rust, provider abstractions, readiness models, or operation
+  names, cleanup labels, SSH readiness, and teardown only. No Hetzner-specific
+  Rust. No provider abstractions. No provider readiness model. No operation
   types.
 - **Test scenarios:**
   - Script refuses to run without an explicit Hetzner token and SSH key.
@@ -1712,12 +1709,12 @@ Pipeline finish:
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
-- **Approach:** Compose product commands into the host smoke. The script
-  provisions two machines, runs first-node install, adds the second machine,
+- **Approach:** Compose product commands into the host smoke. The script creates
+  hosts, SSHes in, runs the product install path, adds the second machine,
   deploys the smoke service, verifies NATS-over-iroh, verifies the required
   eBPF/WireGuard private data plane, verifies ingress, and destroys resources.
-  The script stays glue: no provider policy, no provider lifecycle model, no
-  extra orchestration layer. If a check matters after Hetzner is removed, it
+  The script is not an orchestrator. It is a shell wrapper around real product
+  commands plus host cleanup. If a check matters after Hetzner is removed, it
   belongs in the product command or operation events; otherwise it stays in the
   throwaway script.
 - **Test scenarios:**
@@ -1869,11 +1866,10 @@ over the operation contract harness. The second proof should be U0-U4a over
 real local NATS with operation owner leases. The third proof should add U11 and
 prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
-should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with
-`ployz.sh` installing keeper and keeper installing/restarting `ployzd` role
-units. The production-shaped proof is H0-H1 on two fresh Hetzner machines:
-the harness creates hosts, real product commands install the cluster, the
-second node joins, the old eBPF/WireGuard data plane is adapted into the new
-code path, deploy places containers on both nodes, and Pingora ingress works
-from either public node address. Artifact download may be shortcut; the
+should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
+real install path on one machine. The production-shaped proof is H0-H1 on two
+fresh Hetzner machines: the harness creates hosts, real product commands
+install the cluster, the second node joins, the old eBPF/WireGuard data plane
+is adapted into the new code path, deploy places containers on both nodes, and
+ingress reaches the smoke service. Artifact download may be shortcut; the
 eBPF/WireGuard data plane should not be.

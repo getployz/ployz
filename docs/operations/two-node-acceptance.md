@@ -1,8 +1,11 @@
 # Two-Node Product Smoke On Hetzner
 
-This runbook is for proving Ployz on real substrate. Hetzner is not a product
-abstraction here; it only gives us two fresh Linux machines, public IPs, SSH,
-and cleanup.
+This runbook proves Ployz on real machines. Hetzner is not part of the product
+shape; it only gives us two fresh Linux hosts, public IPs, SSH, and cleanup.
+
+The rule is blunt: if code would still matter after replacing Hetzner with a
+homelab box or another VPS provider, it belongs in Ployz. If it only exists to
+create or delete Hetzner servers, it stays in this shell harness.
 
 The acceptance bar is:
 
@@ -112,6 +115,10 @@ The complete acceptance flow proves the product on those hosts:
 Anything that only exists because the machines came from Hetzner stays in the
 script. Anything that should work on a user VPS, homelab server, or another
 cloud must be expressed through normal Ployz commands and operation events.
+
+The script must not grow a second orchestration model. It should run product
+commands, wait for their visible operation results, print useful diagnostics on
+failure, and clean up the hosts.
 
 ## First-Node Install Contract
 
