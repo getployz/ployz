@@ -2,16 +2,22 @@ use std::path::PathBuf;
 use std::{env, fs};
 
 use ployz_core::ids::NodeId;
+use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
     KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::cli::load_startup;
+use ployz_keeper::executor::{
+    KeeperPlanFailure, KeeperPlanTerminal, KeeperRecordFailure, KeeperStepEffects, KeeperStepEvent,
+    KeeperStepRecorder, execute_keeper_plan,
+};
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinToken, KeeperJoinTarget,
-    KeeperStep, KeeperStepFailure, KeeperStepFailureReason, NonEmptyRoleSet, RedactedJoinMaterial,
-    RoleSetError, bootstrap_script_plan, first_node_install_plan, keeper_join_plan,
+    KeeperStep, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
+    RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, first_node_install_plan,
+    keeper_join_plan,
 };
 use ployz_keeper::systemd::SupervisorUnitTarget;
 
@@ -206,12 +212,162 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
 fn keeper_step_failure_is_bootstrap_scoped_and_typed() {
     let step = KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper);
     assert_eq!(
-        KeeperStepFailure::new(step.clone(), KeeperStepFailureReason::SupervisorStartFailed),
+        KeeperStepFailure::from_step(&step, failure_message("simulated supervisor start failure")),
         KeeperStepFailure {
-            step,
+            step: KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
             reason: KeeperStepFailureReason::SupervisorStartFailed,
-        }
+            message: failure_message("simulated supervisor start failure"),
+        },
     );
+}
+
+#[test]
+fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
+    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(),
+        FirstNodeGateway::Skip,
+    ));
+    let mut effects = RecordingEffects::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let rendered = format!("{execution:?}");
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert!(rendered.contains("/usr/local/bin/ployzd"));
+    assert!(rendered.contains(PLOYZD_DIGEST));
+    assert_eq!(effects.calls.len(), plan.steps().len());
+    assert_eq!(recorder.events, execution.events);
+    let [first, second, ..] = effects.calls.as_slice() else {
+        panic!("plan records at least two calls");
+    };
+    assert_eq!(
+        *first,
+        KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd)
+    );
+    assert_eq!(
+        *second,
+        KeeperStepLabel::VerifyArtifact(ArtifactTarget::Ployzd(ployzd_artifact()))
+    );
+    assert_eq!(
+        execution.events,
+        plan.steps()
+            .iter()
+            .flat_map(|step| {
+                let label = KeeperStepLabel::from_step(step);
+                [
+                    KeeperStepEvent::Started {
+                        step: label.clone(),
+                    },
+                    KeeperStepEvent::Succeeded { step: label },
+                ]
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn keeper_plan_executor_stops_on_first_failed_step() {
+    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact()));
+    let keeper_target = ArtifactTarget::Keeper(keeper_artifact());
+    let mut effects = RecordingEffects {
+        fail_on: Some(KeeperStepLabel::InstallArtifact(keeper_target.clone())),
+        fail_message: "simulated artifact install failure",
+        ..RecordingEffects::default()
+    };
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let failure = KeeperStepFailure {
+        step: KeeperStepLabel::InstallArtifact(keeper_target.clone()),
+        reason: KeeperStepFailureReason::ArtifactInstallFailed,
+        message: failure_message("simulated artifact install failure"),
+    };
+
+    assert_eq!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(failure.clone()))
+    );
+    assert_eq!(
+        effects.calls,
+        vec![
+            KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+            KeeperStepLabel::VerifyArtifact(keeper_target.clone()),
+            KeeperStepLabel::InstallArtifact(keeper_target),
+        ]
+    );
+    assert_eq!(
+        execution.events.last(),
+        Some(&KeeperStepEvent::Failed(failure))
+    );
+    assert_eq!(recorder.events, execution.events);
+}
+
+#[test]
+fn keeper_plan_executor_redacts_join_token_from_progress() {
+    let plan = keeper_join_plan(KeeperJoinTarget::new(
+        JoinToken::try_new("join_secret").expect("valid join token"),
+        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
+        ployzd_artifact(),
+        NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
+            .expect("non-empty role set"),
+    ));
+    let mut effects = RecordingEffects {
+        fail_on: Some(KeeperStepLabel::RedeemJoinToken),
+        fail_message: "simulated join token redeem failure",
+        ..RecordingEffects::default()
+    };
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let rendered = format!("{execution:?}");
+
+    assert!(matches!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::RedeemJoinToken,
+            reason: KeeperStepFailureReason::JoinTokenRedeemFailed,
+            message,
+        }))
+            if message.as_str() == "simulated join token redeem failure"
+    ));
+    assert!(!rendered.contains("join_secret"));
+    assert_eq!(
+        effects.redeemed_tokens,
+        vec![JoinToken::try_new("join_secret").expect("valid join token")]
+    );
+}
+
+#[test]
+fn keeper_plan_executor_records_started_before_applying_step() {
+    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact()));
+    let failed_event = KeeperStepEvent::Started {
+        step: KeeperStepLabel::VerifyArtifact(ArtifactTarget::Keeper(keeper_artifact())),
+    };
+    let mut effects = RecordingEffects::default();
+    let mut recorder = RecordingRecorder {
+        fail_on: Some(failed_event.clone()),
+        fail_message: "simulated event recorder failure",
+        ..RecordingRecorder::default()
+    };
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Record(KeeperRecordFailure {
+            event: failed_event,
+            message: failure_message("simulated event recorder failure"),
+        }))
+    );
+    assert_eq!(
+        effects.calls,
+        vec![KeeperStepLabel::VerifyHost(
+            HostPrerequisite::LinuxRootSystemd
+        )]
+    );
+    assert_eq!(execution.events, recorder.events);
 }
 
 #[test]
@@ -260,6 +416,60 @@ fn artifact_install_paths_must_be_absolute() {
     );
 }
 
+struct RecordingEffects {
+    calls: Vec<KeeperStepLabel>,
+    redeemed_tokens: Vec<JoinToken>,
+    fail_on: Option<KeeperStepLabel>,
+    fail_message: &'static str,
+}
+
+impl RecordingEffects {
+    fn record(&mut self, label: KeeperStepLabel) -> Result<(), FailureMessage> {
+        self.calls.push(label.clone());
+        if self.fail_on.as_ref() == Some(&label) {
+            return Err(failure_message(self.fail_message));
+        }
+        Ok(())
+    }
+}
+
+impl KeeperStepEffects for RecordingEffects {
+    fn apply_step(&mut self, step: &KeeperStep) -> Result<(), FailureMessage> {
+        if let KeeperStep::RedeemJoinToken(token) = step {
+            self.redeemed_tokens.push(token.clone());
+        }
+        self.record(KeeperStepLabel::from_step(step))
+    }
+}
+
+#[derive(Default)]
+struct RecordingRecorder {
+    events: Vec<KeeperStepEvent>,
+    fail_on: Option<KeeperStepEvent>,
+    fail_message: &'static str,
+}
+
+impl KeeperStepRecorder for RecordingRecorder {
+    fn record_step_event(&mut self, event: &KeeperStepEvent) -> Result<(), FailureMessage> {
+        if self.fail_on.as_ref() == Some(event) {
+            return Err(failure_message(self.fail_message));
+        }
+        self.events.push(event.clone());
+        Ok(())
+    }
+}
+
+impl Default for RecordingEffects {
+    fn default() -> Self {
+        Self {
+            calls: Vec::new(),
+            redeemed_tokens: Vec::new(),
+            fail_on: None,
+            fail_message: "simulated keeper step failure",
+        }
+    }
+}
+
 fn keeper_artifact() -> KeeperArtifactTarget {
     KeeperArtifactTarget::new(
         version("0.1.0"),
@@ -290,6 +500,10 @@ fn source(value: &str) -> ArtifactSource {
 
 fn digest(value: &str) -> Sha256Digest {
     Sha256Digest::try_new(value).expect("valid artifact digest")
+}
+
+fn failure_message(value: &str) -> FailureMessage {
+    FailureMessage::try_new(value).expect("valid failure message")
 }
 
 fn node_id(value: &str) -> NodeId {

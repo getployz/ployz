@@ -3,6 +3,7 @@
 use std::fmt;
 
 use ployz_core::ids::NodeId;
+use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
@@ -65,6 +66,36 @@ pub enum KeeperStep {
     RestartSupervisorUnit(SupervisorUnitTarget),
     RedeemJoinToken(JoinToken),
     StoreJoinMaterial(RedactedJoinMaterial),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeeperStepLabel {
+    VerifyHost(HostPrerequisite),
+    VerifyArtifact(ArtifactTarget),
+    InstallArtifact(ArtifactTarget),
+    WriteSupervisorUnit(SupervisorUnitTarget),
+    StartSupervisorUnit(SupervisorUnitTarget),
+    RestartSupervisorUnit(SupervisorUnitTarget),
+    RedeemJoinToken,
+    StoreJoinMaterial(RedactedJoinMaterial),
+}
+
+impl KeeperStepLabel {
+    #[must_use]
+    pub fn from_step(step: &KeeperStep) -> Self {
+        match step {
+            KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
+            KeeperStep::VerifyArtifact(target) => Self::VerifyArtifact(target.clone()),
+            KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
+            KeeperStep::WriteSupervisorUnit(target) => Self::WriteSupervisorUnit(target.clone()),
+            KeeperStep::StartSupervisorUnit(target) => Self::StartSupervisorUnit(target.clone()),
+            KeeperStep::RestartSupervisorUnit(target) => {
+                Self::RestartSupervisorUnit(target.clone())
+            }
+            KeeperStep::RedeemJoinToken(_) => Self::RedeemJoinToken,
+            KeeperStep::StoreJoinMaterial(material) => Self::StoreJoinMaterial(material.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,24 +303,46 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepFailure {
-    pub step: KeeperStep,
+    pub step: KeeperStepLabel,
     pub reason: KeeperStepFailureReason,
+    pub message: FailureMessage,
 }
 
 impl KeeperStepFailure {
     #[must_use]
-    pub const fn new(step: KeeperStep, reason: KeeperStepFailureReason) -> Self {
-        Self { step, reason }
+    pub fn from_step(step: &KeeperStep, message: FailureMessage) -> Self {
+        Self {
+            step: KeeperStepLabel::from_step(step),
+            reason: KeeperStepFailureReason::from_step(step),
+            message,
+        }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeeperStepFailureReason {
     HostPrerequisiteFailed,
     ArtifactVerificationFailed,
     ArtifactInstallFailed,
     SupervisorWriteFailed,
     SupervisorStartFailed,
+    SupervisorRestartFailed,
     JoinTokenRedeemFailed,
     JoinMaterialStoreFailed,
+}
+
+impl KeeperStepFailureReason {
+    #[must_use]
+    pub const fn from_step(step: &KeeperStep) -> Self {
+        match step {
+            KeeperStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
+            KeeperStep::VerifyArtifact(_) => Self::ArtifactVerificationFailed,
+            KeeperStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
+            KeeperStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
+            KeeperStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
+            KeeperStep::RestartSupervisorUnit(_) => Self::SupervisorRestartFailed,
+            KeeperStep::RedeemJoinToken(_) => Self::JoinTokenRedeemFailed,
+            KeeperStep::StoreJoinMaterial(_) => Self::JoinMaterialStoreFailed,
+        }
+    }
 }

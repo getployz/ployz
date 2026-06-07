@@ -1658,22 +1658,29 @@ Pipeline finish:
 
 ### H0. Disposable Two-Node Product Proof
 
-- **Goal:** Prove the actual product on two disposable hosts with one
-  repeatable command.
+- **Goal:** Prove install, machine add, and deploy on two disposable hosts with
+  one repeatable command.
 - **Requirements:** R39-R45
 - **Dependencies:** U1-U9a, U11
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
-- **Approach:** Use the official `hcloud` CLI and plain SSH. The script owns
-  deterministic names, cleanup labels, SSH readiness, command execution,
-  diagnostics, and teardown. After SSH is ready, it runs real product commands:
-  install first node, initialize the cluster, add the second machine, deploy the
-  smoke service, inspect/watch the operation, hit one ingress URL, and destroy
-  resources. The script is not an orchestrator and contains no product policy.
-  NATS-over-iroh, the required eBPF/WireGuard data plane, placement, health, and
-  failure evidence must be visible through normal product commands, operation
-  events, and observed state.
+- **Approach:** Use the official `hcloud` CLI and plain SSH only to create two
+  disposable Linux boxes and run commands on them. The script is not a product
+  component and not an orchestrator. It provisions hosts, waits for SSH, runs
+  the same install and product commands a user would run, prints diagnostics on
+  failure, and tears the hosts down. Hetzner-specific behavior ends at host
+  lifecycle and SSH readiness.
+
+  The proof is deliberately narrow: after the boxes exist, the product must
+  install itself, initialize the first node, add the second machine, connect
+  NATS over iroh, exercise the required eBPF/WireGuard data plane, deploy a
+  smoke service, expose it through ingress, and report operation evidence
+  through normal Ployz commands.
+
+  Do not add Hetzner-specific Rust, provider abstractions, provider readiness
+  state, provider operation types, provider install policy, or provider-aware
+  controller code for H0.
 - **Test scenarios:**
   - Script refuses to run without an explicit Hetzner token and SSH key.
   - Failed host creation or SSH readiness destroys both servers or prints a
@@ -1684,7 +1691,9 @@ Pipeline finish:
   - Failure prints the active operation id, affected nodes, cleanup command,
     and retained evidence locations.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
-  end-to-end against two fresh Hetzner machines.
+  end-to-end against two fresh Hetzner machines. Passing H0 means the substrate
+  and product commands work on real hosts; it does not create a Hetzner product
+  surface.
 
 ---
 

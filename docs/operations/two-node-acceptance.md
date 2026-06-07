@@ -1,4 +1,4 @@
-# Disposable Two-Node Product Proof On Hetzner
+# Disposable Two-Node Product Proof
 
 This runbook proves Ployz on real machines. Hetzner is not part of the product
 shape; it only gives us two fresh Linux hosts, public IPs, SSH, and cleanup.
@@ -17,13 +17,24 @@ The proof bar is:
 - hit the smoke service through ingress,
 - destroy the machines.
 
-## Disposable Host Setup
+## Harness Boundary
 
 The script provisions two machines, proves SSH readiness, runs real product
-commands, prints product diagnostics, and cleans up. The Hetzner parts should
-stay provider glue. Do not add Hetzner-specific Rust code unless the actual
-product needs it. Do not add Hetzner-specific operation states, readiness
-models, or provider abstractions.
+commands, prints product diagnostics, and cleans up.
+
+Hetzner-specific behavior stops at:
+
+- create server,
+- tag server for cleanup,
+- wait for SSH,
+- run shell commands,
+- destroy server.
+
+Everything after SSH is ready must be normal Ployz install/product behavior.
+Do not add Hetzner-specific Rust code, provider abstractions, provider
+readiness models, provider operation states, or provider-aware install policy.
+
+## Disposable Host Setup
 
 Required tools:
 
