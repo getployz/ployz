@@ -1,12 +1,11 @@
 # Disposable Product Smoke Proof
 
-This runbook proves that Ployz installs and runs its actual product path on
-fresh Linux machines. Hetzner only gives us two disposable hosts, public IPs,
-SSH, and cleanup.
+This runbook proves that Ployz installs and runs on two fresh Linux machines.
+Hetzner only supplies disposable hosts, public IPs, SSH, and cleanup.
 
-The rule is blunt: if behavior matters after replacing Hetzner with a homelab
-box or another VPS provider, it belongs in Ployz. If behavior only creates or
-deletes Hetzner servers, it stays in this shell harness.
+The rule is blunt: Hetzner is not an architecture slice. If the product cannot
+install, join a node, deploy, route traffic, and expose operation status through
+normal Ployz commands, this proof fails.
 
 The proof bar is:
 
@@ -17,9 +16,7 @@ The proof bar is:
 - hit one smoke service through ingress,
 - destroy the machines.
 
-That is the whole job. Hetzner is not a feature area; it is a disposable host
-source for proving the install path and actual product substrate on clean
-Linux. The harness must not become a second orchestration path.
+That is the whole job. The harness must not become a second orchestration path.
 
 ## Harness Boundary
 
@@ -36,13 +33,11 @@ Hetzner-specific behavior stops at:
 - capture command output,
 - destroy server.
 
-Everything after SSH is ready must be normal Ployz install/product behavior.
+Everything after SSH is ready is just normal Ployz install/product behavior.
 Do not add Hetzner-specific Rust code, provider abstractions, provider
 readiness models, provider operation states, retries, recovery, diagnostics, or
-provider-aware install policy.
-
-The harness may wait for SSH and command completion. Product readiness must
-come from product commands and operation output, not harness-side domain logic.
+provider-aware install policy. The harness may wait for SSH and command
+completion; product readiness comes from product commands and operation output.
 
 ## Disposable Host Setup
 
@@ -135,12 +130,8 @@ Ployz product commands and operation state prove the real host path:
 - gateway routing.
 
 Anything that only exists because the machines came from Hetzner stays in the
-script. Anything that should work on a user VPS, homelab server, or another
-cloud must be expressed through normal Ployz commands and operation events.
-
-The script must not grow a second orchestration model. It runs product
-commands, prints the failing command output, prints cleanup instructions, and
-cleans up the hosts.
+script. Everything else is product behavior. The script runs commands, prints
+the failing command output, prints cleanup instructions, and cleans up hosts.
 
 The product smoke sequence is fixed and small:
 
@@ -154,44 +145,18 @@ curl ...
 
 Do not add Hetzner-specific variants of those commands.
 
-## First-Node Install Contract
+## Product Expectations
 
-`ployzctl init --node <id>` is the product surface for the first machine. It
-must install the same supervised shape locally that the Hetzner proof later
-exercises remotely:
+The proof calls the same product surfaces a user would call:
 
-- `nats-server`
-- `ployzd tunnel --side core`
-- `ployzd control`
-- `ployzd node --id <id>`
-- optional `ployzd gateway`
+- `ployzctl init --node <id>` installs the first node.
+- `ployzctl machine add --name <node>` joins the second node.
+- `ployzctl deploy ...` deploys one smoke service.
+- `ployzctl ops watch ...` reports operation progress.
+- `curl ...` proves one routed request reaches the service.
 
-Keeper owns the local step plan for this install. Hetzner glue only creates
-the host and calls the product command.
-
-## Machine Add Contract
-
-`ployzctl machine add --name <node>` is the product surface for joining a
-second node. The command accepts a machine-add operation and returns bootstrap
-material for exactly one joining node.
-
-The pending machine is not schedulable until the product operation says it is
-active. The operation should base that on boring facts:
-
-- NATS tunnel over iroh is connected,
-- heartbeat is visible,
-- node inspect succeeds.
-
-Those are product facts, not Hetzner facts. The harness should not duplicate
-them. A reused, invalid, or expired join token fails visibly and preserves
-operation evidence. A readiness failure also fails the operation instead of
-silently activating the machine.
-
-The joined node process shape is:
-
-- `ployzd tunnel --side edge`
-- `ployzd node --id <id>`
-- optional `ployzd gateway`
+The harness does not decide whether a node is active, a route is ready, or a
+deploy succeeded. Ployz operations decide those things.
 
 ## Done
 

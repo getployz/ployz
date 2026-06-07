@@ -245,12 +245,12 @@ commands over iroh.
 - R39. The final MVP proof runs on two real disposable Linux machines. Hetzner
   is only a host allocator. It creates hosts, proves SSH, runs product
   commands, collects command output, and deletes hosts. It is not a product
-  concept.
-- R39a. H0 exists to prove the substrate and product path already built by
-  earlier slices. It must not become a place to design install policy,
-  readiness policy, recovery policy, provider modeling, or orchestration logic.
-  If the smoke proof needs product behavior, implement that behavior in the
-  normal product command path first.
+  concept, provider layer, or architecture slice.
+- R39a. H0 exists only to prove that the install path and actual product path
+  already built by earlier slices work on fresh hosts. It must not design
+  install policy, readiness policy, recovery policy, provider modeling, or
+  orchestration logic. If the product cannot prove itself through normal
+  commands and operation output, H0 fails.
 - R40. The acceptance script is a thin shell harness. It may only do host
   lifecycle, SSH, artifact staging, command execution, output capture, and
   cleanup around this fixed product path:
@@ -268,11 +268,12 @@ commands over iroh.
   locally built binary, pre-staged release artifact, or explicit source path.
   It must not add provider abstractions, provider-specific Rust, provider
   operation types, provider readiness models, provider recovery, Hetzner-only
-  diagnostics, or a second orchestration path.
+  diagnostics, harness-side product probes, or a second orchestration path.
 - R42. The host proof is intentionally tiny: install, init first node, add
   second node, connect NATS over iroh, deploy one smoke service, and prove the
   service responds through the product route. The harness may wait for SSH and
-  command completion. Product readiness must come from product commands.
+  command completion. Product readiness, node activation, route readiness, and
+  deploy success must come from product commands.
 - R43. Reuse the old eBPF/WireGuard dataplane work from git history as a hard
   requirement for container networking. H0 only needs one assertion that the
   real data plane is in the path of the smoke deploy.
@@ -1708,9 +1709,10 @@ Pipeline finish:
 
   Do not add Hetzner-specific Rust, provider abstractions, provider readiness
   state, provider operation types, provider install policy, provider-aware
-  controller code, retries, or Hetzner-specific recovery behavior for H0. If
-  the smoke proof needs a decision about install, machine join, deploy,
-  routing, data plane, or cleanup, that decision belongs in Ployz product code.
+  controller code, retries, harness-side product probes, or Hetzner-specific
+  recovery behavior for H0. If the smoke proof needs a decision about install,
+  machine join, deploy, routing, data plane, or cleanup, that decision belongs
+  in Ployz product code.
 
   The script should stay boring even if that makes H0 less clever. One happy
   path and blunt failure capture are enough:
@@ -1727,9 +1729,9 @@ Pipeline finish:
   ```
 
   Do not add parallel host orchestration, provider retry workflows, adaptive
-  readiness probes, cloud inventory, host state machines, or reusable provider
-  libraries for v1. H0 is proof that the actual product substrate works, not a
-  substrate framework.
+  readiness probes, cloud inventory, host state machines, reusable provider
+  libraries, or a Hetzner crate for v1. H0 is a smoke proof, not a substrate
+  framework.
 - **Test scenarios:**
   - Missing Hetzner token or SSH key fails before creating hosts.
   - Host creation or SSH readiness failure destroys created servers or prints
@@ -1737,9 +1739,9 @@ Pipeline finish:
   - A clean run installs Ployz, joins the second machine, deploys one smoke
     service through real product operations, proves one request through the
     route/data-plane path, and destroys resources.
-  - Product failure prints the failing product command, active operation id
-    when one exists, affected node ids when known, command output path, and
-    cleanup command.
+  - Product failure prints the failing product command, command output path,
+    cleanup command, and whatever operation id/node ids the product already
+    emitted.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
   end-to-end against two fresh disposable machines. Passing H0 means install,
   machine add, deploy, NATS-over-iroh, and the required eBPF/WireGuard data
