@@ -212,6 +212,43 @@ async fn operation_repository_redeems_machine_join_token_once() {
 }
 
 #[tokio::test]
+async fn operation_repository_machine_join_can_complete_after_local_install() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    let accepted = repository
+        .submit_machine_add(
+            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("machine add accepted");
+
+    repository
+        .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
+        .await
+        .expect("join token redeems");
+    repository
+        .record_machine_add_completed(&accepted.operation_id, &accepted.node_id)
+        .await
+        .expect("machine add completes");
+
+    assert_eq!(
+        repository
+            .operation_status(&accepted.operation_id)
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::MachineAdd {
+            id: accepted.operation_id,
+            node_id: accepted.node_id,
+            name: accepted.name,
+            gateway: accepted.gateway,
+            state: MachineAddOperationState::Completed,
+            last_event_sequence: event_sequence(3),
+        })
+    );
+}
+
+#[tokio::test]
 async fn operation_repository_repeated_machine_join_token_returns_joined_facts() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;

@@ -293,6 +293,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "MachineJoinRedeemResponse",
     },
     {
+      name: "machine.join.report",
+      subject: "plz.v1.svc.api.machine.join.report",
+      execution: "mutates_operation",
+      request: "MachineJoinReportRequest",
+      success: "MachineJoinReported",
+      error: "MachineJoinReportError",
+      response: "MachineJoinReportResponse",
+    },
+    {
       name: "ops.status",
       subject: "plz.v1.svc.api.ops.status",
       execution: "query",

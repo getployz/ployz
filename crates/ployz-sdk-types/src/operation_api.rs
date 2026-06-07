@@ -3,7 +3,8 @@
 use crate::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    OperationStatusSnapshot, OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, OperationStatusSnapshot,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -25,6 +26,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::MachineAddApi,
             $crate::operation_api::MachineJoinRedeemApi,
+            $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::OpsStatusApi,
             $crate::operation_api::OpsWatchApi
         );
@@ -65,6 +67,18 @@ impl OperationApiContract for MachineJoinRedeemApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineJoinRedeem;
     const RESPONSE_ALIAS: &'static str = "MachineJoinRedeemResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineJoinReportApi;
+
+impl OperationApiContract for MachineJoinReportApi {
+    type Request = MachineJoinReportRequest;
+    type Success = MachineJoinReported;
+    type Error = MachineJoinReportError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineJoinReport;
+    const RESPONSE_ALIAS: &'static str = "MachineJoinReportResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

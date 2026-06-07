@@ -304,6 +304,7 @@ impl MachineAddOperationState {
 pub enum MachineAddFailure {
     InvalidJoinToken,
     JoinTokenExpired { expired_at: JoinTokenExpiresAt },
+    BootstrapFailed { message: FailureMessage },
     ReadinessFailed { evidence: MachineReadinessEvidence },
 }
 

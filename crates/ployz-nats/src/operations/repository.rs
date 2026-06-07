@@ -3,7 +3,10 @@ use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure};
 mod machine_join;
 mod submission;
 
-pub use machine_join::{MachineJoinRedemption, RedeemMachineJoinTokenError, RedeemedMachineJoin};
+pub use machine_join::{
+    MachineJoinRedemption, RecordMachineJoinReportError, RecordedMachineJoinReport,
+    RedeemMachineJoinTokenError, RedeemedMachineJoin,
+};
 pub use submission::{
     AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
@@ -156,6 +159,20 @@ impl AsyncNatsOperationRepository {
         self.record_operation_event(
             operation_id,
             OperationEventAppend::machine_add_failed(operation_id, node_id, failure),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordMachineAddEventError::from_event_record)
+    }
+
+    pub async fn record_machine_add_completed(
+        &self,
+        operation_id: &OperationId,
+        node_id: &NodeId,
+    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_add_completed(operation_id, node_id),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)

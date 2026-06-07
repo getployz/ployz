@@ -10,7 +10,8 @@ use ployz_keeper::artifacts::{
 use ployz_keeper::cli::{KeeperCliError, KeeperCommand, load_command};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::join_executor::{
-    KeeperJoinRedeemer, KeeperJoinTokenConsumer, execute_keeper_join,
+    KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
+    execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects, SystemKeeperCommandRunner};
 use ployz_keeper::report::KeeperTextRecorder;
@@ -20,7 +21,10 @@ use ployz_keeper::steps::{
 };
 use ployz_nats::connect::connect_with_timeout;
 use ployz_nats::operation_api_client::OperationApiClient;
-use ployz_sdk_types::{MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinToken};
+use ployz_sdk_types::{
+    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportOutcome,
+    MachineJoinReportRequest, MachineJoinToken,
+};
 
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -76,6 +80,7 @@ fn run_join(
     recorder: &mut impl ployz_keeper::executor::KeeperStepRecorder,
 ) -> ployz_keeper::executor::KeeperPlanExecution {
     let mut redeemer = SystemJoinRedeemer::from_env();
+    let mut reporter = SystemJoinReporter::from_env(token.clone());
     let mut token_consumer = StartupJoinTokenConsumer { join_token_file };
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
@@ -87,6 +92,7 @@ fn run_join(
     execute_keeper_join(
         token,
         &mut redeemer,
+        &mut reporter,
         &mut token_consumer,
         &mut effects,
         recorder,
@@ -130,7 +136,10 @@ impl SystemJoinRedeemer {
 }
 
 impl KeeperJoinRedeemer for SystemJoinRedeemer {
-    fn redeem_join_token(&mut self, token: &JoinToken) -> Result<KeeperJoinTarget, FailureMessage> {
+    fn redeem_join_token(
+        &mut self,
+        token: &JoinToken,
+    ) -> Result<RedeemedKeeperJoin, FailureMessage> {
         let Some(nats_url) = self.nats_url.clone() else {
             return Err(failure_message(
                 "PLOYZ_NATS_URL is required to redeem join token",
@@ -157,7 +166,72 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
     }
 }
 
-fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<KeeperJoinTarget, FailureMessage> {
+struct SystemJoinReporter {
+    nats_url: Option<String>,
+    join_token: JoinToken,
+}
+
+impl SystemJoinReporter {
+    fn from_env(join_token: JoinToken) -> Self {
+        Self {
+            nats_url: std::env::var(PLOYZ_NATS_URL_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            join_token,
+        }
+    }
+}
+
+impl KeeperJoinReporter for SystemJoinReporter {
+    fn report_join_completed(&mut self) -> Result<(), FailureMessage> {
+        self.report_join_result(MachineJoinReportRequest {
+            join_token: self.machine_join_token()?,
+            outcome: MachineJoinReportOutcome::Completed,
+        })
+    }
+
+    fn report_join_failed(
+        &mut self,
+        failure: ployz_sdk_types::MachineJoinReportFailure,
+    ) -> Result<(), FailureMessage> {
+        self.report_join_result(MachineJoinReportRequest {
+            join_token: self.machine_join_token()?,
+            outcome: MachineJoinReportOutcome::Failed { failure },
+        })
+    }
+}
+
+impl SystemJoinReporter {
+    fn report_join_result(&self, request: MachineJoinReportRequest) -> Result<(), FailureMessage> {
+        let Some(nats_url) = self.nats_url.clone() else {
+            return Err(failure_message(
+                "PLOYZ_NATS_URL is required to report join result",
+            ));
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| failure_message(&format!("failed to start async runtime: {error}")))?;
+
+        runtime.block_on(async move {
+            let client = connect_with_timeout(&nats_url, DEFAULT_NATS_CONNECT_TIMEOUT)
+                .await
+                .map_err(|error| failure_message(&error.to_string()))?;
+            OperationApiClient::new(client)
+                .machine_join_report(&request)
+                .await
+                .map(|_| ())
+                .map_err(|error| failure_message(&format!("failed to report join result: {error}")))
+        })
+    }
+
+    fn machine_join_token(&self) -> Result<MachineJoinToken, FailureMessage> {
+        MachineJoinToken::try_new(self.join_token.as_str())
+            .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))
+    }
+}
+
+fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoin, FailureMessage> {
     let material = RedactedJoinMaterial::new(
         redeemed.node_id.clone(),
         redeemed.join_bundle.cluster_name.as_str().to_owned(),
@@ -180,7 +254,11 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<KeeperJoinTarget,
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
 
-    Ok(KeeperJoinTarget::new(material, artifact, roles))
+    Ok(RedeemedKeeperJoin::new(
+        redeemed.operation_id,
+        redeemed.node_id,
+        KeeperJoinTarget::new(material, artifact, roles),
+    ))
 }
 
 fn failure_message(message: &str) -> FailureMessage {

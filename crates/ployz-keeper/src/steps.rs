@@ -68,6 +68,7 @@ pub enum KeeperStepLabel {
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
     RedeemJoinToken,
+    ReportJoinResult,
     ConsumeJoinTokenFile,
     StoreJoinMaterial(RedactedJoinMaterial),
 }
@@ -410,6 +411,7 @@ pub enum KeeperStepFailureReason {
     SupervisorStartFailed,
     SupervisorRestartFailed,
     JoinTokenRedeemFailed,
+    JoinReportFailed,
     JoinTokenConsumeFailed,
     JoinMaterialStoreFailed,
 }

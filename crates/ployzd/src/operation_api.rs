@@ -7,14 +7,15 @@ use crate::controllers::{
 use ployz_core::ids::OperationId;
 use ployz_core::machine::RawJoinToken;
 use ployz_core::ops::{
-    OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease,
-    OperationStatusSnapshot,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease, OperationStatus,
+    OperationStatusSnapshot, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::op_watch;
 use ployz_nats::operations::{
     MachineJoinRedemption, OperationEventLogError, OperationEventReplayReadError,
     OperationStatusReadError, OperationStatusStoreError, RecordMachineAddEventError,
+    RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitDeployError as SubmitDeployRepositoryError,
     SubmitMachineAddError as SubmitMachineAddRepositoryError,
@@ -24,7 +25,9 @@ use ployz_sdk_types::{
     DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
-    MachineJoinRedeemed, MachineJoinToken, OperationSubmitClockFailure,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
+    MachineJoinReported, MachineJoinToken, OperationSubmitClockFailure,
     OperationSubmitEventFailure, OperationSubmitStatusFailure, OpsStatusError,
     OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
 };
@@ -141,6 +144,68 @@ pub async fn machine_join_redeem(
     Ok(machine_join_redeemed(redeemed))
 }
 
+pub async fn machine_join_report(
+    controllers: &OperationControllers,
+    request: MachineJoinReportRequest,
+) -> Result<MachineJoinReported, MachineJoinReportError> {
+    let raw_token = RawJoinToken::try_new(request.join_token.as_str())
+        .map_err(|_| MachineJoinReportError::InvalidJoinToken)?;
+    let outcome = request.outcome;
+    let result = match outcome.clone() {
+        MachineJoinReportOutcome::Completed => {
+            controllers.record_machine_join_completed(&raw_token).await
+        }
+        MachineJoinReportOutcome::Failed { failure } => {
+            controllers
+                .record_machine_join_failed(
+                    &raw_token,
+                    machine_add_failure_from_join_report_failure(failure),
+                )
+                .await
+        }
+    };
+    let reported = result.map_err(machine_join_report_error)?;
+
+    let status = controllers
+        .operation_status(&reported.operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::StatusRead {
+                failure: status_read_failure(&error),
+            },
+        })?
+        .ok_or(MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::OperationCorrupt,
+        })?;
+
+    let OperationStatus::MachineAdd {
+        last_event_sequence,
+        ..
+    } = status
+    else {
+        return Err(MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::OperationCorrupt,
+        });
+    };
+
+    Ok(MachineJoinReported {
+        operation_id: reported.operation_id,
+        node_id: reported.node_id,
+        last_event_sequence,
+        outcome,
+    })
+}
+
+fn machine_add_failure_from_join_report_failure(
+    failure: MachineJoinReportFailure,
+) -> ployz_core::machine::MachineAddFailure {
+    match failure {
+        MachineJoinReportFailure::BootstrapFailed { message } => {
+            ployz_core::machine::MachineAddFailure::BootstrapFailed { message }
+        }
+    }
+}
+
 fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeemed {
     let (joined, result) = match redemption {
         MachineJoinRedemption::Joined(joined) => (joined, MachineJoinRedeemResult::Joined),
@@ -158,6 +223,51 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         joined_at: joined.joined_at,
         last_event_sequence: joined.last_event_sequence,
         result,
+    }
+}
+
+fn machine_join_report_error(error: RecordMachineJoinReportError) -> MachineJoinReportError {
+    match &error {
+        RecordMachineJoinReportError::InvalidJoinToken => {
+            return MachineJoinReportError::InvalidJoinToken;
+        }
+        RecordMachineJoinReportError::UnknownJoinToken => {
+            return MachineJoinReportError::UnknownJoinToken;
+        }
+        RecordMachineJoinReportError::RecordMachineAddEvent(error) => match error {
+            RecordMachineAddEventError::ProjectStatus(
+                StatusProjectionError::InvalidTransition {
+                    operation_id,
+                    current,
+                    ..
+                }
+                | StatusProjectionError::TerminalState {
+                    operation_id,
+                    current,
+                    ..
+                },
+            ) => {
+                if let ProjectionOperationState::MachineAdd(state) = current.as_ref() {
+                    return MachineJoinReportError::OperationNotJoining {
+                        operation_id: operation_id.clone(),
+                        current: state.name(),
+                    };
+                }
+            }
+            RecordMachineAddEventError::LoadStatus(_)
+            | RecordMachineAddEventError::StoreStatus(_)
+            | RecordMachineAddEventError::MissingOperation { .. }
+            | RecordMachineAddEventError::ProjectStatus(_)
+            | RecordMachineAddEventError::AppendEvent(_)
+            | RecordMachineAddEventError::StoredEventMismatch { .. }
+            | RecordMachineAddEventError::StatusCursorContended => {}
+        },
+        RecordMachineJoinReportError::StoreStatus(_)
+        | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {}
+    }
+
+    MachineJoinReportError::Unavailable {
+        source: record_machine_join_report_unavailable_source(&error),
     }
 }
 
@@ -410,6 +520,54 @@ fn record_machine_add_event_unavailable_source(
         | RecordMachineAddEventError::StoredEventMismatch { .. }
         | RecordMachineAddEventError::StatusCursorContended => {
             MachineJoinRedeemUnavailableSource::OperationCorrupt
+        }
+    }
+}
+
+fn record_machine_join_report_unavailable_source(
+    error: &RecordMachineJoinReportError,
+) -> MachineJoinReportUnavailableSource {
+    match error {
+        RecordMachineJoinReportError::StoreStatus(error) => {
+            MachineJoinReportUnavailableSource::StatusWrite {
+                failure: operation_submit_status_failure(error),
+            }
+        }
+        RecordMachineJoinReportError::RecordMachineAddEvent(error) => {
+            record_machine_add_report_unavailable_source(error)
+        }
+        RecordMachineJoinReportError::InvalidJoinToken
+        | RecordMachineJoinReportError::UnknownJoinToken
+        | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {
+            MachineJoinReportUnavailableSource::OperationCorrupt
+        }
+    }
+}
+
+fn record_machine_add_report_unavailable_source(
+    error: &RecordMachineAddEventError,
+) -> MachineJoinReportUnavailableSource {
+    match error {
+        RecordMachineAddEventError::LoadStatus(error) => {
+            MachineJoinReportUnavailableSource::StatusRead {
+                failure: status_read_failure(error),
+            }
+        }
+        RecordMachineAddEventError::StoreStatus(error) => {
+            MachineJoinReportUnavailableSource::StatusWrite {
+                failure: operation_submit_status_failure(error),
+            }
+        }
+        RecordMachineAddEventError::AppendEvent(error) => {
+            MachineJoinReportUnavailableSource::EventLog {
+                failure: operation_submit_event_failure(error),
+            }
+        }
+        RecordMachineAddEventError::MissingOperation { .. }
+        | RecordMachineAddEventError::ProjectStatus(_)
+        | RecordMachineAddEventError::StoredEventMismatch { .. }
+        | RecordMachineAddEventError::StatusCursorContended => {
+            MachineJoinReportUnavailableSource::OperationCorrupt
         }
     }
 }

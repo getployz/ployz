@@ -9,7 +9,7 @@ use ployz_core::roles::FirstNodeGateway;
 
 use super::{
     AsyncNatsOperationRepository, OperationStatusReadError, OperationStatusStoreError,
-    RecordMachineAddEventError,
+    OperationStatusWrite, RecordMachineAddEventError,
 };
 
 impl AsyncNatsOperationRepository {
@@ -103,6 +103,67 @@ impl AsyncNatsOperationRepository {
                 })
             }
         }
+    }
+
+    pub async fn record_machine_join_completed(
+        &self,
+        token: &RawJoinToken,
+    ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
+        let target = self.machine_join_report_target(token).await?;
+        let status_write = self
+            .record_machine_add_completed(&target.operation_id, &target.node_id)
+            .await
+            .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
+        Ok(RecordedMachineJoinReport {
+            operation_id: target.operation_id,
+            node_id: target.node_id,
+            status_write,
+        })
+    }
+
+    pub async fn record_machine_join_failed(
+        &self,
+        token: &RawJoinToken,
+        failure: MachineAddFailure,
+    ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
+        let target = self.machine_join_report_target(token).await?;
+        let status_write = self
+            .record_machine_add_failed(&target.operation_id, &target.node_id, failure)
+            .await
+            .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
+        Ok(RecordedMachineJoinReport {
+            operation_id: target.operation_id,
+            node_id: target.node_id,
+            status_write,
+        })
+    }
+
+    async fn machine_join_report_target(
+        &self,
+        token: &RawJoinToken,
+    ) -> Result<MachineJoinReportTarget, RecordMachineJoinReportError> {
+        let fingerprint = token
+            .fingerprint()
+            .map_err(|_| RecordMachineJoinReportError::InvalidJoinToken)?;
+        let Some(submission) = self
+            .status_store
+            .machine_add_submission_for_join_token(&fingerprint)
+            .await
+            .map_err(RecordMachineJoinReportError::StoreStatus)?
+        else {
+            return Err(RecordMachineJoinReportError::UnknownJoinToken);
+        };
+
+        if submission.raw_join_token != *token || !submission.join_token.matches(&fingerprint) {
+            return Err(RecordMachineJoinReportError::JoinTokenMismatch {
+                operation_id: submission.operation_id,
+            });
+        }
+
+        Ok(MachineJoinReportTarget {
+            operation_id: submission.operation_id,
+            node_id: submission.node_id,
+        })
     }
 
     async fn redeem_pending_machine_join(
@@ -211,6 +272,18 @@ pub struct RedeemedMachineJoin {
     pub last_event_sequence: EventSequence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedMachineJoinReport {
+    pub operation_id: OperationId,
+    pub node_id: NodeId,
+    pub status_write: OperationStatusWrite,
+}
+
+struct MachineJoinReportTarget {
+    operation_id: OperationId,
+    node_id: NodeId,
+}
+
 #[derive(Debug)]
 pub enum RedeemMachineJoinTokenError {
     Clock {
@@ -238,4 +311,13 @@ pub enum RedeemMachineJoinTokenError {
         operation_id: OperationId,
         failure: MachineAddFailure,
     },
+}
+
+#[derive(Debug)]
+pub enum RecordMachineJoinReportError {
+    InvalidJoinToken,
+    UnknownJoinToken,
+    StoreStatus(OperationStatusStoreError),
+    RecordMachineAddEvent(RecordMachineAddEventError),
+    JoinTokenMismatch { operation_id: OperationId },
 }

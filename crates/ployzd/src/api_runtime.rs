@@ -2,7 +2,7 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{
-    deploy_submit, machine_add, machine_join_redeem, ops_status, ops_watch,
+    deploy_submit, machine_add, machine_join_redeem, machine_join_report, ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -13,8 +13,8 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
-        OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -66,6 +66,16 @@ async fn bind_operation_endpoint(
             runtime,
             controllers,
             |controllers, request| async move { machine_join_redeem(&controllers, request).await },
+        )
+        .await,
+        OperationApiEndpoint::MachineJoinReport => bind_operation_contract::<
+            MachineJoinReportApi,
+            _,
+            _,
+        >(
+            runtime,
+            controllers,
+            |controllers, request| async move { machine_join_report(&controllers, request).await },
         )
         .await,
         OperationApiEndpoint::OpsStatus => {

@@ -8,7 +8,8 @@ use ployz_sdk_types::{
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
     MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle,
     MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
+    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineJoinToken,
     MachineName, NonEmptyTextError, OperationApiResponse, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
     OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
@@ -17,8 +18,8 @@ use ployz_sdk_types::{
     OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
     RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
-        OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -260,6 +261,12 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         MachineJoinRedeemed,
         MachineJoinRedeemError,
     >();
+    assert_contract::<
+        MachineJoinReportApi,
+        MachineJoinReportRequest,
+        MachineJoinReported,
+        MachineJoinReportError,
+    >();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
         OpsWatchApi,
@@ -298,6 +305,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineJoinRedeemed".to_owned(),
                 "MachineJoinRedeemError".to_owned(),
                 "MachineJoinRedeemResponse",
+            ),
+            (
+                "machine.join.report",
+                "plz.v1.svc.api.machine.join.report",
+                OperationApiEndpointExecution::MutatesOperation,
+                "MachineJoinReportRequest".to_owned(),
+                "MachineJoinReported".to_owned(),
+                "MachineJoinReportError".to_owned(),
+                "MachineJoinReportResponse",
             ),
             (
                 "ops.status",

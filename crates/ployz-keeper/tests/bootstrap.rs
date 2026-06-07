@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::{env, fs};
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
@@ -15,7 +15,8 @@ use ployz_keeper::executor::{
     KeeperStepRecorder, execute_keeper_plan,
 };
 use ployz_keeper::join_executor::{
-    KeeperJoinRedeemer, KeeperJoinTokenConsumer, execute_keeper_join,
+    KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
+    execute_keeper_join,
 };
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
@@ -24,6 +25,7 @@ use ployz_keeper::steps::{
     bootstrap_script_plan, first_node_install_plan, keeper_join_local_install_plan,
 };
 use ployz_keeper::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
+use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]
 fn bootstrap_script_installs_keeper_only() {
@@ -343,12 +345,14 @@ fn keeper_join_executor_redacts_join_token_from_progress() {
     let mut effects = RecordingEffects {
         ..RecordingEffects::default()
     };
+    let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
 
     let execution = execute_keeper_join(
         &token,
         &mut redeemer,
+        &mut reporter,
         &mut token_consumer,
         &mut effects,
         &mut recorder,
@@ -370,6 +374,7 @@ fn keeper_join_executor_redacts_join_token_from_progress() {
         vec![JoinToken::try_new("join_secret").expect("valid join token")]
     );
     assert_eq!(token_consumer.consumed, 0);
+    assert!(reporter.reports.is_empty());
 }
 
 #[test]
@@ -382,12 +387,14 @@ fn keeper_join_keeps_token_when_material_store_fails() {
         fail_on: Some(KeeperStepLabel::StoreJoinMaterial(material.clone())),
         ..RecordingEffects::default()
     };
+    let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
 
     let execution = execute_keeper_join(
         &token,
         &mut redeemer,
+        &mut reporter,
         &mut token_consumer,
         &mut effects,
         &mut recorder,
@@ -402,6 +409,14 @@ fn keeper_join_keeps_token_when_material_store_fails() {
         })) if failed_material == material
     ));
     assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::BootstrapFailed {
+                message: failure_message("simulated keeper step failure"),
+            },
+        }]
+    );
 }
 
 #[test]
@@ -414,12 +429,14 @@ fn keeper_join_keeps_token_when_install_fails_after_redemption() {
         ))),
         ..RecordingEffects::default()
     };
+    let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut recorder = RecordingRecorder::default();
 
     let execution = execute_keeper_join(
         &token,
         &mut redeemer,
+        &mut reporter,
         &mut token_consumer,
         &mut effects,
         &mut recorder,
@@ -434,6 +451,56 @@ fn keeper_join_keeps_token_when_install_fails_after_redemption() {
         }))
     ));
     assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::BootstrapFailed {
+                message: failure_message("simulated keeper step failure"),
+            },
+        }]
+    );
+}
+
+#[test]
+fn keeper_join_does_not_report_completed_when_token_consume_fails() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut reporter = RecordingJoinReporter::default();
+    let mut effects = RecordingEffects {
+        ..RecordingEffects::default()
+    };
+    let mut token_consumer = RecordingTokenConsumer {
+        fail_message: Some("simulated token cleanup failure"),
+        ..RecordingTokenConsumer::default()
+    };
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_join(
+        &token,
+        &mut redeemer,
+        &mut reporter,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::ConsumeJoinTokenFile,
+            reason: KeeperStepFailureReason::JoinTokenConsumeFailed,
+            ..
+        }))
+    ));
+    assert_eq!(token_consumer.consumed, 1);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::BootstrapFailed {
+                message: failure_message("simulated token cleanup failure"),
+            },
+        }]
+    );
 }
 
 #[test]
@@ -552,6 +619,18 @@ struct RecordingJoinRedeemer {
     fail_message: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JoinReport {
+    Completed,
+    Failed { failure: MachineJoinReportFailure },
+}
+
+#[derive(Default)]
+struct RecordingJoinReporter {
+    reports: Vec<JoinReport>,
+    fail_message: Option<&'static str>,
+}
+
 #[derive(Default)]
 struct RecordingTokenConsumer {
     consumed: usize,
@@ -570,18 +649,48 @@ impl KeeperJoinTokenConsumer for RecordingTokenConsumer {
 }
 
 impl KeeperJoinRedeemer for RecordingJoinRedeemer {
-    fn redeem_join_token(&mut self, token: &JoinToken) -> Result<KeeperJoinTarget, FailureMessage> {
+    fn redeem_join_token(
+        &mut self,
+        token: &JoinToken,
+    ) -> Result<RedeemedKeeperJoin, FailureMessage> {
         self.redeemed_tokens.push(token.clone());
         if let Some(message) = self.fail_message {
             return Err(failure_message(message));
         }
 
-        Ok(KeeperJoinTarget::new(
-            RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
-            ployzd_artifact(),
-            NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
-                .expect("non-empty role set"),
+        Ok(RedeemedKeeperJoin::new(
+            operation_id("op_machine"),
+            node_id("node_7"),
+            KeeperJoinTarget::new(
+                RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
+                ployzd_artifact(),
+                NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
+                    .expect("non-empty role set"),
+            ),
         ))
+    }
+}
+
+impl KeeperJoinReporter for RecordingJoinReporter {
+    fn report_join_completed(&mut self) -> Result<(), FailureMessage> {
+        self.reports.push(JoinReport::Completed);
+        if let Some(message) = self.fail_message {
+            return Err(failure_message(message));
+        }
+
+        Ok(())
+    }
+
+    fn report_join_failed(
+        &mut self,
+        failure: MachineJoinReportFailure,
+    ) -> Result<(), FailureMessage> {
+        self.reports.push(JoinReport::Failed { failure });
+        if let Some(message) = self.fail_message {
+            return Err(failure_message(message));
+        }
+
+        Ok(())
     }
 }
 
@@ -659,6 +768,10 @@ fn plan_writes_unit(
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn operation_id(value: &str) -> OperationId {
+    OperationId::try_new(value).expect("valid operation id")
 }
 
 fn unique_temp_path(prefix: &str) -> PathBuf {

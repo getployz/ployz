@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::FirstNodeGateway;
 use ployz_keeper::artifacts::{
@@ -13,7 +13,8 @@ use ployz_keeper::executor::{
 };
 use ployz_keeper::join::JOIN_MATERIAL_FILE;
 use ployz_keeper::join_executor::{
-    KeeperJoinRedeemer, KeeperJoinTokenConsumer, execute_keeper_join,
+    KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
+    execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::steps::{
@@ -22,6 +23,7 @@ use ployz_keeper::steps::{
     RedactedJoinMaterial, bootstrap_script_plan, first_node_install_plan,
 };
 use ployz_keeper::systemd::{NatsServerUnitTarget, SupervisorUnitTarget};
+use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]
 fn local_effects_install_keeper_and_start_its_unit() {
@@ -389,6 +391,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
         target,
     };
+    let mut reporter = RecordingJoinReporter::default();
     let mut token_consumer = RecordingTokenConsumer::default();
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
@@ -399,6 +402,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     let execution = execute_keeper_join(
         &JoinToken::try_new("join_once").expect("valid join token"),
         &mut redeemer,
+        &mut reporter,
         &mut token_consumer,
         &mut effects,
         &mut recorder,
@@ -412,6 +416,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     );
     assert!(root.join("join/bin/ployzd").exists());
     assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
+    assert_eq!(reporter.reports, vec![JoinReport::Completed]);
     assert_eq!(token_consumer.consumed, 1);
     assert_eq!(
         effects.runner().systemctl_calls,
@@ -471,12 +476,45 @@ struct StaticJoinRedeemer {
 }
 
 impl KeeperJoinRedeemer for StaticJoinRedeemer {
-    fn redeem_join_token(&mut self, token: &JoinToken) -> Result<KeeperJoinTarget, FailureMessage> {
+    fn redeem_join_token(
+        &mut self,
+        token: &JoinToken,
+    ) -> Result<RedeemedKeeperJoin, FailureMessage> {
         if *token != self.expected_token {
             return Err(failure_message("unexpected join token"));
         }
 
-        Ok(self.target.clone())
+        Ok(RedeemedKeeperJoin::new(
+            operation_id("op_machine"),
+            node_id("node_2"),
+            self.target.clone(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JoinReport {
+    Completed,
+    Failed { failure: MachineJoinReportFailure },
+}
+
+#[derive(Debug, Default)]
+struct RecordingJoinReporter {
+    reports: Vec<JoinReport>,
+}
+
+impl KeeperJoinReporter for RecordingJoinReporter {
+    fn report_join_completed(&mut self) -> Result<(), FailureMessage> {
+        self.reports.push(JoinReport::Completed);
+        Ok(())
+    }
+
+    fn report_join_failed(
+        &mut self,
+        failure: MachineJoinReportFailure,
+    ) -> Result<(), FailureMessage> {
+        self.reports.push(JoinReport::Failed { failure });
+        Ok(())
     }
 }
 
@@ -635,6 +673,10 @@ fn failure_message(value: &str) -> FailureMessage {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn operation_id(value: &str) -> OperationId {
+    OperationId::try_new(value).expect("valid operation id")
 }
 
 fn temp_dir(prefix: &str) -> PathBuf {

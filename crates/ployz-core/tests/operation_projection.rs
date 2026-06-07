@@ -571,6 +571,45 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
 }
 
 #[test]
+fn machine_add_bootstrap_failure_after_join_is_allowed() {
+    let joined_at =
+        ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
+    let joined = OperationStatus::MachineAdd {
+        id: operation_id("op_machine"),
+        node_id: node_id("node_2"),
+        name: machine_name("edge_2"),
+        gateway: FirstNodeGateway::Skip,
+        state: MachineAddOperationState::Joining { joined_at },
+        last_event_sequence: event_sequence(8),
+    };
+    let failure = MachineAddFailure::BootstrapFailed {
+        message: FailureMessage::try_new("artifact install failed").expect("valid failure message"),
+    };
+
+    assert_eq!(
+        project_operation_event(
+            &joined,
+            OperationEvent::MachineAddFailed {
+                operation_id: operation_id("op_machine"),
+                node_id: node_id("node_2"),
+                failure: failure.clone(),
+            },
+            event_sequence(9),
+        ),
+        Ok(OperationEventProjection::StatusChanged {
+            status: Box::new(OperationStatus::MachineAdd {
+                id: operation_id("op_machine"),
+                node_id: node_id("node_2"),
+                name: machine_name("edge_2"),
+                gateway: FirstNodeGateway::Skip,
+                state: MachineAddOperationState::Failed { failure },
+                last_event_sequence: event_sequence(9),
+            }),
+        })
+    );
+}
+
+#[test]
 fn machine_add_completed_before_join_is_rejected() {
     let pending = machine_add_pending_status();
 

@@ -155,6 +155,17 @@ impl OperationEventAppend {
     }
 
     #[must_use]
+    pub fn machine_add_completed(operation_id: &OperationId, node_id: &NodeId) -> Self {
+        Self::from_event(
+            MessageId::new(format!("machine.add.completed.{}", operation_id.as_str())),
+            OperationEvent::MachineAddCompleted {
+                operation_id: operation_id.clone(),
+                node_id: node_id.clone(),
+            },
+        )
+    }
+
+    #[must_use]
     pub fn machine_add_failed(
         operation_id: &OperationId,
         node_id: &NodeId,

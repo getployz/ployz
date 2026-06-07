@@ -76,7 +76,7 @@ export type MachineAddOperationState = { "state": "pending", join_token: IssuedJ
 
 export type MachineAddOperationStateName = "pending" | "joining" | "completed" | "failed" | "cancelled";
 
-export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, };
+export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, };
 
 export type MachineReadinessEvidence = { nats_tunnel: MachineReadinessCheck, heartbeat: MachineReadinessCheck, node_inspect: MachineReadinessCheck, };
 
@@ -174,6 +174,18 @@ export type MachineJoinRedeemError = { "error": "invalid_join_token" } | { "erro
 
 export type MachineJoinRedeemUnavailableSource = { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "operation_corrupt" };
 
+export type MachineJoinReportRequest = { join_token: MachineJoinToken, outcome: MachineJoinReportOutcome, };
+
+export type MachineJoinReportOutcome = { "outcome": "completed" } | { "outcome": "failed", failure: MachineJoinReportFailure, };
+
+export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, };
+
+export type MachineJoinReported = { operation_id: OperationId, node_id: NodeId, last_event_sequence: EventSequence, outcome: MachineJoinReportOutcome, };
+
+export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", source: MachineJoinReportUnavailableSource, };
+
+export type MachineJoinReportUnavailableSource = { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "operation_corrupt" };
+
 export type OpsStatusRequest = { operation_id: OperationId, };
 
 export type AcceptedOperation = { operation_id: OperationId, watch_subject: string, start_sequence: EventSequence, owner_lease: OperationOwnerLease, };
@@ -214,6 +226,8 @@ export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, Machin
 
 export type MachineJoinRedeemResponse = OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
+export type MachineJoinReportResponse = OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
+
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 export type OpsWatchRequest = OperationEventReplayRequest;
@@ -224,6 +238,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
+  { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
 ] as const;

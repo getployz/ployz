@@ -6,7 +6,8 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
+    RawJoinToken,
 };
 use ployz_core::ops::{
     DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
@@ -18,8 +19,9 @@ use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinRedemption,
     OperationLeaseClaim, OperationStatusReadError, OperationStatusStoreError, OperationStatusWrite,
-    RecordDeployEvidenceError, RecordDeployTransitionError, RedeemMachineJoinTokenError,
-    ReplayOperationEventsError, StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
+    RecordDeployEvidenceError, RecordDeployTransitionError, RecordMachineJoinReportError,
+    RecordedMachineJoinReport, RedeemMachineJoinTokenError, ReplayOperationEventsError,
+    StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -170,6 +172,23 @@ impl OperationControllers {
     ) -> Result<MachineJoinRedemption, RedeemMachineJoinTokenError> {
         self.repository
             .redeem_machine_join_token(token, current_join_time()?)
+            .await
+    }
+
+    pub async fn record_machine_join_completed(
+        &self,
+        token: &RawJoinToken,
+    ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
+        self.repository.record_machine_join_completed(token).await
+    }
+
+    pub async fn record_machine_join_failed(
+        &self,
+        token: &RawJoinToken,
+        failure: MachineAddFailure,
+    ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
+        self.repository
+            .record_machine_join_failed(token, failure)
             .await
     }
 

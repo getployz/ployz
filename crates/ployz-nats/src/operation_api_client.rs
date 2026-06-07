@@ -8,10 +8,11 @@ use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    OperationApiResponse, OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, OperationApiResponse,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
-        OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -68,6 +69,13 @@ impl OperationApiClient {
         request: &MachineJoinRedeemRequest,
     ) -> Result<MachineJoinRedeemed, OperationApiClientError<MachineJoinRedeemError>> {
         self.request_api::<MachineJoinRedeemApi>(request).await
+    }
+
+    pub async fn machine_join_report(
+        &self,
+        request: &MachineJoinReportRequest,
+    ) -> Result<MachineJoinReported, OperationApiClientError<MachineJoinReportError>> {
+        self.request_api::<MachineJoinReportApi>(request).await
     }
 
     pub async fn ops_watch(

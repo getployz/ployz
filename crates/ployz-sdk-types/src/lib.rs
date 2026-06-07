@@ -80,6 +80,9 @@ pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAd
 pub type MachineJoinRedeemResponse =
     OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
+pub type MachineJoinReportResponse =
+    OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineAddGateway {
@@ -100,6 +103,35 @@ pub struct MachineAddAccepted {
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinRedeemRequest {
     pub join_token: MachineJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinReportRequest {
+    pub join_token: MachineJoinToken,
+    pub outcome: MachineJoinReportOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinReportOutcome {
+    Completed,
+    Failed { failure: MachineJoinReportFailure },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinReportFailure {
+    BootstrapFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinReported {
+    pub operation_id: OperationId,
+    pub node_id: NodeId,
+    pub last_event_sequence: EventSequence,
+    pub outcome: MachineJoinReportOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -138,6 +170,35 @@ pub enum MachineJoinRedeemError {
     Unavailable {
         source: MachineJoinRedeemUnavailableSource,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinReportError {
+    InvalidJoinToken,
+    UnknownJoinToken,
+    OperationNotJoining {
+        operation_id: OperationId,
+        current: MachineAddOperationStateName,
+    },
+    Unavailable {
+        source: MachineJoinReportUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineJoinReportUnavailableSource {
+    StatusRead {
+        failure: StatusReadFailure,
+    },
+    StatusWrite {
+        failure: OperationSubmitStatusFailure,
+    },
+    EventLog {
+        failure: OperationSubmitEventFailure,
+    },
+    OperationCorrupt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -558,11 +558,13 @@ fn machine_add_failure_allowed(
         )
         | (
             MachineAddOperationState::Joining { .. },
-            crate::machine::MachineAddFailure::ReadinessFailed { .. },
+            crate::machine::MachineAddFailure::BootstrapFailed { .. }
+            | crate::machine::MachineAddFailure::ReadinessFailed { .. },
         ) => true,
         (
             MachineAddOperationState::Pending { .. },
-            crate::machine::MachineAddFailure::ReadinessFailed { .. },
+            crate::machine::MachineAddFailure::BootstrapFailed { .. }
+            | crate::machine::MachineAddFailure::ReadinessFailed { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },
