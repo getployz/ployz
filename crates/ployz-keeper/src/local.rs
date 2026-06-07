@@ -1,5 +1,6 @@
 //! Local keeper effects.
 
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -10,10 +11,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ployz_core::ops::FailureMessage;
 
 use crate::artifacts::{
-    ArtifactInstallDurability, ArtifactTarget, install_verified_artifact, verify_artifact_file,
+    ArtifactInstallDurability, ArtifactSourceView, ArtifactTarget, install_verified_artifact,
+    verify_artifact_file,
 };
 use crate::executor::KeeperStepEffects;
-use crate::steps::{HostPrerequisite, KeeperStep};
+use crate::steps::{HostPrerequisite, KeeperStep, KeeperStepEffectError, KeeperStepFailureReason};
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
 #[derive(Debug, Clone)]
@@ -28,7 +30,7 @@ pub struct KeeperLocalEffects<R> {
 
 impl<R> KeeperLocalEffects<R> {
     #[must_use]
-    pub const fn new(config: KeeperLocalConfig, runner: R) -> Self {
+    pub fn new(config: KeeperLocalConfig, runner: R) -> Self {
         Self { config, runner }
     }
 
@@ -39,20 +41,27 @@ impl<R> KeeperLocalEffects<R> {
 }
 
 impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
-    fn apply_step(&mut self, step: &KeeperStep) -> Result<(), FailureMessage> {
+    fn apply_step(&mut self, step: &KeeperStep) -> Result<(), KeeperStepEffectError> {
         match step {
-            KeeperStep::VerifyHost(prerequisite) => self.verify_host(*prerequisite),
-            KeeperStep::VerifyArtifact(target) => verify_artifact_source(target),
-            KeeperStep::InstallArtifact(target) => install_artifact_source(target),
-            KeeperStep::WriteSupervisorUnit(target) => self.write_supervisor_unit(target),
-            KeeperStep::StartSupervisorUnit(target) => self.start_supervisor_unit(target),
-            KeeperStep::RestartSupervisorUnit(target) => self.restart_supervisor_unit(target),
-            KeeperStep::RedeemJoinToken(_) => Err(failure_message(
-                "join token redemption is not wired to NATS yet",
-            )),
-            KeeperStep::StoreJoinMaterial(_) => Err(failure_message(
-                "join material storage is not wired to NATS yet",
-            )),
+            KeeperStep::VerifyHost(prerequisite) => {
+                self.verify_host(*prerequisite).map_err(Into::into)
+            }
+            KeeperStep::InstallArtifact(target) => self.install_artifact_source(target),
+            KeeperStep::WriteSupervisorUnit(target) => {
+                self.write_supervisor_unit(target).map_err(Into::into)
+            }
+            KeeperStep::StartSupervisorUnit(target) => {
+                self.start_supervisor_unit(target).map_err(Into::into)
+            }
+            KeeperStep::RestartSupervisorUnit(target) => {
+                self.restart_supervisor_unit(target).map_err(Into::into)
+            }
+            KeeperStep::RedeemJoinToken(_) => {
+                Err(failure_message("join token redemption is not wired to NATS yet").into())
+            }
+            KeeperStep::StoreJoinMaterial(_) => {
+                Err(failure_message("join material storage is not wired to NATS yet").into())
+            }
         }
     }
 }
@@ -107,12 +116,53 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
         let unit_name = target.unit_name();
         self.runner.systemctl(&["restart", &unit_name])
     }
+
+    fn install_artifact_source(
+        &mut self,
+        target: &ArtifactTarget,
+    ) -> Result<(), KeeperStepEffectError> {
+        let artifact = self.acquire_artifact(target).map_err(|message| {
+            KeeperStepEffectError::new(KeeperStepFailureReason::ArtifactDownloadFailed, message)
+        })?;
+        let verified = verify_artifact_file(artifact.path(), target.digest()).map_err(|error| {
+            KeeperStepEffectError::new(
+                KeeperStepFailureReason::ArtifactVerificationFailed,
+                failure_message(error.to_string()),
+            )
+        })?;
+        let installed = install_verified_artifact(&verified, target)
+            .map_err(|error| failure_message(error.to_string()))?;
+        match installed.durability {
+            ArtifactInstallDurability::Confirmed => Ok(()),
+            ArtifactInstallDurability::Unconfirmed { message } => Err(failure_message(format!(
+                "artifact {} was installed at {} but durability is unconfirmed: {message}",
+                installed.source_path.display(),
+                installed.install_path.display()
+            ))
+            .into()),
+        }
+    }
+
+    fn acquire_artifact(
+        &mut self,
+        target: &ArtifactTarget,
+    ) -> Result<AcquiredArtifact, FailureMessage> {
+        match target.source().view() {
+            ArtifactSourceView::LocalPath(path) => Ok(AcquiredArtifact::local(path.to_path_buf())),
+            ArtifactSourceView::RemoteUrl(url) => {
+                let artifact = AcquiredArtifact::downloaded(create_download_path(target)?);
+                self.runner.download(url, artifact.path())?;
+                Ok(artifact)
+            }
+        }
+    }
 }
 
 pub trait KeeperCommandRunner {
     fn is_linux(&mut self) -> bool;
     fn current_uid(&mut self) -> Result<u32, FailureMessage>;
     fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage>;
+    fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -168,6 +218,70 @@ impl KeeperCommandRunner for SystemKeeperCommandRunner {
             output.failure_summary()
         )))
     }
+
+    fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
+        let output = run_os_command_with_display(
+            "curl",
+            &[
+                OsString::from("-fsSL"),
+                OsString::from("--output"),
+                destination.as_os_str().to_os_string(),
+                OsString::from("--"),
+                OsString::from(url),
+            ],
+            "curl -fsSL --output <artifact> -- <redacted-url>".to_owned(),
+            self.timeout,
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(failure_message(format!(
+            "artifact download failed: {}",
+            output.failure_summary()
+        )))
+    }
+}
+
+struct AcquiredArtifact {
+    path: PathBuf,
+    cleanup: AcquiredArtifactCleanup,
+}
+
+impl AcquiredArtifact {
+    fn local(path: PathBuf) -> Self {
+        Self {
+            path,
+            cleanup: AcquiredArtifactCleanup::Keep,
+        }
+    }
+
+    fn downloaded(path: PathBuf) -> Self {
+        Self {
+            path,
+            cleanup: AcquiredArtifactCleanup::Remove,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for AcquiredArtifact {
+    fn drop(&mut self) {
+        if self.cleanup == AcquiredArtifactCleanup::Remove {
+            let _ = fs::remove_file(&self.path);
+            if let Some(parent) = self.path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcquiredArtifactCleanup {
+    Keep,
+    Remove,
 }
 
 struct CapturedCommandOutput {
@@ -199,18 +313,30 @@ fn run_command(
     args: &[&str],
     timeout: Duration,
 ) -> Result<CapturedCommandOutput, FailureMessage> {
+    let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+    run_os_command(program, &args, timeout)
+}
+
+fn run_os_command(
+    program: &str,
+    args: &[OsString],
+    timeout: Duration,
+) -> Result<CapturedCommandOutput, FailureMessage> {
+    run_os_command_with_display(program, args, render_command(program, args), timeout)
+}
+
+fn run_os_command_with_display(
+    program: &str,
+    args: &[OsString],
+    display_command: String,
+    timeout: Duration,
+) -> Result<CapturedCommandOutput, FailureMessage> {
     let mut child = Command::new(program)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            failure_message(format!(
-                "failed to run {} {}: {error}",
-                program,
-                args.join(" ")
-            ))
-        })?;
+        .map_err(|error| failure_message(format!("failed to run {display_command}: {error}")))?;
     let stdout = child
         .stdout
         .take()
@@ -221,9 +347,9 @@ fn run_command(
         .take()
         .map(|pipe| thread::spawn(move || read_limited_pipe(pipe)))
         .expect("stderr is piped");
-    let status = wait_for_child(program, args, &mut child, timeout)?;
+    let status = wait_for_child(&display_command, &mut child, timeout)?;
     Ok(CapturedCommandOutput {
-        command: render_command(program, args),
+        command: display_command,
         status,
         stdout: stdout
             .join()
@@ -244,36 +370,35 @@ fn read_limited_pipe(pipe: impl Read) -> Result<String, String> {
     Ok(output)
 }
 
-fn render_command(program: &str, args: &[&str]) -> String {
+fn render_command(program: &str, args: &[OsString]) -> String {
     if args.is_empty() {
         return program.to_owned();
     }
+    let args = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>();
     format!("{} {}", program, args.join(" "))
 }
 
 fn wait_for_child(
-    program: &str,
-    args: &[&str],
+    command: &str,
     child: &mut Child,
     timeout: Duration,
 ) -> Result<ExitStatus, FailureMessage> {
     let started = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| {
-            failure_message(format!(
-                "failed to wait for {} {}: {error}",
-                program,
-                args.join(" ")
-            ))
-        })? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| failure_message(format!("failed to wait for {command}: {error}")))?
+        {
             return Ok(status);
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
             return Err(failure_message(format!(
-                "{} timed out after {}s",
-                render_command(program, args),
+                "{command} timed out after {}s",
                 timeout.as_secs()
             )));
         }
@@ -281,33 +406,51 @@ fn wait_for_child(
     }
 }
 
-fn verify_artifact_source(target: &ArtifactTarget) -> Result<(), FailureMessage> {
-    let source_path = local_artifact_source_path(target)?;
-    verify_artifact_file(source_path, target.digest())
-        .map(|_verified| ())
-        .map_err(|error| failure_message(error.to_string()))
+fn create_download_path(target: &ArtifactTarget) -> Result<PathBuf, FailureMessage> {
+    let directory = create_private_download_dir(target)?;
+    Ok(directory.join("artifact"))
 }
 
-fn install_artifact_source(target: &ArtifactTarget) -> Result<(), FailureMessage> {
-    let source_path = local_artifact_source_path(target)?;
-    let verified = verify_artifact_file(source_path, target.digest())
-        .map_err(|error| failure_message(error.to_string()))?;
-    let installed = install_verified_artifact(&verified, target)
-        .map_err(|error| failure_message(error.to_string()))?;
-    match installed.durability {
-        ArtifactInstallDurability::Confirmed => Ok(()),
-        ArtifactInstallDurability::Unconfirmed { message } => Err(failure_message(format!(
-            "artifact {} was installed at {} but durability is unconfirmed: {message}",
-            installed.source_path.display(),
-            installed.install_path.display()
-        ))),
+fn create_private_download_dir(target: &ArtifactTarget) -> Result<PathBuf, FailureMessage> {
+    for attempt in 0..16 {
+        let entropy = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| failure_message(format!("failed to create download path: {error}")))?
+            .as_nanos();
+        let name = format!(
+            "ployz-download-{:?}-{}-{entropy}-{attempt}",
+            target.kind(),
+            std::process::id()
+        );
+        let directory = std::env::temp_dir().join(name);
+        match create_private_directory(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(failure_message(format!(
+                    "failed to create private artifact download directory {}: {error}",
+                    directory.display()
+                )));
+            }
+        }
     }
+
+    Err(failure_message(format!(
+        "failed to create unique artifact download directory in {}",
+        std::env::temp_dir().display()
+    )))
 }
 
-fn local_artifact_source_path(target: &ArtifactTarget) -> Result<&Path, FailureMessage> {
-    target.source().local_path().ok_or_else(|| {
-        failure_message("artifact download is not wired yet; local execution requires a local path")
-    })
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
 }
 
 fn validate_nats_config(path: &Path) -> Result<(), FailureMessage> {
@@ -445,4 +588,28 @@ fn sync_directory(_path: &Path) -> std::io::Result<()> {
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message).expect("keeper generated a non-empty failure message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OsString, run_os_command_with_display};
+    use std::time::Duration;
+
+    #[test]
+    fn command_failure_summary_uses_redacted_display_command() {
+        let secret_url = "https://example.invalid/artifact?token=secret";
+        let output = run_os_command_with_display(
+            "false",
+            &[OsString::from(secret_url)],
+            "download <redacted-url>".to_owned(),
+            Duration::from_secs(1),
+        )
+        .expect("false command runs");
+
+        let summary = output.failure_summary();
+
+        assert!(summary.contains("download <redacted-url>"));
+        assert!(!summary.contains(secret_url));
+        assert!(!summary.contains("secret"));
+    }
 }

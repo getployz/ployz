@@ -61,6 +61,12 @@ enum ArtifactSourceKind {
     RemoteUrl(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactSourceView<'a> {
+    LocalPath(&'a Path),
+    RemoteUrl(&'a str),
+}
+
 impl ArtifactSource {
     pub fn try_new(value: impl Into<String>) -> Result<Self, ArtifactTargetError> {
         let value = value.into();
@@ -85,10 +91,10 @@ impl ArtifactSource {
     }
 
     #[must_use]
-    pub fn local_path(&self) -> Option<&Path> {
+    pub fn view(&self) -> ArtifactSourceView<'_> {
         match &self.0 {
-            ArtifactSourceKind::LocalPath(path) => Some(path),
-            ArtifactSourceKind::RemoteUrl(_) => None,
+            ArtifactSourceKind::LocalPath(path) => ArtifactSourceView::LocalPath(path),
+            ArtifactSourceKind::RemoteUrl(url) => ArtifactSourceView::RemoteUrl(url),
         }
     }
 }

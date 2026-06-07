@@ -129,8 +129,87 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
 }
 
 #[test]
-fn local_effects_reject_remote_artifact_sources_until_download_is_wired() {
+fn local_effects_download_remote_artifact_sources() {
     let root = temp_dir("ployz-keeper-local-remote-source");
+    let systemd_dir = root.join("systemd");
+    let install_path = root.join("bin/ployz-keeper");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(
+        KeeperArtifactTarget::new(
+            version("0.1.0"),
+            ArtifactSource::try_new("https://example.invalid/ployz-keeper")
+                .expect("valid remote source"),
+            digest(PLOYZ_NEWLINE_SHA256),
+            install_path.clone(),
+        )
+        .expect("valid keeper artifact"),
+    ));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            download_body: Some(b"ployz\n".to_vec()),
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(fs::read_to_string(install_path).unwrap(), "ployz\n");
+    let downloads = effects.runner().downloads.clone();
+    assert_eq!(downloads.len(), 1);
+    assert!(
+        downloads
+            .iter()
+            .all(|download| download.url == "https://example.invalid/ployz-keeper")
+    );
+    drop(effects);
+    assert!(downloads.iter().all(RecordedDownload::is_cleaned_up));
+}
+
+#[test]
+fn local_effects_remove_partial_remote_download_after_failure() {
+    let root = temp_dir("ployz-keeper-local-remote-source-fail");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let url = "https://example.invalid/ployz-keeper";
+    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(
+        KeeperArtifactTarget::new(
+            version("0.1.0"),
+            ArtifactSource::try_new(url).expect("valid remote source"),
+            digest(PLOYZ_NEWLINE_SHA256),
+            root.join("bin/ployz-keeper"),
+        )
+        .expect("valid keeper artifact"),
+    ));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            fail_download: Some(url.to_owned()),
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::InstallArtifact(_),
+            reason: KeeperStepFailureReason::ArtifactDownloadFailed,
+            message,
+        })) if message.as_str() == "simulated download failure"
+    ));
+    let downloads = effects.runner().downloads.clone();
+    assert_eq!(downloads.len(), 1);
+    assert!(downloads.iter().all(RecordedDownload::is_cleaned_up));
+}
+
+#[test]
+fn local_effects_report_remote_artifact_digest_mismatch_as_verification_failure() {
+    let root = temp_dir("ployz-keeper-local-remote-digest-fail");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     let plan = bootstrap_script_plan(BootstrapScriptTarget::new(
@@ -145,21 +224,40 @@ fn local_effects_reject_remote_artifact_sources_until_download_is_wired() {
     ));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
-        RecordingRunner::root_linux(),
+        RecordingRunner {
+            download_body: Some(b"wrong\n".to_vec()),
+            ..RecordingRunner::root_linux()
+        },
     );
     let mut recorder = RecordingRecorder::default();
 
-    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let first = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+    let second = execute_keeper_plan(&plan, &mut effects, &mut recorder);
 
     assert!(matches!(
-        execution.terminal,
+        first.terminal,
         KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
-            step: KeeperStepLabel::VerifyArtifact(_),
+            step: KeeperStepLabel::InstallArtifact(_),
             reason: KeeperStepFailureReason::ArtifactVerificationFailed,
-            message,
-        })) if message.as_str()
-            == "artifact download is not wired yet; local execution requires a local path"
+            ..
+        }))
     ));
+    assert!(matches!(
+        second.terminal,
+        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::InstallArtifact(_),
+            reason: KeeperStepFailureReason::ArtifactVerificationFailed,
+            ..
+        }))
+    ));
+    assert_eq!(effects.runner().downloads.len(), 2);
+    assert!(
+        effects
+            .runner()
+            .downloads
+            .iter()
+            .all(RecordedDownload::is_cleaned_up)
+    );
 }
 
 #[test]
@@ -305,6 +403,9 @@ struct RecordingRunner {
     uid: u32,
     systemctl_calls: Vec<Vec<String>>,
     fail_systemctl: Option<Vec<String>>,
+    downloads: Vec<RecordedDownload>,
+    download_body: Option<Vec<u8>>,
+    fail_download: Option<String>,
 }
 
 impl RecordingRunner {
@@ -314,6 +415,9 @@ impl RecordingRunner {
             uid: 0,
             systemctl_calls: Vec::new(),
             fail_systemctl: None,
+            downloads: Vec::new(),
+            download_body: None,
+            fail_download: None,
         }
     }
 }
@@ -334,6 +438,45 @@ impl KeeperCommandRunner for RecordingRunner {
             return Err(failure_message("simulated systemctl failure"));
         }
         Ok(())
+    }
+
+    fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
+        if self.fail_download.as_deref() == Some(url) {
+            fs::write(destination, b"partial")
+                .map_err(|error| failure_message(&format!("failed fake partial write: {error}")))?;
+            self.downloads.push(RecordedDownload {
+                url: url.to_owned(),
+                destination: destination.to_path_buf(),
+            });
+            return Err(failure_message("simulated download failure"));
+        }
+        let body = self
+            .download_body
+            .as_deref()
+            .ok_or_else(|| failure_message("missing fake artifact body"))?;
+        fs::write(destination, body)
+            .map_err(|error| failure_message(&format!("failed fake artifact write: {error}")))?;
+        self.downloads.push(RecordedDownload {
+            url: url.to_owned(),
+            destination: destination.to_path_buf(),
+        });
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RecordedDownload {
+    url: String,
+    destination: PathBuf,
+}
+
+impl RecordedDownload {
+    fn is_cleaned_up(&self) -> bool {
+        !self.destination.exists()
+            && self
+                .destination
+                .parent()
+                .is_none_or(|parent| !parent.exists())
     }
 }
 

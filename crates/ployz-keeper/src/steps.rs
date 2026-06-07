@@ -53,7 +53,6 @@ impl KeeperStepPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperStep {
     VerifyHost(HostPrerequisite),
-    VerifyArtifact(ArtifactTarget),
     InstallArtifact(ArtifactTarget),
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
@@ -65,7 +64,6 @@ pub enum KeeperStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperStepLabel {
     VerifyHost(HostPrerequisite),
-    VerifyArtifact(ArtifactTarget),
     InstallArtifact(ArtifactTarget),
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
@@ -79,7 +77,6 @@ impl KeeperStepLabel {
     pub fn from_step(step: &KeeperStep) -> Self {
         match step {
             KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
-            KeeperStep::VerifyArtifact(target) => Self::VerifyArtifact(target.clone()),
             KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
             KeeperStep::WriteSupervisorUnit(spec) => Self::WriteSupervisorUnit(spec.target()),
             KeeperStep::StartSupervisorUnit(target) => Self::StartSupervisorUnit(target.clone()),
@@ -258,7 +255,6 @@ pub enum RoleSetError {
 pub fn bootstrap_script_plan(target: BootstrapScriptTarget) -> KeeperStepPlan {
     KeeperStepPlan::new(vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-        KeeperStep::VerifyArtifact(target.keeper_artifact.clone().into()),
         KeeperStep::InstallArtifact(target.keeper_artifact.clone().into()),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::Keeper {
             artifact: target.keeper_artifact,
@@ -272,7 +268,6 @@ pub fn keeper_join_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
     let mut steps = vec![
         KeeperStep::RedeemJoinToken(target.token),
         KeeperStep::StoreJoinMaterial(target.material),
-        KeeperStep::VerifyArtifact(target.ployzd_artifact.clone().into()),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
     ];
 
@@ -295,7 +290,6 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     let process_set = first_node_process_set(&target.node_id, target.gateway);
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-        KeeperStep::VerifyArtifact(target.ployzd_artifact.clone().into()),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
@@ -322,6 +316,43 @@ pub struct KeeperStepFailure {
     pub message: FailureMessage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeeperStepEffectError {
+    StepDefault(FailureMessage),
+    Explicit {
+        reason: KeeperStepFailureReason,
+        message: FailureMessage,
+    },
+}
+
+impl KeeperStepEffectError {
+    #[must_use]
+    pub const fn new(reason: KeeperStepFailureReason, message: FailureMessage) -> Self {
+        Self::Explicit { reason, message }
+    }
+
+    #[must_use]
+    pub const fn reason(&self) -> Option<KeeperStepFailureReason> {
+        match self {
+            Self::StepDefault(_) => None,
+            Self::Explicit { reason, .. } => Some(*reason),
+        }
+    }
+
+    #[must_use]
+    pub const fn message(&self) -> &FailureMessage {
+        match self {
+            Self::StepDefault(message) | Self::Explicit { message, .. } => message,
+        }
+    }
+}
+
+impl From<FailureMessage> for KeeperStepEffectError {
+    fn from(message: FailureMessage) -> Self {
+        Self::StepDefault(message)
+    }
+}
+
 impl KeeperStepFailure {
     #[must_use]
     pub fn from_step(step: &KeeperStep, message: FailureMessage) -> Self {
@@ -331,11 +362,23 @@ impl KeeperStepFailure {
             message,
         }
     }
+
+    #[must_use]
+    pub fn from_effect_error(step: &KeeperStep, error: KeeperStepEffectError) -> Self {
+        Self {
+            step: KeeperStepLabel::from_step(step),
+            reason: error
+                .reason()
+                .unwrap_or_else(|| KeeperStepFailureReason::from_step(step)),
+            message: error.message().clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeeperStepFailureReason {
     HostPrerequisiteFailed,
+    ArtifactDownloadFailed,
     ArtifactVerificationFailed,
     ArtifactInstallFailed,
     SupervisorWriteFailed,
@@ -350,7 +393,6 @@ impl KeeperStepFailureReason {
     pub const fn from_step(step: &KeeperStep) -> Self {
         match step {
             KeeperStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
-            KeeperStep::VerifyArtifact(_) => Self::ArtifactVerificationFailed,
             KeeperStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
             KeeperStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             KeeperStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,

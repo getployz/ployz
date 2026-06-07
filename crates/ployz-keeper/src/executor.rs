@@ -2,7 +2,9 @@
 
 use ployz_core::ops::FailureMessage;
 
-use crate::steps::{KeeperStep, KeeperStepFailure, KeeperStepLabel, KeeperStepPlan};
+use crate::steps::{
+    KeeperStep, KeeperStepEffectError, KeeperStepFailure, KeeperStepLabel, KeeperStepPlan,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperPlanExecution {
@@ -30,7 +32,7 @@ pub enum KeeperStepEvent {
 }
 
 pub trait KeeperStepEffects {
-    fn apply_step(&mut self, step: &KeeperStep) -> Result<(), FailureMessage>;
+    fn apply_step(&mut self, step: &KeeperStep) -> Result<(), KeeperStepEffectError>;
 }
 
 pub trait KeeperStepRecorder {
@@ -67,8 +69,8 @@ pub fn execute_keeper_plan(
                     return failed_recording(events, succeeded, message);
                 }
             }
-            Err(message) => {
-                let failure = KeeperStepFailure::from_step(step, message);
+            Err(error) => {
+                let failure = KeeperStepFailure::from_effect_error(step, error);
                 let failed = KeeperStepEvent::Failed(failure.clone());
                 if let Err(message) = record_event(&mut events, recorder, failed.clone()) {
                     return failed_recording(events, failed, message);

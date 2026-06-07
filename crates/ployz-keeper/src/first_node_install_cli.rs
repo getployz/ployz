@@ -255,11 +255,11 @@ mod tests {
         ])
         .expect("non-UTF-8 local source path is valid");
 
-        let local_source = target
-            .ployzd_artifact
-            .source
-            .local_path()
-            .expect("source is local");
+        let crate::artifacts::ArtifactSourceView::LocalPath(local_source) =
+            target.ployzd_artifact.source.view()
+        else {
+            panic!("source is local");
+        };
         assert_eq!(local_source.as_os_str().as_bytes(), source.as_bytes());
     }
 

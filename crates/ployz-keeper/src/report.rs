@@ -50,9 +50,6 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd) => {
             "verify-host linux-root-systemd".to_owned()
         }
-        KeeperStepLabel::VerifyArtifact(target) => {
-            format!("verify-artifact {}", render_artifact_target(target))
-        }
         KeeperStepLabel::InstallArtifact(target) => {
             format!("install-artifact {}", render_artifact_target(target))
         }
@@ -83,6 +80,7 @@ fn render_artifact_target(target: &ArtifactTarget) -> String {
 fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
     match reason {
         KeeperStepFailureReason::HostPrerequisiteFailed => "host-prerequisite-failed",
+        KeeperStepFailureReason::ArtifactDownloadFailed => "artifact-download-failed",
         KeeperStepFailureReason::ArtifactVerificationFailed => "artifact-verification-failed",
         KeeperStepFailureReason::ArtifactInstallFailed => "artifact-install-failed",
         KeeperStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
