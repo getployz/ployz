@@ -7,22 +7,23 @@ The rule is blunt: if code would still matter after replacing Hetzner with a
 homelab box or another VPS provider, it belongs in Ployz. If it only exists to
 create or delete Hetzner servers, it stays in this shell harness.
 
-The acceptance bar is:
+The proof bar is:
 
 - create two fresh Hetzner machines,
 - prove SSH is ready,
 - install Ployz with the same commands users run,
 - add the second machine,
 - deploy a real smoke service,
-- prove cross-node networking and ingress,
+- hit the smoke service through ingress,
 - destroy the machines.
 
 ## Disposable Host Setup
 
 The script provisions two machines, proves SSH readiness, runs real product
-commands, and cleans up. The Hetzner parts should stay provider glue. Do not
-add Hetzner-specific Rust code unless the actual product needs it. Do not add
-Hetzner-specific operation states, readiness models, or provider abstractions.
+commands, prints product diagnostics, and cleans up. The Hetzner parts should
+stay provider glue. Do not add Hetzner-specific Rust code unless the actual
+product needs it. Do not add Hetzner-specific operation states, readiness
+models, or provider abstractions.
 
 Required tools:
 
@@ -103,7 +104,7 @@ The disposable host setup proves:
 - SSH readiness on both machines,
 - teardown by cleanup label selector.
 
-The product proof then proves:
+Ployz product commands and operation state then prove:
 
 - first-node install,
 - second-node add/join,
@@ -117,7 +118,7 @@ script. Anything that should work on a user VPS, homelab server, or another
 cloud must be expressed through normal Ployz commands and operation events.
 
 The script must not grow a second orchestration model. It should run product
-commands, wait for their visible operation results, print useful diagnostics on
+commands, wait for visible operation results, print useful diagnostics on
 failure, and clean up the hosts.
 
 ## First-Node Install Contract

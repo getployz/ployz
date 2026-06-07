@@ -243,7 +243,8 @@ commands over iroh.
 ### Disposable Host Acceptance
 
 - R39. The final MVP proof runs on two real Hetzner machines created through
-  the Hetzner CLI. Hetzner is only disposable host plumbing.
+  the Hetzner CLI. Hetzner is only disposable host plumbing: create hosts,
+  prove SSH, run product commands, collect diagnostics, and delete hosts.
 - R40. The acceptance script is a thin shell harness around real product
   commands: create two hosts, SSH in, install Ployz, initialize the first
   machine, add the second machine, deploy a smoke service, inspect the
@@ -252,7 +253,8 @@ commands over iroh.
   locally built binary, pre-staged release artifact, or explicit source path.
   It must not add provider abstractions, provider-specific Rust, provider
   readiness models, provider-specific operation states, or extra Hetzner-only
-  orchestration.
+  orchestration. If the script needs domain knowledge beyond "run this command
+  and wait for its operation result," that knowledge belongs in Ployz.
 - R42. The actual substrate is what is under test: NATS-over-iroh connectivity,
   independently supervised runtime processes, the eBPF/WireGuard container data
   plane, and simple ingress. Provider setup is not under test beyond host
@@ -1664,21 +1666,21 @@ Pipeline finish:
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
 - **Approach:** Use the official `hcloud` CLI and plain SSH. The script owns
-  deterministic names, cleanup labels, SSH readiness, and teardown. After that
-  it runs real product commands: install first node, initialize the cluster, add
-  the second machine, deploy the smoke service, inspect/watch the operation,
-  verify NATS-over-iroh, verify the required eBPF/WireGuard private data plane,
-  verify one ingress request, and destroy resources. The script is not an
-  orchestrator and contains no product policy. If a check matters after Hetzner
-  is removed, it belongs in a product command or operation event; otherwise it
-  stays in the throwaway script.
+  deterministic names, cleanup labels, SSH readiness, command execution,
+  diagnostics, and teardown. After SSH is ready, it runs real product commands:
+  install first node, initialize the cluster, add the second machine, deploy the
+  smoke service, inspect/watch the operation, hit one ingress URL, and destroy
+  resources. The script is not an orchestrator and contains no product policy.
+  NATS-over-iroh, the required eBPF/WireGuard data plane, placement, health, and
+  failure evidence must be visible through normal product commands, operation
+  events, and observed state.
 - **Test scenarios:**
   - Script refuses to run without an explicit Hetzner token and SSH key.
   - Failed host creation or SSH readiness destroys both servers or prints a
     cleanup command.
   - A clean run provisions two machines, installs Ployz, joins the second
-    machine, deploys the smoke service, verifies data plane and ingress, and
-    destroys resources.
+    machine, deploys the smoke service through real product operations, hits
+    ingress once, and destroys resources.
   - Failure prints the active operation id, affected nodes, cleanup command,
     and retained evidence locations.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
@@ -1822,8 +1824,9 @@ prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
 real install path on one machine. H0 then proves the real product on two fresh
-Hetzner machines: the harness creates hosts, real product commands install the
-cluster, the second node joins, the old eBPF/WireGuard data plane is adapted
-into the new code path, deploy places containers on both nodes, and ingress
-reaches the smoke service. Artifact download may be shortcut; the
-eBPF/WireGuard data plane should not be.
+Hetzner machines. The harness creates hosts and runs product commands; Ployz
+itself installs the cluster, joins the second node, adapts the old
+eBPF/WireGuard data plane into the new code path, places containers on both
+nodes, records operation evidence, and serves the smoke service through
+ingress. Artifact download may be shortcut; the eBPF/WireGuard data plane
+should not be.
