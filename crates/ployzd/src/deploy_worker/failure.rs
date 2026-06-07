@@ -12,9 +12,7 @@ use std::time::Duration;
 
 use crate::docker::labels::ManagedContainerLabels;
 
-use super::{
-    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, types::DeployProgressWrite,
-};
+use super::{DeployContainer, DeployExecutionCommand, DeployOperationRecorder};
 
 #[derive(Debug)]
 pub(super) struct DeployExecutionFailure {
@@ -137,8 +135,7 @@ pub enum DeployExecutionError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
-    RecordProgress { progress: DeployProgressWrite },
-    RecordEvidence,
+    RecordOperationEvent,
     RunContainer { node_id: NodeId },
     WaitHealthy,
     CommitActiveService,
@@ -154,8 +151,7 @@ impl DeployExecutionStep {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::RecordProgress { progress } => progress.as_str(),
-            Self::RecordEvidence => "record_evidence",
+            Self::RecordOperationEvent => "record_operation_event",
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
             Self::CommitActiveService => "commit_active_service",
@@ -186,14 +182,12 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("active service commit", timeout),
                 retained_artifacts,
             },
-            Self::RecordProgress { .. } | Self::RecordEvidence => {
-                DeployOperationFailure::ControlPlaneCommitFailed {
-                    service_id: command.request.service_id.clone(),
-                    revision_id: command.request.target_revision.clone(),
-                    message: timeout_failure_message(self.as_str(), timeout),
-                    retained_artifacts,
-                }
-            }
+            Self::RecordOperationEvent => DeployOperationFailure::ControlPlaneCommitFailed {
+                service_id: command.request.service_id.clone(),
+                revision_id: command.request.target_revision.clone(),
+                message: timeout_failure_message(self.as_str(), timeout),
+                retained_artifacts,
+            },
         }
     }
 }

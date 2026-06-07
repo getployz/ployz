@@ -37,7 +37,7 @@ pub use preparation::{
 pub use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
 pub use types::{
     DeployCompletedEventRecord, DeployCompletedEventRecordFailure, DeployContainer,
-    DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts, DeployProgressWrite,
+    DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
 };
 
 pub async fn execute_deploy_operation<R, N, H, A>(
@@ -171,9 +171,7 @@ where
 {
     with_step_timeout(
         command,
-        DeployExecutionStep::RecordProgress {
-            progress: types::DeployProgressWrite::Planning,
-        },
+        DeployExecutionStep::RecordOperationEvent,
         record(recorder, &command.operation_id, transition),
     )
     .await
@@ -188,7 +186,7 @@ where
     R: DeployOperationRecorder,
 {
     let evidence = DeployEvidence::PlanCreated { plan: plan.clone() };
-    with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
+    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
         recorder
             .record_deploy_evidence(&command.operation_id, evidence)
             .await
@@ -207,9 +205,7 @@ where
 {
     with_step_timeout(
         command,
-        DeployExecutionStep::RecordProgress {
-            progress: types::DeployProgressWrite::Running { stage },
-        },
+        DeployExecutionStep::RecordOperationEvent,
         record(
             recorder,
             &command.operation_id,
@@ -241,7 +237,7 @@ where
     R: DeployOperationRecorder,
 {
     let evidence = DeployEvidence::HealthCheckStarted;
-    with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
+    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
         recorder
             .record_deploy_evidence(&command.operation_id, evidence)
             .await
@@ -262,7 +258,7 @@ where
         node_id: started.node_id.clone(),
         container_id: started.container_id.clone(),
     };
-    with_step_timeout(command, DeployExecutionStep::RecordEvidence, async {
+    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
         recorder
             .record_deploy_evidence(&command.operation_id, evidence)
             .await

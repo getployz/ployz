@@ -1,6 +1,6 @@
 use ployz_core::deploy::{DeployRequest, ExistingServiceReplica};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
-use ployz_core::ops::{DeployRunningStage, OperatorHint, RetainedArtifact};
+use ployz_core::ops::{OperatorHint, RetainedArtifact};
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use std::time::Duration;
 
@@ -82,30 +82,6 @@ pub enum DeployCompletedEventRecord {
 pub enum DeployCompletedEventRecordFailure {
     RecordRejected,
     TimedOut { timeout: Duration },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeployProgressWrite {
-    Planning,
-    Running { stage: DeployRunningStage },
-}
-
-impl DeployProgressWrite {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Planning => "planning",
-            Self::Running {
-                stage: DeployRunningStage::StartingContainers,
-            } => "starting_containers",
-            Self::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            } => "waiting_for_health",
-            Self::Running {
-                stage: DeployRunningStage::ActiveServiceCommit,
-            } => "active_service_commit",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
