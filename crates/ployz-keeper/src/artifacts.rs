@@ -71,7 +71,13 @@ impl ArtifactSource {
             return Ok(Self(ArtifactSourceKind::RemoteUrl(value)));
         }
 
-        let path = PathBuf::from(value);
+        Self::from_local_path(PathBuf::from(value))
+    }
+
+    pub fn from_local_path(path: PathBuf) -> Result<Self, ArtifactTargetError> {
+        if path.as_os_str().is_empty() {
+            return Err(ArtifactTargetError::EmptySource);
+        }
         if !path.is_absolute() {
             return Err(ArtifactTargetError::RelativeSourcePath { value: path });
         }
