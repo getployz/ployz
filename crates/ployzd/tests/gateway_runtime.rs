@@ -9,7 +9,7 @@ use ployzd::gateway::{
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
     GatewayProjectionUpdate, GatewayRoute, GatewayUpstream,
 };
-use ployzd::gateway_runtime::GatewayRuntime;
+use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
 
 #[test]
 fn gateway_runtime_serves_new_projection_from_available_source() {
@@ -127,6 +127,64 @@ fn gateway_runtime_has_no_served_routes_before_first_valid_source() {
     assert!(runtime.route_table().routes().is_empty());
 }
 
+#[test]
+fn route_table_selects_first_projected_upstream_for_target() {
+    let table = route_table([projected_route_with_upstreams(
+        "api.example.com",
+        [upstream("node_1", "ctr_1"), upstream("node_2", "ctr_2")],
+    )]);
+
+    assert_eq!(
+        table
+            .select_upstream(&route_target("api.example.com", 443))
+            .expect("target has upstream"),
+        upstream("node_1", "ctr_1")
+    );
+}
+
+#[test]
+fn route_table_reports_unavailable_projection() {
+    let table = GatewayRouteTable::empty();
+
+    assert_eq!(
+        table
+            .select_upstream(&route_target("api.example.com", 443))
+            .expect_err("route table is unavailable"),
+        GatewayRouteSelectionError::RouteTableUnavailable
+    );
+}
+
+#[test]
+fn route_table_reports_missing_route() {
+    let table = route_table([projected_route("api.example.com", "node_1", "ctr_1")]);
+
+    assert_eq!(
+        table
+            .select_upstream(&route_target("admin.example.com", 443))
+            .expect_err("target has no route"),
+        GatewayRouteSelectionError::NoRoute {
+            target: route_target("admin.example.com", 443),
+        }
+    );
+}
+
+#[test]
+fn route_table_reports_route_without_upstreams() {
+    let table = route_table([GatewayProjectedRoute {
+        target: route_target("api.example.com", 443),
+        upstreams: Vec::new(),
+    }]);
+
+    assert_eq!(
+        table
+            .select_upstream(&route_target("api.example.com", 443))
+            .expect_err("target has no upstream"),
+        GatewayRouteSelectionError::NoUpstream {
+            target: route_target("api.example.com", 443),
+        }
+    );
+}
+
 fn source_input(
     hostname: &str,
     node_id_value: &str,
@@ -173,6 +231,29 @@ fn projected_route(
             node_id: node_id(node_id_value),
             container_id: container_id(container_id_value),
         }],
+    }
+}
+
+fn projected_route_with_upstreams(
+    hostname: &str,
+    upstreams: impl IntoIterator<Item = GatewayUpstream>,
+) -> GatewayProjectedRoute {
+    GatewayProjectedRoute {
+        target: route_target(hostname, 443),
+        upstreams: upstreams.into_iter().collect(),
+    }
+}
+
+fn route_table(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> GatewayRouteTable {
+    GatewayRouteTable::from_projection(GatewayProjection {
+        routes: routes.into_iter().collect(),
+    })
+}
+
+fn upstream(node_id_value: &str, container_id_value: &str) -> GatewayUpstream {
+    GatewayUpstream {
+        node_id: node_id(node_id_value),
+        container_id: container_id(container_id_value),
     }
 }
 

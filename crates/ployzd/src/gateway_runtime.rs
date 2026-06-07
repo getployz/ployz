@@ -2,7 +2,7 @@
 
 use crate::gateway::{
     GatewayProjectedRoute, GatewayProjection, GatewayProjectionState, GatewayProjectionUpdate,
-    apply_gateway_update,
+    GatewayUpstream, apply_gateway_update,
 };
 use crate::gateway_source::load_gateway_projection_update_from_nats;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
@@ -72,6 +72,13 @@ impl GatewayRouteTable {
     }
 
     #[must_use]
+    pub const fn from_projection(projection: GatewayProjection) -> Self {
+        Self {
+            current: Some(projection),
+        }
+    }
+
+    #[must_use]
     pub const fn current(&self) -> Option<&GatewayProjection> {
         self.current.as_ref()
     }
@@ -84,9 +91,46 @@ impl GatewayRouteTable {
             .unwrap_or(&[])
     }
 
+    pub fn select_upstream(
+        &self,
+        target: &ployz_core::ops::RouteTarget,
+    ) -> Result<GatewayUpstream, GatewayRouteSelectionError> {
+        let projection = self
+            .current
+            .as_ref()
+            .ok_or(GatewayRouteSelectionError::RouteTableUnavailable)?;
+        let route = projection
+            .routes
+            .iter()
+            .find(|route| &route.target == target)
+            .ok_or_else(|| GatewayRouteSelectionError::NoRoute {
+                target: target.clone(),
+            })?;
+        let upstream =
+            route
+                .upstreams
+                .first()
+                .ok_or_else(|| GatewayRouteSelectionError::NoUpstream {
+                    target: target.clone(),
+                })?;
+
+        Ok(upstream.clone())
+    }
+
     fn replace(&mut self, projection: GatewayProjection) {
         self.current = Some(projection);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewayRouteSelectionError {
+    RouteTableUnavailable,
+    NoRoute {
+        target: ployz_core::ops::RouteTarget,
+    },
+    NoUpstream {
+        target: ployz_core::ops::RouteTarget,
+    },
 }
 
 pub async fn refresh_gateway_runtime_from_nats(
