@@ -1,4 +1,52 @@
-use ployz_core::ops::{OperationEvent, ReplayedOperationEvent};
+use ployz_core::ids::OperationId;
+use ployz_core::ops::{
+    EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayLimit,
+    OperationEventReplayRequest, ReplayedOperationEvent,
+};
+
+use crate::commands::PloyzctlCliError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpsWatchCommand {
+    pub operation_id: OperationId,
+}
+
+impl OpsWatchCommand {
+    #[must_use]
+    pub fn into_request(self) -> OperationEventReplayRequest {
+        OperationEventReplayRequest {
+            operation_id: self.operation_id,
+            start_sequence: EventSequence::try_new(1).expect("one is a valid event sequence"),
+            limit: OperationEventReplayLimit::try_new(MAX_OPERATION_EVENT_REPLAY_LIMIT)
+                .expect("max replay limit is valid"),
+        }
+    }
+}
+
+pub fn parse_ops_watch_command(args: &[String]) -> Result<OpsWatchCommand, PloyzctlCliError> {
+    let operation_id = match args {
+        [] => {
+            return Err(PloyzctlCliError::MissingRequiredArgument {
+                flag: "<operation_id>",
+            });
+        }
+        [operation_id] => operation_id,
+        [_, unexpected, ..] => {
+            return Err(PloyzctlCliError::UnexpectedArgument {
+                value: unexpected.clone(),
+            });
+        }
+    };
+
+    let operation_id = OperationId::try_new(operation_id.clone()).map_err(|error| {
+        PloyzctlCliError::InvalidValue {
+            flag: "<operation_id>",
+            message: error.to_string(),
+        }
+    })?;
+
+    Ok(OpsWatchCommand { operation_id })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchOutput {

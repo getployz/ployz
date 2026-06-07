@@ -3,12 +3,12 @@ use std::process::{Command, Output};
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
-    ReplayedOperationEvent,
+    EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
 };
 use ployz_sdk_types::AcceptedOperation;
 use ployz_sdk_types::MachineAddGateway;
-use ployzctl::commands::deploy::DetachedDeployOutput;
+use ployzctl::commands::deploy::{DetachedDeployCommand, DetachedDeployOutput};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineJoinToken, MachineName,
@@ -81,6 +81,92 @@ fn cli_renders_help_for_no_args() {
         parse_command(std::iter::empty::<String>()).expect("no args renders help"),
         PloyzctlCommand::Help
     );
+}
+
+#[test]
+fn cli_dispatches_detached_deploy_request() {
+    let command = parse_command(detached_deploy_args()).expect("deploy command parses");
+
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    assert_eq!(command, detached_deploy_command());
+}
+
+#[test]
+fn cli_requires_detached_deploy_mode() {
+    let args = [
+        "deploy",
+        "--service",
+        "svc_api",
+        "--revision",
+        "rev_2",
+        "--image",
+        "ghcr.io/acme/api:rev-2",
+        "--replicas",
+        "1",
+        "--operation",
+        "op_deploy",
+        "--idempotency-key",
+        "idem_deploy",
+    ]
+    .map(str::to_owned);
+
+    assert!(matches!(
+        parse_command(args),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--detach"
+    ));
+}
+
+#[test]
+fn cli_requires_deploy_idempotency_key() {
+    let args = [
+        "deploy",
+        "--detach",
+        "--service",
+        "svc_api",
+        "--revision",
+        "rev_2",
+        "--image",
+        "ghcr.io/acme/api:rev-2",
+        "--replicas",
+        "1",
+        "--operation",
+        "op_deploy",
+    ]
+    .map(str::to_owned);
+
+    assert!(matches!(
+        parse_command(args),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--idempotency-key"
+    ));
+}
+
+#[test]
+fn cli_dispatches_ops_watch_request() {
+    let command =
+        parse_command(["ops", "watch", "op_deploy"].map(str::to_owned)).expect("ops watch parses");
+
+    let PloyzctlCommand::OpsWatch(command) = command else {
+        panic!("expected ops watch command");
+    };
+    let request = command.into_request();
+
+    assert_eq!(request.operation_id, operation_id("op_deploy"));
+    assert_eq!(request.start_sequence, event_sequence(1));
+    assert_eq!(
+        request.limit,
+        OperationEventReplayLimit::try_new(MAX_OPERATION_EVENT_REPLAY_LIMIT)
+            .expect("valid replay limit")
+    );
+}
+
+#[test]
+fn cli_requires_ops_watch_operation_id() {
+    assert!(matches!(
+        parse_command(["ops", "watch"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<operation_id>"
+    ));
 }
 
 #[test]
@@ -203,10 +289,12 @@ fn binary_help_only_advertises_implemented_commands() {
     assert!(stdout(&output).contains("ployzctl [--nats <url>] <command>"));
     assert!(stdout(&output).contains("ployzctl init --node <id> [--gateway]"));
     assert!(stdout(&output).contains(
+        "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
+    ));
+    assert!(stdout(&output).contains(
         "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]"
     ));
-    assert!(!stdout(&output).contains("deploy"));
-    assert!(!stdout(&output).contains("ops watch"));
+    assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
 }
 
@@ -229,11 +317,24 @@ fn binary_dispatches_init_first_node() {
 
 #[test]
 fn binary_rejects_unimplemented_commands() {
-    let output = run_ployzctl(&["deploy"]);
+    let output = run_ployzctl(&["service"]);
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "unexpected argument: deploy\n");
+    assert_eq!(stderr(&output), "unexpected argument: service\n");
+}
+
+#[test]
+fn binary_deploy_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .args(detached_deploy_arg_refs())
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
 }
 
 #[test]
@@ -252,6 +353,19 @@ fn binary_machine_add_requires_nats_url() {
             "--idempotency-key",
             "idem_machine",
         ])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+}
+
+#[test]
+fn binary_ops_watch_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .args(["ops", "watch", "op_deploy"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -408,6 +522,41 @@ fn deploy_request() -> DeployRequest {
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
     }
+}
+
+fn detached_deploy_command() -> DetachedDeployCommand {
+    DetachedDeployCommand {
+        operation_id: operation_id("op_deploy"),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_deploy")
+            .expect("valid idempotency key"),
+        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+        revision_id: RevisionId::try_new("rev_2").expect("valid revision id"),
+        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+        replicas: ReplicaCount::try_new(1).expect("valid replicas"),
+    }
+}
+
+fn detached_deploy_args() -> impl Iterator<Item = String> {
+    detached_deploy_arg_refs().into_iter().map(str::to_owned)
+}
+
+fn detached_deploy_arg_refs() -> [&'static str; 14] {
+    [
+        "deploy",
+        "--detach",
+        "--service",
+        "svc_api",
+        "--revision",
+        "rev_2",
+        "--image",
+        "ghcr.io/acme/api:rev-2",
+        "--replicas",
+        "1",
+        "--operation",
+        "op_deploy",
+        "--idempotency-key",
+        "idem_deploy",
+    ]
 }
 
 fn operation_id(value: &str) -> OperationId {

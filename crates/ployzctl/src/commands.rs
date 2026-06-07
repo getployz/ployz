@@ -11,7 +11,9 @@ pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
 ployzctl init --node <id> [--gateway]
-ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]";
+ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>
+ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
+ployzctl ops watch <operation_id>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzctlInvocation {
@@ -21,8 +23,10 @@ pub struct PloyzctlInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
+    Deploy(deploy::DetachedDeployCommand),
     Init(init::FirstNodeInitCommand),
     MachineAdd(machine::MachineAddCommand),
+    OpsWatch(ops::OpsWatchCommand),
     Help,
 }
 
@@ -58,11 +62,17 @@ pub fn parse_command(
     match args.as_slice() {
         [] => Ok(PloyzctlCommand::Help),
         [flag] if flag == "--help" || flag == "-h" => Ok(PloyzctlCommand::Help),
+        [command, rest @ ..] if command == "deploy" => {
+            deploy::parse_deploy_command(rest).map(PloyzctlCommand::Deploy)
+        }
         [command, rest @ ..] if command == "init" => {
             init::parse_init_command(rest).map(PloyzctlCommand::Init)
         }
         [command, subcommand, rest @ ..] if command == "machine" && subcommand == "add" => {
             machine::parse_machine_add_command(rest).map(PloyzctlCommand::MachineAdd)
+        }
+        [command, subcommand, rest @ ..] if command == "ops" && subcommand == "watch" => {
+            ops::parse_ops_watch_command(rest).map(PloyzctlCommand::OpsWatch)
         }
         [unknown, ..] => Err(PloyzctlCliError::UnexpectedArgument {
             value: unknown.clone(),
