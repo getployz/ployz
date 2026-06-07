@@ -15,10 +15,11 @@ ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [dev-dependencies]
 nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [[bin]]
 name = "ployzctl"

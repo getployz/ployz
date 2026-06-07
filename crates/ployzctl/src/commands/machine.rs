@@ -1,9 +1,37 @@
 use std::fmt;
 
-use ployz_core::ids::NodeId;
-use ployz_sdk_types::AcceptedOperation;
+use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ops::OperationIdempotencyKey;
+use ployz_sdk_types::{
+    AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
+};
 
+pub use ployz_sdk_types::MachineName;
 pub use ployz_sdk_types::{BootstrapCommandError, MachineBootstrapUrl, MachineJoinToken};
+
+use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddCommand {
+    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
+    pub node_id: NodeId,
+    pub name: MachineName,
+    pub gateway: MachineAddGateway,
+}
+
+impl MachineAddCommand {
+    #[must_use]
+    pub fn into_request(self) -> MachineAddRequest {
+        MachineAddRequest {
+            operation_id: self.operation_id,
+            idempotency_key: self.idempotency_key,
+            node_id: self.node_id,
+            name: self.name,
+            gateway: self.gateway,
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct MachineAddOutput {
@@ -14,6 +42,16 @@ pub struct MachineAddOutput {
 }
 
 impl MachineAddOutput {
+    #[must_use]
+    pub fn from_accepted(accepted: MachineAddAccepted) -> Self {
+        Self {
+            node_id: accepted.node_id,
+            accepted: accepted.accepted,
+            bootstrap_url: accepted.bootstrap_url,
+            join_token: accepted.join_token,
+        }
+    }
+
     #[must_use]
     pub fn render(&self) -> String {
         format!(
@@ -40,4 +78,55 @@ impl fmt::Debug for MachineAddOutput {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, PloyzctlCliError> {
+    let mut node_id = None;
+    let mut name = None;
+    let mut gateway = MachineAddGateway::Skip;
+    let mut operation_id = None;
+    let mut idempotency_key = None;
+    let mut args = ArgCursor::new(args);
+
+    while !args.is_empty() {
+        if args.take_flag("--gateway") {
+            if gateway == MachineAddGateway::Install {
+                return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
+            }
+            gateway = MachineAddGateway::Install;
+            continue;
+        }
+        if let Some(value) = args.take_value("--node")? {
+            let parsed = NodeId::try_new(value).map_err(|error| invalid_value("--node", error))?;
+            set_once(&mut node_id, parsed, "--node")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--name")? {
+            let parsed =
+                MachineName::try_new(value).map_err(|error| invalid_value("--name", error))?;
+            set_once(&mut name, parsed, "--name")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--operation")? {
+            let parsed =
+                OperationId::try_new(value).map_err(|error| invalid_value("--operation", error))?;
+            set_once(&mut operation_id, parsed, "--operation")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--idempotency-key")? {
+            let parsed = OperationIdempotencyKey::try_new(value)
+                .map_err(|error| invalid_value("--idempotency-key", error))?;
+            set_once(&mut idempotency_key, parsed, "--idempotency-key")?;
+            continue;
+        }
+        return Err(args.unexpected());
+    }
+
+    Ok(MachineAddCommand {
+        operation_id: required(operation_id, "--operation")?,
+        idempotency_key: required(idempotency_key, "--idempotency-key")?,
+        node_id: required(node_id, "--node")?,
+        name: required(name, "--name")?,
+        gateway,
+    })
 }

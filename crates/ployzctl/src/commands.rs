@@ -7,12 +7,48 @@ pub mod init;
 pub mod machine;
 pub mod ops;
 
-pub const USAGE: &str = "ployzctl init --node <id> [--gateway]";
+pub const USAGE: &str = "\
+ployzctl [--nats <url>] <command>
+
+ployzctl init --node <id> [--gateway]
+ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzctlInvocation {
+    pub nats_url: Option<String>,
+    pub command: PloyzctlCommand,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
     Init(init::FirstNodeInitCommand),
+    MachineAdd(machine::MachineAddCommand),
     Help,
+}
+
+pub fn parse_invocation(
+    args: impl IntoIterator<Item = String>,
+) -> Result<PloyzctlInvocation, PloyzctlCliError> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    let mut nats_url = None;
+    let mut command_start = 0;
+
+    while let Some(flag) = args.get(command_start) {
+        if flag == "--nats" {
+            let Some(value) = args.get(command_start + 1) else {
+                return Err(PloyzctlCliError::MissingValue { flag: "--nats" });
+            };
+            set_once(&mut nats_url, flag_value("--nats", value)?, "--nats")?;
+            command_start += 2;
+            continue;
+        }
+        break;
+    }
+
+    Ok(PloyzctlInvocation {
+        nats_url,
+        command: parse_command(args.into_iter().skip(command_start))?,
+    })
 }
 
 pub fn parse_command(
@@ -25,17 +61,90 @@ pub fn parse_command(
         [command, rest @ ..] if command == "init" => {
             init::parse_init_command(rest).map(PloyzctlCommand::Init)
         }
+        [command, subcommand, rest @ ..] if command == "machine" && subcommand == "add" => {
+            machine::parse_machine_add_command(rest).map(PloyzctlCommand::MachineAdd)
+        }
         [unknown, ..] => Err(PloyzctlCliError::UnexpectedArgument {
             value: unknown.clone(),
         }),
     }
 }
 
-#[must_use]
-pub fn render_command(command: PloyzctlCommand) -> String {
-    match command {
-        PloyzctlCommand::Init(command) => command.render(),
-        PloyzctlCommand::Help => format!("{USAGE}\n"),
+pub(crate) fn flag_value(flag: &'static str, value: &str) -> Result<String, PloyzctlCliError> {
+    if value.starts_with('-') {
+        return Err(PloyzctlCliError::MissingValue { flag });
+    }
+    Ok(value.to_owned())
+}
+
+pub(crate) fn set_once<T>(
+    slot: &mut Option<T>,
+    value: T,
+    flag: &'static str,
+) -> Result<(), PloyzctlCliError> {
+    if slot.is_some() {
+        return Err(PloyzctlCliError::DuplicateArgument { flag });
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+pub(crate) fn required<T>(value: Option<T>, flag: &'static str) -> Result<T, PloyzctlCliError> {
+    value.ok_or(PloyzctlCliError::MissingRequiredArgument { flag })
+}
+
+pub(crate) fn invalid_value(flag: &'static str, error: impl fmt::Display) -> PloyzctlCliError {
+    PloyzctlCliError::InvalidValue {
+        flag,
+        message: error.to_string(),
+    }
+}
+
+pub(crate) struct ArgCursor<'a> {
+    rest: &'a [String],
+}
+
+impl<'a> ArgCursor<'a> {
+    pub(crate) const fn new(rest: &'a [String]) -> Self {
+        Self { rest }
+    }
+
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.rest.is_empty()
+    }
+
+    pub(crate) fn take_flag(&mut self, flag: &'static str) -> bool {
+        match self.rest {
+            [head, tail @ ..] if head == flag => {
+                self.rest = tail;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn take_value(
+        &mut self,
+        flag: &'static str,
+    ) -> Result<Option<String>, PloyzctlCliError> {
+        match self.rest {
+            [head] if head == flag => Err(PloyzctlCliError::MissingValue { flag }),
+            [head, value, tail @ ..] if head == flag => {
+                let value = flag_value(flag, value)?;
+                self.rest = tail;
+                Ok(Some(value))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn unexpected(&self) -> PloyzctlCliError {
+        let [value, ..] = self.rest else {
+            unreachable!("unexpected is only called for non-empty args");
+        };
+        PloyzctlCliError::UnexpectedArgument {
+            value: value.clone(),
+        }
     }
 }
 

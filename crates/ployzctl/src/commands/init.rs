@@ -1,7 +1,7 @@
 use ployz_core::ids::NodeId;
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 
-use crate::commands::PloyzctlCliError;
+use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstNodeInitCommand {
@@ -53,63 +53,26 @@ impl FirstNodeInitOutput {
 pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
     let mut node_id = None;
     let mut gateway = FirstNodeGateway::Skip;
-    let mut rest = args;
+    let mut args = ArgCursor::new(args);
 
-    while !rest.is_empty() {
-        match rest {
-            [flag, tail @ ..] if flag == "--gateway" => {
-                if gateway == FirstNodeGateway::Install {
-                    return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
-                }
-                gateway = FirstNodeGateway::Install;
-                rest = tail;
+    while !args.is_empty() {
+        if args.take_flag("--gateway") {
+            if gateway == FirstNodeGateway::Install {
+                return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
             }
-            [flag] if flag == "--node" => {
-                return Err(PloyzctlCliError::MissingValue { flag: "--node" });
-            }
-            [flag, value, tail @ ..] if flag == "--node" => {
-                set_once(&mut node_id, flag_value("--node", value)?, "--node")?;
-                rest = tail;
-            }
-            [unknown, ..] => {
-                return Err(PloyzctlCliError::UnexpectedArgument {
-                    value: unknown.clone(),
-                });
-            }
-            [] => unreachable!("loop exits for empty args"),
+            gateway = FirstNodeGateway::Install;
+            continue;
         }
+        if let Some(value) = args.take_value("--node")? {
+            set_once(&mut node_id, value, "--node")?;
+            continue;
+        }
+        return Err(args.unexpected());
     }
 
     Ok(FirstNodeInitCommand {
-        node_id: NodeId::try_new(required(node_id, "--node")?).map_err(|error| {
-            PloyzctlCliError::InvalidValue {
-                flag: "--node",
-                message: error.to_string(),
-            }
-        })?,
+        node_id: NodeId::try_new(required(node_id, "--node")?)
+            .map_err(|error| invalid_value("--node", error))?,
         gateway,
     })
-}
-
-fn flag_value(flag: &'static str, value: &str) -> Result<String, PloyzctlCliError> {
-    if value.starts_with('-') {
-        return Err(PloyzctlCliError::MissingValue { flag });
-    }
-    Ok(value.to_owned())
-}
-
-fn set_once(
-    slot: &mut Option<String>,
-    value: String,
-    flag: &'static str,
-) -> Result<(), PloyzctlCliError> {
-    if slot.is_some() {
-        return Err(PloyzctlCliError::DuplicateArgument { flag });
-    }
-    *slot = Some(value);
-    Ok(())
-}
-
-fn required(value: Option<String>, flag: &'static str) -> Result<String, PloyzctlCliError> {
-    value.ok_or(PloyzctlCliError::MissingRequiredArgument { flag })
 }

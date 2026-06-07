@@ -3,14 +3,20 @@ use std::process::{Command, Output};
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    EventSequence, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
+    EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
+    ReplayedOperationEvent,
 };
 use ployz_sdk_types::AcceptedOperation;
+use ployz_sdk_types::MachineAddGateway;
 use ployzctl::commands::deploy::DetachedDeployOutput;
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
-use ployzctl::commands::machine::{MachineAddOutput, MachineBootstrapUrl, MachineJoinToken};
+use ployzctl::commands::machine::{
+    MachineAddOutput, MachineBootstrapUrl, MachineJoinToken, MachineName,
+};
 use ployzctl::commands::ops::WatchOutput;
-use ployzctl::commands::{PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, render_command};
+use ployzctl::commands::{
+    PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, parse_invocation,
+};
 
 #[test]
 fn init_first_node_reports_supervised_product_roles() {
@@ -40,8 +46,11 @@ fn cli_dispatches_init_first_node() {
     let command = parse_command(["init", "--gateway", "--node", "node_1"].map(str::to_owned))
         .expect("init command parses");
 
+    let PloyzctlCommand::Init(command) = command else {
+        panic!("expected init command");
+    };
     assert_eq!(
-        render_command(command),
+        command.render(),
         "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
     );
 }
@@ -75,14 +84,128 @@ fn cli_renders_help_for_no_args() {
 }
 
 #[test]
+fn cli_dispatches_machine_add_request() {
+    let command = parse_command(
+        [
+            "machine",
+            "add",
+            "--node",
+            "node_2",
+            "--name",
+            "edge_2",
+            "--gateway",
+            "--operation",
+            "op_machine",
+            "--idempotency-key",
+            "idem_machine",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("machine add command parses");
+
+    let PloyzctlCommand::MachineAdd(command) = command else {
+        panic!("expected machine add command");
+    };
+    assert_eq!(command.operation_id, operation_id("op_machine"));
+    assert_eq!(
+        command.idempotency_key,
+        OperationIdempotencyKey::try_new("idem_machine").expect("valid idempotency key")
+    );
+    assert_eq!(command.node_id, node_id("node_2"));
+    assert_eq!(
+        command.name,
+        MachineName::try_new("edge_2").expect("valid machine name")
+    );
+    assert_eq!(command.gateway, MachineAddGateway::Install);
+}
+
+#[test]
+fn cli_parses_global_nats_url() {
+    let invocation = parse_invocation(
+        [
+            "--nats",
+            "nats://127.0.0.1:4222",
+            "machine",
+            "add",
+            "--node",
+            "node_2",
+            "--name",
+            "edge_2",
+            "--operation",
+            "op_machine",
+            "--idempotency-key",
+            "idem_machine",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("invocation parses");
+
+    assert_eq!(
+        invocation.nats_url.as_deref(),
+        Some("nats://127.0.0.1:4222")
+    );
+    assert!(matches!(invocation.command, PloyzctlCommand::MachineAdd(_)));
+}
+
+#[test]
+fn cli_requires_machine_add_operation_id() {
+    assert!(matches!(
+        parse_command(
+            [
+                "machine",
+                "add",
+                "--node",
+                "node_2",
+                "--name",
+                "edge_2",
+                "--idempotency-key",
+                "idem_machine"
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag })
+            if flag == "--operation"
+    ));
+}
+
+#[test]
+fn cli_requires_machine_add_idempotency_key() {
+    assert!(matches!(
+        parse_command(
+            [
+                "machine",
+                "add",
+                "--node",
+                "node_2",
+                "--name",
+                "edge_2",
+                "--operation",
+                "op_machine"
+            ]
+            .map(str::to_owned)
+        ),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag })
+            if flag == "--idempotency-key"
+    ));
+}
+
+#[test]
 fn binary_help_only_advertises_implemented_commands() {
     let output = run_ployzctl(&[]);
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
     assert_eq!(stdout(&output), format!("{USAGE}\n"));
+    assert!(stdout(&output).contains("ployzctl [--nats <url>] <command>"));
     assert!(stdout(&output).contains("ployzctl init --node <id> [--gateway]"));
+    assert!(stdout(&output).contains(
+        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]"
+    ));
     assert!(!stdout(&output).contains("deploy"));
-    assert!(!stdout(&output).contains("machine add"));
     assert!(!stdout(&output).contains("ops watch"));
     assert_eq!(stderr(&output), "");
 }
@@ -91,7 +214,12 @@ fn binary_help_only_advertises_implemented_commands() {
 fn binary_dispatches_init_first_node() {
     let output = run_ployzctl(&["init", "--node", "node_1", "--gateway"]);
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
     assert_eq!(
         stdout(&output),
         "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
@@ -106,6 +234,30 @@ fn binary_rejects_unimplemented_commands() {
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
     assert_eq!(stderr(&output), "unexpected argument: deploy\n");
+}
+
+#[test]
+fn binary_machine_add_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .args([
+            "machine",
+            "add",
+            "--node",
+            "node_2",
+            "--name",
+            "edge_2",
+            "--operation",
+            "op_machine",
+            "--idempotency-key",
+            "idem_machine",
+        ])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
 }
 
 #[test]
@@ -260,6 +412,10 @@ fn deploy_request() -> DeployRequest {
 
 fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
 }
 
 fn event_sequence(value: u64) -> EventSequence {
