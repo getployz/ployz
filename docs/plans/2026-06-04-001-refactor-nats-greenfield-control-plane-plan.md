@@ -244,7 +244,7 @@ commands over iroh.
 
 - R39. The final MVP proof runs on two real Hetzner machines created through
   the Hetzner CLI. Hetzner is only disposable host plumbing: create hosts,
-  prove SSH, run product commands, collect diagnostics, and delete hosts.
+  prove SSH, run product commands, collect command output, and delete hosts.
 - R40. The acceptance script is a thin shell harness around real product
   commands: create two hosts, SSH in, install Ployz, initialize the first
   machine, add the second machine, deploy a smoke service, inspect the
@@ -252,22 +252,25 @@ commands over iroh.
 - R41. The acceptance path may cut corners on artifact distribution by using a
   locally built binary, pre-staged release artifact, or explicit source path.
   It must not add provider abstractions, provider-specific Rust, provider
-  readiness models, provider-specific operation states, or extra Hetzner-only
-  orchestration. If the script needs domain knowledge beyond "run this command
-  and wait for its operation result," that knowledge belongs in Ployz.
-- R42. The actual substrate is what is under test: NATS-over-iroh connectivity,
-  independently supervised runtime processes, the eBPF/WireGuard container data
-  plane, and simple ingress. Provider setup is not under test beyond host
-  creation, SSH access, and cleanup.
+  readiness models, provider-specific operation states, retries, recovery, or
+  extra Hetzner-only orchestration. If the script needs domain knowledge beyond
+  "run this product command and wait for its operation result," that knowledge
+  belongs in Ployz.
+- R42. The substrate proof is intentionally small: install, init first node,
+  add second node, connect NATS over iroh, start the supervised runtime pieces,
+  deploy one smoke service, and prove the service works through the normal
+  product path. Provider setup is not under test beyond host creation, SSH
+  access, and cleanup.
 - R43. Reuse the old eBPF/WireGuard dataplane work from git history as a hard
-  requirement for container networking. The proof can be thin, but the data
-  plane must be real.
-- R44. Deploy placement proves multi-node execution by running service
-  containers on both machines and preserving operation evidence when substrate
-  setup, container start, or node reachability fails.
-- R45. Ingress only needs to prove that traffic can enter a public node and
-  reach the smoke service over the real cross-node path. Do not build a
-  provider-aware ingress acceptance framework.
+  requirement for container networking. The proof can be thin: move one packet
+  over the real data plane as part of the smoke deploy. Do not build a separate
+  data-plane acceptance product.
+- R44. Deploy placement proves multi-node execution only as far as the smoke
+  service requires. If the product can show one container on each node and a
+  successful request through the product route, the host proof is done.
+- R45. Failure output should be boring: active operation id, affected node ids,
+  the failing product command, and the cleanup command. No Hetzner-specific
+  diagnosis model.
 
 ### Simplicity And Readability
 
@@ -1668,15 +1671,27 @@ Pipeline finish:
 - **Approach:** Use the official `hcloud` CLI and plain SSH only to create two
   disposable Linux boxes and run commands on them. The script is not a product
   component and not an orchestrator. It provisions hosts, waits for SSH, runs
-  the same install and product commands a user would run, prints diagnostics on
-  failure, and tears the hosts down. Hetzner-specific behavior ends at host
+  the same install and product commands a user would run, saves command output
+  on failure, and tears the hosts down. Hetzner-specific behavior ends at host
   lifecycle and SSH readiness.
 
-  The proof is deliberately narrow: after the boxes exist, the product must
-  install itself, initialize the first node, add the second machine, connect
-  NATS over iroh, exercise the required eBPF/WireGuard data plane, deploy a
-  smoke service, expose it through ingress, and report operation evidence
-  through normal Ployz commands.
+  The proof is deliberately narrow. After the boxes exist, the script only
+  drives the product:
+
+  ```text
+  install first node
+  init cluster
+  add second machine
+  deploy smoke service
+  inspect operation
+  curl smoke service
+  cleanup hosts
+  ```
+
+  Passing H0 means the install path and real substrate work on fresh Linux
+  machines. It does not create a Hetzner feature, a provider adapter, or a
+  second orchestration path. If H0 needs complex logic to decide what to do
+  next, the product command is missing a primitive.
 
   Do not add Hetzner-specific Rust, provider abstractions, provider readiness
   state, provider operation types, provider install policy, or provider-aware
@@ -1686,14 +1701,15 @@ Pipeline finish:
   - Failed host creation or SSH readiness destroys both servers or prints a
     cleanup command.
   - A clean run provisions two machines, installs Ployz, joins the second
-    machine, deploys the smoke service through real product operations, hits
-    ingress once, and destroys resources.
-  - Failure prints the active operation id, affected nodes, cleanup command,
-    and retained evidence locations.
+    machine, deploys the smoke service through real product operations, curls
+    the smoke route once, and destroys resources.
+  - Failure prints the failing product command, active operation id when one
+    exists, affected node ids when known, command output path, and cleanup
+    command.
 - **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
-  end-to-end against two fresh Hetzner machines. Passing H0 means the substrate
-  and product commands work on real hosts; it does not create a Hetzner product
-  surface.
+  end-to-end against two fresh Hetzner machines. Passing H0 means install,
+  machine add, deploy, NATS-over-iroh, and the required eBPF/WireGuard data
+  path work on real hosts; it does not create a Hetzner product surface.
 
 ---
 
@@ -1834,8 +1850,9 @@ The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
 real install path on one machine. H0 then proves the real product on two fresh
 Hetzner machines. The harness creates hosts and runs product commands; Ployz
-itself installs the cluster, joins the second node, adapts the old
-eBPF/WireGuard data plane into the new code path, places containers on both
-nodes, records operation evidence, and serves the smoke service through
+itself installs the cluster, joins the second node, uses the old
+eBPF/WireGuard data plane through the normal product path, places containers on
+both nodes, records operation evidence, and serves the smoke service through
 ingress. Artifact download may be shortcut; the eBPF/WireGuard data plane
-should not be.
+should not be. If the harness starts making product decisions, stop and move
+that primitive back into Ployz.

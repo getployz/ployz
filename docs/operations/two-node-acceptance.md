@@ -17,10 +17,13 @@ The proof bar is:
 - hit the smoke service through ingress,
 - destroy the machines.
 
+That is the whole job. Hetzner is not a feature area; it is a disposable way to
+prove the install path and real substrate on clean Linux hosts.
+
 ## Harness Boundary
 
 The script provisions two machines, proves SSH readiness, runs real product
-commands, prints product diagnostics, and cleans up.
+commands, stores command output on failure, and cleans up.
 
 Hetzner-specific behavior stops at:
 
@@ -32,7 +35,12 @@ Hetzner-specific behavior stops at:
 
 Everything after SSH is ready must be normal Ployz install/product behavior.
 Do not add Hetzner-specific Rust code, provider abstractions, provider
-readiness models, provider operation states, or provider-aware install policy.
+readiness models, provider operation states, retries, recovery, or
+provider-aware install policy.
+
+The harness waits for product operation results. It must not learn how Ployz
+internals converge. If the script needs more than "run command, wait for
+operation, print operation," the product command needs a clearer primitive.
 
 ## Disposable Host Setup
 
@@ -115,7 +123,8 @@ The disposable host setup proves:
 - SSH readiness on both machines,
 - teardown by cleanup label selector.
 
-Ployz product commands and operation state then prove:
+Ployz product commands and operation state then prove only the minimum real
+host path:
 
 - first-node install,
 - second-node add/join,
@@ -129,8 +138,8 @@ script. Anything that should work on a user VPS, homelab server, or another
 cloud must be expressed through normal Ployz commands and operation events.
 
 The script must not grow a second orchestration model. It should run product
-commands, wait for visible operation results, print useful diagnostics on
-failure, and clean up the hosts.
+commands, wait for visible operation results, print the failing command output,
+print cleanup instructions, and clean up the hosts.
 
 ## First-Node Install Contract
 
@@ -153,16 +162,17 @@ create the host and call the product command.
 second node. The command accepts a machine-add operation and returns bootstrap
 material for exactly one joining node.
 
-The pending machine is not schedulable. It can become active only after all
-three readiness facts are present:
+The pending machine is not schedulable until the product operation says it is
+active. The operation should base that on boring facts:
 
 - NATS tunnel over iroh is connected,
 - heartbeat is visible,
 - node inspect succeeds.
 
-A reused, invalid, or expired join token fails visibly and preserves operation
-evidence. A readiness failure also fails the operation instead of silently
-activating the machine.
+Those are product facts, not Hetzner facts. The harness should not duplicate
+them. A reused, invalid, or expired join token fails visibly and preserves
+operation evidence. A readiness failure also fails the operation instead of
+silently activating the machine.
 
 The joined node process shape is:
 
