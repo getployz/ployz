@@ -3,7 +3,7 @@ use ployz_core::state::{ActiveServiceCommit, ActiveServiceCommitRequest};
 use std::time::Duration;
 
 use super::{
-    ActiveServiceCommitter, DeployCompletionRecord, DeployCompletionRecordFailure,
+    ActiveServiceCommitter, DeployCompletedEventRecord, DeployCompletedEventRecordFailure,
     DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
 };
 
@@ -11,7 +11,7 @@ pub(super) async fn finalize_successful_deploy<A, R>(
     command: &DeployExecutionCommand,
     active_state: &mut A,
     recorder: &mut R,
-) -> Result<DeployCompletionRecord, DeployExecutionError>
+) -> Result<DeployCompletedEventRecord, DeployExecutionError>
 where
     A: ActiveServiceCommitter,
     R: DeployOperationRecorder,
@@ -23,7 +23,7 @@ where
     )
     .await?;
 
-    Ok(record_deploy_completion(command, recorder).await)
+    Ok(try_record_deploy_completion(command, recorder).await)
 }
 
 async fn commit_active_service_with_timeout<A>(
@@ -73,10 +73,10 @@ where
     }
 }
 
-async fn record_deploy_completion<R>(
+async fn try_record_deploy_completion<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
-) -> DeployCompletionRecord
+) -> DeployCompletedEventRecord
 where
     R: DeployOperationRecorder,
 {
@@ -86,12 +86,12 @@ where
     )
     .await
     {
-        Ok(Ok(())) => DeployCompletionRecord::Recorded,
-        Ok(Err(_)) => DeployCompletionRecord::Uncertain {
-            reason: DeployCompletionRecordFailure::RecordRejected,
+        Ok(Ok(())) => DeployCompletedEventRecord::Recorded,
+        Ok(Err(_)) => DeployCompletedEventRecord::NotRecorded {
+            reason: DeployCompletedEventRecordFailure::RecordRejected,
         },
-        Err(_) => DeployCompletionRecord::Uncertain {
-            reason: DeployCompletionRecordFailure::TimedOut {
+        Err(_) => DeployCompletedEventRecord::NotRecorded {
+            reason: DeployCompletedEventRecordFailure::TimedOut {
                 timeout: command.step_timeout(),
             },
         },

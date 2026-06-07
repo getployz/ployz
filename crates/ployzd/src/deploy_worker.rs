@@ -36,8 +36,8 @@ pub use preparation::{
 
 pub use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
 pub use types::{
-    DeployCompletionRecord, DeployCompletionRecordFailure, DeployContainer, DeployExecutionCommand,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployProgressWrite,
+    DeployCompletedEventRecord, DeployCompletedEventRecordFailure, DeployContainer,
+    DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts, DeployProgressWrite,
 };
 
 pub async fn execute_deploy_operation<R, N, H, A>(
@@ -146,7 +146,7 @@ where
     .await
     .map_err(|source| failure(command, source, &started_containers))?;
 
-    let completion_record =
+    let completed_event =
         finalize_successful_deploy(command, &mut *ports.active_state, &mut *ports.recorder)
             .await
             .map_err(|source| failure(command, source, &started_containers))?;
@@ -155,7 +155,7 @@ where
         service_id: plan.service_id,
         target_revision: plan.target_revision,
         containers,
-        completion_record,
+        completed_event,
     };
 
     Ok(outcome)

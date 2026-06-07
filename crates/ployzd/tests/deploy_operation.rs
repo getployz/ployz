@@ -7,7 +7,7 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use ployzd::deploy_worker::{
-    ActiveServiceCommitter, DeployCompletionRecord, DeployCompletionRecordFailure,
+    ActiveServiceCommitter, DeployCompletedEventRecord, DeployCompletedEventRecordFailure,
     DeployExecutionCommand, DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts,
     DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
     NodeContainerRuntime, NodeContainerRuntimeError, execute_deploy_operation,
@@ -81,7 +81,10 @@ async fn deploy_worker_runs_containers_then_completes() {
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
-    assert_eq!(outcome.completion_record, DeployCompletionRecord::Recorded);
+    assert_eq!(
+        outcome.completed_event,
+        DeployCompletedEventRecord::Recorded
+    );
     assert_eq!(
         outcome
             .containers
@@ -499,7 +502,7 @@ async fn deploy_worker_times_out_hanging_steps() {
 }
 
 #[tokio::test]
-async fn deploy_worker_reports_uncertain_completion_without_appending_failed_after_active_commit() {
+async fn deploy_worker_ignores_completed_event_failure_after_active_commit() {
     let mut recorder = RecordingOperations::fail_completed_transition_times(1);
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
@@ -516,12 +519,14 @@ async fn deploy_worker_reports_uncertain_completion_without_appending_failed_aft
         },
     )
     .await
-    .expect("active commit succeeds even when completion record is uncertain");
+    .expect("active commit succeeds even when the completed event is rejected");
 
+    assert_eq!(outcome.service_id, service_id("svc_api"));
+    assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(
-        outcome.completion_record,
-        DeployCompletionRecord::Uncertain {
-            reason: DeployCompletionRecordFailure::RecordRejected,
+        outcome.completed_event,
+        DeployCompletedEventRecord::NotRecorded {
+            reason: DeployCompletedEventRecordFailure::RecordRejected,
         }
     );
 

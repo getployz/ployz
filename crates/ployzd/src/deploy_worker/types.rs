@@ -67,19 +67,19 @@ pub struct DeployExecutionOutcome {
     pub service_id: ployz_core::ids::ServiceId,
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
-    pub completion_record: DeployCompletionRecord,
+    pub completed_event: DeployCompletedEventRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployCompletionRecord {
+pub enum DeployCompletedEventRecord {
     Recorded,
-    Uncertain {
-        reason: DeployCompletionRecordFailure,
+    NotRecorded {
+        reason: DeployCompletedEventRecordFailure,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployCompletionRecordFailure {
+pub enum DeployCompletedEventRecordFailure {
     RecordRejected,
     TimedOut { timeout: Duration },
 }
