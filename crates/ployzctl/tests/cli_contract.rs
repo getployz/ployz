@@ -677,6 +677,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+        nats_url: None,
     }
     .render();
 
@@ -689,19 +690,38 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
 }
 
 #[test]
-fn machine_add_debug_redacts_join_token() {
+fn machine_add_prints_nats_url_on_shell_side_of_pipe() {
     let output = MachineAddOutput {
         node_id: NodeId::try_new("node_2").expect("valid node id"),
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+        nats_url: Some("nats://127.0.0.1:4222".to_owned()),
+    }
+    .render();
+
+    assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
+    assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:4222' sh -s -- "));
+    assert!(output.contains("--join-token 'join_once_123'"));
+}
+
+#[test]
+fn machine_add_debug_redacts_nats_url_and_join_token() {
+    let output = MachineAddOutput {
+        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        accepted: accepted_operation("op_machine"),
+        bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+            .expect("valid bootstrap url"),
+        join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+        nats_url: Some("nats://127.0.0.1:4222".to_owned()),
     };
 
     let debug = format!("{output:?}");
 
     assert!(debug.contains("[redacted]"));
     assert!(!debug.contains("join_once_123"));
+    assert!(!debug.contains("127.0.0.1"));
 }
 
 #[test]
@@ -712,10 +732,12 @@ fn machine_add_shell_quotes_join_material() {
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh/bootstrap?x='quoted'")
             .expect("valid bootstrap url"),
         join_token: MachineJoinToken::try_new("join'quoted'").expect("valid join token"),
+        nats_url: Some("nats://example.invalid:4222/with'quote".to_owned()),
     }
     .render();
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh/bootstrap?x='\\''quoted'\\'''"));
+    assert!(output.contains("PLOYZ_NATS_URL='nats://example.invalid:4222/with'\\''quote'"));
     assert!(output.contains("--join-token 'join'\\''quoted'\\'''"));
 }
 

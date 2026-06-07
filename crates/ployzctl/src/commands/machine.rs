@@ -47,6 +47,7 @@ pub struct MachineAddOutput {
     pub accepted: AcceptedOperation,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_token: MachineJoinToken,
+    pub nats_url: Option<String>,
 }
 
 impl MachineAddOutput {
@@ -57,16 +58,29 @@ impl MachineAddOutput {
             accepted: accepted.accepted,
             bootstrap_url: accepted.bootstrap_url,
             join_token: accepted.join_token,
+            nats_url: None,
         }
     }
 
     #[must_use]
+    pub fn with_nats_url(mut self, nats_url: Option<String>) -> Self {
+        self.nats_url = nats_url;
+        self
+    }
+
+    #[must_use]
     pub fn render(&self) -> String {
+        let shell = match &self.nats_url {
+            Some(nats_url) => format!("PLOYZ_NATS_URL={} sh", shell_quote(nats_url)),
+            None => "sh".to_owned(),
+        };
+
         format!(
-            "operation {}\nnode {}\ninstall curl -fsSL -- {} | sh -s -- --join-token {}\n",
+            "operation {}\nnode {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
             self.accepted.operation_id.as_str(),
             self.node_id.as_str(),
             shell_quote(self.bootstrap_url.as_str()),
+            shell,
             shell_quote(self.join_token.as_str())
         )
     }
@@ -80,6 +94,7 @@ impl fmt::Debug for MachineAddOutput {
             .field("accepted", &self.accepted)
             .field("bootstrap_url", &self.bootstrap_url)
             .field("join_token", &self.join_token)
+            .field("nats_url", &self.nats_url.as_ref().map(|_| "[redacted]"))
             .finish()
     }
 }
