@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ployz_core::ids::NodeId;
 use ployz_nats::connect::NatsClientEndpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,13 +16,13 @@ pub struct NatsServerConfig {
 
 impl NatsServerConfig {
     pub fn single_node(
-        server_name: impl Into<String>,
+        node_id: NodeId,
         jetstream_store_dir: PathBuf,
     ) -> Result<Self, NatsServerConfigError> {
         let config = Self {
             host: "127.0.0.1".to_owned(),
             port: 4222,
-            server_name: server_name.into(),
+            server_name: node_id.as_str().to_owned(),
             jetstream_store_dir,
         };
         config.validate()?;

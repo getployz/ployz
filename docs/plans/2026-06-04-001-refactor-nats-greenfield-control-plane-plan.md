@@ -241,6 +241,33 @@ commands over iroh.
   connectivity behavior where applicable and expose degraded/failed rollout
   state instead of rewriting cluster truth.
 
+### Production-Shaped Acceptance
+
+- R39. The final MVP proof runs on two real Hetzner machines created through
+  the Hetzner API or CLI, not only on localhost or fake process harnesses.
+- R40. A user can initialize one machine, then run one command from the local
+  developer machine that SSHes to a second machine, installs Keeper, and joins
+  it to the cluster.
+- R41. The acceptance path may cut corners on artifact distribution by using a
+  locally built binary, pre-staged release artifact, or explicit source path,
+  but Keeper must still install and supervise the same production-shaped role
+  services.
+- R42. The actual data plane is production-ish: supervised WireGuard networking
+  connects nodes, containers can reach containers on other nodes over the
+  private network, and service networking does not depend on `ployzd control`
+  staying alive.
+- R43. Reuse the old eBPF/WireGuard dataplane work from git history as a hard
+  requirement for container networking. Adapt the old dataplane into the
+  NATS/Keeper shape rather than rebuilding container networking from scratch or
+  replacing it with a purely user-space shortcut.
+- R44. Deploy placement proves multi-node execution by running service
+  containers on both machines and preserving operation evidence when a node
+  fails to prepare networking, start a container, or become reachable.
+- R45. Pingora ingress is good enough for the acceptance proof: traffic may
+  enter either node and route to the node running the container. The gateway
+  implementation can be intentionally simple because it will be redesigned
+  later, but it must exercise the real cross-node data-plane path.
+
 ### Simplicity And Readability
 
 - R22. Business logic modules must be plain Rust structs, enums, and async
@@ -1009,6 +1036,8 @@ tunnel connectivity becomes ambiguous, or a keeper reports unknown local state.
 - `VISION.md`
 - Operation primitive philosophy from old plans.
 - Failure-audience language and retained deploy artifact semantics.
+- Old eBPF/WireGuard dataplane history as the starting point for production-ish
+  node/container private networking.
 - Existing deploy tests only if they encode product behavior that still applies.
 - Rust discipline in `AGENTS.md`: typed states, enums over option bags, explicit
   timeouts, structured failures.
@@ -1055,9 +1084,11 @@ real gap. U11 has now converted deploy execution to direct owned operation
 functions under advisory leases. U9 added CLI/SDK ergonomics and U9a
 centralizes the user-facing operation API contract so service catalog, runtime
 binding, Rust client calls, and generated TypeScript metadata share one
-endpoint registry. The major remaining gaps are keeper/install/update behavior,
-real Docker execution depth, deeper gateway/DNS data-plane integration, HA
-promotion, backup/restore, and broader end-to-end failure coverage.
+endpoint registry. U10a now models core topology/quorum, R1/R3 NATS resource
+manifests, and the canonical control-plane backup scope. The major remaining
+gaps are keeper/install/update behavior, real Docker execution depth, deeper
+gateway/DNS data-plane integration, HA promotion commands, backup/restore
+execution, and broader end-to-end failure coverage.
 
 ### Execution And Review Loop
 
@@ -1452,10 +1483,10 @@ Pipeline finish:
     a later deploy plans from reality rather than relying on automatic replay.
 - **Verification:** `cargo test -p ployzd deploy_operation deploy_failure_retention`
 
-### U7a. Keeper, `ployz.sh`, And Substrate Rollouts
+### U7a. Keeper And `ployz.sh` Bootstrap Foundation
 
-- **Goal:** Make node bootstrap and substrate updates first-class operations
-  without splitting the main runtime into separate gateway/DNS/tunnel binaries.
+- **Goal:** Make node bootstrap first-class without requiring substrate rollout
+  machinery before the Hetzner proof.
 - **Requirements:** R31, R32, R33, R34, R35, R36, R37, R38
 - **Dependencies:** U1, U1a, U2, U3, U5, U11
 - **Files:**
@@ -1466,19 +1497,13 @@ Pipeline finish:
   - `crates/ployz-keeper/src/systemd.rs`
   - `crates/ployz-keeper/src/health.rs`
   - `crates/ployz-keeper/tests/bootstrap.rs`
-  - `crates/ployz-keeper/tests/rollout.rs`
-  - `crates/ployzd/src/controllers/substrate.rs`
-  - `crates/ployzd/tests/substrate_rollout.rs`
   - `scripts/ployz.sh`
 - **Approach:** Add `ployz-keeper` as a tiny, independently versioned binary.
   `ployz.sh` installs only keeper. Keeper redeems one-time join material,
   downloads and verifies the main `ployzd` artifact, writes systemd units for
-  assigned `ployzd` roles, starts those roles, and reports bootstrap/update
-  progress to the active operation. Substrate update operations assign batches;
-  keeper applies local typed steps only against approved targets and reports
-  durable progress/failures. The `ployzd` that accepts the substrate update
-  owns the rollout operation and renews its owner lease while assigning batches
-  and collecting keeper progress.
+  assigned `ployzd` roles, starts those roles, and reports bootstrap progress
+  to the active operation. Substrate update batches and keeper self-update are
+  a later slice after the two-node Hetzner proof is repeatable.
 - **Test scenarios:**
   - `ployz.sh` installs `ployz-keeper` only and does not write NATS
     credentials or `ployzd` role configs.
@@ -1488,48 +1513,34 @@ Pipeline finish:
   - Keeper writes separate supervisor units for `ployzd control`,
     `ployzd node`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel` only
     when the node is assigned those roles.
-  - Keeper reports each bootstrap/update step to operation events and latest
-    operation status.
-  - A failed keeper step pauses or fails the rollout with typed failure details.
-  - Keeper self-update stages a new keeper binary, restarts, and reports the
-    new keeper version.
+  - Keeper reports each bootstrap step to operation events and latest operation
+    status.
+  - A failed keeper step fails the bootstrap operation with typed failure
+    details.
   - Keeper cannot mutate `KV_CORE` service state, route ownership, cert state,
     or cluster membership except through the scoped bootstrap/update operation.
-- **Verification:** `cargo test -p ployz-keeper && cargo test -p ployzd substrate_rollout`
+- **Verification:** `cargo test -p ployz-keeper`
 
-### U8. Gateway, DNS, And Cert Projection Skeleton
+### U8. Minimal Gateway Projection Skeleton
 
-- **Goal:** Build independently supervised data-plane projections over KV
-  rather than controller-owned runtime state, using `ployzd` role processes
-  from the shared `ployzd` artifact.
-- **Requirements:** R4, R9, R10, R14, R21b, R21c, R33, R38
+- **Goal:** Build the smallest independently supervised gateway projection
+  needed before cross-node Pingora ingress.
+- **Requirements:** R4, R9, R10, R14, R21b, R33, R38
 - **Dependencies:** U6, U7, U7a
 - **Files:**
   - `crates/ployzd/src/gateway.rs`
-  - `crates/ployzd/src/dns.rs`
   - `crates/ployzd/tests/gateway_projection.rs`
-  - `crates/ployzd/tests/dns_projection.rs`
-  - `crates/ployzd/src/controllers/cert.rs`
-  - `crates/ployzd/tests/cert_operation.rs`
 - **Approach:** `ployzd gateway` watches KV_CORE keys `routes.>` and
   `certs.>`, plus KV_OBS keys `containers.>` through its own NATS client; it
-  serves and applies route changes independently of `ployzd control`.
-  `ployzd dns` watches DNS/cert state through its own NATS client and keeps
-  last-known-good answers. Cert renewal remains an owned control-plane
-  operation: the accepting `ployzd` uses KV_LOCKS key `acme.<cert_id>`, Object
-  Store encrypted bundles, and schedule/job subjects.
+  serves and applies route changes independently of `ployzd control`. Keep
+  route projection intentionally narrow; DNS and cert automation are later
+  projection slices and should not block H0-H13.
 - **Test scenarios:**
   - Gateway filters unhealthy/stale containers locally.
   - Gateway keeps last good route config when NATS connection drops.
   - `ployzd gateway` continues serving and applying NATS route changes while
     `ployzd control` is down.
-  - `ployzd dns` continues answering and applying NATS record changes while
-    `ployzd control` is down.
-  - Cert operation writes challenge state with TTL and updates cert KV only
-    after ACME success.
-  - Failed cert renewal leaves prior cert active.
-  - Cert schedule targets the same job subject as fallback scheduler.
-- **Verification:** `cargo test -p ployzd gateway_projection dns_projection cert_operation`
+- **Verification:** `cargo test -p ployzd gateway_projection`
 
 ### U9. CLI And TypeScript SDK Contract
 
@@ -1596,12 +1607,63 @@ Pipeline finish:
     registry.
 - **Verification:** `cargo test -p ployz-sdk-types --test exports && cargo test -p ployzd --test services && cargo test -p ployzctl --test api_client_nats && pnpm --dir packages/ployz-sdk test`
 
-### U10. HA Promotion And Backup
+### U10a. HA And Backup Foundation
+
+- **Goal:** Make HA and backup scope explicit before adding promotion command
+  plumbing.
+- **Requirements:** R9, R10, R15
+- **Dependencies:** U1, U5, U7
+- **Files:**
+  - `crates/ployz-core/src/backup.rs`
+  - `crates/ployz-core/src/ha.rs`
+  - `crates/ployz-core/tests/backup_scope.rs`
+  - `crates/ployz-core/tests/ha_topology.rs`
+  - `crates/ployz-nats/src/bootstrap.rs`
+  - `crates/ployz-nats/tests/bootstrap.rs`
+- **Approach:** Model final core topology as an explicit canonical node set
+  behind a private representation. Final topology is either one core or three
+  cores. A two-core set is promotion progress, not cluster topology.
+  Quorum status is computed directly from observed core node ids so unknown,
+  duplicate, and impossible availability cannot be smuggled in as a count or
+  detached from the topology or promotion-progress value that validated it.
+  Two-core promotion progress reports transitional/degraded availability and
+  still reports unavailable when no core is reachable. Single-node NATS facts
+  carry the server's node id, and three-core facts carry a JetStream peer set;
+  topology bootstrap validates those facts exactly match the core node ids
+  before rendering R1/R3 KV/stream/Object Store manifests. Three-core mode
+  remains quorum-healthy with one core down. Normal bootstrap refuses
+  replication drift; HA promotion gets a separate operation-owned replication
+  promotion plan so it does not bypass reconciliation later. Canonical backup
+  scope is product
+  policy in `ployz-core`: one exhaustive enum policy includes JetStream state,
+  NATS credentials/config, Ployz domain config, and backup manifests while
+  excluding Docker images, app volumes, container runtime state, and node-local
+  caches.
+- **Test scenarios:**
+  - One-node mode reports non-HA healthy.
+  - Two-core promotion progress reports transitional/degraded, not HA.
+  - Two-core final topology is rejected.
+  - Topology and JetStream peers have set semantics, not caller-order
+    semantics.
+  - Single-node bootstrap refuses NATS facts for a different node id.
+  - Three-core bootstrap refuses missing or extra JetStream peers.
+  - Three-core mode remains healthy with two available cores.
+  - Unknown or duplicate available core observations are rejected.
+  - HA bootstrap creates R3 streams/buckets/object buckets.
+  - HA topology bootstrap refuses R3 manifests when JetStream peer ids do not
+    cover the core topology.
+  - HA bootstrap refuses existing R1 resources as replication drift.
+  - HA replication promotion plan marks existing R1 resources for upgrade.
+  - Backup item lists partition every known backup item exactly once.
+  - Backup excludes Docker images and app volumes.
+- **Verification:** `cargo test -p ployz-core --test ha_topology && cargo test -p ployz-core --test backup_scope && cargo test -p ployz-nats --test bootstrap`
+
+### U10b. HA Promotion And Backup Commands
 
 - **Goal:** Support the 1-node to 3-core transition without hiding HA
   complexity.
 - **Requirements:** R9, R10, R15
-- **Dependencies:** U1, U5, U7
+- **Dependencies:** U10a
 - **Files:**
   - `crates/ployzd/src/controllers/core.rs`
   - `crates/ployzctl/src/commands/core.rs`
@@ -1619,6 +1681,309 @@ Pipeline finish:
   - Backup excludes Docker images and app volumes.
   - Restore recreates KV/streams/object metadata needed for service inspect.
 - **Verification:** `cargo test -p ployzd ha_promotion backup_restore`
+
+### H0. Hetzner Acceptance Harness Skeleton
+
+- **Goal:** Create the smallest reliable Hetzner-backed acceptance harness for
+  provisioning, SSH readiness, and teardown.
+- **Requirements:** R39, R41
+- **Dependencies:** U9
+- **Files:**
+  - `crates/ployzctl/src/commands/hetzner.rs`
+  - `scripts/hetzner-two-node-acceptance.sh`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Add an acceptance-only Hetzner API/CLI path with deterministic
+  server names/tags, cleanup labels, required token scope checks, SSH key
+  selection, OS image/server type/region options, timeout policy, and explicit
+  cleanup output. This is not a production provider abstraction.
+- **Test scenarios:**
+  - Harness refuses to run without an explicit Hetzner token and SSH key.
+  - Created servers carry deterministic labels/tags so cleanup can find them.
+  - Failed SSH readiness tears down both servers or prints an explicit cleanup
+    command.
+- **Verification:** The harness can create two Hetzner servers, prove SSH
+  readiness, and tear both servers down without installing Ployz roles.
+
+### H1. Artifact Package And Staging Contract
+
+- **Goal:** Define how local Ployz artifacts are packaged, verified, staged,
+  and installed by Keeper on remote machines.
+- **Requirements:** R31, R37, R41
+- **Dependencies:** U7a models
+- **Files:**
+  - `crates/ployz-keeper/src/artifacts.rs`
+  - `crates/ployz-keeper/tests/artifact_staging.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Keep artifact distribution deliberately small: a local build
+  artifact or staged archive is acceptable, but it must carry target triple,
+  version, checksum, install path, and replace/rollback rules. Do not hide
+  install behavior inside shell snippets.
+- **Test scenarios:**
+  - Artifact metadata rejects architecture/version/checksum mismatches.
+  - Keeper can stage an archive and produce the expected install target.
+  - Failed verification does not replace the active `ployzd` artifact.
+- **Verification:** A staged local artifact can be verified and installed into
+  the expected Keeper-managed path in a temp root.
+
+### H2. First-Node Remote Init Profile
+
+- **Goal:** Initialize the first Hetzner node into the same supervised process
+  shape used by production-like installs.
+- **Requirements:** R31-R38, R39, R41
+- **Dependencies:** U1, U1a, U5, H1
+- **Files:**
+  - `crates/ployzctl/src/commands/init.rs`
+  - `crates/ployz-keeper/src/systemd.rs`
+  - `crates/ployz-keeper/tests/first_node_init.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Install Keeper, `nats-server`, `ployzd control`,
+  `ployzd tunnel --side core`, `ployzd node`, and optional gateway role units
+  on node one. Render config files and credentials explicitly; systemd owns
+  process lifetime.
+- **Test scenarios:**
+  - First-node init writes role units and config files.
+  - `nats-server`, tunnel, control, and node roles have separate readiness.
+  - `ployzd control` restart does not imply NATS/tunnel shutdown.
+- **Verification:** One fresh Hetzner machine reaches NATS, tunnel, control,
+  and node readiness with supervised role units.
+
+### H3. Join Token Store And Redemption Service
+
+- **Goal:** Define how `machine add` safely issues and redeems short-lived join
+  material before the joining machine has NATS credentials.
+- **Requirements:** R5, R31-R36, R40
+- **Dependencies:** U3, U4a, U5, U11
+- **Files:**
+  - `crates/ployz-transport/src/join_bundle.rs`
+  - `crates/ployzd/src/controllers/machine.rs`
+  - `crates/ployzd/tests/join_token.rs`
+- **Approach:** Add token minting, TTL, one-time redemption, replay failure,
+  and operation event reporting. Define the join redemption transport plainly:
+  how the new node reaches the core before it has NATS credentials, what
+  authenticates that request, and what bundle it receives.
+- **Test scenarios:**
+  - Expired/reused tokens fail and emit visible operation evidence.
+  - Join bundle includes domain id, node id, NATS credentials, core iroh
+    endpoints/tickets, relay policy, assigned roles, artifact target, and
+    trusted NATS config.
+  - Token redemption never grants broad control-plane authority.
+- **Verification:** A pending machine can redeem one token exactly once and
+  receive a typed join bundle.
+
+### H4. Machine Add Pending/Active Operation
+
+- **Goal:** Make machine addition a durable operation with clear pending,
+  bootstrapping, reachable, active, and failed states.
+- **Requirements:** R1-R5, R31-R36, R40
+- **Dependencies:** H3, U9a
+- **Files:**
+  - `crates/ployzd/src/controllers/machine.rs`
+  - `crates/ployz-core/src/machine.rs`
+  - `crates/ployzd/tests/machine_add.rs`
+- **Approach:** `machine.add` returns an operation id quickly. The machine is
+  active only after NATS tunnel connectivity, heartbeat, and node inspect all
+  succeed. Failure preserves node/bootstrap evidence.
+- **Test scenarios:**
+  - Pending machine does not receive deploy placement.
+  - Failed bootstrap leaves the operation and machine evidence inspectable.
+  - Active state requires NATS connectivity, heartbeat, and node inspect.
+- **Verification:** Machine add status transitions are durable and readable.
+
+### H5. SSH Bootstrap Executor With Evidence
+
+- **Goal:** Provide the remote command path used by Hetzner bootstrap without
+  scattering shell behavior through product logic.
+- **Requirements:** R39-R41
+- **Dependencies:** H0, H1, H4
+- **Files:**
+  - `crates/ployzctl/src/remote.rs`
+  - `crates/ployzctl/tests/ssh_bootstrap.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Model host-key policy, root/sudo behavior, command quoting,
+  stdout/stderr capture, journal capture, timeout handling, and cleanup output.
+  Keep it as acceptance/bootstrap plumbing, not general orchestration.
+- **Test scenarios:**
+  - Unsafe shell-visible join material is rejected or safely quoted.
+  - Failed remote commands preserve stdout/stderr and journal hints.
+  - Timeout reports the remote phase and cleanup command.
+- **Verification:** A fake SSH executor can drive the same bootstrap phases and
+  failure evidence as the Hetzner path.
+
+### H6. Keeper Step Executor And Progress Reporter
+
+- **Goal:** Execute Keeper bootstrap steps locally on the node and report
+  progress to the owning machine-add operation.
+- **Requirements:** R31-R38, R40, R41
+- **Dependencies:** H1, H3, H5
+- **Files:**
+  - `crates/ployz-keeper/src/steps.rs`
+  - `crates/ployz-keeper/src/systemd.rs`
+  - `crates/ployz-keeper/tests/step_executor.rs`
+- **Approach:** Turn typed step plans into a bounded executor: install artifact,
+  render role configs, write units, start/reload units, check readiness, and
+  report progress/failure. Do not add substrate rollout batches yet.
+- **Test scenarios:**
+  - Step executor stops on first failure and reports the exact failed step.
+  - Role config rendering includes NATS endpoint selection, credentials, and
+    tunnel endpoint config.
+  - Successful execution starts the requested supervised role set.
+- **Verification:** Keeper can execute the first-node and join-node step plans
+  against a temp root/fake systemd backend.
+
+### H7. Two-Node NATS/iRoh Readiness Gate
+
+- **Goal:** Prove two Hetzner nodes form one Ployz control-plane domain over
+  iroh-carried NATS before any dataplane work starts.
+- **Requirements:** R31-R41
+- **Dependencies:** H2, H6, U1a
+- **Files:**
+  - `crates/ployzd/tests/two_node_bootstrap.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Compose first-node init, join token redemption, Keeper step
+  execution, tunnel startup, NATS credentials, heartbeat, and node inspect into
+  one readiness gate.
+- **Test scenarios:**
+  - Node two is active only after NATS tunnel, heartbeat, and node inspect.
+  - Reusing a join token fails visibly.
+  - Stopping edge `ployzd` stops node observations but not workloads or core
+    NATS.
+- **Verification:** Two Hetzner nodes form one Ployz cluster with visible node
+  observations and supervised role processes.
+
+### H8. WireGuard Node Link
+
+- **Goal:** Establish stable node-to-node private reachability over supervised
+  WireGuard without involving containers yet.
+- **Requirements:** R42, R43
+- **Dependencies:** H7
+- **Files:**
+  - `crates/ployzd/src/network/wireguard.rs`
+  - `crates/ployzd/tests/wireguard_node_link.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Reuse old WireGuard dataplane history for key identity, private
+  IP assignment, peer config, allowed IPs, firewall/sysctl, and health checks.
+  The old code is reference material to port, not optional inspiration.
+- **Test scenarios:**
+  - Nodes receive stable private WireGuard identities and addresses.
+  - Peer config is explicit and inspectable.
+  - Restarting `ployzd control` does not tear down established node reachability.
+- **Verification:** Node A can reach node B over WireGuard on real Hetzner
+  machines.
+
+### H9. eBPF Container Network Prep Over WireGuard
+
+- **Goal:** Restore the old eBPF/WireGuard container dataplane so managed
+  containers can reach containers on other nodes.
+- **Requirements:** R42, R43
+- **Dependencies:** H8, U6, U7
+- **Files:**
+  - `crates/ployzd/src/network/`
+  - `crates/ployzd/src/docker/`
+  - `crates/ployzd/tests/wireguard_dataplane.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Characterize and port the old eBPF/WireGuard dataplane
+  invariants from git history, especially commits around `9e92e1cd`,
+  `e2dfa5aa`, `6d059852`, `1774c86b`, and `a3d0a884`. Keep old control-plane
+  state and peer RPC out; keep the eBPF dataplane behavior.
+- **Test scenarios:**
+  - Managed containers receive the network wiring needed for cross-node
+    container reachability.
+  - Failed network prep fails the active operation with node-level evidence.
+  - Restarting `ployzd control` does not break established packet routing.
+- **Verification:** A container on node A can reach a container on node B over
+  the eBPF/WireGuard private dataplane on real Hetzner machines.
+
+### H10. Gateway Upstream Address Projection
+
+- **Goal:** Give Pingora a concrete routable upstream model before implementing
+  cross-node ingress.
+- **Requirements:** R21b, R38, R45
+- **Dependencies:** U8 split, H9
+- **Files:**
+  - `crates/ployzd/src/gateway/`
+  - `crates/ployz-core/src/routes.rs`
+  - `crates/ployzd/tests/gateway_projection.rs`
+- **Approach:** Extend route/upstream projection from node/container ids to
+  routable private address, port, node id, health, and stale/degraded evidence.
+  Keep DNS/cert automation out of this slice.
+- **Test scenarios:**
+  - Gateway projection includes routable local and remote upstream addresses.
+  - Stale/unhealthy remote upstreams are filtered.
+  - Gateway keeps last-known-good routes when NATS is unavailable.
+- **Verification:** Pingora receives an upstream list that can route to remote
+  containers over the private dataplane.
+
+### H11. Multi-Node Deploy Placement
+
+- **Goal:** Deploy one service across both machines and report useful operation
+  evidence for every node/container touched.
+- **Requirements:** R1-R5, R44
+- **Dependencies:** U7, H7, H9
+- **Files:**
+  - `crates/ployzd/src/deploy_worker/`
+  - `crates/ployzd/src/docker/`
+  - `crates/ployzd/tests/two_node_deploy.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Keep placement deliberately simple: explicit two-node placement
+  or replicas spread across active nodes is enough. Plan from live
+  node/container state, start containers on both machines, record node/container
+  ids, and leave failure evidence when a node cannot prepare networking or
+  start Docker.
+- **Test scenarios:**
+  - Deploy starts one managed container on each active node.
+  - Operation events include node ids, container ids, and retained failure
+    evidence on failure.
+  - A later deploy can plan from observed reality and clean up stale failed
+    containers.
+- **Verification:** The acceptance service runs containers on both Hetzner
+  nodes and emits a readable operation timeline.
+
+### H12. Minimal Pingora Cross-Node Ingress
+
+- **Goal:** Accept external HTTP traffic on either node and forward to a healthy
+  service container, including containers on the other node.
+- **Requirements:** R21b, R38, R45
+- **Dependencies:** H10, H11
+- **Files:**
+  - `crates/ployzd/src/gateway/`
+  - `crates/ployzd/tests/pingora_two_node_ingress.rs`
+  - `docs/operations/two-node-acceptance.md`
+- **Approach:** Keep Pingora narrow: route projection, healthy upstream
+  selection, and forwarding over the private dataplane when the selected
+  container is remote. Defer TLS automation, weighted balancing, and broad
+  gateway policy.
+- **Test scenarios:**
+  - Traffic entering node A reaches a service container on node B.
+  - Traffic entering node B reaches a service container on node A.
+  - Gateway reports degraded state when NATS or private-network reachability is
+    unavailable.
+- **Verification:** HTTP requests to both public node IPs reach the deployed
+  service through Pingora.
+
+### H13. Full Two-Node Hetzner Gate And Runbook
+
+- **Goal:** Turn the production-shaped proof into a repeatable acceptance gate
+  that an operator can run and understand.
+- **Requirements:** R39-R45
+- **Dependencies:** H0-H12
+- **Files:**
+  - `scripts/hetzner-two-node-acceptance.sh`
+  - `docs/operations/two-node-acceptance.md`
+  - `crates/ployzd/tests/two_node_acceptance.rs`
+- **Approach:** Compose the previous slices into one documented acceptance
+  flow. The runbook names required Hetzner token scopes, SSH prerequisites,
+  artifact-source shortcuts, expected commands, expected outputs, cleanup
+  behavior, and known gateway limitations.
+- **Test scenarios:**
+  - A clean run provisions two Hetzner machines, installs roles, joins node
+    two, deploys the acceptance service, verifies eBPF/WireGuard container
+    connectivity, verifies ingress from both nodes, and destroys resources.
+  - Failure at any phase prints the active operation id, affected node ids,
+    cleanup command, and retained logs/evidence locations.
+  - The runbook distinguishes acceptable MVP shortcuts from data-plane behavior
+    that must be production-shaped.
+- **Verification:** The final acceptance command completes end-to-end against
+  two fresh Hetzner machines.
 
 ---
 
@@ -1651,6 +2016,11 @@ Pipeline finish:
 | Schedule unsupported by server | Fallback scheduler publishes same job subject | `crates/ployzd/tests/scheduler_fallback.rs` |
 | 2-core HA requested | Command refuses final healthy state | `crates/ployzd/tests/ha_promotion.rs` |
 | 3-core one node down | Mutations continue if quorum remains | `crates/ployzd/tests/ha_promotion.rs` |
+| Hetzner acceptance setup fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
+| Second-node Keeper join fails | Machine operation fails with node/bootstrap evidence; machine is not active | `crates/ployz-keeper/tests/two_node_bootstrap.rs` |
+| WireGuard setup fails | Deploy/join fails with network-prep evidence; no healthy dataplane is claimed | `crates/ployzd/tests/wireguard_dataplane.rs` |
+| Cross-node container traffic fails | Service remains visibly degraded; gateway does not claim healthy remote upstream | `crates/ployzd/tests/two_node_acceptance.rs` |
+| Pingora receives traffic on either node | Request reaches a healthy local or remote service container over the private network | `crates/ployzd/tests/pingora_two_node_ingress.rs` |
 
 ---
 
@@ -1689,6 +2059,8 @@ Do not build these in v1:
 - Automatic cleanup of failed artifacts.
 - Docker layer storage in Object Store.
 - Custom RPC/job/progress abstractions over NATS primitives.
+- Keeper substrate rollout batches before H0-H7 is repeatable.
+- DNS and cert automation before the minimal gateway/Pingora path is proven.
 
 ---
 
@@ -1704,10 +2076,11 @@ Do not build these in v1:
   after lease expiry; the system does not run hidden automatic takeover in v1.
 - AE4. A node credential cannot publish deploy requests, write `KV_CORE`, or
   call another node's service subject.
-- AE5. `ployzd gateway` and `ployzd dns` continue serving when
-  `ployzd control` is down. If NATS remains available, they keep applying NATS
-  route/DNS changes because they watch NATS directly; if NATS is down, they
-  keep serving last-known-good state and report degraded status.
+- AE5. `ployzd gateway` continues serving when `ployzd control` is down. If
+  NATS remains available, it keeps applying NATS route changes because it
+  watches NATS directly; if NATS is down, it keeps serving last-known-good
+  state and reports degraded status. DNS/cert projections follow the same
+  shape later, after the minimal gateway/Pingora path is proven.
 - AE6. Cloud/TypeScript never orchestrates low-level container calls. It submits
   primitive operations and watches operation events.
 - AE7. A new node is bootstrapped by a short-lived `ployz.sh` command that
@@ -1716,6 +2089,10 @@ Do not build these in v1:
 - AE8. A `ployzd` substrate upgrade rolls out through keeper-managed batches,
   restarts/reloads role units under health gates, and stops visibly on typed
   failure.
+- AE9. A developer runs the two-node Hetzner acceptance flow, joins a second
+  machine with one command, deploys a service across both machines, verifies
+  container-to-container WireGuard reachability, and reaches the service
+  through Pingora on either node's public address.
 
 ---
 
@@ -1733,11 +2110,26 @@ Do not build these in v1:
 10. U5 permission profiles.
 11. U6 node agent and Docker observation.
 12. U7 first deploy.
-13. U7a keeper, `ployz.sh`, and substrate rollouts.
-14. U8 gateway/DNS/cert projection.
+13. U7a keeper and `ployz.sh` bootstrap foundation.
+14. U8 minimal gateway projection skeleton.
 15. U9 CLI/SDK ergonomics.
 16. U9a operation API contract registry.
-17. U10 HA/backup.
+17. H0 Hetzner acceptance harness skeleton.
+18. H1 artifact package and staging contract.
+19. H2 first-node remote init profile.
+20. H3 join token store and redemption service.
+21. H4 machine add pending/active operation.
+22. H5 SSH bootstrap executor with evidence.
+23. H6 keeper step executor and progress reporter.
+24. H7 two-node NATS/iRoh readiness gate.
+25. U10a HA/backup foundation.
+26. U10b HA promotion and backup commands.
+27. H8 WireGuard node link.
+28. H9 eBPF container network prep over WireGuard.
+29. H10 gateway upstream address projection.
+30. H11 multi-node deploy placement.
+31. H12 minimal Pingora cross-node ingress.
+32. H13 full two-node Hetzner gate and runbook.
 
 The first proof should be Pre-U0 through U4 with a fake direct execution path
 over the operation contract harness. The second proof should be U0-U4a over
@@ -1746,6 +2138,11 @@ prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with
 `ployz.sh` installing keeper and keeper installing/restarting `ployzd` role
-units. The first production-shaped proof is U0-U8 with real Docker on one node
-plus one edge node connected through iroh, with gateway/DNS roles serving
-independently of `ployzd control`.
+units. The first production-shaped proof is H0-H7 on two fresh Hetzner
+machines: first-node init, second-node join, supervised roles, NATS over iroh,
+heartbeat, and node inspect. HA/backup follows that proof instead of blocking
+it. The final MVP acceptance proof is H0-H13 on two fresh Hetzner machines:
+Keeper installs real supervised role services, the old eBPF/WireGuard
+dataplane is adapted into the new code path, deploy places containers on both
+nodes, and Pingora ingress works from either public node address. Artifact
+download may be shortcut; the eBPF/WireGuard data plane should not be.

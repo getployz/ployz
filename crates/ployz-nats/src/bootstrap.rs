@@ -1,14 +1,25 @@
 //! JetStream bucket, stream, and Object Store bootstrap.
 
+#[path = "bootstrap/resources.rs"]
+mod resources;
+
 use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
 use crate::objects::ObjectBucketSpec;
 use crate::replication::ReplicationFactor;
 use crate::schedules::{NatsServerVersion, ScheduleCapability};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
+use ployz_core::ha::{CanonicalNodeSet, CanonicalNodeSetError, CoreTopology};
+use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
     AUDIT_STREAM_SUBJECT, JOBS_STREAM_SUBJECT, OBS_TRANSITION_STREAM_SUBJECT, OPS_STREAM_SUBJECT,
     SCHEDULE_STREAM_SUBJECT,
 };
+pub use resources::{
+    BootstrapResourceAction, BootstrapResourceDecision, BootstrapResourceKind,
+    BootstrapResourceRef, BootstrapResourceRefusal, ReplicationPromotionAction,
+    ReplicationPromotionDecision,
+};
+use resources::{ExistingResourceView, PlannedResource};
 
 pub const MIN_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion {
     major: 2,
@@ -31,7 +42,28 @@ pub struct BootstrapPlan {
 }
 
 impl BootstrapPlan {
-    pub fn single_node(capabilities: NatsServerCapabilities) -> Result<Self, BootstrapRefusal> {
+    pub fn for_core_topology(
+        capabilities: NatsServerCapabilities,
+        topology: &CoreTopology,
+    ) -> Result<Self, BootstrapRefusal> {
+        let replicas = if topology.is_high_availability() {
+            ReplicationFactor::Three
+        } else {
+            ReplicationFactor::One
+        };
+
+        Self::validate_replication(&capabilities, replicas)?;
+        if !capabilities.jetstream_cluster.covers_topology(topology) {
+            return Err(BootstrapRefusal::JetStreamPeersDoNotCoverCoreTopology);
+        }
+
+        Ok(Self::manifest(capabilities.version, replicas))
+    }
+
+    fn validate_replication(
+        capabilities: &NatsServerCapabilities,
+        replicas: ReplicationFactor,
+    ) -> Result<(), BootstrapRefusal> {
         if !capabilities.jetstream_enabled {
             return Err(BootstrapRefusal::JetStreamDisabled);
         }
@@ -43,18 +75,24 @@ impl BootstrapPlan {
             });
         }
 
-        Ok(Self::single_node_manifest(capabilities.version))
+        let actual = capabilities.jetstream_cluster.peer_count();
+        let required = usize::from(replicas.as_u8());
+        if actual < required {
+            return Err(BootstrapRefusal::InsufficientJetStreamServers { required, actual });
+        }
+
+        Ok(())
     }
 
-    fn single_node_manifest(server_version: NatsServerVersion) -> Self {
+    fn manifest(server_version: NatsServerVersion, replicas: ReplicationFactor) -> Self {
         let schedule_capability = ScheduleCapability::from_server_version(server_version);
 
         Self {
             kv_buckets: vec![
-                KvBucketSpec::new(KV_CORE_BUCKET, ReplicationFactor::One),
-                KvBucketSpec::new("KV_OPS", ReplicationFactor::One),
-                KvBucketSpec::new("KV_OBS", ReplicationFactor::One),
-                KvBucketSpec::new("KV_LOCKS", ReplicationFactor::One),
+                KvBucketSpec::new(KV_CORE_BUCKET, replicas),
+                KvBucketSpec::new("KV_OPS", replicas),
+                KvBucketSpec::new("KV_OBS", replicas),
+                KvBucketSpec::new("KV_LOCKS", replicas),
             ],
             streams: vec![
                 StreamSpec::new(
@@ -62,7 +100,7 @@ impl BootstrapPlan {
                     vec![OPS_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    ReplicationFactor::One,
+                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -70,7 +108,7 @@ impl BootstrapPlan {
                     vec![JOBS_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    ReplicationFactor::One,
+                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -78,7 +116,7 @@ impl BootstrapPlan {
                     vec![AUDIT_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    ReplicationFactor::One,
+                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -86,7 +124,7 @@ impl BootstrapPlan {
                     vec![OBS_TRANSITION_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    ReplicationFactor::One,
+                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -94,16 +132,16 @@ impl BootstrapPlan {
                     vec![SCHEDULE_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    ReplicationFactor::One,
+                    replicas,
                     DiscardPolicy::New,
                 )
                 .with_message_schedules(schedule_capability.message_schedules_available()),
             ],
             object_buckets: vec![
-                ObjectBucketSpec::new("PLZ_BUNDLES", ReplicationFactor::One),
-                ObjectBucketSpec::new("PLZ_DIAGNOSTICS", ReplicationFactor::One),
-                ObjectBucketSpec::new("PLZ_CERTS", ReplicationFactor::One),
-                ObjectBucketSpec::new("PLZ_BACKUPS", ReplicationFactor::One),
+                ObjectBucketSpec::new("PLZ_BUNDLES", replicas),
+                ObjectBucketSpec::new("PLZ_DIAGNOSTICS", replicas),
+                ObjectBucketSpec::new("PLZ_CERTS", replicas),
+                ObjectBucketSpec::new("PLZ_BACKUPS", replicas),
             ],
             schedule_capability,
         }
@@ -111,77 +149,163 @@ impl BootstrapPlan {
 
     #[must_use]
     pub fn diff_against(&self, existing: &ExistingResources) -> BootstrapDiff {
-        let kv_buckets = self
-            .kv_buckets
-            .iter()
-            .map(|bucket| {
-                BootstrapResourceDecision::from_kv(
-                    bucket,
-                    existing
-                        .kv_buckets
-                        .iter()
-                        .find(|observed| observed.name == bucket.name),
-                )
-            })
-            .collect();
-        let streams = self
-            .streams
-            .iter()
-            .map(|stream| {
-                BootstrapResourceDecision::from_stream(
-                    stream,
-                    existing
-                        .streams
-                        .iter()
-                        .find(|observed| observed.name == stream.name),
-                )
-            })
-            .collect();
-        let object_buckets = self
-            .object_buckets
-            .iter()
-            .map(|bucket| {
-                BootstrapResourceDecision::from_object_bucket(
-                    bucket,
-                    existing
-                        .object_buckets
-                        .iter()
-                        .find(|observed| observed.name == bucket.name),
-                )
-            })
+        BootstrapDiff::from_resources(
+            self.planned_resources()
+                .into_iter()
+                .map(|resource| resource.bootstrap_decision(&existing.view()))
+                .collect(),
+        )
+    }
+
+    #[must_use]
+    pub fn replication_promotion_plan_against(
+        &self,
+        existing: &ExistingResources,
+    ) -> ReplicationPromotionPlan {
+        let steps = self
+            .planned_resources()
+            .into_iter()
+            .map(|resource| resource.promotion_decision(&existing.view()))
             .collect();
 
-        BootstrapDiff {
-            kv_buckets,
-            streams,
-            object_buckets,
-        }
+        ReplicationPromotionPlan { steps }
+    }
+
+    fn planned_resources(&self) -> Vec<PlannedResource<'_>> {
+        let mut resources = Vec::new();
+        resources.extend(self.kv_buckets.iter().map(PlannedResource::KvBucket));
+        resources.extend(self.streams.iter().map(PlannedResource::Stream));
+        resources.extend(
+            self.object_buckets
+                .iter()
+                .map(PlannedResource::ObjectBucket),
+        );
+        resources
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsServerCapabilities {
     pub version: NatsServerVersion,
     pub jetstream_enabled: bool,
+    pub jetstream_cluster: JetStreamClusterFacts,
 }
 
 impl NatsServerCapabilities {
     #[must_use]
-    pub const fn new(version: NatsServerVersion, jetstream_enabled: bool) -> Self {
+    pub const fn new(version: NatsServerVersion, jetstream_enabled: bool, node_id: NodeId) -> Self {
         Self {
             version,
             jetstream_enabled,
+            jetstream_cluster: JetStreamClusterFacts::SingleServer { node_id },
+        }
+    }
+
+    #[must_use]
+    pub const fn clustered(
+        version: NatsServerVersion,
+        jetstream_enabled: bool,
+        jetstream_peers: JetStreamPeerSet,
+    ) -> Self {
+        Self {
+            version,
+            jetstream_enabled,
+            jetstream_cluster: JetStreamClusterFacts::Clustered {
+                peers: jetstream_peers,
+            },
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JetStreamClusterFacts {
+    SingleServer { node_id: NodeId },
+    Clustered { peers: JetStreamPeerSet },
+}
+
+impl JetStreamClusterFacts {
+    #[must_use]
+    pub fn peer_count(&self) -> usize {
+        match self {
+            Self::SingleServer { .. } => 1,
+            Self::Clustered { peers } => peers.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn covers_topology(&self, topology: &CoreTopology) -> bool {
+        match self {
+            Self::SingleServer { node_id } => {
+                matches!(topology.nodes(), [topology_node] if topology_node == node_id)
+            }
+            Self::Clustered { peers } => peers.matches_topology(topology),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JetStreamPeerSet {
+    peers: CanonicalNodeSet,
+}
+
+impl JetStreamPeerSet {
+    pub fn from_nodes(peers: Vec<NodeId>) -> Result<Self, JetStreamPeerSetError> {
+        if peers.is_empty() {
+            return Err(JetStreamPeerSetError::Empty);
+        }
+
+        Ok(Self {
+            peers: CanonicalNodeSet::from_nodes(peers)?,
+        })
+    }
+
+    #[must_use]
+    pub fn nodes(&self) -> &[NodeId] {
+        self.peers.nodes()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.peers.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.peers.is_empty()
+    }
+
+    #[must_use]
+    pub fn matches_topology(&self, topology: &CoreTopology) -> bool {
+        self.nodes() == topology.nodes()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JetStreamPeerSetError {
+    Empty,
+    DuplicateNode { node_id: NodeId },
+}
+
+impl From<CanonicalNodeSetError> for JetStreamPeerSetError {
+    fn from(value: CanonicalNodeSetError) -> Self {
+        match value {
+            CanonicalNodeSetError::DuplicateNode { node_id } => Self::DuplicateNode { node_id },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootstrapRefusal {
     JetStreamDisabled,
     UnsupportedServerVersion {
         minimum: NatsServerVersion,
         actual: NatsServerVersion,
     },
+    InsufficientJetStreamServers {
+        required: usize,
+        actual: usize,
+    },
+    JetStreamPeersDoNotCoverCoreTopology,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -191,6 +315,16 @@ pub struct ExistingResources {
     pub object_buckets: Vec<ObjectBucketSpec>,
 }
 
+impl ExistingResources {
+    fn view(&self) -> ExistingResourceView<'_> {
+        ExistingResourceView {
+            kv_buckets: &self.kv_buckets,
+            streams: &self.streams,
+            object_buckets: &self.object_buckets,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapDiff {
     pub kv_buckets: Vec<BootstrapResourceDecision>,
@@ -198,195 +332,64 @@ pub struct BootstrapDiff {
     pub object_buckets: Vec<BootstrapResourceDecision>,
 }
 
+impl BootstrapDiff {
+    fn from_resources(resources: Vec<BootstrapResourceDecision>) -> Self {
+        let mut diff = Self {
+            kv_buckets: Vec::new(),
+            streams: Vec::new(),
+            object_buckets: Vec::new(),
+        };
+
+        for resource in resources {
+            match resource.resource.kind {
+                BootstrapResourceKind::KvBucket => diff.kv_buckets.push(resource),
+                BootstrapResourceKind::Stream => diff.streams.push(resource),
+                BootstrapResourceKind::ObjectBucket => diff.object_buckets.push(resource),
+            }
+        }
+
+        diff
+    }
+
+    #[must_use]
+    pub fn kv_bucket(&self, name: &str) -> Option<&BootstrapResourceDecision> {
+        self.kv_buckets
+            .iter()
+            .find(|decision| decision.resource.name == name)
+    }
+
+    #[must_use]
+    pub fn stream(&self, name: &str) -> Option<&BootstrapResourceDecision> {
+        self.streams
+            .iter()
+            .find(|decision| decision.resource.name == name)
+    }
+
+    #[must_use]
+    pub fn object_bucket(&self, name: &str) -> Option<&BootstrapResourceDecision> {
+        self.object_buckets
+            .iter()
+            .find(|decision| decision.resource.name == name)
+    }
+
+    pub fn all_resources(&self) -> impl Iterator<Item = &BootstrapResourceDecision> {
+        self.kv_buckets
+            .iter()
+            .chain(self.streams.iter())
+            .chain(self.object_buckets.iter())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapResourceDecision {
-    pub name: &'static str,
-    pub action: BootstrapAction,
+pub struct ReplicationPromotionPlan {
+    pub steps: Vec<ReplicationPromotionDecision>,
 }
 
-impl BootstrapResourceDecision {
-    fn from_kv(expected: &KvBucketSpec, observed: Option<&KvBucketSpec>) -> Self {
-        let action = observed.map_or(BootstrapAction::Create, |observed| {
-            kv_bucket_action(expected, observed)
-        });
-
-        Self::from_action(expected.name, action)
-    }
-
-    fn from_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> Self {
-        let action = observed.map_or(BootstrapAction::Create, |observed| {
-            stream_action(expected, observed)
-        });
-
-        Self::from_action(expected.name, action)
-    }
-
-    fn from_object_bucket(
-        expected: &ObjectBucketSpec,
-        observed: Option<&ObjectBucketSpec>,
-    ) -> Self {
-        let action = observed.map_or(BootstrapAction::Create, |observed| {
-            object_bucket_action(expected, observed)
-        });
-
-        Self::from_action(expected.name, action)
-    }
-
-    const fn from_action(name: &'static str, action: BootstrapAction) -> Self {
-        Self { name, action }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BootstrapAction {
-    Create,
-    Adopt,
-    Refuse { reason: BootstrapResourceRefusal },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BootstrapResourceRefusal {
-    ConfigurationDrift {
-        field: &'static str,
-        expected: String,
-        observed: String,
-    },
-}
-
-fn kv_bucket_action(expected: &KvBucketSpec, observed: &KvBucketSpec) -> BootstrapAction {
-    let KvBucketSpec {
-        name: expected_name,
-        replicas: expected_replicas,
-    } = expected;
-    let KvBucketSpec {
-        name: observed_name,
-        replicas: observed_replicas,
-    } = observed;
-
-    if expected_name != observed_name {
-        return drift("name", expected_name, observed_name);
-    }
-
-    if expected_replicas != observed_replicas {
-        return drift(
-            "replicas",
-            &expected_replicas.as_u8().to_string(),
-            &observed_replicas.as_u8().to_string(),
-        );
-    }
-
-    BootstrapAction::Adopt
-}
-
-fn object_bucket_action(
-    expected: &ObjectBucketSpec,
-    observed: &ObjectBucketSpec,
-) -> BootstrapAction {
-    let ObjectBucketSpec {
-        name: expected_name,
-        replicas: expected_replicas,
-    } = expected;
-    let ObjectBucketSpec {
-        name: observed_name,
-        replicas: observed_replicas,
-    } = observed;
-
-    if expected_name != observed_name {
-        return drift("name", expected_name, observed_name);
-    }
-
-    if expected_replicas != observed_replicas {
-        return drift(
-            "replicas",
-            &expected_replicas.as_u8().to_string(),
-            &observed_replicas.as_u8().to_string(),
-        );
-    }
-
-    BootstrapAction::Adopt
-}
-
-fn stream_action(expected: &StreamSpec, observed: &StreamSpec) -> BootstrapAction {
-    let StreamSpec {
-        name: expected_name,
-        subjects: expected_subjects,
-        retention: expected_retention,
-        storage: expected_storage,
-        replicas: expected_replicas,
-        discard: expected_discard,
-        allow_message_schedules: expected_allow_message_schedules,
-    } = expected;
-    let StreamSpec {
-        name: observed_name,
-        subjects: observed_subjects,
-        retention: observed_retention,
-        storage: observed_storage,
-        replicas: observed_replicas,
-        discard: observed_discard,
-        allow_message_schedules: observed_allow_message_schedules,
-    } = observed;
-
-    if expected_name != observed_name {
-        return drift("name", expected_name, observed_name);
-    }
-
-    if expected_subjects != observed_subjects {
-        return drift(
-            "subjects",
-            &format!("{expected_subjects:?}"),
-            &format!("{observed_subjects:?}"),
-        );
-    }
-
-    if expected_retention != observed_retention {
-        return drift(
-            "retention",
-            &format!("{expected_retention:?}"),
-            &format!("{observed_retention:?}"),
-        );
-    }
-
-    if expected_storage != observed_storage {
-        return drift(
-            "storage",
-            &format!("{expected_storage:?}"),
-            &format!("{observed_storage:?}"),
-        );
-    }
-
-    if expected_replicas != observed_replicas {
-        return drift(
-            "replicas",
-            &expected_replicas.as_u8().to_string(),
-            &observed_replicas.as_u8().to_string(),
-        );
-    }
-
-    if expected_discard != observed_discard {
-        return drift(
-            "discard",
-            &format!("{expected_discard:?}"),
-            &format!("{observed_discard:?}"),
-        );
-    }
-
-    if expected_allow_message_schedules != observed_allow_message_schedules {
-        return drift(
-            "allow_message_schedules",
-            &expected_allow_message_schedules.to_string(),
-            &observed_allow_message_schedules.to_string(),
-        );
-    }
-
-    BootstrapAction::Adopt
-}
-
-fn drift(field: &'static str, expected: &str, observed: &str) -> BootstrapAction {
-    BootstrapAction::Refuse {
-        reason: BootstrapResourceRefusal::ConfigurationDrift {
-            field,
-            expected: expected.to_owned(),
-            observed: observed.to_owned(),
-        },
+impl ReplicationPromotionPlan {
+    #[must_use]
+    pub fn stream(&self, name: &str) -> Option<&ReplicationPromotionDecision> {
+        self.steps.iter().find(|step| {
+            step.resource.kind == BootstrapResourceKind::Stream && step.resource.name == name
+        })
     }
 }

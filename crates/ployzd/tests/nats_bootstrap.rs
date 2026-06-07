@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 
+use ployz_core::ids::NodeId;
 use ployz_nats::connect::NatsClientEndpoint;
-use ployzd::nats_process::{
-    NatsServerConfig, NatsServerConfigError, NatsServerRuntime, PreparedNatsServerService,
-};
+use ployzd::nats_process::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
 
 #[test]
 fn single_node_config_enables_jetstream_on_loopback() {
-    let config = NatsServerConfig::single_node("plz-core-1", PathBuf::from("/var/lib/ployz/nats"))
-        .expect("valid config");
+    let config =
+        NatsServerConfig::single_node(node_id("core-1"), PathBuf::from("/var/lib/ployz/nats"))
+            .expect("valid config");
     let rendered = config.render();
 
-    assert!(rendered.contains("server_name: plz-core-1"));
+    assert!(rendered.contains("server_name: core-1"));
     assert!(rendered.contains("host: 127.0.0.1"));
     assert!(rendered.contains("port: 4222"));
     assert!(rendered.contains("jetstream"));
@@ -20,8 +20,9 @@ fn single_node_config_enables_jetstream_on_loopback() {
 
 #[test]
 fn supervised_runtime_uses_prepared_config_endpoint() {
-    let config = NatsServerConfig::single_node("plz-core-1", PathBuf::from("/var/lib/ployz/nats"))
-        .expect("valid config");
+    let config =
+        NatsServerConfig::single_node(node_id("core-1"), PathBuf::from("/var/lib/ployz/nats"))
+            .expect("valid config");
     let service = PreparedNatsServerService::prepare(
         PathBuf::from("/usr/local/bin/nats-server"),
         PathBuf::from("/etc/ployz/nats.conf"),
@@ -41,7 +42,7 @@ fn supervised_server_command_uses_config_file() {
     let service = PreparedNatsServerService::prepare(
         PathBuf::from("/usr/local/bin/nats-server"),
         PathBuf::from("/etc/ployz/nats.conf"),
-        NatsServerConfig::single_node("plz-core-1", PathBuf::from("/var/lib/ployz/nats"))
+        NatsServerConfig::single_node(node_id("core-1"), PathBuf::from("/var/lib/ployz/nats"))
             .expect("valid config"),
     )
     .expect("valid supervised service");
@@ -62,16 +63,12 @@ fn prepared_server_keeps_rendered_config_with_endpoint() {
     let service = PreparedNatsServerService::prepare(
         PathBuf::from("/usr/local/bin/nats-server"),
         PathBuf::from("/etc/ployz/nats.conf"),
-        NatsServerConfig::single_node("plz-core-1", PathBuf::from("/var/lib/ployz/nats"))
+        NatsServerConfig::single_node(node_id("core-1"), PathBuf::from("/var/lib/ployz/nats"))
             .expect("valid config"),
     )
     .expect("valid supervised service");
 
-    assert!(
-        service
-            .rendered_config()
-            .contains("server_name: plz-core-1")
-    );
+    assert!(service.rendered_config().contains("server_name: core-1"));
     assert_eq!(
         service.client_endpoint(),
         NatsClientEndpoint::loopback(4222)
@@ -79,23 +76,9 @@ fn prepared_server_keeps_rendered_config_with_endpoint() {
 }
 
 #[test]
-fn config_rejects_values_that_change_rendered_shape() {
-    assert_eq!(
-        NatsServerConfig::single_node(
-            "plz-core-1\nport: 9999",
-            PathBuf::from("/var/lib/ployz/nats")
-        ),
-        Err(NatsServerConfigError::InvalidToken {
-            field: "server_name",
-            value: "plz-core-1\nport: 9999".to_owned(),
-        })
-    );
-}
-
-#[test]
 fn config_renderer_escapes_quoted_path_values() {
     let config = NatsServerConfig::single_node(
-        "plz-core-1",
+        node_id("core-1"),
         PathBuf::from("/var/lib/ployz/nats \"quoted\" \\ path"),
     )
     .expect("path escapes during render");
@@ -113,4 +96,8 @@ fn external_runtime_keeps_the_supplied_endpoint() {
     let runtime = NatsServerRuntime::External(endpoint.clone());
 
     assert_eq!(runtime.client_endpoint(), endpoint);
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
 }
