@@ -15,12 +15,17 @@ use crate::artifacts::{
     verify_artifact_file,
 };
 use crate::executor::KeeperStepEffects;
-use crate::steps::{HostPrerequisite, KeeperStep, KeeperStepEffectError, KeeperStepFailureReason};
+use crate::join::{JOIN_MATERIAL_FILE, render_redacted_join_material};
+use crate::steps::{
+    HostPrerequisite, KeeperStep, KeeperStepEffectError, KeeperStepFailureReason,
+    RedactedJoinMaterial,
+};
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
 #[derive(Debug, Clone)]
 pub struct KeeperLocalConfig {
     pub systemd_dir: PathBuf,
+    pub state_dir: PathBuf,
 }
 
 pub struct KeeperLocalEffects<R> {
@@ -59,9 +64,7 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
             KeeperStep::RedeemJoinToken(_) => {
                 Err(failure_message("join token redemption is not wired to NATS yet").into())
             }
-            KeeperStep::StoreJoinMaterial(_) => {
-                Err(failure_message("join material storage is not wired to NATS yet").into())
-            }
+            KeeperStep::StoreJoinMaterial(material) => self.store_join_material(material),
         }
     }
 }
@@ -155,6 +158,25 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
                 Ok(artifact)
             }
         }
+    }
+
+    fn store_join_material(
+        &self,
+        material: &RedactedJoinMaterial,
+    ) -> Result<(), KeeperStepEffectError> {
+        ensure_directory(&self.config.state_dir).map_err(|error| {
+            KeeperStepEffectError::new(
+                KeeperStepFailureReason::JoinMaterialStoreFailed,
+                failure_message(format!(
+                    "failed to create keeper state directory {}: {error}",
+                    self.config.state_dir.display()
+                )),
+            )
+        })?;
+        commit_join_material_file(
+            &self.config.state_dir,
+            &render_redacted_join_material(material),
+        )
     }
 }
 
@@ -453,6 +475,13 @@ fn create_private_directory(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)
 }
 
+fn ensure_directory(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    create_private_directory(path)
+}
+
 fn validate_nats_config(path: &Path) -> Result<(), FailureMessage> {
     if path.is_file() {
         return Ok(());
@@ -474,37 +503,55 @@ fn write_unit_file(
             systemd_dir.display()
         ))
     })?;
-    let path = systemd_dir.join(unit_name);
-    let mut staged = create_staged_unit_file(systemd_dir, unit_name)?;
+    write_durable_file(systemd_dir, unit_name, "ployz-unit", contents)
+}
+
+fn commit_join_material_file(
+    directory: &Path,
+    contents: &[u8],
+) -> Result<(), KeeperStepEffectError> {
+    write_durable_file(directory, JOIN_MATERIAL_FILE, "ployz-join", contents).map_err(|message| {
+        KeeperStepEffectError::new(KeeperStepFailureReason::JoinMaterialStoreFailed, message)
+    })
+}
+
+fn write_durable_file(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+    contents: &[u8],
+) -> Result<(), FailureMessage> {
+    let path = directory.join(file_name);
+    let mut staged = create_staged_file(directory, file_name, staged_tag)?;
     staged.file.write_all(contents).map_err(|error| {
         failure_message(format!(
-            "failed to write staged systemd unit {}: {error}",
+            "failed to write staged file {}: {error}",
             staged.path.display()
         ))
     })?;
     staged.file.sync_all().map_err(|error| {
         failure_message(format!(
-            "failed to sync staged systemd unit {}: {error}",
+            "failed to sync staged file {}: {error}",
             staged.path.display()
         ))
     })?;
     staged.commit_to(&path)?;
-    sync_directory(systemd_dir).map_err(|error| {
+    sync_directory(directory).map_err(|error| {
         failure_message(format!(
-            "systemd unit {} was installed but directory sync failed for {}: {error}",
+            "file {} was installed but directory sync failed for {}: {error}",
             path.display(),
-            systemd_dir.display()
+            directory.display()
         ))
     })
 }
 
-struct StagedUnitFile {
+struct StagedFile {
     path: PathBuf,
     file: File,
     committed: bool,
 }
 
-impl StagedUnitFile {
+impl StagedFile {
     fn new(path: PathBuf, file: File) -> Self {
         Self {
             path,
@@ -516,7 +563,7 @@ impl StagedUnitFile {
     fn commit_to(&mut self, path: &Path) -> Result<(), FailureMessage> {
         fs::rename(&self.path, path).map_err(|error| {
             failure_message(format!(
-                "failed to commit staged systemd unit {} to {}: {error}",
+                "failed to commit staged file {} to {}: {error}",
                 self.path.display(),
                 path.display()
             ))
@@ -526,7 +573,7 @@ impl StagedUnitFile {
     }
 }
 
-impl Drop for StagedUnitFile {
+impl Drop for StagedFile {
     fn drop(&mut self) {
         if !self.committed {
             let _ = fs::remove_file(&self.path);
@@ -534,44 +581,47 @@ impl Drop for StagedUnitFile {
     }
 }
 
-fn create_staged_unit_file(
-    systemd_dir: &Path,
-    unit_name: &str,
-) -> Result<StagedUnitFile, FailureMessage> {
+fn create_staged_file(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+) -> Result<StagedFile, FailureMessage> {
     for attempt in 0..16 {
-        let staged_path = unique_staged_unit_path(systemd_dir, unit_name, attempt)?;
+        let staged_path = unique_staged_file_path(directory, file_name, staged_tag, attempt)?;
         match OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&staged_path)
         {
-            Ok(file) => return Ok(StagedUnitFile::new(staged_path, file)),
+            Ok(file) => return Ok(StagedFile::new(staged_path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(failure_message(format!(
-                    "failed to create staged systemd unit {}: {error}",
+                    "failed to create staged file {}: {error}",
                     staged_path.display()
                 )));
             }
         }
     }
+
     Err(failure_message(format!(
-        "failed to create a unique staged systemd unit in {}",
-        systemd_dir.display()
+        "failed to create a unique staged file in {}",
+        directory.display()
     )))
 }
 
-fn unique_staged_unit_path(
-    systemd_dir: &Path,
-    unit_name: &str,
+fn unique_staged_file_path(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
     attempt: u8,
 ) -> Result<PathBuf, FailureMessage> {
     let entropy = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| failure_message(format!("failed to create staged unit name: {error}")))?
+        .map_err(|error| failure_message(format!("failed to create staged file name: {error}")))?
         .as_nanos();
-    Ok(systemd_dir.join(format!(
-        ".{unit_name}.ployz-unit-{}-{entropy}-{attempt}",
+    Ok(directory.join(format!(
+        ".{file_name}.{staged_tag}-{}-{entropy}-{attempt}",
         std::process::id()
     )))
 }

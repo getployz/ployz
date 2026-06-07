@@ -4,7 +4,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::steps::{JoinMaterialError, JoinToken};
+use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
+
+pub const JOIN_MATERIAL_FILE: &str = "join-material";
 
 pub fn consume_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
     let contents = fs::read_to_string(path).map_err(|error| JoinTokenFileError::ReadFailed {
@@ -16,6 +18,9 @@ pub fn consume_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileEr
             |error| match error {
                 JoinMaterialError::EmptyJoinToken => JoinTokenFileError::EmptyToken,
                 JoinMaterialError::EmptyClusterName => {
+                    unreachable!("token validation cannot inspect cluster names")
+                }
+                JoinMaterialError::InvalidClusterName { .. } => {
                     unreachable!("token validation cannot inspect cluster names")
                 }
             },
@@ -59,3 +64,13 @@ impl fmt::Display for JoinTokenFileError {
 }
 
 impl std::error::Error for JoinTokenFileError {}
+
+#[must_use]
+pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
+    format!(
+        "node_id={}\ncluster_name={}\n",
+        material.node_id.as_str(),
+        material.cluster_name
+    )
+    .into_bytes()
+}

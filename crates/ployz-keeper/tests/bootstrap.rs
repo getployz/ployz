@@ -15,10 +15,10 @@ use ployz_keeper::executor::{
     KeeperStepRecorder, execute_keeper_plan,
 };
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinToken, KeeperJoinTarget,
-    KeeperStep, KeeperStepEffectError, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel,
-    NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan,
-    first_node_install_plan, keeper_join_plan,
+    BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
+    KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
+    KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError,
+    bootstrap_script_plan, first_node_install_plan, keeper_join_plan,
 };
 use ployz_keeper::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -228,6 +228,18 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
             role: DaemonProcessRole::Gateway,
         })
     );
+}
+
+#[test]
+fn join_material_cluster_name_rejects_persisted_format_breakers() {
+    for value in ["prod\nnext", "prod\rnext", "prod=next"] {
+        assert_eq!(
+            RedactedJoinMaterial::new(node_id("node_7"), value),
+            Err(JoinMaterialError::InvalidClusterName {
+                value: value.to_owned(),
+            })
+        );
+    }
 }
 
 #[test]

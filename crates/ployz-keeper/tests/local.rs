@@ -8,11 +8,13 @@ use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::executor::{
-    KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEvent, KeeperStepRecorder, execute_keeper_plan,
+    KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
+    execute_keeper_plan,
 };
+use ployz_keeper::join::JOIN_MATERIAL_FILE;
 use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, FirstNodeInstallTarget, KeeperJoinTarget, KeeperStepFailure,
+    BootstrapScriptTarget, FirstNodeInstallTarget, KeeperJoinTarget, KeeperStep, KeeperStepFailure,
     KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, RedactedJoinMaterial,
     bootstrap_script_plan, first_node_install_plan, keeper_join_plan,
 };
@@ -397,6 +399,32 @@ fn local_effects_do_not_silently_accept_unwired_join_token_redemption() {
     ));
 }
 
+#[test]
+fn local_effects_store_redacted_join_material() {
+    let root = temp_dir("ployz-keeper-local-join-material");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let material =
+        RedactedJoinMaterial::new(node_id("node_2"), "prod").expect("valid join material");
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+
+    effects
+        .apply_step(&KeeperStep::StoreJoinMaterial(material.clone()))
+        .expect("join material stores");
+    effects
+        .apply_step(&KeeperStep::StoreJoinMaterial(material))
+        .expect("join material stores idempotently");
+
+    assert_eq!(
+        fs::read_to_string(root.join("state").join(JOIN_MATERIAL_FILE))
+            .expect("join material is stored"),
+        "node_id=node_2\ncluster_name=prod\n"
+    );
+}
+
 #[derive(Debug)]
 struct RecordingRunner {
     linux: bool,
@@ -492,9 +520,10 @@ impl KeeperStepRecorder for RecordingRecorder {
     }
 }
 
-fn local_config(_root: &Path, systemd_dir: &Path) -> KeeperLocalConfig {
+fn local_config(root: &Path, systemd_dir: &Path) -> KeeperLocalConfig {
     KeeperLocalConfig {
         systemd_dir: systemd_dir.to_path_buf(),
+        state_dir: root.join("state"),
     }
 }
 

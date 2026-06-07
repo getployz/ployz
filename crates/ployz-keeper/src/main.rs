@@ -50,6 +50,7 @@ fn run_first_node_install(
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
+            state_dir: "/var/lib/ployz".into(),
         },
         SystemKeeperCommandRunner::default(),
     );

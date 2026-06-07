@@ -136,6 +136,11 @@ impl RedactedJoinMaterial {
         if cluster_name.is_empty() {
             return Err(JoinMaterialError::EmptyClusterName);
         }
+        if cluster_name.contains(['\n', '\r', '=']) {
+            return Err(JoinMaterialError::InvalidClusterName {
+                value: cluster_name,
+            });
+        }
 
         Ok(Self {
             node_id,
@@ -148,6 +153,7 @@ impl RedactedJoinMaterial {
 pub enum JoinMaterialError {
     EmptyJoinToken,
     EmptyClusterName,
+    InvalidClusterName { value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
