@@ -107,3 +107,17 @@ The complete acceptance flow must prove:
 - WireGuard/eBPF data plane,
 - deploy placement,
 - gateway routing.
+
+## First-Node Install Contract
+
+`ployzctl init --node <id>` is the product surface for H1. It must install the
+same supervised shape locally that the Hetzner proof later exercises remotely:
+
+- `nats-server`
+- `ployzd tunnel --side core`
+- `ployzd control`
+- `ployzd node --id <id>`
+- optional `ployzd gateway`
+
+Keeper owns the local step plan for this install. Hetzner glue should only
+create the host and call the product command.

@@ -5,9 +5,47 @@ use ployz_core::ops::{
 };
 use ployz_sdk_types::AcceptedOperation;
 use ployzctl::commands::deploy::DetachedDeployOutput;
+use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{MachineAddOutput, MachineBootstrapUrl, MachineJoinToken};
 use ployzctl::commands::ops::WatchOutput;
 use ployzctl::commands::upgrade::{UpgradeComponent, UpgradeOutput};
+
+#[test]
+fn init_first_node_reports_supervised_product_roles() {
+    let node_id = NodeId::try_new("node_1").expect("valid node id");
+    let output = FirstNodeInitOutput {
+        node_id: node_id.clone(),
+        gateway: FirstNodeGateway::Skip,
+    }
+    .render();
+
+    assert_eq!(
+        output,
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node\n"
+    );
+    assert_eq!(
+        first_node_process_set(&node_id, FirstNodeGateway::Skip).roles(),
+        &[
+            ployz_core::roles::DaemonProcessRole::Tunnel(ployz_core::roles::TunnelSide::Core),
+            ployz_core::roles::DaemonProcessRole::Control,
+            ployz_core::roles::DaemonProcessRole::Node(node_id),
+        ]
+    );
+}
+
+#[test]
+fn init_first_node_can_include_gateway_role() {
+    let output = FirstNodeInitOutput {
+        node_id: NodeId::try_new("node_1").expect("valid node id"),
+        gateway: FirstNodeGateway::Install,
+    }
+    .render();
+
+    assert_eq!(
+        output,
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
+    );
+}
 
 #[test]
 fn deploy_detach_prints_operation_id_without_runtime_details() {

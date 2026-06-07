@@ -8,6 +8,7 @@ use ployz_core::roles::{DaemonProcessRole, TunnelSide};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorUnitTarget {
     Keeper,
+    NatsServer,
     PloyzdRole(DaemonProcessRole),
 }
 
@@ -16,8 +17,45 @@ impl SupervisorUnitTarget {
     pub fn unit_name(&self) -> String {
         match self {
             Self::Keeper => "ployz-keeper.service".to_owned(),
+            Self::NatsServer => "nats-server.service".to_owned(),
             Self::PloyzdRole(role) => role_unit_name(role),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsServerUnit {
+    exec_start: String,
+}
+
+impl NatsServerUnit {
+    pub fn new(
+        binary_path: impl AsRef<Path>,
+        config_path: impl AsRef<Path>,
+    ) -> Result<Self, SupervisorUnitFileError> {
+        let exec_start = render_exec_start(
+            binary_path.as_ref(),
+            ["--config".to_owned(), path_token(config_path.as_ref())?],
+        )?;
+        Ok(Self { exec_start })
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> SupervisorUnitTarget {
+        SupervisorUnitTarget::NatsServer
+    }
+
+    #[must_use]
+    pub fn unit_name(&self) -> String {
+        self.target().unit_name()
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            self.exec_start,
+        )
     }
 }
 
@@ -71,6 +109,15 @@ fn render_exec_start(
         tokens.push(render_exec_token(arg)?);
     }
     Ok(tokens.join(" "))
+}
+
+fn path_token(path: &Path) -> Result<String, SupervisorUnitFileError> {
+    let Some(value) = path.to_str() else {
+        return Err(SupervisorUnitFileError::UnsupportedExecToken {
+            value: path.display().to_string(),
+        });
+    };
+    Ok(value.to_owned())
 }
 
 fn render_exec_token(value: impl Into<String>) -> Result<String, SupervisorUnitFileError> {

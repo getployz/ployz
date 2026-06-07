@@ -2,15 +2,16 @@ use std::path::PathBuf;
 use std::{env, fs};
 
 use ployz_core::ids::NodeId;
-use ployz_core::roles::{DaemonProcessRole, TunnelSide};
+use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
     KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::cli::load_startup;
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, HostPrerequisite, JoinToken, KeeperJoinTarget, KeeperStep,
-    NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, keeper_join_plan,
+    BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinToken, KeeperJoinTarget,
+    KeeperStep, NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan,
+    first_node_install_plan, keeper_join_plan,
 };
 use ployz_keeper::systemd::SupervisorUnitTarget;
 
@@ -125,6 +126,68 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     )));
     assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
         SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Dns)
+    )));
+}
+
+#[test]
+fn first_node_install_starts_nats_and_core_roles_without_join_token() {
+    let node_id = node_id("node_1");
+    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
+        node_id.clone(),
+        ployzd_artifact(),
+        FirstNodeGateway::Skip,
+    ));
+
+    assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
+    assert!(plan.writes_nats_server_unit());
+    assert!(plan.writes_ployzd_role_units());
+    assert!(plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
+        SupervisorUnitTarget::NatsServer
+    )));
+    assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
+        SupervisorUnitTarget::NatsServer
+    )));
+
+    for role in [
+        DaemonProcessRole::Tunnel(TunnelSide::Core),
+        DaemonProcessRole::Control,
+        DaemonProcessRole::Node(node_id),
+    ] {
+        let unit = SupervisorUnitTarget::PloyzdRole(role);
+        assert!(
+            plan.steps()
+                .contains(&KeeperStep::WriteSupervisorUnit(unit.clone()))
+        );
+        assert!(
+            plan.steps()
+                .contains(&KeeperStep::StartSupervisorUnit(unit))
+        );
+    }
+
+    assert!(!plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
+        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
+    )));
+    assert!(
+        !plan
+            .steps()
+            .iter()
+            .any(|step| matches!(step, KeeperStep::RedeemJoinToken(_)))
+    );
+}
+
+#[test]
+fn first_node_install_can_include_gateway_role() {
+    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(),
+        FirstNodeGateway::Install,
+    ));
+
+    assert!(plan.steps().contains(&KeeperStep::WriteSupervisorUnit(
+        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
+    )));
+    assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
+        SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Gateway)
     )));
 }
 

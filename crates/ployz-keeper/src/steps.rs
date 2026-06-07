@@ -3,7 +3,7 @@
 use std::fmt;
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::roles::DaemonProcessRole;
+use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
 use crate::health::{KeeperStepFailureReason, RoleHealthGate};
@@ -41,6 +41,16 @@ impl KeeperStepPlan {
             matches!(
                 step,
                 KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::PloyzdRole(_))
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn writes_nats_server_unit(&self) -> bool {
+        self.steps.iter().any(|step| {
+            matches!(
+                step,
+                KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
             )
         })
     }
@@ -159,6 +169,28 @@ impl KeeperJoinTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstNodeInstallTarget {
+    pub node_id: NodeId,
+    pub ployzd_artifact: PloyzdArtifactTarget,
+    pub gateway: FirstNodeGateway,
+}
+
+impl FirstNodeInstallTarget {
+    #[must_use]
+    pub fn new(
+        node_id: NodeId,
+        ployzd_artifact: PloyzdArtifactTarget,
+        gateway: FirstNodeGateway,
+    ) -> Self {
+        Self {
+            node_id,
+            ployzd_artifact,
+            gateway,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubstrateRolloutTarget {
     pub operation_id: OperationId,
     pub ployzd_artifact: PloyzdArtifactTarget,
@@ -236,6 +268,26 @@ pub fn keeper_join_plan(target: KeeperJoinTarget) -> KeeperStepPlan {
 
     for role in target.roles.roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
+        steps.push(KeeperStep::WriteSupervisorUnit(unit.clone()));
+        steps.push(KeeperStep::StartSupervisorUnit(unit));
+    }
+
+    KeeperStepPlan::new(steps)
+}
+
+#[must_use]
+pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan {
+    let process_set = first_node_process_set(&target.node_id, target.gateway);
+    let mut steps = vec![
+        KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        KeeperStep::VerifyArtifact(target.ployzd_artifact.clone().into()),
+        KeeperStep::InstallArtifact(target.ployzd_artifact.into()),
+        KeeperStep::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer),
+        KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
+    ];
+
+    for role in process_set.roles() {
+        let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
         steps.push(KeeperStep::WriteSupervisorUnit(unit.clone()));
         steps.push(KeeperStep::StartSupervisorUnit(unit));
     }

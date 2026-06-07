@@ -5,7 +5,19 @@ use ployz_core::roles::{DaemonProcessRole, TunnelSide};
 use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest,
 };
-use ployz_keeper::systemd::{PloyzdRoleUnit, role_unit_name};
+use ployz_keeper::systemd::{NatsServerUnit, PloyzdRoleUnit, role_unit_name};
+
+#[test]
+fn nats_server_unit_renders_supervised_configured_process() {
+    let unit = NatsServerUnit::new("/usr/local/bin/nats-server", "/etc/ployz/nats-server.conf")
+        .expect("nats unit is valid");
+
+    assert_eq!(unit.unit_name(), "nats-server.service");
+    assert_eq!(
+        unit.render(),
+        "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/nats-server --config /etc/ployz/nats-server.conf\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+    );
+}
 
 #[test]
 fn role_units_render_the_supervised_ployzd_commands() {

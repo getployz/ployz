@@ -62,6 +62,55 @@ impl TunnelSide {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstNodeGateway {
+    Install,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstNodeProcessSet {
+    pub nats_server: FirstNodeNatsServer,
+    roles: Vec<DaemonProcessRole>,
+}
+
+impl FirstNodeProcessSet {
+    #[must_use]
+    pub fn roles(&self) -> &[DaemonProcessRole] {
+        &self.roles
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstNodeNatsServer {
+    Supervised,
+}
+
+impl FirstNodeNatsServer {
+    #[must_use]
+    pub const fn process_name(self) -> &'static str {
+        match self {
+            Self::Supervised => "nats-server",
+        }
+    }
+}
+
+#[must_use]
+pub fn first_node_process_set(node_id: &NodeId, gateway: FirstNodeGateway) -> FirstNodeProcessSet {
+    let mut roles = vec![
+        DaemonProcessRole::Tunnel(TunnelSide::Core),
+        DaemonProcessRole::Control,
+        DaemonProcessRole::Node(node_id.clone()),
+    ];
+    if gateway == FirstNodeGateway::Install {
+        roles.push(DaemonProcessRole::Gateway);
+    }
+    FirstNodeProcessSet {
+        nats_server: FirstNodeNatsServer::Supervised,
+        roles,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonRoleParseError {
     MissingRole,
@@ -137,7 +186,10 @@ fn is_known_role(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DaemonProcessRole, DaemonRoleParseError, TunnelSide, parse_role_args};
+    use super::{
+        DaemonProcessRole, DaemonRoleParseError, FirstNodeGateway, FirstNodeNatsServer, TunnelSide,
+        first_node_process_set, parse_role_args,
+    };
     use crate::ids::NodeId;
 
     #[test]
@@ -187,6 +239,30 @@ mod tests {
     #[test]
     fn missing_role_is_an_error() {
         assert_eq!(parse_role_args([]), Err(DaemonRoleParseError::MissingRole));
+    }
+
+    #[test]
+    fn first_node_roles_are_the_product_install_shape() {
+        let without_gateway = first_node_process_set(&node_id("node_1"), FirstNodeGateway::Skip);
+        assert_eq!(without_gateway.nats_server, FirstNodeNatsServer::Supervised);
+        assert_eq!(
+            without_gateway.roles(),
+            &[
+                DaemonProcessRole::Tunnel(TunnelSide::Core),
+                DaemonProcessRole::Control,
+                DaemonProcessRole::Node(node_id("node_1")),
+            ]
+        );
+        let with_gateway = first_node_process_set(&node_id("node_1"), FirstNodeGateway::Install);
+        assert_eq!(
+            with_gateway.roles(),
+            &[
+                DaemonProcessRole::Tunnel(TunnelSide::Core),
+                DaemonProcessRole::Control,
+                DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Gateway,
+            ]
+        );
     }
 
     fn node_id(value: &str) -> NodeId {

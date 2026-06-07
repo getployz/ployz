@@ -1708,6 +1708,8 @@ Pipeline finish:
 - **Dependencies:** U1, U1a, U5, H0
 - **Files:**
   - `crates/ployzctl/src/commands/init.rs`
+  - `crates/ployz-keeper/src/steps.rs`
+  - `crates/ployz-keeper/src/systemd.rs`
   - `docs/operations/two-node-acceptance.md`
 - **Approach:** `ployz init` should install the same supervised process shape
   users run in production: `nats-server`, NATS tunnel, control role, node role,
