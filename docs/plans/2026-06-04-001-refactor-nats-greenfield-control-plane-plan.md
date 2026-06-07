@@ -1534,7 +1534,7 @@ Pipeline finish:
   `certs.>`, plus KV_OBS keys `containers.>` through its own NATS client; it
   serves and applies route changes independently of `ployzd control`. Keep
   route projection intentionally narrow; DNS and cert automation are later
-  projection slices and should not block H0-H5.
+  projection slices and should not block the two-node product acceptance.
 - **Test scenarios:**
   - Gateway filters unhealthy/stale containers locally.
   - Gateway keeps last good route config when NATS connection drops.
@@ -1682,9 +1682,9 @@ Pipeline finish:
   - Restore recreates KV/streams/object metadata needed for service inspect.
 - **Verification:** `cargo test -p ployzd ha_promotion backup_restore`
 
-### H0. Hetzner Substrate Smoke
+### H0. Hetzner Host Smoke
 
-- **Goal:** Keep Hetzner as a thin substrate proof: create two fresh machines,
+- **Goal:** Keep Hetzner as thin host plumbing: create two fresh machines,
   prove SSH readiness, and destroy them.
 - **Requirements:** R39, R41
 - **Dependencies:** U9
@@ -1701,101 +1701,20 @@ Pipeline finish:
 - **Verification:** The script creates two Hetzner servers, proves SSH
   readiness, and tears both servers down.
 
-### H1. First-Node Product Install
-
-- **Goal:** Prove the real Ployz install path on one fresh machine.
-- **Requirements:** R31-R38, R39, R41
-- **Dependencies:** U1, U1a, U5, H0
-- **Files:**
-  - `crates/ployzctl/src/commands/init.rs`
-  - `crates/ployz-keeper/src/steps.rs`
-  - `crates/ployz-keeper/src/systemd.rs`
-  - `docs/operations/two-node-acceptance.md`
-- **Approach:** `ployz init` should install the same supervised process shape
-  users run in production: `nats-server`, NATS tunnel, control role, node role,
-  and optional gateway. Keep install logic in the product command, not in
-  Hetzner plumbing.
-- **Test scenarios:**
-  - First-node install writes configs and supervised units.
-  - `nats-server`, tunnel, control, and node roles report separate readiness.
-  - Restarting `ployzd control` does not stop NATS or the tunnel.
-- **Verification:** One fresh Hetzner machine reaches NATS, tunnel, control,
-  and node readiness through the product install command.
-
-### H2. Second-Node Machine Add
-
-- **Goal:** Prove `ployz machine add` on a second fresh machine.
-- **Requirements:** R1-R5, R31-R36, R40
-- **Dependencies:** H1, U3, U4a, U5, U11
-- **Files:**
-  - `crates/ployzd/src/controllers/machine.rs`
-  - `crates/ployz-core/src/machine.rs`
-  - `docs/operations/two-node-acceptance.md`
-- **Approach:** `machine.add` returns an operation id, issues short-lived join
-  material, installs the node role, establishes NATS over iroh, and marks the
-  machine active only after heartbeat and node inspect succeed.
-- **Test scenarios:**
-  - Reusing a join token fails visibly.
-  - Pending machines are not eligible for placement.
-  - Failed bootstrap preserves operation and machine evidence.
-- **Verification:** Two Hetzner machines form one Ployz domain with visible
-  node observations over iroh-carried NATS.
-
-### H3. eBPF/WireGuard Data Plane Proof
-
-- **Goal:** Restore the old eBPF/WireGuard data plane so containers on separate
-  nodes can communicate privately.
-- **Requirements:** R42, R43
-- **Dependencies:** H2, U6, U7
-- **Files:**
-  - `crates/ployzd/src/network/`
-  - `crates/ployzd/src/docker/`
-  - `docs/operations/two-node-acceptance.md`
-- **Approach:** Port the old eBPF/WireGuard invariants from git history,
-  especially commits around `9e92e1cd`, `e2dfa5aa`, `6d059852`, `1774c86b`,
-  and `a3d0a884`. Keep old control-plane state out; the hard requirement is
-  the data-plane behavior.
-- **Test scenarios:**
-  - Nodes receive stable WireGuard identities and private addresses.
-  - Managed containers get cross-node network wiring.
-  - Restarting `ployzd control` does not break established packet routing.
-- **Verification:** A container on node A reaches a container on node B over
-  the eBPF/WireGuard private data plane on real Hetzner machines.
-
-### H4. Product Deploy And Ingress Smoke
-
-- **Goal:** Prove a real deploy and ingress path across both machines.
-- **Requirements:** R1-R5, R21b, R38, R44, R45
-- **Dependencies:** H2, H3, U7, U8
-- **Files:**
-  - `crates/ployzd/src/deploy_worker/`
-  - `crates/ployzd/src/gateway/`
-  - `docs/operations/two-node-acceptance.md`
-- **Approach:** Deploy one smoke service across both nodes. Plan from live
-  node/container state, retain failed containers as evidence, project routable
-  private upstreams, and have Pingora forward to healthy local or remote
-  containers.
-- **Test scenarios:**
-  - Deploy starts one managed container on each active node.
-  - Operation events include node ids, container ids, and retained failure
-    evidence.
-  - HTTP requests to either public node IP reach the smoke service.
-- **Verification:** The acceptance service runs on both Hetzner nodes and is
-  reachable through ingress from both nodes.
-
-### H5. Full Two-Node Product Gate
+### H1. Two-Node Product Acceptance
 
 - **Goal:** Make the whole proof one repeatable command for humans and CI.
 - **Requirements:** R39-R45
-- **Dependencies:** H0-H4
+- **Dependencies:** H0, U1-U9a, U11
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
   - `docs/operations/two-node-acceptance.md`
-- **Approach:** Compose the product commands into the substrate smoke:
-  provision nodes, run first-node install, add the second machine, deploy the
-  smoke service, verify eBPF/WireGuard reachability, verify ingress, and
-  destroy resources. The script should stay glue; product behavior belongs in
-  product commands and operation events.
+- **Approach:** Compose product commands into the host smoke. The script
+  provisions two machines, runs first-node install, adds the second machine,
+  deploys the smoke service, verifies NATS-over-iroh, verifies the required
+  eBPF/WireGuard private data plane, verifies ingress, and destroys resources.
+  The script should stay glue; product behavior belongs in product commands
+  and operation events.
 - **Test scenarios:**
   - A clean run provisions two machines, installs Ployz, joins the second
     machine, deploys the smoke service, verifies data plane and ingress, and
@@ -1836,8 +1755,8 @@ Pipeline finish:
 | Schedule unsupported by server | Fallback scheduler publishes same job subject | `crates/ployzd/tests/scheduler_fallback.rs` |
 | 2-core HA requested | Command refuses final healthy state | `crates/ployzd/tests/ha_promotion.rs` |
 | 3-core one node down | Mutations continue if quorum remains | `crates/ployzd/tests/ha_promotion.rs` |
-| Hetzner substrate smoke fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
-| Second-node machine add fails | Machine operation fails with node/bootstrap evidence; machine is not active | `crates/ployzd/tests/machine_add.rs` |
+| Hetzner host smoke fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
+| Second-node machine add fails | Machine operation fails with node/bootstrap evidence; machine is not active | `crates/ployz-core/tests/machine_lifecycle.rs` |
 | WireGuard setup fails | Deploy/join fails with network-prep evidence; no healthy dataplane is claimed | `crates/ployzd/tests/wireguard_dataplane.rs` |
 | Cross-node container traffic fails | Service remains visibly degraded; gateway does not claim healthy remote upstream | `crates/ployzd/tests/two_node_acceptance.rs` |
 | Pingora receives traffic on either node | Request reaches a healthy local or remote service container over the private network | `crates/ployzd/tests/pingora_two_node_ingress.rs` |
@@ -1879,7 +1798,8 @@ Do not build these in v1:
 - Automatic cleanup of failed artifacts.
 - Docker layer storage in Object Store.
 - Custom RPC/job/progress abstractions over NATS primitives.
-- Substrate rollout batches before H0-H2 product install/join is repeatable.
+- Substrate rollout batches before the two-node product acceptance is
+  repeatable.
 - DNS and cert automation before the minimal gateway/Pingora path is proven.
 
 ---
@@ -1934,14 +1854,10 @@ Do not build these in v1:
 14. U8 minimal gateway projection skeleton.
 15. U9 CLI/SDK ergonomics.
 16. U9a operation API contract registry.
-17. H0 Hetzner substrate smoke.
-18. H1 first-node product install.
-19. H2 second-node machine add.
-20. U10a HA/backup foundation.
-21. U10b HA promotion and backup commands.
-22. H3 eBPF/WireGuard data plane proof.
-23. H4 product deploy and ingress smoke.
-24. H5 full two-node product gate.
+17. H0 Hetzner host smoke.
+18. H1 two-node product acceptance.
+19. U10a HA/backup foundation.
+20. U10b HA promotion and backup commands.
 
 The first proof should be Pre-U0 through U4 with a fake direct execution path
 over the operation contract harness. The second proof should be U0-U4a over
@@ -1950,11 +1866,9 @@ prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with
 `ployz.sh` installing keeper and keeper installing/restarting `ployzd` role
-units. The first production-shaped proof is H0-H2 on two fresh Hetzner
-machines: product install, second-node machine add, supervised roles, NATS over
-iroh, heartbeat, and node inspect. HA/backup follows that proof instead of
-blocking it. The final MVP acceptance proof is H0-H5 on two fresh Hetzner
-machines: real product commands install the cluster, the old eBPF/WireGuard
-data plane is adapted into the new code path, deploy places containers on both
-nodes, and Pingora ingress works from either public node address. Artifact
-download may be shortcut; the eBPF/WireGuard data plane should not be.
+units. The production-shaped proof is H0-H1 on two fresh Hetzner machines:
+the harness creates hosts, real product commands install the cluster, the
+second node joins, the old eBPF/WireGuard data plane is adapted into the new
+code path, deploy places containers on both nodes, and Pingora ingress works
+from either public node address. Artifact download may be shortcut; the
+eBPF/WireGuard data plane should not be.

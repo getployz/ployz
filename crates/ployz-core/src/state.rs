@@ -2,9 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{NodeId, RevisionId, ServiceId};
+use crate::ids::{NodeId, OperationId, RevisionId, ServiceId};
+use crate::machine::MachineName;
 
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
+pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -12,6 +14,22 @@ pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 pub struct ActiveServiceState {
     pub service_id: ServiceId,
     pub active_revision: RevisionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ActiveMachineState {
+    pub node_id: NodeId,
+    pub name: MachineName,
+    pub activated_by: OperationId,
+}
+
+impl ActiveMachineState {
+    #[must_use]
+    pub const fn is_schedulable(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +41,24 @@ impl ActiveServiceStateKey {
         Self(format!(
             "{ACTIVE_SERVICE_STATE_PREFIX}.{}",
             service_id.as_str()
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveMachineStateKey(String);
+
+impl ActiveMachineStateKey {
+    #[must_use]
+    pub fn from_node_id(node_id: &NodeId) -> Self {
+        Self(format!(
+            "{ACTIVE_MACHINE_STATE_PREFIX}.{}",
+            node_id.as_str()
         ))
     }
 

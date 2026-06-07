@@ -81,6 +81,18 @@ impl FirstNodeProcessSet {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinedNodeProcessSet {
+    roles: Vec<DaemonProcessRole>,
+}
+
+impl JoinedNodeProcessSet {
+    #[must_use]
+    pub fn roles(&self) -> &[DaemonProcessRole] {
+        &self.roles
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirstNodeNatsServer {
     Supervised,
@@ -109,6 +121,21 @@ pub fn first_node_process_set(node_id: &NodeId, gateway: FirstNodeGateway) -> Fi
         nats_server: FirstNodeNatsServer::Supervised,
         roles,
     }
+}
+
+#[must_use]
+pub fn joined_node_process_set(
+    node_id: &NodeId,
+    gateway: FirstNodeGateway,
+) -> JoinedNodeProcessSet {
+    let mut roles = vec![
+        DaemonProcessRole::Tunnel(TunnelSide::Edge),
+        DaemonProcessRole::Node(node_id.clone()),
+    ];
+    if gateway == FirstNodeGateway::Install {
+        roles.push(DaemonProcessRole::Gateway);
+    }
+    JoinedNodeProcessSet { roles }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +215,7 @@ fn is_known_role(value: &str) -> bool {
 mod tests {
     use super::{
         DaemonProcessRole, DaemonRoleParseError, FirstNodeGateway, FirstNodeNatsServer, TunnelSide,
-        first_node_process_set, parse_role_args,
+        first_node_process_set, joined_node_process_set, parse_role_args,
     };
     use crate::ids::NodeId;
 
@@ -260,6 +287,25 @@ mod tests {
                 DaemonProcessRole::Tunnel(TunnelSide::Core),
                 DaemonProcessRole::Control,
                 DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Gateway,
+            ]
+        );
+    }
+
+    #[test]
+    fn joined_node_roles_are_the_machine_add_shape() {
+        assert_eq!(
+            joined_node_process_set(&node_id("node_2"), FirstNodeGateway::Skip).roles(),
+            &[
+                DaemonProcessRole::Tunnel(TunnelSide::Edge),
+                DaemonProcessRole::Node(node_id("node_2")),
+            ]
+        );
+        assert_eq!(
+            joined_node_process_set(&node_id("node_2"), FirstNodeGateway::Install).roles(),
+            &[
+                DaemonProcessRole::Tunnel(TunnelSide::Edge),
+                DaemonProcessRole::Node(node_id("node_2")),
                 DaemonProcessRole::Gateway,
             ]
         );

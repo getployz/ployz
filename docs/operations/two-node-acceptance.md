@@ -14,11 +14,11 @@ The acceptance bar is:
 - prove cross-node networking and ingress,
 - destroy the machines.
 
-## Substrate Smoke
+## Host Smoke
 
-The current H0 script only provisions two machines and proves SSH readiness.
-Later H-slices should add product commands to this same flow. Do not add
-Hetzner-specific Rust code unless the actual product needs it.
+The H0 script only provisions two machines and proves SSH readiness. It should
+stay provider glue. Do not add Hetzner-specific Rust code unless the actual
+product needs it.
 
 Required tools:
 
@@ -90,7 +90,7 @@ automatically. If that cleanup fails, it prints the cleanup command.
 
 ## Scope
 
-The substrate smoke proves:
+The host smoke proves:
 
 - explicit Hetzner token and SSH key inputs,
 - deterministic server names,
@@ -99,7 +99,7 @@ The substrate smoke proves:
 - SSH readiness on both machines,
 - teardown by cleanup label selector.
 
-The complete acceptance flow must prove:
+The complete acceptance flow proves the product on those hosts:
 
 - first-node install,
 - second-node add/join,
@@ -121,3 +121,26 @@ same supervised shape locally that the Hetzner proof later exercises remotely:
 
 Keeper owns the local step plan for this install. Hetzner glue should only
 create the host and call the product command.
+
+## Machine Add Contract
+
+`ployzctl machine add --name <node>` is the product surface for joining a
+second node. The command accepts a machine-add operation and returns bootstrap
+material for exactly one joining node.
+
+The pending machine is not schedulable. It can become active only after all
+three readiness facts are present:
+
+- NATS tunnel over iroh is connected,
+- heartbeat is visible,
+- node inspect succeeds.
+
+A reused, invalid, or expired join token fails visibly and preserves operation
+evidence. A readiness failure also fails the operation instead of silently
+activating the machine.
+
+The joined node process shape is:
+
+- `ployzd tunnel --side edge`
+- `ployzd node --id <id>`
+- optional `ployzd gateway`

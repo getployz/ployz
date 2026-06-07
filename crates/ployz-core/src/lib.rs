@@ -12,6 +12,7 @@ pub mod cert;
 pub mod deploy;
 pub mod ha;
 pub mod ids;
+pub mod machine;
 pub mod node;
 pub mod ops;
 pub mod roles;
