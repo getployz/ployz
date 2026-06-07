@@ -230,12 +230,25 @@ fn validate_install_path(install_path: PathBuf) -> Result<PathBuf, ArtifactTarge
             value: install_path,
         });
     }
-    if install_path.file_name().is_none() {
+    if install_path.file_name().is_none() || has_trailing_separator(&install_path) {
         return Err(ArtifactTargetError::MissingInstallFileName {
             value: install_path,
         });
     }
     Ok(install_path)
+}
+
+#[cfg(unix)]
+fn has_trailing_separator(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    path.as_os_str().as_bytes().last() == Some(&b'/')
+}
+
+#[cfg(not(unix))]
+fn has_trailing_separator(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|value| value.ends_with(std::path::MAIN_SEPARATOR))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

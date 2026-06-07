@@ -262,4 +262,32 @@ mod tests {
             .expect("source is local");
         assert_eq!(local_source.as_os_str().as_bytes(), source.as_bytes());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_directory_install_target() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let install_path = std::ffi::OsString::from_vec(b"/tmp/ployz-\xFF/".to_vec());
+
+        assert!(
+            parse_first_node_install_args(&[
+                "--node".into(),
+                "node_1".into(),
+                "--ployzd-version".into(),
+                "0.1.0".into(),
+                "--ployzd-source".into(),
+                "/tmp/ployzd".into(),
+                "--ployzd-sha256".into(),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                "--ployzd-install-path".into(),
+                install_path,
+                "--nats-binary".into(),
+                "/usr/local/bin/nats-server".into(),
+                "--nats-config".into(),
+                "/etc/nats/nats-server.conf".into(),
+            ])
+            .is_err()
+        );
+    }
 }

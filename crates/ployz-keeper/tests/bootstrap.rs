@@ -437,6 +437,17 @@ fn artifact_install_paths_must_be_absolute() {
             value: PathBuf::from("/"),
         })
     );
+    assert_eq!(
+        PloyzdArtifactTarget::new(
+            version("0.1.0"),
+            source("https://example.invalid/ployzd"),
+            digest(PLOYZD_DIGEST),
+            PathBuf::from("/usr/local/bin/"),
+        ),
+        Err(ArtifactTargetError::MissingInstallFileName {
+            value: PathBuf::from("/usr/local/bin/"),
+        })
+    );
 }
 
 struct RecordingEffects {
