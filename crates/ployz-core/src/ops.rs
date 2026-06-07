@@ -17,6 +17,7 @@ use crate::roles::FirstNodeGateway;
 use crate::state::ExpectedActiveService;
 use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
 
+mod accessors;
 mod projection;
 mod routes;
 mod text;
@@ -47,6 +48,13 @@ pub enum DeployRunningStage {
 pub enum CertRunningStage {
     ChallengePublished,
     ValidationStarted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Deploy,
+    Cert,
+    MachineAdd,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
