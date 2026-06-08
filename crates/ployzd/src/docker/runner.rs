@@ -99,7 +99,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, NodeContainerRunnerError> {
-        let requires_endpoint_network = command.labels.endpoint_port.is_some();
+        let requires_endpoint_network = command.endpoint.is_some();
         if requires_endpoint_network {
             self.ensure_endpoint_network().await?;
         }
@@ -231,7 +231,7 @@ fn managed_container_list_options() -> bollard::query_parameters::ListContainers
 }
 
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
-    let endpoint_port = command.labels.endpoint_port;
+    let endpoint_port = command.endpoint.as_ref().map(|endpoint| endpoint.port);
     let exposed_ports = endpoint_port.map(|port| vec![format!("{}/tcp", port.get())]);
     let host_config = endpoint_port.map(|_| HostConfig {
         network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
@@ -386,6 +386,7 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
+            endpoint: None,
             labels: managed_labels(),
         });
 
@@ -404,10 +405,21 @@ mod tests {
         };
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
+            endpoint: Some(crate::node_runtime_types::ContainerEndpointRequest {
+                port: route_port(8080),
+            }),
             labels,
         });
 
         assert_eq!(body.exposed_ports, Some(vec!["8080/tcp".to_owned()]));
+        assert_eq!(
+            body.labels.as_ref().and_then(|labels| {
+                labels
+                    .get(crate::docker::labels::ENDPOINT_PORT_LABEL)
+                    .cloned()
+            }),
+            Some("8080".to_owned())
+        );
         assert_eq!(
             body.host_config.and_then(|config| config.network_mode),
             Some(ENDPOINT_NETWORK_NAME.to_owned())
@@ -418,6 +430,25 @@ mod tests {
                 .map(|endpoints| endpoints.contains_key(ENDPOINT_NETWORK_NAME)),
             Some(true)
         );
+    }
+
+    #[test]
+    fn create_body_without_endpoint_has_no_endpoint_label_or_networking() {
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            endpoint: None,
+            labels: managed_labels(),
+        });
+
+        assert_eq!(
+            body.labels.as_ref().and_then(|labels| labels
+                .get(crate::docker::labels::ENDPOINT_PORT_LABEL)
+                .cloned()),
+            None
+        );
+        assert_eq!(body.exposed_ports, None);
+        assert_eq!(body.host_config, None);
+        assert_eq!(body.networking_config, None);
     }
 
     #[test]

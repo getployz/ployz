@@ -5,6 +5,7 @@ use ployz_core::ids::ContainerId;
 use ployz_core::node::ContainerEndpoint;
 
 use crate::docker::labels::ManagedContainerLabels;
+use crate::node_runtime_types::{ContainerEndpointRequest, NodeContainerRunSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {
@@ -23,7 +24,23 @@ pub enum ExistingManagedContainerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateManagedContainer {
     pub image: ImageReference,
+    pub endpoint: Option<ContainerEndpointRequest>,
     pub labels: ManagedContainerLabels,
+}
+
+#[must_use]
+pub fn managed_container_labels(
+    spec: &NodeContainerRunSpec,
+    endpoint: Option<&ContainerEndpointRequest>,
+) -> ManagedContainerLabels {
+    ManagedContainerLabels {
+        service_id: spec.service_id.clone(),
+        revision_id: spec.revision_id.clone(),
+        operation_id: spec.operation_id.clone(),
+        step_id: spec.step_id.clone(),
+        kind: spec.kind,
+        endpoint_port: endpoint.map(|endpoint| endpoint.port),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

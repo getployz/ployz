@@ -67,7 +67,7 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
         panic!("expected one container run request");
     };
     assert_eq!(run_request.node_id, node_id("node_a"));
-    assert_eq!(run_request.labels.operation_id, operation_id("op_123"));
+    assert_eq!(run_request.container.operation_id, operation_id("op_123"));
     assert_eq!(
         core_state
             .active_service(&service_id("svc_api"))

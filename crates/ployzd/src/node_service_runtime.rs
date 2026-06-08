@@ -2,7 +2,7 @@
 
 use crate::node_agent::runtime::{
     CreateManagedContainer, NodeContainerRunConflict, NodeContainerRunDecision,
-    NodeContainerRunner, NodeContainerRunnerError, decide_container_run,
+    NodeContainerRunner, NodeContainerRunnerError, decide_container_run, managed_container_labels,
 };
 use crate::node_protocol::{
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
@@ -78,12 +78,14 @@ where
         Ok(existing) => existing,
         Err(error) => return runner_error(error),
     };
+    let labels = managed_container_labels(&request.container, request.endpoint.as_ref());
 
-    match decide_container_run(&request.labels, existing) {
+    match decide_container_run(&labels, existing) {
         NodeContainerRunDecision::Create { labels } => {
             match runner
                 .create_managed_container(CreateManagedContainer {
                     image: request.image,
+                    endpoint: request.endpoint,
                     labels,
                 })
                 .await

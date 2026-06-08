@@ -6,10 +6,11 @@ use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, S
 use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
-use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_runtime::start_node_runtime_with_ports;
-use ployzd::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
+use ployzd::node_runtime_types::{
+    NodeContainerRunSpec, NodeRunContainerOutcome, NodeRunContainerRequest,
+};
 
 mod support;
 
@@ -140,13 +141,13 @@ fn run_request(step: &str) -> NodeRunContainerRequest {
     NodeRunContainerRequest {
         node_id: node_id("node_a"),
         image: image("ghcr.io/acme/api:rev-2"),
-        labels: ManagedContainerLabels {
+        endpoint: None,
+        container: NodeContainerRunSpec {
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
             operation_id: operation_id("op_123"),
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
-            endpoint_port: None,
         },
     }
 }

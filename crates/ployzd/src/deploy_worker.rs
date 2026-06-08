@@ -14,8 +14,6 @@ use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, RoutePort};
 
-use crate::docker::labels::ManagedContainerLabels;
-
 pub use facts::{
     ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
     ObservationReadFailure, load_deploy_execution_facts_from_nats,
@@ -35,7 +33,10 @@ pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
 };
 
-pub use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
+pub use crate::node_runtime_types::{
+    ContainerEndpointRequest, NodeContainerRunSpec, NodeRunContainerOutcome,
+    NodeRunContainerRequest,
+};
 pub use types::{
     DeployCompletedEventRecord, DeployCompletedEventRecordFailure, DeployContainer,
     DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
@@ -351,20 +352,23 @@ where
     N: NodeContainerRuntime,
 {
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
+    let endpoint = command
+        .request
+        .route
+        .as_ref()
+        .map(|route| ContainerEndpointRequest {
+            port: route.endpoint_port,
+        });
     let request = NodeRunContainerRequest {
         node_id: node_id.clone(),
         image: command.request.image.clone(),
-        labels: ManagedContainerLabels {
+        endpoint,
+        container: NodeContainerRunSpec {
             service_id: command.request.service_id.clone(),
             revision_id: command.request.target_revision.clone(),
             operation_id: command.operation_id.clone(),
             step_id,
             kind: ManagedContainerKind::Service,
-            endpoint_port: command
-                .request
-                .route
-                .as_ref()
-                .map(|route| route.endpoint_port),
         },
     };
 

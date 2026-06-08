@@ -1,16 +1,35 @@
 //! Deploy-facing node runtime command types.
 
-use crate::docker::labels::ManagedContainerLabels;
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, NodeId};
+use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::node::ManagedContainerKind;
+use ployz_core::ops::RoutePort;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerEndpointRequest {
+    pub port: RoutePort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeContainerRunSpec {
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+    pub operation_id: OperationId,
+    pub step_id: StepId,
+    pub kind: ManagedContainerKind,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeRunContainerRequest {
     pub node_id: NodeId,
     pub image: ImageReference,
-    pub labels: ManagedContainerLabels,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ContainerEndpointRequest>,
+    pub container: NodeContainerRunSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

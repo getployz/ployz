@@ -8,7 +8,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployzd::deploy_worker::{
-    NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
+    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
     NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
@@ -59,7 +59,8 @@ async fn nats_node_runtime_calls_container_run_service() {
             .as_slice(),
         [NodeContainerRunRpcRequest {
             image: image("registry.example/api:rev_2"),
-            labels: managed_labels()
+            endpoint: None,
+            container: managed_container_spec()
         }]
     );
 }
@@ -447,7 +448,18 @@ fn run_request(node_id: &str) -> NodeRunContainerRequest {
     NodeRunContainerRequest {
         node_id: self::node_id(node_id),
         image: image("registry.example/api:rev_2"),
-        labels: managed_labels(),
+        endpoint: None,
+        container: managed_container_spec(),
+    }
+}
+
+fn managed_container_spec() -> NodeContainerRunSpec {
+    NodeContainerRunSpec {
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_2"),
+        operation_id: operation_id("op_123"),
+        step_id: step_id("run_1"),
+        kind: ManagedContainerKind::Service,
     }
 }
 

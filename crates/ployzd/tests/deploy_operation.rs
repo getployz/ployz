@@ -16,6 +16,7 @@ use ployzd::deploy_worker::{
     DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
     WireGuardEbpfPreparer, execute_deploy_operation,
 };
+use ployzd::node_agent::runtime::managed_container_labels;
 use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
 
@@ -159,10 +160,10 @@ async fn deploy_worker_runs_containers_then_completes() {
         panic!("expected exactly two runtime requests");
     };
     assert_eq!(first_request.node_id, node_id("node_a"));
-    assert_eq!(first_request.labels.operation_id, operation_id("op_123"));
-    assert_eq!(first_request.labels.step_id.as_str(), "run_1");
+    assert_eq!(first_request.container.operation_id, operation_id("op_123"));
+    assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(second_request.node_id, node_id("node_b"));
-    assert_eq!(second_request.labels.step_id.as_str(), "run_2");
+    assert_eq!(second_request.container.step_id.as_str(), "run_2");
 }
 
 #[tokio::test]
@@ -650,7 +651,21 @@ async fn routed_deploy_commits_route_before_completion() {
     let [runtime_request] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
     };
-    assert_eq!(runtime_request.labels.endpoint_port, Some(route_port(8080)));
+    assert_eq!(
+        runtime_request
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.port),
+        Some(route_port(8080))
+    );
+    assert_eq!(
+        managed_container_labels(
+            &runtime_request.container,
+            runtime_request.endpoint.as_ref()
+        )
+        .endpoint_port,
+        Some(route_port(8080))
+    );
     assert_eq!(
         health.checked,
         vec![vec![DeployContainerForAssert::routed("node_a", "ctr_1")]]

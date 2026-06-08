@@ -1,7 +1,10 @@
 //! Node-local NATS RPC protocol types.
 
 use crate::docker::labels::ManagedContainerLabels;
-use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
+use crate::node_runtime_types::{
+    ContainerEndpointRequest, NodeContainerRunSpec, NodeRunContainerOutcome,
+    NodeRunContainerRequest,
+};
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
 };
@@ -14,14 +17,17 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct NodeContainerRunRpcRequest {
     pub image: ImageReference,
-    pub labels: ManagedContainerLabels,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ContainerEndpointRequest>,
+    pub container: NodeContainerRunSpec,
 }
 
 impl From<NodeRunContainerRequest> for NodeContainerRunRpcRequest {
     fn from(value: NodeRunContainerRequest) -> Self {
         Self {
             image: value.image,
-            labels: value.labels,
+            endpoint: value.endpoint,
+            container: value.container,
         }
     }
 }

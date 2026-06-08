@@ -8,7 +8,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::request_json;
 use ployzd::deploy_worker::{
-    NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
+    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
     NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
@@ -56,6 +56,7 @@ async fn node_runtime_service_creates_missing_container() {
         state.creates(),
         vec![CreateManagedContainer {
             image: image("registry.example/api:rev_2"),
+            endpoint: None,
             labels: managed_labels(),
         }]
     );
@@ -563,7 +564,8 @@ fn run_request(node_id: &str) -> NodeRunContainerRequest {
     NodeRunContainerRequest {
         node_id: self::node_id(node_id),
         image: image("registry.example/api:rev_2"),
-        labels: managed_labels(),
+        endpoint: None,
+        container: managed_container_spec(),
     }
 }
 
@@ -581,6 +583,16 @@ fn failure_message(value: &str) -> FailureMessage {
 fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
     ployz_core::ops::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
         .expect("valid inspect hint")
+}
+
+fn managed_container_spec() -> NodeContainerRunSpec {
+    NodeContainerRunSpec {
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_2"),
+        operation_id: operation_id("op_123"),
+        step_id: step_id("run_1"),
+        kind: ManagedContainerKind::Service,
+    }
 }
 
 fn existing_container(

@@ -1,8 +1,7 @@
 use ployz_core::dataplane::WireGuardEbpfPrepareError;
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+    ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::ManagedContainerLabels;
@@ -63,7 +62,7 @@ impl NodeContainerRunner for ObservingContainerRunner {
             revision_id: command.labels.revision_id,
             operation_id: command.labels.operation_id,
             step_id: command.labels.step_id,
-            kind: ManagedContainerKind::Service,
+            kind: command.labels.kind,
             state: ContainerRuntimeState::Exited,
         };
         let snapshot = self
