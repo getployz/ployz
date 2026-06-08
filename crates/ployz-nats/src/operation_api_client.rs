@@ -6,13 +6,14 @@ use crate::service_protocol::{
 use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, OperationApiResponse,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
+    DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, OperationApiResponse, OpsStatusError,
+    OpsStatusRequest, OpsWatchError, OpsWatchRequest,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi,
+        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -48,6 +49,13 @@ impl OperationApiClient {
         request: &DeploySubmitRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<DeploySubmitError>> {
         self.request_api::<DeploySubmitApi>(request).await
+    }
+
+    pub async fn backup_create(
+        &self,
+        request: &BackupCreateRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<BackupCreateError>> {
+        self.request_api::<BackupCreateApi>(request).await
     }
 
     pub async fn ops_status(

@@ -98,6 +98,10 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::MachineAddJoined { .. } => "machine.add.joined",
         OperationEvent::MachineAddCompleted { .. } => "machine.add.completed",
         OperationEvent::MachineAddFailed { .. } => "machine.add.failed",
+        OperationEvent::BackupCreateSubmitted { .. } => "backup.submitted",
+        OperationEvent::BackupRunning { .. } => "backup.running",
+        OperationEvent::BackupCompleted { .. } => "backup.completed",
+        OperationEvent::BackupFailed { .. } => "backup.failed",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

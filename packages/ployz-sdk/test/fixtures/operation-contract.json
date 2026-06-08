@@ -37,6 +37,23 @@
       }
     }
   },
+  "backup_create_request": {
+    "operation_id": "op_backup",
+    "idempotency_key": "idem_backup"
+  },
+  "backup_create_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_backup",
+      "watch_subject": "plz.v1.op.op_backup.>",
+      "start_sequence": "3",
+      "owner_lease": {
+        "operation_id": "op_backup",
+        "owner_id": "control",
+        "expires_at": "120"
+      }
+    }
+  },
   "machine_add_request": {
     "operation_id": "op_machine",
     "idempotency_key": "idem_machine",

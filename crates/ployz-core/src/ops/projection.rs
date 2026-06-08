@@ -1,10 +1,13 @@
+use super::backup;
+use super::classification::{
+    CertEvent, ClassifiedOperationEvent, DeployEvent, MachineAddEvent, OperationSubjectRef,
+};
 use super::{
-    CertId, CertOperationState, CertRunningStage, CertTransition, DeployEvidence,
-    DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, NodeId,
-    OperationEvent, OperationId, OperationKind, OperationStatus,
+    BackupOperationState, BackupTransition, CertId, CertOperationState, CertRunningStage,
+    CertTransition, DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition,
+    EventSequence, NodeId, OperationEvent, OperationId, OperationKind, OperationStatus,
 };
 use crate::machine::MachineAddOperationState;
-use crate::ops::CancellationReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployProjection {
@@ -60,12 +63,7 @@ pub enum ProjectionOperationState {
     Deploy(DeployOperationState),
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationSubjectRef {
-    Cert(CertId),
-    MachineAdd(NodeId),
+    Backup(BackupOperationState),
 }
 
 pub fn project_cert_transition(
@@ -235,6 +233,12 @@ pub fn project_operation_event(
             };
             project_machine_add_event(current, node_id, subject, event, event_sequence)
         }
+        ClassifiedOperationEvent::Backup { event, .. } => {
+            let OperationStatus::Backup { state, .. } = current else {
+                return Err(kind_mismatch(current, OperationKind::Backup));
+            };
+            backup::project_event(current, state, event, event_sequence)
+        }
         ClassifiedOperationEvent::Cancelled {
             operation_id: _,
             reason,
@@ -255,208 +259,13 @@ pub fn project_operation_event(
                 MachineAddOperationState::Cancelled { reason },
                 event_sequence,
             ),
+            OperationStatus::Backup { .. } => backup::transition_projection(
+                current,
+                BackupTransition::Cancelled { reason },
+                event_sequence,
+            ),
         },
     }
-}
-
-enum ClassifiedOperationEvent {
-    Deploy {
-        operation_id: OperationId,
-        event: DeployEvent,
-    },
-    Cert {
-        operation_id: OperationId,
-        subject: OperationSubjectRef,
-        event: CertEvent,
-    },
-    MachineAdd {
-        operation_id: OperationId,
-        subject: OperationSubjectRef,
-        event: MachineAddEvent,
-    },
-    Cancelled {
-        operation_id: OperationId,
-        reason: CancellationReason,
-    },
-}
-
-impl ClassifiedOperationEvent {
-    fn operation_id(&self) -> &OperationId {
-        match self {
-            Self::Deploy { operation_id, .. }
-            | Self::Cert { operation_id, .. }
-            | Self::MachineAdd { operation_id, .. }
-            | Self::Cancelled { operation_id, .. } => operation_id,
-        }
-    }
-}
-
-impl From<OperationEvent> for ClassifiedOperationEvent {
-    fn from(event: OperationEvent) -> Self {
-        match event {
-            OperationEvent::DeploySubmitted { operation_id, .. } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Submitted,
-            },
-            OperationEvent::DeployPlanningStarted { operation_id, .. } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Transition(DeployTransition::Planning),
-            },
-            OperationEvent::DeployPlanCreated {
-                operation_id, plan, ..
-            } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::PlanCreated { plan }),
-            },
-            OperationEvent::DeployRunning {
-                operation_id,
-                stage,
-                ..
-            } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Transition(DeployTransition::Running { stage }),
-            },
-            OperationEvent::DeployContainerStarted {
-                operation_id,
-                node_id,
-                container_id,
-                ..
-            } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::ContainerStarted {
-                    node_id,
-                    container_id,
-                }),
-            },
-            OperationEvent::DeployHealthCheckStarted { operation_id, .. } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::HealthCheckStarted),
-            },
-            OperationEvent::DeployCompleted { operation_id, .. } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Transition(DeployTransition::Completed),
-            },
-            OperationEvent::DeployFailed {
-                operation_id,
-                failure,
-                ..
-            } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Transition(DeployTransition::Failed { failure }),
-            },
-            OperationEvent::CertRenewalSubmitted {
-                operation_id,
-                cert_id,
-                ..
-            } => Self::Cert {
-                operation_id,
-                subject: OperationSubjectRef::Cert(cert_id),
-                event: CertEvent::Submitted,
-            },
-            OperationEvent::CertChallengePublished {
-                operation_id,
-                cert_id,
-                ..
-            } => Self::Cert {
-                operation_id,
-                subject: OperationSubjectRef::Cert(cert_id),
-                event: CertEvent::Transition(CertTransition::Running {
-                    stage: CertRunningStage::ChallengePublished,
-                }),
-            },
-            OperationEvent::CertValidationStarted {
-                operation_id,
-                cert_id,
-                ..
-            } => Self::Cert {
-                operation_id,
-                subject: OperationSubjectRef::Cert(cert_id),
-                event: CertEvent::Transition(CertTransition::Running {
-                    stage: CertRunningStage::ValidationStarted,
-                }),
-            },
-            OperationEvent::CertCompleted {
-                operation_id,
-                active_cert,
-                ..
-            } => Self::Cert {
-                operation_id,
-                subject: OperationSubjectRef::Cert(active_cert.cert_id.clone()),
-                event: CertEvent::Transition(CertTransition::Completed),
-            },
-            OperationEvent::CertFailed {
-                operation_id,
-                failure,
-                ..
-            } => Self::Cert {
-                operation_id,
-                subject: OperationSubjectRef::Cert(failure.cert_id().clone()),
-                event: CertEvent::Transition(CertTransition::Failed { failure }),
-            },
-            OperationEvent::MachineAddSubmitted {
-                operation_id,
-                node_id,
-                ..
-            } => Self::MachineAdd {
-                operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
-                event: MachineAddEvent::Submitted,
-            },
-            OperationEvent::MachineAddJoined {
-                operation_id,
-                node_id,
-                joined_at,
-                ..
-            } => Self::MachineAdd {
-                operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
-                event: MachineAddEvent::Transition(MachineAddOperationState::Joining { joined_at }),
-            },
-            OperationEvent::MachineAddCompleted {
-                operation_id,
-                node_id,
-                ..
-            } => Self::MachineAdd {
-                operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
-                event: MachineAddEvent::Transition(MachineAddOperationState::Completed),
-            },
-            OperationEvent::MachineAddFailed {
-                operation_id,
-                node_id,
-                failure,
-                ..
-            } => Self::MachineAdd {
-                operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
-                event: MachineAddEvent::Transition(MachineAddOperationState::Failed { failure }),
-            },
-            OperationEvent::Cancelled {
-                operation_id,
-                reason,
-                ..
-            } => Self::Cancelled {
-                operation_id,
-                reason,
-            },
-        }
-    }
-}
-
-enum DeployEvent {
-    Submitted,
-    Evidence(DeployEvidence),
-    Transition(DeployTransition),
-}
-
-enum CertEvent {
-    Submitted,
-    Transition(CertTransition),
-}
-
-enum MachineAddEvent {
-    Submitted,
-    Transition(MachineAddOperationState),
 }
 
 fn kind_mismatch(current: &OperationStatus, actual: OperationKind) -> StatusProjectionError {

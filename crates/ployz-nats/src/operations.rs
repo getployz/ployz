@@ -7,11 +7,11 @@ mod repository;
 mod status_store;
 
 pub use events::{
-    AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError,
+    AsyncNatsOperationEventLog, BackupCreateJob, OperationEventAppend, OperationEventLogError,
     OperationEventReplayReadError, StoredOperationEvent,
 };
 pub use keys::{
-    cert_submission_key, deploy_submission_key, machine_add_join_token_key,
+    backup_submission_key, cert_submission_key, deploy_submission_key, machine_add_join_token_key,
     machine_add_submission_key, operation_owner_lease_key, operation_status_key,
 };
 pub use ployz_core::ops::{
@@ -19,21 +19,23 @@ pub use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
 };
 pub use repository::{
-    AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    AsyncNatsOperationRepository, CertOperationSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission, MachineJoinRedemption, OperationLeaseClaim,
-    OperationLeaseClaimError, RecordCertEventError, RecordDeployEvidenceError,
-    RecordDeployTransitionError, RecordLifecycleEventError, RecordMachineAddEventError,
-    RecordMachineJoinReportError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
-    RedeemedMachineJoin, ReplayOperationEventsError, SubmitCertError, SubmitDeployError,
+    AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
+    AcceptedMachineAddSubmission, AsyncNatsOperationRepository, BackupOperationSubmission,
+    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
+    MachineJoinRedemption, OperationLeaseClaim, OperationLeaseClaimError, RecordBackupEventError,
+    RecordCertEventError, RecordDeployEvidenceError, RecordDeployTransitionError,
+    RecordLifecycleEventError, RecordMachineAddEventError, RecordMachineJoinReportError,
+    RecordedMachineJoinReport, RedeemMachineJoinTokenError, RedeemedMachineJoin,
+    ReplayOperationEventsError, SubmitBackupError, SubmitCertError, SubmitDeployError,
     SubmitMachineAddError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
-    OperationStatusWrite, StoredCertSubmission, StoredDeploySubmission, StoredMachineAddJoinToken,
-    StoredMachineAddSubmission,
+    OperationStatusWrite, StoredBackupSubmission, StoredCertSubmission, StoredDeploySubmission,
+    StoredMachineAddJoinToken, StoredMachineAddSubmission,
 };
 
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";
+pub const PLZ_JOBS_STREAM: &str = "PLZ_JOBS";
 pub const KV_OPS_BUCKET: &str = "KV_OPS";
 const NATS_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

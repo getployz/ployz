@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+pub mod backup;
 pub mod deploy;
 pub mod init;
 pub mod machine;
@@ -11,6 +12,8 @@ pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
 ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--keeper-binary <path>]]
+ployzctl backup create --operation <id> --idempotency-key <key>
+ployzctl backup restore --plan
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]
 ployzctl ops watch <operation_id>";
@@ -24,6 +27,8 @@ pub struct PloyzctlInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
     Deploy(deploy::DetachedDeployCommand),
+    BackupCreate(backup::BackupCreateCommand),
+    BackupRestorePlan(backup::BackupRestorePlanCommand),
     Init(init::FirstNodeInitCommand),
     MachineAdd(machine::MachineAddCommand),
     OpsWatch(ops::OpsWatchCommand),
@@ -64,6 +69,12 @@ pub fn parse_command(
         [flag] if flag == "--help" || flag == "-h" => Ok(PloyzctlCommand::Help),
         [command, rest @ ..] if command == "deploy" => {
             deploy::parse_deploy_command(rest).map(PloyzctlCommand::Deploy)
+        }
+        [command, subcommand, rest @ ..] if command == "backup" && subcommand == "create" => {
+            backup::parse_backup_create_command(rest).map(PloyzctlCommand::BackupCreate)
+        }
+        [command, subcommand, rest @ ..] if command == "backup" && subcommand == "restore" => {
+            backup::parse_backup_restore_command(rest).map(PloyzctlCommand::BackupRestorePlan)
         }
         [command, rest @ ..] if command == "init" => {
             init::parse_init_command(rest).map(PloyzctlCommand::Init)

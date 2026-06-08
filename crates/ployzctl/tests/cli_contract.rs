@@ -190,6 +190,49 @@ fn cli_requires_ops_watch_operation_id() {
 }
 
 #[test]
+fn cli_dispatches_backup_create_request() {
+    let command = parse_command(
+        [
+            "backup",
+            "create",
+            "--operation",
+            "op_backup",
+            "--idempotency-key",
+            "idem_backup",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("backup create parses");
+
+    let PloyzctlCommand::BackupCreate(command) = command else {
+        panic!("expected backup create command");
+    };
+    let request = command.into_request();
+
+    assert_eq!(request.operation_id, operation_id("op_backup"));
+    assert_eq!(
+        request.idempotency_key,
+        OperationIdempotencyKey::try_new("idem_backup").expect("valid idempotency key")
+    );
+}
+
+#[test]
+fn cli_dispatches_backup_restore_plan() {
+    let command = parse_command(["backup", "restore", "--plan"].map(str::to_owned))
+        .expect("backup restore plan parses");
+
+    assert!(matches!(command, PloyzctlCommand::BackupRestorePlan(_)));
+}
+
+#[test]
+fn cli_requires_backup_restore_plan_flag() {
+    assert!(matches!(
+        parse_command(["backup", "restore"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--plan"
+    ));
+}
+
+#[test]
 fn cli_dispatches_machine_add_request() {
     let command =
         parse_command(machine_add_args_with_gateway()).expect("machine add command parses");
@@ -272,6 +315,10 @@ fn binary_help_only_advertises_implemented_commands() {
     assert!(stdout(&output).contains(
         "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
     ));
+    assert!(
+        stdout(&output).contains("ployzctl backup create --operation <id> --idempotency-key <key>")
+    );
+    assert!(stdout(&output).contains("ployzctl backup restore --plan"));
     assert!(stdout(&output).contains(
         "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
     ));

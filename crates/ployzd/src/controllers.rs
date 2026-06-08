@@ -10,18 +10,19 @@ use ployz_core::machine::{
     RawJoinToken,
 };
 use ployz_core::ops::{
-    DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
+    BackupTransition, DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
     OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
     OperationStatusSnapshot,
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinRedemption,
-    OperationLeaseClaim, OperationStatusReadError, OperationStatusStoreError, OperationStatusWrite,
+    BackupOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
+    MachineJoinRedemption, OperationLeaseClaim, OperationStatusReadError,
+    OperationStatusStoreError, OperationStatusWrite, RecordBackupEventError,
     RecordDeployEvidenceError, RecordDeployTransitionError, RecordMachineJoinReportError,
     RecordedMachineJoinReport, RedeemMachineJoinTokenError, ReplayOperationEventsError,
-    StoredOperationEvent, SubmitDeployError, SubmitMachineAddError,
+    StoredOperationEvent, SubmitBackupError, SubmitDeployError, SubmitMachineAddError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,6 +50,12 @@ pub struct MachineAddSubmitCommand {
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupCreateCommand {
+    pub operation_id: OperationId,
+    pub idempotency_key: IdempotencyKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +174,29 @@ impl OperationControllers {
         })
     }
 
+    pub async fn submit_backup(
+        &self,
+        command: BackupCreateCommand,
+    ) -> Result<AcceptedBackupOperation, SubmitBackupError> {
+        let submitted = self
+            .repository
+            .submit_backup(
+                BackupOperationSubmission {
+                    operation_id: command.operation_id,
+                    idempotency_key: command.idempotency_key,
+                },
+                self.backup_lease_claim()?,
+            )
+            .await?;
+
+        Ok(AcceptedBackupOperation {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            lease: submitted.lease,
+            should_start_execution: submitted.should_start_execution,
+        })
+    }
+
     pub async fn redeem_machine_join_token(
         &self,
         token: &RawJoinToken,
@@ -251,6 +281,16 @@ impl OperationControllers {
             .await
     }
 
+    pub async fn record_backup_transition(
+        &self,
+        operation_id: &OperationId,
+        transition: BackupTransition,
+    ) -> Result<OperationStatusWrite, RecordBackupEventError> {
+        self.repository
+            .record_backup_transition(operation_id, transition)
+            .await
+    }
+
     pub async fn operation_status(
         &self,
         operation_id: &OperationId,
@@ -269,6 +309,19 @@ impl OperationControllers {
                     .map_err(|error| OperationStatusStoreError::Clock {
                         message: error.message,
                     })?,
+            )
+            .await
+    }
+
+    pub async fn claim_owner_lease(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<OperationOwnerLease, OperationStatusStoreError> {
+        self.repository
+            .claim_owner_lease(
+                operation_id,
+                self.build_lease_claim()
+                    .map_err(|message| OperationStatusStoreError::Clock { message })?,
             )
             .await
     }
@@ -303,6 +356,11 @@ impl OperationControllers {
     fn machine_add_lease_claim(&self) -> Result<OperationLeaseClaim, SubmitMachineAddError> {
         self.build_lease_claim()
             .map_err(|message| SubmitMachineAddError::Clock { message })
+    }
+
+    fn backup_lease_claim(&self) -> Result<OperationLeaseClaim, SubmitBackupError> {
+        self.build_lease_claim()
+            .map_err(|message| SubmitBackupError::Clock { message })
     }
 
     fn build_lease_claim(&self) -> Result<OperationLeaseClaim, String> {
@@ -342,6 +400,14 @@ pub struct AcceptedMachineAddOperation {
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
     pub lease: OperationOwnerLease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedBackupOperation {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub lease: OperationOwnerLease,
+    pub should_start_execution: bool,
 }
 
 fn test_owner_id() -> OperationOwnerId {

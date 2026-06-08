@@ -66,13 +66,13 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, state: MachineAddOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, ownership: OperationOwnershipStatus, };
 
 export type OperationOwnershipStatus = { "state": "unclaimed" } | { "state": "owned", lease: OperationOwnerLease, } | { "state": "expired", lease: OperationOwnerLease, };
 
-export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "machine_drain", node_id: NodeId, } | { "kind": "service_remove", service_id: ServiceId, };
+export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "backup" } | { "kind": "machine_drain", node_id: NodeId, } | { "kind": "service_remove", service_id: ServiceId, };
 
 export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -94,7 +94,11 @@ export type CertOperationState = { "state": "accepted" } | { "state": "running",
 
 export type CertRunningStage = "challenge_published" | "validation_started";
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_completed", operation_id: OperationId, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type BackupOperationState = { "state": "accepted" } | { "state": "running", stage: BackupRunningStage, } | { "state": "completed", manifest: BackupManifest, } | { "state": "failed", failure: BackupOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
+
+export type BackupRunningStage = { "stage": "snapshotting_control_plane" } | { "stage": "writing_manifest", artifact: BackupArtifact, };
+
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_completed", operation_id: OperationId, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -122,6 +126,32 @@ export type DeployOperationFailure = { "kind": "planning_failed", service_id: Se
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
+export type BackupOperationFailure = { "kind": "snapshot_failed", message: FailureMessage, } | { "kind": "manifest_write_failed", message: FailureMessage, };
+
+export type BackupItem = "core_state_kv" | "operation_state_kv" | "observation_state_kv" | "lock_state_kv" | "backup_manifest" | "nats_credentials" | "nats_server_config" | "ployz_domain_config" | "operation_event_streams" | "docker_images" | "application_volumes" | "container_runtime_state" | "node_local_cache";
+
+export type BackupPolicy = "included" | "excluded";
+
+export type BackupScopeEntry = { item: BackupItem, policy: BackupPolicy, };
+
+export type BackupArtifactKind = "control_plane_bundle";
+
+export type BackupArtifact = { bucket: string, object_name: string, kind: BackupArtifactKind, byte_count: number, digest: string, };
+
+export type BackupManifestVersion = "v1";
+
+export type KvEntrySnapshot = { key: string, revision: number, value: Array<number>, };
+
+export type KvBucketSnapshot = { name: string, entries: Array<KvEntrySnapshot>, };
+
+export type ControlPlaneKvSnapshot = { format_version: BackupManifestVersion, buckets: Array<KvBucketSnapshot>, };
+
+export type BackupBundle = { format_version: BackupManifestVersion, control_plane: ControlPlaneKvSnapshot, };
+
+export type BackupManifest = { format_version: BackupManifestVersion, scope: Array<BackupScopeEntry>, restore_contract: Array<RestoreStep>, artifacts: Array<BackupArtifact>, };
+
+export type RestoreStep = "recreate_control_plane_authority" | "restore_jet_stream_state" | "wait_for_node_reconnects" | "rebuild_observations_from_reality";
+
 export type OperatorHint = Brand<string, "OperatorHint">;
 
 export type CertValidAt = Brand<string, "CertValidAt">;
@@ -147,6 +177,8 @@ export type ActiveServiceState = { service_id: ServiceId, active_revision: Revis
 export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
 
 export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
+
+export type BackupCreateRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, };
 
 export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, join_bundle: MachineJoinBundle, };
 
@@ -200,6 +232,10 @@ export type DeploySubmitError = { "error": "unavailable", operation_id: Operatio
 
 export type DeploySubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
 
+export type BackupCreateError = { "error": "unavailable", operation_id: OperationId, source: BackupCreateUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type BackupCreateUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
+
 export type OperationSubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "encode_lease" | "decode_lease" | "cas_conflict" | "get_status" | "clock" | "timeout";
 
 export type OperationSubmitEventFailure = "encode_event" | "decode_event" | "publish_request" | "publish_ack" | "read_event" | "timeout" | "invalid_ack_sequence";
@@ -238,6 +274,8 @@ export type OpsWatchRequest = OperationEventReplayRequest;
 
 export type OpsWatchResponse = OperationApiResponse<OperationEventReplayPage, OpsWatchError>;
 
+export type BackupCreateResponse = OperationApiResponse<AcceptedOperation, BackupCreateError>;
+
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
@@ -245,4 +283,5 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
+  { name: "backup.create", subject: "plz.v1.svc.api.backup.create", execution: "accepts_operation", request: "BackupCreateRequest", success: "AcceptedOperation", error: "BackupCreateError", response: "BackupCreateResponse" },
 ] as const;

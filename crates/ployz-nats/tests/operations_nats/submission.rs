@@ -119,6 +119,63 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
 }
 
 #[tokio::test]
+async fn operation_repository_backup_submit_is_durable_and_idempotent() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+
+    let first = repository
+        .submit_backup(
+            backup_submission("op_backup", "idem_backup"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("first backup accepted");
+    let second = repository
+        .submit_backup(
+            backup_submission("op_other", "idem_backup"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("duplicate backup accepted");
+
+    assert!(first.should_start_execution);
+    assert!(!second.should_start_execution);
+    assert_eq!(first.operation_id, operation_id("op_backup"));
+    assert_eq!(first.operation_id, second.operation_id);
+    assert_eq!(first.start_sequence, second.start_sequence);
+    assert_eq!(first.lease, second.lease);
+    assert_eq!(
+        repository
+            .operation_status(&operation_id("op_backup"))
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::backup_accepted(
+            operation_id("op_backup"),
+            first.start_sequence,
+        ))
+    );
+
+    let page = repository
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id: operation_id("op_backup"),
+            start_sequence: first.start_sequence,
+            limit: event_replay_limit(10),
+        })
+        .await
+        .expect("backup replay succeeds");
+
+    let [event] = page.events.as_slice() else {
+        panic!("expected one backup event");
+    };
+    assert_eq!(
+        event.event,
+        OperationEvent::BackupCreateSubmitted {
+            operation_id: operation_id("op_backup"),
+        }
+    );
+}
+
+#[tokio::test]
 async fn operation_repository_records_machine_add_joined_transition() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;

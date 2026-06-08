@@ -5,7 +5,8 @@ pub(super) fn status_id(status: &OperationStatus) -> &OperationId {
     match status {
         OperationStatus::Deploy { id, .. }
         | OperationStatus::Cert { id, .. }
-        | OperationStatus::MachineAdd { id, .. } => id,
+        | OperationStatus::MachineAdd { id, .. }
+        | OperationStatus::Backup { id, .. } => id,
     }
 }
 
@@ -20,6 +21,10 @@ pub(super) fn status_sequence(status: &OperationStatus) -> EventSequence {
             ..
         }
         | OperationStatus::MachineAdd {
+            last_event_sequence,
+            ..
+        }
+        | OperationStatus::Backup {
             last_event_sequence,
             ..
         } => *last_event_sequence,

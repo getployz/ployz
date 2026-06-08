@@ -1,8 +1,8 @@
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
 use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::subjects::{
-    API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_MACHINE_JOIN_REPORT, API_OPS_STATUS,
-    API_OPS_WATCH, NodeServiceEndpoint,
+    API_BACKUP_CREATE, API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD,
+    API_MACHINE_JOIN_REPORT, API_OPS_STATUS, API_OPS_WATCH, NodeServiceEndpoint,
 };
 use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
@@ -30,6 +30,7 @@ fn control_catalog_supports_srv_ping_discovery() {
     );
     assert!(catalog.has_endpoint_subject(API_OPS_STATUS));
     assert!(catalog.has_endpoint_subject(API_OPS_WATCH));
+    assert!(catalog.has_endpoint_subject(API_BACKUP_CREATE));
     assert!(!catalog.has_endpoint_subject(API_DEPLOY_PLAN));
     assert!(catalog.has_endpoint_subject(API_MACHINE_ADD));
     assert!(catalog.has_endpoint_subject(API_MACHINE_JOIN_REPORT));
@@ -83,9 +84,15 @@ fn api_service_marks_mutations_as_operation_acceptors() {
         .iter()
         .find(|endpoint| endpoint.subject == API_MACHINE_JOIN_REPORT)
         .expect("machine.join.report endpoint is registered");
+    let backup_create = api
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == API_BACKUP_CREATE)
+        .expect("backup.create endpoint is registered");
 
     assert_eq!(deploy_submit.execution, EndpointExecution::AcceptsOperation);
     assert_eq!(machine_add.execution, EndpointExecution::AcceptsOperation);
+    assert_eq!(backup_create.execution, EndpointExecution::AcceptsOperation);
     assert_eq!(
         machine_join_report.execution,
         EndpointExecution::MutatesOperation

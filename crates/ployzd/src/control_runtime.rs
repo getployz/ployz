@@ -1,6 +1,7 @@
 //! Runtime wiring for the control role.
 
 use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
+use crate::backup_runtime::{BackupTaskRegistry, BackupWorkerStartError, OwnedBackupLauncher};
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::{DeployTaskRegistry, OwnedDeployLauncher};
@@ -10,6 +11,7 @@ use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
@@ -22,12 +24,14 @@ const CONTROL_OPERATION_OWNER_ID: &str = "control";
 pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
     deploy_tasks: DeployTaskRegistry,
+    backup_tasks: BackupTaskRegistry,
 }
 
 impl RunningControlRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
         self.deploy_tasks.abort_all();
+        self.backup_tasks.abort_all();
         Ok(())
     }
 }
@@ -66,10 +70,14 @@ pub async fn start_control_runtime_with_client(
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
+    let backups = AsyncNatsBackupObjectStore::from_jetstream(&jetstream)
+        .await
+        .map_err(ControlRuntimeError::OpenBackupObjects)?;
     let owner_id = OperationOwnerId::try_new(CONTROL_OPERATION_OWNER_ID)
         .expect("control owner id is static and valid");
     let controllers = OperationControllers::with_owner(event_log, status_store, owner_id);
     let deploy_tasks = DeployTaskRegistry::default();
+    let backup_tasks = BackupTaskRegistry::default();
     let deploy_launcher = OwnedDeployLauncher::new(
         client.clone(),
         core_state,
@@ -79,9 +87,19 @@ pub async fn start_control_runtime_with_client(
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );
+    let backup_launcher = OwnedBackupLauncher::new(
+        jetstream,
+        controllers.clone(),
+        backups,
+        backup_tasks.clone(),
+    );
+    backup_launcher
+        .start_worker()
+        .await
+        .map_err(ControlRuntimeError::StartBackupWorker)?;
     let operation_api = start_operation_api_service_with_handlers(
         client,
-        OperationApiHandlers::launch_deploys(controllers, deploy_launcher),
+        OperationApiHandlers::launch_operations(controllers, deploy_launcher),
     )
     .await
     .map_err(ControlRuntimeError::StartOperationApi)?;
@@ -89,6 +107,7 @@ pub async fn start_control_runtime_with_client(
     Ok(RunningControlRuntime {
         operation_api,
         deploy_tasks,
+        backup_tasks,
     })
 }
 
@@ -117,7 +136,9 @@ pub enum ControlRuntimeError {
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
+    OpenBackupObjects(BackupObjectStoreError),
     StartOperationApi(ApiServiceRuntimeError),
+    StartBackupWorker(BackupWorkerStartError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
 }
@@ -140,11 +161,17 @@ impl fmt::Display for ControlRuntimeError {
                     "failed to open operation status store: {error:?}"
                 )
             }
+            Self::OpenBackupObjects(error) => {
+                write!(formatter, "failed to open backup object store: {error:?}")
+            }
             Self::StartOperationApi(error) => {
                 write!(
                     formatter,
                     "failed to start operation API service: {error:?}"
                 )
+            }
+            Self::StartBackupWorker(error) => {
+                write!(formatter, "failed to start backup worker: {error:?}")
             }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")

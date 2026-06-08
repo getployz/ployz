@@ -19,6 +19,7 @@ pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
 pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
 pub const API_MACHINE_JOIN_REPORT: &str = "plz.v1.svc.api.machine.join.report";
+pub const API_BACKUP_CREATE: &str = "plz.v1.svc.api.backup.create";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
@@ -28,15 +29,17 @@ pub enum OperationApiEndpoint {
     MachineJoinReport,
     OpsStatus,
     OpsWatch,
+    BackupCreate,
 }
 
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 6] = [
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 7] = [
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineJoinRedeem,
     OperationApiEndpoint::MachineJoinReport,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
+    OperationApiEndpoint::BackupCreate,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +59,7 @@ impl OperationApiEndpoint {
             Self::MachineJoinReport => "machine.join.report",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
+            Self::BackupCreate => "backup.create",
         }
     }
 
@@ -68,13 +72,14 @@ impl OperationApiEndpoint {
             Self::MachineJoinReport => API_MACHINE_JOIN_REPORT,
             Self::OpsStatus => API_OPS_STATUS,
             Self::OpsWatch => API_OPS_WATCH,
+            Self::BackupCreate => API_BACKUP_CREATE,
         }
     }
 
     #[must_use]
     pub const fn execution(self) -> OperationApiEndpointExecution {
         match self {
-            Self::DeploySubmit | Self::MachineAdd => {
+            Self::DeploySubmit | Self::MachineAdd | Self::BackupCreate => {
                 OperationApiEndpointExecution::AcceptsOperation
             }
             Self::MachineJoinRedeem | Self::MachineJoinReport => {
@@ -206,6 +211,38 @@ pub fn op_machine_add_failed(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
+pub fn op_backup_submitted(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.backup.submitted", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_backup_running(
+    operation_id: &OperationId,
+    stage: crate::ops::BackupRunningStage,
+) -> String {
+    format!(
+        "plz.v1.op.{}.backup.running.{}",
+        operation_id.as_str(),
+        stage.as_subject(),
+    )
+}
+
+#[must_use]
+pub fn op_backup_completed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.backup.completed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn op_backup_failed(operation_id: &OperationId) -> String {
+    format!("plz.v1.op.{}.backup.failed", operation_id.as_str())
+}
+
+#[must_use]
+pub fn backup_create_job(operation_id: &OperationId) -> String {
+    format!("plz.v1.job.backup.create.{}", operation_id.as_str())
+}
+
+#[must_use]
 pub fn cert_renewal_schedule(cert_id: &CertId) -> String {
     format!("plz.v1.sched.cert.renew.{}", cert_id.as_str())
 }
@@ -237,6 +274,16 @@ impl DeployRunningStage {
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
             Self::ActiveServiceCommit => "active_service_commit",
+        }
+    }
+}
+
+impl crate::ops::BackupRunningStage {
+    #[must_use]
+    pub const fn as_subject(&self) -> &'static str {
+        match self {
+            Self::SnapshottingControlPlane => "snapshotting_control_plane",
+            Self::WritingManifest { .. } => "writing_manifest",
         }
     }
 }

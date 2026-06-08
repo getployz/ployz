@@ -1,8 +1,8 @@
 //! User-facing operation service handlers.
 
 use crate::controllers::{
-    DeploySubmitCommand, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
-    OperationControllers,
+    BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterialError,
+    MachineAddSubmitCommand, OperationControllers,
 };
 use crate::deploy_runtime::OwnedDeployLauncher;
 use ployz_core::ids::OperationId;
@@ -18,11 +18,13 @@ use ployz_nats::operations::{
     OperationStatusReadError, OperationStatusStoreError, RecordMachineAddEventError,
     RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
-    ReplayOperationEventsError, SubmitDeployError as SubmitDeployRepositoryError,
+    ReplayOperationEventsError, SubmitBackupError as SubmitBackupRepositoryError,
+    SubmitDeployError as SubmitDeployRepositoryError,
     SubmitMachineAddError as SubmitMachineAddRepositoryError,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
+    AcceptedOperation, BackupCreateError, BackupCreateRequest, BackupCreateUnavailableSource,
+    BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
@@ -34,7 +36,7 @@ use ployz_sdk_types::{
 };
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_execution: DeploySubmitExecution,
@@ -50,7 +52,7 @@ impl OperationApiHandlers {
     }
 
     #[must_use]
-    pub fn launch_deploys(
+    pub fn launch_operations(
         controllers: OperationControllers,
         deploy_launcher: OwnedDeployLauncher,
     ) -> Self {
@@ -66,7 +68,7 @@ impl OperationApiHandlers {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum DeploySubmitExecution {
     AcceptOnly,
     Launch(Arc<OwnedDeployLauncher>),
@@ -93,6 +95,15 @@ impl From<DeploySubmitRequest> for DeploySubmitCommand {
             operation_id: value.operation_id,
             idempotency_key: value.idempotency_key,
             target: value.target,
+        }
+    }
+}
+
+impl From<BackupCreateRequest> for BackupCreateCommand {
+    fn from(value: BackupCreateRequest) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            idempotency_key: value.idempotency_key,
         }
     }
 }
@@ -175,6 +186,24 @@ pub async fn machine_add(
         })?,
         join_token: raw_token,
     })
+}
+
+pub async fn backup_create(
+    handlers: &OperationApiHandlers,
+    request: BackupCreateRequest,
+) -> Result<AcceptedOperation, BackupCreateError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers
+        .submit_backup(request.into())
+        .await
+        .map_err(|error| backup_create_error_from_submit_error(operation_id, error))?;
+
+    Ok(owned_operation(
+        accepted.operation_id,
+        accepted.start_sequence,
+        accepted.lease,
+    ))
 }
 
 pub async fn machine_join_redeem(
@@ -402,6 +431,38 @@ fn deploy_submit_error_from_submit_error(
         },
         SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
             DeploySubmitError::DuplicateSequenceMismatch {
+                operation_id,
+                sequence,
+            }
+        }
+    }
+}
+
+fn backup_create_error_from_submit_error(
+    operation_id: OperationId,
+    error: SubmitBackupRepositoryError,
+) -> BackupCreateError {
+    match error {
+        SubmitBackupRepositoryError::AppendEvent(source) => BackupCreateError::Unavailable {
+            operation_id,
+            source: BackupCreateUnavailableSource::EventLog {
+                failure: operation_submit_event_failure(&source),
+            },
+        },
+        SubmitBackupRepositoryError::StoreStatus(source) => BackupCreateError::Unavailable {
+            operation_id,
+            source: BackupCreateUnavailableSource::StatusStore {
+                failure: operation_submit_status_failure(&source),
+            },
+        },
+        SubmitBackupRepositoryError::Clock { .. } => BackupCreateError::Unavailable {
+            operation_id,
+            source: BackupCreateUnavailableSource::Clock {
+                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
+            },
+        },
+        SubmitBackupRepositoryError::DuplicateSequenceMismatch { sequence } => {
+            BackupCreateError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,
             }

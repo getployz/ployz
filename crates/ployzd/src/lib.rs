@@ -9,6 +9,7 @@
 
 pub mod api_runtime;
 pub mod app;
+pub mod backup_runtime;
 pub mod config;
 pub mod control_runtime;
 pub mod controllers;

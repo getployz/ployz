@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 use super::keys::{
-    cert_submission_key, deploy_submission_key, machine_add_join_token_key,
+    backup_submission_key, cert_submission_key, deploy_submission_key, machine_add_join_token_key,
     machine_add_submission_key, operation_owner_lease_key, operation_status_key,
 };
 use super::projection::{status_id, status_sequence};
@@ -50,6 +50,12 @@ pub struct StoredMachineAddSubmission {
 pub struct StoredMachineAddJoinToken {
     pub operation_id: ployz_core::ids::OperationId,
     pub idempotency_key: OperationIdempotencyKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredBackupSubmission {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub start_sequence: EventSequence,
 }
 
 impl AsyncNatsOperationStatusStore {
@@ -209,6 +215,58 @@ impl AsyncNatsOperationStatusStore {
         serde_json::from_slice(&payload)
             .map(Some)
             .map_err(OperationStatusStoreError::DecodeSubmission)
+    }
+
+    pub async fn backup_submission(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredBackupSubmission>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "backup submission get",
+            self.bucket.get(backup_submission_key(idempotency_key)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeSubmission)
+    }
+
+    pub async fn put_backup_submission_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredBackupSubmission,
+    ) -> Result<StoredBackupSubmission, OperationStatusStoreError> {
+        if let Some(existing) = self.backup_submission(idempotency_key).await? {
+            return Ok(existing);
+        }
+
+        let key = backup_submission_key(idempotency_key);
+        let payload =
+            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "backup submission create",
+            self.bucket.create(&key, payload.into()),
+        )
+        .await?
+        {
+            Ok(_) => Ok(submission.clone()),
+            Err(error) => {
+                if let Some(existing) = self.backup_submission(idempotency_key).await? {
+                    Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
     }
 
     pub async fn put_cert_submission_if_absent(

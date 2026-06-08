@@ -7,11 +7,10 @@ fn canonical_backup_scope_includes_control_plane_state() {
     assert_eq!(
         items_with_policy(BackupPolicy::Included),
         vec![
-            BackupItem::JetStreamDataDirectory,
-            BackupItem::NatsCredentials,
-            BackupItem::NatsServerConfig,
-            BackupItem::PloyzDomainConfig,
-            BackupItem::BackupManifest,
+            BackupItem::CoreStateKv,
+            BackupItem::OperationStateKv,
+            BackupItem::ObservationStateKv,
+            BackupItem::LockStateKv,
         ]
     );
 }
@@ -21,6 +20,11 @@ fn canonical_backup_scope_excludes_runtime_data() {
     assert_eq!(
         items_with_policy(BackupPolicy::Excluded),
         vec![
+            BackupItem::BackupManifest,
+            BackupItem::NatsCredentials,
+            BackupItem::NatsServerConfig,
+            BackupItem::PloyzDomainConfig,
+            BackupItem::OperationEventStreams,
             BackupItem::DockerImages,
             BackupItem::ApplicationVolumes,
             BackupItem::ContainerRuntimeState,
@@ -32,8 +36,8 @@ fn canonical_backup_scope_excludes_runtime_data() {
 #[test]
 fn backup_scope_has_stable_wire_shape() {
     assert_eq!(
-        serde_json::to_string(&BackupItem::JetStreamDataDirectory).expect("item serializes"),
-        r#""jet_stream_data_directory""#
+        serde_json::to_string(&BackupItem::CoreStateKv).expect("item serializes"),
+        r#""core_state_kv""#
     );
     assert_eq!(
         serde_json::from_str::<BackupPolicy>(r#""included""#).expect("policy deserializes"),
@@ -72,8 +76,6 @@ fn restore_contract_rebuilds_control_plane_then_observations() {
         single_core_restore_contract().collect::<Vec<_>>(),
         vec![
             RestoreStep::RecreateControlPlaneAuthority,
-            RestoreStep::RestoreNatsCredentialsAndConfig,
-            RestoreStep::RestorePloyzDomainConfig,
             RestoreStep::RestoreJetStreamState,
             RestoreStep::WaitForNodeReconnects,
             RestoreStep::RebuildObservationsFromReality,

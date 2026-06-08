@@ -16,8 +16,8 @@ use ployz_core::ops::{
 use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
-    MachineAddOperationSubmission, OperationLeaseClaim, PLZ_OPS_STREAM,
+    BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
+    MachineAddOperationSubmission, OperationLeaseClaim, PLZ_JOBS_STREAM, PLZ_OPS_STREAM,
 };
 use ployz_sdk_types::{MachineJoinBundle, MachineJoinPloyzdArtifact};
 
@@ -50,6 +50,15 @@ pub(super) async fn bootstrap_operation_resources(jetstream: &jetstream::Context
         })
         .await
         .expect("create PLZ_OPS stream");
+    jetstream
+        .create_stream(jetstream::stream::Config {
+            name: PLZ_JOBS_STREAM.to_owned(),
+            subjects: vec!["plz.v1.job.>".to_owned()],
+            storage: StorageType::Memory,
+            ..Default::default()
+        })
+        .await
+        .expect("create PLZ_JOBS stream");
     jetstream
         .create_key_value(jetstream::kv::Config {
             bucket: KV_OPS_BUCKET.to_owned(),
@@ -91,6 +100,16 @@ pub(super) fn cert_submission(
     CertOperationSubmission {
         operation_id: self::operation_id(operation_id),
         cert_id: self::cert_id(cert_id),
+        idempotency_key: self::idempotency_key(idempotency_key),
+    }
+}
+
+pub(super) fn backup_submission(
+    operation_id: &str,
+    idempotency_key: &str,
+) -> BackupOperationSubmission {
+    BackupOperationSubmission {
+        operation_id: self::operation_id(operation_id),
         idempotency_key: self::idempotency_key(idempotency_key),
     }
 }

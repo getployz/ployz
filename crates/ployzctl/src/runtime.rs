@@ -14,7 +14,7 @@ use crate::commands::{PloyzctlCommand, USAGE};
 use ployz_nats::connect::{
     NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
 };
-use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};
+use ployz_sdk_types::{BackupCreateError, DeploySubmitError, MachineAddError, OpsWatchError};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -79,6 +79,21 @@ pub async fn execute_command(
                 crate::commands::deploy::DetachedDeployOutput::from_accepted(accepted).render(),
             ))
         }
+        PloyzctlCommand::BackupCreate(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let accepted = api
+                .backup_create(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::BackupCreateApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::backup::BackupCreateOutput::from_accepted(accepted).render(),
+            ))
+        }
+        PloyzctlCommand::BackupRestorePlan(_) => Ok(PloyzctlExecutionOutput::stdout(
+            crate::commands::backup::BackupRestorePlanOutput::single_core().render(),
+        )),
         PloyzctlCommand::Init(command) => match &command.mode {
             FirstNodeInitMode::RunKeeperInstall {
                 keeper_install,
@@ -452,6 +467,9 @@ pub enum PloyzctlExecutionError {
     DeploySubmitApi {
         source: OperationApiClientError<DeploySubmitError>,
     },
+    BackupCreateApi {
+        source: OperationApiClientError<BackupCreateError>,
+    },
     MachineAddApi {
         source: OperationApiClientError<MachineAddError>,
     },
@@ -473,6 +491,7 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::NatsConnect(error) => write!(formatter, "{error}"),
             Self::KeeperFirstNodeInstall { source } => write!(formatter, "{source}"),
             Self::DeploySubmitApi { source } => write!(formatter, "{source}"),
+            Self::BackupCreateApi { source } => write!(formatter, "{source}"),
             Self::MachineAddApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),
         }

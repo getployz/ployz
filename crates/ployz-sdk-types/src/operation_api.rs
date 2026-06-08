@@ -1,10 +1,11 @@
 //! User-facing operation API contract registry.
 
 use crate::{
-    AcceptedOperation, DeploySubmitError, DeploySubmitRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, OperationStatusSnapshot,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
+    DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, OperationStatusSnapshot, OpsStatusError,
+    OpsStatusRequest, OpsWatchError, OpsWatchRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -28,7 +29,8 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineJoinRedeemApi,
             $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::OpsStatusApi,
-            $crate::operation_api::OpsWatchApi
+            $crate::operation_api::OpsWatchApi,
+            $crate::operation_api::BackupCreateApi
         );
     };
 }
@@ -43,6 +45,18 @@ impl OperationApiContract for DeploySubmitApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeploySubmit;
     const RESPONSE_ALIAS: &'static str = "DeploySubmitResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackupCreateApi;
+
+impl OperationApiContract for BackupCreateApi {
+    type Request = BackupCreateRequest;
+    type Success = AcceptedOperation;
+    type Error = BackupCreateError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::BackupCreate;
+    const RESPONSE_ALIAS: &'static str = "BackupCreateResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

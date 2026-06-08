@@ -8,16 +8,17 @@ pub use machine_join::{
     RedeemMachineJoinTokenError, RedeemedMachineJoin,
 };
 pub use submission::{
-    AcceptedCertSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
-    CertOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    OperationLeaseClaim, OperationLeaseClaimError, SubmitCertError, SubmitDeployError,
+    AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
+    AcceptedMachineAddSubmission, BackupOperationSubmission, CertOperationSubmission,
+    DeployOperationSubmission, MachineAddOperationSubmission, OperationLeaseClaim,
+    OperationLeaseClaimError, SubmitBackupError, SubmitCertError, SubmitDeployError,
     SubmitMachineAddError,
 };
 
 use ployz_core::ids::{CertId, NodeId, OperationId};
 use ployz_core::ops::{
-    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, OperationEvent,
-    OperationEventProjection, OperationEventReplayCursor, OperationEventReplayPage,
+    BackupTransition, CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
+    OperationEvent, OperationEventProjection, OperationEventReplayCursor, OperationEventReplayPage,
     OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
     OperationStatusSnapshot, StatusProjectionError, project_operation_event,
     validate_fresh_deploy_evidence,
@@ -134,6 +135,20 @@ impl AsyncNatsOperationRepository {
         .map_err(RecordCertEventError::from_event_record)
     }
 
+    pub async fn record_backup_transition(
+        &self,
+        operation_id: &OperationId,
+        transition: BackupTransition,
+    ) -> Result<OperationStatusWrite, RecordBackupEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::backup_transition(operation_id, &transition),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordBackupEventError::from_event_record)
+    }
+
     pub async fn record_machine_add_joined(
         &self,
         operation_id: &OperationId,
@@ -213,6 +228,21 @@ impl AsyncNatsOperationRepository {
     ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
         self.status_store
             .renew_owner_lease(
+                operation_id,
+                owner.owner_id(),
+                owner.now(),
+                owner.expires_at(),
+            )
+            .await
+    }
+
+    pub async fn claim_owner_lease(
+        &self,
+        operation_id: &OperationId,
+        owner: OperationLeaseClaim,
+    ) -> Result<OperationOwnerLease, OperationStatusStoreError> {
+        self.status_store
+            .claim_owner_lease(
                 operation_id,
                 owner.owner_id(),
                 owner.now(),
@@ -636,6 +666,10 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::MachineAddJoined { .. }
         | OperationEvent::MachineAddCompleted { .. }
         | OperationEvent::MachineAddFailed { .. }
+        | OperationEvent::BackupCreateSubmitted { .. }
+        | OperationEvent::BackupRunning { .. }
+        | OperationEvent::BackupCompleted { .. }
+        | OperationEvent::BackupFailed { .. }
         | OperationEvent::Cancelled { .. } => None,
     }
 }
@@ -690,6 +724,7 @@ pub enum RecordDeployEvidenceError {
 
 pub type RecordCertEventError = RecordLifecycleEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
+pub type RecordBackupEventError = RecordLifecycleEventError;
 
 #[derive(Debug)]
 pub enum RecordLifecycleEventError {

@@ -12,6 +12,11 @@ use ts_rs::TS;
 pub mod operation_api;
 pub mod typescript;
 
+pub use ployz_core::backup::{
+    BackupArtifact, BackupArtifactKind, BackupBundle, BackupItem, BackupManifest,
+    BackupManifestVersion, BackupPolicy, BackupScopeEntry, ControlPlaneKvSnapshot,
+    KvBucketSnapshot, KvEntrySnapshot, RestoreStep,
+};
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
@@ -36,7 +41,8 @@ pub use ployz_core::machine::{
     MachineReadinessCheck, MachineReadinessEvidence,
 };
 pub use ployz_core::ops::{
-    ActiveServiceCommitFailure, ArtifactUnavailableReason, CancellationReason, EventSequence,
+    ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,
+    BackupOperationState, BackupRunningStage, CancellationReason, EventSequence,
     EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
@@ -64,6 +70,15 @@ pub struct DeploySubmitRequest {
 }
 
 pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct BackupCreateRequest {
+    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
+}
+
+pub type BackupCreateResponse = OperationApiResponse<AcceptedOperation, BackupCreateError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -368,6 +383,33 @@ pub enum DeploySubmitError {
     DuplicateSequenceMismatch {
         operation_id: OperationId,
         sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupCreateError {
+    Unavailable {
+        operation_id: OperationId,
+        source: BackupCreateUnavailableSource,
+    },
+    DuplicateSequenceMismatch {
+        operation_id: OperationId,
+        sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupCreateUnavailableSource {
+    StatusStore {
+        failure: OperationSubmitStatusFailure,
+    },
+    EventLog {
+        failure: OperationSubmitEventFailure,
+    },
+    Clock {
+        failure: OperationSubmitClockFailure,
     },
 }
 

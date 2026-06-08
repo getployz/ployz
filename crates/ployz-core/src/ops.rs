@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU64};
 
+use crate::backup::BackupManifest;
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::dataplane::WireGuardEbpfComponent;
 use crate::deploy::{DeployPlan, DeployRequest};
@@ -19,15 +20,21 @@ use crate::state::ExpectedActiveService;
 use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
 
 mod accessors;
+mod backup;
+mod classification;
 mod projection;
 mod routes;
 mod text;
 
+pub use backup::{
+    BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
+};
+pub use classification::OperationSubjectRef;
 pub use projection::{
-    CertProjection, DeployProjection, OperationEventProjection, OperationSubjectRef,
-    ProjectionOperationState, StatusProjectionError, project_cert_transition,
-    project_deploy_transition, project_operation_event, validate_cert_transition,
-    validate_deploy_transition, validate_fresh_deploy_evidence,
+    CertProjection, DeployProjection, OperationEventProjection, ProjectionOperationState,
+    StatusProjectionError, project_cert_transition, project_deploy_transition,
+    project_operation_event, validate_cert_transition, validate_deploy_transition,
+    validate_fresh_deploy_evidence,
 };
 pub use routes::{RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RouteTarget};
 pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
@@ -58,6 +65,7 @@ pub enum OperationKind {
     Deploy,
     Cert,
     MachineAdd,
+    Backup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +281,11 @@ pub enum OperationStatus {
         name: MachineName,
         gateway: FirstNodeGateway,
         state: MachineAddOperationState,
+        last_event_sequence: EventSequence,
+    },
+    Backup {
+        id: OperationId,
+        state: BackupOperationState,
         last_event_sequence: EventSequence,
     },
 }
@@ -517,11 +530,21 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn backup_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
+        Self::Backup {
+            id,
+            state: BackupOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
+            Self::Backup { state, .. } => state.is_terminal(),
         }
     }
 }
@@ -844,6 +867,7 @@ pub enum OperationSubject {
     Deploy { service_id: ServiceId },
     Cert { cert_id: CertId },
     MachineAdd { node_id: NodeId },
+    Backup,
     MachineDrain { node_id: NodeId },
     ServiceRemove { service_id: ServiceId },
 }
@@ -923,6 +947,21 @@ pub enum OperationEvent {
         operation_id: OperationId,
         node_id: NodeId,
         failure: MachineAddFailure,
+    },
+    BackupCreateSubmitted {
+        operation_id: OperationId,
+    },
+    BackupRunning {
+        operation_id: OperationId,
+        stage: BackupRunningStage,
+    },
+    BackupCompleted {
+        operation_id: OperationId,
+        manifest: BackupManifest,
+    },
+    BackupFailed {
+        operation_id: OperationId,
+        failure: BackupOperationFailure,
     },
     Cancelled {
         operation_id: OperationId,

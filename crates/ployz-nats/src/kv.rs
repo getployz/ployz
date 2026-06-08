@@ -7,6 +7,7 @@ use std::future::Future;
 use std::time::Duration;
 
 pub const KV_CORE_BUCKET: &str = "KV_CORE";
+pub const KV_LOCKS_BUCKET: &str = "KV_LOCKS";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KvBucketSpec {

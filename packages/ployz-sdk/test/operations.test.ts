@@ -342,6 +342,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       error: "OpsWatchError",
       response: "OpsWatchResponse",
     },
+    {
+      name: "backup.create",
+      subject: "plz.v1.svc.api.backup.create",
+      execution: "accepts_operation",
+      request: "BackupCreateRequest",
+      success: "AcceptedOperation",
+      error: "BackupCreateError",
+      response: "BackupCreateResponse",
+    },
   ]);
 });
 

@@ -6,24 +6,32 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 use ployz_core::ops::{
-    CertOperationFailure, DeployEvidence, DeployTransition, EventSequence, EventSequenceError,
-    OperationEvent, OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
-    ReplayedOperationEvent,
+    BackupOperationFailure, BackupTransition, CertOperationFailure, DeployEvidence,
+    DeployTransition, EventSequence, EventSequenceError, OperationEvent, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationIdempotencyKey, ReplayedOperationEvent,
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::{
-    op_cancelled, op_cert_challenge_published, op_cert_completed, op_cert_failed,
-    op_cert_submitted, op_cert_validation_started, op_deploy_completed,
+    backup_create_job, op_backup_completed, op_backup_failed, op_backup_running,
+    op_backup_submitted, op_cancelled, op_cert_challenge_published, op_cert_completed,
+    op_cert_failed, op_cert_submitted, op_cert_validation_started, op_deploy_completed,
     op_deploy_container_started, op_deploy_failed, op_deploy_health_check_started,
     op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
     op_machine_add_completed, op_machine_add_failed, op_machine_add_joined,
     op_machine_add_submitted, op_watch,
 };
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 use crate::streams::MessageId;
 
 use super::{NATS_OPERATION_TIMEOUT, PLZ_OPS_STREAM};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupCreateJob {
+    pub operation_id: OperationId,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationEventAppend {
@@ -182,6 +190,26 @@ impl OperationEventAppend {
     }
 
     #[must_use]
+    pub fn backup_submitted(
+        operation_id: OperationId,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!("backup.create.{}", idempotency_key.as_str())),
+            OperationEvent::BackupCreateSubmitted { operation_id },
+        )
+    }
+
+    #[must_use]
+    pub fn backup_transition(operation_id: &OperationId, transition: &BackupTransition) -> Self {
+        let event = backup_transition_event(operation_id, transition);
+        Self::from_event(
+            backup_transition_message_id(operation_id, transition),
+            event,
+        )
+    }
+
+    #[must_use]
     pub fn cert_challenge_published(
         operation_id: &OperationId,
         cert_id: &CertId,
@@ -301,6 +329,35 @@ impl AsyncNatsOperationEventLog {
             })?,
             duplicate: ack.duplicate,
         })
+    }
+
+    pub async fn publish_backup_create_job(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<(), OperationEventLogError> {
+        let payload = serde_json::to_vec(&BackupCreateJob {
+            operation_id: operation_id.clone(),
+        })
+        .map_err(OperationEventLogError::EncodeEvent)?;
+        let publish = PublishMessage::build()
+            .payload(payload.into())
+            .message_id(format!("backup.create.job.{}", operation_id.as_str()));
+        let ack_future = with_event_timeout(
+            "backup create job publish request",
+            self.jetstream
+                .send_publish(backup_create_job(operation_id), publish),
+        )
+        .await?
+        .map_err(|error| OperationEventLogError::PublishRequest {
+            message: error.to_string(),
+        })?;
+        let _ack = with_event_timeout("backup create job publish ack", async { ack_future.await })
+            .await?
+            .map_err(|error| OperationEventLogError::PublishAck {
+                message: error.to_string(),
+            })?;
+
+        Ok(())
     }
 
     pub async fn event_at_sequence(
@@ -522,6 +579,13 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::MachineAddFailed { operation_id, .. } => {
             op_machine_add_failed(operation_id)
         }
+        OperationEvent::BackupCreateSubmitted { operation_id } => op_backup_submitted(operation_id),
+        OperationEvent::BackupRunning {
+            operation_id,
+            stage,
+        } => op_backup_running(operation_id, stage.clone()),
+        OperationEvent::BackupCompleted { operation_id, .. } => op_backup_completed(operation_id),
+        OperationEvent::BackupFailed { operation_id, .. } => op_backup_failed(operation_id),
         OperationEvent::Cancelled { operation_id, .. } => op_cancelled(operation_id),
     }
 }
@@ -619,6 +683,51 @@ fn deploy_transition_event(
             operation_id: operation_id.clone(),
             reason: reason.clone(),
         },
+    }
+}
+
+fn backup_transition_event(
+    operation_id: &OperationId,
+    transition: &BackupTransition,
+) -> OperationEvent {
+    match transition {
+        BackupTransition::Running { stage } => OperationEvent::BackupRunning {
+            operation_id: operation_id.clone(),
+            stage: stage.clone(),
+        },
+        BackupTransition::Completed { manifest } => OperationEvent::BackupCompleted {
+            operation_id: operation_id.clone(),
+            manifest: manifest.clone(),
+        },
+        BackupTransition::Failed { failure } => OperationEvent::BackupFailed {
+            operation_id: operation_id.clone(),
+            failure: failure.clone(),
+        },
+        BackupTransition::Cancelled { reason } => OperationEvent::Cancelled {
+            operation_id: operation_id.clone(),
+            reason: reason.clone(),
+        },
+    }
+}
+
+fn backup_transition_message_id(
+    operation_id: &OperationId,
+    transition: &BackupTransition,
+) -> MessageId {
+    let suffix = match transition {
+        BackupTransition::Running { stage } => stage.as_subject(),
+        BackupTransition::Completed { .. } => "completed",
+        BackupTransition::Failed { failure } => backup_failure_subject(failure),
+        BackupTransition::Cancelled { .. } => "cancelled",
+    };
+
+    MessageId::new(format!("backup.{suffix}.{}", operation_id.as_str()))
+}
+
+const fn backup_failure_subject(failure: &BackupOperationFailure) -> &'static str {
+    match failure {
+        BackupOperationFailure::SnapshotFailed { .. } => "snapshot_failed",
+        BackupOperationFailure::ManifestWriteFailed { .. } => "manifest_write_failed",
     }
 }
 

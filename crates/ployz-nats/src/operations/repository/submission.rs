@@ -10,8 +10,8 @@ use ployz_core::roles::FirstNodeGateway;
 use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
-    OperationStatusStoreError, StoredCertSubmission, StoredDeploySubmission,
-    StoredMachineAddJoinToken, StoredMachineAddSubmission,
+    OperationStatusStoreError, StoredBackupSubmission, StoredCertSubmission,
+    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddSubmission,
 };
 
 impl AsyncNatsOperationRepository {
@@ -364,6 +364,103 @@ impl AsyncNatsOperationRepository {
         })
     }
 
+    pub async fn submit_backup(
+        &self,
+        submission: BackupOperationSubmission,
+        owner: OperationLeaseClaim,
+    ) -> Result<AcceptedBackupSubmission, SubmitBackupError> {
+        if let Some(existing) = self
+            .status_store
+            .backup_submission(&submission.idempotency_key)
+            .await
+            .map_err(SubmitBackupError::StoreStatus)?
+        {
+            let lease = self
+                .status_store
+                .claim_owner_lease(
+                    &existing.operation_id,
+                    owner.owner_id(),
+                    owner.now(),
+                    owner.expires_at(),
+                )
+                .await
+                .map_err(SubmitBackupError::StoreStatus)?;
+            self.event_log
+                .publish_backup_create_job(&existing.operation_id)
+                .await
+                .map_err(SubmitBackupError::AppendEvent)?;
+            return Ok(AcceptedBackupSubmission {
+                operation_id: existing.operation_id,
+                start_sequence: existing.start_sequence,
+                lease,
+                should_start_execution: false,
+            });
+        }
+
+        let stored = self
+            .event_log
+            .append(OperationEventAppend::backup_submitted(
+                submission.operation_id.clone(),
+                &submission.idempotency_key,
+            ))
+            .await
+            .map_err(SubmitBackupError::AppendEvent)?;
+        let operation_id = if stored.duplicate {
+            let original = self
+                .event_log
+                .event_at_sequence(stored.sequence)
+                .await
+                .map_err(SubmitBackupError::AppendEvent)?;
+            let OperationEvent::BackupCreateSubmitted { operation_id } = original else {
+                return Err(SubmitBackupError::DuplicateSequenceMismatch {
+                    sequence: stored.sequence,
+                });
+            };
+            operation_id
+        } else {
+            submission.operation_id
+        };
+        let status = OperationStatus::backup_accepted(operation_id.clone(), stored.sequence);
+        self.status_store
+            .put_if_newer(&status)
+            .await
+            .map_err(SubmitBackupError::StoreStatus)?;
+        let submitted = StoredBackupSubmission {
+            operation_id: operation_id.clone(),
+            start_sequence: stored.sequence,
+        };
+
+        let submitted = self
+            .status_store
+            .put_backup_submission_if_absent(&submission.idempotency_key, &submitted)
+            .await
+            .map_err(SubmitBackupError::StoreStatus)?;
+        let lease = self
+            .status_store
+            .claim_owner_lease(
+                &submitted.operation_id,
+                owner.owner_id(),
+                owner.now(),
+                owner.expires_at(),
+            )
+            .await
+            .map_err(SubmitBackupError::StoreStatus)?;
+        let should_start_execution = !stored.duplicate
+            && submitted.operation_id == operation_id
+            && submitted.start_sequence == stored.sequence;
+        self.event_log
+            .publish_backup_create_job(&submitted.operation_id)
+            .await
+            .map_err(SubmitBackupError::AppendEvent)?;
+
+        Ok(AcceptedBackupSubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            lease,
+            should_start_execution,
+        })
+    }
+
     async fn index_machine_add_join_token(
         &self,
         fingerprint: &ployz_core::machine::JoinTokenFingerprint,
@@ -473,6 +570,12 @@ pub struct MachineAddOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupOperationSubmission {
+    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationLeaseClaim {
     owner_id: OperationOwnerId,
     now: OperationLeaseExpiresAt,
@@ -563,6 +666,14 @@ pub struct AcceptedMachineAddSubmission {
     pub lease: OperationOwnerLease,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedBackupSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub lease: OperationOwnerLease,
+    pub should_start_execution: bool,
+}
+
 #[derive(Debug)]
 pub enum SubmitDeployError {
     AppendEvent(OperationEventLogError),
@@ -585,4 +696,12 @@ pub enum SubmitMachineAddError {
     Clock { message: String },
     DuplicateSequenceMismatch { sequence: EventSequence },
     JoinTokenMismatch,
+}
+
+#[derive(Debug)]
+pub enum SubmitBackupError {
+    AppendEvent(OperationEventLogError),
+    StoreStatus(OperationStatusStoreError),
+    Clock { message: String },
+    DuplicateSequenceMismatch { sequence: EventSequence },
 }
