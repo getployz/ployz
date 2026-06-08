@@ -69,3 +69,29 @@ pub struct BackupScopeEntry {
     pub item: BackupItem,
     pub policy: BackupPolicy,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreStep {
+    RecreateControlPlaneAuthority,
+    RestoreNatsCredentialsAndConfig,
+    RestorePloyzDomainConfig,
+    RestoreJetStreamState,
+    WaitForNodeReconnects,
+    RebuildObservationsFromReality,
+}
+
+impl RestoreStep {
+    pub const ALL: [Self; 6] = [
+        Self::RecreateControlPlaneAuthority,
+        Self::RestoreNatsCredentialsAndConfig,
+        Self::RestorePloyzDomainConfig,
+        Self::RestoreJetStreamState,
+        Self::WaitForNodeReconnects,
+        Self::RebuildObservationsFromReality,
+    ];
+}
+
+pub fn single_core_restore_contract() -> impl Iterator<Item = RestoreStep> {
+    RestoreStep::ALL.into_iter()
+}

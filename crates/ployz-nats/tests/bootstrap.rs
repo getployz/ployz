@@ -2,39 +2,20 @@ use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
 use ployz_nats::bootstrap::{
     BootstrapPlan, BootstrapRefusal, BootstrapResourceAction, BootstrapResourceRefusal,
-    ExistingResources, JetStreamPeerSet, JetStreamPeerSetError, NatsServerCapabilities,
-    ReplicationPromotionAction, assure_nats_resources,
+    ExistingResources, NatsServerCapabilities, assure_nats_resources,
 };
 use ployz_nats::replication::ReplicationFactor;
 use ployz_nats::schedules::NatsServerVersion;
 use ployz_nats::streams::{DiscardPolicy, RetentionPolicy};
 
-fn supported_single_node_plan() -> BootstrapPlan {
-    let topology = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single topology");
+fn supported_single_core_plan() -> BootstrapPlan {
+    let topology = CoreTopology::single(node_id("core_1"));
 
     BootstrapPlan::for_core_topology(
         single_capabilities("core_1", NatsServerVersion::new(2, 14, 2), true),
         &topology,
     )
     .expect("supported nats-server can be bootstrapped")
-}
-
-fn supported_ha_plan() -> BootstrapPlan {
-    let topology = CoreTopology::from_nodes(vec![
-        node_id("core_1"),
-        node_id("core_2"),
-        node_id("core_3"),
-    ])
-    .expect("three core topology");
-    BootstrapPlan::for_core_topology(
-        NatsServerCapabilities::clustered(
-            NatsServerVersion::new(2, 14, 2),
-            true,
-            jetstream_peers(["core_1", "core_2", "core_3"]),
-        ),
-        &topology,
-    )
-    .expect("supported nats-server can bootstrap HA resources")
 }
 
 fn existing_from_plan(plan: &BootstrapPlan) -> ExistingResources {
@@ -47,26 +28,19 @@ fn existing_from_plan(plan: &BootstrapPlan) -> ExistingResources {
 
 fn all_resources_are_created(plan: &BootstrapPlan) -> bool {
     let diff = plan.diff_against(&ExistingResources::default());
-    all_resources_have_action(&diff, BootstrapResourceAction::Create)
+    diff.all_resources()
+        .all(|resource| resource.action == BootstrapResourceAction::Create)
 }
 
 fn all_resources_are_adopted(plan: &BootstrapPlan) -> bool {
-    let existing = existing_from_plan(plan);
-    let diff = plan.diff_against(&existing);
-    all_resources_have_action(&diff, BootstrapResourceAction::Adopt)
-}
-
-fn all_resources_have_action(
-    diff: &ployz_nats::bootstrap::BootstrapDiff,
-    action: BootstrapResourceAction,
-) -> bool {
+    let diff = plan.diff_against(&existing_from_plan(plan));
     diff.all_resources()
-        .all(|resource| resource.action == action)
+        .all(|resource| resource.action == BootstrapResourceAction::Adopt)
 }
 
 #[test]
-fn single_node_bootstrap_contains_required_resources() {
-    let plan = supported_single_node_plan();
+fn single_core_bootstrap_contains_required_resources() {
+    let plan = supported_single_core_plan();
 
     for bucket in ["KV_CORE", "KV_OPS", "KV_OBS", "KV_LOCKS"] {
         assert!(
@@ -97,174 +71,29 @@ fn single_node_bootstrap_contains_required_resources() {
 }
 
 #[test]
-fn high_availability_bootstrap_uses_r3_resources() {
-    let plan = supported_ha_plan();
+fn single_core_bootstrap_uses_r1_resources() {
+    let plan = supported_single_core_plan();
 
     assert!(
         plan.kv_buckets
             .iter()
-            .all(|bucket| bucket.replicas == ReplicationFactor::Three)
+            .all(|bucket| bucket.replicas == ReplicationFactor::One)
     );
     assert!(
         plan.streams
             .iter()
-            .all(|stream| stream.replicas == ReplicationFactor::Three)
+            .all(|stream| stream.replicas == ReplicationFactor::One)
     );
     assert!(
         plan.object_buckets
             .iter()
-            .all(|bucket| bucket.replicas == ReplicationFactor::Three)
-    );
-}
-
-#[test]
-fn bootstrap_plan_tracks_core_topology() {
-    let single_capabilities = single_capabilities("core_1", NatsServerVersion::new(2, 14, 2), true);
-    let ha_capabilities = NatsServerCapabilities::clustered(
-        NatsServerVersion::new(2, 14, 2),
-        true,
-        jetstream_peers(["core_1", "core_2", "core_3"]),
-    );
-    let single = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single core");
-    let ha = CoreTopology::from_nodes(vec![
-        node_id("core_1"),
-        node_id("core_2"),
-        node_id("core_3"),
-    ])
-    .expect("three cores");
-
-    assert!(
-        BootstrapPlan::for_core_topology(single_capabilities.clone(), &single)
-            .expect("single plan")
-            .kv_buckets
-            .iter()
             .all(|bucket| bucket.replicas == ReplicationFactor::One)
-    );
-    assert_eq!(
-        CoreTopology::from_nodes(vec![node_id("core_1"), node_id("core_2")]),
-        Err(ployz_core::ha::CoreTopologyError::TransitionalCoreCount { count: 2 })
-    );
-    assert!(
-        BootstrapPlan::for_core_topology(ha_capabilities, &ha)
-            .expect("ha plan")
-            .streams
-            .iter()
-            .all(|stream| stream.replicas == ReplicationFactor::Three)
-    );
-}
-
-#[test]
-fn high_availability_bootstrap_requires_three_clustered_jetstream_servers() {
-    let topology = CoreTopology::from_nodes(vec![
-        node_id("core_1"),
-        node_id("core_2"),
-        node_id("core_3"),
-    ])
-    .expect("three core topology");
-
-    assert_eq!(
-        BootstrapPlan::for_core_topology(
-            single_capabilities("core_1", NatsServerVersion::new(2, 14, 2), true),
-            &topology,
-        ),
-        Err(BootstrapRefusal::InsufficientJetStreamServers {
-            required: 3,
-            actual: 1,
-        })
-    );
-    assert_eq!(
-        BootstrapPlan::for_core_topology(
-            NatsServerCapabilities::clustered(
-                NatsServerVersion::new(2, 14, 2),
-                true,
-                jetstream_peers(["core_1", "core_2"]),
-            ),
-            &topology,
-        ),
-        Err(BootstrapRefusal::InsufficientJetStreamServers {
-            required: 3,
-            actual: 2,
-        })
-    );
-}
-
-#[test]
-fn topology_bootstrap_requires_single_server_to_match_single_core() {
-    let topology = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single topology");
-
-    assert_eq!(
-        BootstrapPlan::for_core_topology(
-            single_capabilities("other_core", NatsServerVersion::new(2, 14, 2), true),
-            &topology,
-        ),
-        Err(BootstrapRefusal::JetStreamPeersDoNotCoverCoreTopology)
-    );
-}
-
-#[test]
-fn topology_bootstrap_requires_jetstream_peers_to_cover_core_nodes() {
-    let topology = CoreTopology::from_nodes(vec![
-        node_id("core_1"),
-        node_id("core_2"),
-        node_id("core_3"),
-    ])
-    .expect("three core topology");
-    let wrong_peers = NatsServerCapabilities::clustered(
-        NatsServerVersion::new(2, 14, 2),
-        true,
-        jetstream_peers(["core_1", "core_2", "other_core"]),
-    );
-
-    assert_eq!(
-        BootstrapPlan::for_core_topology(wrong_peers, &topology),
-        Err(BootstrapRefusal::JetStreamPeersDoNotCoverCoreTopology)
-    );
-}
-
-#[test]
-fn topology_bootstrap_rejects_extra_jetstream_peers() {
-    let topology = CoreTopology::from_nodes(vec![
-        node_id("core_1"),
-        node_id("core_2"),
-        node_id("core_3"),
-    ])
-    .expect("three core topology");
-    let extra_peers = NatsServerCapabilities::clustered(
-        NatsServerVersion::new(2, 14, 2),
-        true,
-        jetstream_peers(["core_1", "core_2", "core_3", "other_core"]),
-    );
-
-    assert_eq!(
-        BootstrapPlan::for_core_topology(extra_peers, &topology),
-        Err(BootstrapRefusal::JetStreamPeersDoNotCoverCoreTopology)
-    );
-}
-
-#[test]
-fn jetstream_peer_set_has_set_semantics() {
-    let peers = JetStreamPeerSet::from_nodes(vec![
-        node_id("core_3"),
-        node_id("core_1"),
-        node_id("core_2"),
-    ])
-    .expect("peer set");
-
-    assert_eq!(
-        peers.nodes(),
-        &[node_id("core_1"), node_id("core_2"), node_id("core_3")]
-    );
-    assert_eq!(
-        JetStreamPeerSet::from_nodes(vec![node_id("core_1"), node_id("core_1")]),
-        Err(JetStreamPeerSetError::DuplicateNode {
-            node_id: node_id("core_1"),
-        })
     );
 }
 
 #[test]
 fn operation_stream_is_retained_history_not_work_queue() {
-    let plan = supported_single_node_plan();
+    let plan = supported_single_core_plan();
     let ops = plan
         .streams
         .iter()
@@ -276,8 +105,24 @@ fn operation_stream_is_retained_history_not_work_queue() {
 }
 
 #[test]
+fn bootstrap_uses_core_topology_as_single_core_shape() {
+    let topology = CoreTopology::single(node_id("core_1"));
+    let plan = BootstrapPlan::for_core_topology(
+        single_capabilities("configured_core", NatsServerVersion::new(2, 14, 2), true),
+        &topology,
+    )
+    .expect("single-core topology is enough to render v1 resources");
+
+    assert!(
+        plan.kv_buckets
+            .iter()
+            .all(|bucket| bucket.replicas == ReplicationFactor::One)
+    );
+}
+
+#[test]
 fn jobs_stream_is_separate_from_operation_history() {
-    let plan = supported_single_node_plan();
+    let plan = supported_single_core_plan();
     let jobs = plan
         .streams
         .iter()
@@ -290,13 +135,13 @@ fn jobs_stream_is_separate_from_operation_history() {
 
 #[test]
 fn schedule_stream_tracks_server_capability() {
-    let topology = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single topology");
-    let with_schedules = BootstrapPlan::for_core_topology(
+    let topology = CoreTopology::single(node_id("core_1"));
+    let plan = BootstrapPlan::for_core_topology(
         single_capabilities("core_1", NatsServerVersion::new(2, 12, 0), true),
         &topology,
     )
     .expect("minimum supported nats-server can be bootstrapped");
-    let schedule_stream = with_schedules
+    let schedule_stream = plan
         .streams
         .iter()
         .find(|stream| stream.name == "PLZ_SCHEDULES")
@@ -308,16 +153,12 @@ fn schedule_stream_tracks_server_capability() {
 
 #[test]
 fn fresh_bootstrap_creates_all_resources() {
-    let plan = supported_single_node_plan();
-
-    assert!(all_resources_are_created(&plan));
+    assert!(all_resources_are_created(&supported_single_core_plan()));
 }
 
 #[test]
 fn reboot_bootstrap_adopts_existing_resources() {
-    let plan = supported_single_node_plan();
-
-    assert!(all_resources_are_adopted(&plan));
+    assert!(all_resources_are_adopted(&supported_single_core_plan()));
 }
 
 #[tokio::test]
@@ -327,7 +168,7 @@ async fn bootstrap_assurance_adopts_resources_created_by_parallel_startup() {
         .await
         .expect("connect to test nats");
     let jetstream = async_nats::jetstream::new(client);
-    let plan = supported_single_node_plan();
+    let plan = supported_single_core_plan();
 
     let (first, second, third) = tokio::join!(
         assure_nats_resources(&jetstream, &plan),
@@ -346,8 +187,8 @@ async fn bootstrap_assurance_adopts_resources_created_by_parallel_startup() {
 }
 
 #[test]
-fn bootstrap_refuses_existing_resource_drift() {
-    let plan = supported_single_node_plan();
+fn bootstrap_refuses_existing_stream_shape_drift() {
+    let plan = supported_single_core_plan();
     let mut existing = existing_from_plan(&plan);
     existing
         .streams
@@ -372,69 +213,36 @@ fn bootstrap_refuses_existing_resource_drift() {
 }
 
 #[test]
-fn ha_bootstrap_refuses_existing_single_node_replication() {
-    let ha_plan = supported_ha_plan();
-    let single_node_existing = existing_from_plan(&supported_single_node_plan());
-
-    let diff = ha_plan.diff_against(&single_node_existing);
-    let core = diff.kv_bucket("KV_CORE").expect("KV_CORE diff exists");
-
-    assert_eq!(
-        core.action,
-        BootstrapResourceAction::Refuse {
-            reason: BootstrapResourceRefusal::ConfigurationDrift {
-                field: "replicas",
-                expected: "3".to_owned(),
-                observed: "1".to_owned(),
-            },
-        }
-    );
-}
-
-#[test]
-fn ha_promotion_diff_marks_r1_resources_for_replication_upgrade() {
-    let ha_plan = supported_ha_plan();
-    let single_node_existing = existing_from_plan(&supported_single_node_plan());
-
-    let plan = ha_plan.replication_promotion_plan_against(&single_node_existing);
-
-    assert!(plan.steps.iter().all(|step| step.action
-        == ReplicationPromotionAction::UpgradeReplicas {
-            from: ReplicationFactor::One,
-            to: ReplicationFactor::Three,
-        }));
-}
-
-#[test]
-fn ha_promotion_diff_refuses_stream_shape_drift_before_replication_upgrade() {
-    let ha_plan = supported_ha_plan();
-    let mut single_node_existing = existing_from_plan(&supported_single_node_plan());
-    single_node_existing
+fn bootstrap_refuses_existing_resource_policy_drift() {
+    let plan = supported_single_core_plan();
+    let mut existing = existing_from_plan(&plan);
+    let schedules = existing
         .streams
         .iter_mut()
-        .find(|stream| stream.name == "PLZ_OPS")
-        .expect("observed PLZ_OPS stream exists")
-        .subjects = vec!["wrong.>".to_owned()];
+        .find(|stream| stream.name == "PLZ_SCHEDULES")
+        .expect("observed PLZ_SCHEDULES stream exists");
+    schedules.discard = DiscardPolicy::New;
 
-    let plan = ha_plan.replication_promotion_plan_against(&single_node_existing);
+    let diff = plan.diff_against(&existing);
+    let schedules = diff
+        .stream("PLZ_SCHEDULES")
+        .expect("PLZ_SCHEDULES diff exists");
 
     assert_eq!(
-        plan.stream("PLZ_OPS")
-            .expect("PLZ_OPS promotion step exists")
-            .action,
-        ReplicationPromotionAction::Refuse {
+        schedules.action,
+        BootstrapResourceAction::Refuse {
             reason: BootstrapResourceRefusal::ConfigurationDrift {
-                field: "subjects",
-                expected: "[\"plz.v1.op.>\"]".to_owned(),
-                observed: "[\"wrong.>\"]".to_owned(),
-            },
+                field: "discard",
+                expected: "Old".to_owned(),
+                observed: "New".to_owned(),
+            }
         }
     );
 }
 
 #[test]
 fn bootstrap_creates_missing_resource_by_name() {
-    let plan = supported_single_node_plan();
+    let plan = supported_single_core_plan();
     let mut existing = existing_from_plan(&plan);
     existing.streams.retain(|stream| stream.name != "PLZ_OPS");
 
@@ -446,7 +254,7 @@ fn bootstrap_creates_missing_resource_by_name() {
 
 #[test]
 fn bootstrap_refuses_without_jetstream() {
-    let topology = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single topology");
+    let topology = CoreTopology::single(node_id("core_1"));
     let capabilities = single_capabilities("core_1", NatsServerVersion::new(2, 14, 2), false);
 
     assert_eq!(
@@ -457,7 +265,7 @@ fn bootstrap_refuses_without_jetstream() {
 
 #[test]
 fn bootstrap_refuses_old_nats_server() {
-    let topology = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single topology");
+    let topology = CoreTopology::single(node_id("core_1"));
     let capabilities = single_capabilities("core_1", NatsServerVersion::new(2, 11, 9), true);
 
     assert_eq!(
@@ -471,10 +279,6 @@ fn bootstrap_refuses_old_nats_server() {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
-}
-
-fn jetstream_peers<const N: usize>(nodes: [&str; N]) -> JetStreamPeerSet {
-    JetStreamPeerSet::from_nodes(nodes.into_iter().map(node_id).collect()).expect("valid peers")
 }
 
 fn single_capabilities(

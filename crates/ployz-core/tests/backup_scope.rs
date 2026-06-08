@@ -1,4 +1,6 @@
-use ployz_core::backup::{BackupItem, BackupPolicy, control_plane_backup_scope};
+use ployz_core::backup::{
+    BackupItem, BackupPolicy, RestoreStep, control_plane_backup_scope, single_core_restore_contract,
+};
 
 #[test]
 fn canonical_backup_scope_includes_control_plane_state() {
@@ -62,6 +64,30 @@ fn backup_scope_lists_every_item_once() {
                 .policy
         );
     }
+}
+
+#[test]
+fn restore_contract_rebuilds_control_plane_then_observations() {
+    assert_eq!(
+        single_core_restore_contract().collect::<Vec<_>>(),
+        vec![
+            RestoreStep::RecreateControlPlaneAuthority,
+            RestoreStep::RestoreNatsCredentialsAndConfig,
+            RestoreStep::RestorePloyzDomainConfig,
+            RestoreStep::RestoreJetStreamState,
+            RestoreStep::WaitForNodeReconnects,
+            RestoreStep::RebuildObservationsFromReality,
+        ]
+    );
+}
+
+#[test]
+fn restore_contract_has_stable_wire_shape() {
+    assert_eq!(
+        serde_json::to_string(&RestoreStep::RebuildObservationsFromReality)
+            .expect("restore step serializes"),
+        r#""rebuild_observations_from_reality""#
+    );
 }
 
 fn items_with_policy(policy: BackupPolicy) -> Vec<BackupItem> {

@@ -11,7 +11,7 @@ use crate::replication::ReplicationFactor;
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError, ScheduleCapability};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
-use ployz_core::ha::{CanonicalNodeSet, CanonicalNodeSetError, CoreTopology};
+use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
     AUDIT_STREAM_SUBJECT, JOBS_STREAM_SUBJECT, OBS_TRANSITION_STREAM_SUBJECT, OPS_STREAM_SUBJECT,
@@ -19,8 +19,7 @@ use ployz_core::subjects::{
 };
 pub use resources::{
     BootstrapResourceAction, BootstrapResourceDecision, BootstrapResourceKind,
-    BootstrapResourceRef, BootstrapResourceRefusal, ReplicationPromotionAction,
-    ReplicationPromotionDecision,
+    BootstrapResourceRef, BootstrapResourceRefusal,
 };
 use resources::{ExistingResourceView, PlannedResource};
 use std::fmt;
@@ -48,7 +47,7 @@ pub struct BootstrapPlan {
 impl BootstrapPlan {
     pub fn for_single_server_client_and_topology(
         client: &async_nats::Client,
-        topology: &CoreTopology,
+        _topology: &CoreTopology,
         node_id: NodeId,
     ) -> Result<Self, BootstrapRefusal> {
         let server = client.server_info();
@@ -60,30 +59,25 @@ impl BootstrapPlan {
         })?;
         let capabilities = NatsServerCapabilities::new(version, server.jetstream, node_id);
 
-        Self::for_core_topology(capabilities, topology)
+        Self::for_single_core(capabilities)
     }
 
     pub fn for_core_topology(
         capabilities: NatsServerCapabilities,
         topology: &CoreTopology,
     ) -> Result<Self, BootstrapRefusal> {
-        let replicas = if topology.is_high_availability() {
-            ReplicationFactor::Three
-        } else {
-            ReplicationFactor::One
-        };
+        let _single_core = topology.node();
 
-        Self::validate_replication(&capabilities, replicas)?;
-        if !capabilities.jetstream_cluster.covers_topology(topology) {
-            return Err(BootstrapRefusal::JetStreamPeersDoNotCoverCoreTopology);
-        }
-
-        Ok(Self::manifest(capabilities.version, replicas))
+        Self::for_single_core(capabilities)
     }
 
-    fn validate_replication(
+    pub fn for_single_core(capabilities: NatsServerCapabilities) -> Result<Self, BootstrapRefusal> {
+        Self::validate_single_server(&capabilities)?;
+        Ok(Self::manifest(capabilities.version))
+    }
+
+    fn validate_single_server(
         capabilities: &NatsServerCapabilities,
-        replicas: ReplicationFactor,
     ) -> Result<(), BootstrapRefusal> {
         if !capabilities.jetstream_enabled {
             return Err(BootstrapRefusal::JetStreamDisabled);
@@ -96,17 +90,12 @@ impl BootstrapPlan {
             });
         }
 
-        let actual = capabilities.jetstream_cluster.peer_count();
-        let required = usize::from(replicas.as_u8());
-        if actual < required {
-            return Err(BootstrapRefusal::InsufficientJetStreamServers { required, actual });
-        }
-
         Ok(())
     }
 
-    fn manifest(server_version: NatsServerVersion, replicas: ReplicationFactor) -> Self {
+    fn manifest(server_version: NatsServerVersion) -> Self {
         let schedule_capability = ScheduleCapability::from_server_version(server_version);
+        let replicas = ReplicationFactor::One;
 
         Self {
             kv_buckets: vec![
@@ -178,20 +167,6 @@ impl BootstrapPlan {
         )
     }
 
-    #[must_use]
-    pub fn replication_promotion_plan_against(
-        &self,
-        existing: &ExistingResources,
-    ) -> ReplicationPromotionPlan {
-        let steps = self
-            .planned_resources()
-            .into_iter()
-            .map(|resource| resource.promotion_decision(&existing.view()))
-            .collect();
-
-        ReplicationPromotionPlan { steps }
-    }
-
     fn planned_resources(&self) -> Vec<PlannedResource<'_>> {
         let mut resources = Vec::new();
         resources.extend(self.kv_buckets.iter().map(PlannedResource::KvBucket));
@@ -209,7 +184,7 @@ impl BootstrapPlan {
 pub struct NatsServerCapabilities {
     pub version: NatsServerVersion,
     pub jetstream_enabled: bool,
-    pub jetstream_cluster: JetStreamClusterFacts,
+    pub configured_node_id: NodeId,
 }
 
 impl NatsServerCapabilities {
@@ -218,99 +193,7 @@ impl NatsServerCapabilities {
         Self {
             version,
             jetstream_enabled,
-            jetstream_cluster: JetStreamClusterFacts::SingleServer { node_id },
-        }
-    }
-
-    #[must_use]
-    pub const fn clustered(
-        version: NatsServerVersion,
-        jetstream_enabled: bool,
-        jetstream_peers: JetStreamPeerSet,
-    ) -> Self {
-        Self {
-            version,
-            jetstream_enabled,
-            jetstream_cluster: JetStreamClusterFacts::Clustered {
-                peers: jetstream_peers,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JetStreamClusterFacts {
-    SingleServer { node_id: NodeId },
-    Clustered { peers: JetStreamPeerSet },
-}
-
-impl JetStreamClusterFacts {
-    #[must_use]
-    pub fn peer_count(&self) -> usize {
-        match self {
-            Self::SingleServer { .. } => 1,
-            Self::Clustered { peers } => peers.len(),
-        }
-    }
-
-    #[must_use]
-    pub fn covers_topology(&self, topology: &CoreTopology) -> bool {
-        match self {
-            Self::SingleServer { node_id } => {
-                matches!(topology.nodes(), [topology_node] if topology_node == node_id)
-            }
-            Self::Clustered { peers } => peers.matches_topology(topology),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JetStreamPeerSet {
-    peers: CanonicalNodeSet,
-}
-
-impl JetStreamPeerSet {
-    pub fn from_nodes(peers: Vec<NodeId>) -> Result<Self, JetStreamPeerSetError> {
-        if peers.is_empty() {
-            return Err(JetStreamPeerSetError::Empty);
-        }
-
-        Ok(Self {
-            peers: CanonicalNodeSet::from_nodes(peers)?,
-        })
-    }
-
-    #[must_use]
-    pub fn nodes(&self) -> &[NodeId] {
-        self.peers.nodes()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.peers.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.peers.is_empty()
-    }
-
-    #[must_use]
-    pub fn matches_topology(&self, topology: &CoreTopology) -> bool {
-        self.nodes() == topology.nodes()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JetStreamPeerSetError {
-    Empty,
-    DuplicateNode { node_id: NodeId },
-}
-
-impl From<CanonicalNodeSetError> for JetStreamPeerSetError {
-    fn from(value: CanonicalNodeSetError) -> Self {
-        match value {
-            CanonicalNodeSetError::DuplicateNode { node_id } => Self::DuplicateNode { node_id },
+            configured_node_id: node_id,
         }
     }
 }
@@ -326,11 +209,6 @@ pub enum BootstrapRefusal {
         minimum: NatsServerVersion,
         actual: NatsServerVersion,
     },
-    InsufficientJetStreamServers {
-        required: usize,
-        actual: usize,
-    },
-    JetStreamPeersDoNotCoverCoreTopology,
 }
 
 impl fmt::Display for BootstrapRefusal {
@@ -353,13 +231,6 @@ impl fmt::Display for BootstrapRefusal {
                 minimum.minor,
                 minimum.patch
             ),
-            Self::InsufficientJetStreamServers { required, actual } => write!(
-                formatter,
-                "JetStream has {actual} server(s), but {required} are required"
-            ),
-            Self::JetStreamPeersDoNotCoverCoreTopology => {
-                formatter.write_str("JetStream peers do not cover the core topology")
-            }
         }
     }
 }
@@ -435,19 +306,5 @@ impl BootstrapDiff {
             .iter()
             .chain(self.streams.iter())
             .chain(self.object_buckets.iter())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplicationPromotionPlan {
-    pub steps: Vec<ReplicationPromotionDecision>,
-}
-
-impl ReplicationPromotionPlan {
-    #[must_use]
-    pub fn stream(&self, name: &str) -> Option<&ReplicationPromotionDecision> {
-        self.steps.iter().find(|step| {
-            step.resource.kind == BootstrapResourceKind::Stream && step.resource.name == name
-        })
     }
 }

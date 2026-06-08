@@ -59,30 +59,6 @@ pub enum BootstrapResourceAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplicationPromotionDecision {
-    pub resource: BootstrapResourceRef,
-    pub action: ReplicationPromotionAction,
-}
-
-impl ReplicationPromotionDecision {
-    fn new(resource: BootstrapResourceRef, action: ReplicationPromotionAction) -> Self {
-        Self { resource, action }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReplicationPromotionAction {
-    AlreadyAtTarget,
-    UpgradeReplicas {
-        from: ReplicationFactor,
-        to: ReplicationFactor,
-    },
-    Refuse {
-        reason: BootstrapResourceRefusal,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootstrapResourceRefusal {
     MissingResource,
     ConfigurationDrift {
@@ -96,13 +72,7 @@ pub enum BootstrapResourceRefusal {
 enum ResourceComparison {
     Missing,
     Unchanged,
-    ShapeDrift {
-        reason: BootstrapResourceRefusal,
-    },
-    ReplicaMismatch {
-        expected: ReplicationFactor,
-        observed: ReplicationFactor,
-    },
+    ShapeDrift { reason: BootstrapResourceRefusal },
 }
 
 impl ResourceComparison {
@@ -111,31 +81,6 @@ impl ResourceComparison {
             Self::Missing => BootstrapResourceAction::Create,
             Self::Unchanged => BootstrapResourceAction::Adopt,
             Self::ShapeDrift { reason } => BootstrapResourceAction::Refuse { reason },
-            Self::ReplicaMismatch { expected, observed } => BootstrapResourceAction::Refuse {
-                reason: replica_drift(expected, observed),
-            },
-        }
-    }
-
-    fn promotion_action(self) -> ReplicationPromotionAction {
-        match self {
-            Self::Missing => ReplicationPromotionAction::Refuse {
-                reason: BootstrapResourceRefusal::MissingResource,
-            },
-            Self::Unchanged => ReplicationPromotionAction::AlreadyAtTarget,
-            Self::ShapeDrift { reason } => ReplicationPromotionAction::Refuse { reason },
-            Self::ReplicaMismatch { expected, observed } => {
-                if observed.as_u8() < expected.as_u8() {
-                    ReplicationPromotionAction::UpgradeReplicas {
-                        from: observed,
-                        to: expected,
-                    }
-                } else {
-                    ReplicationPromotionAction::Refuse {
-                        reason: replica_drift(expected, observed),
-                    }
-                }
-            }
         }
     }
 }
@@ -153,14 +98,6 @@ impl PlannedResource<'_> {
     ) -> BootstrapResourceDecision {
         let (resource, comparison) = self.compare(existing);
         BootstrapResourceDecision::new(resource, comparison.bootstrap_action())
-    }
-
-    pub(crate) fn promotion_decision(
-        &self,
-        existing: &ExistingResourceView<'_>,
-    ) -> ReplicationPromotionDecision {
-        let (resource, comparison) = self.compare(existing);
-        ReplicationPromotionDecision::new(resource, comparison.promotion_action())
     }
 
     fn compare(
@@ -230,10 +167,7 @@ fn compare_kv_bucket(
     }
 
     if expected_replicas != observed_replicas {
-        return ResourceComparison::ReplicaMismatch {
-            expected: *expected_replicas,
-            observed: *observed_replicas,
-        };
+        return replica_drift(*expected_replicas, *observed_replicas);
     }
 
     ResourceComparison::Unchanged
@@ -260,10 +194,7 @@ fn compare_object_bucket(
     }
 
     if expected_replicas != observed_replicas {
-        return ResourceComparison::ReplicaMismatch {
-            expected: *expected_replicas,
-            observed: *observed_replicas,
-        };
+        return replica_drift(*expected_replicas, *observed_replicas);
     }
 
     ResourceComparison::Unchanged
@@ -337,23 +268,19 @@ fn compare_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> Resou
     }
 
     if expected_replicas != observed_replicas {
-        return ResourceComparison::ReplicaMismatch {
-            expected: *expected_replicas,
-            observed: *observed_replicas,
-        };
+        return replica_drift(*expected_replicas, *observed_replicas);
     }
 
     ResourceComparison::Unchanged
 }
 
-fn replica_drift(
-    expected: ReplicationFactor,
-    observed: ReplicationFactor,
-) -> BootstrapResourceRefusal {
-    BootstrapResourceRefusal::ConfigurationDrift {
-        field: "replicas",
-        expected: expected.as_u8().to_string(),
-        observed: observed.as_u8().to_string(),
+fn replica_drift(expected: ReplicationFactor, observed: ReplicationFactor) -> ResourceComparison {
+    ResourceComparison::ShapeDrift {
+        reason: BootstrapResourceRefusal::ConfigurationDrift {
+            field: "replicas",
+            expected: expected.as_u8().to_string(),
+            observed: observed.as_u8().to_string(),
+        },
     }
 }
 
