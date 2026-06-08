@@ -185,6 +185,18 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
             )?;
             continue;
         }
+        if let Some(value) = args.take_value("--nats-version")? {
+            set_once(&mut parsed.nats_version, value, "--nats-version")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--nats-source")? {
+            set_once(&mut parsed.nats_source, value, "--nats-source")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--nats-sha256")? {
+            set_once(&mut parsed.nats_sha256, value, "--nats-sha256")?;
+            continue;
+        }
         if let Some(value) = args.take_value("--nats-binary")? {
             set_once(&mut parsed.nats_binary, value, "--nats-binary")?;
             continue;
@@ -219,6 +231,9 @@ struct ParsedInitArgs {
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
     ployzd_install_path: Option<String>,
+    nats_version: Option<String>,
+    nats_source: Option<String>,
+    nats_sha256: Option<String>,
     nats_binary: Option<String>,
     nats_config: Option<String>,
     machine_bootstrap_url: Option<String>,
@@ -235,6 +250,9 @@ impl Default for ParsedInitArgs {
             ployzd_source: None,
             ployzd_sha256: None,
             ployzd_install_path: None,
+            nats_version: None,
+            nats_source: None,
+            nats_sha256: None,
             nats_binary: None,
             nats_config: None,
             machine_bootstrap_url: None,
@@ -288,6 +306,9 @@ impl ParsedInitArgs {
             ployzd_source,
             ployzd_sha256,
             ployzd_install_path,
+            nats_version,
+            nats_source,
+            nats_sha256,
             nats_binary,
             nats_config,
             machine_bootstrap_url,
@@ -298,6 +319,9 @@ impl ParsedInitArgs {
             ployzd_source,
             ployzd_sha256,
             ployzd_install_path,
+            nats_version,
+            nats_source,
+            nats_sha256,
             nats_binary,
             nats_config,
             machine_bootstrap_url,
@@ -351,6 +375,9 @@ struct ParsedKeeperInstallArgs {
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
     ployzd_install_path: Option<String>,
+    nats_version: Option<String>,
+    nats_source: Option<String>,
+    nats_sha256: Option<String>,
     nats_binary: Option<String>,
     nats_config: Option<String>,
     machine_bootstrap_url: Option<String>,
@@ -390,6 +417,18 @@ impl ParsedKeeperInstallArgs {
                 "--ployzd-install-path",
             )?)
             .map_err(|error| invalid_value("--ployzd-install-path", error))?,
+            nats_version: InstallArtifactVersion::try_new(required(
+                self.nats_version,
+                "--nats-version",
+            )?)
+            .map_err(|error| invalid_value("--nats-version", error))?,
+            nats_source: InstallArtifactSource::try_new(required(
+                self.nats_source,
+                "--nats-source",
+            )?)
+            .map_err(|error| invalid_value("--nats-source", error))?,
+            nats_sha256: InstallSha256Digest::try_new(required(self.nats_sha256, "--nats-sha256")?)
+                .map_err(|error| invalid_value("--nats-sha256", error))?,
             nats_binary: AbsoluteInstallPath::try_new(required(self.nats_binary, "--nats-binary")?)
                 .map_err(|error| invalid_value("--nats-binary", error))?,
             nats_config: AbsoluteInstallPath::try_new(required(self.nats_config, "--nats-config")?)
@@ -402,6 +441,9 @@ impl ParsedKeeperInstallArgs {
             || self.ployzd_source.is_some()
             || self.ployzd_sha256.is_some()
             || self.ployzd_install_path.is_some()
+            || self.nats_version.is_some()
+            || self.nats_source.is_some()
+            || self.nats_sha256.is_some()
             || self.nats_binary.is_some()
             || self.nats_config.is_some()
             || self.machine_bootstrap_url.is_some()

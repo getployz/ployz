@@ -7,7 +7,9 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::roles::FirstNodeGateway;
 
-use crate::artifacts::{ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest};
+use crate::artifacts::{
+    ArtifactSource, ArtifactVersion, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+};
 use crate::cli::KeeperCliError;
 use crate::steps::FirstNodeInstallTarget;
 use crate::systemd::NatsServerUnitTarget;
@@ -53,6 +55,9 @@ struct FirstNodeInstallArgs {
     ployzd_source: Option<OsString>,
     ployzd_sha256: Option<OsString>,
     ployzd_install_path: Option<OsString>,
+    nats_version: Option<OsString>,
+    nats_source: Option<OsString>,
+    nats_sha256: Option<OsString>,
     nats_binary: Option<OsString>,
     nats_config: Option<OsString>,
     machine_bootstrap_url: Option<OsString>,
@@ -67,6 +72,9 @@ impl FirstNodeInstallArgs {
             ployzd_source: None,
             ployzd_sha256: None,
             ployzd_install_path: None,
+            nats_version: None,
+            nats_source: None,
+            nats_sha256: None,
             nats_binary: None,
             nats_config: None,
             machine_bootstrap_url: None,
@@ -101,6 +109,15 @@ impl FirstNodeInstallArgs {
                 "--ployzd-install-path",
             );
         }
+        if flag == "--nats-version" {
+            return set_once(&mut self.nats_version, value, "--nats-version");
+        }
+        if flag == "--nats-source" {
+            return set_once(&mut self.nats_source, value, "--nats-source");
+        }
+        if flag == "--nats-sha256" {
+            return set_once(&mut self.nats_sha256, value, "--nats-sha256");
+        }
         if flag == "--nats-binary" {
             return set_once(&mut self.nats_binary, value, "--nats-binary");
         }
@@ -123,18 +140,37 @@ impl FirstNodeInstallArgs {
     fn into_target(self) -> Result<FirstNodeInstallTarget, KeeperCliError> {
         let node = parse_node_id(required(self.node, "--node")?)?;
         let ployzd_artifact = PloyzdArtifactTarget::new(
-            parse_version(required(self.ployzd_version, "--ployzd-version")?)?,
+            parse_version(
+                required(self.ployzd_version, "--ployzd-version")?,
+                "--ployzd-version",
+            )?,
             parse_artifact_source(required(self.ployzd_source, "--ployzd-source")?)?,
-            parse_digest(required(self.ployzd_sha256, "--ployzd-sha256")?)?,
+            parse_digest(
+                required(self.ployzd_sha256, "--ployzd-sha256")?,
+                "--ployzd-sha256",
+            )?,
             PathBuf::from(required(self.ployzd_install_path, "--ployzd-install-path")?),
         )?;
-        let nats_server_unit = NatsServerUnitTarget::new(
+        let nats_server_artifact = NatsServerArtifactTarget::new(
+            parse_version(
+                required(self.nats_version, "--nats-version")?,
+                "--nats-version",
+            )?,
+            parse_artifact_source(required(self.nats_source, "--nats-source")?)?,
+            parse_digest(
+                required(self.nats_sha256, "--nats-sha256")?,
+                "--nats-sha256",
+            )?,
             PathBuf::from(required(self.nats_binary, "--nats-binary")?),
+        )?;
+        let nats_server_unit = NatsServerUnitTarget::new(
+            nats_server_artifact.install_path().to_path_buf(),
             PathBuf::from(required(self.nats_config, "--nats-config")?),
         )?;
 
-        let mut target = FirstNodeInstallTarget::new(node, ployzd_artifact, self.gateway)
-            .with_nats_server_unit(nats_server_unit);
+        let mut target =
+            FirstNodeInstallTarget::new(node, ployzd_artifact, nats_server_artifact, self.gateway)
+                .with_nats_server_unit(nats_server_unit);
         if let Some(url) = self.machine_bootstrap_url {
             target = target.with_machine_bootstrap_url(parse_machine_bootstrap_url(url)?);
         }
@@ -162,12 +198,12 @@ fn parse_node_id(value: OsString) -> Result<NodeId, KeeperCliError> {
     NodeId::try_new(utf8_value(value, "--node")?).map_err(KeeperCliError::from)
 }
 
-fn parse_version(value: OsString) -> Result<ArtifactVersion, KeeperCliError> {
-    ArtifactVersion::try_new(utf8_value(value, "--ployzd-version")?).map_err(KeeperCliError::from)
+fn parse_version(value: OsString, flag: &'static str) -> Result<ArtifactVersion, KeeperCliError> {
+    ArtifactVersion::try_new(utf8_value(value, flag)?).map_err(KeeperCliError::from)
 }
 
-fn parse_digest(value: OsString) -> Result<Sha256Digest, KeeperCliError> {
-    Sha256Digest::try_new(utf8_value(value, "--ployzd-sha256")?).map_err(KeeperCliError::from)
+fn parse_digest(value: OsString, flag: &'static str) -> Result<Sha256Digest, KeeperCliError> {
+    Sha256Digest::try_new(utf8_value(value, flag)?).map_err(KeeperCliError::from)
 }
 
 fn parse_artifact_source(value: OsString) -> Result<ArtifactSource, KeeperCliError> {
@@ -198,6 +234,9 @@ fn is_value_flag(value: &OsString) -> bool {
         || value == "--ployzd-source"
         || value == "--ployzd-sha256"
         || value == "--ployzd-install-path"
+        || value == "--nats-version"
+        || value == "--nats-source"
+        || value == "--nats-sha256"
         || value == "--nats-binary"
         || value == "--nats-config"
         || value == "--machine-bootstrap-url"
@@ -218,6 +257,12 @@ mod tests {
             "/etc/nats/nats-server.conf".into(),
             "--nats-binary".into(),
             "/usr/local/bin/nats-server".into(),
+            "--nats-source".into(),
+            "/tmp/nats-server".into(),
+            "--nats-version".into(),
+            "2.12.0".into(),
+            "--nats-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             "--ployzd-install-path".into(),
             "/usr/local/bin/ployzd".into(),
             "--ployzd-sha256".into(),
@@ -266,6 +311,12 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             "--ployzd-install-path".into(),
             "/usr/local/bin/ployzd".into(),
+            "--nats-version".into(),
+            "2.12.0".into(),
+            "--nats-source".into(),
+            "/tmp/nats-server".into(),
+            "--nats-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             "--nats-binary".into(),
             "/usr/local/bin/nats-server".into(),
             "--nats-config".into(),
@@ -300,6 +351,12 @@ mod tests {
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 "--ployzd-install-path".into(),
                 install_path,
+                "--nats-version".into(),
+                "2.12.0".into(),
+                "--nats-source".into(),
+                "/tmp/nats-server".into(),
+                "--nats-sha256".into(),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 "--nats-binary".into(),
                 "/usr/local/bin/nats-server".into(),
                 "--nats-config".into(),

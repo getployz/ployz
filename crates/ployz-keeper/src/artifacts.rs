@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
     Keeper,
+    NatsServer,
     Ployzd,
 }
 
@@ -158,8 +159,38 @@ impl PloyzdArtifactTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsServerArtifactTarget {
+    pub version: ArtifactVersion,
+    pub source: ArtifactSource,
+    pub digest: Sha256Digest,
+    install_path: PathBuf,
+}
+
+impl NatsServerArtifactTarget {
+    pub fn new(
+        version: ArtifactVersion,
+        source: ArtifactSource,
+        digest: Sha256Digest,
+        install_path: PathBuf,
+    ) -> Result<Self, ArtifactTargetError> {
+        Ok(Self {
+            version,
+            source,
+            digest,
+            install_path: validate_install_path(install_path)?,
+        })
+    }
+
+    #[must_use]
+    pub fn install_path(&self) -> &Path {
+        &self.install_path
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactTarget {
     Keeper(KeeperArtifactTarget),
+    NatsServer(NatsServerArtifactTarget),
     Ployzd(PloyzdArtifactTarget),
 }
 
@@ -168,6 +199,7 @@ impl ArtifactTarget {
     pub const fn kind(&self) -> ArtifactKind {
         match self {
             Self::Keeper(_) => ArtifactKind::Keeper,
+            Self::NatsServer(_) => ArtifactKind::NatsServer,
             Self::Ployzd(_) => ArtifactKind::Ployzd,
         }
     }
@@ -176,6 +208,7 @@ impl ArtifactTarget {
     pub const fn digest(&self) -> &Sha256Digest {
         match self {
             Self::Keeper(target) => &target.digest,
+            Self::NatsServer(target) => &target.digest,
             Self::Ployzd(target) => &target.digest,
         }
     }
@@ -184,6 +217,7 @@ impl ArtifactTarget {
     pub const fn source(&self) -> &ArtifactSource {
         match self {
             Self::Keeper(target) => &target.source,
+            Self::NatsServer(target) => &target.source,
             Self::Ployzd(target) => &target.source,
         }
     }
@@ -192,6 +226,7 @@ impl ArtifactTarget {
     pub fn install_path(&self) -> &Path {
         match self {
             Self::Keeper(target) => target.install_path(),
+            Self::NatsServer(target) => target.install_path(),
             Self::Ployzd(target) => target.install_path(),
         }
     }
@@ -206,6 +241,12 @@ impl From<KeeperArtifactTarget> for ArtifactTarget {
 impl From<PloyzdArtifactTarget> for ArtifactTarget {
     fn from(value: PloyzdArtifactTarget) -> Self {
         Self::Ployzd(value)
+    }
+}
+
+impl From<NatsServerArtifactTarget> for ArtifactTarget {
+    fn from(value: NatsServerArtifactTarget) -> Self {
+        Self::NatsServer(value)
     }
 }
 

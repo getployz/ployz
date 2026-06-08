@@ -80,6 +80,7 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
 fn render_artifact_target(target: &ArtifactTarget) -> String {
     let kind = match target.kind() {
         ArtifactKind::Keeper => "keeper",
+        ArtifactKind::NatsServer => "nats-server",
         ArtifactKind::Ployzd => "ployzd",
     };
     format!("{kind} {}", target.install_path().display())

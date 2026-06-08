@@ -50,7 +50,7 @@ fn cli_init_can_emit_keeper_first_node_install_command() {
     assert_eq!(command.gateway(), FirstNodeGateway::Install);
     assert_eq!(
         command.render(),
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\ninstall ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\ninstall ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway\n"
     );
 }
 
@@ -108,6 +108,12 @@ fn cli_init_validates_keeper_install_inputs_before_rendering() {
                 PLOYZ_NEWLINE_SHA256,
                 "--ployzd-install-path",
                 "/usr/local/bin/ployzd",
+                "--nats-version",
+                "2.12.0",
+                "--nats-source",
+                "/tmp/nats-server",
+                "--nats-sha256",
+                PLOYZ_NEWLINE_SHA256,
                 "--nats-binary",
                 "/usr/local/bin/nats-server",
                 "--nats-config",
@@ -394,7 +400,7 @@ fn binary_init_can_run_keeper_first_node_install_command() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         fs::read_to_string(captured_args).expect("fake keeper captured args"),
-        "first-node-install\n--node\nnode_1\n--ployzd-version\n0.1.0\n--ployzd-source\n/tmp/ployzd\n--ployzd-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ployzd-install-path\n/usr/local/bin/ployzd\n--nats-binary\n/usr/local/bin/nats-server\n--nats-config\n/etc/nats/nats-server.conf\n--gateway\n"
+        "first-node-install\n--node\nnode_1\n--ployzd-version\n0.1.0\n--ployzd-source\n/tmp/ployzd\n--ployzd-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ployzd-install-path\n/usr/local/bin/ployzd\n--nats-version\n2.12.0\n--nats-source\n/tmp/nats-server\n--nats-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--nats-binary\n/usr/local/bin/nats-server\n--nats-config\n/etc/nats/nats-server.conf\n--gateway\n"
     );
 }
 
@@ -445,6 +451,12 @@ fn cli_init_rejects_emit_and_run_together() {
                 PLOYZ_NEWLINE_SHA256,
                 "--ployzd-install-path",
                 "/usr/local/bin/ployzd",
+                "--nats-version",
+                "2.12.0",
+                "--nats-source",
+                "/tmp/nats-server",
+                "--nats-sha256",
+                PLOYZ_NEWLINE_SHA256,
                 "--nats-binary",
                 "/usr/local/bin/nats-server",
                 "--nats-config",
@@ -475,6 +487,12 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
             PLOYZ_NEWLINE_SHA256,
             "--ployzd-install-path",
             "/usr/local/bin/ployzd",
+            "--nats-version",
+            "2.12.0",
+            "--nats-source",
+            "/tmp/nats-server",
+            "--nats-sha256",
+            PLOYZ_NEWLINE_SHA256,
             "--nats-binary",
             "/usr/local/bin/nats-server",
             "--nats-config",
@@ -509,6 +527,12 @@ fn cli_init_rejects_keeper_binary_with_emit_mode() {
                 PLOYZ_NEWLINE_SHA256,
                 "--ployzd-install-path",
                 "/usr/local/bin/ployzd",
+                "--nats-version",
+                "2.12.0",
+                "--nats-source",
+                "/tmp/nats-server",
+                "--nats-sha256",
+                PLOYZ_NEWLINE_SHA256,
                 "--nats-binary",
                 "/usr/local/bin/nats-server",
                 "--nats-config",
@@ -776,7 +800,7 @@ fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
         .map(str::to_owned)
 }
 
-fn init_with_keeper_install_arg_refs() -> [&'static str; 17] {
+fn init_with_keeper_install_arg_refs() -> [&'static str; 23] {
     [
         "init",
         "--node",
@@ -791,6 +815,12 @@ fn init_with_keeper_install_arg_refs() -> [&'static str; 17] {
         PLOYZ_NEWLINE_SHA256,
         "--ployzd-install-path",
         "/usr/local/bin/ployzd",
+        "--nats-version",
+        "2.12.0",
+        "--nats-source",
+        "/tmp/nats-server",
+        "--nats-sha256",
+        PLOYZ_NEWLINE_SHA256,
         "--nats-binary",
         "/usr/local/bin/nats-server",
         "--nats-config",
@@ -813,6 +843,12 @@ fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<&str> {
         PLOYZ_NEWLINE_SHA256,
         "--ployzd-install-path",
         "/usr/local/bin/ployzd",
+        "--nats-version",
+        "2.12.0",
+        "--nats-source",
+        "/tmp/nats-server",
+        "--nats-sha256",
+        PLOYZ_NEWLINE_SHA256,
         "--nats-binary",
         "/usr/local/bin/nats-server",
         "--nats-config",

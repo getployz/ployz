@@ -10,7 +10,10 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 use ployz_nats::connect::NatsClientUrl;
 
-use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
+use crate::artifacts::{
+    ArtifactKind, ArtifactTarget, KeeperArtifactTarget, NatsServerArtifactTarget,
+    PloyzdArtifactTarget,
+};
 use crate::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
 };
@@ -218,6 +221,7 @@ impl KeeperJoinTarget {
 pub struct FirstNodeInstallTarget {
     pub node_id: NodeId,
     pub ployzd_artifact: PloyzdArtifactTarget,
+    pub nats_server_artifact: NatsServerArtifactTarget,
     pub gateway: FirstNodeGateway,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
@@ -228,14 +232,22 @@ impl FirstNodeInstallTarget {
     pub fn new(
         node_id: NodeId,
         ployzd_artifact: PloyzdArtifactTarget,
+        nats_server_artifact: NatsServerArtifactTarget,
         gateway: FirstNodeGateway,
     ) -> Self {
-        let nats_server_unit = NatsServerUnitTarget::default_paths();
+        let nats_server_unit = NatsServerUnitTarget::new(
+            nats_server_artifact.install_path().to_path_buf(),
+            NatsServerUnitTarget::default_paths()
+                .config_path()
+                .to_path_buf(),
+        )
+        .expect("validated nats-server artifact install path is a valid unit path");
         let role_environment =
             PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback(4222));
         Self {
             node_id,
             ployzd_artifact,
+            nats_server_artifact,
             gateway,
             nats_server_unit,
             role_environment,
@@ -475,6 +487,7 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
+        KeeperStep::InstallArtifact(target.nats_server_artifact.clone().into()),
         KeeperStep::WriteNatsServerConfig(nats_server_config),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),

@@ -5,7 +5,8 @@ use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::FirstNodeGateway;
 use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    ArtifactSource, ArtifactVersion, KeeperArtifactTarget, NatsServerArtifactTarget,
+    PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
@@ -73,15 +74,23 @@ fn local_effects_install_first_node_process_units() {
     let root = temp_dir("ployz-keeper-local-first-node");
     let source = root.join("ployzd-source");
     let install_path = root.join("bin/ployzd");
+    let nats_source = root.join("nats-server-source");
+    let nats_install_path = root.join("bin/nats-server");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
+    fs::write(&nats_source, "ployz\n").expect("nats source can be written");
 
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
     let plan = first_node_install_plan(
-        FirstNodeInstallTarget::new(node_id("node_1"), ployzd_artifact, FirstNodeGateway::Skip)
-            .with_nats_server_unit(nats_unit(&root))
-            .with_role_environment(role_env(&root)),
+        FirstNodeInstallTarget::new(
+            node_id("node_1"),
+            ployzd_artifact,
+            nats_server_artifact(&nats_source, &nats_install_path),
+            FirstNodeGateway::Skip,
+        )
+        .with_nats_server_unit(nats_unit(&root))
+        .with_role_environment(role_env(&root)),
     );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
@@ -93,6 +102,7 @@ fn local_effects_install_first_node_process_units() {
 
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(fs::read_to_string(&install_path).unwrap(), "ployz\n");
+    assert_eq!(fs::read_to_string(&nats_install_path).unwrap(), "ployz\n");
     assert_eq!(
         fs::read_to_string(root.join("etc/nats-server.conf")).unwrap(),
         "server_name: node_1\nhost: 127.0.0.1\nport: 4222\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n"
@@ -122,11 +132,14 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir exists");
     let ployzd_source = root.join("ployzd-source");
+    let nats_source = root.join("nats-server-source");
     fs::write(&ployzd_source, "ployz\n").expect("artifact source can be written");
+    fs::write(&nats_source, "ployz\n").expect("nats source can be written");
     let runner = RecordingRunner::root_linux();
     let target = FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         FirstNodeGateway::Skip,
     )
     .with_nats_server_unit(nats_unit(&root))
@@ -316,15 +329,23 @@ fn local_effects_write_nats_config_before_nats_unit() {
     let root = temp_dir("ployz-keeper-local-nats-config");
     let source = root.join("ployzd-source");
     let install_path = root.join("bin/ployzd");
+    let nats_source = root.join("nats-server-source");
+    let nats_install_path = root.join("bin/nats-server");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
+    fs::write(&nats_source, "ployz\n").expect("nats source can be written");
 
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
     let plan = first_node_install_plan(
-        FirstNodeInstallTarget::new(node_id("node_1"), ployzd_artifact, FirstNodeGateway::Skip)
-            .with_nats_server_unit(nats_unit(&root))
-            .with_role_environment(role_env(&root)),
+        FirstNodeInstallTarget::new(
+            node_id("node_1"),
+            ployzd_artifact,
+            nats_server_artifact(&nats_source, &nats_install_path),
+            FirstNodeGateway::Skip,
+        )
+        .with_nats_server_unit(nats_unit(&root))
+        .with_role_environment(role_env(&root)),
     );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
@@ -412,14 +433,18 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     let root = temp_dir("ployz-keeper-local-plan-artifact-source");
     let source = root.join("ployzd-source");
     let install_path = root.join("plan/bin/ployzd");
+    let nats_source = root.join("nats-server-source");
+    let nats_install_path = root.join("plan/bin/nats-server");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
+    fs::write(&nats_source, "ployz\n").expect("nats source can be written");
 
     let plan = first_node_install_plan(
         FirstNodeInstallTarget::new(
             node_id("node_1"),
             ployzd_artifact(&source, &install_path),
+            nats_server_artifact(&nats_source, &nats_install_path),
             FirstNodeGateway::Skip,
         )
         .with_nats_server_unit(nats_unit(&root))
@@ -726,6 +751,16 @@ fn ployzd_artifact(source: &Path, install_path: &Path) -> PloyzdArtifactTarget {
         install_path.to_path_buf(),
     )
     .expect("valid ployzd artifact")
+}
+
+fn nats_server_artifact(source: &Path, install_path: &Path) -> NatsServerArtifactTarget {
+    NatsServerArtifactTarget::new(
+        version("2.12.0"),
+        artifact_source(source),
+        digest(PLOYZ_NEWLINE_SHA256),
+        install_path.to_path_buf(),
+    )
+    .expect("valid nats-server artifact")
 }
 
 fn artifact_source(path: &Path) -> ArtifactSource {

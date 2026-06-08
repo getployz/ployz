@@ -12,7 +12,7 @@ fn keeper_first_node_install_renders_shell_command() {
 
     assert_eq!(
         install.render_command(),
-        "ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway"
+        "ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway"
     );
 }
 
@@ -105,6 +105,12 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
         .expect("valid digest"),
         ployzd_install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
             .expect("valid install path"),
+        nats_version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
+        nats_source: InstallArtifactSource::try_new("/tmp/nats-server").expect("valid nats source"),
+        nats_sha256: InstallSha256Digest::try_new(
+            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+        )
+        .expect("valid nats digest"),
         nats_binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
             .expect("valid nats binary path"),
         nats_config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")

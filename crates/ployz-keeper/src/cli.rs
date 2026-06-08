@@ -187,7 +187,7 @@ impl fmt::Display for KeeperCliError {
 
 impl std::error::Error for KeeperCliError {}
 
-pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--gateway]";
+pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--gateway]";
 
 #[cfg(test)]
 mod tests {
@@ -250,6 +250,12 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             "--ployzd-install-path".into(),
             "/usr/local/bin/ployzd".into(),
+            "--nats-version".into(),
+            "2.12.0".into(),
+            "--nats-source".into(),
+            "/tmp/nats-server".into(),
+            "--nats-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             "--nats-binary".into(),
             "/usr/local/bin/nats-server".into(),
             "--nats-config".into(),

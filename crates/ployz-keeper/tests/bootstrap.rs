@@ -7,7 +7,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
-    KeeperArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    KeeperArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::cli::load_startup;
 use ployz_keeper::executor::{
@@ -171,10 +171,12 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id.clone(),
         ployzd_artifact(),
+        nats_server_artifact(),
         FirstNodeGateway::Skip,
     ));
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
+    assert!(plan.installs_artifact_kind(ArtifactKind::NatsServer));
     assert!(plan.writes_nats_server_unit());
     assert!(plan.writes_ployzd_role_units());
     assert!(
@@ -222,6 +224,7 @@ fn first_node_install_can_include_gateway_role() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(),
+        nats_server_artifact(),
         FirstNodeGateway::Install,
     ));
 
@@ -275,6 +278,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(),
+        nats_server_artifact(),
         FirstNodeGateway::Skip,
     ));
     let mut effects = RecordingEffects::default();
@@ -299,19 +303,23 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
         *second,
         KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(ployzd_artifact()))
     );
-    let [_, _, third, fourth, fifth, ..] = effects.calls.as_slice() else {
+    let [_, _, third, fourth, fifth, sixth, ..] = effects.calls.as_slice() else {
         panic!("first-node plan records nats setup calls");
     };
     assert_eq!(
         *third,
-        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+        KeeperStepLabel::InstallArtifact(ArtifactTarget::NatsServer(nats_server_artifact()))
     );
     assert_eq!(
         *fourth,
-        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
     );
     assert_eq!(
         *fifth,
+        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+    );
+    assert_eq!(
+        *sixth,
         KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::NatsServer)
     );
     assert_eq!(
@@ -772,6 +780,16 @@ fn ployzd_artifact() -> PloyzdArtifactTarget {
         PathBuf::from("/usr/local/bin/ployzd"),
     )
     .expect("valid ployzd artifact")
+}
+
+fn nats_server_artifact() -> NatsServerArtifactTarget {
+    NatsServerArtifactTarget::new(
+        version("2.12.0"),
+        source("https://example.invalid/nats-server"),
+        digest(PLOYZD_DIGEST),
+        PathBuf::from("/usr/local/bin/nats-server"),
+    )
+    .expect("valid nats-server artifact")
 }
 
 fn role_environment() -> PloyzdRoleEnvironmentTarget {
