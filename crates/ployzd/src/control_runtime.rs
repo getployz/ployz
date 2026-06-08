@@ -1,11 +1,16 @@
 //! Runtime wiring for the control role.
 
-use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service};
+use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
+use crate::deploy_runtime::{DeployTaskRegistry, OwnedDeployLauncher};
+use crate::deploy_worker::DeployExecutionNodeScope;
+use crate::operation_api::OperationApiHandlers;
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
+use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
@@ -16,11 +21,14 @@ const CONTROL_OPERATION_OWNER_ID: &str = "control";
 
 pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
+    deploy_tasks: DeployTaskRegistry,
 }
 
 impl RunningControlRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
-        self.operation_api.shutdown().await
+        self.operation_api.shutdown().await?;
+        self.deploy_tasks.abort_all();
+        Ok(())
     }
 }
 
@@ -49,17 +57,39 @@ pub async fn start_control_runtime_with_client(
         .map_err(ControlRuntimeError::AssureBootstrap)?;
 
     let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .map_err(ControlRuntimeError::OpenCoreState)?;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .map_err(ControlRuntimeError::OpenObservations)?;
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
     let owner_id = OperationOwnerId::try_new(CONTROL_OPERATION_OWNER_ID)
         .expect("control owner id is static and valid");
     let controllers = OperationControllers::with_owner(event_log, status_store, owner_id);
-    let operation_api = start_operation_api_service(client, controllers)
-        .await
-        .map_err(ControlRuntimeError::StartOperationApi)?;
+    let deploy_tasks = DeployTaskRegistry::default();
+    let deploy_launcher = OwnedDeployLauncher::new(
+        client.clone(),
+        core_state,
+        observations,
+        controllers.clone(),
+        DeployExecutionNodeScope::same_nodes(config.deploy_nodes.clone()),
+        config.deploy_step_timeout,
+        deploy_tasks.clone(),
+    );
+    let operation_api = start_operation_api_service_with_handlers(
+        client,
+        OperationApiHandlers::launch_deploys(controllers, deploy_launcher),
+    )
+    .await
+    .map_err(ControlRuntimeError::StartOperationApi)?;
 
-    Ok(RunningControlRuntime { operation_api })
+    Ok(RunningControlRuntime {
+        operation_api,
+        deploy_tasks,
+    })
 }
 
 pub async fn run_control_until_shutdown(
@@ -84,6 +114,8 @@ pub enum ControlRuntimeError {
     ConnectNats(NatsConnectError),
     PlanBootstrap(BootstrapRefusal),
     AssureBootstrap(BootstrapAssuranceError),
+    OpenCoreState(CoreStateStoreError),
+    OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
@@ -96,6 +128,12 @@ impl fmt::Display for ControlRuntimeError {
             Self::ConnectNats(error) => write!(formatter, "{error}"),
             Self::PlanBootstrap(error) => write!(formatter, "NATS bootstrap refused: {error}"),
             Self::AssureBootstrap(error) => write!(formatter, "{error}"),
+            Self::OpenCoreState(error) => {
+                write!(formatter, "failed to open core state store: {error}")
+            }
+            Self::OpenObservations(error) => {
+                write!(formatter, "failed to open observation store: {error}")
+            }
             Self::OpenOperationStatus(error) => {
                 write!(
                     formatter,

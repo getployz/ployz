@@ -44,6 +44,7 @@ impl AsyncNatsOperationRepository {
                 start_sequence: existing.start_sequence,
                 target,
                 lease,
+                should_start_execution: false,
             });
         }
 
@@ -56,7 +57,7 @@ impl AsyncNatsOperationRepository {
             ))
             .await
             .map_err(SubmitDeployError::AppendEvent)?;
-        let (operation_id, target) = if stored.duplicate {
+        let (operation_id, target, should_start_execution) = if stored.duplicate {
             let original = self
                 .event_log
                 .event_at_sequence(stored.sequence)
@@ -71,9 +72,9 @@ impl AsyncNatsOperationRepository {
                     sequence: stored.sequence,
                 });
             };
-            (operation_id, target)
+            (operation_id, target, false)
         } else {
-            (submission.operation_id, submission.target)
+            (submission.operation_id, submission.target, true)
         };
         let status = OperationStatus::deploy_accepted(
             operation_id.clone(),
@@ -85,7 +86,7 @@ impl AsyncNatsOperationRepository {
             .await
             .map_err(SubmitDeployError::StoreStatus)?;
         let submitted = StoredDeploySubmission {
-            operation_id,
+            operation_id: operation_id.clone(),
             start_sequence: stored.sequence,
         };
 
@@ -97,6 +98,9 @@ impl AsyncNatsOperationRepository {
         let target = self
             .submitted_deploy_target(&submitted.operation_id, submitted.start_sequence)
             .await?;
+        let should_start_execution = should_start_execution
+            && submitted.operation_id == operation_id
+            && submitted.start_sequence == stored.sequence;
 
         let lease = self
             .status_store
@@ -114,6 +118,7 @@ impl AsyncNatsOperationRepository {
             start_sequence: submitted.start_sequence,
             target,
             lease,
+            should_start_execution,
         })
     }
 
@@ -534,6 +539,7 @@ pub struct AcceptedDeploySubmission {
     pub start_sequence: EventSequence,
     pub target: ployz_core::deploy::DeployRequest,
     pub lease: OperationOwnerLease,
+    pub should_start_execution: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

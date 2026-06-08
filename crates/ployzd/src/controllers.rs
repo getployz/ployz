@@ -129,6 +129,7 @@ impl OperationControllers {
             start_sequence: submitted.start_sequence,
             target: submitted.target,
             lease: submitted.lease,
+            should_start_execution: submitted.should_start_execution,
         })
     }
 
@@ -327,6 +328,7 @@ pub struct AcceptedDeployOperation {
     pub start_sequence: EventSequence,
     pub target: DeployRequest,
     pub lease: OperationOwnerLease,
+    pub should_start_execution: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -33,7 +33,12 @@ async fn operation_repository_duplicate_submit_returns_original_operation() {
         .await
         .expect("duplicate submit accepted");
 
-    assert_eq!(first, second);
+    assert!(first.should_start_execution);
+    assert!(!second.should_start_execution);
+    assert_eq!(first.operation_id, second.operation_id);
+    assert_eq!(first.start_sequence, second.start_sequence);
+    assert_eq!(first.target, second.target);
+    assert_eq!(first.lease, second.lease);
     assert_eq!(first.operation_id, operation_id("op_123"));
     assert_eq!(first.lease.owner_id, owner_id("control_a"));
     assert!(

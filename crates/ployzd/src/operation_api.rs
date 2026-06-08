@@ -4,6 +4,7 @@ use crate::controllers::{
     DeploySubmitCommand, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
     OperationControllers,
 };
+use crate::deploy_runtime::OwnedDeployLauncher;
 use ployz_core::ids::OperationId;
 use ployz_core::machine::RawJoinToken;
 use ployz_core::ops::{
@@ -31,6 +32,45 @@ use ployz_sdk_types::{
     OperationSubmitEventFailure, OperationSubmitStatusFailure, OpsStatusError,
     OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
 };
+use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+pub struct OperationApiHandlers {
+    controllers: OperationControllers,
+    deploy_execution: DeploySubmitExecution,
+}
+
+impl OperationApiHandlers {
+    #[must_use]
+    pub fn accept_only(controllers: OperationControllers) -> Self {
+        Self {
+            controllers,
+            deploy_execution: DeploySubmitExecution::AcceptOnly,
+        }
+    }
+
+    #[must_use]
+    pub fn launch_deploys(
+        controllers: OperationControllers,
+        deploy_launcher: OwnedDeployLauncher,
+    ) -> Self {
+        Self {
+            controllers,
+            deploy_execution: DeploySubmitExecution::Launch(Arc::new(deploy_launcher)),
+        }
+    }
+
+    #[must_use]
+    pub const fn controllers(&self) -> &OperationControllers {
+        &self.controllers
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum DeploySubmitExecution {
+    AcceptOnly,
+    Launch(Arc<OwnedDeployLauncher>),
+}
 
 #[must_use]
 pub fn owned_operation(
@@ -58,21 +98,27 @@ impl From<DeploySubmitRequest> for DeploySubmitCommand {
 }
 
 pub async fn deploy_submit(
-    controllers: &OperationControllers,
+    handlers: &OperationApiHandlers,
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
-    controllers
+    let accepted = handlers
+        .controllers
         .submit_deploy(command)
         .await
-        .map(|accepted| {
-            owned_operation(
-                accepted.operation_id,
-                accepted.start_sequence,
-                accepted.lease,
-            )
-        })
-        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))
+        .map_err(|error| deploy_submit_error_from_submit_error(operation_id, error))?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        accepted.start_sequence,
+        accepted.lease.clone(),
+    );
+    match (&handlers.deploy_execution, accepted.should_start_execution) {
+        (DeploySubmitExecution::Launch(launcher), true) => launcher.launch(accepted),
+        (DeploySubmitExecution::AcceptOnly, true | false)
+        | (DeploySubmitExecution::Launch(_), false) => {}
+    }
+
+    Ok(operation)
 }
 
 pub async fn machine_add(

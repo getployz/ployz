@@ -2,7 +2,8 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{
-    deploy_submit, machine_add, machine_join_redeem, machine_join_report, ops_status, ops_watch,
+    OperationApiHandlers, deploy_submit, machine_add, machine_join_redeem, machine_join_report,
+    ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -25,14 +26,25 @@ pub async fn start_operation_api_service(
     client: ployz_nats::service_runtime::NatsClient,
     controllers: OperationControllers,
 ) -> Result<RunningNatsService, ApiServiceRuntimeError> {
+    start_operation_api_service_with_handlers(
+        client,
+        OperationApiHandlers::accept_only(controllers),
+    )
+    .await
+}
+
+pub async fn start_operation_api_service_with_handlers(
+    client: ployz_nats::service_runtime::NatsClient,
+    handlers: OperationApiHandlers,
+) -> Result<RunningNatsService, ApiServiceRuntimeError> {
     let spec = api_service();
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(ApiServiceRuntimeError::Nats)?;
-    let controllers = Arc::new(controllers);
+    let handlers = Arc::new(handlers);
 
     for endpoint in IMPLEMENTED_OPERATION_API_ENDPOINTS {
-        bind_operation_endpoint(&mut runtime, Arc::clone(&controllers), endpoint).await?;
+        bind_operation_endpoint(&mut runtime, Arc::clone(&handlers), endpoint).await?;
     }
 
     Ok(runtime)
@@ -40,50 +52,50 @@ pub async fn start_operation_api_service(
 
 async fn bind_operation_endpoint(
     runtime: &mut RunningNatsService,
-    controllers: Arc<OperationControllers>,
+    handlers: Arc<OperationApiHandlers>,
     endpoint: OperationApiEndpoint,
 ) -> Result<(), ApiServiceRuntimeError> {
     match endpoint {
-        OperationApiEndpoint::DeploySubmit => bind_operation_contract::<DeploySubmitApi, _, _>(
-            runtime,
-            controllers,
-            |controllers, request| async move { deploy_submit(&controllers, request.into()).await },
-        )
-        .await,
-        OperationApiEndpoint::MachineAdd => {
-            bind_operation_contract::<MachineAddApi, _, _>(
+        OperationApiEndpoint::DeploySubmit => {
+            bind_operation_contract::<DeploySubmitApi, _, _>(
                 runtime,
-                controllers,
-                |controllers, request| async move { machine_add(&controllers, request).await },
+                handlers,
+                |handlers, request| async move { deploy_submit(&handlers, request.into()).await },
             )
             .await
         }
-        OperationApiEndpoint::MachineJoinRedeem => bind_operation_contract::<
-            MachineJoinRedeemApi,
-            _,
-            _,
-        >(
+        OperationApiEndpoint::MachineAdd => bind_operation_contract::<MachineAddApi, _, _>(
             runtime,
-            controllers,
-            |controllers, request| async move { machine_join_redeem(&controllers, request).await },
+            handlers,
+            |handlers, request| async move { machine_add(handlers.controllers(), request).await },
         )
         .await,
-        OperationApiEndpoint::MachineJoinReport => bind_operation_contract::<
-            MachineJoinReportApi,
-            _,
-            _,
-        >(
-            runtime,
-            controllers,
-            |controllers, request| async move { machine_join_report(&controllers, request).await },
-        )
-        .await,
+        OperationApiEndpoint::MachineJoinRedeem => {
+            bind_operation_contract::<MachineJoinRedeemApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move {
+                    machine_join_redeem(handlers.controllers(), request).await
+                },
+            )
+            .await
+        }
+        OperationApiEndpoint::MachineJoinReport => {
+            bind_operation_contract::<MachineJoinReportApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move {
+                    machine_join_report(handlers.controllers(), request).await
+                },
+            )
+            .await
+        }
         OperationApiEndpoint::OpsStatus => {
             bind_operation_contract::<OpsStatusApi, _, _>(
                 runtime,
-                controllers,
-                |controllers, request| async move {
-                    ops_status(&controllers, request.operation_id).await
+                handlers,
+                |handlers, request| async move {
+                    ops_status(handlers.controllers(), request.operation_id).await
                 },
             )
             .await
@@ -91,8 +103,8 @@ async fn bind_operation_endpoint(
         OperationApiEndpoint::OpsWatch => {
             bind_operation_contract::<OpsWatchApi, _, _>(
                 runtime,
-                controllers,
-                |controllers, request| async move { ops_watch(&controllers, request).await },
+                handlers,
+                |handlers, request| async move { ops_watch(handlers.controllers(), request).await },
             )
             .await
         }
@@ -101,7 +113,7 @@ async fn bind_operation_endpoint(
 
 async fn bind_operation_contract<C, H, F>(
     runtime: &mut RunningNatsService,
-    controllers: Arc<OperationControllers>,
+    handlers: Arc<OperationApiHandlers>,
     handler: H,
 ) -> Result<(), ApiServiceRuntimeError>
 where
@@ -109,17 +121,17 @@ where
     C::Request: DeserializeOwned + 'static,
     C::Success: Serialize + 'static,
     C::Error: Serialize + 'static,
-    H: Fn(Arc<OperationControllers>, C::Request) -> F + Send + Sync + 'static,
+    H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
     F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
 {
     let spec = api_endpoint_spec(C::ENDPOINT);
     let handler = Arc::new(handler);
     runtime
         .bind_endpoint(&spec, move |request| {
-            let controllers = Arc::clone(&controllers);
+            let handlers = Arc::clone(&handlers);
             let handler = Arc::clone(&handler);
             operation_api_response::<C, _, _>(request, {
-                move |request| handler(controllers, request)
+                move |request| handler(handlers, request)
             })
         })
         .await

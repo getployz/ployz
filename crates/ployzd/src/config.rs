@@ -5,12 +5,14 @@ use ployz_core::ids::NodeId;
 use std::fmt;
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
+use std::time::Duration;
 
 use crate::iroh_tunnel::PreparedTunnelService;
 use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfig {
@@ -131,6 +133,8 @@ pub struct ControlProcessConfig {
     pub nats: NatsServerRuntime,
     pub core_node_id: NodeId,
     pub core_topology: CoreTopology,
+    pub deploy_nodes: Vec<NodeId>,
+    pub deploy_step_timeout: Duration,
 }
 
 impl ControlProcessConfig {
@@ -140,9 +144,23 @@ impl ControlProcessConfig {
             .expect("single-core process config uses a valid topology");
         Self {
             nats,
-            core_node_id,
+            core_node_id: core_node_id.clone(),
             core_topology,
+            deploy_nodes: vec![core_node_id],
+            deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
         }
+    }
+
+    #[must_use]
+    pub fn with_deploy_nodes(mut self, deploy_nodes: Vec<NodeId>) -> Self {
+        self.deploy_nodes = deploy_nodes;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_deploy_step_timeout(mut self, deploy_step_timeout: Duration) -> Self {
+        self.deploy_step_timeout = deploy_step_timeout;
+        self
     }
 
     #[must_use]
