@@ -6,11 +6,12 @@ use crate::node_agent::runtime::{
 };
 use crate::node_protocol::{
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
-    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
+    NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::NodeRunContainerOutcome;
 use crate::services::{node_endpoint_spec, node_runtime_service_base};
-use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
+use ployz_core::dataplane::WireGuardEbpfPrepareError;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::{
@@ -279,7 +280,6 @@ fn inspect_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
 pub trait NodeWireGuardEbpfPreparer {
     fn prepare_wireguard_ebpf(
         &self,
-        request: WireGuardEbpfPrepareRequest,
     ) -> impl std::future::Future<Output = Result<(), WireGuardEbpfPrepareError>> + Send;
 }
 
@@ -296,12 +296,17 @@ where
         Err(response) => return response,
     };
 
-    let request = WireGuardEbpfPrepareRequest {
-        operation_id: request.operation_id,
-        nodes: request.nodes,
-    };
+    if !request.nodes.iter().any(|candidate| candidate == &node_id) {
+        return node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+            node_id: node_id.clone(),
+            error: NodeWireGuardEbpfPrepareDomainError::Unavailable {
+                component: ployz_core::dataplane::WireGuardEbpfComponent::WireGuard,
+                message: failure_message("wireguard/eBPF prepare request did not target this node"),
+            },
+        });
+    }
 
-    match preparer.prepare_wireguard_ebpf(request).await {
+    match preparer.prepare_wireguard_ebpf().await {
         Ok(()) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok { node_id }),
         Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
             node_id,

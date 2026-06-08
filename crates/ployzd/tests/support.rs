@@ -1,4 +1,4 @@
-use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
+use ployz_core::dataplane::WireGuardEbpfPrepareError;
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
@@ -156,10 +156,7 @@ impl ObservingContainerRunnerState {
 pub struct ReadyWireGuardEbpf;
 
 impl NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
-    async fn prepare_wireguard_ebpf(
-        &self,
-        _request: WireGuardEbpfPrepareRequest,
-    ) -> Result<(), WireGuardEbpfPrepareError> {
+    async fn prepare_wireguard_ebpf(&self) -> Result<(), WireGuardEbpfPrepareError> {
         Ok(())
     }
 }

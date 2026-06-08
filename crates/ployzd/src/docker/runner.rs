@@ -15,6 +15,9 @@ pub struct DockerManagedContainerRunner {
     docker: Docker,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LazyLocalDockerManagedContainerRunner;
+
 impl DockerManagedContainerRunner {
     pub fn local_defaults() -> Result<Self, DockerManagedContainerRunnerConnectError> {
         let docker = Docker::connect_with_local_defaults().map_err(|source| {
@@ -28,6 +31,36 @@ impl DockerManagedContainerRunner {
     #[must_use]
     pub fn new(docker: Docker) -> Self {
         Self { docker }
+    }
+}
+
+impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
+    async fn existing_managed_containers(
+        &self,
+    ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
+        let runner = connect_local_docker_for_list()?;
+        runner.existing_managed_containers().await
+    }
+
+    async fn create_managed_container(
+        &self,
+        command: CreateManagedContainer,
+    ) -> Result<ContainerId, NodeContainerRunnerError> {
+        let runner = connect_local_docker_for_create()?;
+        runner.create_managed_container(command).await
+    }
+
+    async fn start_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let runner = DockerManagedContainerRunner::local_defaults().map_err(|error| {
+            NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        runner.start_managed_container(container_id).await
     }
 }
 
@@ -80,6 +113,24 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             })
     }
+}
+
+fn connect_local_docker_for_list() -> Result<DockerManagedContainerRunner, NodeContainerRunnerError>
+{
+    DockerManagedContainerRunner::local_defaults().map_err(|error| {
+        NodeContainerRunnerError::ListExisting {
+            message: error.to_string(),
+        }
+    })
+}
+
+fn connect_local_docker_for_create()
+-> Result<DockerManagedContainerRunner, NodeContainerRunnerError> {
+    DockerManagedContainerRunner::local_defaults().map_err(|error| {
+        NodeContainerRunnerError::Create {
+            message: error.to_string(),
+        }
+    })
 }
 
 fn docker_container_state(

@@ -12,6 +12,8 @@ use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
+pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +50,7 @@ pub fn load_daemon_process_config(
 ) -> Result<LoadedDaemonProcessConfig, DaemonProcessConfigError> {
     match &role {
         DaemonProcessRole::Control => {
-            let nats_url = load_nats_url(&role, env)?;
+            let nats_url = load_nats_url(&role, &env)?;
             Ok(LoadedDaemonProcessConfig::Configured(
                 DaemonProcessConfig::Control(ControlProcessConfig::new(
                     NatsServerRuntime::External(nats_url),
@@ -57,19 +59,23 @@ pub fn load_daemon_process_config(
             ))
         }
         DaemonProcessRole::Node(node_id) => {
-            let nats_url = load_nats_url(&role, env)?;
+            let nats_url = load_nats_url(&role, &env)?;
             Ok(LoadedDaemonProcessConfig::Configured(
-                DaemonProcessConfig::Node(NodeProcessConfig::new(node_id.clone(), nats_url)),
+                DaemonProcessConfig::Node(NodeProcessConfig::new(
+                    node_id.clone(),
+                    nats_url,
+                    load_ebpf_bytecode_path(env),
+                )),
             ))
         }
         DaemonProcessRole::Gateway => {
-            let nats_url = load_nats_url(&role, env)?;
+            let nats_url = load_nats_url(&role, &env)?;
             Ok(LoadedDaemonProcessConfig::Configured(
                 DaemonProcessConfig::Gateway(GatewayProcessConfig::new(nats_url)),
             ))
         }
         DaemonProcessRole::Dns => {
-            let nats_url = load_nats_url(&role, env)?;
+            let nats_url = load_nats_url(&role, &env)?;
             Ok(LoadedDaemonProcessConfig::Configured(
                 DaemonProcessConfig::Dns(DnsProcessConfig::new(nats_url)),
             ))
@@ -80,9 +86,16 @@ pub fn load_daemon_process_config(
     }
 }
 
+fn load_ebpf_bytecode_path(env: impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
+    env(PLOYZ_EBPF_BYTECODE_ENV)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_BYTECODE_PATH))
+}
+
 fn load_nats_url(
     role: &DaemonProcessRole,
-    env: impl Fn(&str) -> Option<String>,
+    env: &impl Fn(&str) -> Option<String>,
 ) -> Result<NatsClientUrl, DaemonProcessConfigError> {
     let value = env(PLOYZ_NATS_URL_ENV)
         .ok_or_else(|| DaemonProcessConfigError::MissingNatsUrl { role: role.clone() })?;
@@ -173,12 +186,21 @@ impl ControlProcessConfig {
 pub struct NodeProcessConfig {
     pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
+    pub ebpf_bytecode_path: std::path::PathBuf,
 }
 
 impl NodeProcessConfig {
     #[must_use]
-    pub fn new(node_id: NodeId, nats_url: NatsClientUrl) -> Self {
-        Self { node_id, nats_url }
+    pub fn new(
+        node_id: NodeId,
+        nats_url: NatsClientUrl,
+        ebpf_bytecode_path: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            node_id,
+            nats_url,
+            ebpf_bytecode_path,
+        }
     }
 }
 

@@ -5,6 +5,8 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::FailureMessage;
+use ployz_core::subjects::NodeServiceEndpoint;
+use ployz_nats::service_runtime::request_json;
 use ployzd::deploy_worker::{
     NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
     NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
@@ -14,11 +16,16 @@ use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError,
 };
+use ployzd::node_protocol::{
+    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+};
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::{
     NodeWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_node_runtime_service,
 };
+use ployzd::services::node_endpoint_subject;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[tokio::test]
 async fn node_runtime_service_creates_missing_container() {
@@ -260,13 +267,48 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
         .await
         .expect("wireguard ebpf prepare succeeds");
 
-    assert_eq!(
-        state.requests(),
-        vec![WireGuardEbpfPrepareRequest {
+    assert_eq!(state.prepare_count(), 1);
+}
+
+#[tokio::test]
+async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
+    let nats = test_nats().await;
+    let state = RecordingWireGuardEbpfState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        idle_runner(),
+        RecordingWireGuardEbpf::new(state.clone()),
+    )
+    .await
+    .expect("node wireguard ebpf service starts");
+    let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
+        &nats.client,
+        node_endpoint_subject(
+            &node_id("node_a"),
+            NodeServiceEndpoint::WireGuardEbpfPrepare,
+        ),
+        &NodeWireGuardEbpfPrepareRpcRequest {
             operation_id: operation_id("op_123"),
-            nodes: vec![node_id("node_a")],
-        }]
-    );
+            nodes: vec![node_id("node_b")],
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("node service responds");
+
+    assert!(matches!(
+        response,
+        NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+            node_id,
+            error: ployzd::node_protocol::NodeWireGuardEbpfPrepareDomainError::Unavailable {
+                component: WireGuardEbpfComponent::WireGuard,
+                ..
+            },
+            ..
+        } if node_id == self::node_id("node_a")
+    ));
+    assert_eq!(state.prepare_count(), 0);
 }
 
 #[tokio::test]
@@ -440,18 +482,17 @@ struct RecordingWireGuardEbpfState {
 }
 
 impl RecordingWireGuardEbpfState {
-    fn requests(&self) -> Vec<WireGuardEbpfPrepareRequest> {
+    fn prepare_count(&self) -> usize {
         self.inner
             .lock()
             .expect("recording wireguard ebpf lock is not poisoned")
-            .requests
-            .clone()
+            .prepare_count
     }
 }
 
 #[derive(Default)]
 struct RecordingWireGuardEbpfInner {
-    requests: Vec<WireGuardEbpfPrepareRequest>,
+    prepare_count: usize,
 }
 
 #[derive(Clone)]
@@ -475,16 +516,12 @@ impl RecordingWireGuardEbpf {
 }
 
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
-    async fn prepare_wireguard_ebpf(
-        &self,
-        request: WireGuardEbpfPrepareRequest,
-    ) -> Result<(), WireGuardEbpfPrepareError> {
+    async fn prepare_wireguard_ebpf(&self) -> Result<(), WireGuardEbpfPrepareError> {
         self.state
             .inner
             .lock()
             .expect("recording wireguard ebpf lock is not poisoned")
-            .requests
-            .push(request);
+            .prepare_count += 1;
 
         match &self.failure {
             Some(error) => Err(error.clone()),

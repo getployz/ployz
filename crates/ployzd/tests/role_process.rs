@@ -10,8 +10,8 @@ use ployzd::app::{
 };
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, LoadedDaemonProcessConfig, NodeProcessConfig, PLOYZ_NATS_URL_ENV,
-    TunnelProcessConfig, load_daemon_process_config,
+    GatewayProcessConfig, LoadedDaemonProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
+    PLOYZ_NATS_URL_ENV, TunnelProcessConfig, load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
@@ -51,7 +51,11 @@ fn control_process_owns_api_and_nats_assurance() {
 fn node_process_owns_node_rpc_and_observations_only() {
     let node_id = node_id("node_7");
     let url = NatsClientUrl::loopback(7422);
-    let config = DaemonProcessConfig::Node(NodeProcessConfig::new(node_id.clone(), url.clone()));
+    let config = DaemonProcessConfig::Node(NodeProcessConfig::new(
+        node_id.clone(),
+        url.clone(),
+        "/tmp/ployz-ebpf".into(),
+    ));
     let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
         panic!("node role should produce a node process plan");
     };
@@ -174,12 +178,15 @@ fn role_parser_accepts_the_supervisor_process_commands() {
 
 #[test]
 fn nats_client_roles_load_the_keeper_written_nats_url() {
-    let LoadedDaemonProcessConfig::Configured(config) =
-        load_daemon_process_config(DaemonProcessRole::Node(node_id("node_7")), |name| {
-            (name == PLOYZ_NATS_URL_ENV).then(|| "nats://127.0.0.1:7422".to_owned())
-        })
-        .expect("node role config loads")
-    else {
+    let LoadedDaemonProcessConfig::Configured(config) = load_daemon_process_config(
+        DaemonProcessRole::Node(node_id("node_7")),
+        |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+            PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
+            _ => None,
+        },
+    )
+    .expect("node role config loads") else {
         panic!("node role should be configured");
     };
 
@@ -188,10 +195,14 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
     };
     assert_eq!(config.node_id, node_id("node_7"));
     assert_eq!(config.nats_url, NatsClientUrl::loopback(7422));
+    assert_eq!(
+        config.ebpf_bytecode_path,
+        std::path::PathBuf::from("/tmp/ployz-ebpf")
+    );
 }
 
 #[test]
-fn binary_node_role_fails_until_node_runtime_exists() {
+fn binary_node_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["node", "--id", "node_7"])
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
@@ -199,9 +210,10 @@ fn binary_node_role_fails_until_node_runtime_exists() {
         .expect("ployzd binary runs");
 
     assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "ployzd node runtime is not implemented yet\n"
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("failed to connect to NATS"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
