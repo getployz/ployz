@@ -1,25 +1,251 @@
-//! Owned deploy execution launched by the control service.
+//! Owned deploy execution started by the control service.
 
 use crate::controllers::{AcceptedDeployOperation, OperationControllers};
-use crate::deploy_launcher::{
-    DeployLaunchError, DeployLaunchPorts, DeployLaunchStores, run_deploy_operation,
-};
 use crate::deploy_worker::{
-    DeployContainer, DeployExecutionNodeScope, DeployExecutionOutcome, DeployHealthCheckError,
-    DeployHealthChecker,
+    DeployCommandPreparationError, DeployContainer, DeployExecutionError, DeployExecutionNodeScope,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
+    DeployHealthChecker, NodeContainerRuntime, WireGuardEbpfPreparer, execute_deploy_operation,
+    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
 use crate::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployz_core::ops::{FailureMessage, OperatorHint};
+use crate::operation_lease::with_advisory_operation_lease;
+use ployz_core::ids::OperationOwnerId;
+use ployz_core::ops::{
+    DeployOperationFailure, DeployTransition, FailureMessage, OperationOwnerLease, OperatorHint,
+};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
+use ployz_nats::operations::{OperationStatusStoreError, RecordDeployTransitionError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+pub async fn run_deploy_operation<D, N, H>(
+    accepted: AcceptedDeployOperation,
+    node_scope: DeployExecutionNodeScope,
+    stores: DeployOperationStores,
+    ports: DeployOperationPorts<'_, D, N, H>,
+    step_timeout: Duration,
+) -> Result<DeployExecutionOutcome, DeployOperationRunError>
+where
+    D: WireGuardEbpfPreparer,
+    N: NodeContainerRuntime,
+    H: DeployHealthChecker,
+{
+    let DeployOperationStores {
+        core_state,
+        observations,
+        controllers,
+    } = stores;
+    let DeployOperationPorts {
+        wireguard_ebpf,
+        node_runtime,
+        health_checker,
+    } = ports;
+    renew_operation_owner_lease(&controllers, &accepted)
+        .await
+        .map_err(DeployOperationRunError::LeaseNotHeld)?;
+    let lease_policy = controllers.lease_policy();
+    let lease_renewer = controllers.clone();
+    let operation_id = accepted.operation_id.clone();
+    let request = accepted.target.clone();
+
+    with_advisory_operation_lease(operation_id, lease_policy, lease_renewer, async move {
+        let facts = match load_deploy_execution_facts_from_nats(
+            &request,
+            node_scope,
+            &core_state,
+            &observations,
+            step_timeout,
+        )
+        .await
+        {
+            Ok(facts) => facts,
+            Err(source) => {
+                let failure_record_error = record_operation_failure(
+                    &controllers,
+                    &accepted,
+                    fact_load_failure(&request, &source),
+                )
+                .await
+                .err();
+                return Err(DeployOperationRunError::LoadFacts {
+                    source,
+                    failure_record_error,
+                });
+            }
+        };
+        let command = match prepare_deploy_execution_command(
+            accepted.operation_id.clone(),
+            request.clone(),
+            facts,
+        ) {
+            Ok(command) => command,
+            Err(source) => {
+                let failure_record_error = record_operation_failure(
+                    &controllers,
+                    &accepted,
+                    preparation_failure(&request),
+                )
+                .await
+                .err();
+                return Err(DeployOperationRunError::PrepareCommand {
+                    source,
+                    failure_record_error,
+                });
+            }
+        };
+        let mut recorder = controllers;
+        let mut route_state = core_state.clone();
+        let mut active_state = core_state;
+
+        execute_deploy_operation(
+            command,
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                wireguard_ebpf,
+                node_runtime,
+                health_checker,
+                route_state: &mut route_state,
+                active_state: &mut active_state,
+            },
+        )
+        .await
+        .map_err(DeployOperationRunError::Execute)
+    })
+    .await
+}
+
+async fn renew_operation_owner_lease(
+    controllers: &OperationControllers,
+    accepted: &AcceptedDeployOperation,
+) -> Result<OperationOwnerLease, DeployOperationLeaseError> {
+    verify_accepted_deploy_lease(&accepted.lease, &accepted.operation_id)?;
+    let Some(lease) = controllers
+        .renew_owner_lease(&accepted.operation_id)
+        .await
+        .map_err(DeployOperationLeaseError::Renew)?
+    else {
+        return Err(DeployOperationLeaseError::NoCurrentLease {
+            operation_id: accepted.operation_id.clone(),
+            expected_owner: controllers.owner_id().clone(),
+        });
+    };
+    verify_accepted_deploy_lease(&lease, &accepted.operation_id)?;
+    if lease.owner_id != *controllers.owner_id() {
+        return Err(DeployOperationLeaseError::NotCurrentOwner {
+            lease,
+            expected_owner: controllers.owner_id().clone(),
+        });
+    }
+
+    Ok(lease)
+}
+
+fn verify_accepted_deploy_lease(
+    lease: &OperationOwnerLease,
+    operation_id: &ployz_core::ids::OperationId,
+) -> Result<(), DeployOperationLeaseError> {
+    if &lease.operation_id != operation_id {
+        return Err(DeployOperationLeaseError::OperationMismatch {
+            lease: lease.clone(),
+            expected_operation_id: operation_id.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+async fn record_operation_failure(
+    controllers: &OperationControllers,
+    accepted: &AcceptedDeployOperation,
+    failure: DeployOperationFailure,
+) -> Result<(), RecordDeployTransitionError> {
+    controllers
+        .record_deploy_transition(&accepted.operation_id, DeployTransition::Failed { failure })
+        .await
+        .map(|_| ())
+}
+
+fn fact_load_failure(
+    request: &ployz_core::deploy::DeployRequest,
+    source: &DeployFactLoadError,
+) -> DeployOperationFailure {
+    DeployOperationFailure::PlanningFailed {
+        service_id: request.service_id.clone(),
+        revision_id: request.target_revision.clone(),
+        message: operation_failure_message(fact_load_failure_message(source)),
+    }
+}
+
+fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOperationFailure {
+    DeployOperationFailure::PlanningFailed {
+        service_id: request.service_id.clone(),
+        revision_id: request.target_revision.clone(),
+        message: operation_failure_message("deploy command could not be prepared"),
+    }
+}
+
+fn fact_load_failure_message(source: &DeployFactLoadError) -> &'static str {
+    match source {
+        DeployFactLoadError::ActiveServiceRead { .. } => "active service state could not be loaded",
+        DeployFactLoadError::ActiveRouteRead { .. } => "active route state could not be loaded",
+        DeployFactLoadError::NodeObservationRead { .. } => "node observations could not be loaded",
+    }
+}
+
+fn operation_failure_message(message: &'static str) -> FailureMessage {
+    FailureMessage::try_new(message).expect("static operation failure message is non-empty")
+}
+
 #[derive(Debug, Clone)]
-pub struct OwnedDeployLauncher {
+pub struct DeployOperationStores {
+    pub core_state: AsyncNatsCoreStateStore,
+    pub observations: AsyncNatsObservationStore,
+    pub controllers: OperationControllers,
+}
+
+pub struct DeployOperationPorts<'a, D, N, H> {
+    pub wireguard_ebpf: &'a mut D,
+    pub node_runtime: &'a mut N,
+    pub health_checker: &'a mut H,
+}
+
+#[derive(Debug)]
+pub enum DeployOperationRunError {
+    LeaseNotHeld(DeployOperationLeaseError),
+    LoadFacts {
+        source: DeployFactLoadError,
+        failure_record_error: Option<RecordDeployTransitionError>,
+    },
+    PrepareCommand {
+        source: DeployCommandPreparationError,
+        failure_record_error: Option<RecordDeployTransitionError>,
+    },
+    Execute(DeployExecutionError),
+}
+
+#[derive(Debug)]
+pub enum DeployOperationLeaseError {
+    OperationMismatch {
+        lease: OperationOwnerLease,
+        expected_operation_id: ployz_core::ids::OperationId,
+    },
+    NoCurrentLease {
+        operation_id: ployz_core::ids::OperationId,
+        expected_owner: OperationOwnerId,
+    },
+    NotCurrentOwner {
+        lease: OperationOwnerLease,
+        expected_owner: OperationOwnerId,
+    },
+    Renew(OperationStatusStoreError),
+}
+
+#[derive(Debug, Clone)]
+pub struct DeployOperationRuntime {
     client: async_nats::Client,
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
@@ -29,7 +255,7 @@ pub struct OwnedDeployLauncher {
     task_registry: DeployTaskRegistry,
 }
 
-impl OwnedDeployLauncher {
+impl DeployOperationRuntime {
     #[must_use]
     pub fn new(
         client: async_nats::Client,
@@ -51,17 +277,17 @@ impl OwnedDeployLauncher {
         }
     }
 
-    pub fn launch(&self, accepted: AcceptedDeployOperation) {
-        let launcher = self.clone();
+    pub fn start(&self, accepted: AcceptedDeployOperation) {
+        let runtime = self.clone();
         self.task_registry.spawn(async move {
-            let _outcome = launcher.run(accepted).await;
+            let _outcome = runtime.run(accepted).await;
         });
     }
 
     pub async fn run(
         self,
         accepted: AcceptedDeployOperation,
-    ) -> Result<DeployExecutionOutcome, DeployLaunchError> {
+    ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
         let mut wireguard_ebpf = NatsNodeWireGuardEbpfPreparer::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
         let mut node_runtime = NatsNodeContainerRuntime::new(self.client.clone())
@@ -72,12 +298,12 @@ impl OwnedDeployLauncher {
         run_deploy_operation(
             accepted,
             self.node_scope,
-            DeployLaunchStores {
+            DeployOperationStores {
                 core_state: self.core_state,
                 observations: self.observations,
                 controllers: self.controllers,
             },
-            DeployLaunchPorts {
+            DeployOperationPorts {
                 wireguard_ebpf: &mut wireguard_ebpf,
                 node_runtime: &mut node_runtime,
                 health_checker: &mut health_checker,

@@ -62,7 +62,7 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 }
 
 #[tokio::test]
-async fn control_runtime_launches_deploy_submit_and_commits_active_state() {
+async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     let nats = TestNats::start().await;
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
@@ -92,9 +92,9 @@ async fn control_runtime_launches_deploy_submit_and_commits_active_state() {
     .expect("node runtime starts");
     let api = OperationApiClient::new(nats.client.clone());
     let request = DeploySubmitRequest {
-        operation_id: operation_id("op_launch"),
+        operation_id: operation_id("op_run"),
         target: deploy_target("svc_api"),
-        idempotency_key: idempotency_key("idem_launch"),
+        idempotency_key: idempotency_key("idem_run"),
     };
 
     let accepted = api
@@ -102,8 +102,8 @@ async fn control_runtime_launches_deploy_submit_and_commits_active_state() {
         .await
         .expect("operation API accepts deploy");
 
-    assert_eq!(accepted.operation_id, operation_id("op_launch"));
-    let status = wait_for_terminal_deploy_status(&api, operation_id("op_launch")).await;
+    assert_eq!(accepted.operation_id, operation_id("op_run"));
+    let status = wait_for_terminal_deploy_status(&api, operation_id("op_run")).await;
     assert!(matches!(
         status,
         OperationStatus::Deploy {
@@ -127,7 +127,7 @@ async fn control_runtime_launches_deploy_submit_and_commits_active_state() {
         .deploy_submit(&request)
         .await
         .expect("duplicate operation API submit returns original operation");
-    assert_eq!(duplicate.operation_id, operation_id("op_launch"));
+    assert_eq!(duplicate.operation_id, operation_id("op_run"));
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         observations

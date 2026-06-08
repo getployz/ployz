@@ -4,7 +4,7 @@ use crate::controllers::{
     BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterialError,
     MachineAddSubmitCommand, OperationControllers,
 };
-use crate::deploy_runtime::OwnedDeployLauncher;
+use crate::deploy_runtime::DeployOperationRuntime;
 use ployz_core::ids::OperationId;
 use ployz_core::machine::RawJoinToken;
 use ployz_core::ops::{
@@ -52,13 +52,13 @@ impl OperationApiHandlers {
     }
 
     #[must_use]
-    pub fn launch_operations(
+    pub fn execute_operations(
         controllers: OperationControllers,
-        deploy_launcher: OwnedDeployLauncher,
+        deploy_runtime: DeployOperationRuntime,
     ) -> Self {
         Self {
             controllers,
-            deploy_execution: DeploySubmitExecution::Launch(Arc::new(deploy_launcher)),
+            deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
         }
     }
 
@@ -71,7 +71,7 @@ impl OperationApiHandlers {
 #[derive(Clone)]
 pub enum DeploySubmitExecution {
     AcceptOnly,
-    Launch(Arc<OwnedDeployLauncher>),
+    Execute(Arc<DeployOperationRuntime>),
 }
 
 #[must_use]
@@ -124,9 +124,9 @@ pub async fn deploy_submit(
         accepted.lease.clone(),
     );
     match (&handlers.deploy_execution, accepted.should_start_execution) {
-        (DeploySubmitExecution::Launch(launcher), true) => launcher.launch(accepted),
+        (DeploySubmitExecution::Execute(runtime), true) => runtime.start(accepted),
         (DeploySubmitExecution::AcceptOnly, true | false)
-        | (DeploySubmitExecution::Launch(_), false) => {}
+        | (DeploySubmitExecution::Execute(_), false) => {}
     }
 
     Ok(operation)

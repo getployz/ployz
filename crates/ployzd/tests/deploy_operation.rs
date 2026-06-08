@@ -10,8 +10,8 @@ use ployz_core::state::{
     ExpectedActiveService,
 };
 use ployzd::deploy_worker::{
-    ActiveRouteCommitter, ActiveServiceCommitter, DeployCompletedEventRecord,
-    DeployCompletedEventRecordFailure, DeployExecutionCommand, DeployExecutionError,
+    ActiveRouteCommitter, ActiveServiceCommitter, DeployCompletionRecord,
+    DeployCompletionRecordFailure, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
     WireGuardEbpfPreparer, execute_deploy_operation,
@@ -92,10 +92,7 @@ async fn deploy_worker_runs_containers_then_completes() {
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
-    assert_eq!(
-        outcome.completed_event,
-        DeployCompletedEventRecord::Recorded
-    );
+    assert_eq!(outcome.completion_record, DeployCompletionRecord::Recorded);
     assert_eq!(
         outcome
             .containers
@@ -768,7 +765,7 @@ async fn deploy_worker_times_out_hanging_steps() {
 }
 
 #[tokio::test]
-async fn deploy_worker_ignores_completed_event_failure_after_active_commit() {
+async fn deploy_worker_keeps_success_when_completion_record_fails_after_active_commit() {
     let mut recorder = RecordingOperations::fail_completed_transition_times(1);
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
@@ -794,9 +791,9 @@ async fn deploy_worker_ignores_completed_event_failure_after_active_commit() {
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(
-        outcome.completed_event,
-        DeployCompletedEventRecord::NotRecorded {
-            reason: DeployCompletedEventRecordFailure::RecordRejected,
+        outcome.completion_record,
+        DeployCompletionRecord::Missing {
+            reason: DeployCompletionRecordFailure::RecordRejected,
         }
     );
 

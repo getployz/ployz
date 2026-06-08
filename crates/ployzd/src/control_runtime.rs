@@ -4,7 +4,7 @@ use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_wit
 use crate::backup_runtime::{BackupTaskRegistry, BackupWorkerStartError, OwnedBackupLauncher};
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
-use crate::deploy_runtime::{DeployTaskRegistry, OwnedDeployLauncher};
+use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
 use crate::deploy_worker::DeployExecutionNodeScope;
 use crate::operation_api::OperationApiHandlers;
 use ployz_core::ids::OperationOwnerId;
@@ -78,7 +78,7 @@ pub async fn start_control_runtime_with_client(
     let controllers = OperationControllers::with_owner(event_log, status_store, owner_id);
     let deploy_tasks = DeployTaskRegistry::default();
     let backup_tasks = BackupTaskRegistry::default();
-    let deploy_launcher = OwnedDeployLauncher::new(
+    let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         core_state,
         observations,
@@ -99,7 +99,7 @@ pub async fn start_control_runtime_with_client(
         .map_err(ControlRuntimeError::StartBackupWorker)?;
     let operation_api = start_operation_api_service_with_handlers(
         client,
-        OperationApiHandlers::launch_operations(controllers, deploy_launcher),
+        OperationApiHandlers::execute_operations(controllers, deploy_runtime),
     )
     .await
     .map_err(ControlRuntimeError::StartOperationApi)?;

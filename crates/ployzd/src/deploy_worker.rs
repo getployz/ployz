@@ -2,7 +2,6 @@
 
 mod facts;
 mod failure;
-mod finalization;
 mod ports;
 mod preparation;
 mod types;
@@ -24,7 +23,6 @@ pub use failure::{
     NodeRuntimeUnavailableReason,
 };
 use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
-use finalization::finalize_successful_deploy;
 pub use ports::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DeployHealthChecker,
     DeployOperationRecorder, NodeContainerRuntime, WireGuardEbpfPreparer,
@@ -38,8 +36,8 @@ pub use crate::node_runtime_types::{
     NodeRunContainerRequest,
 };
 pub use types::{
-    DeployCompletedEventRecord, DeployCompletedEventRecordFailure, DeployContainer,
-    DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
+    DeployCompletionRecord, DeployCompletionRecordFailure, DeployContainer, DeployExecutionCommand,
+    DeployExecutionOutcome, DeployExecutionPorts,
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, C, A>(
@@ -163,23 +161,71 @@ where
     .await
     .map_err(|source| failure(command, source, &started_containers))?;
 
-    let completed_event = finalize_successful_deploy(
-        command,
-        &mut *ports.active_state,
-        &mut *ports.route_state,
-        &mut *ports.recorder,
-    )
-    .await
-    .map_err(|source| failure(command, source, &started_containers))?;
+    commit_active_service(command, &mut *ports.active_state)
+        .await
+        .map_err(|source| failure(command, source, &started_containers))?;
+    cutover_route(command, &mut *ports.route_state)
+        .await
+        .map_err(|source| failure(command, source, &started_containers))?;
+    let completion_record = record_completion_best_effort(command, &mut *ports.recorder).await;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
         target_revision: plan.target_revision,
         containers,
-        completed_event,
+        completion_record,
     };
 
     Ok(outcome)
+}
+
+async fn record_completion_best_effort<R>(
+    command: &DeployExecutionCommand,
+    recorder: &mut R,
+) -> DeployCompletionRecord
+where
+    R: DeployOperationRecorder,
+{
+    match record_stage(command, recorder, DeployTransition::Completed).await {
+        Ok(()) => DeployCompletionRecord::Recorded,
+        Err(DeployExecutionError::StepTimedOut { timeout, .. }) => {
+            DeployCompletionRecord::Missing {
+                reason: DeployCompletionRecordFailure::TimedOut { timeout },
+            }
+        }
+        Err(_) => DeployCompletionRecord::Missing {
+            reason: DeployCompletionRecordFailure::RecordRejected,
+        },
+    }
+}
+
+async fn commit_active_service<A>(
+    command: &DeployExecutionCommand,
+    active_state: &mut A,
+) -> Result<(), DeployExecutionError>
+where
+    A: ActiveServiceCommitter,
+{
+    let outcome = with_step_timeout(
+        command,
+        DeployExecutionStep::CommitActiveService,
+        active_state.commit_active_service(command.active_service_commit_request()),
+    )
+    .await?;
+
+    match outcome {
+        ployz_core::state::ActiveServiceCommit::Stored { .. }
+        | ployz_core::state::ActiveServiceCommit::AlreadyCommitted { .. } => Ok(()),
+        ployz_core::state::ActiveServiceCommit::ActiveServiceChanged {
+            expected_current,
+            current_revision,
+            attempted_revision,
+        } => Err(DeployExecutionError::ActiveServiceCommitRejected {
+            expected_current,
+            current_revision,
+            attempted_revision,
+        }),
+    }
 }
 
 pub(super) async fn cutover_route<C>(

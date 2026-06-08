@@ -16,15 +16,15 @@ use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore, KV_OPS_BUCKET, PLZ_OPS_STREAM,
 };
 use ployzd::controllers::{DeploySubmitCommand, IdempotencyKey, OperationControllers};
-use ployzd::deploy_launcher::{
-    DeployLaunchError, DeployLaunchPorts, DeployLaunchStores, run_deploy_operation,
+use ployzd::deploy_runtime::{
+    DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::deploy_worker::DeployExecutionNodeScope;
 use ployzd::operation_lease::OperationLeasePolicy;
 use std::time::Duration;
 
 #[tokio::test]
-async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
+async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let nats = test_nats().await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
@@ -45,12 +45,12 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
     let outcome = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployLaunchStores {
+        DeployOperationStores {
             core_state: core_state.clone(),
             observations,
             controllers: controllers.clone(),
         },
-        DeployLaunchPorts {
+        DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
@@ -58,7 +58,7 @@ async fn accepted_deploy_launches_from_nats_facts_and_commits_active_state() {
         Duration::from_secs(5),
     )
     .await
-    .expect("accepted deploy launches");
+    .expect("accepted deploy runs");
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
@@ -111,12 +111,12 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     let error = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployLaunchStores {
+        DeployOperationStores {
             core_state: core_state.clone(),
             observations,
             controllers: controllers.clone(),
         },
-        DeployLaunchPorts {
+        DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
@@ -126,7 +126,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     .await
     .expect_err("health failure fails deploy");
 
-    assert!(matches!(error, DeployLaunchError::Execute(_)));
+    assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
         core_state
             .active_service(&service_id("svc_api"))
@@ -179,12 +179,12 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     let error = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployLaunchStores {
+        DeployOperationStores {
             core_state,
             observations: missing_observations,
             controllers: controllers.clone(),
         },
-        DeployLaunchPorts {
+        DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
@@ -196,7 +196,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
 
     assert!(matches!(
         error,
-        DeployLaunchError::LoadFacts {
+        DeployOperationRunError::LoadFacts {
             failure_record_error: None,
             ..
         }
@@ -224,7 +224,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
 }
 
 #[tokio::test]
-async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects() {
+async fn duplicate_submit_without_ownership_does_not_run_runtime_side_effects() {
     let nats = test_nats().await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
@@ -250,12 +250,12 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
     let error = run_deploy_operation(
         duplicate,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployLaunchStores {
+        DeployOperationStores {
             core_state,
             observations,
             controllers: owner_b,
         },
-        DeployLaunchPorts {
+        DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
@@ -263,12 +263,12 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
         Duration::from_secs(5),
     )
     .await
-    .expect_err("non-owner cannot launch");
+    .expect_err("non-owner cannot run");
 
     assert!(matches!(
         error,
-        DeployLaunchError::LeaseNotHeld(
-            ployzd::deploy_launcher::DeployLaunchLeaseError::NoCurrentLease {
+        DeployOperationRunError::LeaseNotHeld(
+            ployzd::deploy_runtime::DeployOperationLeaseError::NoCurrentLease {
                 operation_id: current_operation_id,
                 expected_owner,
             }
@@ -280,7 +280,7 @@ async fn duplicate_submit_without_ownership_does_not_launch_runtime_side_effects
 }
 
 #[tokio::test]
-async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
+async fn expired_accepted_lease_does_not_run_runtime_side_effects() {
     let nats = test_nats().await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
@@ -310,12 +310,12 @@ async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
     let error = run_deploy_operation(
         accepted,
         DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployLaunchStores {
+        DeployOperationStores {
             core_state,
             observations,
             controllers,
         },
-        DeployLaunchPorts {
+        DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
             node_runtime: &mut runtime,
             health_checker: &mut health,
@@ -323,12 +323,12 @@ async fn expired_accepted_lease_does_not_launch_runtime_side_effects() {
         Duration::from_secs(5),
     )
     .await
-    .expect_err("expired accepted lease cannot launch");
+    .expect_err("expired accepted lease cannot run");
 
     assert!(matches!(
         error,
-        DeployLaunchError::LeaseNotHeld(
-            ployzd::deploy_launcher::DeployLaunchLeaseError::NoCurrentLease { .. }
+        DeployOperationRunError::LeaseNotHeld(
+            ployzd::deploy_runtime::DeployOperationLeaseError::NoCurrentLease { .. }
         )
     ));
     assert!(runtime.requests.is_empty());
