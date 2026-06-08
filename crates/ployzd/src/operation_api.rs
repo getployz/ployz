@@ -26,7 +26,7 @@ use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, BackupCreateUnavailableSource,
     BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineJoinRedeemError,
+    MachineAddRequest, MachineAddUnavailableSource, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
@@ -176,14 +176,7 @@ pub async fn machine_add(
             accepted.lease,
         ),
         node_id: accepted.node_id,
-        bootstrap_url: MachineBootstrapUrl::try_new(material.bootstrap_url).map_err(|_| {
-            MachineAddError::Unavailable {
-                operation_id: operation_id.clone(),
-                source: MachineAddUnavailableSource::BootstrapMaterial {
-                    failure: BootstrapMaterialFailure::RenderBootstrapUrl,
-                },
-            }
-        })?,
+        bootstrap_url: material.bootstrap_url,
         join_token: raw_token,
     })
 }

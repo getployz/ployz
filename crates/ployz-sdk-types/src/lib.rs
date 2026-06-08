@@ -32,8 +32,9 @@ pub use ployz_core::ids::{
     SubjectTokenError,
 };
 pub use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinBundle, MachineJoinClusterName, MachineJoinPloyzdArtifact,
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
+    InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinPloyzdArtifact,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
@@ -270,35 +271,6 @@ pub enum MachineAddUnavailableSource {
 pub enum BootstrapMaterialFailure {
     EncodeJoinBundle,
     IssueJoinToken,
-    RenderBootstrapUrl,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(type = "Brand<string, \"MachineBootstrapUrl\">")]
-#[serde(transparent)]
-pub struct MachineBootstrapUrl(String);
-
-impl MachineBootstrapUrl {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, BootstrapCommandError> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            return Err(BootstrapCommandError::EmptyBootstrapUrl);
-        }
-        if !value.starts_with("https://")
-            || value
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
-            return Err(BootstrapCommandError::InvalidBootstrapUrl);
-        }
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -339,8 +311,6 @@ impl fmt::Debug for MachineJoinToken {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootstrapCommandError {
-    EmptyBootstrapUrl,
-    InvalidBootstrapUrl,
     EmptyJoinToken,
     InvalidJoinToken,
 }

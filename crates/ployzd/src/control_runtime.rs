@@ -75,7 +75,12 @@ pub async fn start_control_runtime_with_client(
         .map_err(ControlRuntimeError::OpenBackupObjects)?;
     let owner_id = OperationOwnerId::try_new(CONTROL_OPERATION_OWNER_ID)
         .expect("control owner id is static and valid");
-    let controllers = OperationControllers::with_owner(event_log, status_store, owner_id);
+    let controllers = OperationControllers::with_owner(
+        event_log,
+        status_store,
+        owner_id,
+        config.machine_bootstrap_url.clone(),
+    );
     let deploy_tasks = DeployTaskRegistry::default();
     let backup_tasks = BackupTaskRegistry::default();
     let deploy_runtime = DeployOperationRuntime::new(

@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
+use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::roles::FirstNodeGateway;
 
 use crate::artifacts::{ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest};
@@ -54,6 +55,7 @@ struct FirstNodeInstallArgs {
     ployzd_install_path: Option<OsString>,
     nats_binary: Option<OsString>,
     nats_config: Option<OsString>,
+    machine_bootstrap_url: Option<OsString>,
 }
 
 impl FirstNodeInstallArgs {
@@ -67,6 +69,7 @@ impl FirstNodeInstallArgs {
             ployzd_install_path: None,
             nats_binary: None,
             nats_config: None,
+            machine_bootstrap_url: None,
         }
     }
 
@@ -104,6 +107,13 @@ impl FirstNodeInstallArgs {
         if flag == "--nats-config" {
             return set_once(&mut self.nats_config, value, "--nats-config");
         }
+        if flag == "--machine-bootstrap-url" {
+            return set_once(
+                &mut self.machine_bootstrap_url,
+                value,
+                "--machine-bootstrap-url",
+            );
+        }
 
         Err(KeeperCliError::UnexpectedArgument {
             value: flag.to_string_lossy().into_owned(),
@@ -123,10 +133,12 @@ impl FirstNodeInstallArgs {
             PathBuf::from(required(self.nats_config, "--nats-config")?),
         )?;
 
-        Ok(
-            FirstNodeInstallTarget::new(node, ployzd_artifact, self.gateway)
-                .with_nats_server_unit(nats_server_unit),
-        )
+        let mut target = FirstNodeInstallTarget::new(node, ployzd_artifact, self.gateway)
+            .with_nats_server_unit(nats_server_unit);
+        if let Some(url) = self.machine_bootstrap_url {
+            target = target.with_machine_bootstrap_url(parse_machine_bootstrap_url(url)?);
+        }
+        Ok(target)
     }
 }
 
@@ -169,6 +181,11 @@ fn parse_artifact_source(value: OsString) -> Result<ArtifactSource, KeeperCliErr
     }
 }
 
+fn parse_machine_bootstrap_url(value: OsString) -> Result<MachineBootstrapUrl, KeeperCliError> {
+    MachineBootstrapUrl::try_new(utf8_value(value, "--machine-bootstrap-url")?)
+        .map_err(KeeperCliError::from)
+}
+
 fn utf8_value(value: OsString, flag: &'static str) -> Result<String, KeeperCliError> {
     value
         .into_string()
@@ -183,6 +200,7 @@ fn is_value_flag(value: &OsString) -> bool {
         || value == "--ployzd-install-path"
         || value == "--nats-binary"
         || value == "--nats-config"
+        || value == "--machine-bootstrap-url"
 }
 
 #[cfg(test)]

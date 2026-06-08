@@ -51,7 +51,7 @@ fn main() -> ExitCode {
         Ok(KeeperCommand::FirstNodeInstall(target)) => {
             let stdout = std::io::stdout();
             let mut recorder = KeeperTextRecorder::new(stdout.lock());
-            let execution = run_first_node_install(target, &mut recorder);
+            let execution = run_first_node_install(*target, &mut recorder);
             match execution.terminal {
                 KeeperPlanTerminal::Completed => ExitCode::SUCCESS,
                 KeeperPlanTerminal::Failed(failure) => {

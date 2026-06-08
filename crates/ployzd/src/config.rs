@@ -2,6 +2,7 @@
 
 use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
+use ployz_core::install::{InstallContractError, MachineBootstrapUrl};
 use std::fmt;
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
@@ -12,6 +13,8 @@ use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
+pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
 pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -40,7 +43,7 @@ impl DaemonProcessConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadedDaemonProcessConfig {
-    Configured(DaemonProcessConfig),
+    Configured(Box<DaemonProcessConfig>),
     TunnelConfigPending { side: TunnelSide },
 }
 
@@ -51,34 +54,36 @@ pub fn load_daemon_process_config(
     match &role {
         DaemonProcessRole::Control => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(
-                DaemonProcessConfig::Control(ControlProcessConfig::new(
-                    NatsServerRuntime::External(nats_url),
-                    NodeId::try_new("core_1").expect("default single-core node id is valid"),
-                )),
-            ))
+            let control = ControlProcessConfig::new(
+                NatsServerRuntime::External(nats_url),
+                NodeId::try_new("core_1").expect("default single-core node id is valid"),
+            )
+            .with_machine_bootstrap_url(load_machine_bootstrap_url(&env)?);
+            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
+                DaemonProcessConfig::Control(control),
+            )))
         }
         DaemonProcessRole::Node(node_id) => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(
+            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
                 DaemonProcessConfig::Node(NodeProcessConfig::new(
                     node_id.clone(),
                     nats_url,
                     load_ebpf_bytecode_path(env),
                 )),
-            ))
+            )))
         }
         DaemonProcessRole::Gateway => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(
+            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
                 DaemonProcessConfig::Gateway(GatewayProcessConfig::new(nats_url)),
-            ))
+            )))
         }
         DaemonProcessRole::Dns => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(
+            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
                 DaemonProcessConfig::Dns(DnsProcessConfig::new(nats_url)),
-            ))
+            )))
         }
         DaemonProcessRole::Tunnel(side) => {
             Ok(LoadedDaemonProcessConfig::TunnelConfigPending { side: *side })
@@ -108,6 +113,21 @@ fn load_nats_url(
     })
 }
 
+fn load_machine_bootstrap_url(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<MachineBootstrapUrl, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_MACHINE_BOOTSTRAP_URL_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(default_machine_bootstrap_url());
+    };
+    MachineBootstrapUrl::try_new(value.clone())
+        .map_err(|source| DaemonProcessConfigError::InvalidMachineBootstrapUrl { value, source })
+}
+
+fn default_machine_bootstrap_url() -> MachineBootstrapUrl {
+    MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+        .expect("default machine bootstrap URL is valid")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfigError {
     MissingNatsUrl {
@@ -117,6 +137,10 @@ pub enum DaemonProcessConfigError {
         role: DaemonProcessRole,
         value: String,
         source: NatsClientUrlError,
+    },
+    InvalidMachineBootstrapUrl {
+        value: String,
+        source: InstallContractError,
     },
 }
 
@@ -135,6 +159,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 PLOYZ_NATS_URL_ENV,
                 role.process_name()
             ),
+            Self::InvalidMachineBootstrapUrl { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_MACHINE_BOOTSTRAP_URL_ENV
+            ),
         }
     }
 }
@@ -148,6 +177,7 @@ pub struct ControlProcessConfig {
     pub core_topology: CoreTopology,
     pub deploy_nodes: Vec<NodeId>,
     pub deploy_step_timeout: Duration,
+    pub machine_bootstrap_url: MachineBootstrapUrl,
 }
 
 impl ControlProcessConfig {
@@ -161,6 +191,7 @@ impl ControlProcessConfig {
             core_topology,
             deploy_nodes: vec![core_node_id],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
+            machine_bootstrap_url: default_machine_bootstrap_url(),
         }
     }
 
@@ -173,6 +204,15 @@ impl ControlProcessConfig {
     #[must_use]
     pub const fn with_deploy_step_timeout(mut self, deploy_step_timeout: Duration) -> Self {
         self.deploy_step_timeout = deploy_step_timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_machine_bootstrap_url(
+        mut self,
+        machine_bootstrap_url: MachineBootstrapUrl,
+    ) -> Self {
+        self.machine_bootstrap_url = machine_bootstrap_url;
         self
     }
 

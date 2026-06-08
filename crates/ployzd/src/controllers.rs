@@ -4,7 +4,7 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::MachineJoinBundle;
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
     RawJoinToken,
@@ -26,11 +26,11 @@ use ployz_nats::operations::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use crate::operation_lease::OperationLeasePolicy;
 
 pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
 
-pub const MACHINE_ADD_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 const MACHINE_JOIN_TOKEN_TTL_SECONDS: u64 = 600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub struct BackupCreateCommand {
 pub struct MachineAddBootstrapMaterial {
     pub raw_join_token: RawJoinToken,
     pub join_token: IssuedJoinToken,
-    pub bootstrap_url: &'static str,
+    pub bootstrap_url: MachineBootstrapUrl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +76,7 @@ pub struct OperationControllers {
     repository: AsyncNatsOperationRepository,
     owner_id: OperationOwnerId,
     lease_policy: OperationLeasePolicy,
+    machine_bootstrap_url: MachineBootstrapUrl,
 }
 
 impl OperationControllers {
@@ -84,11 +85,13 @@ impl OperationControllers {
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
         owner_id: OperationOwnerId,
+        machine_bootstrap_url: MachineBootstrapUrl,
     ) -> Self {
         Self::with_owner_and_lease_policy(
             event_log,
             status_store,
             owner_id,
+            machine_bootstrap_url,
             OperationLeasePolicy::default_policy(),
         )
     }
@@ -98,12 +101,14 @@ impl OperationControllers {
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
         owner_id: OperationOwnerId,
+        machine_bootstrap_url: MachineBootstrapUrl,
         lease_policy: OperationLeasePolicy,
     ) -> Self {
         Self {
             repository: AsyncNatsOperationRepository::new(event_log, status_store),
             owner_id,
             lease_policy,
+            machine_bootstrap_url,
         }
     }
 
@@ -112,7 +117,13 @@ impl OperationControllers {
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
     ) -> Self {
-        Self::with_owner(event_log, status_store, test_owner_id())
+        Self::with_owner(
+            event_log,
+            status_store,
+            test_owner_id(),
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default machine bootstrap URL is valid"),
+        )
     }
 
     pub async fn submit_deploy(
@@ -247,7 +258,7 @@ impl OperationControllers {
         Ok(MachineAddBootstrapMaterial {
             raw_join_token,
             join_token: IssuedJoinToken::new(fingerprint, expires_at),
-            bootstrap_url: MACHINE_ADD_BOOTSTRAP_URL,
+            bootstrap_url: self.machine_bootstrap_url.clone(),
         })
     }
 

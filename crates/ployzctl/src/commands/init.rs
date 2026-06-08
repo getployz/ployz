@@ -1,7 +1,7 @@
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    KeeperFirstNodeInstall,
+    KeeperFirstNodeInstall, MachineBootstrapUrl,
 };
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 
@@ -193,6 +193,14 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
             set_once(&mut parsed.nats_config, value, "--nats-config")?;
             continue;
         }
+        if let Some(value) = args.take_value("--machine-bootstrap-url")? {
+            set_once(
+                &mut parsed.machine_bootstrap_url,
+                value,
+                "--machine-bootstrap-url",
+            )?;
+            continue;
+        }
         if let Some(value) = args.take_value("--keeper-binary")? {
             set_once(&mut parsed.keeper_binary, value, "--keeper-binary")?;
             continue;
@@ -213,6 +221,7 @@ struct ParsedInitArgs {
     ployzd_install_path: Option<String>,
     nats_binary: Option<String>,
     nats_config: Option<String>,
+    machine_bootstrap_url: Option<String>,
     keeper_binary: Option<String>,
 }
 
@@ -228,6 +237,7 @@ impl Default for ParsedInitArgs {
             ployzd_install_path: None,
             nats_binary: None,
             nats_config: None,
+            machine_bootstrap_url: None,
             keeper_binary: None,
         }
     }
@@ -280,6 +290,7 @@ impl ParsedInitArgs {
             ployzd_install_path,
             nats_binary,
             nats_config,
+            machine_bootstrap_url,
             keeper_binary,
         } = self;
         let keeper_install = ParsedKeeperInstallArgs {
@@ -289,6 +300,7 @@ impl ParsedInitArgs {
             ployzd_install_path,
             nats_binary,
             nats_config,
+            machine_bootstrap_url,
         };
         let has_keeper_install_value = keeper_install.has_any_value();
         let node_id = NodeId::try_new(required(node_id, "--node")?)
@@ -341,6 +353,7 @@ struct ParsedKeeperInstallArgs {
     ployzd_install_path: Option<String>,
     nats_binary: Option<String>,
     nats_config: Option<String>,
+    machine_bootstrap_url: Option<String>,
 }
 
 impl ParsedKeeperInstallArgs {
@@ -352,6 +365,11 @@ impl ParsedKeeperInstallArgs {
         Ok(KeeperFirstNodeInstall {
             node_id,
             gateway,
+            machine_bootstrap_url: self
+                .machine_bootstrap_url
+                .map(MachineBootstrapUrl::try_new)
+                .transpose()
+                .map_err(|error| invalid_value("--machine-bootstrap-url", error))?,
             ployzd_version: InstallArtifactVersion::try_new(required(
                 self.ployzd_version,
                 "--ployzd-version",
@@ -386,5 +404,6 @@ impl ParsedKeeperInstallArgs {
             || self.ployzd_install_path.is_some()
             || self.nats_binary.is_some()
             || self.nats_config.is_some()
+            || self.machine_bootstrap_url.is_some()
     }
 }

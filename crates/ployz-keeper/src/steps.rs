@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::NodeId;
+use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
@@ -252,18 +253,29 @@ impl FirstNodeInstallTarget {
         self.role_environment = role_environment;
         self
     }
+
+    #[must_use]
+    pub fn with_machine_bootstrap_url(mut self, url: MachineBootstrapUrl) -> Self {
+        self.role_environment = self.role_environment.with_machine_bootstrap_url(url);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzdRoleEnvironmentTarget {
     file: PloyzdRoleEnvironmentFile,
     nats_url: NatsClientUrl,
+    machine_bootstrap_url: Option<MachineBootstrapUrl>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn new(file: PloyzdRoleEnvironmentFile, nats_url: NatsClientUrl) -> Self {
-        Self { file, nats_url }
+        Self {
+            file,
+            nats_url,
+            machine_bootstrap_url: None,
+        }
     }
 
     #[must_use]
@@ -274,6 +286,12 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub const fn file(&self) -> &PloyzdRoleEnvironmentFile {
         &self.file
+    }
+
+    #[must_use]
+    pub fn with_machine_bootstrap_url(mut self, url: MachineBootstrapUrl) -> Self {
+        self.machine_bootstrap_url = Some(url);
+        self
     }
 
     #[must_use]
@@ -295,7 +313,13 @@ impl PloyzdRoleEnvironmentTarget {
 
     #[must_use]
     pub fn render(&self) -> String {
-        format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str())
+        let mut output = format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str());
+        if let Some(url) = &self.machine_bootstrap_url {
+            output.push_str("PLOYZ_MACHINE_BOOTSTRAP_URL=");
+            output.push_str(url.as_str());
+            output.push('\n');
+        }
+        output
     }
 }
 

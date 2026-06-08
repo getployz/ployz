@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct KeeperFirstNodeInstall {
     pub node_id: NodeId,
     pub gateway: FirstNodeGateway,
+    pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub ployzd_version: InstallArtifactVersion,
     pub ployzd_source: InstallArtifactSource,
     pub ployzd_sha256: InstallSha256Digest,
@@ -40,6 +41,12 @@ impl KeeperFirstNodeInstall {
         if self.gateway == FirstNodeGateway::Install {
             args.push("--gateway".to_owned());
         }
+        if let Some(machine_bootstrap_url) = &self.machine_bootstrap_url {
+            args.extend([
+                "--machine-bootstrap-url".to_owned(),
+                machine_bootstrap_url.as_str().to_owned(),
+            ]);
+        }
         args
     }
 
@@ -57,6 +64,51 @@ impl KeeperFirstNodeInstall {
             })
             .collect::<Vec<_>>()
             .join(" ")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"MachineBootstrapUrl\">")
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineBootstrapUrl(String);
+
+impl MachineBootstrapUrl {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InstallContractError::EmptyBootstrapUrl);
+        }
+        if !value.starts_with("https://")
+            || value
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(InstallContractError::InvalidBootstrapUrl { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineBootstrapUrl {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineBootstrapUrl> for String {
+    fn from(value: MachineBootstrapUrl) -> Self {
+        value.0
     }
 }
 
@@ -280,6 +332,8 @@ impl From<AbsoluteInstallPath> for String {
 pub enum InstallContractError {
     EmptyClusterName,
     InvalidClusterName { value: String },
+    EmptyBootstrapUrl,
+    InvalidBootstrapUrl { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -301,6 +355,11 @@ impl fmt::Display for InstallContractError {
                     "cluster name {value:?} contains unsupported characters"
                 )
             }
+            Self::EmptyBootstrapUrl => formatter.write_str("machine bootstrap URL is empty"),
+            Self::InvalidBootstrapUrl { value } => write!(
+                formatter,
+                "machine bootstrap URL {value:?} must be an HTTPS URL without whitespace"
+            ),
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
             Self::RelativeArtifactSource { value } => {

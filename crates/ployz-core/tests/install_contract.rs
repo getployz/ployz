@@ -1,7 +1,8 @@
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    KeeperFirstNodeInstall, MachineJoinBundle, MachineJoinClusterName, MachineJoinPloyzdArtifact,
+    KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinPloyzdArtifact,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -23,10 +24,27 @@ fn keeper_first_node_install_omits_gateway_when_skipped() {
 }
 
 #[test]
+fn keeper_first_node_install_can_carry_machine_bootstrap_url() {
+    let mut install = keeper_install(FirstNodeGateway::Skip);
+    install.machine_bootstrap_url = Some(
+        MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
+    );
+
+    assert!(
+        install
+            .render_command()
+            .contains("--machine-bootstrap-url 'https://example.test/ployz.sh'")
+    );
+}
+
+#[test]
 fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinClusterName::try_new("").is_err());
     assert!(MachineJoinClusterName::try_new("prod\nother").is_err());
     assert!(MachineJoinClusterName::try_new("prod=west").is_err());
+    assert!(MachineBootstrapUrl::try_new("").is_err());
+    assert!(MachineBootstrapUrl::try_new("http://example.test/ployz.sh").is_err());
+    assert!(MachineBootstrapUrl::try_new("https://example.test/ployz.sh").is_ok());
     assert!(InstallArtifactVersion::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
@@ -78,6 +96,7 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
     KeeperFirstNodeInstall {
         node_id: NodeId::try_new("node_1").expect("valid node id"),
         gateway,
+        machine_bootstrap_url: None,
         ployzd_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
         ployzd_source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
         ployzd_sha256: InstallSha256Digest::try_new(

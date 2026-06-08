@@ -18,9 +18,11 @@ async fn run() -> Result<(), MainError> {
     let role = parse_role_args(std::env::args().skip(1)).map_err(MainError::Role)?;
     let loaded = load_daemon_process_config(role.clone(), env_var).map_err(MainError::Config)?;
     match loaded {
-        LoadedDaemonProcessConfig::Configured(config) => run_daemon_process_until_shutdown(&config)
-            .await
-            .map_err(MainError::Runtime),
+        LoadedDaemonProcessConfig::Configured(config) => {
+            run_daemon_process_until_shutdown(config.as_ref())
+                .await
+                .map_err(MainError::Runtime)
+        }
         LoadedDaemonProcessConfig::TunnelConfigPending { side } => {
             Err(MainError::TunnelConfigPending { side })
         }

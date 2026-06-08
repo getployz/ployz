@@ -246,7 +246,7 @@ export type MachineAddError = { "error": "unavailable", operation_id: OperationI
 
 export type MachineAddUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "bootstrap_material", failure: BootstrapMaterialFailure, };
 
-export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token" | "render_bootstrap_url";
+export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token";
 
 export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OpsStatusUnavailableSource, };
 

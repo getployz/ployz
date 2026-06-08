@@ -117,6 +117,38 @@ fn local_effects_install_first_node_process_units() {
 }
 
 #[test]
+fn first_node_install_writes_machine_bootstrap_url_when_configured() {
+    let root = temp_dir("ployz-keeper-first-node-bootstrap-url");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir exists");
+    let ployzd_source = root.join("ployzd-source");
+    fs::write(&ployzd_source, "ployz\n").expect("artifact source can be written");
+    let runner = RecordingRunner::root_linux();
+    let target = FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        FirstNodeGateway::Skip,
+    )
+    .with_nats_server_unit(nats_unit(&root))
+    .with_role_environment(
+        role_env(&root).with_machine_bootstrap_url(
+            ployz_core::install::MachineBootstrapUrl::try_new("https://example.test/ployz.sh")
+                .expect("valid bootstrap url"),
+        ),
+    );
+    let plan = first_node_install_plan(target);
+    let mut effects = KeeperLocalEffects::new(local_config(&root, &systemd_dir), runner);
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut RecordingRecorder::default());
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(
+        fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\n"
+    );
+}
+
+#[test]
 fn local_effects_fail_before_work_when_host_is_not_root() {
     let root = temp_dir("ployz-keeper-local-not-root");
     let systemd_dir = root.join("systemd");

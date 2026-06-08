@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use ployz_core::ids::SubjectTokenError;
+use ployz_core::install::InstallContractError;
 
 use crate::artifacts::ArtifactTargetError;
 use crate::first_node_install_cli::parse_first_node_install_args;
@@ -15,7 +16,7 @@ use crate::systemd::SupervisorUnitFileError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperCommand {
     Start(KeeperStartup),
-    FirstNodeInstall(FirstNodeInstallTarget),
+    FirstNodeInstall(Box<FirstNodeInstallTarget>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +46,7 @@ pub fn load_command(
             Ok(KeeperCommand::Start(KeeperStartup { join }))
         }
         ParsedKeeperCommand::FirstNodeInstall(target) => {
-            Ok(KeeperCommand::FirstNodeInstall(*target))
+            Ok(KeeperCommand::FirstNodeInstall(target))
         }
     }
 }
@@ -124,6 +125,7 @@ pub enum KeeperCliError {
     UnexpectedArgument { value: String },
     JoinTokenFile(JoinTokenFileError),
     NodeId(SubjectTokenError),
+    InstallContract(InstallContractError),
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
 }
@@ -137,6 +139,12 @@ impl From<JoinTokenFileError> for KeeperCliError {
 impl From<SubjectTokenError> for KeeperCliError {
     fn from(value: SubjectTokenError) -> Self {
         Self::NodeId(value)
+    }
+}
+
+impl From<InstallContractError> for KeeperCliError {
+    fn from(value: InstallContractError) -> Self {
+        Self::InstallContract(value)
     }
 }
 
@@ -170,6 +178,7 @@ impl fmt::Display for KeeperCliError {
             }
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
             Self::NodeId(error) => write!(formatter, "{error}"),
+            Self::InstallContract(error) => write!(formatter, "{error}"),
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
         }
@@ -178,7 +187,7 @@ impl fmt::Display for KeeperCliError {
 
 impl std::error::Error for KeeperCliError {}
 
-pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--gateway]";
+pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--gateway]";
 
 #[cfg(test)]
 mod tests {

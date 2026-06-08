@@ -2,6 +2,10 @@ use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
+use ployz_core::install::{
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
+    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinPloyzdArtifact,
+};
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
 };
@@ -9,7 +13,9 @@ use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operation_api_client::OperationApiClient;
-use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
+use ployz_sdk_types::{
+    DeploySubmitRequest, MachineAddGateway, MachineAddRequest, OpsStatusRequest,
+};
 use ployzd::config::ControlProcessConfig;
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
@@ -54,6 +60,53 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .get_object_store("PLZ_BUNDLES")
         .await
         .expect("control runtime created PLZ_BUNDLES");
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_uses_configured_machine_bootstrap_url() {
+    let nats = TestNats::start().await;
+    let config = control_config().with_machine_bootstrap_url(
+        MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
+    );
+    let runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
+            .await
+            .expect("control runtime starts");
+    let api = OperationApiClient::new(nats.client.clone());
+
+    let accepted = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_machine"),
+            idempotency_key: idempotency_key("idem_machine"),
+            node_id: node_id("node_2"),
+            name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: MachineAddGateway::Skip,
+            join_bundle: ployz_core::install::MachineJoinBundle {
+                cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+                ployzd: MachineJoinPloyzdArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                        .expect("valid install path"),
+                },
+            },
+        })
+        .await
+        .expect("machine add succeeds");
+
+    assert_eq!(
+        accepted.bootstrap_url.as_str(),
+        "https://example.test/ployz.sh"
+    );
 
     runtime
         .shutdown()

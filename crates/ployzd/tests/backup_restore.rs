@@ -2,6 +2,7 @@ use ployz_core::backup::{
     BackupArtifactKind, BackupBundle, BackupManifest, ControlPlaneKvSnapshot,
 };
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
+use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     BackupOperationState, EventSequence, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
@@ -12,7 +13,7 @@ use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
-use ployzd::config::ControlProcessConfig;
+use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
 use ployzd::controllers::{BackupCreateCommand, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;
 use tokio::io::AsyncReadExt;
@@ -181,7 +182,13 @@ async fn seed_controllers(nats: &TestNats) -> OperationControllers {
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
         .await
         .expect("status store opens");
-    OperationControllers::with_owner(event_log, status_store, operation_owner_id("control"))
+    OperationControllers::with_owner(
+        event_log,
+        status_store,
+        operation_owner_id("control"),
+        MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+            .expect("default bootstrap URL is valid"),
+    )
 }
 
 fn completed_backup_manifest(status: &OperationStatus, expected_id: &str) -> BackupManifest {

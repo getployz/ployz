@@ -11,7 +11,7 @@ pub mod ops;
 pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
-ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--keeper-binary <path>]]
+ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--keeper-binary <path>]]
 ployzctl backup create --operation <id> --idempotency-key <key>
 ployzctl backup restore --plan
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]

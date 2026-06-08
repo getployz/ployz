@@ -5,7 +5,7 @@ use ployz_sdk_types::{
     BackupCreateResponse, CertBundleRef, CertId, CertOperationState, CertRunningStage,
     CertTextError, CertValidAt, CertValidityWindow, DeployOperationState, DeployRequest,
     DeployRunningStage, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
+    EventSequence, EventSequenceError, ImageReference, ImageReferenceError, InstallContractError,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
     MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle,
     MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
@@ -507,7 +507,7 @@ fn sdk_exports_constructor_error_types() {
     assert!(matches!(RoutePort::try_new(0), Err(RoutePortError::Zero)));
     assert!(matches!(
         MachineBootstrapUrl::try_new("http://get.ployz.sh"),
-        Err(ployz_sdk_types::BootstrapCommandError::InvalidBootstrapUrl)
+        Err(InstallContractError::InvalidBootstrapUrl { .. })
     ));
     assert!(matches!(
         MachineJoinToken::try_new("join token"),

@@ -11,7 +11,8 @@ use ployzd::app::{
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, LoadedDaemonProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
-    PLOYZ_NATS_URL_ENV, TunnelProcessConfig, load_daemon_process_config,
+    PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_NATS_URL_ENV, TunnelProcessConfig,
+    load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
@@ -190,7 +191,7 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
         panic!("node role should be configured");
     };
 
-    let DaemonProcessConfig::Node(config) = config else {
+    let DaemonProcessConfig::Node(config) = *config else {
         panic!("node role should produce node config");
     };
     assert_eq!(config.node_id, node_id("node_7"));
@@ -199,6 +200,40 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
         config.ebpf_bytecode_path,
         std::path::PathBuf::from("/tmp/ployz-ebpf")
     );
+}
+
+#[test]
+fn control_role_loads_optional_machine_bootstrap_url() {
+    let LoadedDaemonProcessConfig::Configured(config) =
+        load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+            PLOYZ_MACHINE_BOOTSTRAP_URL_ENV => Some("https://example.test/ployz.sh".to_owned()),
+            _ => None,
+        })
+        .expect("control role config loads")
+    else {
+        panic!("control role should be configured");
+    };
+
+    let DaemonProcessConfig::Control(config) = *config else {
+        panic!("control role should produce control config");
+    };
+    assert_eq!(
+        config.machine_bootstrap_url.as_str(),
+        "https://example.test/ployz.sh"
+    );
+}
+
+#[test]
+fn control_role_rejects_invalid_machine_bootstrap_url() {
+    assert!(matches!(
+        load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+            PLOYZ_MACHINE_BOOTSTRAP_URL_ENV => Some("http://example.test/ployz.sh".to_owned()),
+            _ => None,
+        }),
+        Err(DaemonProcessConfigError::InvalidMachineBootstrapUrl { .. })
+    ));
 }
 
 #[test]
