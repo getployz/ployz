@@ -12,7 +12,7 @@ async fn container_observation_store_writes_latest_container_to_kv_obs() {
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observation store");
-    let running = managed_observation("ctr_123", ContainerRuntimeState::Running);
+    let running = managed_observation("ctr_123", ContainerRuntimeState::running_unroutable());
     let exited = managed_observation("ctr_123", ContainerRuntimeState::Exited);
 
     store
@@ -39,8 +39,8 @@ async fn container_observation_snapshot_removes_stale_node_containers() {
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observation store");
-    let stale = managed_observation("ctr_123", ContainerRuntimeState::Running);
-    let retained = managed_observation("ctr_456", ContainerRuntimeState::Running);
+    let stale = managed_observation("ctr_123", ContainerRuntimeState::running_unroutable());
+    let retained = managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
 
     store
         .replace_node_containers(&node_snapshot([stale, retained.clone()]))
@@ -78,7 +78,7 @@ async fn node_observation_snapshots_list_sorted_current_snapshots() {
         [managed_observation_for(
             "node_7",
             "ctr_7",
-            ContainerRuntimeState::Running,
+            ContainerRuntimeState::running_unroutable(),
         )],
     );
     let node_8 = node_snapshot_for(
@@ -94,7 +94,7 @@ async fn node_observation_snapshots_list_sorted_current_snapshots() {
         [managed_observation_for(
             "node_8",
             "ctr_8",
-            ContainerRuntimeState::Running,
+            ContainerRuntimeState::running_unroutable(),
         )],
     );
 
@@ -119,7 +119,8 @@ async fn node_observation_snapshots_list_sorted_current_snapshots() {
 
 #[tokio::test]
 async fn container_observation_snapshot_rejects_wrong_node_before_store_write() {
-    let mut wrong_node = managed_observation("ctr_456", ContainerRuntimeState::Running);
+    let mut wrong_node =
+        managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
     wrong_node.node_id = node_id("node_8");
 
     assert_eq!(

@@ -20,6 +20,7 @@ impl AsyncNatsCoreStateStore {
         let key = ActiveRouteStateKey::from_target(&request.target);
         let state = ActiveRouteState {
             target: request.target.clone(),
+            endpoint_port: request.endpoint_port,
             service_id: request.service_id.clone(),
             revision_id: request.revision_id.clone(),
         };
@@ -81,7 +82,7 @@ impl AsyncNatsCoreStateStore {
                     }
                 }
             }
-            ActiveRouteCommitDecision::Complete(outcome) => Ok(outcome),
+            ActiveRouteCommitDecision::Complete(outcome) => Ok(*outcome),
         }
     }
 
@@ -187,7 +188,7 @@ struct LoadedActiveRouteState {
 enum ActiveRouteCommitDecision {
     Create,
     Update { revision: CoreStateRevision },
-    Complete(ActiveRouteCommit),
+    Complete(Box<ActiveRouteCommit>),
 }
 
 fn classify_active_route_preflight(
@@ -201,50 +202,59 @@ fn classify_active_route_preflight(
             ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
                 service_id,
                 revision_id,
-            }) => ActiveRouteCommitDecision::Complete(ActiveRouteCommit::ActiveRouteChanged {
-                expected_current: ExpectedActiveRoute::ServiceRevision(
-                    ExpectedActiveRouteRevision {
-                        service_id: service_id.clone(),
-                        revision_id: revision_id.clone(),
-                    },
-                ),
-                current: None,
-                attempted: attempted.clone(),
-            }),
+                endpoint_port,
+            }) => ActiveRouteCommitDecision::Complete(Box::new(
+                ActiveRouteCommit::ActiveRouteChanged {
+                    expected_current: ExpectedActiveRoute::ServiceRevision(
+                        ExpectedActiveRouteRevision {
+                            service_id: service_id.clone(),
+                            revision_id: revision_id.clone(),
+                            endpoint_port: *endpoint_port,
+                        },
+                    ),
+                    current: None,
+                    attempted: attempted.clone(),
+                },
+            )),
         };
     };
 
     if active_route_state_matches(&existing.state, attempted) {
-        return ActiveRouteCommitDecision::Complete(ActiveRouteCommit::AlreadyCommitted {
-            service_id: existing.state.service_id.clone(),
-            revision_id: existing.state.revision_id.clone(),
-        });
+        return ActiveRouteCommitDecision::Complete(Box::new(
+            ActiveRouteCommit::AlreadyCommitted {
+                service_id: existing.state.service_id.clone(),
+                revision_id: existing.state.revision_id.clone(),
+            },
+        ));
     }
 
     match expected_current {
         ExpectedActiveRoute::Absent => {
-            ActiveRouteCommitDecision::Complete(ActiveRouteCommit::ActiveRouteChanged {
+            ActiveRouteCommitDecision::Complete(Box::new(ActiveRouteCommit::ActiveRouteChanged {
                 expected_current: ExpectedActiveRoute::Absent,
                 current: Some(existing.state.clone()),
                 attempted: attempted.clone(),
-            })
+            }))
         }
         ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
             service_id,
             revision_id,
+            endpoint_port,
         }) if existing.state.service_id != *service_id
-            || existing.state.revision_id != *revision_id =>
+            || existing.state.revision_id != *revision_id
+            || existing.state.endpoint_port != *endpoint_port =>
         {
-            ActiveRouteCommitDecision::Complete(ActiveRouteCommit::ActiveRouteChanged {
+            ActiveRouteCommitDecision::Complete(Box::new(ActiveRouteCommit::ActiveRouteChanged {
                 expected_current: ExpectedActiveRoute::ServiceRevision(
                     ExpectedActiveRouteRevision {
                         service_id: service_id.clone(),
                         revision_id: revision_id.clone(),
+                        endpoint_port: *endpoint_port,
                     },
                 ),
                 current: Some(existing.state.clone()),
                 attempted: attempted.clone(),
-            })
+            }))
         }
         ExpectedActiveRoute::ServiceRevision(_) => ActiveRouteCommitDecision::Update {
             revision: existing.revision,
@@ -273,6 +283,7 @@ fn classify_active_route_write_conflict(
 
 fn active_route_state_matches(current: &ActiveRouteState, attempted: &ActiveRouteState) -> bool {
     current.target == attempted.target
+        && current.endpoint_port == attempted.endpoint_port
         && current.service_id == attempted.service_id
         && current.revision_id == attempted.revision_id
 }

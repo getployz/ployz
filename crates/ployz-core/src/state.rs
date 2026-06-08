@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use crate::machine::MachineName;
-use crate::ops::RouteTarget;
+use crate::ops::{RoutePort, RouteTarget};
 
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
@@ -24,6 +24,7 @@ pub struct ActiveServiceState {
 #[serde(deny_unknown_fields)]
 pub struct ActiveRouteState {
     pub target: RouteTarget,
+    pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
 }
@@ -137,6 +138,7 @@ pub struct ActiveServiceCommitRequest {
 #[serde(deny_unknown_fields)]
 pub struct ActiveRouteCommitRequest {
     pub target: RouteTarget,
+    pub endpoint_port: RoutePort,
     pub expected_current: ExpectedActiveRoute,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
@@ -164,6 +166,7 @@ pub enum ExpectedActiveRoute {
 pub struct ExpectedActiveRouteRevision {
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
+    pub endpoint_port: RoutePort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

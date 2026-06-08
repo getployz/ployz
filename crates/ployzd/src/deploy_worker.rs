@@ -12,7 +12,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
-use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition};
+use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, RoutePort};
 
 use crate::docker::labels::ManagedContainerLabels;
 
@@ -113,6 +113,7 @@ where
             } => containers.push(DeployContainer {
                 node_id: node_id.clone(),
                 container_id: container_id.clone(),
+                required_endpoint_port: required_endpoint_port(command),
             }),
             DeployPlanStep::RunContainer { node_id, slot } => {
                 let started = with_step_timeout(
@@ -359,6 +360,11 @@ where
             operation_id: command.operation_id.clone(),
             step_id,
             kind: ManagedContainerKind::Service,
+            endpoint_port: command
+                .request
+                .route
+                .as_ref()
+                .map(|route| route.endpoint_port),
         },
     };
 
@@ -368,8 +374,17 @@ where
         .map(|outcome| DeployContainer {
             node_id: node_id.clone(),
             container_id: outcome.container_id().clone(),
+            required_endpoint_port: required_endpoint_port(command),
         })
         .map_err(DeployExecutionError::RunContainer)
+}
+
+fn required_endpoint_port(command: &DeployExecutionCommand) -> Option<RoutePort> {
+    command
+        .request
+        .route
+        .as_ref()
+        .map(|route| route.endpoint_port)
 }
 
 fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {

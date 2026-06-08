@@ -9,7 +9,6 @@ use crate::deploy_worker::{
     DeployHealthChecker,
 };
 use crate::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployz_core::node::ContainerRuntimeState;
 use ployz_core::ops::{FailureMessage, OperatorHint};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
@@ -143,9 +142,15 @@ impl DeployHealthChecker for ObservationHealthChecker {
                     .container(&container.node_id, &container.container_id)
                     .await
                 {
-                    Ok(Some(observation))
-                        if observation.state == ContainerRuntimeState::Running => {}
-                    Ok(Some(_)) => return Err(unhealthy_container(container, "container exited")),
+                    Ok(Some(observation)) => {
+                        match observed_container_health(container, &observation) {
+                            ObservedContainerHealth::Healthy => {}
+                            ObservedContainerHealth::Pending => all_running = false,
+                            ObservedContainerHealth::Failed(message) => {
+                                return Err(unhealthy_container(container, message));
+                            }
+                        }
+                    }
                     Ok(None) => all_running = false,
                     Err(error) => {
                         return Err(unhealthy_container(container, health_read_error(error)));
@@ -160,6 +165,36 @@ impl DeployHealthChecker for ObservationHealthChecker {
             tokio::time::sleep(self.poll_interval).await;
         }
     }
+}
+
+fn observed_container_health(
+    container: &DeployContainer,
+    observation: &ployz_core::node::ManagedContainerObservation,
+) -> ObservedContainerHealth {
+    if !observation.state.is_running() {
+        return ObservedContainerHealth::Failed("container exited");
+    }
+
+    let Some(required_port) = container.required_endpoint_port else {
+        return ObservedContainerHealth::Healthy;
+    };
+
+    let Some(endpoint) = observation.running_service_endpoint() else {
+        return ObservedContainerHealth::Pending;
+    };
+
+    if endpoint.port != required_port {
+        return ObservedContainerHealth::Pending;
+    }
+
+    ObservedContainerHealth::Healthy
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservedContainerHealth {
+    Healthy,
+    Pending,
+    Failed(&'static str),
 }
 
 fn unhealthy_container(
@@ -179,4 +214,149 @@ fn unhealthy_container(
 
 fn health_read_error(error: ObservationStoreError) -> String {
     format!("container observation could not be read: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::node::{
+        ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    };
+    use ployz_core::ops::RoutePort;
+
+    #[test]
+    fn routed_health_waits_for_endpoint_evidence() {
+        assert_eq!(
+            observed_container_health(
+                &deploy_container("node_a", "ctr_1", Some(route_port(8080))),
+                &observation(
+                    "node_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_unroutable()
+                ),
+            ),
+            ObservedContainerHealth::Pending
+        );
+    }
+
+    #[test]
+    fn unrouted_health_accepts_running_without_endpoint() {
+        assert_eq!(
+            observed_container_health(
+                &deploy_container("node_a", "ctr_1", None),
+                &observation(
+                    "node_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_unroutable()
+                ),
+            ),
+            ObservedContainerHealth::Healthy
+        );
+    }
+
+    #[test]
+    fn routed_health_accepts_running_endpoint() {
+        assert_eq!(
+            observed_container_health(
+                &deploy_container("node_a", "ctr_1", Some(route_port(8080))),
+                &observation(
+                    "node_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 8080)),
+                ),
+            ),
+            ObservedContainerHealth::Healthy
+        );
+    }
+
+    #[test]
+    fn routed_health_waits_for_matching_endpoint_port() {
+        assert_eq!(
+            observed_container_health(
+                &deploy_container("node_a", "ctr_1", Some(route_port(8080))),
+                &observation(
+                    "node_a",
+                    "ctr_1",
+                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
+                ),
+            ),
+            ObservedContainerHealth::Pending
+        );
+    }
+
+    #[test]
+    fn health_fails_exited_container() {
+        assert_eq!(
+            observed_container_health(
+                &deploy_container("node_a", "ctr_1", None),
+                &observation("node_a", "ctr_1", ContainerRuntimeState::Exited),
+            ),
+            ObservedContainerHealth::Failed("container exited")
+        );
+    }
+
+    fn deploy_container(
+        node_id_value: &str,
+        container_id_value: &str,
+        required_endpoint_port: Option<RoutePort>,
+    ) -> DeployContainer {
+        DeployContainer {
+            node_id: node_id(node_id_value),
+            container_id: container_id(container_id_value),
+            required_endpoint_port,
+        }
+    }
+
+    fn observation(
+        node_id_value: &str,
+        container_id_value: &str,
+        state: ContainerRuntimeState,
+    ) -> ManagedContainerObservation {
+        ManagedContainerObservation {
+            node_id: node_id(node_id_value),
+            container_id: container_id(container_id_value),
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_1"),
+            operation_id: operation_id("op_123"),
+            step_id: step_id("run_1"),
+            kind: ManagedContainerKind::Service,
+            state,
+        }
+    }
+
+    fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+        ContainerEndpoint {
+            ip: ip.parse().expect("valid endpoint ip"),
+            port: route_port(port),
+        }
+    }
+
+    fn route_port(port: u16) -> RoutePort {
+        RoutePort::try_new(port).expect("valid endpoint port")
+    }
+
+    fn node_id(value: &str) -> NodeId {
+        NodeId::try_new(value).expect("valid node id")
+    }
+
+    fn container_id(value: &str) -> ContainerId {
+        ContainerId::try_new(value).expect("valid container id")
+    }
+
+    fn service_id(value: &str) -> ServiceId {
+        ServiceId::try_new(value).expect("valid service id")
+    }
+
+    fn revision_id(value: &str) -> RevisionId {
+        RevisionId::try_new(value).expect("valid revision id")
+    }
+
+    fn operation_id(value: &str) -> OperationId {
+        OperationId::try_new(value).expect("valid operation id")
+    }
+
+    fn step_id(value: &str) -> StepId {
+        StepId::try_new(value).expect("valid step id")
+    }
 }

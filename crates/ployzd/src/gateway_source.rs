@@ -181,6 +181,7 @@ fn gateway_projection_input_from_state(
 fn gateway_route_from_state(state: ActiveRouteState) -> GatewayRoute {
     GatewayRoute {
         target: state.target,
+        endpoint_port: state.endpoint_port,
         service_id: state.service_id,
         revision_id: state.revision_id,
     }

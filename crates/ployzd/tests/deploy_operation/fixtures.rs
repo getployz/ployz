@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
 };
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
@@ -178,11 +178,13 @@ impl RecordingRouteState {
                 expected_current: ExpectedActiveRoute::Absent,
                 current: Some(ActiveRouteState {
                     target: route.clone(),
+                    endpoint_port: route_port(8080),
                     service_id: service_id("svc_other"),
                     revision_id: revision_id("rev_other"),
                 }),
                 attempted: ActiveRouteState {
                     target: route,
+                    endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_2"),
                 },
@@ -287,6 +289,7 @@ impl DeployHealthChecker for RecordingHealth {
                     DeployContainerForAssert::from_container(
                         container.node_id.clone(),
                         container.container_id.clone(),
+                        container.required_endpoint_port,
                     )
                 })
                 .collect(),
@@ -351,17 +354,35 @@ impl OperationLeaseRenewer for RecordingLeaseRenewer {
 pub(super) struct DeployContainerForAssert {
     node_id: NodeId,
     container_id: ContainerId,
+    required_endpoint_port: Option<RoutePort>,
 }
 
 impl DeployContainerForAssert {
     pub(super) fn new(node_id: &str, container_id: &str) -> Self {
-        Self::from_container(self::node_id(node_id), self::container_id(container_id))
+        Self::from_container(
+            self::node_id(node_id),
+            self::container_id(container_id),
+            None,
+        )
     }
 
-    const fn from_container(node_id: NodeId, container_id: ContainerId) -> Self {
+    pub(super) fn routed(node_id: &str, container_id: &str) -> Self {
+        Self::from_container(
+            self::node_id(node_id),
+            self::container_id(container_id),
+            Some(route_port(8080)),
+        )
+    }
+
+    const fn from_container(
+        node_id: NodeId,
+        container_id: ContainerId,
+        required_endpoint_port: Option<RoutePort>,
+    ) -> Self {
         Self {
             node_id,
             container_id,
+            required_endpoint_port,
         }
     }
 }
@@ -465,7 +486,10 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             target_revision: revision_id("rev_2"),
             image: image("registry.example/api:rev_2"),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
-            route: Some(route_target("api.example.com", 443)),
+            route: Some(DeployRoute {
+                target: route_target("api.example.com", 443),
+                endpoint_port: route_port(8080),
+            }),
         },
         DeployExecutionFacts {
             active_service: None,
@@ -537,7 +561,7 @@ fn observed_service_container(
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::Running,
+        state: ContainerRuntimeState::running_unroutable(),
     }
 }
 
@@ -572,8 +596,12 @@ pub(super) fn image(value: &str) -> ImageReference {
 pub(super) fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget {
         hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
-        port: RoutePort::try_new(port).expect("valid route port"),
+        port: route_port(port),
     }
+}
+
+pub(super) fn route_port(port: u16) -> RoutePort {
+    RoutePort::try_new(port).expect("valid route port")
 }
 
 pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedArtifact {

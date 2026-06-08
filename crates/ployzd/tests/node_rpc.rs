@@ -458,6 +458,7 @@ fn managed_labels() -> ManagedContainerLabels {
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

@@ -44,7 +44,9 @@ export type ReplicaCount = SafeInteger<"ReplicaCount">;
 
 export type ReplicaSlot = SafeInteger<"ReplicaSlot">;
 
-export type DeployRequest = { service_id: ServiceId, target_revision: RevisionId, image: ImageReference, replicas: ReplicaCount, route?: RouteTarget | null, };
+export type DeployRequest = { service_id: ServiceId, target_revision: RevisionId, image: ImageReference, replicas: ReplicaCount, route?: DeployRoute | null, };
+
+export type DeployRoute = { target: RouteTarget, endpoint_port: RoutePort, };
 
 export type DeployPlan = { service_id: ServiceId, target_revision: RevisionId, steps: Array<DeployPlanStep>, };
 

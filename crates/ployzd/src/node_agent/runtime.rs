@@ -2,6 +2,7 @@ use std::future::Future;
 
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
+use ployz_core::node::ContainerEndpoint;
 
 use crate::docker::labels::ManagedContainerLabels;
 
@@ -14,7 +15,7 @@ pub struct ExistingManagedContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExistingManagedContainerState {
-    Running,
+    Running { endpoint: Option<ContainerEndpoint> },
     StartableStopped,
     NotStartable { description: String },
 }
@@ -121,7 +122,7 @@ pub fn decide_container_run(
 
     if labels == *expected {
         return match state {
-            ExistingManagedContainerState::Running => {
+            ExistingManagedContainerState::Running { .. } => {
                 NodeContainerRunDecision::ReuseRunning { container_id }
             }
             ExistingManagedContainerState::StartableStopped => {

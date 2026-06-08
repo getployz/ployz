@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
+use ployz_core::ops::{RoutePort, RoutePortError};
 use serde::{Deserialize, Serialize};
 
 pub const MANAGED_LABEL: &str = "plz.managed";
@@ -10,6 +11,7 @@ pub const REVISION_LABEL: &str = "plz.revision";
 pub const OPERATION_ID_LABEL: &str = "plz.operation_id";
 pub const STEP_ID_LABEL: &str = "plz.step_id";
 pub const CONTAINER_TYPE_LABEL: &str = "plz.container_type";
+pub const ENDPOINT_PORT_LABEL: &str = "plz.endpoint_port";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,12 +21,14 @@ pub struct ManagedContainerLabels {
     pub operation_id: OperationId,
     pub step_id: StepId,
     pub kind: ManagedContainerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_port: Option<RoutePort>,
 }
 
 impl ManagedContainerLabels {
     #[must_use]
     pub fn render(&self) -> BTreeMap<String, String> {
-        BTreeMap::from([
+        let mut labels = BTreeMap::from([
             (MANAGED_LABEL.to_owned(), "true".to_owned()),
             (
                 SERVICE_ID_LABEL.to_owned(),
@@ -43,7 +47,13 @@ impl ManagedContainerLabels {
                 CONTAINER_TYPE_LABEL.to_owned(),
                 self.kind.as_label().to_owned(),
             ),
-        ])
+        ]);
+
+        if let Some(port) = self.endpoint_port {
+            labels.insert(ENDPOINT_PORT_LABEL.to_owned(), port.get().to_string());
+        }
+
+        labels
     }
 
     pub fn parse(labels: &BTreeMap<String, String>) -> Result<Self, ManagedContainerLabelError> {
@@ -66,6 +76,21 @@ impl ManagedContainerLabels {
                 value: kind_value.to_owned(),
             });
         };
+        let endpoint_port = match labels.get(ENDPOINT_PORT_LABEL) {
+            Some(value) => Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|_| ManagedContainerLabelError::InvalidPort {
+                        value: value.clone(),
+                    })
+                    .and_then(|value| {
+                        RoutePort::try_new(value).map_err(|source| {
+                            ManagedContainerLabelError::InvalidRoutePort { value, source }
+                        })
+                    })?,
+            ),
+            None => None,
+        };
 
         Ok(Self {
             service_id,
@@ -73,6 +98,7 @@ impl ManagedContainerLabels {
             operation_id,
             step_id,
             kind,
+            endpoint_port,
         })
     }
 }
@@ -87,6 +113,13 @@ pub enum ManagedContainerLabelError {
     },
     InvalidKind {
         value: String,
+    },
+    InvalidPort {
+        value: String,
+    },
+    InvalidRoutePort {
+        value: u16,
+        source: RoutePortError,
     },
     InvalidId {
         label: &'static str,

@@ -110,6 +110,7 @@ export interface PloyzDeployInput {
   route?: {
     hostname: string;
     port: number;
+    endpointPort: number;
   };
 }
 
@@ -170,8 +171,11 @@ export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitReques
       ...(input.route
         ? {
             route: {
-              hostname: routeHostname(input.route.hostname),
-              port: routePort(input.route.port),
+              target: {
+                hostname: routeHostname(input.route.hostname),
+                port: routePort(input.route.port),
+              },
+              endpoint_port: routePort(input.route.endpointPort),
             },
           }
         : {}),

@@ -1,7 +1,7 @@
 use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
 use ployz_core::deploy::{DeployPlan, DeployRequest, ExistingServiceReplica};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
-use ployz_core::ops::{OperatorHint, RetainedArtifact};
+use ployz_core::ops::{OperatorHint, RetainedArtifact, RoutePort};
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveService,
 };
@@ -102,6 +102,7 @@ pub enum DeployCompletedEventRecordFailure {
 pub struct DeployContainer {
     pub node_id: NodeId,
     pub container_id: ContainerId,
+    pub required_endpoint_port: Option<RoutePort>,
 }
 
 impl DeployContainer {

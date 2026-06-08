@@ -157,7 +157,7 @@ fn observed_service_container(
         operation_id: operation_id("op_existing"),
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::Running,
+        state: ContainerRuntimeState::running_unroutable(),
     }
 }
 

@@ -1,13 +1,14 @@
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployzd::gateway::{
     GatewayNodeObservation, GatewayObservationFreshness, GatewayProjectedRoute, GatewayProjection,
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
-    GatewayProjectionUpdate, GatewayRoute, GatewayUpstream, apply_gateway_update, project_gateway,
+    GatewayProjectionUpdate, GatewayRoute, GatewayUnroutableContainer, GatewayUpstream,
+    apply_gateway_update, project_gateway,
 };
 
 #[test]
@@ -58,16 +59,94 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
                     upstreams: vec![GatewayUpstream {
                         node_id: node_id("node_1"),
                         container_id: container_id("api_good"),
+                        endpoint: endpoint("10.0.0.1", 8080),
                     }],
+                    unroutable_containers: vec![],
                 },
                 GatewayProjectedRoute {
                     target: route_target("www.example.com", 443),
                     upstreams: vec![GatewayUpstream {
                         node_id: node_id("node_1"),
                         container_id: container_id("web_good"),
+                        endpoint: endpoint("10.0.0.1", 8080),
                     }],
+                    unroutable_containers: vec![],
                 },
             ],
+        }
+    );
+}
+
+#[test]
+fn gateway_filters_running_containers_without_endpoint_evidence() {
+    let projection = project_gateway(GatewayProjectionInput {
+        routes: vec![gateway_route("api.example.com", "svc_api", "rev_2")],
+        observed_nodes: vec![fresh_node(
+            "node_1",
+            vec![service_container(
+                "node_1",
+                "api_unroutable",
+                "svc_api",
+                "rev_2",
+                ContainerRuntimeState::running_unroutable(),
+            )],
+        )],
+    })
+    .expect("valid gateway projection");
+
+    assert_eq!(
+        projection,
+        GatewayProjection {
+            routes: vec![GatewayProjectedRoute {
+                target: route_target("api.example.com", 443),
+                upstreams: vec![],
+                unroutable_containers: vec![GatewayUnroutableContainer {
+                    node_id: node_id("node_1"),
+                    container_id: container_id("api_unroutable"),
+                }],
+            }],
+        }
+    );
+}
+
+#[test]
+fn gateway_filters_running_containers_on_endpoint_port() {
+    let projection = project_gateway(GatewayProjectionInput {
+        routes: vec![gateway_route("api.example.com", "svc_api", "rev_2")],
+        observed_nodes: vec![fresh_node(
+            "node_1",
+            vec![
+                service_container(
+                    "node_1",
+                    "api_wrong_port",
+                    "svc_api",
+                    "rev_2",
+                    ContainerRuntimeState::running_at(endpoint("10.0.0.1", 3000)),
+                ),
+                service_container(
+                    "node_1",
+                    "api_good",
+                    "svc_api",
+                    "rev_2",
+                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 8080)),
+                ),
+            ],
+        )],
+    })
+    .expect("valid gateway projection");
+
+    assert_eq!(
+        projection,
+        GatewayProjection {
+            routes: vec![GatewayProjectedRoute {
+                target: route_target("api.example.com", 443),
+                upstreams: vec![GatewayUpstream {
+                    node_id: node_id("node_1"),
+                    container_id: container_id("api_good"),
+                    endpoint: endpoint("10.0.0.2", 8080),
+                }],
+                unroutable_containers: vec![],
+            }],
         }
     );
 }
@@ -81,7 +160,9 @@ fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
             upstreams: vec![GatewayUpstream {
                 node_id: node_id("node_1"),
                 container_id: container_id("api_good"),
+                endpoint: endpoint("10.0.0.1", 8080),
             }],
+            unroutable_containers: vec![],
         }],
     };
 
@@ -97,7 +178,9 @@ fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
                     upstreams: vec![GatewayUpstream {
                         node_id: node_id("node_1"),
                         container_id: container_id("api_good"),
+                        endpoint: endpoint("10.0.0.1", 8080),
                     }],
+                    unroutable_containers: vec![],
                 }],
             },
             error,
@@ -122,11 +205,13 @@ fn gateway_rejects_duplicate_route_targets() {
             routes: vec![
                 GatewayRoute {
                     target: route_target("API.example.com", 443),
+                    endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_1"),
                 },
                 GatewayRoute {
                     target: target.clone(),
+                    endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_2"),
                 },
@@ -146,18 +231,22 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
             upstreams: vec![GatewayUpstream {
                 node_id: node_id("node_1"),
                 container_id: container_id("api_good"),
+                endpoint: endpoint("10.0.0.1", 8080),
             }],
+            unroutable_containers: vec![],
         }],
     };
     let update = GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
         routes: vec![
             GatewayRoute {
                 target: target.clone(),
+                endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
                 revision_id: revision_id("rev_1"),
             },
             GatewayRoute {
                 target: target.clone(),
+                endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
                 revision_id: revision_id("rev_2"),
             },
@@ -174,7 +263,9 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
                     upstreams: vec![GatewayUpstream {
                         node_id: node_id("node_1"),
                         container_id: container_id("api_good"),
+                        endpoint: endpoint("10.0.0.1", 8080),
                     }],
+                    unroutable_containers: vec![],
                 }],
             },
             error: GatewayProjectionError::DuplicateRouteTarget { target },
@@ -190,7 +281,9 @@ fn gateway_retains_last_good_projection_when_source_decode_fails() {
             upstreams: vec![GatewayUpstream {
                 node_id: node_id("node_1"),
                 container_id: container_id("api_good"),
+                endpoint: endpoint("10.0.0.1", 8080),
             }],
+            unroutable_containers: vec![],
         }],
     };
     let error = GatewayProjectionError::InvalidSource {
@@ -209,7 +302,9 @@ fn gateway_retains_last_good_projection_when_source_decode_fails() {
                     upstreams: vec![GatewayUpstream {
                         node_id: node_id("node_1"),
                         container_id: container_id("api_good"),
+                        endpoint: endpoint("10.0.0.1", 8080),
                     }],
+                    unroutable_containers: vec![],
                 }],
             },
             error,
@@ -225,7 +320,9 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
             upstreams: vec![GatewayUpstream {
                 node_id: node_id("node_1"),
                 container_id: container_id("api_good"),
+                endpoint: endpoint("10.0.0.1", 8080),
             }],
+            unroutable_containers: vec![],
         }],
     };
     let error = GatewayProjectionError::InvalidSource {
@@ -249,7 +346,9 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
                     upstreams: vec![GatewayUpstream {
                         node_id: node_id("node_1"),
                         container_id: container_id("api_good"),
+                        endpoint: endpoint("10.0.0.1", 8080),
                     }],
+                    unroutable_containers: vec![],
                 }],
             },
             error,
@@ -294,6 +393,7 @@ fn observed_node(
 fn gateway_route(hostname: &str, service_id_value: &str, revision_id_value: &str) -> GatewayRoute {
     GatewayRoute {
         target: route_target(hostname, 443),
+        endpoint_port: route_port(8080),
         service_id: service_id(service_id_value),
         revision_id: revision_id(revision_id_value),
     }
@@ -348,6 +448,13 @@ fn route_port(value: u16) -> RoutePort {
     RoutePort::try_new(value).expect("valid route port")
 }
 
+fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+    ContainerEndpoint {
+        ip: ip.parse().expect("valid endpoint ip"),
+        port: route_port(port),
+    }
+}
+
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
 }
@@ -379,7 +486,7 @@ fn source_unavailable() -> GatewayProjectionError {
 }
 
 fn running() -> ContainerRuntimeState {
-    ContainerRuntimeState::Running
+    ContainerRuntimeState::running_at(endpoint("10.0.0.1", 8080))
 }
 
 fn exited() -> ContainerRuntimeState {

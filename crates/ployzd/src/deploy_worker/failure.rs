@@ -337,7 +337,7 @@ impl ActiveRouteCommitError {
             .expect("route commit errors only occur for routed deploys");
         match self {
             Self::Store(error) => DeployOperationFailure::RouteCutoverFailed {
-                route,
+                route: route.target,
                 reason: RouteCutoverFailureReason::StateStoreFailed {
                     message: failure_message(format!("active route state write failed: {error}")),
                 },

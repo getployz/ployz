@@ -587,7 +587,11 @@ fn existing_container(
     container_id: &str,
     labels: ManagedContainerLabels,
 ) -> ExistingManagedContainer {
-    existing_container_with_state(container_id, labels, ExistingManagedContainerState::Running)
+    existing_container_with_state(
+        container_id,
+        labels,
+        ExistingManagedContainerState::Running { endpoint: None },
+    )
 }
 
 fn existing_container_with_state(
@@ -609,6 +613,7 @@ fn managed_labels() -> ManagedContainerLabels {
         operation_id: operation_id("op_123"),
         step_id: step_id("run_1"),
         kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

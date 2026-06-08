@@ -1,11 +1,11 @@
 use ployz_core::deploy::{
     DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput, DeployPreparationError,
-    DeployPreparationInput, DeployRequest, ExistingServiceReplica, ImageReference, ReplicaCount,
-    ReplicaSlot, plan_service_deploy, prepare_deploy,
+    DeployPreparationInput, DeployRequest, DeployRoute, ExistingServiceReplica, ImageReference,
+    ReplicaCount, ReplicaSlot, plan_service_deploy, prepare_deploy,
 };
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
@@ -112,7 +112,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "svc_api",
                     "rev_1",
                     ManagedContainerKind::Service,
-                    ContainerRuntimeState::Running,
+                    ContainerRuntimeState::running_unroutable(),
                 ),
                 observed_container(
                     "node_b",
@@ -120,7 +120,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "svc_api",
                     "rev_old",
                     ManagedContainerKind::Service,
-                    ContainerRuntimeState::Running,
+                    ContainerRuntimeState::running_unroutable(),
                 ),
                 observed_container(
                     "node_b",
@@ -128,7 +128,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     "svc_api",
                     "rev_1",
                     ManagedContainerKind::Job,
-                    ContainerRuntimeState::Running,
+                    ContainerRuntimeState::running_unroutable(),
                 ),
                 observed_container(
                     "node_b",
@@ -159,6 +159,46 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 }
 
 #[test]
+fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
+    let mut request = deploy_request(2);
+    request.route = Some(deploy_route("api.example.com", 443, 8080));
+
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request,
+        active_service: None,
+        active_route: None,
+        eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
+        observed_nodes: vec![observed_node(
+            "node_b",
+            [
+                observed_container(
+                    "node_b",
+                    "ctr_wrong_port",
+                    "svc_api",
+                    "rev_1",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
+                ),
+                observed_container(
+                    "node_b",
+                    "ctr_target",
+                    "svc_api",
+                    "rev_1",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_at(endpoint("10.0.0.3", 8080)),
+                ),
+            ],
+        )],
+    })
+    .expect("deploy preparation succeeds");
+
+    assert_eq!(
+        prepared.existing_replicas,
+        vec![existing_replica("node_b", "ctr_target")]
+    );
+}
+
+#[test]
 fn deploy_preparation_rejects_active_state_for_another_service() {
     assert_eq!(
         prepare_deploy(DeployPreparationInput {
@@ -181,7 +221,7 @@ fn deploy_preparation_rejects_active_state_for_another_service() {
 #[test]
 fn deploy_preparation_rejects_active_route_for_another_target() {
     let mut request = deploy_request(1);
-    request.route = Some(route_target("api.example.com", 443));
+    request.route = Some(deploy_route("api.example.com", 443, 8080));
 
     assert_eq!(
         prepare_deploy(DeployPreparationInput {
@@ -189,6 +229,7 @@ fn deploy_preparation_rejects_active_route_for_another_target() {
             active_service: None,
             active_route: Some(ActiveRouteState {
                 target: route_target("admin.example.com", 443),
+                endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
                 revision_id: revision_id("rev_old"),
             }),
@@ -205,13 +246,14 @@ fn deploy_preparation_rejects_active_route_for_another_target() {
 #[test]
 fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
     let mut request = deploy_request(1);
-    request.route = Some(route_target("api.example.com", 443));
+    request.route = Some(deploy_route("api.example.com", 443, 8080));
 
     let prepared = prepare_deploy(DeployPreparationInput {
         request,
         active_service: None,
         active_route: Some(ActiveRouteState {
             target: route_target("api.example.com", 443),
+            endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_old"),
         }),
@@ -224,11 +266,13 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
         .route_commit
         .expect("routed deploy has route commit request");
     assert_eq!(route_commit.target, route_target("api.example.com", 443));
+    assert_eq!(route_commit.endpoint_port, route_port(8080));
     assert_eq!(
         route_commit.expected_current,
         ExpectedActiveRoute::ServiceRevision(ployz_core::state::ExpectedActiveRouteRevision {
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_old"),
+            endpoint_port: route_port(8080),
         })
     );
     assert_eq!(route_commit.service_id, service_id("svc_api"));
@@ -253,6 +297,13 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         route: None,
+    }
+}
+
+fn deploy_route(hostname: &str, public_port: u16, endpoint_port: u16) -> DeployRoute {
+    DeployRoute {
+        target: route_target(hostname, public_port),
+        endpoint_port: route_port(endpoint_port),
     }
 }
 
@@ -298,7 +349,18 @@ fn step_id(value: &str) -> StepId {
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget {
         hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
-        port: RoutePort::try_new(port).expect("valid route port"),
+        port: route_port(port),
+    }
+}
+
+fn route_port(port: u16) -> RoutePort {
+    RoutePort::try_new(port).expect("valid route port")
+}
+
+fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+    ContainerEndpoint {
+        ip: ip.parse().expect("valid container endpoint ip"),
+        port: route_port(port),
     }
 }
 

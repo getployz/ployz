@@ -2,8 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::IpAddr;
 
 use crate::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use crate::ops::RoutePort;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,11 +36,43 @@ impl ManagedContainerKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContainerRuntimeState {
-    Running,
+    Running {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<ContainerEndpoint>,
+    },
     Exited,
+}
+
+impl ContainerRuntimeState {
+    #[must_use]
+    pub const fn running_unroutable() -> Self {
+        Self::Running { endpoint: None }
+    }
+
+    #[must_use]
+    pub fn running_at(endpoint: ContainerEndpoint) -> Self {
+        Self::Running {
+            endpoint: Some(endpoint),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        match self {
+            Self::Running { .. } => true,
+            Self::Exited => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerEndpoint {
+    pub ip: IpAddr,
+    pub port: RoutePort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +91,7 @@ pub struct ManagedContainerObservation {
 impl ManagedContainerObservation {
     #[must_use]
     pub fn is_running_service(&self) -> bool {
-        self.kind == ManagedContainerKind::Service && self.state == ContainerRuntimeState::Running
+        self.kind == ManagedContainerKind::Service && self.state.is_running()
     }
 
     #[must_use]
@@ -69,6 +103,18 @@ impl ManagedContainerObservation {
         self.is_running_service()
             && self.service_id == *service_id
             && self.revision_id == *revision_id
+    }
+
+    #[must_use]
+    pub fn running_service_endpoint(&self) -> Option<&ContainerEndpoint> {
+        if self.kind != ManagedContainerKind::Service {
+            return None;
+        }
+
+        match &self.state {
+            ContainerRuntimeState::Running { endpoint } => endpoint.as_ref(),
+            ContainerRuntimeState::Exited => None,
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use async_nats::jetstream;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
@@ -33,6 +33,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
             target: target.clone(),
+            endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
@@ -60,7 +61,9 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
             upstreams: vec![GatewayUpstream {
                 node_id: node_id("node_7"),
                 container_id: container_id("ctr_7"),
+                endpoint: endpoint("10.0.0.7", 8080),
             }],
+            unroutable_containers: vec![],
         }]
     );
 }
@@ -79,6 +82,7 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
             target: target.clone(),
+            endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
@@ -109,6 +113,7 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
         vec![GatewayProjectedRoute {
             target,
             upstreams: vec![],
+            unroutable_containers: vec![],
         }]
     );
 }
@@ -129,6 +134,7 @@ async fn gateway_source_reports_invalid_route_state_as_invalid_source() {
         .expect("open raw core bucket");
     let payload = serde_json::to_vec(&ActiveRouteState {
         target: route_target("api.example.com", 443),
+        endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
     })
@@ -201,7 +207,7 @@ fn managed_observation(
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::Running,
+        state: ContainerRuntimeState::running_at(endpoint("10.0.0.7", 8080)),
     }
 }
 
@@ -215,6 +221,13 @@ fn route_hostname(value: &str) -> RouteHostname {
 
 fn route_port(value: u16) -> RoutePort {
     RoutePort::try_new(value).expect("valid route port")
+}
+
+fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+    ContainerEndpoint {
+        ip: ip.parse().expect("valid endpoint ip"),
+        port: route_port(port),
+    }
 }
 
 fn node_id(value: &str) -> NodeId {

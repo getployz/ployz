@@ -272,7 +272,9 @@ where
 
 fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
     match state {
-        ExistingManagedContainerState::Running => ContainerRuntimeState::Running,
+        ExistingManagedContainerState::Running { endpoint } => {
+            ContainerRuntimeState::Running { endpoint }
+        }
         ExistingManagedContainerState::StartableStopped
         | ExistingManagedContainerState::NotStartable { .. } => ContainerRuntimeState::Exited,
     }
@@ -474,7 +476,7 @@ mod tests {
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
             labels: labels("run_1"),
-            state: ExistingManagedContainerState::Running,
+            state: ExistingManagedContainerState::Running { endpoint: None },
         }]);
 
         let mut publisher = NodeObservationPublisher::new(nats.client.clone());
@@ -495,7 +497,7 @@ mod tests {
                 .container(&container_id("ctr_123"))
                 .expect("container exists")
                 .state,
-            ContainerRuntimeState::Running
+            ContainerRuntimeState::running_unroutable()
         );
     }
 
@@ -554,6 +556,7 @@ mod tests {
             operation_id: operation_id("op_123"),
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
+            endpoint_port: None,
         }
     }
 

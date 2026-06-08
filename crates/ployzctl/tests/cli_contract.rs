@@ -6,12 +6,10 @@ use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, Service
 use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
-    RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddGateway, MachineJoinBundle, MachineJoinPloyzdArtifact,
 };
-use ployzctl::commands::deploy::{DetachedDeployCommand, DetachedDeployOutput};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineJoinToken, MachineName,
@@ -162,93 +160,6 @@ fn cli_renders_help_for_no_args() {
         parse_command(std::iter::empty::<String>()).expect("no args renders help"),
         PloyzctlCommand::Help
     );
-}
-
-#[test]
-fn cli_dispatches_detached_deploy_request() {
-    let command = parse_command(detached_deploy_args()).expect("deploy command parses");
-
-    let PloyzctlCommand::Deploy(command) = command else {
-        panic!("expected deploy command");
-    };
-    assert_eq!(command, detached_deploy_command());
-}
-
-#[test]
-fn cli_dispatches_detached_deploy_request_with_route() {
-    let command = parse_command(detached_deploy_args_with_route()).expect("deploy command parses");
-
-    let PloyzctlCommand::Deploy(command) = command else {
-        panic!("expected deploy command");
-    };
-    assert_eq!(
-        command.route,
-        Some(RouteTarget {
-            hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-            port: RoutePort::try_new(443).expect("valid route port"),
-        })
-    );
-}
-
-#[test]
-fn cli_requires_route_port_when_deploy_route_hostname_is_set() {
-    let args = detached_deploy_arg_refs()
-        .chain(["--route-hostname", "api.example.com"])
-        .map(str::to_owned);
-
-    assert!(matches!(
-        parse_command(args),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--route-port"
-    ));
-}
-
-#[test]
-fn cli_requires_detached_deploy_mode() {
-    let args = [
-        "deploy",
-        "--service",
-        "svc_api",
-        "--revision",
-        "rev_2",
-        "--image",
-        "ghcr.io/acme/api:rev-2",
-        "--replicas",
-        "1",
-        "--operation",
-        "op_deploy",
-        "--idempotency-key",
-        "idem_deploy",
-    ]
-    .map(str::to_owned);
-
-    assert!(matches!(
-        parse_command(args),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--detach"
-    ));
-}
-
-#[test]
-fn cli_requires_deploy_idempotency_key() {
-    let args = [
-        "deploy",
-        "--detach",
-        "--service",
-        "svc_api",
-        "--revision",
-        "rev_2",
-        "--image",
-        "ghcr.io/acme/api:rev-2",
-        "--replicas",
-        "1",
-        "--operation",
-        "op_deploy",
-    ]
-    .map(str::to_owned);
-
-    assert!(matches!(
-        parse_command(args),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--idempotency-key"
-    ));
 }
 
 #[test]
@@ -573,19 +484,6 @@ fn binary_rejects_unimplemented_commands() {
 }
 
 #[test]
-fn binary_deploy_requires_nats_url() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
-        .env_remove("PLOYZ_NATS_URL")
-        .args(detached_deploy_arg_refs())
-        .output()
-        .expect("ployzctl binary runs");
-
-    assert!(!output.status.success());
-    assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
-}
-
-#[test]
 fn binary_machine_add_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
@@ -622,19 +520,6 @@ fn init_first_node_can_include_gateway_role() {
     assert_eq!(
         output,
         "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
-    );
-}
-
-#[test]
-fn deploy_detach_prints_operation_id_without_runtime_details() {
-    let output = DetachedDeployOutput {
-        accepted: accepted_operation("op_deploy"),
-    }
-    .render();
-
-    assert_eq!(
-        output,
-        "operation op_deploy\nwatch ployzctl ops watch op_deploy\n"
     );
 }
 
@@ -782,49 +667,6 @@ fn deploy_request() -> DeployRequest {
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         route: None,
     }
-}
-
-fn detached_deploy_command() -> DetachedDeployCommand {
-    DetachedDeployCommand {
-        operation_id: operation_id("op_deploy"),
-        idempotency_key: OperationIdempotencyKey::try_new("idem_deploy")
-            .expect("valid idempotency key"),
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
-        revision_id: RevisionId::try_new("rev_2").expect("valid revision id"),
-        image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-        replicas: ReplicaCount::try_new(1).expect("valid replicas"),
-        route: None,
-    }
-}
-
-fn detached_deploy_args() -> impl Iterator<Item = String> {
-    detached_deploy_arg_refs().map(str::to_owned)
-}
-
-fn detached_deploy_args_with_route() -> impl Iterator<Item = String> {
-    detached_deploy_arg_refs()
-        .chain(["--route-hostname", "api.example.com", "--route-port", "443"])
-        .map(str::to_owned)
-}
-
-fn detached_deploy_arg_refs() -> impl Iterator<Item = &'static str> {
-    [
-        "deploy",
-        "--detach",
-        "--service",
-        "svc_api",
-        "--revision",
-        "rev_2",
-        "--image",
-        "ghcr.io/acme/api:rev-2",
-        "--replicas",
-        "1",
-        "--operation",
-        "op_deploy",
-        "--idempotency-key",
-        "idem_deploy",
-    ]
-    .into_iter()
 }
 
 fn machine_add_args_with_gateway() -> impl Iterator<Item = String> {

@@ -1,4 +1,4 @@
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
@@ -13,7 +13,7 @@ pub struct DetachedDeployCommand {
     pub revision_id: RevisionId,
     pub image: ImageReference,
     pub replicas: ReplicaCount,
-    pub route: Option<RouteTarget>,
+    pub route: Option<DeployRoute>,
 }
 
 impl DetachedDeployCommand {
@@ -64,6 +64,7 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
     let mut replicas = None;
     let mut route_hostname = None;
     let mut route_port = None;
+    let mut endpoint_port = None;
     let mut args = ArgCursor::new(args);
 
     while !args.is_empty() {
@@ -120,6 +121,11 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
             set_once(&mut route_port, parsed, "--route-port")?;
             continue;
         }
+        if let Some(value) = args.take_value("--endpoint-port")? {
+            let parsed = parse_port(value, "--endpoint-port")?;
+            set_once(&mut endpoint_port, parsed, "--endpoint-port")?;
+            continue;
+        }
         return Err(args.unexpected());
     }
 
@@ -134,7 +140,7 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
         revision_id: required(revision_id, "--revision")?,
         image: required(image, "--image")?,
         replicas: required(replicas, "--replicas")?,
-        route: parse_route(route_hostname, route_port)?,
+        route: parse_deploy_route(route_hostname, route_port, endpoint_port)?,
     })
 }
 
@@ -149,27 +155,45 @@ fn parse_replicas(value: String) -> Result<ReplicaCount, PloyzctlCliError> {
 }
 
 fn parse_route_port(value: String) -> Result<RoutePort, PloyzctlCliError> {
+    parse_port(value, "--route-port")
+}
+
+fn parse_port(value: String, flag: &'static str) -> Result<RoutePort, PloyzctlCliError> {
     let value = value
         .parse::<u16>()
         .map_err(|error| PloyzctlCliError::InvalidValue {
-            flag: "--route-port",
+            flag,
             message: error.to_string(),
         })?;
-    RoutePort::try_new(value).map_err(|error| invalid_value("--route-port", error))
+    RoutePort::try_new(value).map_err(|error| invalid_value(flag, error))
 }
 
-fn parse_route(
+fn parse_deploy_route(
     hostname: Option<RouteHostname>,
     port: Option<RoutePort>,
-) -> Result<Option<RouteTarget>, PloyzctlCliError> {
-    match (hostname, port) {
-        (Some(hostname), Some(port)) => Ok(Some(RouteTarget { hostname, port })),
-        (None, None) => Ok(None),
-        (Some(_), None) => Err(PloyzctlCliError::MissingRequiredArgument {
-            flag: "--route-port",
+    endpoint_port: Option<RoutePort>,
+) -> Result<Option<DeployRoute>, PloyzctlCliError> {
+    match (hostname, port, endpoint_port) {
+        (Some(hostname), Some(port), Some(endpoint_port)) => Ok(Some(DeployRoute {
+            target: RouteTarget { hostname, port },
+            endpoint_port,
+        })),
+        (None, None, None) => Ok(None),
+        (Some(_), Some(_), None) => Err(PloyzctlCliError::MissingRequiredArgument {
+            flag: "--endpoint-port",
         }),
-        (None, Some(_)) => Err(PloyzctlCliError::MissingRequiredArgument {
+        (None, None, Some(_)) => Err(PloyzctlCliError::MissingRequiredArgument {
             flag: "--route-hostname",
         }),
+        (Some(_), None, Some(_)) | (Some(_), None, None) => {
+            Err(PloyzctlCliError::MissingRequiredArgument {
+                flag: "--route-port",
+            })
+        }
+        (None, Some(_), Some(_)) | (None, Some(_), None) => {
+            Err(PloyzctlCliError::MissingRequiredArgument {
+                flag: "--route-hostname",
+            })
+        }
     }
 }

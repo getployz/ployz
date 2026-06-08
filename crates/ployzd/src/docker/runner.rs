@@ -4,11 +4,21 @@ use crate::node_agent::runtime::{
     NodeContainerRunner, NodeContainerRunnerError,
 };
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum};
+use bollard::errors::Error as BollardError;
+use bollard::models::{
+    ContainerCreateBody, ContainerSummary, ContainerSummaryNetworkSettings,
+    ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkCreateRequest,
+    NetworkingConfig,
+};
 use bollard::query_parameters::ListContainersOptionsBuilder;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
+use ployz_core::node::ContainerEndpoint;
+use ployz_core::ops::RoutePort;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::net::IpAddr;
+
+const ENDPOINT_NETWORK_NAME: &str = "ployz";
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -89,6 +99,11 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, NodeContainerRunnerError> {
+        let requires_endpoint_network = command.labels.endpoint_port.is_some();
+        if requires_endpoint_network {
+            self.ensure_endpoint_network().await?;
+        }
+
         let response = self
             .docker
             .create_container(None, create_body(command))
@@ -115,6 +130,40 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
     }
 }
 
+impl DockerManagedContainerRunner {
+    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+        let request = NetworkCreateRequest {
+            name: ENDPOINT_NETWORK_NAME.to_owned(),
+            driver: Some("bridge".to_owned()),
+            labels: Some(HashMap::from([(
+                MANAGED_LABEL.to_owned(),
+                "true".to_owned(),
+            )])),
+            ..Default::default()
+        };
+
+        match self.docker.create_network(request).await {
+            Ok(_) => Ok(()),
+            Err(error) if is_network_already_exists(&error) => Ok(()),
+            Err(error) => Err(NodeContainerRunnerError::Create {
+                message: format!("ensure Docker network {ENDPOINT_NETWORK_NAME}: {error}"),
+            }),
+        }?;
+
+        Ok(())
+    }
+}
+
+fn is_network_already_exists(error: &BollardError) -> bool {
+    matches!(
+        error,
+        BollardError::DockerResponseServerError {
+            status_code: 409,
+            message
+        } if message.contains("already exists")
+    )
+}
+
 fn connect_local_docker_for_list() -> Result<DockerManagedContainerRunner, NodeContainerRunnerError>
 {
     DockerManagedContainerRunner::local_defaults().map_err(|error| {
@@ -135,9 +184,13 @@ fn connect_local_docker_for_create()
 
 fn docker_container_state(
     state: ContainerSummaryStateEnum,
+    labels: &ManagedContainerLabels,
+    network_settings: Option<ContainerSummaryNetworkSettings>,
 ) -> Result<ExistingManagedContainerState, DockerManagedContainerSummaryError> {
     match state {
-        ContainerSummaryStateEnum::RUNNING => Ok(ExistingManagedContainerState::Running),
+        ContainerSummaryStateEnum::RUNNING => Ok(ExistingManagedContainerState::Running {
+            endpoint: container_endpoint(labels.endpoint_port, network_settings)?,
+        }),
         ContainerSummaryStateEnum::CREATED | ContainerSummaryStateEnum::EXITED => {
             Ok(ExistingManagedContainerState::StartableStopped)
         }
@@ -178,9 +231,25 @@ fn managed_container_list_options() -> bollard::query_parameters::ListContainers
 }
 
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
+    let endpoint_port = command.labels.endpoint_port;
+    let exposed_ports = endpoint_port.map(|port| vec![format!("{}/tcp", port.get())]);
+    let host_config = endpoint_port.map(|_| HostConfig {
+        network_mode: Some(ENDPOINT_NETWORK_NAME.to_owned()),
+        ..Default::default()
+    });
+    let networking_config = endpoint_port.map(|_| NetworkingConfig {
+        endpoints_config: Some(HashMap::from([(
+            ENDPOINT_NETWORK_NAME.to_owned(),
+            EndpointSettings::default(),
+        )])),
+    });
+
     ContainerCreateBody {
         image: Some(command.image.as_str().to_owned()),
         labels: Some(hashmap_from_btree(command.labels.render())),
+        exposed_ports,
+        host_config,
+        networking_config,
         ..Default::default()
     }
 }
@@ -198,13 +267,50 @@ fn existing_container_from_summary(
         .state
         .ok_or(DockerManagedContainerSummaryError::MissingState)?;
 
+    let labels = ManagedContainerLabels::parse(&btree_from_hashmap(labels))
+        .map_err(DockerManagedContainerSummaryError::InvalidLabels)?;
     Ok(ExistingManagedContainer {
         container_id: ContainerId::try_new(id)
             .map_err(DockerManagedContainerSummaryError::InvalidContainerId)?,
-        labels: ManagedContainerLabels::parse(&btree_from_hashmap(labels))
-            .map_err(DockerManagedContainerSummaryError::InvalidLabels)?,
-        state: docker_container_state(state)?,
+        state: docker_container_state(state, &labels, summary.network_settings)?,
+        labels,
     })
+}
+
+fn container_endpoint(
+    port: Option<RoutePort>,
+    network_settings: Option<ContainerSummaryNetworkSettings>,
+) -> Result<Option<ContainerEndpoint>, DockerManagedContainerSummaryError> {
+    let Some(port) = port else {
+        return Ok(None);
+    };
+    let Some(network_settings) = network_settings else {
+        return Ok(None);
+    };
+    let Some(networks) = network_settings.networks else {
+        return Ok(None);
+    };
+
+    let Some(endpoint) = networks.get(ENDPOINT_NETWORK_NAME) else {
+        return Ok(None);
+    };
+    let Some(ip) = endpoint
+        .ip_address
+        .as_ref()
+        .or(endpoint.global_ipv6_address.as_ref())
+        .filter(|ip| !ip.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(ContainerEndpoint {
+        ip: ip.parse::<IpAddr>().map_err(|_| {
+            DockerManagedContainerSummaryError::InvalidEndpointIp {
+                value: ip.to_owned(),
+            }
+        })?,
+        port,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +318,7 @@ enum DockerManagedContainerSummaryError {
     MissingId,
     MissingLabels,
     MissingState,
+    InvalidEndpointIp { value: String },
     InvalidContainerId(SubjectTokenError),
     InvalidLabels(ManagedContainerLabelError),
 }
@@ -224,6 +331,12 @@ impl fmt::Display for DockerManagedContainerSummaryError {
                 formatter.write_str("managed Docker container is missing labels")
             }
             Self::MissingState => formatter.write_str("managed Docker container is missing state"),
+            Self::InvalidEndpointIp { value } => {
+                write!(
+                    formatter,
+                    "managed Docker container has invalid endpoint ip: {value}"
+                )
+            }
             Self::InvalidContainerId(error) => {
                 write!(
                     formatter,
@@ -284,6 +397,46 @@ mod tests {
     }
 
     #[test]
+    fn create_body_exposes_endpoint_port_when_routable() {
+        let labels = ManagedContainerLabels {
+            endpoint_port: Some(route_port(8080)),
+            ..managed_labels()
+        };
+        let body = create_body(CreateManagedContainer {
+            image: image("ghcr.io/acme/api:rev-2"),
+            labels,
+        });
+
+        assert_eq!(body.exposed_ports, Some(vec!["8080/tcp".to_owned()]));
+        assert_eq!(
+            body.host_config.and_then(|config| config.network_mode),
+            Some(ENDPOINT_NETWORK_NAME.to_owned())
+        );
+        assert_eq!(
+            body.networking_config
+                .and_then(|config| config.endpoints_config)
+                .map(|endpoints| endpoints.contains_key(ENDPOINT_NETWORK_NAME)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn endpoint_network_create_conflict_is_idempotent() {
+        assert!(is_network_already_exists(
+            &BollardError::DockerResponseServerError {
+                status_code: 409,
+                message: "network with name ployz already exists".to_owned(),
+            }
+        ));
+        assert!(!is_network_already_exists(
+            &BollardError::DockerResponseServerError {
+                status_code: 409,
+                message: "different conflict".to_owned(),
+            }
+        ));
+    }
+
+    #[test]
     fn summary_with_managed_labels_becomes_existing_container() {
         let summary = ContainerSummary {
             id: Some("0123456789abcdef".to_owned()),
@@ -297,8 +450,117 @@ mod tests {
             ExistingManagedContainer {
                 container_id: container_id("0123456789abcdef"),
                 labels: managed_labels(),
-                state: ExistingManagedContainerState::Running,
+                state: ExistingManagedContainerState::Running { endpoint: None },
             }
+        );
+    }
+
+    #[test]
+    fn running_summary_with_endpoint_label_and_network_ip_becomes_routable_container() {
+        let labels = ManagedContainerLabels {
+            endpoint_port: Some(route_port(8080)),
+            ..managed_labels()
+        };
+        let summary = ContainerSummary {
+            id: Some("0123456789abcdef".to_owned()),
+            labels: Some(hashmap_from_btree(labels.render())),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some(HashMap::from([(
+                    "ployz".to_owned(),
+                    bollard::models::EndpointSettings {
+                        ip_address: Some("10.42.0.9".to_owned()),
+                        ..Default::default()
+                    },
+                )])),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            existing_container_from_summary(summary)
+                .expect("summary parses")
+                .state,
+            ExistingManagedContainerState::Running {
+                endpoint: Some(ContainerEndpoint {
+                    ip: "10.42.0.9".parse().expect("valid endpoint ip"),
+                    port: route_port(8080),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn running_summary_uses_only_the_ployz_network_for_endpoint_evidence() {
+        let labels = ManagedContainerLabels {
+            endpoint_port: Some(route_port(8080)),
+            ..managed_labels()
+        };
+        let summary = ContainerSummary {
+            id: Some("0123456789abcdef".to_owned()),
+            labels: Some(hashmap_from_btree(labels.render())),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some(HashMap::from([
+                    (
+                        "ployz".to_owned(),
+                        bollard::models::EndpointSettings {
+                            ip_address: Some("10.42.0.9".to_owned()),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        "bridge".to_owned(),
+                        bollard::models::EndpointSettings {
+                            ip_address: Some("172.17.0.2".to_owned()),
+                            ..Default::default()
+                        },
+                    ),
+                ])),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            existing_container_from_summary(summary)
+                .expect("summary parses")
+                .state,
+            ExistingManagedContainerState::Running {
+                endpoint: Some(ContainerEndpoint {
+                    ip: "10.42.0.9".parse().expect("valid endpoint ip"),
+                    port: route_port(8080),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn running_summary_without_ployz_network_is_running_but_unroutable() {
+        let labels = ManagedContainerLabels {
+            endpoint_port: Some(route_port(8080)),
+            ..managed_labels()
+        };
+        let summary = ContainerSummary {
+            id: Some("0123456789abcdef".to_owned()),
+            labels: Some(hashmap_from_btree(labels.render())),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some(HashMap::from([(
+                    "bridge".to_owned(),
+                    bollard::models::EndpointSettings {
+                        ip_address: Some("172.17.0.2".to_owned()),
+                        ..Default::default()
+                    },
+                )])),
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            existing_container_from_summary(summary)
+                .expect("summary parses")
+                .state,
+            ExistingManagedContainerState::Running { endpoint: None }
         );
     }
 
@@ -360,7 +622,12 @@ mod tests {
             operation_id: operation_id("op_123"),
             step_id: step_id("run_1"),
             kind: ManagedContainerKind::Service,
+            endpoint_port: None,
         }
+    }
+
+    fn route_port(value: u16) -> RoutePort {
+        RoutePort::try_new(value).expect("valid route port")
     }
 
     fn service_id(value: &str) -> ServiceId {

@@ -130,7 +130,10 @@ async fn assert_observed_running(
     assert_eq!(observation.operation_id, operation_id("op_123"));
     assert_eq!(observation.step_id, step_id("run_1"));
     assert_eq!(observation.kind, ManagedContainerKind::Service);
-    assert_eq!(observation.state, ContainerRuntimeState::Running);
+    assert_eq!(
+        observation.state,
+        ContainerRuntimeState::running_unroutable()
+    );
 }
 
 fn run_request(step: &str) -> NodeRunContainerRequest {
@@ -143,6 +146,7 @@ fn run_request(step: &str) -> NodeRunContainerRequest {
             operation_id: operation_id("op_123"),
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
+            endpoint_port: None,
         },
     }
 }

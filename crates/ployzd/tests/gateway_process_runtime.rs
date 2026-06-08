@@ -1,7 +1,7 @@
 use async_nats::jetstream;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
@@ -41,6 +41,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
             target: route_target("api.example.com", 443),
+            endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
@@ -71,6 +72,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
         vec![GatewayUpstream {
             node_id: node_id("node_7"),
             container_id: container_id("ctr_7"),
+            endpoint: endpoint("10.0.0.7", 8080),
         }]
     );
     assert_eq!(
@@ -90,6 +92,7 @@ fn gateway_serves_smoke_route(
             [route] if route.upstreams == vec![GatewayUpstream {
                 node_id: node_id("node_7"),
                 container_id: container_id("ctr_7"),
+                endpoint: endpoint("10.0.0.7", 8080),
             }]
         )
     })
@@ -162,7 +165,7 @@ fn managed_observation(
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::Running,
+        state: ContainerRuntimeState::running_at(endpoint("10.0.0.7", 8080)),
     }
 }
 
@@ -176,6 +179,13 @@ fn route_hostname(value: &str) -> RouteHostname {
 
 fn route_port(value: u16) -> RoutePort {
     RoutePort::try_new(value).expect("valid route port")
+}
+
+fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+    ContainerEndpoint {
+        ip: ip.parse().expect("valid endpoint ip"),
+        port: route_port(port),
+    }
 }
 
 fn node_id(value: &str) -> NodeId {

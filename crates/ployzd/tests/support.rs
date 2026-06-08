@@ -107,7 +107,7 @@ impl NodeContainerRunner for ObservingContainerRunner {
         };
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
-                state: ContainerRuntimeState::Running,
+                state: ContainerRuntimeState::running_unroutable(),
                 ..observation
             })
             .map_err(|error| NodeContainerRunnerError::Start {
@@ -172,14 +172,19 @@ fn existing_container_from_observation(
             operation_id: observation.operation_id.clone(),
             step_id: observation.step_id.clone(),
             kind: observation.kind,
+            endpoint_port: observation
+                .running_service_endpoint()
+                .map(|endpoint| endpoint.port),
         },
-        state: existing_container_state(observation.state),
+        state: existing_container_state(&observation.state),
     }
 }
 
-fn existing_container_state(state: ContainerRuntimeState) -> ExistingManagedContainerState {
+fn existing_container_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
-        ContainerRuntimeState::Running => ExistingManagedContainerState::Running,
+        ContainerRuntimeState::Running { endpoint } => ExistingManagedContainerState::Running {
+            endpoint: endpoint.clone(),
+        },
         ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
 }

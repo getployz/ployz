@@ -43,16 +43,17 @@ pub async fn load_deploy_execution_facts_from_nats(
             service_id: request.service_id.clone(),
             failure: active_service_read_failure(source),
         })?;
-    let active_route = match &request.route {
-        Some(route) => Some(core_state.active_route(route).await.map_err(|source| {
-            DeployFactLoadError::ActiveRouteRead {
-                route: route.clone(),
-                failure: active_route_read_failure(source),
-            }
-        })?),
-        None => None,
-    }
-    .flatten();
+    let active_route =
+        match &request.route {
+            Some(route) => Some(core_state.active_route(&route.target).await.map_err(
+                |source| DeployFactLoadError::ActiveRouteRead {
+                    route: route.target.clone(),
+                    failure: active_route_read_failure(source),
+                },
+            )?),
+            None => None,
+        }
+        .flatten();
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
 
     Ok(DeployExecutionFacts {

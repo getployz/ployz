@@ -43,7 +43,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                 "ctr_target",
                 "svc_api",
                 "rev_2",
-                ContainerRuntimeState::Running,
+                ContainerRuntimeState::running_unroutable(),
             )],
         ))
         .await
@@ -57,7 +57,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                     "ctr_old",
                     "svc_api",
                     "rev_1",
-                    ContainerRuntimeState::Running,
+                    ContainerRuntimeState::running_unroutable(),
                 ),
                 managed_observation(
                     "node_b",

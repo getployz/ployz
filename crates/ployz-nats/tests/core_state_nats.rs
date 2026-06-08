@@ -337,6 +337,7 @@ async fn active_route_state_round_trips_through_kv_core() {
             .expect("active route loads"),
         Some(ActiveRouteState {
             target,
+            endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         })
@@ -415,6 +416,7 @@ async fn active_route_commit_rejects_stale_previous_revision() {
                 ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_1"),
+                    endpoint_port: route_port(8080),
                 }),
                 "svc_api",
                 "rev_2",
@@ -431,6 +433,7 @@ async fn active_route_commit_rejects_stale_previous_revision() {
                 ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_1"),
+                    endpoint_port: route_port(8080),
                 }),
                 "svc_api",
                 "rev_3",
@@ -441,9 +444,57 @@ async fn active_route_commit_rejects_stale_previous_revision() {
             expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
                 service_id: service_id("svc_api"),
                 revision_id: revision_id("rev_1"),
+                endpoint_port: route_port(8080),
             }),
             current: Some(active_route_state(&target, "svc_api", "rev_2")),
             attempted: active_route_state(&target, "svc_api", "rev_3"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn active_route_commit_rejects_stale_previous_endpoint_port() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let target = route_target("api.example.com", 443);
+
+    assert!(matches!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::Absent,
+                "svc_api",
+                "rev_1",
+            ))
+            .await
+            .expect("first route commit stores"),
+        ActiveRouteCommit::Stored { .. }
+    ));
+
+    assert_eq!(
+        store
+            .commit_active_route(&route_commit_request(
+                &target,
+                ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                    service_id: service_id("svc_api"),
+                    revision_id: revision_id("rev_1"),
+                    endpoint_port: route_port(3000),
+                }),
+                "svc_api",
+                "rev_2",
+            ))
+            .await
+            .expect("stale route endpoint is classified"),
+        ActiveRouteCommit::ActiveRouteChanged {
+            expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                service_id: service_id("svc_api"),
+                revision_id: revision_id("rev_1"),
+                endpoint_port: route_port(3000),
+            }),
+            current: Some(active_route_state(&target, "svc_api", "rev_1")),
+            attempted: active_route_state(&target, "svc_api", "rev_2"),
         }
     );
 }
@@ -519,6 +570,7 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
 
     let wrong_payload = serde_json::to_vec(&ActiveRouteState {
         target: other_target.clone(),
+        endpoint_port: route_port(8080),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
     })
@@ -616,6 +668,7 @@ fn route_port(value: u16) -> RoutePort {
 fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> ActiveRouteState {
     ActiveRouteState {
         target: target.clone(),
+        endpoint_port: route_port(8080),
         service_id: service_id(service),
         revision_id: revision_id(revision),
     }
@@ -641,6 +694,7 @@ fn route_commit_request(
 ) -> ActiveRouteCommitRequest {
     ActiveRouteCommitRequest {
         target: target.clone(),
+        endpoint_port: route_port(8080),
         expected_current,
         service_id: service_id(service),
         revision_id: revision_id(revision),

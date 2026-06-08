@@ -13,7 +13,7 @@ use ployzd::node_agent::observer::InMemoryObservationStore;
 #[test]
 fn docker_event_updates_latest_container_observation() {
     let mut store = InMemoryObservationStore::new();
-    let observation = managed_observation("ctr_123", ContainerRuntimeState::Running);
+    let observation = managed_observation("ctr_123", ContainerRuntimeState::running_unroutable());
 
     store
         .put_container(observation.clone())
@@ -31,7 +31,7 @@ fn full_sync_corrects_missed_docker_event() {
     store
         .put_container(managed_observation(
             "ctr_123",
-            ContainerRuntimeState::Running,
+            ContainerRuntimeState::running_unroutable(),
         ))
         .expect("container observation stores");
     let exited = managed_observation("ctr_123", ContainerRuntimeState::Exited);
@@ -50,10 +50,10 @@ fn full_sync_removes_stale_containers_for_the_node() {
     store
         .put_container(managed_observation(
             "ctr_123",
-            ContainerRuntimeState::Running,
+            ContainerRuntimeState::running_unroutable(),
         ))
         .expect("container observation stores");
-    let retained = managed_observation("ctr_456", ContainerRuntimeState::Running);
+    let retained = managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
     store
         .put_container(retained.clone())
         .expect("container observation stores");
@@ -72,7 +72,8 @@ fn full_sync_removes_stale_containers_for_the_node() {
 
 #[test]
 fn node_snapshot_rejects_observations_for_a_different_node() {
-    let mut wrong_node = managed_observation("ctr_456", ContainerRuntimeState::Running);
+    let mut wrong_node =
+        managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
     wrong_node.node_id = node_id("node_8");
 
     assert_eq!(
@@ -183,6 +184,7 @@ fn managed_labels() -> ManagedContainerLabels {
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

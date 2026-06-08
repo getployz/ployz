@@ -1,6 +1,6 @@
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
@@ -173,6 +173,7 @@ fn route_table_reports_route_without_upstreams() {
     let table = route_table([GatewayProjectedRoute {
         target: route_target("api.example.com", 443),
         upstreams: Vec::new(),
+        unroutable_containers: vec![],
     }]);
 
     assert_eq!(
@@ -193,6 +194,7 @@ fn source_input(
     GatewayProjectionInput {
         routes: vec![GatewayRoute {
             target: route_target(hostname, 443),
+            endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         }],
@@ -216,7 +218,7 @@ fn managed_container(node_id_value: &str, container_id_value: &str) -> ManagedCo
         operation_id: operation_id("op_123"),
         step_id: step_id("step_1"),
         kind: ManagedContainerKind::Service,
-        state: ContainerRuntimeState::Running,
+        state: ContainerRuntimeState::running_at(endpoint("10.0.0.1", 8080)),
     }
 }
 
@@ -230,7 +232,9 @@ fn projected_route(
         upstreams: vec![GatewayUpstream {
             node_id: node_id(node_id_value),
             container_id: container_id(container_id_value),
+            endpoint: endpoint("10.0.0.1", 8080),
         }],
+        unroutable_containers: vec![],
     }
 }
 
@@ -241,6 +245,7 @@ fn projected_route_with_upstreams(
     GatewayProjectedRoute {
         target: route_target(hostname, 443),
         upstreams: upstreams.into_iter().collect(),
+        unroutable_containers: vec![],
     }
 }
 
@@ -254,6 +259,7 @@ fn upstream(node_id_value: &str, container_id_value: &str) -> GatewayUpstream {
     GatewayUpstream {
         node_id: node_id(node_id_value),
         container_id: container_id(container_id_value),
+        endpoint: endpoint("10.0.0.1", 8080),
     }
 }
 
@@ -267,6 +273,13 @@ fn route_hostname(value: &str) -> RouteHostname {
 
 fn route_port(value: u16) -> RoutePort {
     RoutePort::try_new(value).expect("valid route port")
+}
+
+fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+    ContainerEndpoint {
+        ip: ip.parse().expect("valid endpoint ip"),
+        port: route_port(port),
+    }
 }
 
 fn node_id(value: &str) -> NodeId {

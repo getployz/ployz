@@ -640,12 +640,21 @@ async fn routed_deploy_commits_route_before_completion() {
         route_state.requests,
         vec![ActiveRouteCommitRequest {
             target: route_target("api.example.com", 443),
+            endpoint_port: route_port(8080),
             expected_current: ExpectedActiveRoute::Absent,
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_2"),
         }]
     );
     assert_eq!(active_state.requests.len(), 1);
+    let [runtime_request] = runtime.requests.as_slice() else {
+        panic!("expected one runtime request");
+    };
+    assert_eq!(runtime_request.labels.endpoint_port, Some(route_port(8080)));
+    assert_eq!(
+        health.checked,
+        vec![vec![DeployContainerForAssert::routed("node_a", "ctr_1")]]
+    );
     assert_eq!(
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::Completed))

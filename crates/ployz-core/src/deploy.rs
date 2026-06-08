@@ -6,7 +6,7 @@ use std::num::NonZeroU16;
 
 use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
 use crate::node::NodeContainerObservationSnapshot;
-use crate::ops::RouteTarget;
+use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{
     ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceState, ExpectedActiveRoute,
     ExpectedActiveRouteRevision, ExpectedActiveService,
@@ -21,7 +21,15 @@ pub struct DeployRequest {
     pub image: ImageReference,
     pub replicas: ReplicaCount,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route: Option<RouteTarget>,
+    pub route: Option<DeployRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployRoute {
+    pub target: RouteTarget,
+    pub endpoint_port: RoutePort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +238,7 @@ fn existing_replicas(
         .flat_map(NodeContainerObservationSnapshot::containers)
         .filter(|container| {
             container.is_running_service_revision(&request.service_id, &request.target_revision)
+                && reusable_for_route(container, request.route.as_ref())
         })
         .map(|container| ExistingServiceReplica {
             node_id: container.node_id.clone(),
@@ -238,13 +247,28 @@ fn existing_replicas(
         .collect()
 }
 
+fn reusable_for_route(
+    container: &crate::node::ManagedContainerObservation,
+    route: Option<&DeployRoute>,
+) -> bool {
+    let Some(route) = route else {
+        return true;
+    };
+
+    container
+        .running_service_endpoint()
+        .is_some_and(|endpoint| endpoint.port == route.endpoint_port)
+}
+
 fn active_route_commit_request(
     request: &DeployRequest,
     active_route: Option<ActiveRouteState>,
 ) -> Result<Option<ActiveRouteCommitRequest>, DeployPreparationError> {
-    let Some(target) = request.route.clone() else {
+    let Some(route) = request.route.clone() else {
         return Ok(None);
     };
+    let target = route.target;
+    let endpoint_port = route.endpoint_port;
 
     let expected_current = match active_route {
         Some(route) => {
@@ -257,6 +281,7 @@ fn active_route_commit_request(
             ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
                 service_id: route.service_id,
                 revision_id: route.revision_id,
+                endpoint_port: route.endpoint_port,
             })
         }
         None => ExpectedActiveRoute::Absent,
@@ -264,6 +289,7 @@ fn active_route_commit_request(
 
     Ok(Some(ActiveRouteCommitRequest {
         target,
+        endpoint_port,
         expected_current,
         service_id: request.service_id.clone(),
         revision_id: request.target_revision.clone(),

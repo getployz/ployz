@@ -218,7 +218,7 @@ test("sdk maps raw deploy input to the wire request", () => {
   assert.deepEqual(
     deploySubmitRequest({
       ...deployInput(),
-      route: { hostname: "api.example.com", port: 443 },
+      route: { hostname: "api.example.com", port: 443, endpointPort: 8080 },
     }),
     {
       operation_id: "op_123",
@@ -229,8 +229,11 @@ test("sdk maps raw deploy input to the wire request", () => {
         image: "ghcr.io/acme/api:rev-2",
         replicas: 1,
         route: {
-          hostname: "api.example.com",
-          port: 443,
+          target: {
+            hostname: "api.example.com",
+            port: 443,
+          },
+          endpoint_port: 8080,
         },
       },
     },

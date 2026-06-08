@@ -19,8 +19,8 @@ pub use ployz_core::cert::{
 };
 pub use ployz_core::dataplane::WireGuardEbpfComponent;
 pub use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ImageReferenceError, ReplicaCount,
-    ReplicaCountError, ReplicaSlot,
+    DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference, ImageReferenceError,
+    ReplicaCount, ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
