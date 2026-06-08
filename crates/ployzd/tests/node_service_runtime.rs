@@ -16,7 +16,6 @@ use ployzd::node_agent::runtime::{
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::{
     NodeWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_node_runtime_service,
-    start_node_wireguard_ebpf_service,
 };
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +27,7 @@ async fn node_runtime_service_creates_missing_container() {
         nats.client.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone()).with_next_container("ctr_created"),
+        ready_wireguard_ebpf(),
     )
     .await
     .expect("node runtime service starts");
@@ -62,6 +62,7 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
         node_id("node_a"),
         RecordingRunner::new(state.clone())
             .with_existing(existing_container("ctr_existing", managed_labels())),
+        ready_wireguard_ebpf(),
     )
     .await
     .expect("node runtime service starts");
@@ -94,6 +95,7 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
             "ctr_conflict",
             conflicting_labels.clone(),
         )),
+        ready_wireguard_ebpf(),
     )
     .await
     .expect("node runtime service starts");
@@ -123,6 +125,7 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
         nats.client.clone(),
         node_id("node_a"),
         RecordingRunner::new(RecordingRunnerState::default()).with_create_failure("disk full"),
+        ready_wireguard_ebpf(),
     )
     .await
     .expect("node runtime service starts");
@@ -148,9 +151,10 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
 async fn node_wireguard_ebpf_service_calls_local_preparer() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_node_wireguard_ebpf_service(
+    let _service = start_node_runtime_service(
         nats.client.clone(),
         node_id("node_a"),
+        idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
     )
     .await
@@ -175,9 +179,10 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
 async fn node_wireguard_ebpf_service_preserves_prepare_failure() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
-    let _service = start_node_wireguard_ebpf_service(
+    let _service = start_node_runtime_service(
         nats.client.clone(),
         node_id("node_a"),
+        idle_runner(),
         RecordingWireGuardEbpf::new(state).with_failure(WireGuardEbpfPrepareError::Unavailable {
             node_id: node_id("node_a"),
             component: WireGuardEbpfComponent::EbpfForwarding,
@@ -343,6 +348,14 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
             None => Ok(()),
         }
     }
+}
+
+fn idle_runner() -> RecordingRunner {
+    RecordingRunner::new(RecordingRunnerState::default())
+}
+
+fn ready_wireguard_ebpf() -> RecordingWireGuardEbpf {
+    RecordingWireGuardEbpf::new(RecordingWireGuardEbpfState::default())
 }
 
 struct TestNats {

@@ -1,12 +1,7 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
-use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId};
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
-};
+use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
 };
@@ -17,14 +12,10 @@ use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployzd::config::ControlProcessConfig;
 use ployzd::nats_process::NatsServerRuntime;
-use ployzd::node_agent::runtime::{
-    CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner, NodeContainerRunnerError,
-};
-use ployzd::node_service_runtime::{
-    NodeWireGuardEbpfPreparer, start_node_runtime_service, start_node_wireguard_ebpf_service,
-};
-use std::sync::{Arc, Mutex};
+use ployzd::node_runtime::start_node_runtime_with_ports;
 use std::time::Duration;
+
+mod support;
 
 #[tokio::test]
 async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
@@ -91,18 +82,14 @@ async fn control_runtime_launches_deploy_submit_and_commits_active_state() {
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observations");
-    let runner = ObservingRunner::new(node_id("node_a"), observations);
-    let _container_service =
-        start_node_runtime_service(nats.client.clone(), node_id("node_a"), runner.clone())
-            .await
-            .expect("node container service starts");
-    let _wireguard_ebpf_service = start_node_wireguard_ebpf_service(
+    let node_runtime = start_node_runtime_with_ports(
         nats.client.clone(),
         node_id("node_a"),
-        ReadyWireGuardEbpf,
+        support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        support::ReadyWireGuardEbpf,
     )
     .await
-    .expect("node wireguard ebpf service starts");
+    .expect("node runtime starts");
     let api = OperationApiClient::new(nats.client.clone());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_launch"),
@@ -142,8 +129,21 @@ async fn control_runtime_launches_deploy_submit_and_commits_active_state() {
         .expect("duplicate operation API submit returns original operation");
     assert_eq!(duplicate.operation_id, operation_id("op_launch"));
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(runner.created_count(), 1);
+    assert_eq!(
+        observations
+            .node_snapshot(&node_id("node_a"))
+            .await
+            .expect("node observations read")
+            .expect("node snapshot exists")
+            .containers()
+            .len(),
+        1
+    );
 
+    node_runtime
+        .shutdown()
+        .await
+        .expect("node runtime shuts down");
     runtime
         .shutdown()
         .await
@@ -219,10 +219,6 @@ fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
 }
 
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
 fn control_config() -> ControlProcessConfig {
     ControlProcessConfig::new(
         NatsServerRuntime::External(NatsClientUrl::loopback(4222)),
@@ -286,106 +282,4 @@ async fn wait_for_terminal_deploy_status(
     }
 
     panic!("deploy did not reach terminal status");
-}
-
-#[derive(Clone)]
-struct ObservingRunner {
-    node_id: NodeId,
-    observations: AsyncNatsObservationStore,
-    state: Arc<Mutex<ObservingRunnerState>>,
-}
-
-#[derive(Default)]
-struct ObservingRunnerState {
-    next_container: u64,
-    created_count: u64,
-}
-
-impl ObservingRunner {
-    fn new(node_id: NodeId, observations: AsyncNatsObservationStore) -> Self {
-        Self {
-            node_id,
-            observations,
-            state: Arc::new(Mutex::new(ObservingRunnerState {
-                next_container: 1,
-                created_count: 0,
-            })),
-        }
-    }
-
-    fn created_count(&self) -> u64 {
-        self.state
-            .lock()
-            .expect("observing runner lock is not poisoned")
-            .created_count
-    }
-}
-
-impl NodeContainerRunner for ObservingRunner {
-    async fn existing_managed_containers(
-        &self,
-    ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
-        Ok(Vec::new())
-    }
-
-    async fn create_managed_container(
-        &self,
-        command: CreateManagedContainer,
-    ) -> Result<ContainerId, NodeContainerRunnerError> {
-        let container_id = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("observing runner lock is not poisoned");
-            let container_id = container_id(&format!("ctr_{}", state.next_container));
-            state.next_container += 1;
-            state.created_count += 1;
-            container_id
-        };
-        let observation = ManagedContainerObservation {
-            node_id: self.node_id.clone(),
-            container_id: container_id.clone(),
-            service_id: command.labels.service_id,
-            revision_id: command.labels.revision_id,
-            operation_id: command.labels.operation_id,
-            step_id: command.labels.step_id,
-            kind: ManagedContainerKind::Service,
-            state: ContainerRuntimeState::Running,
-        };
-        let snapshot = self
-            .observations
-            .node_snapshot(&self.node_id)
-            .await
-            .map_err(|error| NodeContainerRunnerError::Create {
-                message: error.to_string(),
-            })?
-            .unwrap_or_else(|| {
-                NodeContainerObservationSnapshot::try_new(self.node_id.clone(), Vec::new())
-                    .expect("empty node snapshot is valid")
-            })
-            .with_container_replaced(observation)
-            .map_err(|error| NodeContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
-        self.observations
-            .replace_node_containers(&snapshot)
-            .await
-            .map_err(|error| NodeContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
-
-        Ok(container_id)
-    }
-}
-
-#[derive(Clone)]
-struct ReadyWireGuardEbpf;
-
-impl NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
-    async fn prepare_wireguard_ebpf(
-        &self,
-        _request: WireGuardEbpfPrepareRequest,
-    ) -> Result<(), WireGuardEbpfPrepareError> {
-        Ok(())
-    }
 }

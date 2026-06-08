@@ -18,48 +18,39 @@ use ployz_nats::service_runtime::{
     RunningNatsService, decode_json_request, start_nats_service,
 };
 
-pub async fn start_node_runtime_service<R>(
+pub async fn start_node_runtime_service<R, P>(
     client: ployz_nats::service_runtime::NatsClient,
     node_id: NodeId,
     runner: R,
+    preparer: P,
 ) -> Result<RunningNatsService, NodeServiceRuntimeError>
 where
     R: Clone + NodeContainerRunner + Send + Sync + 'static,
+    P: Clone + NodeWireGuardEbpfPreparer + Send + Sync + 'static,
 {
     let spec = node_runtime_service_base(&node_id);
-    let endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRun);
+    let container_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRun);
+    let wireguard_ebpf_endpoint =
+        node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
 
     runtime
-        .bind_endpoint(&endpoint, move |request| {
+        .bind_endpoint(&container_endpoint, {
             let node_id = node_id.clone();
             let runner = runner.clone();
-            async move { handle_container_run(node_id, runner, request).await }
+            move |request| {
+                let node_id = node_id.clone();
+                let runner = runner.clone();
+                async move { handle_container_run(node_id, runner, request).await }
+            }
         })
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
 
-    Ok(runtime)
-}
-
-pub async fn start_node_wireguard_ebpf_service<P>(
-    client: ployz_nats::service_runtime::NatsClient,
-    node_id: NodeId,
-    preparer: P,
-) -> Result<RunningNatsService, NodeServiceRuntimeError>
-where
-    P: Clone + NodeWireGuardEbpfPreparer + Send + Sync + 'static,
-{
-    let spec = node_runtime_service_base(&node_id);
-    let endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
-    let mut runtime = start_nats_service(client, &spec)
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
-
     runtime
-        .bind_endpoint(&endpoint, move |request| {
+        .bind_endpoint(&wireguard_ebpf_endpoint, move |request| {
             let node_id = node_id.clone();
             let preparer = preparer.clone();
             async move { handle_wireguard_ebpf_prepare(node_id, preparer, request).await }

@@ -191,6 +191,21 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
 }
 
 #[test]
+fn binary_node_role_fails_until_node_runtime_exists() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["node", "--id", "node_7"])
+        .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
+        .output()
+        .expect("ployzd binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "ployzd node runtime is not implemented yet\n"
+    );
+}
+
+#[test]
 fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
     assert_eq!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |_| None),
@@ -231,21 +246,6 @@ fn binary_node_role_requires_nats_url() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         "PLOYZ_NATS_URL is required for ployzd node\n"
-    );
-}
-
-#[test]
-fn binary_node_role_fails_until_node_runtime_exists() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args(["node", "--id", "node_7"])
-        .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
-        .output()
-        .expect("ployzd binary runs");
-
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "ployzd node runtime is not implemented yet\n"
     );
 }
 
