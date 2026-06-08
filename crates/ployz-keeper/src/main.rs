@@ -160,7 +160,7 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
                 .map_err(|error| failure_message(&format!("failed to redeem join token: {error}")))
         })?;
 
-        keeper_join_target(redeemed, nats_url)
+        keeper_join_target(redeemed)
     }
 }
 
@@ -252,10 +252,7 @@ impl std::fmt::Display for KeeperNatsUrlError {
     }
 }
 
-fn keeper_join_target(
-    redeemed: MachineJoinRedeemed,
-    nats_url: NatsClientUrl,
-) -> Result<RedeemedKeeperJoin, FailureMessage> {
+fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoin, FailureMessage> {
     let material = RedactedJoinMaterial::new(
         redeemed.node_id.clone(),
         redeemed.join_bundle.cluster_name.as_str().to_owned(),
@@ -277,6 +274,9 @@ fn keeper_join_target(
             .to_vec(),
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
+    let runtime_nats_url =
+        NatsClientUrl::try_new(redeemed.join_bundle.runtime_nats_url.as_str())
+            .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
         redeemed.node_id,
@@ -284,7 +284,7 @@ fn keeper_join_target(
             material,
             artifact,
             roles,
-            PloyzdRoleEnvironmentTarget::default_path(nats_url),
+            PloyzdRoleEnvironmentTarget::default_path(runtime_nats_url),
         ),
     ))
 }
@@ -302,5 +302,61 @@ impl KeeperJoinTokenConsumer for StartupJoinTokenConsumer {
         ployz_keeper::join::remove_join_token_file(&self.join_token_file).map_err(|error| {
             FailureMessage::try_new(error.to_string()).expect("join token file error is non-empty")
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keeper_join_target;
+    use ployz_core::ids::{NodeId, OperationId};
+    use ployz_core::install::{
+        AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
+        MachineJoinBundle, MachineJoinClusterName, MachineJoinPloyzdArtifact,
+        MachineJoinRuntimeNatsUrl,
+    };
+    use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
+    use ployz_core::roles::FirstNodeGateway;
+    use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
+
+    #[test]
+    fn keeper_join_target_uses_runtime_nats_url_from_redeemed_bundle() {
+        let redeemed = MachineJoinRedeemed {
+            operation_id: OperationId::try_new("op_machine").expect("valid operation id"),
+            node_id: NodeId::try_new("node_2").expect("valid node id"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: FirstNodeGateway::Skip,
+            join_bundle: machine_join_bundle(),
+            joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
+            last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+                .expect("valid sequence"),
+            result: MachineJoinRedeemResult::Joined,
+        };
+
+        let target = keeper_join_target(redeemed)
+            .expect("redeemed bundle converts")
+            .target;
+
+        assert_eq!(
+            target.role_environment.render(),
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\n"
+        );
+    }
+
+    fn machine_join_bundle() -> MachineJoinBundle {
+        MachineJoinBundle {
+            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                .expect("valid runtime nats url"),
+            ployzd: MachineJoinPloyzdArtifact {
+                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
+                sha256: InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                    .expect("valid install path"),
+            },
+        }
     }
 }

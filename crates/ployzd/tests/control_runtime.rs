@@ -5,6 +5,7 @@ use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     MachineBootstrapUrl, MachineJoinClusterName, MachineJoinPloyzdArtifact,
+    MachineJoinRuntimeNatsUrl,
 };
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
@@ -88,6 +89,8 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             gateway: MachineAddGateway::Skip,
             join_bundle: ployz_core::install::MachineJoinBundle {
                 cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                    .expect("valid runtime nats url"),
                 ployzd: MachineJoinPloyzdArtifact {
                     version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
                     source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),

@@ -10,14 +10,14 @@ use ployz_sdk_types::{
     MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle,
     MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineJoinToken,
-    MachineName, NonEmptyTextError, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse,
-    OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineJoinRuntimeNatsUrl, MachineJoinToken, MachineName, NonEmptyTextError,
+    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi,
         MachineJoinReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
@@ -189,7 +189,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
@@ -220,7 +220,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
 }
 
@@ -445,6 +445,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
             .expect("valid cluster name"),
+        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+            .expect("valid runtime nats url"),
         ployzd: MachineJoinPloyzdArtifact {
             version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
                 .expect("valid version"),

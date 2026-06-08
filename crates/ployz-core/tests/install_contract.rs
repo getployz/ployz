@@ -2,7 +2,7 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinPloyzdArtifact,
+    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -45,6 +45,10 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineBootstrapUrl::try_new("").is_err());
     assert!(MachineBootstrapUrl::try_new("http://example.test/ployz.sh").is_err());
     assert!(MachineBootstrapUrl::try_new("https://example.test/ployz.sh").is_ok());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("http://127.0.0.1:7422").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422\n").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422").is_ok());
     assert!(InstallArtifactVersion::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
@@ -63,6 +67,7 @@ fn keeper_install_contract_validates_artifact_inputs() {
 fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
     let value = serde_json::json!({
         "cluster_name": "prod",
+        "runtime_nats_url": "nats://127.0.0.1:7422",
         "ployzd": {
             "version": "0.1.0",
             "source": "relative/ployzd",
@@ -82,6 +87,7 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
         value,
         serde_json::json!({
             "cluster_name": "prod",
+            "runtime_nats_url": "nats://127.0.0.1:7422",
             "ployzd": {
                 "version": "0.1.0",
                 "source": "/tmp/ployzd",
@@ -121,6 +127,8 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+            .expect("valid runtime nats url"),
         ployzd: MachineJoinPloyzdArtifact {
             version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
             source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),

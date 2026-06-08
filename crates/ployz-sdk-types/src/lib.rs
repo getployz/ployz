@@ -34,7 +34,7 @@ pub use ployz_core::ids::{
 pub use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinPloyzdArtifact,
+    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,

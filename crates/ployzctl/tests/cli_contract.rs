@@ -326,7 +326,7 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert!(stdout(&output).contains("ployzctl backup restore --plan"));
     assert!(stdout(&output).contains(
-        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
+        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --runtime-nats-url <url> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
     ));
     assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
@@ -760,6 +760,8 @@ fn machine_add_arg_refs() -> impl Iterator<Item = &'static str> {
         "idem_machine",
         "--cluster",
         "prod",
+        "--runtime-nats-url",
+        "nats://127.0.0.1:7422",
         "--ployzd-version",
         "0.1.0",
         "--ployzd-source",
@@ -776,6 +778,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
             .expect("valid cluster name"),
+        runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
+            "nats://127.0.0.1:7422",
+        )
+        .expect("valid runtime nats url"),
         ployzd: MachineJoinPloyzdArtifact {
             version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
                 .expect("valid version"),

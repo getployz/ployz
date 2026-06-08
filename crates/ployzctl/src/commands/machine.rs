@@ -3,7 +3,7 @@ use std::fmt;
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinClusterName,
+    MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
 };
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{
@@ -106,6 +106,7 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
     let mut operation_id = None;
     let mut idempotency_key = None;
     let mut cluster_name = None;
+    let mut runtime_nats_url = None;
     let mut ployzd_version = None;
     let mut ployzd_source = None;
     let mut ployzd_sha256 = None;
@@ -147,6 +148,10 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
             set_once(&mut cluster_name, value, "--cluster")?;
             continue;
         }
+        if let Some(value) = args.take_value("--runtime-nats-url")? {
+            set_once(&mut runtime_nats_url, value, "--runtime-nats-url")?;
+            continue;
+        }
         if let Some(value) = args.take_value("--ployzd-version")? {
             set_once(&mut ployzd_version, value, "--ployzd-version")?;
             continue;
@@ -169,6 +174,11 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
     let join_bundle = MachineJoinBundle {
         cluster_name: MachineJoinClusterName::try_new(required(cluster_name, "--cluster")?)
             .map_err(|error| invalid_value("--cluster", error))?,
+        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(required(
+            runtime_nats_url,
+            "--runtime-nats-url",
+        )?)
+        .map_err(|error| invalid_value("--runtime-nats-url", error))?,
         ployzd: MachineJoinPloyzdArtifact {
             version: InstallArtifactVersion::try_new(required(ployzd_version, "--ployzd-version")?)
                 .map_err(|error| invalid_value("--ployzd-version", error))?,

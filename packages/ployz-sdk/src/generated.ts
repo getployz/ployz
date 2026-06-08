@@ -188,6 +188,8 @@ export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId,
 
 export type MachineJoinClusterName = string;
 
+export type MachineJoinRuntimeNatsUrl = string;
+
 export type InstallArtifactVersion = string;
 
 export type InstallArtifactSource = string;
@@ -196,7 +198,7 @@ export type InstallSha256Digest = string;
 
 export type AbsoluteInstallPath = string;
 
-export type MachineJoinBundle = { cluster_name: MachineJoinClusterName, ployzd: MachineJoinPloyzdArtifact, };
+export type MachineJoinBundle = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, ployzd: MachineJoinPloyzdArtifact, };
 
 export type MachineJoinPloyzdArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
 

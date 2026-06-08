@@ -512,6 +512,7 @@ function machineAddInput() {
 function machineJoinBundle(): MachineJoinBundle {
   return {
     cluster_name: "prod",
+    runtime_nats_url: "nats://127.0.0.1:7422",
     ployzd: {
       version: "0.1.0",
       source: "/tmp/ployzd",

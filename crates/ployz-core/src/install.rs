@@ -126,6 +126,7 @@ impl From<MachineBootstrapUrl> for String {
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinBundle {
     pub cluster_name: MachineJoinClusterName,
+    pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub ployzd: MachineJoinPloyzdArtifact,
 }
 
@@ -137,6 +138,48 @@ pub struct MachineJoinPloyzdArtifact {
     pub source: InstallArtifactSource,
     pub sha256: InstallSha256Digest,
     pub install_path: AbsoluteInstallPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinRuntimeNatsUrl(String);
+
+impl MachineJoinRuntimeNatsUrl {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InstallContractError::EmptyRuntimeNatsUrl);
+        }
+        if !value.starts_with("nats://")
+            || value
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(InstallContractError::InvalidRuntimeNatsUrl { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineJoinRuntimeNatsUrl {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinRuntimeNatsUrl> for String {
+    fn from(value: MachineJoinRuntimeNatsUrl) -> Self {
+        value.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,6 +386,8 @@ pub enum InstallContractError {
     InvalidClusterName { value: String },
     EmptyBootstrapUrl,
     InvalidBootstrapUrl { value: String },
+    EmptyRuntimeNatsUrl,
+    InvalidRuntimeNatsUrl { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -368,6 +413,11 @@ impl fmt::Display for InstallContractError {
             Self::InvalidBootstrapUrl { value } => write!(
                 formatter,
                 "machine bootstrap URL {value:?} must be an HTTPS URL without whitespace"
+            ),
+            Self::EmptyRuntimeNatsUrl => formatter.write_str("runtime NATS URL is empty"),
+            Self::InvalidRuntimeNatsUrl { value } => write!(
+                formatter,
+                "runtime NATS URL {value:?} must be a nats:// URL without whitespace"
             ),
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
