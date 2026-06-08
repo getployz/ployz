@@ -4,20 +4,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub use ployz_core::nats_config::{NatsServerConfig, NatsServerConfigError};
-use ployz_nats::connect::NatsClientEndpoint;
+use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServerRuntime {
     Supervised(PreparedNatsServerService),
-    External(NatsClientEndpoint),
+    External(NatsClientUrl),
 }
 
 impl NatsServerRuntime {
     #[must_use]
-    pub fn client_endpoint(&self) -> NatsClientEndpoint {
+    pub fn client_url(&self) -> NatsClientUrl {
         match self {
-            Self::Supervised(service) => service.client_endpoint(),
-            Self::External(endpoint) => endpoint.clone(),
+            Self::Supervised(service) => service.client_url(),
+            Self::External(url) => url.clone(),
         }
     }
 }
@@ -57,6 +57,11 @@ impl PreparedNatsServerService {
     #[must_use]
     pub fn rendered_config(&self) -> &str {
         &self.rendered_config
+    }
+
+    #[must_use]
+    pub fn client_url(&self) -> NatsClientUrl {
+        NatsClientUrl::from_endpoint(&self.client_endpoint)
     }
 
     #[must_use]

@@ -11,7 +11,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::api_client::{OperationApiClient, OperationApiClientError};
 use crate::commands::init::FirstNodeInitMode;
 use crate::commands::{PloyzctlCommand, USAGE};
-use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
+use ployz_nats::connect::{
+    NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
+};
 use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -430,6 +432,9 @@ async fn operation_api_client(
         return Err(PloyzctlExecutionError::MissingNatsUrl);
     };
 
+    let nats_url =
+        NatsClientUrl::try_new(nats_url).map_err(PloyzctlExecutionError::InvalidNatsUrl)?;
+
     connect_with_timeout(&nats_url, config.nats_connect_timeout())
         .await
         .map(OperationApiClient::new)
@@ -439,6 +444,7 @@ async fn operation_api_client(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlExecutionError {
     MissingNatsUrl,
+    InvalidNatsUrl(NatsClientUrlError),
     NatsConnect(NatsConnectError),
     KeeperFirstNodeInstall {
         source: Box<LocalKeeperInstallError>,
@@ -458,6 +464,12 @@ impl fmt::Display for PloyzctlExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingNatsUrl => write!(formatter, "--nats or {PLOYZ_NATS_URL_ENV} is required"),
+            Self::InvalidNatsUrl(error) => {
+                write!(
+                    formatter,
+                    "--nats or {PLOYZ_NATS_URL_ENV} is invalid: {error:?}"
+                )
+            }
             Self::NatsConnect(error) => write!(formatter, "{error}"),
             Self::KeeperFirstNodeInstall { source } => write!(formatter, "{source}"),
             Self::DeploySubmitApi { source } => write!(formatter, "{source}"),

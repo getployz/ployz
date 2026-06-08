@@ -1,15 +1,17 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::process::Command;
 
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::API_OPS_STATUS;
-use ployz_nats::connect::NatsClientEndpoint;
+use ployz_nats::connect::NatsClientUrl;
 use ployz_transport::iroh_endpoint::IrohEndpoint;
 use ployzd::app::{
     ControlWork, DnsWork, GatewayWork, RoleProcessPlan, TunnelWork, plan_configured_process,
 };
 use ployzd::config::{
-    ControlProcessConfig, DaemonProcessConfig, DnsProcessConfig, GatewayProcessConfig,
-    NodeProcessConfig, TunnelProcessConfig,
+    ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
+    GatewayProcessConfig, LoadedDaemonProcessConfig, NodeProcessConfig, PLOYZ_NATS_URL_ENV,
+    TunnelProcessConfig, load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
@@ -17,17 +19,17 @@ use ployzd::role::{DaemonProcessRole, TunnelSide, parse_role_args};
 
 #[test]
 fn control_process_owns_api_and_nats_assurance() {
-    let endpoint = NatsClientEndpoint::loopback(4222);
+    let url = NatsClientUrl::loopback(4222);
     let config = DaemonProcessConfig::Control(ControlProcessConfig::new(
-        NatsServerRuntime::External(endpoint.clone()),
+        NatsServerRuntime::External(url.clone()),
     ));
     let RoleProcessPlan::Control(plan) = plan_configured_process(&config) else {
         panic!("control role should produce a control process plan");
     };
 
     assert_eq!(config.role(), DaemonProcessRole::Control);
-    assert_eq!(plan.nats, NatsServerRuntime::External(endpoint.clone()));
-    assert_eq!(plan.nats_endpoint(), endpoint);
+    assert_eq!(plan.nats, NatsServerRuntime::External(url.clone()));
+    assert_eq!(plan.nats_url(), url);
     assert_eq!(
         plan.work,
         &[
@@ -42,16 +44,15 @@ fn control_process_owns_api_and_nats_assurance() {
 #[test]
 fn node_process_owns_node_rpc_and_observations_only() {
     let node_id = node_id("node_7");
-    let endpoint = NatsClientEndpoint::loopback(7422);
-    let config =
-        DaemonProcessConfig::Node(NodeProcessConfig::new(node_id.clone(), endpoint.clone()));
+    let url = NatsClientUrl::loopback(7422);
+    let config = DaemonProcessConfig::Node(NodeProcessConfig::new(node_id.clone(), url.clone()));
     let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
         panic!("node role should produce a node process plan");
     };
 
     assert_eq!(config.role(), DaemonProcessRole::Node(node_id.clone()));
     assert_eq!(plan.node_id, node_id);
-    assert_eq!(plan.nats_endpoint, endpoint);
+    assert_eq!(plan.nats_url, url);
     assert_eq!(
         plan.work,
         &[
@@ -65,9 +66,9 @@ fn node_process_owns_node_rpc_and_observations_only() {
 
 #[test]
 fn gateway_and_dns_are_watchers_not_command_surfaces() {
-    let endpoint = NatsClientEndpoint::loopback(7422);
-    let gateway_config = DaemonProcessConfig::Gateway(GatewayProcessConfig::new(endpoint.clone()));
-    let dns_config = DaemonProcessConfig::Dns(DnsProcessConfig::new(endpoint.clone()));
+    let url = NatsClientUrl::loopback(7422);
+    let gateway_config = DaemonProcessConfig::Gateway(GatewayProcessConfig::new(url.clone()));
+    let dns_config = DaemonProcessConfig::Dns(DnsProcessConfig::new(url.clone()));
 
     let RoleProcessPlan::Gateway(gateway) = plan_configured_process(&gateway_config) else {
         panic!("gateway role should produce a gateway process plan");
@@ -78,8 +79,8 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
 
     assert_eq!(gateway_config.role(), DaemonProcessRole::Gateway);
     assert_eq!(dns_config.role(), DaemonProcessRole::Dns);
-    assert_eq!(gateway.nats_endpoint, endpoint);
-    assert_eq!(dns.nats_endpoint, endpoint);
+    assert_eq!(gateway.nats_url, url);
+    assert_eq!(dns.nats_url, url);
     assert_eq!(
         gateway.work,
         &[
@@ -162,6 +163,83 @@ fn role_parser_accepts_the_supervisor_process_commands() {
     assert_eq!(
         parse_role_args(["tunnel", "--side", "edge"].map(str::to_owned)),
         Ok(DaemonProcessRole::Tunnel(TunnelSide::Edge))
+    );
+}
+
+#[test]
+fn nats_client_roles_load_the_keeper_written_nats_url() {
+    let LoadedDaemonProcessConfig::Configured(config) =
+        load_daemon_process_config(DaemonProcessRole::Node(node_id("node_7")), |name| {
+            (name == PLOYZ_NATS_URL_ENV).then(|| "nats://127.0.0.1:7422".to_owned())
+        })
+        .expect("node role config loads")
+    else {
+        panic!("node role should be configured");
+    };
+
+    let DaemonProcessConfig::Node(config) = config else {
+        panic!("node role should produce node config");
+    };
+    assert_eq!(config.node_id, node_id("node_7"));
+    assert_eq!(config.nats_url, NatsClientUrl::loopback(7422));
+}
+
+#[test]
+fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
+    assert_eq!(
+        load_daemon_process_config(DaemonProcessRole::Gateway, |_| None),
+        Err(DaemonProcessConfigError::MissingNatsUrl {
+            role: DaemonProcessRole::Gateway,
+        })
+    );
+    assert!(matches!(
+        load_daemon_process_config(DaemonProcessRole::Dns, |name| {
+            (name == PLOYZ_NATS_URL_ENV).then(|| "nats://127.0.0.1:4222\nnext".to_owned())
+        }),
+        Err(DaemonProcessConfigError::InvalidNatsUrl {
+            role: DaemonProcessRole::Dns,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn tunnel_roles_wait_for_transport_join_material() {
+    assert_eq!(
+        load_daemon_process_config(DaemonProcessRole::Tunnel(TunnelSide::Edge), |_| None),
+        Ok(LoadedDaemonProcessConfig::TunnelConfigPending {
+            side: TunnelSide::Edge
+        })
+    );
+}
+
+#[test]
+fn binary_node_role_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["node", "--id", "node_7"])
+        .env_remove(PLOYZ_NATS_URL_ENV)
+        .output()
+        .expect("ployzd binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "PLOYZ_NATS_URL is required for ployzd node\n"
+    );
+}
+
+#[test]
+fn binary_node_role_accepts_keeper_written_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["node", "--id", "node_7"])
+        .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
+        .output()
+        .expect("ployzd binary runs");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "ployzd role: node\nployzd plan: node\n"
     );
 }
 

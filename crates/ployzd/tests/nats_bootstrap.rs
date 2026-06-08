@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
-use ployz_nats::connect::NatsClientEndpoint;
+use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
 use ployzd::nats_process::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
 
 #[test]
@@ -31,10 +31,7 @@ fn supervised_runtime_uses_prepared_config_endpoint() {
     .expect("valid supervised service");
     let runtime = NatsServerRuntime::Supervised(service);
 
-    assert_eq!(
-        runtime.client_endpoint(),
-        NatsClientEndpoint::loopback(4222)
-    );
+    assert_eq!(runtime.client_url(), NatsClientUrl::loopback(4222));
 }
 
 #[test]
@@ -92,10 +89,10 @@ fn config_renderer_escapes_quoted_path_values() {
 
 #[test]
 fn external_runtime_keeps_the_supplied_endpoint() {
-    let endpoint = NatsClientEndpoint::tcp("10.0.0.12", 4222);
-    let runtime = NatsServerRuntime::External(endpoint.clone());
+    let url = NatsClientUrl::try_new("nats://10.0.0.12:4222").expect("valid NATS URL");
+    let runtime = NatsServerRuntime::External(url.clone());
 
-    assert_eq!(runtime.client_endpoint(), endpoint);
+    assert_eq!(runtime.client_url(), url);
 }
 
 fn node_id(value: &str) -> NodeId {

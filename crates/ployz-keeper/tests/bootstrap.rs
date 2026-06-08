@@ -21,11 +21,12 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
     KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
-    KeeperStepFailureReason, KeeperStepLabel, NatsClientUrl, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan,
-    first_node_install_plan, keeper_join_local_install_plan,
+    KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
+    RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, first_node_install_plan,
+    keeper_join_local_install_plan,
 };
 use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget};
+use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]

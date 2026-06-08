@@ -52,18 +52,64 @@ impl NatsClientEndpoint {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsClientUrl(String);
+
+impl NatsClientUrl {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, NatsClientUrlError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(NatsClientUrlError::Empty);
+        }
+        if value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        {
+            return Err(NatsClientUrlError::UnsupportedEnvironmentValue { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn from_endpoint(endpoint: &NatsClientEndpoint) -> Self {
+        Self::try_new(endpoint.url()).expect("endpoint-rendered NATS URL is valid")
+    }
+
+    #[must_use]
+    pub fn loopback(port: u16) -> Self {
+        Self::from_endpoint(&NatsClientEndpoint::loopback(port))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for NatsClientUrl {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NatsClientUrlError {
+    Empty,
+    UnsupportedEnvironmentValue { value: String },
+}
+
 pub async fn connect_with_timeout(
-    nats_url: &str,
+    nats_url: &NatsClientUrl,
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
-    match tokio::time::timeout(timeout, async_nats::connect(nats_url)).await {
+    match tokio::time::timeout(timeout, async_nats::connect(nats_url.as_str())).await {
         Ok(Ok(client)) => Ok(client),
         Ok(Err(error)) => Err(NatsConnectError::Connect {
-            url: nats_url.to_owned(),
+            url: nats_url.as_str().to_owned(),
             message: error.to_string(),
         }),
         Err(_) => Err(NatsConnectError::Timeout {
-            url: nats_url.to_owned(),
+            url: nats_url.as_str().to_owned(),
             timeout,
         }),
     }

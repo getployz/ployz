@@ -19,13 +19,14 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, KeeperStep,
-    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NatsClientUrl, NonEmptyRoleSet,
+    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
     PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, bootstrap_script_plan,
     first_node_install_plan,
 };
 use ployz_keeper::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
 };
+use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]
@@ -671,7 +672,7 @@ fn role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(root.join("etc/ployzd.env"))
             .expect("valid ployzd role environment target"),
-        NatsClientUrl::loopback(),
+        NatsClientUrl::loopback(4222),
     )
 }
 

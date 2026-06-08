@@ -7,6 +7,7 @@ use ployz_core::ids::NodeId;
 use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
+use ployz_nats::connect::NatsClientUrl;
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
 use crate::systemd::{
@@ -229,7 +230,8 @@ impl FirstNodeInstallTarget {
         gateway: FirstNodeGateway,
     ) -> Self {
         let nats_server_unit = NatsServerUnitTarget::default_paths();
-        let role_environment = PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback());
+        let role_environment =
+            PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback(4222));
         Self {
             node_id,
             ployzd_artifact,
@@ -295,41 +297,6 @@ impl PloyzdRoleEnvironmentTarget {
     pub fn render(&self) -> String {
         format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsClientUrl(String);
-
-impl NatsClientUrl {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, NatsClientUrlError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(NatsClientUrlError::Empty);
-        }
-        if value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-        {
-            return Err(NatsClientUrlError::UnsupportedEnvironmentValue { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn loopback() -> Self {
-        Self::try_new("nats://127.0.0.1:4222").expect("loopback NATS URL is valid")
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NatsClientUrlError {
-    Empty,
-    UnsupportedEnvironmentValue { value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

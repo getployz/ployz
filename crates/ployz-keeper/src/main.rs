@@ -16,10 +16,10 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects, SystemKeeperCommandRunner};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, NatsClientUrl, NonEmptyRoleSet,
+    FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, NonEmptyRoleSet,
     PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, first_node_install_plan,
 };
-use ployz_nats::connect::connect_with_timeout;
+use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError, connect_with_timeout};
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
     MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportOutcome,
@@ -122,15 +122,13 @@ fn failure_summary(failure: &KeeperPlanFailure) -> &str {
 }
 
 struct SystemJoinRedeemer {
-    nats_url: Option<String>,
+    nats_url: Result<NatsClientUrl, KeeperNatsUrlError>,
 }
 
 impl SystemJoinRedeemer {
     fn from_env() -> Self {
         Self {
-            nats_url: std::env::var(PLOYZ_NATS_URL_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty()),
+            nats_url: load_nats_url_from_env(),
         }
     }
 }
@@ -140,11 +138,10 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
         &mut self,
         token: &JoinToken,
     ) -> Result<RedeemedKeeperJoin, FailureMessage> {
-        let Some(nats_url) = self.nats_url.clone() else {
-            return Err(failure_message(
-                "PLOYZ_NATS_URL is required to redeem join token",
-            ));
-        };
+        let nats_url = self
+            .nats_url
+            .clone()
+            .map_err(|error| failure_message(&format!("{error}")))?;
         let join_token = MachineJoinToken::try_new(token.as_str())
             .map_err(|error| failure_message(&format!("invalid join token: {error:?}")))?;
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -168,16 +165,14 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
 }
 
 struct SystemJoinReporter {
-    nats_url: Option<String>,
+    nats_url: Result<NatsClientUrl, KeeperNatsUrlError>,
     join_token: JoinToken,
 }
 
 impl SystemJoinReporter {
     fn from_env(join_token: JoinToken) -> Self {
         Self {
-            nats_url: std::env::var(PLOYZ_NATS_URL_ENV)
-                .ok()
-                .filter(|value| !value.trim().is_empty()),
+            nats_url: load_nats_url_from_env(),
             join_token,
         }
     }
@@ -204,11 +199,10 @@ impl KeeperJoinReporter for SystemJoinReporter {
 
 impl SystemJoinReporter {
     fn report_join_result(&self, request: MachineJoinReportRequest) -> Result<(), FailureMessage> {
-        let Some(nats_url) = self.nats_url.clone() else {
-            return Err(failure_message(
-                "PLOYZ_NATS_URL is required to report join result",
-            ));
-        };
+        let nats_url = self
+            .nats_url
+            .clone()
+            .map_err(|error| failure_message(&format!("{error}")))?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -232,9 +226,35 @@ impl SystemJoinReporter {
     }
 }
 
+fn load_nats_url_from_env() -> Result<NatsClientUrl, KeeperNatsUrlError> {
+    let value = std::env::var(PLOYZ_NATS_URL_ENV).map_err(|_| KeeperNatsUrlError::Missing)?;
+    NatsClientUrl::try_new(value.clone())
+        .map_err(|source| KeeperNatsUrlError::Invalid { value, source })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeeperNatsUrlError {
+    Missing,
+    Invalid {
+        value: String,
+        source: NatsClientUrlError,
+    },
+}
+
+impl std::fmt::Display for KeeperNatsUrlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(formatter, "{PLOYZ_NATS_URL_ENV} is required"),
+            Self::Invalid { value, .. } => {
+                write!(formatter, "{PLOYZ_NATS_URL_ENV}={value:?} is invalid")
+            }
+        }
+    }
+}
+
 fn keeper_join_target(
     redeemed: MachineJoinRedeemed,
-    nats_url: String,
+    nats_url: NatsClientUrl,
 ) -> Result<RedeemedKeeperJoin, FailureMessage> {
     let material = RedactedJoinMaterial::new(
         redeemed.node_id.clone(),
@@ -257,9 +277,6 @@ fn keeper_join_target(
             .to_vec(),
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
-    let nats_url = NatsClientUrl::try_new(nats_url)
-        .map_err(|error| failure_message(&format!("invalid NATS URL for role env: {error:?}")))?;
-
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
         redeemed.node_id,

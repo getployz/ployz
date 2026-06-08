@@ -1,7 +1,7 @@
 //! Daemon application composition.
 
 use ployz_core::ids::NodeId;
-use ployz_nats::connect::NatsClientEndpoint;
+use ployz_nats::connect::NatsClientUrl;
 
 use crate::config::{
     ControlProcessConfig, DaemonProcessConfig, DnsProcessConfig, GatewayProcessConfig,
@@ -30,8 +30,8 @@ pub struct ControlProcessPlan {
 
 impl ControlProcessPlan {
     #[must_use]
-    pub fn nats_endpoint(&self) -> NatsClientEndpoint {
-        self.nats.client_endpoint()
+    pub fn nats_url(&self) -> NatsClientUrl {
+        self.nats.client_url()
     }
 }
 
@@ -44,7 +44,7 @@ pub enum ControlWork {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeProcessPlan {
     pub node_id: NodeId,
-    pub nats_endpoint: NatsClientEndpoint,
+    pub nats_url: NatsClientUrl,
     pub service_catalog: DaemonServiceCatalog,
     pub work: &'static [NodeWork],
 }
@@ -57,7 +57,7 @@ pub enum NodeWork {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProcessPlan {
-    pub nats_endpoint: NatsClientEndpoint,
+    pub nats_url: NatsClientUrl,
     pub work: &'static [GatewayWork],
 }
 
@@ -70,7 +70,7 @@ pub enum GatewayWork {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsProcessPlan {
-    pub nats_endpoint: NatsClientEndpoint,
+    pub nats_url: NatsClientUrl,
     pub work: &'static [DnsWork],
 }
 
@@ -137,7 +137,7 @@ fn plan_control_process(config: &ControlProcessConfig) -> RoleProcessPlan {
 fn plan_node_process(config: &NodeProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Node(NodeProcessPlan {
         node_id: config.node_id.clone(),
-        nats_endpoint: config.nats_endpoint.clone(),
+        nats_url: config.nats_url.clone(),
         service_catalog: DaemonServiceCatalog::for_node(&config.node_id),
         work: &[NodeWork::ServeNodeRpc, NodeWork::PublishDockerObservations],
     })
@@ -145,7 +145,7 @@ fn plan_node_process(config: &NodeProcessConfig) -> RoleProcessPlan {
 
 fn plan_gateway_process(config: &GatewayProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Gateway(GatewayProcessPlan {
-        nats_endpoint: config.nats_endpoint.clone(),
+        nats_url: config.nats_url.clone(),
         work: &[
             GatewayWork::WatchRoutes,
             GatewayWork::WatchContainerHealth,
@@ -156,7 +156,7 @@ fn plan_gateway_process(config: &GatewayProcessConfig) -> RoleProcessPlan {
 
 fn plan_dns_process(config: &DnsProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Dns(DnsProcessPlan {
-        nats_endpoint: config.nats_endpoint.clone(),
+        nats_url: config.nats_url.clone(),
         work: &[
             DnsWork::WatchServices,
             DnsWork::WatchNodeAddresses,
