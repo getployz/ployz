@@ -17,14 +17,17 @@ pub struct NodeRunContainerRequest {
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeRunContainerOutcome {
     Created { container_id: ContainerId },
-    Reused { container_id: ContainerId },
+    ReusedRunning { container_id: ContainerId },
+    StartedExisting { container_id: ContainerId },
 }
 
 impl NodeRunContainerOutcome {
     #[must_use]
     pub fn container_id(&self) -> &ContainerId {
         match self {
-            Self::Created { container_id } | Self::Reused { container_id } => container_id,
+            Self::Created { container_id }
+            | Self::ReusedRunning { container_id }
+            | Self::StartedExisting { container_id } => container_id,
         }
     }
 }

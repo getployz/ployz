@@ -406,6 +406,24 @@ pub enum NodeContainerRuntimeError {
         step_id: StepId,
         container_ids: Vec<ContainerId>,
     },
+    CreatedContainerStartFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    ExistingContainerStartFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    OperationStepContainerNotStartable {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
     StartedContainerUnhealthy {
         node_id: NodeId,
         container_id: ployz_core::ids::ContainerId,
@@ -444,6 +462,38 @@ impl NodeContainerRuntimeError {
                     retained_artifacts,
                 }
             }
+            Self::CreatedContainerStartFailed {
+                node_id,
+                container_id,
+                message,
+                inspect_hint,
+            } => {
+                let retained_artifact = RetainedArtifact::CreatedContainer {
+                    node_id: node_id.clone(),
+                    container_id: container_id.clone(),
+                    inspect_hint: inspect_hint.clone(),
+                };
+                let mut retained_artifacts = retained_artifacts;
+                if !retained_artifacts.contains(&retained_artifact) {
+                    retained_artifacts.push(retained_artifact);
+                }
+
+                DeployOperationFailure::RuntimeUnavailable {
+                    node_id: node_id.clone(),
+                    message: message.clone(),
+                    retained_artifacts,
+                }
+            }
+            Self::ExistingContainerStartFailed {
+                node_id, message, ..
+            }
+            | Self::OperationStepContainerNotStartable {
+                node_id, message, ..
+            } => DeployOperationFailure::RuntimeUnavailable {
+                node_id: node_id.clone(),
+                message: message.clone(),
+                retained_artifacts,
+            },
             Self::StartedContainerUnhealthy {
                 node_id,
                 container_id,

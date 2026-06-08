@@ -104,7 +104,7 @@ export type RoutePort = SafeInteger<"RoutePort">;
 
 export type RouteTarget = { hostname: RouteHostname, port: RoutePort, };
 
-export type RetainedArtifact = { "type": "started_container", node_id: NodeId, container_id: ContainerId, log_hint: OperatorHint, };
+export type RetainedArtifact = { "type": "created_container", node_id: NodeId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", node_id: NodeId, container_id: ContainerId, log_hint: OperatorHint, };
 
 export type HealthCheckFailure = { "reason": "probe_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
 

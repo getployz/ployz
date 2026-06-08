@@ -391,6 +391,49 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
 }
 
 #[tokio::test]
+async fn deploy_worker_retains_created_container_when_start_fails() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::failing_start("ctr_created");
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command(1);
+
+    let error = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("deploy fails");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            source,
+            failure:
+                DeployOperationFailure::RuntimeUnavailable {
+                    node_id: failure_node_id,
+                    message,
+                    retained_artifacts,
+                },
+            ..
+        } if matches!(*source, DeployExecutionError::RunContainer(NodeContainerRuntimeError::CreatedContainerStartFailed { .. }))
+            && failure_node_id == node_id("node_a")
+            && message == failure_message("container start failed: exec format error")
+            && retained_artifacts == vec![retained_created_container("node_a", "ctr_created")]
+    ));
+    assert!(active_state.requests.is_empty());
+}
+
+#[tokio::test]
 async fn deploy_worker_records_planning_before_plan_failure() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();

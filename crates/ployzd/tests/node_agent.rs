@@ -2,8 +2,8 @@ use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::ManagedContainerKind;
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_agent::runtime::{
-    ExistingManagedContainer, NodeContainerRunConflict, NodeContainerRunDecision,
-    decide_container_run,
+    ExistingManagedContainer, ExistingManagedContainerState, NodeContainerRunConflict,
+    NodeContainerRunDecision, decide_container_run,
 };
 
 #[test]
@@ -15,7 +15,7 @@ fn matching_operation_step_and_request_labels_reuse_existing_container() {
             &expected,
             [existing_container("ctr_existing", expected.clone())]
         ),
-        NodeContainerRunDecision::Reuse {
+        NodeContainerRunDecision::ReuseRunning {
             container_id: container_id("ctr_existing"),
         }
     );
@@ -55,6 +55,49 @@ fn different_step_does_not_reuse_container() {
 }
 
 #[test]
+fn stopped_matching_operation_step_starts_existing_container() {
+    let expected = run_labels("op_123", "step_1");
+
+    assert_eq!(
+        decide_container_run(
+            &expected,
+            [existing_container_with_state(
+                "ctr_existing",
+                expected.clone(),
+                ExistingManagedContainerState::StartableStopped,
+            )]
+        ),
+        NodeContainerRunDecision::StartExisting {
+            container_id: container_id("ctr_existing"),
+        }
+    );
+}
+
+#[test]
+fn non_startable_matching_operation_step_reports_not_startable() {
+    let expected = run_labels("op_123", "step_1");
+
+    assert_eq!(
+        decide_container_run(
+            &expected,
+            [existing_container_with_state(
+                "ctr_existing",
+                expected.clone(),
+                ExistingManagedContainerState::NotStartable {
+                    description: "paused".to_owned(),
+                },
+            )]
+        ),
+        NodeContainerRunDecision::NotStartable {
+            container_id: container_id("ctr_existing"),
+            state: ExistingManagedContainerState::NotStartable {
+                description: "paused".to_owned(),
+            },
+        }
+    );
+}
+
+#[test]
 fn duplicate_operation_step_matches_are_ambiguous() {
     let expected = run_labels("op_123", "step_1");
 
@@ -78,9 +121,18 @@ fn existing_container(
     container_id: &str,
     labels: ManagedContainerLabels,
 ) -> ExistingManagedContainer {
+    existing_container_with_state(container_id, labels, ExistingManagedContainerState::Running)
+}
+
+fn existing_container_with_state(
+    container_id: &str,
+    labels: ManagedContainerLabels,
+    state: ExistingManagedContainerState,
+) -> ExistingManagedContainer {
     ExistingManagedContainer {
         container_id: self::container_id(container_id),
         labels,
+        state,
     }
 }
 

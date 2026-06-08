@@ -239,6 +239,11 @@ pub enum RouteCutoverFailureReason {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RetainedArtifact {
+    CreatedContainer {
+        node_id: NodeId,
+        container_id: ContainerId,
+        inspect_hint: OperatorHint,
+    },
     StartedContainer {
         node_id: NodeId,
         container_id: ContainerId,

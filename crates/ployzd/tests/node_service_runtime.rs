@@ -11,7 +11,8 @@ use ployzd::deploy_worker::{
 };
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_agent::runtime::{
-    CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner, NodeContainerRunnerError,
+    CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
+    NodeContainerRunner, NodeContainerRunnerError,
 };
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::{
@@ -75,11 +76,104 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
 
     assert_eq!(
         outcome,
-        NodeRunContainerOutcome::Reused {
+        NodeRunContainerOutcome::ReusedRunning {
             container_id: container_id("ctr_existing"),
         }
     );
     assert!(state.creates().is_empty());
+}
+
+#[tokio::test]
+async fn node_runtime_service_starts_existing_stopped_operation_step_container() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(state.clone()).with_existing(existing_container_with_state(
+            "ctr_existing",
+            managed_labels(),
+            ExistingManagedContainerState::StartableStopped,
+        )),
+        ready_wireguard_ebpf(),
+    )
+    .await
+    .expect("node runtime service starts");
+    let mut client = NatsNodeContainerRuntime::new(nats.client);
+
+    let outcome = client
+        .run_container(run_request("node_a"))
+        .await
+        .expect("container run succeeds");
+
+    assert_eq!(
+        outcome,
+        NodeRunContainerOutcome::StartedExisting {
+            container_id: container_id("ctr_existing"),
+        }
+    );
+    assert_eq!(state.starts(), vec![container_id("ctr_existing")]);
+    assert!(state.creates().is_empty());
+}
+
+#[tokio::test]
+async fn node_runtime_service_reports_start_failure_with_container_evidence() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(state).with_start_failure("ctr_created", "exec format error"),
+        ready_wireguard_ebpf(),
+    )
+    .await
+    .expect("node runtime service starts");
+    let mut client = NatsNodeContainerRuntime::new(nats.client);
+
+    let error = client
+        .run_container(run_request("node_a"))
+        .await
+        .expect_err("container start failure is returned");
+
+    assert_eq!(
+        error,
+        NodeContainerRuntimeError::CreatedContainerStartFailed {
+            node_id: node_id("node_a"),
+            container_id: container_id("ctr_created"),
+            message: failure_message("container start failed: exec format error"),
+            inspect_hint: inspect_hint("ctr_created"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn node_runtime_service_reports_existing_start_failure_without_created_evidence() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(state).with_existing_start_failure("ctr_existing", "still stopping"),
+        ready_wireguard_ebpf(),
+    )
+    .await
+    .expect("node runtime service starts");
+    let mut client = NatsNodeContainerRuntime::new(nats.client);
+
+    let error = client
+        .run_container(run_request("node_a"))
+        .await
+        .expect_err("existing container start failure is returned");
+
+    assert_eq!(
+        error,
+        NodeContainerRuntimeError::ExistingContainerStartFailed {
+            node_id: node_id("node_a"),
+            container_id: container_id("ctr_existing"),
+            message: failure_message("container start failed: still stopping"),
+            inspect_hint: inspect_hint("ctr_existing"),
+        }
+    );
 }
 
 #[tokio::test]
@@ -221,11 +315,20 @@ impl RecordingRunnerState {
             .creates
             .clone()
     }
+
+    fn starts(&self) -> Vec<ContainerId> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .starts
+            .clone()
+    }
 }
 
 #[derive(Default)]
 struct RecordingRunnerInner {
     creates: Vec<CreateManagedContainer>,
+    starts: Vec<ContainerId>,
 }
 
 #[derive(Clone)]
@@ -234,6 +337,7 @@ struct RecordingRunner {
     existing: Vec<ExistingManagedContainer>,
     next_container: Option<ContainerId>,
     create_failure: Option<String>,
+    start_failure: Option<(ContainerId, String)>,
 }
 
 impl RecordingRunner {
@@ -243,6 +347,7 @@ impl RecordingRunner {
             existing: Vec::new(),
             next_container: None,
             create_failure: None,
+            start_failure: None,
         }
     }
 
@@ -258,6 +363,22 @@ impl RecordingRunner {
 
     fn with_create_failure(mut self, message: &str) -> Self {
         self.create_failure = Some(message.to_owned());
+        self
+    }
+
+    fn with_start_failure(mut self, container_id: &str, message: &str) -> Self {
+        self.next_container = Some(self::container_id(container_id));
+        self.start_failure = Some((self::container_id(container_id), message.to_owned()));
+        self
+    }
+
+    fn with_existing_start_failure(mut self, container_id: &str, message: &str) -> Self {
+        self.existing.push(existing_container_with_state(
+            container_id,
+            managed_labels(),
+            ExistingManagedContainerState::StartableStopped,
+        ));
+        self.start_failure = Some((self::container_id(container_id), message.to_owned()));
         self
     }
 }
@@ -288,6 +409,28 @@ impl NodeContainerRunner for RecordingRunner {
             .ok_or_else(|| NodeContainerRunnerError::Create {
                 message: "missing next container id".to_owned(),
             })
+    }
+
+    async fn start_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<(), NodeContainerRunnerError> {
+        if let Some((failed_container_id, message)) = self.start_failure.clone()
+            && failed_container_id == *container_id
+        {
+            return Err(NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message,
+            });
+        }
+
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .starts
+            .push(container_id.clone());
+        Ok(())
     }
 }
 
@@ -398,13 +541,27 @@ fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("valid failure message")
 }
 
+fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
+    ployz_core::ops::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
+        .expect("valid inspect hint")
+}
+
 fn existing_container(
     container_id: &str,
     labels: ManagedContainerLabels,
 ) -> ExistingManagedContainer {
+    existing_container_with_state(container_id, labels, ExistingManagedContainerState::Running)
+}
+
+fn existing_container_with_state(
+    container_id: &str,
+    labels: ManagedContainerLabels,
+    state: ExistingManagedContainerState,
+) -> ExistingManagedContainer {
     ExistingManagedContainer {
         container_id: self::container_id(container_id),
         labels,
+        state,
     }
 }
 

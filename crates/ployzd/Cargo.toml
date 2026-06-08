@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "service"] }
+bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 futures-util.workspace = true
 ployz-core.workspace = true
 ployz-nats.workspace = true

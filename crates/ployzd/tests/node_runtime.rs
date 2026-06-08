@@ -40,7 +40,7 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
         .expect("duplicate operation step reuses container");
     assert_eq!(
         second,
-        NodeRunContainerOutcome::Reused {
+        NodeRunContainerOutcome::ReusedRunning {
             container_id: first_container_id
         }
     );

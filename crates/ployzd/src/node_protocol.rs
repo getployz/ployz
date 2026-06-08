@@ -52,6 +52,21 @@ pub enum NodeContainerRunDomainError {
         step_id: StepId,
         container_ids: Vec<ContainerId>,
     },
+    CreatedContainerStartFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    ExistingContainerStartFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    OperationStepContainerNotStartable {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
     StartedContainerUnhealthy {
         container_id: ContainerId,
         message: FailureMessage,

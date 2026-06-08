@@ -7,7 +7,8 @@ use ployz_core::node::{
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_agent::runtime::{
-    CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner, NodeContainerRunnerError,
+    CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
+    NodeContainerRunner, NodeContainerRunnerError,
 };
 use ployzd::node_service_runtime::NodeWireGuardEbpfPreparer;
 use std::sync::{Arc, Mutex};
@@ -63,7 +64,7 @@ impl NodeContainerRunner for ObservingContainerRunner {
             operation_id: command.labels.operation_id,
             step_id: command.labels.step_id,
             kind: ManagedContainerKind::Service,
-            state: ContainerRuntimeState::Running,
+            state: ContainerRuntimeState::Exited,
         };
         let snapshot = self
             .observations
@@ -81,6 +82,45 @@ impl NodeContainerRunner for ObservingContainerRunner {
             .map_err(node_observation_create_error)?;
 
         Ok(container_id)
+    }
+
+    async fn start_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let Some(snapshot) = self
+            .observations
+            .node_snapshot(&self.node_id)
+            .await
+            .map_err(node_observation_create_error)?
+        else {
+            return Err(NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: "container is missing from observations".to_owned(),
+            });
+        };
+        let Some(observation) = snapshot.container(container_id).cloned() else {
+            return Err(NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: "container is missing from observations".to_owned(),
+            });
+        };
+        let snapshot = snapshot
+            .with_container_replaced(ManagedContainerObservation {
+                state: ContainerRuntimeState::Running,
+                ..observation
+            })
+            .map_err(|error| NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        self.observations
+            .replace_node_containers(&snapshot)
+            .await
+            .map_err(|error| NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })
     }
 }
 
@@ -136,6 +176,14 @@ fn existing_container_from_observation(
             step_id: observation.step_id.clone(),
             kind: observation.kind,
         },
+        state: existing_container_state(observation.state),
+    }
+}
+
+fn existing_container_state(state: ContainerRuntimeState) -> ExistingManagedContainerState {
+    match state {
+        ContainerRuntimeState::Running => ExistingManagedContainerState::Running,
+        ContainerRuntimeState::Exited => ExistingManagedContainerState::StartableStopped,
     }
 }
 

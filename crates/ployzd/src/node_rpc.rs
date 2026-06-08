@@ -130,6 +130,36 @@ impl NodeContainerRunDomainError {
                 step_id,
                 container_ids,
             },
+            Self::CreatedContainerStartFailed {
+                container_id,
+                message,
+                inspect_hint,
+            } => NodeContainerRuntimeError::CreatedContainerStartFailed {
+                node_id,
+                container_id,
+                message,
+                inspect_hint,
+            },
+            Self::ExistingContainerStartFailed {
+                container_id,
+                message,
+                inspect_hint,
+            } => NodeContainerRuntimeError::ExistingContainerStartFailed {
+                node_id,
+                container_id,
+                message,
+                inspect_hint,
+            },
+            Self::OperationStepContainerNotStartable {
+                container_id,
+                message,
+                inspect_hint,
+            } => NodeContainerRuntimeError::OperationStepContainerNotStartable {
+                node_id,
+                container_id,
+                message,
+                inspect_hint,
+            },
             Self::StartedContainerUnhealthy {
                 container_id,
                 message,

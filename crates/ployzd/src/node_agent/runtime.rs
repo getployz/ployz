@@ -9,6 +9,14 @@ use crate::docker::labels::ManagedContainerLabels;
 pub struct ExistingManagedContainer {
     pub container_id: ContainerId,
     pub labels: ManagedContainerLabels,
+    pub state: ExistingManagedContainerState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExistingManagedContainerState {
+    Running,
+    StartableStopped,
+    NotStartable { description: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,8 +27,16 @@ pub struct CreateManagedContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeContainerRunnerError {
-    ListExisting { message: String },
-    Create { message: String },
+    ListExisting {
+        message: String,
+    },
+    Create {
+        message: String,
+    },
+    Start {
+        container_id: ContainerId,
+        message: String,
+    },
 }
 
 pub trait NodeContainerRunner {
@@ -32,6 +48,11 @@ pub trait NodeContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> impl Future<Output = Result<ContainerId, NodeContainerRunnerError>> + Send;
+
+    fn start_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,8 +60,15 @@ pub enum NodeContainerRunDecision {
     Create {
         labels: ManagedContainerLabels,
     },
-    Reuse {
+    ReuseRunning {
         container_id: ContainerId,
+    },
+    StartExisting {
+        container_id: ContainerId,
+    },
+    NotStartable {
+        container_id: ContainerId,
+        state: ExistingManagedContainerState,
     },
     Conflict(NodeContainerRunConflict),
     Ambiguous {
@@ -85,15 +113,32 @@ pub fn decide_container_run(
         };
     }
 
-    if first.labels == *expected {
-        return NodeContainerRunDecision::Reuse {
-            container_id: first.container_id,
+    let ExistingManagedContainer {
+        container_id,
+        labels,
+        state,
+    } = first;
+
+    if labels == *expected {
+        return match state {
+            ExistingManagedContainerState::Running => {
+                NodeContainerRunDecision::ReuseRunning { container_id }
+            }
+            ExistingManagedContainerState::StartableStopped => {
+                NodeContainerRunDecision::StartExisting { container_id }
+            }
+            ExistingManagedContainerState::NotStartable { .. } => {
+                NodeContainerRunDecision::NotStartable {
+                    container_id,
+                    state,
+                }
+            }
         };
     }
 
     NodeContainerRunDecision::Conflict(NodeContainerRunConflict {
-        container_id: first.container_id,
+        container_id,
         expected: expected.clone(),
-        actual: first.labels,
+        actual: labels,
     })
 }

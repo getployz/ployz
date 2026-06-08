@@ -87,13 +87,35 @@ where
                 })
                 .await
             {
-                Ok(container_id) => node_success(container_created_response(node_id, container_id)),
+                Ok(container_id) => match runner.start_managed_container(&container_id).await {
+                    Ok(()) => node_success(container_created_response(node_id, container_id)),
+                    Err(error) => created_container_start_error(node_id, container_id, error),
+                },
                 Err(error) => runner_error(error),
             }
         }
-        NodeContainerRunDecision::Reuse { container_id } => {
-            node_success(container_reused_response(node_id, container_id))
+        NodeContainerRunDecision::ReuseRunning { container_id } => {
+            node_success(container_reused_running_response(node_id, container_id))
         }
+        NodeContainerRunDecision::StartExisting { container_id } => {
+            match runner.start_managed_container(&container_id).await {
+                Ok(()) => node_success(container_started_existing_response(node_id, container_id)),
+                Err(error) => existing_container_start_error(node_id, container_id, error),
+            }
+        }
+        NodeContainerRunDecision::NotStartable {
+            container_id,
+            state,
+        } => node_domain_error(NodeContainerRunRpcResponse::DomainError {
+            node_id,
+            error: NodeContainerRunDomainError::OperationStepContainerNotStartable {
+                container_id: container_id.clone(),
+                message: failure_message(format!(
+                    "operation step container is not startable: {state:?}"
+                )),
+                inspect_hint: inspect_hint(&container_id),
+            },
+        }),
         NodeContainerRunDecision::Conflict(conflict) => {
             node_domain_error(container_conflict_response(node_id, conflict))
         }
@@ -120,13 +142,23 @@ fn container_created_response(
     }
 }
 
-fn container_reused_response(
+fn container_reused_running_response(
     node_id: NodeId,
     container_id: ContainerId,
 ) -> NodeContainerRunRpcResponse {
     NodeContainerRunRpcResponse::Ok {
         node_id,
-        outcome: NodeRunContainerOutcome::Reused { container_id },
+        outcome: NodeRunContainerOutcome::ReusedRunning { container_id },
+    }
+}
+
+fn container_started_existing_response(
+    node_id: NodeId,
+    container_id: ContainerId,
+) -> NodeContainerRunRpcResponse {
+    NodeContainerRunRpcResponse::Ok {
+        node_id,
+        outcome: NodeRunContainerOutcome::StartedExisting { container_id },
     }
 }
 
@@ -176,7 +208,72 @@ fn runner_error(error: NodeContainerRunnerError) -> NatsServiceResponse {
         NodeContainerRunnerError::Create { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container create failed: {message}")),
         ),
+        NodeContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
+            NatsServiceError::internal(format!("container start failed: {message}")),
+        ),
     }
+}
+
+fn created_container_start_error(
+    node_id: NodeId,
+    container_id: ContainerId,
+    error: NodeContainerRunnerError,
+) -> NatsServiceResponse {
+    match error {
+        NodeContainerRunnerError::Start { message, .. } => {
+            node_domain_error(NodeContainerRunRpcResponse::DomainError {
+                node_id,
+                error: NodeContainerRunDomainError::CreatedContainerStartFailed {
+                    container_id: container_id.clone(),
+                    message: failure_message(format!("container start failed: {message}")),
+                    inspect_hint: inspect_hint(&container_id),
+                },
+            })
+        }
+        NodeContainerRunnerError::ListExisting { message } => {
+            runner_error(NodeContainerRunnerError::ListExisting { message })
+        }
+        NodeContainerRunnerError::Create { message } => {
+            runner_error(NodeContainerRunnerError::Create { message })
+        }
+    }
+}
+
+fn existing_container_start_error(
+    node_id: NodeId,
+    container_id: ContainerId,
+    error: NodeContainerRunnerError,
+) -> NatsServiceResponse {
+    match error {
+        NodeContainerRunnerError::Start { message, .. } => {
+            node_domain_error(NodeContainerRunRpcResponse::DomainError {
+                node_id,
+                error: NodeContainerRunDomainError::ExistingContainerStartFailed {
+                    container_id: container_id.clone(),
+                    message: failure_message(format!("container start failed: {message}")),
+                    inspect_hint: inspect_hint(&container_id),
+                },
+            })
+        }
+        NodeContainerRunnerError::ListExisting { message } => {
+            runner_error(NodeContainerRunnerError::ListExisting { message })
+        }
+        NodeContainerRunnerError::Create { message } => {
+            runner_error(NodeContainerRunnerError::Create { message })
+        }
+    }
+}
+
+fn failure_message(value: impl Into<String>) -> ployz_core::ops::FailureMessage {
+    ployz_core::ops::FailureMessage::try_new(value).expect("generated failure message is non-empty")
+}
+
+fn inspect_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
+    ployz_core::ops::OperatorHint::try_new(format!(
+        "ployz container inspect {}",
+        container_id.as_str()
+    ))
+    .expect("generated inspect hint is non-empty")
 }
 
 pub trait NodeWireGuardEbpfPreparer {

@@ -8,8 +8,8 @@ use ployz_core::node::{
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{
-    DeployEvidence, DeployRunningStage, DeployTransition, OperatorHint, RetainedArtifact,
-    RouteHostname, RoutePort, RouteTarget,
+    DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage, OperatorHint,
+    RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceCommit,
@@ -110,6 +110,7 @@ pub(super) struct RecordingRuntime {
     containers: Vec<ContainerId>,
     fail_after_first: bool,
     reuse_existing: bool,
+    fail_start: bool,
 }
 
 #[derive(Default)]
@@ -372,6 +373,7 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
             reuse_existing: false,
+            fail_start: false,
         }
     }
 
@@ -381,6 +383,7 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
             reuse_existing: true,
+            fail_start: false,
         }
     }
 
@@ -390,6 +393,17 @@ impl RecordingRuntime {
             containers: vec![container_id("ctr_1")],
             fail_after_first: true,
             reuse_existing: false,
+            fail_start: false,
+        }
+    }
+
+    pub(super) fn failing_start(container_id: &str) -> Self {
+        Self {
+            requests: Vec::new(),
+            containers: vec![self::container_id(container_id)],
+            fail_after_first: false,
+            reuse_existing: false,
+            fail_start: true,
         }
     }
 }
@@ -418,8 +432,17 @@ impl NodeContainerRuntime for RecordingRuntime {
             });
         };
 
+        if self.fail_start {
+            return Err(NodeContainerRuntimeError::CreatedContainerStartFailed {
+                node_id: request.node_id,
+                container_id,
+                message: runtime_failure_message("container start failed: exec format error"),
+                inspect_hint: inspect_hint("ctr_created"),
+            });
+        }
+
         if self.reuse_existing {
-            Ok(NodeRunContainerOutcome::Reused { container_id })
+            Ok(NodeRunContainerOutcome::ReusedRunning { container_id })
         } else {
             Ok(NodeRunContainerOutcome::Created { container_id })
         }
@@ -560,4 +583,21 @@ pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedA
         log_hint: OperatorHint::try_new(format!("ployz logs {container_id}"))
             .expect("valid log hint"),
     }
+}
+
+pub(super) fn retained_created_container(node_id: &str, container_id: &str) -> RetainedArtifact {
+    RetainedArtifact::CreatedContainer {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        inspect_hint: inspect_hint(container_id),
+    }
+}
+
+pub(super) fn inspect_hint(container_id: &str) -> OperatorHint {
+    OperatorHint::try_new(format!("ployz container inspect {container_id}"))
+        .expect("valid inspect hint")
+}
+
+fn runtime_failure_message(value: &str) -> FailureMessage {
+    FailureMessage::try_new(value).expect("valid failure message")
 }
