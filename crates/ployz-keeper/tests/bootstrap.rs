@@ -21,10 +21,11 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
     KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
-    KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, RedactedJoinMaterial, RoleSetError,
-    bootstrap_script_plan, first_node_install_plan, keeper_join_local_install_plan,
+    KeeperStepFailureReason, KeeperStepLabel, NatsClientUrl, NonEmptyRoleSet,
+    PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, RoleSetError, bootstrap_script_plan,
+    first_node_install_plan, keeper_join_local_install_plan,
 };
-use ployz_keeper::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
+use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget};
 use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]
@@ -131,6 +132,7 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
         ployzd_artifact(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
+        role_environment(),
     ));
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
@@ -138,6 +140,10 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     assert!(plan.steps().contains(&KeeperStep::StoreJoinMaterial(
         RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material")
     )));
+    assert!(
+        plan.steps()
+            .contains(&KeeperStep::WritePloyzdRoleEnvironment(role_environment()))
+    );
 
     for role in roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
@@ -177,6 +183,10 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
             )))
     );
     assert!(plan_writes_unit(&plan, &SupervisorUnitTarget::NatsServer));
+    assert!(
+        plan.steps()
+            .contains(&KeeperStep::WritePloyzdRoleEnvironment(role_environment()))
+    );
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
         SupervisorUnitTarget::NatsServer
     )));
@@ -687,6 +697,7 @@ impl KeeperJoinRedeemer for RecordingJoinRedeemer {
                 ployzd_artifact(),
                 NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
                     .expect("non-empty role set"),
+                role_environment(),
             ),
         ))
     }
@@ -760,6 +771,14 @@ fn ployzd_artifact() -> PloyzdArtifactTarget {
         PathBuf::from("/usr/local/bin/ployzd"),
     )
     .expect("valid ployzd artifact")
+}
+
+fn role_environment() -> PloyzdRoleEnvironmentTarget {
+    PloyzdRoleEnvironmentTarget::new(
+        PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
+            .expect("valid role environment path"),
+        NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid NATS URL"),
+    )
 }
 
 fn version(value: &str) -> ArtifactVersion {

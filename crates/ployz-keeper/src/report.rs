@@ -56,6 +56,9 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::WriteNatsServerConfig(target) => {
             format!("write-nats-config {}", target.display_path().display())
         }
+        KeeperStepLabel::WritePloyzdRoleEnvironment(target) => {
+            format!("write-role-env {}", target.file().path().display())
+        }
         KeeperStepLabel::WriteSupervisorUnit(target) => {
             format!("write-unit {}", target.unit_name())
         }
@@ -89,6 +92,7 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         KeeperStepFailureReason::ArtifactVerificationFailed => "artifact-verification-failed",
         KeeperStepFailureReason::ArtifactInstallFailed => "artifact-install-failed",
         KeeperStepFailureReason::NatsConfigWriteFailed => "nats-config-write-failed",
+        KeeperStepFailureReason::RoleEnvironmentWriteFailed => "role-environment-write-failed",
         KeeperStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
         KeeperStepFailureReason::SupervisorStartFailed => "supervisor-start-failed",
         KeeperStepFailureReason::SupervisorRestartFailed => "supervisor-restart-failed",

@@ -1,7 +1,7 @@
 //! Supervisor units managed by keeper.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::artifacts::{KeeperArtifactTarget, PloyzdArtifactTarget};
 use ployz_core::roles::{DaemonProcessRole, TunnelSide};
@@ -33,6 +33,7 @@ pub enum SupervisorUnitSpec {
     PloyzdRole {
         role: DaemonProcessRole,
         artifact: PloyzdArtifactTarget,
+        environment_file: PloyzdRoleEnvironmentFile,
     },
 }
 
@@ -57,10 +58,42 @@ impl SupervisorUnitSpec {
             Self::NatsServer(target) => {
                 Ok(NatsServerUnit::new(target.binary_path(), target.config_path())?.render())
             }
-            Self::PloyzdRole { role, artifact } => {
-                Ok(PloyzdRoleUnit::new(role.clone(), artifact)?.render())
-            }
+            Self::PloyzdRole {
+                role,
+                artifact,
+                environment_file,
+            } => Ok(PloyzdRoleUnit::new(role.clone(), artifact, environment_file)?.render()),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzdRoleEnvironmentFile {
+    path: PathBuf,
+}
+
+impl PloyzdRoleEnvironmentFile {
+    pub fn new(path: PathBuf) -> Result<Self, SupervisorUnitFileError> {
+        let path = validate_supervisor_path(path)?;
+        let value = path
+            .to_str()
+            .expect("validated supervisor path is UTF-8")
+            .to_owned();
+        if !value.bytes().all(is_plain_environment_file_token_byte) {
+            return Err(SupervisorUnitFileError::UnsupportedEnvironmentFilePath { value: path });
+        }
+        Ok(Self { path })
+    }
+
+    #[must_use]
+    pub fn default_path() -> Self {
+        Self::new(PathBuf::from("/etc/ployz/ployzd.env"))
+            .expect("default ployzd environment path is valid")
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -171,15 +204,21 @@ impl NatsServerUnit {
 pub struct PloyzdRoleUnit {
     role: DaemonProcessRole,
     exec_start: String,
+    environment_file: PloyzdRoleEnvironmentFile,
 }
 
 impl PloyzdRoleUnit {
     pub fn new(
         role: DaemonProcessRole,
         artifact: &PloyzdArtifactTarget,
+        environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
         let exec_start = render_exec_start(artifact.install_path(), role.command_args())?;
-        Ok(Self { role, exec_start })
+        Ok(Self {
+            role,
+            exec_start,
+            environment_file: environment_file.clone(),
+        })
     }
 
     #[must_use]
@@ -195,8 +234,9 @@ impl PloyzdRoleUnit {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.process_name(),
+            self.environment_file.path().display(),
             self.exec_start,
         )
     }
@@ -263,6 +303,7 @@ pub enum SupervisorUnitFileError {
     EmptyPath,
     RelativePath { value: std::path::PathBuf },
     MissingFileName { value: std::path::PathBuf },
+    UnsupportedEnvironmentFilePath { value: std::path::PathBuf },
 }
 
 impl fmt::Display for SupervisorUnitFileError {
@@ -287,6 +328,11 @@ impl fmt::Display for SupervisorUnitFileError {
                     value.display()
                 )
             }
+            Self::UnsupportedEnvironmentFilePath { value } => write!(
+                formatter,
+                "systemd environment file path {} must be an absolute plain token",
+                value.display()
+            ),
         }
     }
 }
@@ -299,6 +345,10 @@ fn is_plain_systemd_token_byte(byte: u8) -> bool {
             byte,
             b'/' | b'.' | b'_' | b'-' | b':' | b'=' | b'@' | b'+' | b'%'
         )
+}
+
+fn is_plain_environment_file_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-')
 }
 
 fn validate_supervisor_path(

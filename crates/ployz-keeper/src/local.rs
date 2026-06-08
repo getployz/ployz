@@ -18,7 +18,7 @@ use crate::executor::KeeperStepEffects;
 use crate::join::{JOIN_MATERIAL_FILE, render_redacted_join_material};
 use crate::steps::{
     HostPrerequisite, KeeperStep, KeeperStepEffectError, KeeperStepFailureReason,
-    NatsServerConfigTarget, RedactedJoinMaterial,
+    NatsServerConfigTarget, PloyzdRoleEnvironmentTarget, RedactedJoinMaterial,
 };
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -52,6 +52,9 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
             KeeperStep::InstallArtifact(target) => self.install_artifact_source(target),
+            KeeperStep::WritePloyzdRoleEnvironment(target) => self
+                .write_ployzd_role_environment(target)
+                .map_err(Into::into),
             KeeperStep::WriteNatsServerConfig(target) => {
                 self.write_nats_server_config(target).map_err(Into::into)
             }
@@ -114,6 +117,24 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
             target.config_file_name(),
             "ployz-nats",
             target.render_config().as_bytes(),
+        )
+    }
+
+    fn write_ployzd_role_environment(
+        &self,
+        target: &PloyzdRoleEnvironmentTarget,
+    ) -> Result<(), FailureMessage> {
+        fs::create_dir_all(target.directory()).map_err(|error| {
+            failure_message(format!(
+                "failed to create ployzd environment directory {}: {error}",
+                target.directory().display()
+            ))
+        })?;
+        write_durable_file(
+            target.directory(),
+            target.file_name(),
+            "ployz-role-env",
+            target.render().as_bytes(),
         )
     }
 

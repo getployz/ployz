@@ -19,10 +19,13 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, KeeperStep,
-    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
-    RedactedJoinMaterial, bootstrap_script_plan, first_node_install_plan,
+    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NatsClientUrl, NonEmptyRoleSet,
+    PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, bootstrap_script_plan,
+    first_node_install_plan,
 };
-use ployz_keeper::systemd::{NatsServerUnitTarget, SupervisorUnitTarget};
+use ployz_keeper::systemd::{
+    NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
+};
 use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]
@@ -76,7 +79,8 @@ fn local_effects_install_first_node_process_units() {
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
     let plan = first_node_install_plan(
         FirstNodeInstallTarget::new(node_id("node_1"), ployzd_artifact, FirstNodeGateway::Skip)
-            .with_nats_server_unit(nats_unit(&root)),
+            .with_nats_server_unit(nats_unit(&root))
+            .with_role_environment(role_env(&root)),
     );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
@@ -101,6 +105,10 @@ fn local_effects_install_first_node_process_units() {
         fs::read_to_string(systemd_dir.join("ployzd-control.service"))
             .unwrap()
             .contains("control")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\n"
     );
     assert!(systemd_dir.join("ployzd-tunnel-core.service").exists());
     assert!(systemd_dir.join("ployzd-node-node_1.service").exists());
@@ -282,7 +290,8 @@ fn local_effects_write_nats_config_before_nats_unit() {
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
     let plan = first_node_install_plan(
         FirstNodeInstallTarget::new(node_id("node_1"), ployzd_artifact, FirstNodeGateway::Skip)
-            .with_nats_server_unit(nats_unit(&root)),
+            .with_nats_server_unit(nats_unit(&root))
+            .with_role_environment(role_env(&root)),
     );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
@@ -380,7 +389,8 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
             ployzd_artifact(&source, &install_path),
             FirstNodeGateway::Skip,
         )
-        .with_nats_server_unit(nats_unit(&root)),
+        .with_nats_server_unit(nats_unit(&root))
+        .with_role_environment(role_env(&root)),
     );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
@@ -410,6 +420,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             "node_2",
         ))])
         .expect("non-empty role set"),
+        role_env(&root),
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
@@ -439,6 +450,10 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         "node_id=node_2\ncluster_name=prod\n"
     );
     assert!(root.join("join/bin/ployzd").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\n"
+    );
     assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
     assert_eq!(reporter.reports, vec![JoinReport::Completed]);
     assert_eq!(token_consumer.consumed, 1);
@@ -650,6 +665,14 @@ fn nats_unit(root: &Path) -> NatsServerUnitTarget {
         root.join("etc/nats-server.conf"),
     )
     .expect("valid nats-server unit target")
+}
+
+fn role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
+    PloyzdRoleEnvironmentTarget::new(
+        PloyzdRoleEnvironmentFile::new(root.join("etc/ployzd.env"))
+            .expect("valid ployzd role environment target"),
+        NatsClientUrl::loopback(),
+    )
 }
 
 fn keeper_artifact(source: &Path, install_path: &Path) -> KeeperArtifactTarget {

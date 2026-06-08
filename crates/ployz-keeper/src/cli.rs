@@ -45,7 +45,7 @@ pub fn load_command(
             Ok(KeeperCommand::Start(KeeperStartup { join }))
         }
         ParsedKeeperCommand::FirstNodeInstall(target) => {
-            Ok(KeeperCommand::FirstNodeInstall(target))
+            Ok(KeeperCommand::FirstNodeInstall(*target))
         }
     }
 }
@@ -68,7 +68,7 @@ pub fn load_startup(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedKeeperCommand {
     Start { join_token_file: Option<PathBuf> },
-    FirstNodeInstall(FirstNodeInstallTarget),
+    FirstNodeInstall(Box<FirstNodeInstallTarget>),
 }
 
 fn parse_keeper_args(
@@ -83,7 +83,9 @@ fn parse_keeper_args(
             .map(|join_token_file| ParsedKeeperCommand::Start { join_token_file }),
         [flag] if flag == "--help" || flag == "-h" => Err(KeeperCliError::HelpRequested),
         [command, rest @ ..] if command == "first-node-install" => {
-            parse_first_node_install_args(rest).map(ParsedKeeperCommand::FirstNodeInstall)
+            parse_first_node_install_args(rest)
+                .map(Box::new)
+                .map(ParsedKeeperCommand::FirstNodeInstall)
         }
         [unknown, ..] => Err(KeeperCliError::UnexpectedArgument {
             value: unknown.to_string_lossy().into_owned(),

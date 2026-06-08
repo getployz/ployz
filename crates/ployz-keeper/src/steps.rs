@@ -9,7 +9,9 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, KeeperArtifactTarget, PloyzdArtifactTarget};
-use crate::systemd::{NatsServerUnitTarget, SupervisorUnitSpec, SupervisorUnitTarget};
+use crate::systemd::{
+    NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepPlan {
@@ -56,6 +58,7 @@ impl KeeperStepPlan {
 pub enum KeeperStep {
     VerifyHost(HostPrerequisite),
     InstallArtifact(ArtifactTarget),
+    WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentTarget),
     WriteNatsServerConfig(NatsServerConfigTarget),
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
@@ -67,6 +70,7 @@ pub enum KeeperStep {
 pub enum KeeperStepLabel {
     VerifyHost(HostPrerequisite),
     InstallArtifact(ArtifactTarget),
+    WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentTarget),
     WriteNatsServerConfig(NatsServerConfigTarget),
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
@@ -83,6 +87,9 @@ impl KeeperStepLabel {
         match step {
             KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
             KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
+            KeeperStep::WritePloyzdRoleEnvironment(target) => {
+                Self::WritePloyzdRoleEnvironment(target.clone())
+            }
             KeeperStep::WriteNatsServerConfig(target) => {
                 Self::WriteNatsServerConfig(target.clone())
             }
@@ -185,6 +192,7 @@ pub struct KeeperJoinTarget {
     pub material: RedactedJoinMaterial,
     pub ployzd_artifact: PloyzdArtifactTarget,
     pub roles: NonEmptyRoleSet,
+    pub role_environment: PloyzdRoleEnvironmentTarget,
 }
 
 impl KeeperJoinTarget {
@@ -193,11 +201,13 @@ impl KeeperJoinTarget {
         material: RedactedJoinMaterial,
         ployzd_artifact: PloyzdArtifactTarget,
         roles: NonEmptyRoleSet,
+        role_environment: PloyzdRoleEnvironmentTarget,
     ) -> Self {
         Self {
             material,
             ployzd_artifact,
             roles,
+            role_environment,
         }
     }
 }
@@ -208,6 +218,7 @@ pub struct FirstNodeInstallTarget {
     pub ployzd_artifact: PloyzdArtifactTarget,
     pub gateway: FirstNodeGateway,
     pub nats_server_unit: NatsServerUnitTarget,
+    pub role_environment: PloyzdRoleEnvironmentTarget,
 }
 
 impl FirstNodeInstallTarget {
@@ -218,11 +229,13 @@ impl FirstNodeInstallTarget {
         gateway: FirstNodeGateway,
     ) -> Self {
         let nats_server_unit = NatsServerUnitTarget::default_paths();
+        let role_environment = PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback());
         Self {
             node_id,
             ployzd_artifact,
             gateway,
             nats_server_unit,
+            role_environment,
         }
     }
 
@@ -231,6 +244,92 @@ impl FirstNodeInstallTarget {
         self.nats_server_unit = nats_server_unit;
         self
     }
+
+    #[must_use]
+    pub fn with_role_environment(mut self, role_environment: PloyzdRoleEnvironmentTarget) -> Self {
+        self.role_environment = role_environment;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PloyzdRoleEnvironmentTarget {
+    file: PloyzdRoleEnvironmentFile,
+    nats_url: NatsClientUrl,
+}
+
+impl PloyzdRoleEnvironmentTarget {
+    #[must_use]
+    pub fn new(file: PloyzdRoleEnvironmentFile, nats_url: NatsClientUrl) -> Self {
+        Self { file, nats_url }
+    }
+
+    #[must_use]
+    pub fn default_path(nats_url: NatsClientUrl) -> Self {
+        Self::new(PloyzdRoleEnvironmentFile::default_path(), nats_url)
+    }
+
+    #[must_use]
+    pub const fn file(&self) -> &PloyzdRoleEnvironmentFile {
+        &self.file
+    }
+
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        self.file
+            .path()
+            .parent()
+            .expect("validated ployzd role env path has a directory")
+    }
+
+    #[must_use]
+    pub fn file_name(&self) -> &str {
+        self.file
+            .path()
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .expect("validated ployzd role env path has a UTF-8 file name")
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsClientUrl(String);
+
+impl NatsClientUrl {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, NatsClientUrlError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(NatsClientUrlError::Empty);
+        }
+        if value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        {
+            return Err(NatsClientUrlError::UnsupportedEnvironmentValue { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::try_new("nats://127.0.0.1:4222").expect("loopback NATS URL is valid")
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NatsClientUrlError {
+    Empty,
+    UnsupportedEnvironmentValue { value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +457,9 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
     let mut steps = vec![KeeperStep::InstallArtifact(
         target.ployzd_artifact.clone().into(),
     )];
+    steps.push(KeeperStep::WritePloyzdRoleEnvironment(
+        target.role_environment.clone(),
+    ));
 
     for role in target.roles.roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
@@ -365,6 +467,7 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
             SupervisorUnitSpec::PloyzdRole {
                 role,
                 artifact: target.ployzd_artifact.clone(),
+                environment_file: target.role_environment.file().clone(),
             },
         ));
         steps.push(KeeperStep::StartSupervisorUnit(unit));
@@ -384,6 +487,7 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
         KeeperStep::WriteNatsServerConfig(nats_server_config),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
+        KeeperStep::WritePloyzdRoleEnvironment(target.role_environment.clone()),
     ];
 
     for role in process_set.roles() {
@@ -392,6 +496,7 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
             SupervisorUnitSpec::PloyzdRole {
                 role: role.clone(),
                 artifact: target.ployzd_artifact.clone(),
+                environment_file: target.role_environment.file().clone(),
             },
         ));
         steps.push(KeeperStep::StartSupervisorUnit(unit));
@@ -473,6 +578,7 @@ pub enum KeeperStepFailureReason {
     ArtifactVerificationFailed,
     ArtifactInstallFailed,
     NatsConfigWriteFailed,
+    RoleEnvironmentWriteFailed,
     SupervisorWriteFailed,
     SupervisorStartFailed,
     SupervisorRestartFailed,
@@ -488,6 +594,7 @@ impl KeeperStepFailureReason {
         match step {
             KeeperStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
             KeeperStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
+            KeeperStep::WritePloyzdRoleEnvironment(_) => Self::RoleEnvironmentWriteFailed,
             KeeperStep::WriteNatsServerConfig(_) => Self::NatsConfigWriteFailed,
             KeeperStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             KeeperStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
