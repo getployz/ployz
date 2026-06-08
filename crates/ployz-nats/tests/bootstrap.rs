@@ -3,11 +3,11 @@ use ployz_core::ids::NodeId;
 use ployz_nats::bootstrap::{
     BootstrapPlan, BootstrapRefusal, BootstrapResourceAction, BootstrapResourceRefusal,
     ExistingResources, JetStreamPeerSet, JetStreamPeerSetError, NatsServerCapabilities,
-    ReplicationPromotionAction,
+    ReplicationPromotionAction, assure_nats_resources,
 };
 use ployz_nats::replication::ReplicationFactor;
 use ployz_nats::schedules::NatsServerVersion;
-use ployz_nats::streams::RetentionPolicy;
+use ployz_nats::streams::{DiscardPolicy, RetentionPolicy};
 
 fn supported_single_node_plan() -> BootstrapPlan {
     let topology = CoreTopology::from_nodes(vec![node_id("core_1")]).expect("single topology");
@@ -303,6 +303,7 @@ fn schedule_stream_tracks_server_capability() {
         .expect("schedule stream exists");
 
     assert!(schedule_stream.allow_message_schedules);
+    assert_eq!(schedule_stream.discard, DiscardPolicy::Old);
 }
 
 #[test]
@@ -317,6 +318,31 @@ fn reboot_bootstrap_adopts_existing_resources() {
     let plan = supported_single_node_plan();
 
     assert!(all_resources_are_adopted(&plan));
+}
+
+#[tokio::test]
+async fn bootstrap_assurance_adopts_resources_created_by_parallel_startup() {
+    let server = nats_server::run_server("tests/configs/jetstream.conf");
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let jetstream = async_nats::jetstream::new(client);
+    let plan = supported_single_node_plan();
+
+    let (first, second, third) = tokio::join!(
+        assure_nats_resources(&jetstream, &plan),
+        assure_nats_resources(&jetstream, &plan),
+        assure_nats_resources(&jetstream, &plan),
+    );
+
+    assert!(first.is_ok(), "{first:?}");
+    assert!(second.is_ok(), "{second:?}");
+    assert!(third.is_ok(), "{third:?}");
+    jetstream
+        .get_stream("PLZ_OPS")
+        .await
+        .expect("bootstrap created PLZ_OPS");
+    drop(server);
 }
 
 #[test]

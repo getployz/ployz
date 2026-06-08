@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "nuid", "server_2_14", "service"] }
+async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "nuid", "object-store", "ring", "server_2_12", "server_2_14", "service"] }
 futures-util.workspace = true
 ployz-core.workspace = true
 ployz-sdk-types.workspace = true

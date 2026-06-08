@@ -2,25 +2,23 @@ use std::error::Error;
 use std::io;
 use std::time::Duration;
 
-use testcontainers_modules::nats::{Nats, NatsServerCmd};
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner};
-
 pub struct TestNats {
-    _container: ContainerAsync<Nats>,
+    _server: nats_server::Server,
     url: String,
 }
 
 impl TestNats {
     pub async fn start_jetstream() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let command = NatsServerCmd::default().with_jetstream();
-        let container = Nats::default().with_cmd(&command).start().await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(4222).await?;
-        let url = format!("nats://{host}:{port}");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ployz-nats/tests/configs/jetstream.conf"
+        );
+        let server = nats_server::run_server(config);
+        let url = server.client_url();
         wait_for_nats(&url).await?;
 
         Ok(Self {
-            _container: container,
+            _server: server,
             url,
         })
     }
@@ -48,7 +46,7 @@ async fn wait_for_nats(url: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
 
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("NATS test container did not become ready at {url}: {last_error}"),
+        format!("NATS test server did not become ready at {url}: {last_error}"),
     )
     .into())
 }

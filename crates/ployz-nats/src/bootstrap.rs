@@ -1,13 +1,16 @@
 //! JetStream bucket, stream, and Object Store bootstrap.
 
+#[path = "bootstrap/assurance.rs"]
+mod assurance;
 #[path = "bootstrap/resources.rs"]
 mod resources;
 
 use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
 use crate::objects::ObjectBucketSpec;
 use crate::replication::ReplicationFactor;
-use crate::schedules::{NatsServerVersion, ScheduleCapability};
+use crate::schedules::{NatsServerVersion, NatsServerVersionParseError, ScheduleCapability};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
+pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
 use ployz_core::ha::{CanonicalNodeSet, CanonicalNodeSetError, CoreTopology};
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
@@ -20,6 +23,7 @@ pub use resources::{
     ReplicationPromotionDecision,
 };
 use resources::{ExistingResourceView, PlannedResource};
+use std::fmt;
 
 pub const MIN_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion {
     major: 2,
@@ -42,6 +46,23 @@ pub struct BootstrapPlan {
 }
 
 impl BootstrapPlan {
+    pub fn for_single_server_client_and_topology(
+        client: &async_nats::Client,
+        topology: &CoreTopology,
+        node_id: NodeId,
+    ) -> Result<Self, BootstrapRefusal> {
+        let server = client.server_info();
+        let version = NatsServerVersion::parse(&server.version).map_err(|source| {
+            BootstrapRefusal::InvalidServerVersion {
+                value: server.version,
+                source,
+            }
+        })?;
+        let capabilities = NatsServerCapabilities::new(version, server.jetstream, node_id);
+
+        Self::for_core_topology(capabilities, topology)
+    }
+
     pub fn for_core_topology(
         capabilities: NatsServerCapabilities,
         topology: &CoreTopology,
@@ -133,7 +154,7 @@ impl BootstrapPlan {
                     RetentionPolicy::Limits,
                     StorageBackend::File,
                     replicas,
-                    DiscardPolicy::New,
+                    DiscardPolicy::Old,
                 )
                 .with_message_schedules(schedule_capability.message_schedules_available()),
             ],
@@ -297,6 +318,10 @@ impl From<CanonicalNodeSetError> for JetStreamPeerSetError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootstrapRefusal {
     JetStreamDisabled,
+    InvalidServerVersion {
+        value: String,
+        source: NatsServerVersionParseError,
+    },
     UnsupportedServerVersion {
         minimum: NatsServerVersion,
         actual: NatsServerVersion,
@@ -307,6 +332,39 @@ pub enum BootstrapRefusal {
     },
     JetStreamPeersDoNotCoverCoreTopology,
 }
+
+impl fmt::Display for BootstrapRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::JetStreamDisabled => formatter.write_str("JetStream is disabled"),
+            Self::InvalidServerVersion { value, source } => {
+                write!(
+                    formatter,
+                    "invalid NATS server version {value:?}: {source:?}"
+                )
+            }
+            Self::UnsupportedServerVersion { minimum, actual } => write!(
+                formatter,
+                "NATS server version {}.{}.{} is below required {}.{}.{}",
+                actual.major,
+                actual.minor,
+                actual.patch,
+                minimum.major,
+                minimum.minor,
+                minimum.patch
+            ),
+            Self::InsufficientJetStreamServers { required, actual } => write!(
+                formatter,
+                "JetStream has {actual} server(s), but {required} are required"
+            ),
+            Self::JetStreamPeersDoNotCoverCoreTopology => {
+                formatter.write_str("JetStream peers do not cover the core topology")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BootstrapRefusal {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExistingResources {

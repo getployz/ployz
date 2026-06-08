@@ -1,9 +1,9 @@
 use std::error::Error;
 
 use async_nats::jetstream;
-use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ha::CoreTopology;
+use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
@@ -11,7 +11,7 @@ use ployz_core::ops::{
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, KV_OPS_BUCKET, OperationLeaseClaim, PLZ_OPS_STREAM,
+    DeployOperationSubmission, OperationLeaseClaim,
 };
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployzctl::api_client::OperationApiClient;
@@ -33,8 +33,8 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_jetstream().await?;
     let client = async_nats::connect(nats.url()).await?;
-    let jetstream = jetstream::new(client);
-    bootstrap_operation_resources(&jetstream).await?;
+    let jetstream = jetstream::new(client.clone());
+    bootstrap_nats_resources(&client, &jetstream).await?;
     let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
@@ -103,7 +103,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let nats = TestNats::start_jetstream().await?;
     let client = async_nats::connect(nats.url()).await?;
     let jetstream = jetstream::new(client.clone());
-    bootstrap_operation_resources(&jetstream).await?;
+    bootstrap_nats_resources(&client, &jetstream).await?;
     let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
@@ -201,29 +201,27 @@ async fn operation_replay_page(
         .expect("operation event replay succeeds")
 }
 
-async fn bootstrap_operation_resources(
+async fn bootstrap_nats_resources(
+    client: &async_nats::Client,
     jetstream: &jetstream::Context,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    jetstream
-        .create_stream(jetstream::stream::Config {
-            name: PLZ_OPS_STREAM.to_owned(),
-            subjects: vec!["plz.v1.op.>".to_owned()],
-            storage: StorageType::Memory,
-            ..Default::default()
-        })
-        .await?;
-    jetstream
-        .create_key_value(jetstream::kv::Config {
-            bucket: KV_OPS_BUCKET.to_owned(),
-            ..Default::default()
-        })
-        .await?;
-
-    Ok(())
+    let node_id = node_id("core_1");
+    let topology =
+        CoreTopology::from_nodes(vec![node_id.clone()]).expect("single-node topology is valid");
+    let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client_and_topology(
+        client, &topology, node_id,
+    )?;
+    ployz_nats::bootstrap::assure_nats_resources(jetstream, &plan)
+        .await
+        .map_err(Into::into)
 }
 
 fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
+}
+
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
 }
 
 fn service_id(value: &str) -> ServiceId {

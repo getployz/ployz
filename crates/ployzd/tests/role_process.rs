@@ -22,12 +22,18 @@ fn control_process_owns_api_and_nats_assurance() {
     let url = NatsClientUrl::loopback(4222);
     let config = DaemonProcessConfig::Control(ControlProcessConfig::new(
         NatsServerRuntime::External(url.clone()),
+        node_id("core_1"),
     ));
     let RoleProcessPlan::Control(plan) = plan_configured_process(&config) else {
         panic!("control role should produce a control process plan");
     };
 
     assert_eq!(config.role(), DaemonProcessRole::Control);
+    let DaemonProcessConfig::Control(config) = &config else {
+        panic!("control config stays typed");
+    };
+    assert_eq!(config.core_node_id, node_id("core_1"));
+    assert_eq!(config.core_topology.nodes(), &[node_id("core_1")]);
     assert_eq!(plan.nats, NatsServerRuntime::External(url.clone()));
     assert_eq!(plan.nats_url(), url);
     assert_eq!(
@@ -229,17 +235,17 @@ fn binary_node_role_requires_nats_url() {
 }
 
 #[test]
-fn binary_node_role_accepts_keeper_written_nats_url() {
+fn binary_node_role_fails_until_node_runtime_exists() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["node", "--id", "node_7"])
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
         .output()
         .expect("ployzd binary runs");
 
-    assert!(output.status.success());
+    assert!(!output.status.success());
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "ployzd role: node\nployzd plan: node\n"
+        String::from_utf8_lossy(&output.stderr),
+        "ployzd node runtime is not implemented yet\n"
     );
 }
 

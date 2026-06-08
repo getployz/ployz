@@ -1,5 +1,6 @@
 //! Role-specific daemon configuration.
 
+use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
 use std::fmt;
 
@@ -49,6 +50,7 @@ pub fn load_daemon_process_config(
             Ok(LoadedDaemonProcessConfig::Configured(
                 DaemonProcessConfig::Control(ControlProcessConfig::new(
                     NatsServerRuntime::External(nats_url),
+                    NodeId::try_new("core_1").expect("default single-core node id is valid"),
                 )),
             ))
         }
@@ -127,12 +129,20 @@ impl std::error::Error for DaemonProcessConfigError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlProcessConfig {
     pub nats: NatsServerRuntime,
+    pub core_node_id: NodeId,
+    pub core_topology: CoreTopology,
 }
 
 impl ControlProcessConfig {
     #[must_use]
-    pub fn new(nats: NatsServerRuntime) -> Self {
-        Self { nats }
+    pub fn new(nats: NatsServerRuntime, core_node_id: NodeId) -> Self {
+        let core_topology = CoreTopology::from_nodes(vec![core_node_id.clone()])
+            .expect("single-core process config uses a valid topology");
+        Self {
+            nats,
+            core_node_id,
+            core_topology,
+        }
     }
 
     #[must_use]

@@ -1,28 +1,12 @@
-use ployzd::app::plan_configured_process;
 use ployzd::config::{LoadedDaemonProcessConfig, load_daemon_process_config};
+use ployzd::daemon_runtime::run_daemon_process_until_shutdown;
 use ployzd::role::parse_role_args;
 
-fn main() {
-    match parse_role_args(std::env::args().skip(1)) {
-        Ok(role) => match load_daemon_process_config(role.clone(), env_var) {
-            Ok(LoadedDaemonProcessConfig::Configured(config)) => {
-                let plan = plan_configured_process(&config);
-                println!("ployzd role: {}", config.role().process_name());
-                println!("ployzd plan: {}", plan_name(&plan));
-            }
-            Ok(LoadedDaemonProcessConfig::TunnelConfigPending { .. }) => {
-                println!("ployzd role: {}", role.process_name());
-                println!("ployzd tunnel config: pending");
-            }
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(2);
-            }
-        },
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(2);
-        }
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("{error}");
+        std::process::exit(error.exit_code());
     }
 }
 
@@ -30,12 +14,47 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-fn plan_name(plan: &ployzd::app::RoleProcessPlan) -> &'static str {
-    match plan {
-        ployzd::app::RoleProcessPlan::Control(_) => "control",
-        ployzd::app::RoleProcessPlan::Node(_) => "node",
-        ployzd::app::RoleProcessPlan::Gateway(_) => "gateway",
-        ployzd::app::RoleProcessPlan::Dns(_) => "dns",
-        ployzd::app::RoleProcessPlan::Tunnel(_) => "tunnel",
+async fn run() -> Result<(), MainError> {
+    let role = parse_role_args(std::env::args().skip(1)).map_err(MainError::Role)?;
+    let loaded = load_daemon_process_config(role.clone(), env_var).map_err(MainError::Config)?;
+    match loaded {
+        LoadedDaemonProcessConfig::Configured(config) => run_daemon_process_until_shutdown(&config)
+            .await
+            .map_err(MainError::Runtime),
+        LoadedDaemonProcessConfig::TunnelConfigPending { side } => {
+            Err(MainError::TunnelConfigPending { side })
+        }
+    }
+}
+
+#[derive(Debug)]
+enum MainError {
+    Role(ployzd::role::DaemonRoleParseError),
+    Config(ployzd::config::DaemonProcessConfigError),
+    Runtime(ployzd::daemon_runtime::DaemonRuntimeError),
+    TunnelConfigPending { side: ployzd::role::TunnelSide },
+}
+
+impl MainError {
+    const fn exit_code(&self) -> i32 {
+        match self {
+            Self::Role(_) | Self::Config(_) => 2,
+            Self::Runtime(_) | Self::TunnelConfigPending { .. } => 3,
+        }
+    }
+}
+
+impl std::fmt::Display for MainError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Role(error) => write!(formatter, "{error}"),
+            Self::Config(error) => write!(formatter, "{error}"),
+            Self::Runtime(error) => write!(formatter, "{error}"),
+            Self::TunnelConfigPending { side } => write!(
+                formatter,
+                "ployzd tunnel {} config is pending",
+                side.as_str()
+            ),
+        }
     }
 }
