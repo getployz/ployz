@@ -57,6 +57,8 @@ pub async fn start_node_process_runtime(
         config.node_id.clone(),
         config.ebpf_bytecode_path.clone(),
         config.ebpf_ctl_path.clone(),
+        config.dataplane_bridge_ifname.clone(),
+        config.dataplane_wg_ifname.clone(),
     );
 
     start_node_process_runtime_with_ports(

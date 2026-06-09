@@ -23,10 +23,21 @@ pub struct HostWireGuardEbpfPreparer {
 
 impl HostWireGuardEbpfPreparer {
     #[must_use]
-    pub fn new(node_id: NodeId, ebpf_bytecode_path: PathBuf, ebpf_ctl_path: PathBuf) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        ebpf_bytecode_path: PathBuf,
+        ebpf_ctl_path: PathBuf,
+        bridge_ifname: String,
+        wg_ifname: String,
+    ) -> Self {
         Self {
             node_id,
-            requirements: default_requirements(ebpf_bytecode_path, ebpf_ctl_path),
+            requirements: default_requirements(
+                ebpf_bytecode_path,
+                ebpf_ctl_path,
+                bridge_ifname,
+                wg_ifname,
+            ),
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -223,6 +234,8 @@ impl HostDataplaneRequirement {
 fn default_requirements(
     ebpf_bytecode_path: PathBuf,
     ebpf_ctl_path: PathBuf,
+    bridge_ifname: String,
+    wg_ifname: String,
 ) -> Vec<HostDataplaneRequirement> {
     let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
     let ebpf_bytecode_arg = ebpf_bytecode_path.display().to_string();
@@ -248,10 +261,20 @@ fn default_requirements(
         ),
         HostDataplaneRequirement::command_succeeds(
             WireGuardEbpfComponent::EbpfForwarding,
-            ebpf_ctl_program,
-            ["validate".to_owned(), ebpf_bytecode_arg],
+            ebpf_ctl_program.clone(),
+            ["validate".to_owned(), ebpf_bytecode_arg.clone()],
         ),
         HostDataplaneRequirement::ployz_tc_bytecode(ebpf_bytecode_path),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::EbpfForwarding,
+            ebpf_ctl_program,
+            [
+                "ensure-attached".to_owned(),
+                ebpf_bytecode_arg,
+                bridge_ifname,
+                wg_ifname,
+            ],
+        ),
     ]
 }
 
@@ -347,6 +370,33 @@ mod tests {
                 ..
             } if node_id == self::node_id("node_a")
         ));
+    }
+
+    #[test]
+    fn default_requirements_ensure_ployz_tc_is_attached() {
+        let requirements = default_requirements(
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+            "/usr/local/bin/ployz-ebpf-ctl".into(),
+            "docker0".to_owned(),
+            "ployz-wg0".to_owned(),
+        );
+
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::EbpfForwarding,
+                    program,
+                    args,
+                } if program == "/usr/local/bin/ployz-ebpf-ctl"
+                    && args == &[
+                        "ensure-attached",
+                        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+                        "docker0",
+                        "ployz-wg0"
+                    ]
+            )
+        }));
     }
 
     #[tokio::test]

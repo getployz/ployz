@@ -25,6 +25,10 @@ pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
 pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
 pub const PLOYZ_EBPF_CTL_ENV: &str = "PLOYZ_EBPF_CTL";
 pub const DEFAULT_EBPF_CTL_PATH: &str = "/usr/local/bin/ployz-ebpf-ctl";
+pub const PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_BRIDGE_IFNAME";
+pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "docker0";
+pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
+pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
 pub const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 pub const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
@@ -82,6 +86,8 @@ pub fn load_daemon_process_config(
                 nats_url,
                 load_ebpf_bytecode_path(&env),
                 load_ebpf_ctl_path(&env),
+                load_dataplane_bridge_ifname(&env),
+                load_dataplane_wg_ifname(&env),
                 load_node_public_ip(&env)?,
             )))
         }
@@ -119,6 +125,18 @@ fn load_ebpf_ctl_path(env: &impl Fn(&str) -> Option<String>) -> std::path::PathB
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_CTL_PATH))
+}
+
+fn load_dataplane_bridge_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
+    env(PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned())
+}
+
+fn load_dataplane_wg_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
+    env(PLOYZ_DATAPLANE_WG_IFNAME_ENV)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_DATAPLANE_WG_IFNAME.to_owned())
 }
 
 fn load_node_public_ip(
@@ -614,6 +632,8 @@ pub struct NodeProcessConfig {
     pub nats_url: NatsClientUrl,
     pub ebpf_bytecode_path: std::path::PathBuf,
     pub ebpf_ctl_path: std::path::PathBuf,
+    pub dataplane_bridge_ifname: String,
+    pub dataplane_wg_ifname: String,
     pub public_ip: Option<IpAddr>,
 }
 
@@ -624,6 +644,8 @@ impl NodeProcessConfig {
         nats_url: NatsClientUrl,
         ebpf_bytecode_path: std::path::PathBuf,
         ebpf_ctl_path: std::path::PathBuf,
+        dataplane_bridge_ifname: String,
+        dataplane_wg_ifname: String,
         public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
@@ -631,6 +653,8 @@ impl NodeProcessConfig {
             nats_url,
             ebpf_bytecode_path,
             ebpf_ctl_path,
+            dataplane_bridge_ifname,
+            dataplane_wg_ifname,
             public_ip,
         }
     }

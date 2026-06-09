@@ -21,6 +21,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, bytecode, bridge, wg_ifname] if command == "attach" => {
             attach(Path::new(bytecode), bridge, wg_ifname)
         }
+        [command, bytecode, bridge, wg_ifname] if command == "ensure-attached" => {
+            ensure_attached(Path::new(bytecode), bridge, wg_ifname)
+        }
         [command, bridge] if command == "detach" => detach(bridge),
         [command, action, subnet, ifindex] if command == "route" && action == "add" => {
             let subnet = parse_ipv4_subnet(subnet)?;
@@ -41,7 +44,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: ployz-ebpf-ctl validate <bytecode>\n       ployz-ebpf-ctl attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl detach <bridge-ifname>\n       ployz-ebpf-ctl route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl route del <ipv4-subnet>".to_owned()
+    "usage: ployz-ebpf-ctl validate <bytecode>\n       ployz-ebpf-ctl attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl ensure-attached <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl detach <bridge-ifname>\n       ployz-ebpf-ctl route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl route del <ipv4-subnet>".to_owned()
 }
 
 fn validate_bytecode(path: &Path) -> Result<(), String> {
@@ -66,6 +69,16 @@ fn attach(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> 
 #[cfg(not(target_os = "linux"))]
 fn attach(_bytecode: &Path, _bridge: &str, _wg_ifname: &str) -> Result<(), String> {
     Err("attach requires Linux".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_attached(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> {
+    linux::ensure_attached(bytecode, bridge, wg_ifname)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_attached(_bytecode: &Path, _bridge: &str, _wg_ifname: &str) -> Result<(), String> {
+    Err("ensure-attached requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
@@ -194,6 +207,15 @@ mod linux {
         Ok(())
     }
 
+    pub fn ensure_attached(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> {
+        validate_bytecode(bytecode)?;
+        if ployz_tc_pins_exist() {
+            return Ok(());
+        }
+        remove_ployz_tc_pins()?;
+        attach(bytecode, bridge, wg_ifname)
+    }
+
     pub fn detach(bridge: &str) -> Result<(), String> {
         aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Egress, "ployz_egress")
             .map_err(|error| format!("detach ployz_egress from {bridge}: {error}"))?;
@@ -204,6 +226,23 @@ mod linux {
         remove_pin_file(format!("{PIN_PATH}/ingress"))?;
         remove_pin_dir(PIN_PATH)?;
         Ok(())
+    }
+
+    fn ployz_tc_pins_exist() -> bool {
+        [
+            format!("{PIN_PATH}/routes"),
+            format!("{PIN_PATH}/egress"),
+            format!("{PIN_PATH}/ingress"),
+        ]
+        .iter()
+        .all(|path| Path::new(path).exists())
+    }
+
+    fn remove_ployz_tc_pins() -> Result<(), String> {
+        remove_pin_file(format!("{PIN_PATH}/routes"))?;
+        remove_pin_file(format!("{PIN_PATH}/egress"))?;
+        remove_pin_file(format!("{PIN_PATH}/ingress"))?;
+        remove_pin_dir(PIN_PATH)
     }
 
     pub fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32) -> Result<(), String> {
@@ -276,6 +315,7 @@ mod tests {
         let error = run(Vec::new()).expect_err("empty args fail");
 
         assert!(error.contains("ployz-ebpf-ctl validate <bytecode>"));
+        assert!(error.contains("ployz-ebpf-ctl ensure-attached <bytecode>"));
     }
 
     #[test]

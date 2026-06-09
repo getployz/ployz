@@ -72,6 +72,9 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_CTL"));
     assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));
     assert!(script.contains("/usr/local/bin/ployz-ebpf-ctl"));
+    assert!(script.contains("wireguard-tools iproute2"));
+    assert!(script.contains("mount -t bpf bpf /sys/fs/bpf"));
+    assert!(script.contains("ip link add dev ployz-wg0 type wireguard"));
     assert!(!script.contains("PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL"));
     assert!(!script.contains("PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
     assert!(!script.contains("\"join_bundle\""));
