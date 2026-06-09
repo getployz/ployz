@@ -110,7 +110,6 @@
           }
         }
       },
-      "runtime_nats_url": "nats://127.0.0.1:7422",
       "join_token": "join_once_123"
     }
   },

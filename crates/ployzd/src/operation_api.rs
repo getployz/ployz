@@ -620,8 +620,6 @@ pub async fn machine_add(
                 failure: bootstrap_material_failure(error),
             },
         })?;
-    let join_bundle = material.join_bundle.clone();
-    let runtime_nats_url = join_bundle.material.runtime_nats_url.clone();
     let command = MachineAddSubmitCommand {
         operation_id: request.operation_id,
         idempotency_key: request.idempotency_key,
@@ -655,8 +653,7 @@ pub async fn machine_add(
         ),
         node_id: accepted.node_id,
         bootstrap_url: material.bootstrap_url,
-        join_bundle,
-        runtime_nats_url,
+        join_bundle: accepted.join_bundle,
         join_token: raw_token,
     })
 }

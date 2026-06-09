@@ -697,7 +697,6 @@ function defaultFixture(): OperationFixture {
         node_id: nodeId("node_2"),
         bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
         join_bundle: machineJoinBundle(),
-        runtime_nats_url: "nats://127.0.0.1:7422",
         join_token: machineJoinToken("join_once_123"),
       },
     },

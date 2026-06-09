@@ -54,7 +54,7 @@ impl MachineAddOutput {
             node_id: accepted.node_id,
             accepted: accepted.accepted,
             bootstrap_url: accepted.bootstrap_url,
-            runtime_nats_url: accepted.runtime_nats_url,
+            runtime_nats_url: accepted.join_bundle.material.runtime_nats_url,
             join_token: accepted.join_token,
         }
     }

@@ -455,8 +455,8 @@ export class MachineAddHandle extends OperationHandle {
     return this.machine.join_bundle;
   }
 
-  get runtimeNatsUrl(): MachineAddAccepted["runtime_nats_url"] {
-    return this.machine.runtime_nats_url;
+  get runtimeNatsUrl(): MachineAddAccepted["join_bundle"]["material"]["runtime_nats_url"] {
+    return this.machine.join_bundle.material.runtime_nats_url;
   }
 
   get joinToken(): MachineAddAccepted["join_token"] {
