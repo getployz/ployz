@@ -6,9 +6,10 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 use ployz_core::ops::{
-    BackupOperationFailure, BackupTransition, CertOperationFailure, DeployEvidence,
-    DeployTransition, EventSequence, EventSequenceError, OperationEvent, OperationEventReplayLimit,
-    OperationEventReplayPage, OperationIdempotencyKey, ReplayedOperationEvent,
+    BackupOperationFailure, BackupTransition, CertOperationFailure, DeployCompletionOutcome,
+    DeployEvidence, DeployTransition, EventSequence, EventSequenceError, OperationEvent,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
+    ReplayedOperationEvent,
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::{
@@ -648,8 +649,9 @@ fn deploy_transition_event(
             operation_id: operation_id.clone(),
             stage: *stage,
         },
-        DeployTransition::Completed => OperationEvent::DeployCompleted {
+        DeployTransition::Completed { outcome } => OperationEvent::DeployCompleted {
             operation_id: operation_id.clone(),
+            outcome: *outcome,
         },
         DeployTransition::Failed { failure } => OperationEvent::DeployFailed {
             operation_id: operation_id.clone(),
@@ -713,7 +715,12 @@ fn deploy_transition_token(transition: &DeployTransition) -> String {
         DeployTransition::Running { stage } => {
             format!("running.{}", stage.as_subject())
         }
-        DeployTransition::Completed => "completed".to_owned(),
+        DeployTransition::Completed {
+            outcome: DeployCompletionOutcome::Completed,
+        } => "completed".to_owned(),
+        DeployTransition::Completed { outcome } => {
+            format!("completed.{}", outcome.as_subject())
+        }
         DeployTransition::Failed { .. } => "failed".to_owned(),
         DeployTransition::Cancelled { .. } => "cancelled".to_owned(),
     }

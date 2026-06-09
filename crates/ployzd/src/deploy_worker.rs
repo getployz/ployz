@@ -307,7 +307,7 @@ async fn record_completion_best_effort<R>(
 where
     R: DeployOperationRecorder,
 {
-    match record_stage(command, recorder, DeployTransition::Completed).await {
+    match record_stage(command, recorder, DeployTransition::completed()).await {
         Ok(()) => DeployTerminalEvent::Recorded,
         Err(_) => DeployTerminalEvent::Missing,
     }

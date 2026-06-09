@@ -605,7 +605,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
     );
 
     repository
-        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Completed)
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::completed())
         .await
         .expect("completed transition records");
     let terminal_duplicate = repository
@@ -813,7 +813,7 @@ async fn operation_repository_rejects_fresh_evidence_after_completed_operation()
     submit_deploy(&repository, "op_123").await;
     record_active_commit_stage(&repository, "op_123").await;
     repository
-        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Completed)
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::completed())
         .await
         .expect("completed transition records");
 
@@ -865,7 +865,7 @@ async fn operation_repository_rejects_durable_evidence_after_terminal_cursor() {
     submit_deploy(&repository, "op_completed").await;
     record_active_commit_stage(&repository, "op_completed").await;
     repository
-        .record_deploy_transition(&operation_id("op_completed"), DeployTransition::Completed)
+        .record_deploy_transition(&operation_id("op_completed"), DeployTransition::completed())
         .await
         .expect("completed transition records");
     assert_durable_terminal_evidence_rejected(&repository, &event_log, "op_completed").await;

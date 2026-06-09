@@ -12,7 +12,7 @@ use ployz_core::node::{
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+    ExpectedActiveService, NodePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -192,53 +192,6 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
 }
 
 #[tokio::test]
-async fn routed_nats_preparation_includes_gateway_nodes_in_dataplane_scope() {
-    let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
-    core_state
-        .replace_active_machine(&active_machine("edge_2"))
-        .await
-        .expect("active edge stores");
-    observations
-        .replace_gateway_status(&gateway_status("core_1"))
-        .await
-        .expect("core gateway status stores");
-    observations
-        .replace_node_public_ip(&node_public_ip("core_1", 1))
-        .await
-        .expect("core public ip stores");
-    observations
-        .replace_node_public_ip(&node_public_ip("edge_2", 2))
-        .await
-        .expect("edge public ip stores");
-
-    let command = prepare_command_from_nats(
-        operation_id("op_123"),
-        routed_deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
-        &core_state,
-        &observations,
-        Duration::from_secs(7),
-    )
-    .await;
-
-    assert_eq!(command.eligible_nodes(), [node_id("edge_2")]);
-    assert_eq!(command.dataplane_nodes(), [node_id("core_1")]);
-    assert_eq!(
-        command.wireguard_peer_endpoints(),
-        [
-            wireguard_peer_endpoint("core_1", 1),
-            wireguard_peer_endpoint("edge_2", 2),
-        ]
-    );
-}
-
-#[tokio::test]
 async fn routed_nats_preparation_uses_configured_node_as_dataplane_fallback() {
     let nats = test_nats().await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
@@ -279,6 +232,41 @@ async fn routed_nats_preparation_uses_configured_node_as_dataplane_fallback() {
             wireguard_peer_endpoint("edge_2", 2),
         ]
     );
+}
+
+#[tokio::test]
+async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
+    let nats = test_nats().await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    core_state
+        .replace_active_machine(&active_machine("edge_2"))
+        .await
+        .expect("active edge stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("edge_2", 2))
+        .await
+        .expect("edge public ip stores");
+
+    let error = load_deploy_execution_facts_from_nats(
+        &routed_deploy_request(),
+        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        &core_state,
+        &observations,
+        Duration::from_secs(7),
+    )
+    .await
+    .expect_err("missing configured dataplane public ip is rejected");
+
+    assert!(matches!(
+        error,
+        DeployFactLoadError::MissingNodePublicIpObservation { node_id }
+            if node_id == self::node_id("core_1")
+    ));
 }
 
 #[tokio::test]
@@ -518,15 +506,6 @@ fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
     NodePublicIpObservation {
         node_id: self::node_id(node_id),
         public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
-    }
-}
-
-fn gateway_status(node_id: &str) -> GatewayStatusObservation {
-    GatewayStatusObservation {
-        node_id: self::node_id(node_id),
-        listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
-        serving: GatewayServingStatus::Current,
-        route_count: 1,
     }
 }
 

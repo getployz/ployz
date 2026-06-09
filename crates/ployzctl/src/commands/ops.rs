@@ -226,9 +226,24 @@ const fn deploy_state(state: &DeployOperationState) -> &'static str {
         DeployOperationState::Accepted => "accepted",
         DeployOperationState::Planning => "planning",
         DeployOperationState::Running { stage } => deploy_running_stage(*stage),
-        DeployOperationState::Completed => "completed",
+        DeployOperationState::Completed { outcome } => deploy_completion_outcome(*outcome),
         DeployOperationState::Failed { .. } => "failed",
         DeployOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+const fn deploy_completion_outcome(
+    outcome: ployz_core::ops::DeployCompletionOutcome,
+) -> &'static str {
+    match outcome {
+        ployz_core::ops::DeployCompletionOutcome::Completed => "completed",
+        ployz_core::ops::DeployCompletionOutcome::CompletedWithWarnings => {
+            "completed-with-warnings"
+        }
+        ployz_core::ops::DeployCompletionOutcome::PartiallyCompleted => "partially-completed",
+        ployz_core::ops::DeployCompletionOutcome::PartiallyCompletedWithWarnings => {
+            "partially-completed-with-warnings"
+        }
     }
 }
 

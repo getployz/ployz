@@ -307,7 +307,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::Completed,
+            state: DeployOperationState::completed(),
             ..
         }
     ));
@@ -401,7 +401,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::Completed,
+            state: DeployOperationState::completed(),
             ..
         }
     ));

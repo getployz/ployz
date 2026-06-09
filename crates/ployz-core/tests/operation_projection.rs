@@ -57,7 +57,7 @@ fn terminal_operation_status_cannot_return_to_running() {
     let completed = OperationStatus::Deploy {
         id: operation_id("op_123"),
         service_id: service_id("svc_api"),
-        state: DeployOperationState::Completed,
+        state: DeployOperationState::completed(),
         last_event_sequence: event_sequence(4),
     };
 
@@ -66,7 +66,7 @@ fn terminal_operation_status_cannot_return_to_running() {
         Err(StatusProjectionError::TerminalState {
             operation_id: operation_id("op_123"),
             current: Box::new(ProjectionOperationState::Deploy(
-                DeployOperationState::Completed
+                DeployOperationState::completed()
             )),
             attempted: Box::new(ProjectionOperationState::Deploy(fake_running_state())),
         })
@@ -85,7 +85,7 @@ fn deploy_completion_is_rejected_before_active_commit_stage() {
     };
 
     assert_eq!(
-        project_deploy_transition(&waiting, DeployTransition::Completed, event_sequence(5)),
+        project_deploy_transition(&waiting, DeployTransition::completed(), event_sequence(5)),
         Err(StatusProjectionError::InvalidTransition {
             operation_id: operation_id("op_123"),
             current: Box::new(ProjectionOperationState::Deploy(
@@ -94,7 +94,7 @@ fn deploy_completion_is_rejected_before_active_commit_stage() {
                 }
             )),
             attempted: Box::new(ProjectionOperationState::Deploy(
-                DeployOperationState::Completed
+                DeployOperationState::completed()
             )),
         })
     );
@@ -175,12 +175,16 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
     };
 
     assert_eq!(
-        project_deploy_transition(&committing, DeployTransition::Completed, event_sequence(6)),
+        project_deploy_transition(
+            &committing,
+            DeployTransition::completed(),
+            event_sequence(6)
+        ),
         Ok(DeployProjection::Updated {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
-                state: DeployOperationState::Completed,
+                state: DeployOperationState::completed(),
                 last_event_sequence: event_sequence(6),
             }),
         })
@@ -307,14 +311,14 @@ fn invalid_deploy_transitions_are_rejected() {
     );
 
     assert_eq!(
-        project_deploy_transition(&accepted, DeployTransition::Completed, event_sequence(2)),
+        project_deploy_transition(&accepted, DeployTransition::completed(), event_sequence(2)),
         Err(StatusProjectionError::InvalidTransition {
             operation_id: operation_id("op_123"),
             current: Box::new(ProjectionOperationState::Deploy(
                 DeployOperationState::Accepted
             )),
             attempted: Box::new(ProjectionOperationState::Deploy(
-                DeployOperationState::Completed
+                DeployOperationState::completed()
             )),
         })
     );

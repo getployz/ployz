@@ -62,6 +62,7 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
                                 2,
                                 OperationEvent::DeployCompleted {
                                     operation_id: operation_id("op_deploy"),
+                                    outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
                                 },
                             )])
                         }

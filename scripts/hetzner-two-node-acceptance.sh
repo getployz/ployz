@@ -251,7 +251,7 @@ wait_for_smoke_service() {
   log_file="${log_dir}/curl-smoke-${name}.log"
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if curl -fsS -H 'Host: smoke.local' "http://${ip}:8080/" >"$log_file" 2>&1; then
+    if curl -fsS --connect-timeout 2 --max-time 5 -H 'Host: smoke.local' "http://${ip}:8080/" >"$log_file" 2>&1; then
       cat "$log_file"
       return 0
     fi

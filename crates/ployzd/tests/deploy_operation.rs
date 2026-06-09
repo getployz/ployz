@@ -164,7 +164,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
-            RecordedOperation::Transition(DeployTransition::Completed),
+            RecordedOperation::Transition(DeployTransition::completed()),
         ]
     );
     assert_eq!(runtime.requests.len(), 2);
@@ -276,7 +276,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: active_service_running(),
             }),
-            RecordedOperation::Transition(DeployTransition::Completed),
+            RecordedOperation::Transition(DeployTransition::completed()),
         ]
     );
 }
@@ -328,7 +328,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
     );
     assert_eq!(
         recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+        Some(&RecordedOperation::Transition(DeployTransition::completed()))
     );
     assert!(
         recorder
@@ -386,7 +386,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
     );
     assert_eq!(
         recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+        Some(&RecordedOperation::Transition(DeployTransition::completed()))
     );
 }
 
@@ -477,7 +477,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
     );
     assert_eq!(
         recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+        Some(&RecordedOperation::Transition(DeployTransition::completed()))
     );
     assert_eq!(runtime.requests.len(), 1);
 }
@@ -827,7 +827,7 @@ async fn routed_deploy_commits_route_before_completion() {
     );
     assert_eq!(
         recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+        Some(&RecordedOperation::Transition(DeployTransition::completed()))
     );
     assert_deploy_event_order(
         &recorder.records,
@@ -892,7 +892,7 @@ async fn routed_deploy_fails_before_completion_when_route_is_stale() {
     assert!(
         !recorder
             .records
-            .contains(&RecordedOperation::Transition(DeployTransition::Completed))
+            .contains(&RecordedOperation::Transition(DeployTransition::completed()))
     );
 }
 

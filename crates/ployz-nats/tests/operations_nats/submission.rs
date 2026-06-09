@@ -989,7 +989,7 @@ async fn operation_repository_replay_marks_terminal_operation_caught_up_as_termi
             .expect("running stage recorded");
     }
     repository
-        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Completed)
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::completed())
         .await
         .expect("completion recorded");
 

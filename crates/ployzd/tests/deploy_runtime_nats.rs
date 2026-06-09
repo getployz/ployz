@@ -87,7 +87,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
-            state: DeployOperationState::Completed,
+            state: DeployOperationState::completed(),
             ..
         })
     ));

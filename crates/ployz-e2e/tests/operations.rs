@@ -253,7 +253,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::Completed,
+            state: DeployOperationState::completed(),
             ..
         }
     ));
@@ -342,6 +342,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployCompleted {
                 operation_id: operation_id("op_e2e_run"),
+                outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
             },
         ]
     );
@@ -421,7 +422,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::Completed,
+            state: DeployOperationState::completed(),
             ..
         }
     ));

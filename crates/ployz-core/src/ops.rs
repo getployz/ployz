@@ -57,6 +57,28 @@ pub enum DeployRunningStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
+pub enum DeployCompletionOutcome {
+    Completed,
+    CompletedWithWarnings,
+    PartiallyCompleted,
+    PartiallyCompletedWithWarnings,
+}
+
+impl DeployCompletionOutcome {
+    #[must_use]
+    pub const fn as_subject(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::CompletedWithWarnings => "completed_with_warnings",
+            Self::PartiallyCompleted => "partially_completed",
+            Self::PartiallyCompletedWithWarnings => "partially_completed_with_warnings",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
 pub enum CertRunningStage {
     ChallengePublished,
     ValidationStarted,
@@ -77,16 +99,23 @@ pub enum DeployOperationState {
     Accepted,
     Planning,
     Running { stage: DeployRunningStage },
-    Completed,
+    Completed { outcome: DeployCompletionOutcome },
     Failed { failure: DeployOperationFailure },
     Cancelled { reason: CancellationReason },
 }
 
 impl DeployOperationState {
     #[must_use]
+    pub const fn completed() -> Self {
+        Self::Completed {
+            outcome: DeployCompletionOutcome::Completed,
+        }
+    }
+
+    #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
             Self::Accepted | Self::Planning | Self::Running { .. } => false,
         }
     }
@@ -560,7 +589,7 @@ impl OperationStatus {
 pub enum DeployTransition {
     Planning,
     Running { stage: DeployRunningStage },
-    Completed,
+    Completed { outcome: DeployCompletionOutcome },
     Failed { failure: DeployOperationFailure },
     Cancelled { reason: CancellationReason },
 }
@@ -650,11 +679,18 @@ impl DeployEvidence {
 
 impl DeployTransition {
     #[must_use]
+    pub const fn completed() -> Self {
+        Self::Completed {
+            outcome: DeployCompletionOutcome::Completed,
+        }
+    }
+
+    #[must_use]
     pub fn state(&self) -> DeployOperationState {
         match self {
             Self::Planning => DeployOperationState::Planning,
             Self::Running { stage } => DeployOperationState::Running { stage: *stage },
-            Self::Completed => DeployOperationState::Completed,
+            Self::Completed { outcome } => DeployOperationState::Completed { outcome: *outcome },
             Self::Failed { failure } => DeployOperationState::Failed {
                 failure: failure.clone(),
             },
@@ -942,6 +978,7 @@ pub enum OperationEvent {
     },
     DeployCompleted {
         operation_id: OperationId,
+        outcome: DeployCompletionOutcome,
     },
     DeployFailed {
         operation_id: OperationId,

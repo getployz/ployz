@@ -849,6 +849,7 @@ fn ops_watch_renders_persisted_operation_events() {
                 2,
                 ployz_core::ops::OperationEvent::DeployCompleted {
                     operation_id: operation_id("op_123"),
+                    outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
                 },
             ),
         ],

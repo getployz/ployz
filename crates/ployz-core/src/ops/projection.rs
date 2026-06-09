@@ -602,7 +602,7 @@ fn evidence_is_satisfied_after_stage(
         DeployOperationState::Running { stage } => {
             deploy_stage_rank(*stage) > deploy_stage_rank(evidence_stage)
         }
-        DeployOperationState::Completed => true,
+        DeployOperationState::Completed { .. } => true,
         DeployOperationState::Accepted
         | DeployOperationState::Planning
         | DeployOperationState::Failed { .. }
@@ -645,11 +645,13 @@ fn deploy_transition_satisfied(
             }
             DeployOperationState::Accepted
             | DeployOperationState::Planning
-            | DeployOperationState::Completed
+            | DeployOperationState::Completed { .. }
             | DeployOperationState::Failed { .. }
             | DeployOperationState::Cancelled { .. } => false,
         },
-        DeployOperationState::Completed => matches!(current, DeployOperationState::Completed),
+        DeployOperationState::Completed { outcome: attempted } => {
+            matches!(current, DeployOperationState::Completed { outcome } if outcome == attempted)
+        }
         DeployOperationState::Failed { failure: attempted } => {
             matches!(current, DeployOperationState::Failed { failure } if failure == attempted)
         }
@@ -795,13 +797,13 @@ fn deploy_transition_allowed(
             DeployOperationState::Running {
                 stage: DeployRunningStage::ActiveServiceCommit,
             },
-            DeployOperationState::Completed,
+            DeployOperationState::Completed { .. },
         )
         | (
             DeployOperationState::Running {
                 stage: DeployRunningStage::RemovingSupersededContainers,
             },
-            DeployOperationState::Completed,
+            DeployOperationState::Completed { .. },
         ) => true,
         (
             DeployOperationState::Planning,
@@ -814,7 +816,7 @@ fn deploy_transition_allowed(
             DeployOperationState::Running { stage: attempted },
         ) => deploy_stage_is_next(*current, *attempted),
         (DeployOperationState::Accepted, _)
-        | (DeployOperationState::Completed, _)
+        | (DeployOperationState::Completed { .. }, _)
         | (DeployOperationState::Failed { .. }, _)
         | (DeployOperationState::Cancelled { .. }, _)
         | (DeployOperationState::Planning, _)

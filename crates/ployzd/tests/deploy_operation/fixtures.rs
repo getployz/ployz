@@ -78,7 +78,7 @@ impl DeployOperationRecorder for RecordingOperations {
     ) -> Result<(), DeployOperationRecordError> {
         assert_eq!(recorded_operation_id, &operation_id("op_123"));
         if self.fail_completed_transition_remaining > 0
-            && transition == (DeployTransition::Completed)
+            && transition == (DeployTransition::completed())
         {
             self.fail_completed_transition_remaining -= 1;
             self.completed_transition_attempts += 1;

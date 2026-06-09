@@ -66,16 +66,20 @@ pub async fn load_deploy_execution_facts_from_nats(
         .flatten();
     let node_scope = load_active_machine_node_scope(core_state, node_scope).await?;
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
-    let dataplane_nodes =
-        load_routed_dataplane_nodes(request, observations, routed_dataplane_fallback).await?;
+    let dataplane_nodes = routed_dataplane_nodes(request, routed_dataplane_fallback);
     let peer_endpoint_node_ids = sorted_unique_nodes(
         node_scope
             .eligible_nodes
             .iter()
             .chain(dataplane_nodes.iter()),
     );
+    let public_ip_requirement = match request.route {
+        Some(_) => NodePublicIpRequirement::RequireAll,
+        None => NodePublicIpRequirement::BestEffort,
+    };
     let wireguard_peer_endpoints =
-        load_wireguard_peer_endpoints(observations, &peer_endpoint_node_ids).await?;
+        load_wireguard_peer_endpoints(observations, &peer_endpoint_node_ids, public_ip_requirement)
+            .await?;
 
     Ok(DeployExecutionFacts {
         active_service,
@@ -88,26 +92,12 @@ pub async fn load_deploy_execution_facts_from_nats(
     })
 }
 
-async fn load_routed_dataplane_nodes(
-    request: &DeployRequest,
-    observations: &AsyncNatsObservationStore,
-    fallback_nodes: Vec<NodeId>,
-) -> Result<Vec<NodeId>, DeployFactLoadError> {
+fn routed_dataplane_nodes(request: &DeployRequest, fallback_nodes: Vec<NodeId>) -> Vec<NodeId> {
     if request.route.is_none() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
-    let gateways = observations.gateway_statuses().await.map_err(|source| {
-        DeployFactLoadError::GatewayStatusObservationRead {
-            failure: observation_read_failure(source),
-        }
-    })?;
-    Ok(sorted_unique_nodes(
-        gateways
-            .iter()
-            .map(|gateway| &gateway.node_id)
-            .chain(fallback_nodes.iter()),
-    ))
+    sorted_unique_nodes(fallback_nodes.iter())
 }
 
 async fn load_active_machine_node_scope(
@@ -161,6 +151,7 @@ async fn load_node_snapshots(
 async fn load_wireguard_peer_endpoints(
     observations: &AsyncNatsObservationStore,
     node_ids: &[NodeId],
+    requirement: NodePublicIpRequirement,
 ) -> Result<Vec<WireGuardPeerEndpoint>, DeployFactLoadError> {
     let requested = node_ids.iter().collect::<std::collections::BTreeSet<_>>();
     let mut endpoints = observations
@@ -175,7 +166,25 @@ async fn load_wireguard_peer_endpoints(
         .collect::<Vec<_>>();
 
     endpoints.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+    if requirement == NodePublicIpRequirement::RequireAll {
+        for node_id in node_ids {
+            if endpoints
+                .iter()
+                .all(|endpoint| endpoint.node_id != *node_id)
+            {
+                return Err(DeployFactLoadError::MissingNodePublicIpObservation {
+                    node_id: node_id.clone(),
+                });
+            }
+        }
+    }
     Ok(endpoints)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodePublicIpRequirement {
+    BestEffort,
+    RequireAll,
 }
 
 fn peer_endpoint_from_public_ip(observation: NodePublicIpObservation) -> WireGuardPeerEndpoint {
@@ -214,8 +223,8 @@ pub enum DeployFactLoadError {
     NodePublicIpObservationRead {
         failure: ObservationReadFailure,
     },
-    GatewayStatusObservationRead {
-        failure: ObservationReadFailure,
+    MissingNodePublicIpObservation {
+        node_id: NodeId,
     },
 }
 
@@ -447,12 +456,11 @@ impl fmt::Display for DeployFactLoadError {
                     "node public ip observations could not be read: {failure}"
                 )
             }
-            Self::GatewayStatusObservationRead { failure } => {
-                write!(
-                    formatter,
-                    "gateway observations could not be read: {failure}"
-                )
-            }
+            Self::MissingNodePublicIpObservation { node_id } => write!(
+                formatter,
+                "node public ip observation for {} is missing",
+                node_id.as_str()
+            ),
         }
     }
 }

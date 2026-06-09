@@ -101,6 +101,14 @@ fn removing_superseded_containers_stage_has_stable_wire_name() {
 }
 
 #[test]
+fn completed_operation_state_carries_stable_outcome_name() {
+    assert_eq!(
+        serde_json::to_string(&DeployOperationState::completed()).expect("state serializes"),
+        r#"{"state":"completed","outcome":"completed"}"#
+    );
+}
+
+#[test]
 fn running_operation_status_round_trips_through_json() {
     let status = OperationStatus::Deploy {
         id: operation_id("op_123"),
@@ -168,7 +176,7 @@ fn wireguard_ebpf_timeout_failures_keep_node_scope() {
 
 #[test]
 fn terminal_operation_state_is_explicit() {
-    assert!(DeployOperationState::Completed.is_terminal());
+    assert!(DeployOperationState::completed().is_terminal());
     assert!(
         DeployOperationState::Failed {
             failure: DeployOperationFailure::RouteCutoverFailed {
