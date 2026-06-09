@@ -64,6 +64,16 @@ export PLOYZ_SSH_PRIVATE_KEY="$HOME/.ssh/ployz-ci"
 servers. `PLOYZ_SSH_PRIVATE_KEY` is the matching local private key used to
 prove SSH readiness.
 
+Prepare local artifacts:
+
+```sh
+scripts/prepare-h0-artifacts.sh
+```
+
+The prep command builds the Ployz binaries into `/tmp/ployz-build-target`,
+resolves the eBPF bytecode, requires `nats-server`, and prints the exports the
+acceptance script will use.
+
 Optional environment:
 
 ```sh

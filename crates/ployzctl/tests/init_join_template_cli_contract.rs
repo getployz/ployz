@@ -110,6 +110,19 @@ fn assert_join_template(template: MachineJoinTemplate) {
         "/usr/local/bin/ployzd"
     );
     assert_eq!(
+        template
+            .join_bundle
+            .material
+            .ebpf_bytecode
+            .install_path
+            .as_str(),
+        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+    );
+    assert_eq!(
+        template.join_bundle.material.ebpf_ctl.install_path.as_str(),
+        "/usr/local/bin/ployz-ebpf-ctl"
+    );
+    assert_eq!(
         template.secret_delivery.nats_credentials.secret(),
         "acceptance-node-creds"
     );
@@ -143,6 +156,22 @@ fn init_join_template_args(secret_delivery_file: &Path) -> Vec<String> {
         PLOYZ_NEWLINE_SHA256,
         "--ployzd-install-path",
         "/usr/local/bin/ployzd",
+        "--ebpf-bytecode-version",
+        "acceptance",
+        "--ebpf-bytecode-source",
+        "/tmp/ployz-ebpf-tc",
+        "--ebpf-bytecode-sha256",
+        PLOYZ_NEWLINE_SHA256,
+        "--ebpf-bytecode-install-path",
+        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+        "--ebpf-ctl-version",
+        "acceptance",
+        "--ebpf-ctl-source",
+        "/tmp/ployz-ebpf-ctl",
+        "--ebpf-ctl-sha256",
+        PLOYZ_NEWLINE_SHA256,
+        "--ebpf-ctl-install-path",
+        "/usr/local/bin/ployz-ebpf-ctl",
         "--secret-delivery-file",
     ]
     .into_iter()

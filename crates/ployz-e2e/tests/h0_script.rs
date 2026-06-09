@@ -104,9 +104,33 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(!script.contains("provider trait"));
 }
 
+#[test]
+fn h0_artifact_prep_builds_and_prints_acceptance_exports() {
+    let script = std::fs::read_to_string(prepare_script_path()).expect("script is readable");
+
+    assert!(script.contains("TARGET_DIR=\"${PLOYZ_ACCEPTANCE_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/ployz-build-target}}\""));
+    assert!(script.contains("-p ployzctl"));
+    assert!(script.contains("-p ployzd"));
+    assert!(script.contains("-p ployz-keeper"));
+    assert!(script.contains("-p ployz-ebpf-ctl"));
+    assert!(script.contains("scripts/install-ebpf-bytecode.sh"));
+    assert!(script.contains("set PLOYZ_ACCEPTANCE_NATS_SERVER or install nats-server on PATH"));
+    assert!(script.contains("export PLOYZ_ACCEPTANCE_PLOYZCTL="));
+    assert!(script.contains("export PLOYZ_ACCEPTANCE_PLOYZD="));
+    assert!(script.contains("export PLOYZ_ACCEPTANCE_KEEPER="));
+    assert!(script.contains("export PLOYZ_ACCEPTANCE_EBPF_CTL="));
+    assert!(script.contains("export PLOYZ_ACCEPTANCE_EBPF_BYTECODE="));
+    assert!(script.contains("export PLOYZ_ACCEPTANCE_NATS_SERVER="));
+    assert!(script.contains("scripts/hetzner-two-node-acceptance.sh up --run-id <id>"));
+}
+
 fn script_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/hetzner-two-node-acceptance.sh")
+}
+
+fn prepare_script_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/prepare-h0-artifacts.sh")
 }
 
 fn stdout(output: &std::process::Output) -> String {
