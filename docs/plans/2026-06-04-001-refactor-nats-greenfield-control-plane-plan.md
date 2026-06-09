@@ -1063,20 +1063,32 @@ started:
   real NATS operation adapters are substantially represented, but any durable
   consumer workflow path should be removed or deferred.
 - U5: permission profile rendering exists and is covered by tests.
-- U6: node-agent idempotency and Docker observation/label models are started.
-- U7: the first deploy proof exists against fake Docker-style execution and
-  active-state commit behavior.
+- U6: node-agent idempotency, Docker observation/label models, and the local
+  Docker execution path are started.
+- U7: the deploy proof exists against fake execution and has real-Docker
+  adapters, active-state commit behavior, route cutover, retained failed
+  artifact behavior, and eBPF/WireGuard preparation evidence.
+- U7a: keeper, `ployz.sh`, artifact verification, first-node install planning,
+  join-token redemption, join material storage, and supervised role unit
+  rendering exist. The current product gap is proving that fresh-host init and
+  joined-host install run those pieces without helper orchestration.
+- U8: the gateway process exists as a direct NATS watcher with simple HTTP
+  proxy behavior and last-known-good projection behavior. Keep it dumb until
+  H0 proves the product path.
+- U9/U9a: CLI/SDK ergonomics and the operation API registry exist; recent work
+  made first-node activation an explicit API operation instead of CLI-side
+  orchestration.
+- U10a/U10b: backup scope, backup objects, and restore-shaped coverage exist
+  enough to stay behind the H0 product proof unless a fresh test run exposes a
+  real regression.
 
 Remaining work should avoid redoing those pieces unless current tests reveal a
-real gap. U11 has now converted deploy execution to direct owned operation
-functions under advisory leases. U9 added CLI/SDK ergonomics and U9a
-centralizes the user-facing operation API contract so service catalog, runtime
-binding, Rust client calls, and generated TypeScript metadata share one
-endpoint registry. U10a now needs to be narrowed to single-core NATS resource
-manifests and the canonical control-plane backup scope. The major remaining
-gaps are keeper bootstrap/install execution, real Docker execution depth,
-deeper gateway/DNS data-plane integration, backup/restore execution, and
-broader end-to-end failure coverage.
+real gap. U11 has converted deploy execution to direct owned operation
+functions under advisory leases. The major remaining gaps are proving
+fresh-host keeper/init, proving real joined-node install through NATS over
+iroh, making the real Docker/eBPF/WireGuard/gateway path pass H0, then filling
+the stress-test gaps around process loss, tunnel loss, and ambiguous node
+runtime failures.
 
 ### Execution And Review Loop
 

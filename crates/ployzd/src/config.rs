@@ -73,12 +73,10 @@ pub fn load_daemon_process_config(
 ) -> Result<DaemonProcessConfig, DaemonProcessConfigError> {
     match &role {
         DaemonProcessRole::Control => {
+            let node_id = load_process_node_id(&role, &env)?;
             let nats_url = load_nats_url(&role, &env)?;
-            let control = ControlProcessConfig::new(
-                NatsServerRuntime::External(nats_url),
-                NodeId::try_new("core_1").expect("default single-core node id is valid"),
-            )
-            .with_machine_bootstrap(load_machine_bootstrap(&env)?);
+            let control = ControlProcessConfig::new(NatsServerRuntime::External(nats_url), node_id)
+                .with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
         DaemonProcessRole::Node(node_id) => {

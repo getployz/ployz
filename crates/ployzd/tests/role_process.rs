@@ -272,6 +272,7 @@ fn node_role_rejects_invalid_public_ip() {
 #[test]
 fn control_role_loads_optional_machine_bootstrap_url() {
     let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_NODE_ID_ENV => Some("core_a".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
         PLOYZ_MACHINE_BOOTSTRAP_URL_ENV => Some("https://example.test/ployz.sh".to_owned()),
         _ => None,
@@ -281,6 +282,7 @@ fn control_role_loads_optional_machine_bootstrap_url() {
     let DaemonProcessConfig::Control(config) = config else {
         panic!("control role should produce control config");
     };
+    assert_eq!(config.deploy_nodes, vec![node_id("core_a")]);
     assert_eq!(
         config.machine_bootstrap.bootstrap_url.as_str(),
         "https://example.test/ployz.sh"
@@ -291,6 +293,7 @@ fn control_role_loads_optional_machine_bootstrap_url() {
 fn control_role_loads_optional_machine_join_template() {
     let template_path = temp_join_template_file();
     let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_NODE_ID_ENV => Some("core_a".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
         PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV => Some(template_path.clone()),
         _ => None,
@@ -345,6 +348,7 @@ fn gateway_role_rejects_invalid_listen_addr() {
 fn control_role_rejects_invalid_machine_bootstrap_url() {
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+            PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
             PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
             PLOYZ_MACHINE_BOOTSTRAP_URL_ENV => Some("http://example.test/ployz.sh".to_owned()),
             _ => None,
