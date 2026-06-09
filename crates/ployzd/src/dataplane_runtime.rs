@@ -1,6 +1,5 @@
 //! Host WireGuard/eBPF readiness for node-local dataplane preparation.
 
-use object::{Object, ObjectSymbol};
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
     WireGuardEbpfPrepareError, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
@@ -256,56 +255,16 @@ fn validate_ployz_tc_bytecode(
             ),
         )
     })?;
-    let object = object::File::parse(bytes.as_slice()).map_err(|source| {
+    ployz_ebpf_common::validate_ployz_tc_bytecode(bytes.as_slice()).map_err(|source| {
         unavailable(
             node_id,
             WireGuardEbpfComponent::EbpfForwarding,
             format!(
-                "required eBPF bytecode is not a readable object file: {}: {source}",
+                "required eBPF bytecode is not valid Ployz TC bytecode: {}: {source:?}",
                 path.display()
             ),
         )
-    })?;
-    if object.architecture() != object::Architecture::Bpf {
-        return Err(unavailable(
-            node_id,
-            WireGuardEbpfComponent::EbpfForwarding,
-            format!(
-                "required eBPF bytecode is not a BPF object: {}",
-                path.display()
-            ),
-        ));
-    }
-
-    let symbols = object
-        .symbols()
-        .filter_map(|symbol| symbol.name().ok())
-        .collect::<std::collections::BTreeSet<_>>();
-    let required = [
-        "ployz_egress",
-        "ployz_ingress",
-        "ROUTES",
-        "WG_IFINDEX",
-        "OBSERVE_FLAG",
-        "EVENTS",
-    ];
-    let mut found = Vec::new();
-    for symbol in required {
-        if !symbols.contains(symbol) {
-            return Err(unavailable(
-                node_id,
-                WireGuardEbpfComponent::EbpfForwarding,
-                format!(
-                    "required eBPF bytecode symbol is missing from {}: {}",
-                    path.display(),
-                    symbol
-                ),
-            ));
-        }
-        found.push(symbol.to_owned());
-    }
-
-    Ok(found)
+    })
 }
 
 fn component_ready_path(component: WireGuardEbpfComponent, path: String) -> HostDataplaneEvidence {

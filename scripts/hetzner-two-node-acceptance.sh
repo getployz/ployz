@@ -194,8 +194,9 @@ stage_host() {
   scp_base "$keeper_bin" "$(ssh_target "$ip"):$remote_keeper" >/dev/null
   scp_base "$nats_server_bin" "$(ssh_target "$ip"):$remote_nats_server" >/dev/null
   scp_base "$ployz_sh" "$(ssh_target "$ip"):$remote_ployz_sh" >/dev/null
+  scp_base "$ebpf_ctl_bin" "$(ssh_target "$ip"):$remote_ebpf_ctl" >/dev/null
   scp_base "$ebpf_bytecode" "$(ssh_target "$ip"):$remote_ebpf_path" >/dev/null
-  remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh'"
+  remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh' '$remote_ebpf_ctl'"
   remote_sh "$ip" "chmod 0644 '$remote_ebpf_path'"
 }
 
@@ -251,11 +252,13 @@ ployzctl_bin="${PLOYZ_ACCEPTANCE_PLOYZCTL:-${acceptance_target_dir}/debug/ployzc
 ployzd_bin="${PLOYZ_ACCEPTANCE_PLOYZD:-${acceptance_target_dir}/debug/ployzd}"
 keeper_bin="${PLOYZ_ACCEPTANCE_KEEPER:-${acceptance_target_dir}/debug/ployz-keeper}"
 nats_server_bin="${PLOYZ_ACCEPTANCE_NATS_SERVER:-}"
+ebpf_ctl_bin="${PLOYZ_ACCEPTANCE_EBPF_CTL:-${acceptance_target_dir}/debug/ployz-ebpf-ctl}"
 ebpf_bytecode="${PLOYZ_ACCEPTANCE_EBPF_BYTECODE:-/tmp/ployz-rust-ebpf-target/bpfel-unknown-none/release/ployz-ebpf-tc}"
 smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
 ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
 edge_runtime_nats_url="nats://127.0.0.1:7422"
 remote_ebpf_path="/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+remote_ebpf_ctl="/usr/local/bin/ployz-ebpf-ctl"
 
 case "$command" in
   up)
@@ -269,6 +272,7 @@ case "$command" in
     need_file "$ployzd_bin" "ployzd artifact"
     need_file "$keeper_bin" "ployz-keeper artifact"
     need_file "$nats_server_bin" "nats-server artifact"
+    need_file "$ebpf_ctl_bin" "Ployz eBPF ctl artifact"
     need_file "$ebpf_bytecode" "Ployz eBPF bytecode"
     need_file "$ployz_sh" "ployz.sh"
     need_command hcloud

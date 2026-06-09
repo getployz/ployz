@@ -19,9 +19,11 @@ fn hetzner_h0_rejects_invalid_run_id_before_external_work() {
 fn hetzner_h0_requires_ebpf_bytecode_before_hcloud() {
     let temp = temp_path("ployz-h0-ssh-key");
     let nats = temp_path("ployz-h0-nats-server");
+    let ebpf_ctl = temp_path("ployz-h0-ebpf-ctl");
     let missing_ebpf = temp_path("ployz-h0-missing-ebpf");
     std::fs::write(&temp, "key").expect("ssh key can be written");
     std::fs::write(&nats, "nats").expect("nats artifact can be written");
+    std::fs::write(&ebpf_ctl, "ctl").expect("ebpf ctl artifact can be written");
     let _ = std::fs::remove_file(&missing_ebpf);
     let output = Command::new("sh")
         .arg(script_path())
@@ -32,6 +34,7 @@ fn hetzner_h0_requires_ebpf_bytecode_before_hcloud() {
         .env("HETZNER_SSH_KEY", "key")
         .env("PLOYZ_SSH_PRIVATE_KEY", &temp)
         .env("PLOYZ_ACCEPTANCE_NATS_SERVER", &nats)
+        .env("PLOYZ_ACCEPTANCE_EBPF_CTL", &ebpf_ctl)
         .env("PLOYZ_ACCEPTANCE_EBPF_BYTECODE", &missing_ebpf)
         .output()
         .expect("script runs");
@@ -41,6 +44,7 @@ fn hetzner_h0_requires_ebpf_bytecode_before_hcloud() {
     assert!(stderr(&output).contains("Ployz eBPF bytecode does not exist"));
     let _ = std::fs::remove_file(temp);
     let _ = std::fs::remove_file(nats);
+    let _ = std::fs::remove_file(ebpf_ctl);
 }
 
 #[test]
@@ -60,7 +64,9 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains(" ops watch op_deploy_smoke"));
     assert!(script.contains("curl -fsS -H 'Host: smoke.local'"));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_BYTECODE"));
+    assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_CTL"));
     assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));
+    assert!(script.contains("/usr/local/bin/ployz-ebpf-ctl"));
     assert!(!script.contains("PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL"));
     assert!(!script.contains("PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
     assert!(!script.contains("\"join_bundle\""));

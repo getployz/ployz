@@ -393,6 +393,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         client.clone(),
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        node_id("node_a"),
     )
     .await?;
     let upstream = TestUpstream::start().await;
