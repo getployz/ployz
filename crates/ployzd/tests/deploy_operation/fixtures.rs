@@ -154,6 +154,7 @@ pub(super) struct RecordingRuntime {
     reuse_existing: bool,
     fail_start: bool,
     fail_remove: bool,
+    fail_stop: bool,
 }
 
 #[derive(Default)]
@@ -473,6 +474,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             fail_start: false,
             fail_remove: false,
+            fail_stop: false,
         }
     }
 
@@ -486,6 +488,7 @@ impl RecordingRuntime {
             reuse_existing: true,
             fail_start: false,
             fail_remove: false,
+            fail_stop: false,
         }
     }
 
@@ -499,6 +502,7 @@ impl RecordingRuntime {
             reuse_existing: false,
             fail_start: false,
             fail_remove: false,
+            fail_stop: false,
         }
     }
 
@@ -512,11 +516,17 @@ impl RecordingRuntime {
             reuse_existing: false,
             fail_start: true,
             fail_remove: false,
+            fail_stop: false,
         }
     }
 
     pub(super) fn with_remove_failure(mut self) -> Self {
         self.fail_remove = true;
+        self
+    }
+
+    pub(super) fn with_stop_failure(mut self) -> Self {
+        self.fail_stop = true;
         self
     }
 }
@@ -586,7 +596,19 @@ impl NodeContainerRuntime for RecordingRuntime {
         &mut self,
         request: NodeStopContainerRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        self.stops.push(request);
+        self.stops.push(request.clone());
+        if self.fail_stop {
+            return Err(NodeContainerRuntimeError::StopContainerFailed {
+                node_id: request.node_id,
+                container_id: request.container_id.clone(),
+                message: runtime_failure_message("container stop failed: permission denied"),
+                inspect_hint: OperatorHint::try_new(format!(
+                    "ployz container inspect {}",
+                    request.container_id.as_str()
+                ))
+                .expect("valid inspect hint"),
+            });
+        }
         Ok(())
     }
 }
@@ -799,6 +821,18 @@ pub(super) fn retained_created_container(node_id: &str, container_id: &str) -> R
     RetainedArtifact::CreatedContainer {
         node_id: self::node_id(node_id),
         container_id: self::container_id(container_id),
+        inspect_hint: inspect_hint(container_id),
+    }
+}
+
+pub(super) fn retained_stop_failed_container(
+    node_id: &str,
+    container_id: &str,
+) -> RetainedArtifact {
+    RetainedArtifact::ContainerStopFailed {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        message: runtime_failure_message("container stop failed: permission denied"),
         inspect_hint: inspect_hint(container_id),
     }
 }

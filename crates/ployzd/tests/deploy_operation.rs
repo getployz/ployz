@@ -672,7 +672,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
         runtime
             .requests
             .iter()
-            .zip([container_id("ctr_1"), container_id("ctr_2")])
+            .zip([container_id("ctr_created")])
             .map(
                 |(request, container_id)| ployzd::deploy_worker::NodeStopContainerRequest {
                     node_id: request.node_id.clone(),
@@ -687,6 +687,47 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             )
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_stop_failure();
+    let mut health = RecordingHealth::unhealthy("node_a", "ctr_1");
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command(1);
+
+    let error = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("deploy fails");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            failure:
+                DeployOperationFailure::HealthCheckFailed {
+                    retained_artifacts,
+                    ..
+                },
+            ..
+        } if retained_artifacts == vec![
+            retained_container("node_a", "ctr_1"),
+            retained_stop_failed_container("node_a", "ctr_1"),
+        ]
+    ));
+    assert_eq!(runtime.stops.len(), 1);
 }
 
 #[tokio::test]

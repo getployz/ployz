@@ -21,6 +21,7 @@ use super::{
 pub(super) struct DeployExecutionFailure {
     source: DeployExecutionError,
     operation_failure: DeployOperationFailure,
+    retained_stop_targets: Vec<DeployContainer>,
 }
 
 impl DeployExecutionFailure {
@@ -29,12 +30,33 @@ impl DeployExecutionFailure {
         source: DeployExecutionError,
         deploy_containers: &[DeployContainer],
     ) -> Self {
+        Self::with_stop_targets(command, source, deploy_containers, deploy_containers)
+    }
+
+    fn with_stop_targets(
+        command: &DeployExecutionCommand,
+        source: DeployExecutionError,
+        deploy_containers: &[DeployContainer],
+        retained_stop_targets: &[DeployContainer],
+    ) -> Self {
         let operation_failure =
             source.deploy_failure(command, retained_artifacts(deploy_containers));
         Self {
             source,
             operation_failure,
+            retained_stop_targets: retained_stop_targets.to_vec(),
         }
+    }
+
+    pub(super) fn retained_stop_targets(&self) -> &[DeployContainer] {
+        &self.retained_stop_targets
+    }
+
+    pub(super) fn add_retained_artifacts(&mut self, artifacts: Vec<RetainedArtifact>) {
+        if artifacts.is_empty() {
+            return;
+        }
+        add_retained_artifacts(&mut self.operation_failure, artifacts);
     }
 }
 
@@ -44,6 +66,20 @@ pub(super) fn failure(
     deploy_containers: &[DeployContainer],
 ) -> DeployExecutionFailure {
     DeployExecutionFailure::new(command, source, deploy_containers)
+}
+
+pub(super) fn failure_with_stop_targets(
+    command: &DeployExecutionCommand,
+    source: DeployExecutionError,
+    deploy_containers: &[DeployContainer],
+    retained_stop_targets: &[DeployContainer],
+) -> DeployExecutionFailure {
+    DeployExecutionFailure::with_stop_targets(
+        command,
+        source,
+        deploy_containers,
+        retained_stop_targets,
+    )
 }
 
 pub(super) async fn fail_deploy<R>(
@@ -649,6 +685,43 @@ fn retained_artifacts(containers: &[DeployContainer]) -> Vec<RetainedArtifact> {
         .iter()
         .map(DeployContainer::retained_artifact)
         .collect()
+}
+
+fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<RetainedArtifact>) {
+    let retained_artifacts = match failure {
+        DeployOperationFailure::WireGuardEbpfUnavailable {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::WireGuardEbpfInvalidReport {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::RuntimeUnavailable {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::HealthCheckFailed {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::ControlPlaneCommitFailed {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::ActiveServiceCommitRejected {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::RouteCutoverFailed {
+            retained_artifacts, ..
+        } => retained_artifacts,
+        DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::ArtifactUnavailable { .. } => return,
+    };
+
+    for artifact in artifacts {
+        if !retained_artifacts.contains(&artifact) {
+            retained_artifacts.push(artifact);
+        }
+    }
 }
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {

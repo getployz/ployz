@@ -132,16 +132,24 @@ fn retained_artifact_carries_variant_specific_failure_data() {
         health_check: HealthCheckFailure::TimedOut {
             timeout_seconds: 30,
         },
-        retained_artifacts: vec![RetainedArtifact::StartedContainer {
-            node_id: node_id("node_7"),
-            container_id: container_id("ctr_123"),
-            log_hint: operator_hint("ployz logs ctr_123"),
-        }],
+        retained_artifacts: vec![
+            RetainedArtifact::StartedContainer {
+                node_id: node_id("node_7"),
+                container_id: container_id("ctr_123"),
+                log_hint: operator_hint("ployz logs ctr_123"),
+            },
+            RetainedArtifact::ContainerStopFailed {
+                node_id: node_id("node_7"),
+                container_id: container_id("ctr_123"),
+                message: failure_message("container stop failed"),
+                inspect_hint: operator_hint("ployz container inspect ctr_123"),
+            },
+        ],
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifacts":[{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"}]}"#
+        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifacts":[{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"},{"type":"container_stop_failed","node_id":"node_7","container_id":"ctr_123","message":"container stop failed","inspect_hint":"ployz container inspect ctr_123"}]}"#
     );
 }
 

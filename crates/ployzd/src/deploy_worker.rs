@@ -14,7 +14,7 @@ use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
-    RoutePort,
+    OperatorHint, RetainedArtifact, RoutePort,
 };
 
 pub use facts::{
@@ -26,7 +26,9 @@ pub use failure::{
     DeployHealthCheckError, DeployOperationRecordError, NodeContainerRuntimeError,
     NodeRuntimeUnavailableReason,
 };
-use failure::{DeployExecutionFailure, fail_deploy, failure, with_step_timeout};
+use failure::{
+    DeployExecutionFailure, fail_deploy, failure, failure_with_stop_targets, with_step_timeout,
+};
 pub use ports::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DeployHealthChecker,
     DeployOperationRecorder, NodeContainerRuntime, WireGuardEbpfPreparer,
@@ -60,7 +62,16 @@ where
     let mut ports = ports;
     match execute_deploy(&command, &mut ports).await {
         Ok(outcome) => Ok(outcome),
-        Err(failure) => fail_deploy(command, &mut *ports.recorder, failure).await,
+        Err(mut failure) => {
+            let stop_artifacts = stop_retained_containers(
+                &command,
+                &mut *ports.node_runtime,
+                failure.retained_stop_targets(),
+            )
+            .await;
+            failure.add_retained_artifacts(stop_artifacts);
+            fail_deploy(command, &mut *ports.recorder, failure).await
+        }
     }
 }
 
@@ -131,15 +142,31 @@ where
                 required_endpoint_port: required_endpoint_port(command),
             }),
             DeployPlanStep::RunContainer { node_id, slot } => {
-                let started = with_step_timeout(
+                let run_result = with_step_timeout(
                     command,
                     DeployExecutionStep::RunContainer {
                         node_id: node_id.clone(),
                     },
                     run_deploy_step(&mut *ports.node_runtime, command, node_id, *slot),
                 )
-                .await
-                .map_err(|source| failure(command, source, &started_containers))?;
+                .await;
+                let started = match run_result {
+                    Ok(started) => started,
+                    Err(source) => {
+                        let retained = retained_containers_after_run_error(
+                            command,
+                            &started_containers,
+                            *slot,
+                            &source,
+                        );
+                        return Err(failure_with_stop_targets(
+                            command,
+                            source,
+                            &started_containers,
+                            &retained,
+                        ));
+                    }
+                };
                 containers.push(started.clone());
                 started_containers.push(started.clone());
                 record_container_started(&mut *ports.recorder, command, &started)
@@ -168,7 +195,6 @@ where
     )
     .await;
     if let Err(source) = health_result {
-        stop_retained_containers(command, &mut *ports.node_runtime, &started_containers).await;
         return Err(failure(command, source, &started_containers));
     }
 
@@ -263,9 +289,11 @@ async fn stop_retained_containers<N>(
     command: &DeployExecutionCommand,
     node_runtime: &mut N,
     containers: &[DeployContainer],
-) where
+) -> Vec<RetainedArtifact>
+where
     N: NodeContainerRuntime,
 {
+    let mut stop_failures = Vec::new();
     for container in containers {
         let stop = node_runtime.stop_container(NodeStopContainerRequest {
             node_id: container.node_id.clone(),
@@ -273,8 +301,78 @@ async fn stop_retained_containers<N>(
             container_id: container.container_id.clone(),
             expected_identity: retained_container_identity(command, container),
         });
-        let _ = tokio::time::timeout(command.step_timeout(), stop).await;
+        match tokio::time::timeout(command.step_timeout(), stop).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                stop_failures.push(container_stop_failed_artifact(
+                    container,
+                    cleanup_failure_message(error),
+                ));
+            }
+            Err(_) => {
+                stop_failures.push(container_stop_failed_artifact(
+                    container,
+                    FailureMessage::try_new(format!(
+                        "retained container stop timed out after {} seconds",
+                        command.step_timeout().as_secs()
+                    ))
+                    .expect("generated retained stop failure message is non-empty"),
+                ));
+            }
+        }
     }
+    stop_failures
+}
+
+fn container_stop_failed_artifact(
+    container: &DeployContainer,
+    message: FailureMessage,
+) -> RetainedArtifact {
+    RetainedArtifact::ContainerStopFailed {
+        node_id: container.node_id.clone(),
+        container_id: container.container_id.clone(),
+        message,
+        inspect_hint: inspect_hint(&container.container_id),
+    }
+}
+
+fn retained_containers_after_run_error(
+    command: &DeployExecutionCommand,
+    started_containers: &[DeployContainer],
+    slot: ReplicaSlot,
+    source: &DeployExecutionError,
+) -> Vec<DeployContainer> {
+    let mut retained = started_containers.to_vec();
+    if let Some(container) = retained_created_container(command, slot, source)
+        && !retained.contains(&container)
+    {
+        retained.push(container);
+    }
+    retained
+}
+
+fn retained_created_container(
+    command: &DeployExecutionCommand,
+    slot: ReplicaSlot,
+    source: &DeployExecutionError,
+) -> Option<DeployContainer> {
+    let DeployExecutionError::RunContainer(
+        NodeContainerRuntimeError::CreatedContainerStartFailed {
+            node_id,
+            container_id,
+            ..
+        },
+    ) = source
+    else {
+        return None;
+    };
+    let step_id = deploy_step_id(slot).ok()?;
+    Some(DeployContainer {
+        node_id: node_id.clone(),
+        container_id: container_id.clone(),
+        step_id,
+        required_endpoint_port: required_endpoint_port(command),
+    })
 }
 
 fn retained_container_identity(
@@ -298,6 +396,11 @@ fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContaine
         step_id: target.step_id.clone(),
         kind: target.kind,
     }
+}
+
+fn inspect_hint(container_id: &ployz_core::ids::ContainerId) -> OperatorHint {
+    OperatorHint::try_new(format!("ployz container inspect {}", container_id.as_str()))
+        .expect("generated inspect hint is non-empty")
 }
 
 fn cleanup_evidence(cleanup: &[DeployCleanupResult]) -> DeployEvidence {

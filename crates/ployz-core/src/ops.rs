@@ -293,6 +293,12 @@ pub enum RetainedArtifact {
         container_id: ContainerId,
         log_hint: OperatorHint,
     },
+    ContainerStopFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
