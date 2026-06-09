@@ -4,6 +4,7 @@ use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{InstallContractError, MachineBootstrapUrl};
 use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use std::time::Duration;
@@ -13,6 +14,7 @@ use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
@@ -76,7 +78,10 @@ pub fn load_daemon_process_config(
         DaemonProcessRole::Gateway => {
             let nats_url = load_nats_url(&role, &env)?;
             Ok(LoadedDaemonProcessConfig::Configured(Box::new(
-                DaemonProcessConfig::Gateway(GatewayProcessConfig::new(nats_url)),
+                DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
+                    nats_url,
+                    load_gateway_listen_addr(&env)?,
+                )),
             )))
         }
         DaemonProcessRole::Dns => {
@@ -123,9 +128,24 @@ fn load_machine_bootstrap_url(
         .map_err(|source| DaemonProcessConfigError::InvalidMachineBootstrapUrl { value, source })
 }
 
+fn load_gateway_listen_addr(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<SocketAddr, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_GATEWAY_LISTEN_ADDR_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(default_gateway_listen_addr());
+    };
+    value
+        .parse()
+        .map_err(|source| DaemonProcessConfigError::InvalidGatewayListenAddr { value, source })
+}
+
 fn default_machine_bootstrap_url() -> MachineBootstrapUrl {
     MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
         .expect("default machine bootstrap URL is valid")
+}
+
+fn default_gateway_listen_addr() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8080)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +161,10 @@ pub enum DaemonProcessConfigError {
     InvalidMachineBootstrapUrl {
         value: String,
         source: InstallContractError,
+    },
+    InvalidGatewayListenAddr {
+        value: String,
+        source: std::net::AddrParseError,
     },
 }
 
@@ -163,6 +187,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_MACHINE_BOOTSTRAP_URL_ENV
+            ),
+            Self::InvalidGatewayListenAddr { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_GATEWAY_LISTEN_ADDR_ENV
             ),
         }
     }
@@ -247,12 +276,16 @@ impl NodeProcessConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProcessConfig {
     pub nats_url: NatsClientUrl,
+    pub listen_addr: SocketAddr,
 }
 
 impl GatewayProcessConfig {
     #[must_use]
-    pub fn new(nats_url: NatsClientUrl) -> Self {
-        Self { nats_url }
+    pub fn new(nats_url: NatsClientUrl, listen_addr: SocketAddr) -> Self {
+        Self {
+            nats_url,
+            listen_addr,
+        }
     }
 }
 

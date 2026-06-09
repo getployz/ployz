@@ -2,6 +2,7 @@
 
 use ployz_core::ids::NodeId;
 use ployz_nats::connect::NatsClientUrl;
+use std::net::SocketAddr;
 
 use crate::config::{
     ControlProcessConfig, DaemonProcessConfig, DnsProcessConfig, GatewayProcessConfig,
@@ -58,6 +59,7 @@ pub enum NodeWork {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProcessPlan {
     pub nats_url: NatsClientUrl,
+    pub listen_addr: SocketAddr,
     pub work: &'static [GatewayWork],
 }
 
@@ -146,6 +148,7 @@ fn plan_node_process(config: &NodeProcessConfig) -> RoleProcessPlan {
 fn plan_gateway_process(config: &GatewayProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Gateway(GatewayProcessPlan {
         nats_url: config.nats_url.clone(),
+        listen_addr: config.listen_addr,
         work: &[
             GatewayWork::WatchRoutes,
             GatewayWork::WatchContainerHealth,
