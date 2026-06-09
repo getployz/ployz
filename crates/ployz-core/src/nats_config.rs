@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::ids::NodeId;
+use crate::install::{InstallSha256Digest, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsServerConfig {
@@ -53,10 +55,29 @@ impl NatsServerConfig {
         )
     }
 
+    #[must_use]
+    pub fn sha256_digest(&self) -> InstallSha256Digest {
+        let digest = Sha256::digest(self.render().as_bytes());
+        InstallSha256Digest::try_new(format!("{digest:x}"))
+            .expect("rendered NATS config sha256 digest is valid")
+    }
+
     fn validate(&self) -> Result<(), NatsServerConfigError> {
         validate_config_token("host", &self.host)?;
         validate_config_path("jetstream_store_dir", &self.jetstream_store_dir)?;
         Ok(())
+    }
+}
+
+#[must_use]
+pub fn trusted_nats_for_first_node(node_id: NodeId) -> MachineJoinTrustedNats {
+    let config =
+        NatsServerConfig::single_node(node_id.clone(), PathBuf::from("/var/lib/ployz/nats"))
+            .expect("first-node NATS config is valid");
+    MachineJoinTrustedNats {
+        server_id: MachineJoinTrustedNatsServerId::try_new(node_id.as_str())
+            .expect("node ids are valid trusted NATS server ids"),
+        config_sha256: config.sha256_digest(),
     }
 }
 

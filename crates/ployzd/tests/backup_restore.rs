@@ -2,7 +2,7 @@ use ployz_core::backup::{
     BackupArtifactKind, BackupBundle, BackupManifest, ControlPlaneKvSnapshot,
 };
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
-use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
 use ployz_core::ops::{
     BackupOperationState, EventSequence, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
@@ -14,9 +14,7 @@ use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
 use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
-use ployzd::controllers::{
-    BackupCreateCommand, MachineAddBootstrapConfig, MachineJoinTemplate, OperationControllers,
-};
+use ployzd::controllers::{BackupCreateCommand, MachineAddBootstrapConfig, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;
 use tokio::io::AsyncReadExt;
 

@@ -21,7 +21,6 @@ optional env:
   PLOYZ_ACCEPTANCE_KEEPER=/tmp/ployz-rust-target/debug/ployz-keeper
   PLOYZ_ACCEPTANCE_NATS_SERVER=/path/to/nats-server
   PLOYZ_ACCEPTANCE_PLOYZ_SH=scripts/ployz.sh
-  PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE=/path/to/machine-join-template.json
   PLOYZ_ACCEPTANCE_SMOKE_IMAGE=nginx:alpine
   PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL=nats://127.0.0.1:7422
   PLOYZ_ACCEPTANCE_KEEP=1
@@ -242,7 +241,6 @@ ployzctl_bin="${PLOYZ_ACCEPTANCE_PLOYZCTL:-${acceptance_target_dir}/debug/ployzc
 ployzd_bin="${PLOYZ_ACCEPTANCE_PLOYZD:-${acceptance_target_dir}/debug/ployzd}"
 keeper_bin="${PLOYZ_ACCEPTANCE_KEEPER:-${acceptance_target_dir}/debug/ployz-keeper}"
 nats_server_bin="${PLOYZ_ACCEPTANCE_NATS_SERVER:-}"
-machine_join_template_file="${PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE:-}"
 smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
 ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
 runtime_nats_url="${PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL:-}"
@@ -255,14 +253,12 @@ case "$command" in
     [ -n "${PLOYZ_SSH_PRIVATE_KEY:-}" ] || die "set PLOYZ_SSH_PRIVATE_KEY"
     [ -f "$PLOYZ_SSH_PRIVATE_KEY" ] || die "PLOYZ_SSH_PRIVATE_KEY does not exist: ${PLOYZ_SSH_PRIVATE_KEY}"
     [ -n "$runtime_nats_url" ] || die "set PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL to the edge-reachable NATS tunnel URL"
-    [ -n "$machine_join_template_file" ] || die "set PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"
     [ -n "$nats_server_bin" ] || die "set PLOYZ_ACCEPTANCE_NATS_SERVER"
     need_file "$ployzctl_bin" "Ployz CLI"
     need_file "$ployzd_bin" "ployzd artifact"
     need_file "$keeper_bin" "ployz-keeper artifact"
     need_file "$nats_server_bin" "nats-server artifact"
     need_file "$ployz_sh" "ployz.sh"
-    need_file "$machine_join_template_file" "machine join template"
     need_command hcloud
     need_command jq
     need_command ssh
@@ -282,6 +278,7 @@ case "$command" in
     remote_nats_server="${remote_dir}/nats-server"
     remote_ployz_sh="${remote_dir}/ployz.sh"
     remote_join_template="/etc/ployz/machine-join-template.json"
+    remote_secret_delivery="/etc/ployz/machine-join-secret-delivery.json"
     ployzd_sha256="$(sha256_file "$ployzd_bin")"
     keeper_sha256="$(sha256_file "$keeper_bin")"
     nats_sha256="$(sha256_file "$nats_server_bin")"
@@ -301,7 +298,12 @@ case "$command" in
     stage_host "$core_ip"
     stage_host "$edge_ip"
     remote_sh "$core_ip" "install -d -m 0700 /etc/ployz"
-    scp_base "$machine_join_template_file" "$(ssh_target "$core_ip"):$remote_join_template" >/dev/null
+    remote_sh "$core_ip" "umask 077; cat > '$remote_secret_delivery'" <<'JSON'
+{"nats_credentials":"acceptance-node-creds","core_iroh_ticket":"acceptance-core-ticket"}
+JSON
+
+    run_remote_logged render-join-template "$core_ip" \
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key acceptance-core --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
 
     run_remote_logged init-core "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"

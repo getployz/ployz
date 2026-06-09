@@ -194,6 +194,8 @@ export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtim
 
 export type MachineJoinSecretDelivery = { nats_credentials: MachineJoinNatsCredentials, core_iroh_ticket: MachineJoinIrohTicket, };
 
+export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, };
+
 export type MachineJoinNatsCredentials = string;
 
 export type MachineJoinTrustedNatsServerId = string;

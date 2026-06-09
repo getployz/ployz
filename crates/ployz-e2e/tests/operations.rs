@@ -7,7 +7,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ha::CoreTopology;
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
@@ -24,7 +24,7 @@ use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::config::ControlProcessConfig;
-use ployzd::controllers::{MachineAddBootstrapConfig, MachineJoinTemplate, OperationControllers};
+use ployzd::controllers::{MachineAddBootstrapConfig, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 

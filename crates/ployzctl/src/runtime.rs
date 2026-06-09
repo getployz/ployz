@@ -107,6 +107,9 @@ pub async fn execute_command(
                 Ok(PloyzctlExecutionOutput::stdout(command.render()))
             }
         },
+        PloyzctlCommand::InitJoinTemplate(command) => {
+            Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
+        }
         PloyzctlCommand::MachineAdd(command) => {
             let api = operation_api_client(config).await?;
             let request = command.into_request();

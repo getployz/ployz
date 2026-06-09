@@ -7,7 +7,8 @@ use ployz_core::install::{
     MachineBootstrapUrl, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
     MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
     MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
+    MachineJoinTrustedNatsServerId,
 };
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
@@ -20,7 +21,7 @@ use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddGateway, MachineAddRequest, OpsStatusRequest,
 };
 use ployzd::config::ControlProcessConfig;
-use ployzd::controllers::{MachineAddBootstrapConfig, MachineJoinTemplate};
+use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 use std::time::Duration;

@@ -37,38 +37,21 @@ fn hetzner_h0_requires_runtime_nats_url_before_hcloud() {
 }
 
 #[test]
-fn hetzner_h0_requires_join_template_before_hcloud() {
-    let temp = temp_path("ployz-h0-ssh-key");
-    std::fs::write(&temp, "key").expect("ssh key can be written");
-    let output = Command::new("sh")
-        .arg(script_path())
-        .arg("up")
-        .arg("--run-id")
-        .arg("valid-run")
-        .env("HCLOUD_TOKEN", "token")
-        .env("HETZNER_SSH_KEY", "key")
-        .env("PLOYZ_SSH_PRIVATE_KEY", &temp)
-        .env("PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL", "nats://127.0.0.1:7422")
-        .output()
-        .expect("script runs");
-
-    assert!(!output.status.success());
-    assert_eq!(stdout(&output), "");
-    assert!(stderr(&output).contains("set PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
-    let _ = std::fs::remove_file(temp);
-}
-
-#[test]
 fn hetzner_h0_script_drives_the_product_path() {
     let script = std::fs::read_to_string(script_path()).expect("script is readable");
 
+    assert!(script.contains(" init join-template "));
+    assert!(script.contains("--trusted-first-node core_1"));
+    assert!(script.contains("--secret-delivery-file"));
+    assert!(!script.contains("--nats-credentials"));
+    assert!(!script.contains("--trusted-nats-config-sha256"));
     assert!(script.contains(" init --node core_1"));
     assert!(script.contains(" machine add --node edge_2"));
     assert!(script.contains(" sh '$remote_ployz_sh' --join-token"));
     assert!(script.contains(" deploy --detach"));
     assert!(script.contains(" ops watch op_deploy_smoke"));
     assert!(script.contains("curl -fsS -H 'Host: smoke.local'"));
-    assert!(script.contains("PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
+    assert!(!script.contains("PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
     assert!(!script.contains("\"join_bundle\""));
     assert!(!script.contains("provider trait"));
 }

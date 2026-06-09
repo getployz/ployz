@@ -7,6 +7,8 @@ pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 
 use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
 
+pub mod join_template;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstNodeInitCommand {
     pub mode: FirstNodeInitMode,

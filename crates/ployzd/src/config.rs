@@ -2,14 +2,14 @@
 
 use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
-use ployz_core::install::{InstallContractError, MachineBootstrapUrl};
+use ployz_core::install::{InstallContractError, MachineBootstrapUrl, MachineJoinTemplate};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{fmt, fs};
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use std::time::Duration;
 
-use crate::controllers::{MachineAddBootstrapConfig, MachineJoinTemplate};
+use crate::controllers::MachineAddBootstrapConfig;
 use crate::iroh_tunnel::PreparedTunnelService;
 use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};

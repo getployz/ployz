@@ -12,14 +12,15 @@ use ployz_sdk_types::{
     MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
     MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinToken,
-    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineName, NonEmptyTextError,
-    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
-    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
+    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinToken, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineName,
+    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
+    RoutePortError, ServiceId, SubjectTokenError,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi,
         MachineJoinReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
@@ -215,6 +216,10 @@ fn sdk_exports_operation_api_wire_types() {
             result: MachineJoinRedeemResult::Joined,
         },
     };
+    let join_template = MachineJoinTemplate {
+        join_bundle: machine_join_bundle(),
+        secret_delivery: machine_join_secret_delivery(),
+    };
 
     assert_eq!(
         serde_json::to_string(&redeem_request).expect("request serializes"),
@@ -223,6 +228,10 @@ fn sdk_exports_operation_api_wire_types() {
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
         r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&join_template).expect("join template serializes"),
+        r#"{"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
     );
 }
 

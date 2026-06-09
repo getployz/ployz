@@ -12,6 +12,7 @@ pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
 ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--keeper-binary <path>]]
+ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --core-iroh-public-key <key> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --secret-delivery-file <path>
 ployzctl backup create --operation <id> --idempotency-key <key>
 ployzctl backup restore --plan
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]
@@ -30,6 +31,7 @@ pub enum PloyzctlCommand {
     BackupCreate(backup::BackupCreateCommand),
     BackupRestorePlan(backup::BackupRestorePlanCommand),
     Init(init::FirstNodeInitCommand),
+    InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineAdd(machine::MachineAddCommand),
     OpsWatch(ops::OpsWatchCommand),
     Help,
@@ -75,6 +77,10 @@ pub fn parse_command(
         }
         [command, subcommand, rest @ ..] if command == "backup" && subcommand == "restore" => {
             backup::parse_backup_restore_command(rest).map(PloyzctlCommand::BackupRestorePlan)
+        }
+        [command, subcommand, rest @ ..] if command == "init" && subcommand == "join-template" => {
+            init::join_template::parse_machine_join_template_command(rest)
+                .map(PloyzctlCommand::InitJoinTemplate)
         }
         [command, rest @ ..] if command == "init" => {
             init::parse_init_command(rest).map(PloyzctlCommand::Init)

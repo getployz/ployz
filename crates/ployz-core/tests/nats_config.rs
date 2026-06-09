@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
-use ployz_core::nats_config::{NatsServerConfig, NatsServerConfigError};
+use ployz_core::nats_config::{
+    NatsServerConfig, NatsServerConfigError, trusted_nats_for_first_node,
+};
 
 #[test]
 fn single_node_nats_config_renders_loopback_jetstream() {
@@ -14,6 +16,14 @@ fn single_node_nats_config_renders_loopback_jetstream() {
     assert_eq!(
         config.render(),
         "server_name: core_1\nhost: 127.0.0.1\nport: 4222\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n"
+    );
+    assert_eq!(
+        config.sha256_digest().as_str(),
+        "5be25a6dfbc6a4b45598f1d128dd2230e5109575018b8826e36d2883102f6ec2"
+    );
+    assert_eq!(
+        trusted_nats_for_first_node(node_id("core_1")).config_sha256,
+        config.sha256_digest()
     );
 }
 

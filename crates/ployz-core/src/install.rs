@@ -157,6 +157,14 @@ pub struct MachineJoinSecretDelivery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
+pub struct MachineJoinTemplate {
+    pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
 pub struct MachineJoinTrustedNats {
     pub server_id: MachineJoinTrustedNatsServerId,
     pub config_sha256: InstallSha256Digest,

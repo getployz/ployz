@@ -4,7 +4,9 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery};
+use ployz_core::install::{
+    MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery, MachineJoinTemplate,
+};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
     RawJoinToken,
@@ -24,7 +26,6 @@ use ployz_nats::operations::{
     RecordedMachineJoinReport, RedeemMachineJoinTokenError, ReplayOperationEventsError,
     StoredOperationEvent, SubmitBackupError, SubmitDeployError, SubmitMachineAddError,
 };
-use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::operation_lease::OperationLeasePolicy;
@@ -96,12 +97,6 @@ impl MachineAddBootstrapConfig {
         self.join_template = Some(Box::new(join_template));
         self
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MachineJoinTemplate {
-    pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone)]

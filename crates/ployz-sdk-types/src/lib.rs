@@ -36,8 +36,8 @@ pub use ployz_core::install::{
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
     MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
-    MachineJoinTrustedNatsServerId,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
