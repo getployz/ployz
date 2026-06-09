@@ -1,12 +1,14 @@
 use async_nats::jetstream;
 use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::machine::MachineName;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::state::{
-    ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey, ExpectedActiveService,
+    ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
+    ExpectedActiveService,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -112,6 +114,53 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ]
     );
     assert_eq!(command.step_timeout(), Duration::from_secs(7));
+}
+
+#[tokio::test]
+async fn nats_preparation_uses_active_machines_as_deploy_scope() {
+    let nats = test_nats().await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    core_state
+        .replace_active_machine(&active_machine("edge_2"))
+        .await
+        .expect("active edge stores");
+    observations
+        .replace_node_containers(&node_snapshot(
+            "edge_2",
+            [managed_observation(
+                "edge_2",
+                "ctr_target",
+                "svc_api",
+                "rev_2",
+                ContainerRuntimeState::running_unroutable(),
+            )],
+        ))
+        .await
+        .expect("edge observations store");
+
+    let command = prepare_command_from_nats(
+        operation_id("op_123"),
+        deploy_request(),
+        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        &core_state,
+        &observations,
+        Duration::from_secs(7),
+    )
+    .await;
+
+    assert_eq!(command.eligible_nodes(), [node_id("edge_2")]);
+    assert_eq!(
+        command.existing_replicas(),
+        [ployz_core::deploy::ExistingServiceReplica {
+            node_id: node_id("edge_2"),
+            container_id: container_id("ctr_target")
+        }]
+    );
 }
 
 #[tokio::test]
@@ -323,6 +372,14 @@ fn managed_observation(
         step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
         kind: ManagedContainerKind::Service,
         state,
+    }
+}
+
+fn active_machine(node_id: &str) -> ActiveMachineState {
+    ActiveMachineState {
+        node_id: self::node_id(node_id),
+        name: MachineName::try_new(node_id).expect("valid machine name"),
+        activated_by: operation_id("op_machine_add"),
     }
 }
 

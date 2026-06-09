@@ -4,7 +4,9 @@ use futures_util::{StreamExt, stream};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NodeId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
-use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::core_state::{
+    ActiveMachineReadError, ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError,
+};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::fmt;
 use std::time::Duration;
@@ -54,6 +56,7 @@ pub async fn load_deploy_execution_facts_from_nats(
             None => None,
         }
         .flatten();
+    let node_scope = load_active_machine_node_scope(core_state, node_scope).await?;
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
 
     Ok(DeployExecutionFacts {
@@ -63,6 +66,28 @@ pub async fn load_deploy_execution_facts_from_nats(
         observed_nodes,
         step_timeout,
     })
+}
+
+async fn load_active_machine_node_scope(
+    core_state: &AsyncNatsCoreStateStore,
+    fallback: DeployExecutionNodeScope,
+) -> Result<DeployExecutionNodeScope, DeployFactLoadError> {
+    let machines = core_state.active_machines().await.map_err(|source| {
+        DeployFactLoadError::ActiveMachineRead {
+            failure: active_machine_read_failure(source),
+        }
+    })?;
+    if machines.is_empty() {
+        return Ok(fallback);
+    }
+
+    Ok(DeployExecutionNodeScope::same_nodes(
+        machines
+            .into_iter()
+            .filter(|machine| machine.is_schedulable())
+            .map(|machine| machine.node_id)
+            .collect(),
+    ))
 }
 
 async fn load_node_snapshots(
@@ -100,6 +125,9 @@ pub enum DeployFactLoadError {
     ActiveRouteRead {
         route: ployz_core::ops::RouteTarget,
         failure: ActiveRouteReadFailure,
+    },
+    ActiveMachineRead {
+        failure: ActiveMachineReadFailure,
     },
     NodeObservationRead {
         node_id: NodeId,
@@ -168,6 +196,51 @@ pub enum ObservationReadFailure {
         operation: &'static str,
     },
     UnexpectedWriteFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActiveMachineReadFailure {
+    Decode {
+        message: String,
+    },
+    ListKeys {
+        message: String,
+    },
+    Get {
+        key: String,
+        message: String,
+    },
+    CorruptState {
+        key: String,
+        expected_node_id: NodeId,
+    },
+    Timeout {
+        operation: &'static str,
+    },
+}
+
+fn active_machine_read_failure(source: ActiveMachineReadError) -> ActiveMachineReadFailure {
+    match source {
+        ActiveMachineReadError::Decode(error) => ActiveMachineReadFailure::Decode {
+            message: error.to_string(),
+        },
+        ActiveMachineReadError::Get { key, message } => {
+            ActiveMachineReadFailure::Get { key, message }
+        }
+        ActiveMachineReadError::ListKeys { message } => {
+            ActiveMachineReadFailure::ListKeys { message }
+        }
+        ActiveMachineReadError::CorruptActiveMachineState {
+            key,
+            expected_node_id,
+        } => ActiveMachineReadFailure::CorruptState {
+            key,
+            expected_node_id,
+        },
+        ActiveMachineReadError::Timeout { operation } => {
+            ActiveMachineReadFailure::Timeout { operation }
+        }
+    }
 }
 
 fn active_route_read_failure(source: ActiveRouteReadError) -> ActiveRouteReadFailure {
@@ -275,6 +348,9 @@ impl fmt::Display for DeployFactLoadError {
                 "active route state for {:?} could not be read: {}",
                 route, failure
             ),
+            Self::ActiveMachineRead { failure } => {
+                write!(formatter, "active machines could not be read: {failure}")
+            }
             Self::NodeObservationRead { node_id, failure } => write!(
                 formatter,
                 "node observations for {} could not be read: {}",
@@ -310,6 +386,26 @@ impl fmt::Display for ActiveServiceReadFailure {
             Self::UnexpectedWriteFailure => {
                 formatter.write_str("unexpected write-path failure during read")
             }
+        }
+    }
+}
+
+impl fmt::Display for ActiveMachineReadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode { message } => write!(formatter, "decode active machine state: {message}"),
+            Self::ListKeys { message } => write!(formatter, "list active machine keys: {message}"),
+            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::CorruptState {
+                key,
+                expected_node_id,
+            } => write!(
+                formatter,
+                "state at {} does not belong to {}",
+                key,
+                expected_node_id.as_str()
+            ),
+            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
     }
 }

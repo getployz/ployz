@@ -192,6 +192,7 @@ fn fact_load_failure_message(source: &DeployFactLoadError) -> &'static str {
     match source {
         DeployFactLoadError::ActiveServiceRead { .. } => "active service state could not be loaded",
         DeployFactLoadError::ActiveRouteRead { .. } => "active route state could not be loaded",
+        DeployFactLoadError::ActiveMachineRead { .. } => "active machines could not be loaded",
         DeployFactLoadError::NodeObservationRead { .. } => "node observations could not be loaded",
     }
 }
