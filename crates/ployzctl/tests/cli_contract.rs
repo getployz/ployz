@@ -47,6 +47,29 @@ fn init_first_node_reports_supervised_product_roles() {
 }
 
 #[test]
+fn cli_init_can_activate_first_node_without_keeper_install_args() {
+    let command = parse_command(
+        [
+            "init",
+            "--node",
+            "node_1",
+            "--gateway",
+            "--activate-first-node",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("activation-only init command parses");
+
+    let PloyzctlCommand::Init(command) = command else {
+        panic!("expected init command");
+    };
+
+    assert_eq!(command.node_id(), &node_id("node_1"));
+    assert_eq!(command.gateway(), FirstNodeGateway::Install);
+    assert_eq!(command.render(), "activate first node node_1\n");
+}
+
+#[test]
 fn cli_init_can_emit_keeper_first_node_install_command() {
     let command = parse_command(init_with_keeper_install_args()).expect("init command parses");
 
@@ -464,8 +487,11 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert_eq!(stdout(&output), format!("{USAGE}\n"));
     assert!(stdout(&output).contains("ployzctl [--nats <url>] <command>"));
+    assert!(
+        stdout(&output).contains("ployzctl init --node <id> [--gateway] [--activate-first-node]")
+    );
     assert!(stdout(&output).contains(
-        "ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install)"
+        "ployzctl init --node <id> [--gateway] (--emit-keeper-install | --run-keeper-install)"
     ));
     assert!(stdout(&output).contains("ployzctl init join-template --cluster <name>"));
     assert!(stdout(&output).contains("--ebpf-bytecode-install-path <path>"));
@@ -693,6 +719,20 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
         panic!("expected init command");
     };
     assert_eq!(command.node_id(), &node_id("node_1"));
+}
+
+#[test]
+fn cli_init_rejects_run_keeper_install_with_activation() {
+    assert!(matches!(
+        parse_command(
+            init_with_keeper_run_arg_refs("/tmp/ployz-keeper")
+                .into_iter()
+                .chain(["--activate-first-node"])
+                .map(str::to_owned),
+        ),
+        Err(PloyzctlCliError::ConflictingArguments { first, second })
+            if first == "--run-keeper-install" && second == "--activate-first-node"
+    ));
 }
 
 #[test]

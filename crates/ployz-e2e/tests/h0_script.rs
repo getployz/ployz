@@ -66,7 +66,16 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(!script.contains("--core-iroh-public-key acceptance-core"));
     assert!(!script.contains("--nats-credentials"));
     assert!(!script.contains("--trusted-nats-config-sha256"));
-    assert!(script.contains(" init --node core_1 --node-public-ip '$core_ip'"));
+    assert!(script.contains("install-core"));
+    assert!(
+        script.contains(
+            "'$remote_keeper' first-node-install --node core_1 --node-public-ip '$core_ip'"
+        )
+    );
+    assert!(script.contains("activate-core"));
+    assert!(script.contains(" init --node core_1 --gateway --activate-first-node"));
+    assert!(!script.contains("--run-keeper-install"));
+    assert!(!script.contains("--keeper-binary '$remote_keeper'"));
     assert!(script.contains("--activate-first-node"));
     assert!(script.contains(" machine add --node edge_2"));
     assert!(script.contains("start-bootstrap-tunnel"));
