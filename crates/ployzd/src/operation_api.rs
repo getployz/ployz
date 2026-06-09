@@ -145,8 +145,12 @@ impl LogsQueryRuntime {
     }
 
     async fn tail(&self, request: LogsTailRequest) -> Result<LogsTailResult, LogsTailError> {
-        let node_id = match request.node_id {
-            Some(node_id) => node_id,
+        let node_id = match request.node_id.clone() {
+            Some(node_id) => {
+                self.verify_observed_container_on_node(&node_id, &request.container_id)
+                    .await?;
+                node_id
+            }
             None => self
                 .find_container_node(&request.container_id)
                 .await?
@@ -202,6 +206,32 @@ impl LogsQueryRuntime {
                 node_ids: node_ids.to_vec(),
             }),
         }
+    }
+
+    async fn verify_observed_container_on_node(
+        &self,
+        node_id: &NodeId,
+        container_id: &ContainerId,
+    ) -> Result<(), LogsTailError> {
+        let Some(snapshot) = self
+            .observations
+            .node_snapshot(node_id)
+            .await
+            .map_err(|_| LogsTailError::Unavailable {
+                source: LogsTailUnavailableSource::Observations,
+                node_id: Some(node_id.clone()),
+            })?
+        else {
+            return Err(LogsTailError::NoSuchContainer {
+                container_id: container_id.clone(),
+            });
+        };
+        if snapshot.container(container_id).is_none() {
+            return Err(LogsTailError::NoSuchContainer {
+                container_id: container_id.clone(),
+            });
+        }
+        Ok(())
     }
 }
 
