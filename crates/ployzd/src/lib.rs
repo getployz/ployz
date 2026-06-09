@@ -18,6 +18,7 @@ pub mod dataplane_runtime;
 pub mod deploy_runtime;
 pub mod deploy_worker;
 pub mod dns;
+pub mod dns_source;
 pub mod docker;
 pub mod gateway;
 pub mod gateway_http;
