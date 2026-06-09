@@ -73,8 +73,8 @@ pub enum GatewayWork {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsProcessPlan {
-    pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
+    pub listen_addr: SocketAddr,
     pub work: &'static [DnsWork],
 }
 
@@ -162,8 +162,8 @@ fn plan_gateway_process(config: &GatewayProcessConfig) -> RoleProcessPlan {
 
 fn plan_dns_process(config: &DnsProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Dns(DnsProcessPlan {
-        node_id: config.node_id.clone(),
         nats_url: config.nats_url.clone(),
+        listen_addr: config.listen_addr,
         work: &[
             DnsWork::WatchServices,
             DnsWork::WatchNodeAddresses,

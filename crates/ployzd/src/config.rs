@@ -19,6 +19,7 @@ pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
 pub const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
+pub const PLOYZ_DNS_LISTEN_ADDR_ENV: &str = "PLOYZ_DNS_LISTEN_ADDR";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
 pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
@@ -102,10 +103,10 @@ pub fn load_daemon_process_config(
             )))
         }
         DaemonProcessRole::Dns => {
-            let node_id = load_process_node_id(&role, &env)?;
             let nats_url = load_nats_url(&role, &env)?;
             Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(
-                node_id, nats_url,
+                nats_url,
+                load_dns_listen_addr(&env)?,
             )))
         }
         DaemonProcessRole::Tunnel(side) => Ok(DaemonProcessConfig::Tunnel(load_tunnel_config(
@@ -239,6 +240,17 @@ fn load_gateway_listen_addr(
     value
         .parse()
         .map_err(|source| DaemonProcessConfigError::InvalidGatewayListenAddr { value, source })
+}
+
+fn load_dns_listen_addr(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<SocketAddr, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_DNS_LISTEN_ADDR_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(default_dns_listen_addr());
+    };
+    value
+        .parse()
+        .map_err(|source| DaemonProcessConfigError::InvalidDnsListenAddr { value, source })
 }
 
 fn load_tunnel_config(
@@ -416,6 +428,10 @@ fn default_gateway_listen_addr() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8080)
 }
 
+fn default_dns_listen_addr() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfigError {
     MissingNodeId {
@@ -450,6 +466,10 @@ pub enum DaemonProcessConfigError {
         source: String,
     },
     InvalidGatewayListenAddr {
+        value: String,
+        source: std::net::AddrParseError,
+    },
+    InvalidDnsListenAddr {
         value: String,
         source: std::net::AddrParseError,
     },
@@ -539,6 +559,11 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_GATEWAY_LISTEN_ADDR_ENV
+            ),
+            Self::InvalidDnsListenAddr { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_DNS_LISTEN_ADDR_ENV
             ),
             Self::MissingTunnelConfig { side, env } => write!(
                 formatter,
@@ -693,14 +718,17 @@ impl GatewayProcessConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsProcessConfig {
-    pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
+    pub listen_addr: SocketAddr,
 }
 
 impl DnsProcessConfig {
     #[must_use]
-    pub fn new(node_id: NodeId, nats_url: NatsClientUrl) -> Self {
-        Self { node_id, nats_url }
+    pub fn new(nats_url: NatsClientUrl, listen_addr: SocketAddr) -> Self {
+        Self {
+            nats_url,
+            listen_addr,
+        }
     }
 }
 
