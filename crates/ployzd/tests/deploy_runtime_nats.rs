@@ -25,6 +25,7 @@ use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::deploy_worker::DeployExecutionNodeScope;
+use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::operation_lease::OperationLeasePolicy;
 use std::time::Duration;
 
@@ -157,6 +158,73 @@ async fn health_failure_records_failed_operation_without_committing_active_state
                 },
             ..
         }) if retained_artifacts == vec![retained_container("node_a", "ctr_1")]
+    ));
+}
+
+#[tokio::test]
+async fn missing_node_responder_marks_deploy_failed_without_committing_active_state() {
+    let nats = test_nats().await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observations");
+    let controllers = operation_controllers(&nats.jetstream).await;
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .await
+        .expect("deploy operation accepted");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = NatsNodeContainerRuntime::new(nats.client.clone())
+        .with_request_timeout(Duration::from_millis(200));
+    let mut health = RecordingHealth::healthy();
+
+    let error = run_deploy_operation(
+        accepted,
+        DeployExecutionNodeScope::same_nodes(vec![node_id("node_missing")]),
+        DeployOperationStores {
+            core_state: core_state.clone(),
+            observations,
+            controllers: controllers.clone(),
+        },
+        DeployOperationPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("missing node responder fails deploy");
+
+    assert!(matches!(error, DeployOperationRunError::Execute(_)));
+    assert!(
+        core_state
+            .active_service(&service_id("svc_api"))
+            .await
+            .expect("active state reads")
+            .is_none()
+    );
+    assert!(matches!(
+        controllers
+            .operation_status(&operation_id("op_123"))
+            .await
+            .expect("operation status reads"),
+        Some(OperationStatus::Deploy {
+            state:
+                DeployOperationState::Failed {
+                    failure:
+                        DeployOperationFailure::RuntimeUnavailable {
+                            node_id: failed_node_id,
+                            message,
+                            retained_artifacts,
+                        },
+                },
+            ..
+        }) if failed_node_id == node_id("node_missing")
+            && message.as_str() == "node runtime has no responders"
+            && retained_artifacts.is_empty()
     ));
 }
 
@@ -343,6 +411,7 @@ async fn expired_accepted_lease_does_not_run_runtime_side_effects() {
 
 struct TestNats {
     _server: nats_server::Server,
+    client: async_nats::Client,
     jetstream: jetstream::Context,
 }
 
@@ -355,11 +424,12 @@ async fn test_nats() -> TestNats {
     let client = async_nats::connect(server.client_url())
         .await
         .expect("connect to test nats");
-    let jetstream = jetstream::new(client);
+    let jetstream = jetstream::new(client.clone());
     bootstrap_nats(&jetstream).await;
 
     TestNats {
         _server: server,
+        client,
         jetstream,
     }
 }
