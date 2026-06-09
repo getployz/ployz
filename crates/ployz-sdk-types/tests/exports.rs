@@ -191,6 +191,7 @@ fn sdk_exports_operation_api_wire_types() {
             node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
             bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                 .expect("valid bootstrap url"),
+            join_bundle: machine_join_bundle(),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime NATS URL"),
             join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
@@ -203,7 +204,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7","owner_lease":{"operation_id":"op_machine","owner_id":"control","expires_at":"120"}},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","runtime_nats_url":"nats://127.0.0.1:7422","join_token":"join_once_123"}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7","owner_lease":{"operation_id":"op_machine","owner_id":"control","expires_at":"120"}},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"runtime_nats_url":"nats://127.0.0.1:7422","join_token":"join_once_123"}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {

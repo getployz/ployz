@@ -1,6 +1,12 @@
 use std::process::{Command, Output};
 
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
+use ployz_core::install::{
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
+    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+    MachineJoinIrohPublicKey, MachineJoinMaterial, MachineJoinPloyzdArtifact,
+    MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
 };
@@ -11,8 +17,7 @@ use ployz_nats::services::{
 };
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
-    MachineAddResponse, MachineBootstrapUrl, MachineJoinRuntimeNatsUrl, MachineJoinToken,
-    MachineName, OperationApiResponse,
+    MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
     operation_api::{MachineAddApi, OperationApiContract},
 };
 
@@ -51,6 +56,7 @@ async fn binary_machine_add_calls_nats_service() {
                     node_id: node_id("node_2"),
                     bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                         .expect("valid bootstrap url"),
+                    join_bundle: machine_join_bundle(),
                     runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                         .expect("valid runtime NATS URL"),
                     join_token: MachineJoinToken::try_new("join_once_123")
@@ -140,6 +146,64 @@ fn node_id(value: &str) -> NodeId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn machine_join_bundle() -> MachineJoinBundle {
+    MachineJoinBundle {
+        material: MachineJoinMaterial {
+            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                .expect("valid runtime nats url"),
+            trusted_nats: MachineJoinTrustedNats {
+                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                    .expect("valid nats server id"),
+                config_sha256: digest(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
+            },
+            core_iroh: MachineJoinCoreIrohEndpoint {
+                node_id: node_id("core_1"),
+                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                    .expect("valid core iroh public key"),
+                direct_addresses: Vec::new(),
+                relay_url: None,
+            },
+            ployzd: MachineJoinPloyzdArtifact {
+                version: version("0.1.0"),
+                source: source("/tmp/ployzd"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/bin/ployzd"),
+            },
+            ebpf_bytecode: MachineJoinArtifact {
+                version: version("0.1.0"),
+                source: source("/tmp/ployz-ebpf-tc"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
+            },
+            ebpf_ctl: MachineJoinArtifact {
+                version: version("0.1.0"),
+                source: source("/tmp/ployz-ebpf-ctl"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/bin/ployz-ebpf-ctl"),
+            },
+        },
+    }
+}
+
+fn version(value: &str) -> InstallArtifactVersion {
+    InstallArtifactVersion::try_new(value).expect("valid artifact version")
+}
+
+fn source(value: &str) -> InstallArtifactSource {
+    InstallArtifactSource::try_new(value).expect("valid artifact source")
+}
+
+fn digest(value: &str) -> InstallSha256Digest {
+    InstallSha256Digest::try_new(value).expect("valid digest")
+}
+
+fn absolute_path(value: &str) -> AbsoluteInstallPath {
+    AbsoluteInstallPath::try_new(value).expect("valid absolute install path")
 }
 
 fn stdout(output: &Output) -> String {

@@ -228,7 +228,7 @@ export type MachineAddRequest = { operation_id: OperationId, idempotency_key: Op
 
 export type MachineAddGateway = "install" | "skip";
 
-export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, runtime_nats_url: MachineJoinRuntimeNatsUrl, join_token: MachineJoinToken, };
+export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_bundle: MachineJoinBundle, runtime_nats_url: MachineJoinRuntimeNatsUrl, join_token: MachineJoinToken, };
 
 export type MachineListRequest = Record<symbol, never>;
 

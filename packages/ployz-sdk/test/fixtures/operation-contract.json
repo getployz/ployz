@@ -76,6 +76,40 @@
       },
       "node_id": "node_2",
       "bootstrap_url": "https://get.ployz.sh",
+      "join_bundle": {
+        "material": {
+          "cluster_name": "prod",
+          "runtime_nats_url": "nats://127.0.0.1:7422",
+          "trusted_nats": {
+            "server_id": "server_1",
+            "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "core_iroh": {
+            "node_id": "core_1",
+            "public_key": "core-public-key",
+            "direct_addresses": [],
+            "relay_url": null
+          },
+          "ployzd": {
+            "version": "0.1.0",
+            "source": "/tmp/ployzd",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install_path": "/usr/local/bin/ployzd"
+          },
+          "ebpf_bytecode": {
+            "version": "0.1.0",
+            "source": "/tmp/ployz-ebpf-tc",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+          },
+          "ebpf_ctl": {
+            "version": "0.1.0",
+            "source": "/tmp/ployz-ebpf-ctl",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+          }
+        }
+      },
       "runtime_nats_url": "nats://127.0.0.1:7422",
       "join_token": "join_once_123"
     }
