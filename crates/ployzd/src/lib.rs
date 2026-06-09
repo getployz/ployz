@@ -20,6 +20,7 @@ pub mod deploy_worker;
 pub mod dns;
 pub mod docker;
 pub mod gateway;
+pub mod gateway_http;
 pub mod gateway_process_runtime;
 pub mod gateway_runtime;
 pub mod gateway_source;

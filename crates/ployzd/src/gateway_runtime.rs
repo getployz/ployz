@@ -5,6 +5,7 @@ use crate::gateway::{
     GatewayProjectionUpdate, GatewayUpstream, apply_gateway_update,
 };
 use crate::gateway_source::load_gateway_projection_update_from_nats;
+use ployz_core::ops::RouteTarget;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 
@@ -109,7 +110,7 @@ impl GatewayRouteTable {
 
     pub fn select_upstream(
         &self,
-        target: &ployz_core::ops::RouteTarget,
+        target: &RouteTarget,
     ) -> Result<GatewayUpstream, GatewayRouteSelectionError> {
         let projection = self
             .current
@@ -141,12 +142,8 @@ impl GatewayRouteTable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayRouteSelectionError {
     RouteTableUnavailable,
-    NoRoute {
-        target: ployz_core::ops::RouteTarget,
-    },
-    NoUpstream {
-        target: ployz_core::ops::RouteTarget,
-    },
+    NoRoute { target: RouteTarget },
+    NoUpstream { target: RouteTarget },
 }
 
 pub async fn refresh_gateway_runtime_from_nats(
