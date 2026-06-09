@@ -54,6 +54,17 @@
       }
     }
   },
+  "init_first_node_activate_request": {
+    "node_id": "core_1",
+    "gateway": "skip"
+  },
+  "init_first_node_activate_response": {
+    "status": "ok",
+    "value": {
+      "operation_id": "op_init_core_1",
+      "node_id": "core_1"
+    }
+  },
   "machine_add_request": {
     "operation_id": "op_machine",
     "idempotency_key": "idem_machine",

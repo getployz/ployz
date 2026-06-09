@@ -44,17 +44,9 @@ impl FirstNodeInitCommand {
     }
 
     #[must_use]
-    pub fn activate(node_id: NodeId, gateway: FirstNodeGateway) -> Self {
-        Self {
-            mode: FirstNodeInitMode::Activate { node_id, gateway },
-        }
-    }
-
-    #[must_use]
     pub fn node_id(&self) -> &NodeId {
         match &self.mode {
             FirstNodeInitMode::Summary { node_id, .. }
-            | FirstNodeInitMode::Activate { node_id, .. }
             | FirstNodeInitMode::EmitKeeperInstall(KeeperFirstNodeInstall { node_id, .. })
             | FirstNodeInitMode::RunKeeperInstall {
                 keeper_install: KeeperFirstNodeInstall { node_id, .. },
@@ -67,7 +59,6 @@ impl FirstNodeInitCommand {
     pub fn gateway(&self) -> FirstNodeGateway {
         match &self.mode {
             FirstNodeInitMode::Summary { gateway, .. }
-            | FirstNodeInitMode::Activate { gateway, .. }
             | FirstNodeInitMode::EmitKeeperInstall(KeeperFirstNodeInstall { gateway, .. })
             | FirstNodeInitMode::RunKeeperInstall {
                 keeper_install: KeeperFirstNodeInstall { gateway, .. },
@@ -95,15 +86,29 @@ pub enum FirstNodeInitMode {
         node_id: NodeId,
         gateway: FirstNodeGateway,
     },
-    Activate {
-        node_id: NodeId,
-        gateway: FirstNodeGateway,
-    },
     EmitKeeperInstall(KeeperFirstNodeInstall),
     RunKeeperInstall {
         keeper_install: KeeperFirstNodeInstall,
         keeper_binary: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstNodeActivateCommand {
+    pub node_id: NodeId,
+    pub gateway: FirstNodeGateway,
+}
+
+impl FirstNodeActivateCommand {
+    #[must_use]
+    pub const fn new(node_id: NodeId, gateway: FirstNodeGateway) -> Self {
+        Self { node_id, gateway }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("activate first node {}\n", self.node_id.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,9 +144,6 @@ impl FirstNodeInitOutput {
     #[must_use]
     pub fn render(&self) -> String {
         let (node_id, gateway, keeper_install) = match &self.mode {
-            FirstNodeInitMode::Activate { node_id, .. } => {
-                return format!("activate first node {}\n", node_id.as_str());
-            }
             FirstNodeInitMode::Summary { node_id, gateway } => (node_id, *gateway, None),
             FirstNodeInitMode::EmitKeeperInstall(keeper_install) => (
                 &keeper_install.node_id,
@@ -188,15 +190,6 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
         }
         if args.take_flag("--run-keeper-install") {
             parsed.set_keeper_install_mode(ParsedKeeperInstallMode::Run)?;
-            continue;
-        }
-        if args.take_flag("--activate-first-node") {
-            if parsed.activate_first_node {
-                return Err(PloyzctlCliError::DuplicateArgument {
-                    flag: "--activate-first-node",
-                });
-            }
-            parsed.activate_first_node = true;
             continue;
         }
         if args.take_flag("--gateway") {
@@ -332,6 +325,34 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
     parsed.into_command()
 }
 
+pub fn parse_first_node_activate_command(
+    args: &[String],
+) -> Result<FirstNodeActivateCommand, PloyzctlCliError> {
+    let mut node_id = None;
+    let mut gateway = FirstNodeGateway::Skip;
+    let mut args = ArgCursor::new(args);
+
+    while !args.is_empty() {
+        if args.take_flag("--gateway") {
+            if gateway == FirstNodeGateway::Install {
+                return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
+            }
+            gateway = FirstNodeGateway::Install;
+            continue;
+        }
+        if let Some(value) = args.take_value("--node")? {
+            set_once(&mut node_id, value, "--node")?;
+            continue;
+        }
+
+        return Err(args.unexpected());
+    }
+
+    let node_id = NodeId::try_new(required(node_id, "--node")?)
+        .map_err(|error| invalid_value("--node", error))?;
+    Ok(FirstNodeActivateCommand::new(node_id, gateway))
+}
+
 struct ParsedInitArgs {
     keeper_install_mode: ParsedKeeperInstallMode,
     node_id: Option<String>,
@@ -357,7 +378,6 @@ struct ParsedInitArgs {
     machine_bootstrap_url: Option<String>,
     machine_join_template_file: Option<String>,
     keeper_binary: Option<String>,
-    activate_first_node: bool,
 }
 
 impl Default for ParsedInitArgs {
@@ -387,7 +407,6 @@ impl Default for ParsedInitArgs {
             machine_bootstrap_url: None,
             machine_join_template_file: None,
             keeper_binary: None,
-            activate_first_node: false,
         }
     }
 }
@@ -454,7 +473,6 @@ impl ParsedInitArgs {
             machine_bootstrap_url,
             machine_join_template_file,
             keeper_binary,
-            activate_first_node,
         } = self;
         let keeper_install = ParsedKeeperInstallArgs {
             node_public_ip,
@@ -488,20 +506,11 @@ impl ParsedInitArgs {
                     flag: "--emit-keeper-install or --run-keeper-install",
                 });
             }
-            if activate_first_node {
-                return Ok(FirstNodeInitCommand::activate(node_id, gateway));
-            }
             return Ok(FirstNodeInitCommand::summary(node_id, gateway));
         }
 
         let keeper_install = keeper_install.into_keeper_install(node_id, gateway)?;
         if keeper_install_mode == ParsedKeeperInstallMode::Run {
-            if activate_first_node {
-                return Err(PloyzctlCliError::ConflictingArguments {
-                    first: "--run-keeper-install",
-                    second: "--activate-first-node",
-                });
-            }
             let keeper_binary = keeper_binary.unwrap_or_else(|| "ployz-keeper".to_owned());
             if keeper_binary.is_empty() {
                 return Err(PloyzctlCliError::InvalidValue {
@@ -517,12 +526,6 @@ impl ParsedInitArgs {
         if keeper_binary.is_some() {
             return Err(PloyzctlCliError::MissingRequiredArgument {
                 flag: "--run-keeper-install",
-            });
-        }
-        if activate_first_node {
-            return Err(PloyzctlCliError::ConflictingArguments {
-                first: "--emit-keeper-install",
-                second: "--activate-first-node",
             });
         }
 

@@ -73,10 +73,7 @@ fn hetzner_h0_script_drives_the_product_path() {
         )
     );
     assert!(script.contains("activate-core"));
-    assert!(script.contains(" init --node core_1 --gateway --activate-first-node"));
-    assert!(!script.contains("--run-keeper-install"));
-    assert!(!script.contains("--keeper-binary '$remote_keeper'"));
-    assert!(script.contains("--activate-first-node"));
+    assert!(script.contains(" init activate-first-node --node core_1 --gateway"));
     assert!(script.contains(" machine add --node edge_2"));
     assert!(script.contains("start-bootstrap-tunnel"));
     assert!(script.contains("machine add did not print the joined node runtime NATS URL"));

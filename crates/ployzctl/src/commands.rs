@@ -13,7 +13,7 @@ pub mod service;
 pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
-ployzctl init --node <id> [--gateway] [--activate-first-node]
+ployzctl init activate-first-node --node <id> [--gateway]
 ployzctl init --node <id> [--gateway] (--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--node-public-ip <ip>] [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--keeper-binary <path>]
 ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --core-iroh-public-key <key> [--core-iroh-direct-address <addr>] [--core-iroh-relay-url <url>] --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --ebpf-bytecode-version <version> --ebpf-bytecode-source <path> --ebpf-bytecode-sha256 <sha256> --ebpf-bytecode-install-path <path> --ebpf-ctl-version <version> --ebpf-ctl-source <path> --ebpf-ctl-sha256 <sha256> --ebpf-ctl-install-path <path> --secret-delivery-file <path>
 ployzctl backup create --operation <id> --idempotency-key <key>
@@ -40,6 +40,7 @@ pub enum PloyzctlCommand {
     BackupCreate(backup::BackupCreateCommand),
     BackupRestorePlan(backup::BackupRestorePlanCommand),
     Init(init::FirstNodeInitCommand),
+    InitFirstNodeActivate(init::FirstNodeActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineAdd(machine::MachineAddCommand),
     MachineList(machine::MachineListCommand),
@@ -96,6 +97,12 @@ pub fn parse_command(
         [command, subcommand, rest @ ..] if command == "init" && subcommand == "join-template" => {
             init::join_template::parse_machine_join_template_command(rest)
                 .map(PloyzctlCommand::InitJoinTemplate)
+        }
+        [command, subcommand, rest @ ..]
+            if command == "init" && subcommand == "activate-first-node" =>
+        {
+            init::parse_first_node_activate_command(rest)
+                .map(PloyzctlCommand::InitFirstNodeActivate)
         }
         [command, rest @ ..] if command == "init" => {
             init::parse_init_command(rest).map(PloyzctlCommand::Init)

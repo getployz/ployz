@@ -9,7 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{OperationApiClient, OperationApiClientError, OperationApiRequestFailure};
-use crate::commands::init::{FirstNodeActivationOutput, FirstNodeGateway, FirstNodeInitMode};
+use crate::commands::init::{
+    FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeGateway, FirstNodeInitMode,
+};
 use crate::commands::{PloyzctlCommand, USAGE};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
@@ -132,15 +134,14 @@ pub async fn execute_command(
                 )?;
                 Ok(output)
             }
-            FirstNodeInitMode::Activate { node_id, gateway } => {
-                let activation =
-                    activate_first_node_machine(node_id.clone(), *gateway, config).await?;
-                Ok(PloyzctlExecutionOutput::stdout(activation.render()))
-            }
             FirstNodeInitMode::Summary { .. } | FirstNodeInitMode::EmitKeeperInstall(_) => {
                 Ok(PloyzctlExecutionOutput::stdout(command.render()))
             }
         },
+        PloyzctlCommand::InitFirstNodeActivate(command) => {
+            let activation = activate_first_node_machine(&command, config).await?;
+            Ok(PloyzctlExecutionOutput::stdout(activation.render()))
+        }
         PloyzctlCommand::InitJoinTemplate(command) => {
             Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
         }
@@ -325,13 +326,12 @@ impl PloyzctlExecutionOutput {
 }
 
 async fn activate_first_node_machine(
-    node_id: ployz_core::ids::NodeId,
-    gateway: FirstNodeGateway,
+    command: &FirstNodeActivateCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
     let deadline = Instant::now() + config.nats_connect_timeout();
     loop {
-        match activate_first_node_machine_once(node_id.clone(), gateway, config).await {
+        match activate_first_node_machine_once(command, config).await {
             Ok(activation) => return Ok(activation),
             Err(error)
                 if error.is_first_node_activation_retryable() && Instant::now() < deadline =>
@@ -344,15 +344,14 @@ async fn activate_first_node_machine(
 }
 
 async fn activate_first_node_machine_once(
-    node_id: ployz_core::ids::NodeId,
-    gateway: FirstNodeGateway,
+    command: &FirstNodeActivateCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
     let api = operation_api_client(config).await?;
     let activated = api
         .init_first_node_activate(&InitFirstNodeActivateRequest {
-            node_id,
-            gateway: machine_add_gateway(gateway),
+            node_id: command.node_id.clone(),
+            gateway: machine_add_gateway(command.gateway),
         })
         .await
         .map_err(|source| PloyzctlExecutionError::FirstNodeActivateApi { source })?;

@@ -406,7 +406,7 @@ JSON
       "'$remote_keeper' first-node-install --node core_1 --node-public-ip '$core_ip' --gateway --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
 
     run_remote_logged activate-core "$core_ip" \
-      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --activate-first-node"
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init activate-first-node --node core_1 --gateway"
 
     machine_log="${log_dir}/machine-add.log"
     run_remote_logged machine-add "$core_ip" \

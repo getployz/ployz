@@ -9,6 +9,8 @@ import type {
   BackupCreateResponse,
   DeploySubmitRequest,
   DeploySubmitResponse,
+  InitFirstNodeActivateRequest,
+  InitFirstNodeActivateResponse,
   LogsTailRequest,
   LogsTailResponse,
   MachineAddRequest,
@@ -91,6 +93,12 @@ export class PloyzNatsTransport {
 
   deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse> {
     return this.#request("deploy.submit", request);
+  }
+
+  initFirstNodeActivate(
+    request: InitFirstNodeActivateRequest,
+  ): Promise<InitFirstNodeActivateResponse> {
+    return this.#request("init.first_node.activate", request);
   }
 
   backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse> {

@@ -69,6 +69,10 @@ import type {
   DeploySubmitRequest,
   DeploySubmitResponse,
   EventSequence,
+  InitFirstNodeActivateError,
+  InitFirstNodeActivateRequest,
+  InitFirstNodeActivateResponse,
+  InitFirstNodeActivated,
   LogsTailError,
   LogsTailLines,
   LogsTailRequest,
@@ -117,6 +121,9 @@ import type {
 
 export interface PloyzOperationTransport {
   deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse>;
+  initFirstNodeActivate(
+    request: InitFirstNodeActivateRequest,
+  ): Promise<InitFirstNodeActivateResponse>;
   backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse>;
   machineAdd(request: MachineAddRequest): Promise<MachineAddResponse>;
   machineList(request: MachineListRequest): Promise<MachineListResponse>;
@@ -166,6 +173,11 @@ export interface PloyzMachineAddInput {
   gateway: MachineAddGateway;
 }
 
+export interface PloyzFirstNodeActivateInput {
+  nodeId: string;
+  gateway: MachineAddGateway;
+}
+
 export interface PloyzMachineJoinRedeemInput {
   joinToken: string;
 }
@@ -211,6 +223,16 @@ export class PloyzClient {
       await this.#transport.backupCreate(backupCreateRequest(input)),
     );
     return new OperationHandle(this.#transport, accepted);
+  }
+
+  async initFirstNodeActivate(
+    input: PloyzFirstNodeActivateInput,
+  ): Promise<FirstNodeActivationHandle> {
+    const activated = unwrapApiResponse(
+      "init.first_node.activate",
+      await this.#transport.initFirstNodeActivate(initFirstNodeActivateRequest(input)),
+    );
+    return new FirstNodeActivationHandle(this.#transport, activated);
   }
 
   async machineAdd(input: PloyzMachineAddInput): Promise<MachineAddHandle> {
@@ -331,6 +353,15 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     node_id: nodeId(input.nodeId),
     name: machineName(input.name),
+    gateway: input.gateway,
+  };
+}
+
+export function initFirstNodeActivateRequest(
+  input: PloyzFirstNodeActivateInput,
+): InitFirstNodeActivateRequest {
+  return {
+    node_id: nodeId(input.nodeId),
     gateway: input.gateway,
   };
 }
@@ -464,6 +495,33 @@ export class MachineAddHandle extends OperationHandle {
   }
 }
 
+export class FirstNodeActivationHandle {
+  readonly #transport: PloyzOperationTransport;
+  readonly activated: InitFirstNodeActivated;
+
+  constructor(transport: PloyzOperationTransport, activated: InitFirstNodeActivated) {
+    this.#transport = transport;
+    this.activated = activated;
+  }
+
+  get operationId(): OperationId {
+    return this.activated.operation_id;
+  }
+
+  get nodeId(): InitFirstNodeActivated["node_id"] {
+    return this.activated.node_id;
+  }
+
+  async status(): Promise<OperationStatusSnapshot> {
+    return unwrapApiResponse(
+      "ops.status",
+      await this.#transport.opsStatus({
+        operation_id: this.activated.operation_id,
+      }),
+    );
+  }
+}
+
 function unwrapApiResponse<T, E>(
   endpoint: PloyzApiEndpoint,
   response: OperationApiResponse<T, E>,
@@ -479,6 +537,7 @@ function unwrapApiResponse<T, E>(
 export type PloyzOperationError =
   | PloyzApiError<BackupCreateError>
   | PloyzApiError<DeploySubmitError>
+  | PloyzApiError<InitFirstNodeActivateError>
   | PloyzApiError<MachineAddError>
   | PloyzApiError<MachineListError>
   | PloyzApiError<MachineInspectError>

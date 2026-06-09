@@ -49,10 +49,10 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
         .arg(server.client_url())
         .args([
             "init",
+            "activate-first-node",
             "--node",
             "core_1",
             "--gateway",
-            "--activate-first-node",
         ])
         .output()
         .expect("ployzctl binary runs");

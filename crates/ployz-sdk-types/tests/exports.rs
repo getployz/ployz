@@ -251,12 +251,17 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
     assert_fixture::<BackupCreateRequest>(&fixture, "backup_create_request");
+    assert_fixture::<InitFirstNodeActivateRequest>(&fixture, "init_first_node_activate_request");
     assert_fixture::<MachineAddRequest>(&fixture, "machine_add_request");
     assert_fixture::<MachineJoinRedeemRequest>(&fixture, "machine_join_redeem_request");
     assert_fixture::<OperationEventReplayRequest>(&fixture, "ops_watch_request");
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
     assert_fixture::<BackupCreateResponse>(&fixture, "backup_create_response");
+    assert_fixture::<OperationApiResponse<InitFirstNodeActivated, InitFirstNodeActivateError>>(
+        &fixture,
+        "init_first_node_activate_response",
+    );
     assert_fixture::<MachineAddResponse>(&fixture, "machine_add_response");
     assert_fixture::<MachineJoinRedeemResponse>(&fixture, "machine_join_redeem_response");
     assert_fixture::<OperationStatusSnapshot>(&fixture, "operation_status_snapshot");
