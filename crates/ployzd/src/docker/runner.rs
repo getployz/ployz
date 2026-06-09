@@ -9,8 +9,8 @@ use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryNetworkSettings,
-    ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkCreateRequest,
-    NetworkingConfig,
+    ContainerSummaryStateEnum, EndpointSettings, HostConfig, Ipam, IpamConfig,
+    NetworkCreateRequest, NetworkingConfig,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
@@ -32,24 +32,44 @@ const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
     docker: Docker,
+    endpoint_network_subnet: String,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct LazyLocalDockerManagedContainerRunner;
+#[derive(Debug, Clone)]
+pub struct LazyLocalDockerManagedContainerRunner {
+    endpoint_network_subnet: String,
+}
+
+impl LazyLocalDockerManagedContainerRunner {
+    #[must_use]
+    pub fn new(endpoint_network_subnet: String) -> Self {
+        Self {
+            endpoint_network_subnet,
+        }
+    }
+}
 
 impl DockerManagedContainerRunner {
-    pub fn local_defaults() -> Result<Self, DockerManagedContainerRunnerConnectError> {
+    pub fn local_defaults(
+        endpoint_network_subnet: impl Into<String>,
+    ) -> Result<Self, DockerManagedContainerRunnerConnectError> {
         let docker = Docker::connect_with_local_defaults().map_err(|source| {
             DockerManagedContainerRunnerConnectError {
                 message: source.to_string(),
             }
         })?;
-        Ok(Self { docker })
+        Ok(Self {
+            docker,
+            endpoint_network_subnet: endpoint_network_subnet.into(),
+        })
     }
 
     #[must_use]
-    pub fn new(docker: Docker) -> Self {
-        Self { docker }
+    pub fn new(docker: Docker, endpoint_network_subnet: impl Into<String>) -> Self {
+        Self {
+            docker,
+            endpoint_network_subnet: endpoint_network_subnet.into(),
+        }
     }
 }
 
@@ -65,7 +85,7 @@ impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, NodeContainerRunnerError> {
-        let runner = connect_local_docker_for_create()?;
+        let runner = connect_local_docker_for_create(self.endpoint_network_subnet.clone())?;
         runner.create_managed_container(command).await
     }
 
@@ -73,12 +93,12 @@ impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
     ) -> Result<(), NodeContainerRunnerError> {
-        let runner = DockerManagedContainerRunner::local_defaults().map_err(|error| {
-            NodeContainerRunnerError::Start {
-                container_id: container_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
+        let runner =
+            DockerManagedContainerRunner::local_defaults(self.endpoint_network_subnet.clone())
+                .map_err(|error| NodeContainerRunnerError::Start {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                })?;
         runner.start_managed_container(container_id).await
     }
 
@@ -87,12 +107,12 @@ impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
     ) -> Result<(), NodeContainerRunnerError> {
-        let runner = DockerManagedContainerRunner::local_defaults().map_err(|error| {
-            NodeContainerRunnerError::Remove {
-                container_id: container_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
+        let runner =
+            DockerManagedContainerRunner::local_defaults(self.endpoint_network_subnet.clone())
+                .map_err(|error| NodeContainerRunnerError::Remove {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                })?;
         runner
             .remove_managed_container(container_id, expected_identity)
             .await
@@ -105,12 +125,12 @@ impl NodeLogReader for LazyLocalDockerManagedContainerRunner {
         container_id: &ContainerId,
         tail_lines: Option<u16>,
     ) -> Result<NodeLogTail, NodeLogReaderError> {
-        let runner = DockerManagedContainerRunner::local_defaults().map_err(|error| {
-            NodeLogReaderError::ReadFailed {
-                container_id: container_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
+        let runner =
+            DockerManagedContainerRunner::local_defaults(self.endpoint_network_subnet.clone())
+                .map_err(|error| NodeLogReaderError::ReadFailed {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                })?;
         runner.tail_container_logs(container_id, tail_lines).await
     }
 }
@@ -273,15 +293,7 @@ impl DockerManagedContainerRunner {
     }
 
     async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
-        let request = NetworkCreateRequest {
-            name: ENDPOINT_NETWORK_NAME.to_owned(),
-            driver: Some("bridge".to_owned()),
-            labels: Some(HashMap::from([(
-                MANAGED_LABEL.to_owned(),
-                "true".to_owned(),
-            )])),
-            ..Default::default()
-        };
+        let request = endpoint_network_create_request(&self.endpoint_network_subnet);
 
         match self.docker.create_network(request).await {
             Ok(_) => Ok(()),
@@ -317,16 +329,17 @@ fn is_container_missing(error: &BollardError) -> bool {
 
 fn connect_local_docker_for_list() -> Result<DockerManagedContainerRunner, NodeContainerRunnerError>
 {
-    DockerManagedContainerRunner::local_defaults().map_err(|error| {
+    DockerManagedContainerRunner::local_defaults("10.42.1.0/24").map_err(|error| {
         NodeContainerRunnerError::ListExisting {
             message: error.to_string(),
         }
     })
 }
 
-fn connect_local_docker_for_create()
--> Result<DockerManagedContainerRunner, NodeContainerRunnerError> {
-    DockerManagedContainerRunner::local_defaults().map_err(|error| {
+fn connect_local_docker_for_create(
+    endpoint_network_subnet: String,
+) -> Result<DockerManagedContainerRunner, NodeContainerRunnerError> {
+    DockerManagedContainerRunner::local_defaults(endpoint_network_subnet).map_err(|error| {
         NodeContainerRunnerError::Create {
             message: error.to_string(),
         }
@@ -418,6 +431,26 @@ fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {
         exposed_ports,
         host_config,
         networking_config,
+        ..Default::default()
+    }
+}
+
+fn endpoint_network_create_request(endpoint_network_subnet: &str) -> NetworkCreateRequest {
+    NetworkCreateRequest {
+        name: ENDPOINT_NETWORK_NAME.to_owned(),
+        driver: Some("bridge".to_owned()),
+        ipam: Some(Ipam {
+            driver: Some("default".to_owned()),
+            config: Some(vec![IpamConfig {
+                subnet: Some(endpoint_network_subnet.to_owned()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        labels: Some(HashMap::from([(
+            MANAGED_LABEL.to_owned(),
+            "true".to_owned(),
+        )])),
         ..Default::default()
     }
 }
@@ -597,6 +630,23 @@ mod tests {
                 .and_then(|config| config.endpoints_config)
                 .map(|endpoints| endpoints.contains_key(ENDPOINT_NETWORK_NAME)),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn endpoint_network_create_request_sets_node_subnet() {
+        let request = endpoint_network_create_request("10.42.7.0/24");
+
+        assert_eq!(request.name, ENDPOINT_NETWORK_NAME);
+        assert_eq!(request.driver, Some("bridge".to_owned()));
+        assert_eq!(
+            request
+                .ipam
+                .and_then(|ipam| ipam.config)
+                .and_then(|configs| {
+                    configs.into_iter().next().and_then(|config| config.subnet)
+                }),
+            Some("10.42.7.0/24".to_owned())
         );
     }
 

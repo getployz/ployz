@@ -29,6 +29,7 @@ pub const PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_BRIDGE_IFNA
 pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "docker0";
 pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
 pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
+pub const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
 pub const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 pub const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
@@ -88,6 +89,7 @@ pub fn load_daemon_process_config(
                 load_ebpf_ctl_path(&env),
                 load_dataplane_bridge_ifname(&env),
                 load_dataplane_wg_ifname(&env),
+                load_dataplane_endpoint_subnet(&env, node_id),
                 load_node_public_ip(&env)?,
             )))
         }
@@ -137,6 +139,41 @@ fn load_dataplane_wg_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
     env(PLOYZ_DATAPLANE_WG_IFNAME_ENV)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_DATAPLANE_WG_IFNAME.to_owned())
+}
+
+fn load_dataplane_endpoint_subnet(
+    env: &impl Fn(&str) -> Option<String>,
+    node_id: &NodeId,
+) -> String {
+    env(PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_dataplane_endpoint_subnet(node_id))
+}
+
+fn default_dataplane_endpoint_subnet(node_id: &NodeId) -> String {
+    let octet = trailing_node_number(node_id.as_str())
+        .map(|number| ((number.saturating_sub(1)) % 254 + 1) as u8)
+        .unwrap_or_else(|| stable_node_octet(node_id.as_str()));
+    format!("10.42.{octet}.0/24")
+}
+
+fn trailing_node_number(value: &str) -> Option<u16> {
+    let digits = value
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.chars().rev().collect::<String>().parse().ok()
+}
+
+fn stable_node_octet(value: &str) -> u8 {
+    let hash = value.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    (hash % 254 + 1) as u8
 }
 
 fn load_node_public_ip(
@@ -634,6 +671,7 @@ pub struct NodeProcessConfig {
     pub ebpf_ctl_path: std::path::PathBuf,
     pub dataplane_bridge_ifname: String,
     pub dataplane_wg_ifname: String,
+    pub dataplane_endpoint_subnet: String,
     pub public_ip: Option<IpAddr>,
 }
 
@@ -646,6 +684,7 @@ impl NodeProcessConfig {
         ebpf_ctl_path: std::path::PathBuf,
         dataplane_bridge_ifname: String,
         dataplane_wg_ifname: String,
+        dataplane_endpoint_subnet: String,
         public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
@@ -655,6 +694,7 @@ impl NodeProcessConfig {
             ebpf_ctl_path,
             dataplane_bridge_ifname,
             dataplane_wg_ifname,
+            dataplane_endpoint_subnet,
             public_ip,
         }
     }

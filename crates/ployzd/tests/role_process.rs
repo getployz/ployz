@@ -12,8 +12,8 @@ use ployzd::app::{
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, NodeProcessConfig, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV,
-    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV,
-    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_EBPF_BYTECODE_ENV,
+    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
     PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
     PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
@@ -65,6 +65,7 @@ fn node_process_owns_node_rpc_and_observations_only() {
         "/tmp/ployz-ebpf-ctl".into(),
         "docker0".to_owned(),
         "ployz-wg0".to_owned(),
+        "10.42.7.0/24".to_owned(),
         None,
     ));
     let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
@@ -206,6 +207,7 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
                 PLOYZ_EBPF_CTL_ENV => Some("/tmp/ployz-ebpf-ctl".to_owned()),
                 PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV => Some("br-ployz".to_owned()),
                 PLOYZ_DATAPLANE_WG_IFNAME_ENV => Some("wg-ployz".to_owned()),
+                PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV => Some("10.77.2.0/24".to_owned()),
                 PLOYZ_NODE_PUBLIC_IP_ENV => Some("203.0.113.7".to_owned()),
                 _ => None,
             },
@@ -227,10 +229,29 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
     );
     assert_eq!(config.dataplane_bridge_ifname, "br-ployz");
     assert_eq!(config.dataplane_wg_ifname, "wg-ployz");
+    assert_eq!(config.dataplane_endpoint_subnet, "10.77.2.0/24");
     assert_eq!(
         config.public_ip,
         Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
     );
+}
+
+#[test]
+fn node_role_derives_endpoint_subnet_from_node_id() {
+    let config =
+        load_daemon_process_config(
+            DaemonProcessRole::Node(node_id("edge_2")),
+            |name| match name {
+                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+                _ => None,
+            },
+        )
+        .expect("node role config loads");
+
+    let DaemonProcessConfig::Node(config) = config else {
+        panic!("node role should produce node config");
+    };
+    assert_eq!(config.dataplane_endpoint_subnet, "10.42.2.0/24");
 }
 
 #[test]

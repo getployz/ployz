@@ -52,7 +52,8 @@ pub async fn start_node_process_runtime(
     let client = connect_with_timeout(&config.nats_url, NODE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(NodeProcessRuntimeError::ConnectNats)?;
-    let runner = LazyLocalDockerManagedContainerRunner;
+    let runner =
+        LazyLocalDockerManagedContainerRunner::new(config.dataplane_endpoint_subnet.clone());
     let preparer = HostWireGuardEbpfPreparer::new(
         config.node_id.clone(),
         config.ebpf_bytecode_path.clone(),
@@ -64,7 +65,7 @@ pub async fn start_node_process_runtime(
     start_node_process_runtime_with_ports(
         client,
         config.node_id.clone(),
-        runner,
+        runner.clone(),
         preparer,
         runner,
         config.public_ip,
