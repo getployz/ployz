@@ -13,8 +13,8 @@ use ployz_core::deploy::{
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployRunningStage,
-    DeployTransition, FailureMessage, RoutePort,
+    DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
+    RoutePort,
 };
 
 pub use facts::{
@@ -38,7 +38,7 @@ pub use preparation::{
 use crate::docker::labels::ManagedContainerIdentity;
 pub use crate::node_runtime_types::{
     ContainerEndpointRequest, NodeContainerRunSpec, NodeRemoveContainerRequest,
-    NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeRunContainerOutcome, NodeRunContainerRequest, NodeStopContainerRequest,
 };
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
@@ -117,10 +117,17 @@ where
             DeployPlanStep::UseExistingContainer {
                 node_id,
                 container_id,
-                ..
+                slot,
             } => containers.push(DeployContainer {
                 node_id: node_id.clone(),
                 container_id: container_id.clone(),
+                step_id: deploy_step_id(*slot).map_err(|source| {
+                    failure(
+                        command,
+                        DeployExecutionError::StepId(source),
+                        &started_containers,
+                    )
+                })?,
                 required_endpoint_port: required_endpoint_port(command),
             }),
             DeployPlanStep::RunContainer { node_id, slot } => {
@@ -154,13 +161,16 @@ where
         .await
         .map_err(|source| failure(command, source, &started_containers))?;
 
-    with_step_timeout(
+    let health_result = with_step_timeout(
         command,
         DeployExecutionStep::WaitHealthy,
         (*ports.health_checker).wait_healthy(&containers),
     )
-    .await
-    .map_err(|source| failure(command, source, &started_containers))?;
+    .await;
+    if let Err(source) = health_result {
+        stop_retained_containers(command, &mut *ports.node_runtime, &started_containers).await;
+        return Err(failure(command, source, &started_containers));
+    }
 
     if command.active_route_commit_request().is_some() {
         record_running_stage(
@@ -195,20 +205,13 @@ where
         .await;
     }
     let cleanup = cleanup_superseded_containers(command, &mut *ports.node_runtime, &plan).await;
-    if !cleanup.is_empty() {
-        let _ = record_cleanup_finished(command, &mut *ports.recorder, cleanup_evidence(&cleanup))
-            .await;
-    }
-    let completion_outcome = completion_outcome(&cleanup);
-    let terminal_event =
-        record_completion_best_effort(command, &mut *ports.recorder, completion_outcome).await;
+    let terminal_event = record_terminal_state(command, &mut *ports.recorder, &cleanup).await;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
         target_revision: plan.target_revision,
         containers,
         cleanup,
-        completion_outcome,
         terminal_event,
     };
 
@@ -256,6 +259,37 @@ where
     cleanup
 }
 
+async fn stop_retained_containers<N>(
+    command: &DeployExecutionCommand,
+    node_runtime: &mut N,
+    containers: &[DeployContainer],
+) where
+    N: NodeContainerRuntime,
+{
+    for container in containers {
+        let stop = node_runtime.stop_container(NodeStopContainerRequest {
+            node_id: container.node_id.clone(),
+            operation_id: command.operation_id.clone(),
+            container_id: container.container_id.clone(),
+            expected_identity: retained_container_identity(command, container),
+        });
+        let _ = tokio::time::timeout(command.step_timeout(), stop).await;
+    }
+}
+
+fn retained_container_identity(
+    command: &DeployExecutionCommand,
+    container: &DeployContainer,
+) -> ManagedContainerIdentity {
+    ManagedContainerIdentity {
+        service_id: command.request.service_id.clone(),
+        revision_id: command.request.target_revision.clone(),
+        operation_id: command.operation_id.clone(),
+        step_id: container.step_id.clone(),
+        kind: ManagedContainerKind::Service,
+    }
+}
+
 fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
         service_id: target.service_id.clone(),
@@ -299,32 +333,31 @@ fn cleanup_failure_message(error: NodeContainerRuntimeError) -> FailureMessage {
         | NodeContainerRuntimeError::ExistingContainerStartFailed { message, .. }
         | NodeContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
         | NodeContainerRuntimeError::StartedContainerUnhealthy { message, .. }
+        | NodeContainerRuntimeError::StopContainerFailed { message, .. }
         | NodeContainerRuntimeError::RemoveContainerFailed { message, .. } => message,
     }
 }
 
-async fn record_completion_best_effort<R>(
+async fn record_terminal_state<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
-    outcome: DeployCompletionOutcome,
+    cleanup: &[DeployCleanupResult],
 ) -> DeployTerminalEvent
 where
     R: DeployOperationRecorder,
 {
+    if !cleanup.is_empty() {
+        let record_cleanup =
+            record_cleanup_finished(command, recorder, cleanup_evidence(cleanup)).await;
+        if DeployCleanupResult::has_failure(cleanup) && record_cleanup.is_err() {
+            return DeployTerminalEvent::Missing;
+        }
+    }
+
+    let outcome = DeployCleanupResult::completion_outcome(cleanup);
     match record_stage(command, recorder, DeployTransition::Completed { outcome }).await {
         Ok(()) => DeployTerminalEvent::Recorded,
         Err(_) => DeployTerminalEvent::Missing,
-    }
-}
-
-fn completion_outcome(cleanup: &[DeployCleanupResult]) -> DeployCompletionOutcome {
-    if cleanup
-        .iter()
-        .any(|result| matches!(result, DeployCleanupResult::Failed { .. }))
-    {
-        DeployCompletionOutcome::CompletedWithWarnings
-    } else {
-        DeployCompletionOutcome::Completed
     }
 }
 
@@ -579,7 +612,7 @@ where
             service_id: command.request.service_id.clone(),
             revision_id: command.request.target_revision.clone(),
             operation_id: command.operation_id.clone(),
-            step_id,
+            step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
         },
     };
@@ -590,6 +623,7 @@ where
         .map(|outcome| DeployContainer {
             node_id: node_id.clone(),
             container_id: outcome.container_id().clone(),
+            step_id,
             required_endpoint_port: required_endpoint_port(command),
         })
         .map_err(DeployExecutionError::RunContainer)

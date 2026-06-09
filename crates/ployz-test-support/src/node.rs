@@ -170,6 +170,45 @@ impl NodeContainerRunner for ObservingContainerRunner {
             .await
             .map_err(|error| node_observation_remove_error(container_id, error))
     }
+
+    async fn stop_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let Some(snapshot) = self
+            .observations
+            .node_snapshot(&self.node_id)
+            .await
+            .map_err(|error| node_observation_stop_error(container_id, error))?
+        else {
+            return Ok(());
+        };
+
+        let Some(existing) = snapshot.container(container_id).cloned() else {
+            return Ok(());
+        };
+        if observation_identity(&existing) != *expected_identity {
+            return Err(NodeContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message: "container identity did not match stop target".to_owned(),
+            });
+        }
+
+        let snapshot = snapshot
+            .with_container_replaced(ManagedContainerObservation {
+                state: ContainerRuntimeState::Exited,
+                ..existing
+            })
+            .map_err(|error| NodeContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        self.observations
+            .replace_node_containers(&snapshot)
+            .await
+            .map_err(|error| node_observation_stop_error(container_id, error))
+    }
 }
 
 impl NodeLogReader for ObservingContainerRunner {
@@ -376,6 +415,16 @@ fn node_observation_remove_error(
     error: ObservationStoreError,
 ) -> NodeContainerRunnerError {
     NodeContainerRunnerError::Remove {
+        container_id: container_id.clone(),
+        message: error.to_string(),
+    }
+}
+
+fn node_observation_stop_error(
+    container_id: &ContainerId,
+    error: ObservationStoreError,
+) -> NodeContainerRunnerError {
+    NodeContainerRunnerError::Stop {
         container_id: container_id.clone(),
         message: error.to_string(),
     }

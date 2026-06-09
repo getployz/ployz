@@ -537,6 +537,7 @@ mod tests {
         DeployContainer {
             node_id: node_id(node_id_value),
             container_id: container_id(container_id_value),
+            step_id: step_id("run_1"),
             required_endpoint_port,
         }
     }

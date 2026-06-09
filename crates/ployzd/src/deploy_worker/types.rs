@@ -2,7 +2,7 @@ use ployz_core::dataplane::{WireGuardEbpfPrepareRequest, WireGuardPeerEndpoint};
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, ExistingServiceReplica,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
+use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, StepId};
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RoutePort,
 };
@@ -109,8 +109,14 @@ pub struct DeployExecutionOutcome {
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
-    pub completion_outcome: DeployCompletionOutcome,
     pub terminal_event: DeployTerminalEvent,
+}
+
+impl DeployExecutionOutcome {
+    #[must_use]
+    pub fn completion_outcome(&self) -> DeployCompletionOutcome {
+        DeployCleanupResult::completion_outcome(&self.cleanup)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +126,25 @@ pub enum DeployCleanupResult {
         target: DeployCleanupContainer,
         message: FailureMessage,
     },
+}
+
+impl DeployCleanupResult {
+    pub(super) fn completion_outcome(cleanup: &[Self]) -> DeployCompletionOutcome {
+        if cleanup
+            .iter()
+            .any(|result| matches!(result, Self::Failed { .. }))
+        {
+            DeployCompletionOutcome::CompletedWithWarnings
+        } else {
+            DeployCompletionOutcome::Completed
+        }
+    }
+
+    pub(super) fn has_failure(cleanup: &[Self]) -> bool {
+        cleanup
+            .iter()
+            .any(|result| matches!(result, Self::Failed { .. }))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +157,7 @@ pub enum DeployTerminalEvent {
 pub struct DeployContainer {
     pub node_id: NodeId,
     pub container_id: ContainerId,
+    pub step_id: StepId,
     pub required_endpoint_port: Option<RoutePort>,
 }
 

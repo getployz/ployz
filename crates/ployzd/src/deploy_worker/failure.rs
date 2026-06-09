@@ -442,6 +442,12 @@ pub enum NodeContainerRuntimeError {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
+    StopContainerFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
 }
 
 impl NodeContainerRuntimeError {
@@ -503,6 +509,9 @@ impl NodeContainerRuntimeError {
                 node_id, message, ..
             }
             | Self::RemoveContainerFailed {
+                node_id, message, ..
+            }
+            | Self::StopContainerFailed {
                 node_id, message, ..
             } => DeployOperationFailure::RuntimeUnavailable {
                 node_id: node_id.clone(),

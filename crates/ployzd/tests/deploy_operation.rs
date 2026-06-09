@@ -375,7 +375,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
         }]
     );
     assert_eq!(
-        outcome.completion_outcome,
+        outcome.completion_outcome(),
         DeployCompletionOutcome::CompletedWithWarnings
     );
     assert!(
@@ -397,6 +397,77 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             }
         ))
     );
+}
+
+#[tokio::test]
+async fn deploy_worker_does_not_record_warning_completion_without_cleanup_failure_evidence() {
+    let mut recorder = RecordingOperations::fail_cleanup_evidence_times(1);
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_remove_failure();
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds even when cleanup evidence cannot be recorded");
+
+    assert_eq!(active_state.requests.len(), 1);
+    assert_eq!(
+        outcome.completion_outcome(),
+        DeployCompletionOutcome::CompletedWithWarnings
+    );
+    assert_eq!(outcome.terminal_event, DeployTerminalEvent::Missing);
+    assert_eq!(recorder.completed_transition_attempts, 0);
+    assert!(!recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::Transition(DeployTransition::Completed {
+            outcome: DeployCompletionOutcome::CompletedWithWarnings,
+        })
+    )));
+}
+
+#[tokio::test]
+async fn deploy_worker_counts_warning_completion_write_failure() {
+    let mut recorder = RecordingOperations::fail_completed_transition_times(1);
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_remove_failure();
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds even when warning completion cannot be recorded");
+
+    assert_eq!(
+        outcome.completion_outcome(),
+        DeployCompletionOutcome::CompletedWithWarnings
+    );
+    assert_eq!(outcome.terminal_event, DeployTerminalEvent::Missing);
+    assert_eq!(recorder.completed_transition_attempts, 1);
 }
 
 #[tokio::test]
@@ -441,6 +512,7 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
             && retained_artifacts.is_empty()
     ));
     assert!(runtime.requests.is_empty());
+    assert!(runtime.stops.is_empty());
     assert!(active_state.requests.is_empty());
 }
 
@@ -595,6 +667,26 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             && retained_artifacts == vec![retained_created_container("node_a", "ctr_created")]
     ));
     assert!(active_state.requests.is_empty());
+    assert_eq!(
+        runtime.stops,
+        runtime
+            .requests
+            .iter()
+            .zip([container_id("ctr_1"), container_id("ctr_2")])
+            .map(
+                |(request, container_id)| ployzd::deploy_worker::NodeStopContainerRequest {
+                    node_id: request.node_id.clone(),
+                    operation_id: operation_id("op_123"),
+                    container_id,
+                    expected_identity: managed_container_labels(
+                        &request.container,
+                        request.endpoint.as_ref()
+                    )
+                    .identity(),
+                }
+            )
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

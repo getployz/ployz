@@ -45,6 +45,15 @@ pub struct NodeRemoveContainerRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NodeStopContainerRequest {
+    pub node_id: NodeId,
+    pub operation_id: OperationId,
+    pub container_id: ContainerId,
+    pub expected_identity: ManagedContainerIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeLogsTailRequest {
     pub node_id: NodeId,
     pub container_id: ContainerId,

@@ -14,7 +14,7 @@ use bollard::models::{
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
-    RemoveContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
@@ -115,6 +115,22 @@ impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
                 })?;
         runner
             .remove_managed_container(container_id, expected_identity)
+            .await
+    }
+
+    async fn stop_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let runner =
+            DockerManagedContainerRunner::local_defaults(self.endpoint_network_subnet.clone())
+                .map_err(|error| NodeContainerRunnerError::Stop {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                })?;
+        runner
+            .stop_managed_container(container_id, expected_identity)
             .await
     }
 }
@@ -225,6 +241,52 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             Ok(()) => Ok(()),
             Err(error) if is_container_missing(&error) => Ok(()),
             Err(error) => Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    async fn stop_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let existing = self
+            .existing_managed_containers()
+            .await?
+            .into_iter()
+            .find(|container| container.container_id == *container_id);
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+        if existing.labels.identity() != *expected_identity {
+            return Err(NodeContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container identity did not match stop target: expected {:?}, found {:?}",
+                    expected_identity,
+                    existing.labels.identity()
+                ),
+            });
+        }
+
+        if !matches!(
+            existing.state,
+            ExistingManagedContainerState::Running { .. }
+        ) {
+            return Ok(());
+        }
+
+        let options = StopContainerOptionsBuilder::new().build();
+        match self
+            .docker
+            .stop_container(container_id.as_str(), Some(options))
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) if is_container_missing(&error) => Ok(()),
+            Err(error) => Err(NodeContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),

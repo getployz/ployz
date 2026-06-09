@@ -494,6 +494,17 @@ mod tests {
                 message: "not used".to_owned(),
             })
         }
+
+        async fn stop_managed_container(
+            &self,
+            container_id: &ContainerId,
+            _expected_identity: &ManagedContainerIdentity,
+        ) -> Result<(), NodeContainerRunnerError> {
+            Err(NodeContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -533,6 +544,17 @@ mod tests {
             _expected_identity: &ManagedContainerIdentity,
         ) -> Result<(), NodeContainerRunnerError> {
             Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
+
+        async fn stop_managed_container(
+            &self,
+            container_id: &ContainerId,
+            _expected_identity: &ManagedContainerIdentity,
+        ) -> Result<(), NodeContainerRunnerError> {
+            Err(NodeContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })

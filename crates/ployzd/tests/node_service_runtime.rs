@@ -11,7 +11,8 @@ use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::request_json;
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    NodeRunContainerRequest, NodeRuntimeUnavailableReason, NodeStopContainerRequest,
+    WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::node_agent::runtime::{
@@ -20,6 +21,7 @@ use ployzd::node_agent::runtime::{
 };
 use ployzd::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
+    NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
     NodeLogsTailRpcRequest, NodeLogsTailRpcResponse, NodeWireGuardEbpfPreparePhase,
     NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
@@ -298,6 +300,34 @@ async fn node_runtime_service_removes_container() {
 }
 
 #[tokio::test]
+async fn node_runtime_service_stops_container() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("node runtime service starts");
+    let mut client = NatsNodeContainerRuntime::new(nats.client);
+
+    client
+        .stop_container(NodeStopContainerRequest {
+            node_id: node_id("node_a"),
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_failed"),
+            expected_identity: managed_labels().identity(),
+        })
+        .await
+        .expect("container stop succeeds");
+
+    assert_eq!(state.stops(), vec![container_id("ctr_failed")]);
+}
+
+#[tokio::test]
 async fn node_runtime_service_reports_remove_failure_as_domain_error() {
     let nats = test_nats().await;
     let _service = start_node_runtime_service(
@@ -332,6 +362,46 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
                 container_id: container_id("ctr_old"),
                 message: failure_message("container remove failed: busy"),
                 inspect_hint: inspect_hint("ctr_old"),
+            },
+        }
+    );
+}
+
+#[tokio::test]
+async fn node_runtime_service_reports_stop_failure_as_domain_error() {
+    let nats = test_nats().await;
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_stop_failure("ctr_failed", "permission denied"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("node runtime service starts");
+
+    let response = request_json::<_, NodeContainerStopRpcResponse>(
+        &nats.client,
+        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::ContainerStop),
+        &NodeContainerStopRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_failed"),
+            expected_identity: managed_labels().identity(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("node service responds");
+
+    assert_eq!(
+        response,
+        NodeContainerStopRpcResponse::DomainError {
+            node_id: node_id("node_a"),
+            error: NodeContainerStopDomainError::StopFailed {
+                container_id: container_id("ctr_failed"),
+                message: failure_message("container stop failed: permission denied"),
+                inspect_hint: inspect_hint("ctr_failed"),
             },
         }
     );
@@ -511,12 +581,21 @@ impl RecordingRunnerState {
             .removes
             .clone()
     }
+
+    fn stops(&self) -> Vec<ContainerId> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .stops
+            .clone()
+    }
 }
 
 #[derive(Default)]
 struct RecordingRunnerInner {
     creates: Vec<CreateManagedContainer>,
     starts: Vec<ContainerId>,
+    stops: Vec<ContainerId>,
     removes: Vec<ContainerId>,
 }
 
@@ -527,6 +606,7 @@ struct RecordingRunner {
     next_container: Option<ContainerId>,
     create_failure: Option<String>,
     start_failure: Option<(ContainerId, String)>,
+    stop_failure: Option<(ContainerId, String)>,
     remove_failure: Option<(ContainerId, String)>,
 }
 
@@ -538,6 +618,7 @@ impl RecordingRunner {
             next_container: None,
             create_failure: None,
             start_failure: None,
+            stop_failure: None,
             remove_failure: None,
         }
     }
@@ -575,6 +656,11 @@ impl RecordingRunner {
 
     fn with_remove_failure(mut self, container_id: &str, message: &str) -> Self {
         self.remove_failure = Some((self::container_id(container_id), message.to_owned()));
+        self
+    }
+
+    fn with_stop_failure(mut self, container_id: &str, message: &str) -> Self {
+        self.stop_failure = Some((self::container_id(container_id), message.to_owned()));
         self
     }
 }
@@ -648,6 +734,29 @@ impl NodeContainerRunner for RecordingRunner {
             .lock()
             .expect("recording runner lock is not poisoned")
             .removes
+            .push(container_id.clone());
+        Ok(())
+    }
+
+    async fn stop_managed_container(
+        &self,
+        container_id: &ContainerId,
+        _expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        if let Some((failed_container_id, message)) = self.stop_failure.clone()
+            && failed_container_id == *container_id
+        {
+            return Err(NodeContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message,
+            });
+        }
+
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .stops
             .push(container_id.clone());
         Ok(())
     }

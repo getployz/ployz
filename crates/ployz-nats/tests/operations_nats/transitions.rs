@@ -1,7 +1,10 @@
 use super::fixtures::*;
+use ployz_core::deploy::DeployCleanupContainer;
+use ployz_core::ids::StepId;
+use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
-    OperationStatus,
+    DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationState,
+    DeployRunningStage, DeployTransition, OperationStatus,
 };
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, OperationEventAppend, OperationStatusWrite,
@@ -100,6 +103,29 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
         )
         .await
         .expect("active commit records");
+    let cleanup_target = DeployCleanupContainer {
+        node_id: node_id("node_a"),
+        container_id: container_id("ctr_old"),
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_old"),
+        operation_id: operation_id("op_old"),
+        step_id: StepId::try_new("step_old").expect("valid step id"),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
+    };
+    repository
+        .record_deploy_evidence(
+            &operation_id("op_123"),
+            DeployEvidence::CleanupFinished {
+                removed: Vec::new(),
+                failed: vec![DeployCleanupFailure {
+                    target: cleanup_target,
+                    message: failure_message("container remove failed: busy"),
+                }],
+            },
+        )
+        .await
+        .expect("cleanup warning evidence records");
 
     repository
         .record_deploy_transition(
@@ -122,7 +148,7 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
             state: DeployOperationState::Completed {
                 outcome: DeployCompletionOutcome::CompletedWithWarnings,
             },
-            last_event_sequence: event_sequence(7),
+            last_event_sequence: event_sequence(8),
         })
     );
 }

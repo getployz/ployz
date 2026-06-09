@@ -4,6 +4,7 @@ use crate::docker::labels::ManagedContainerLabels;
 use crate::node_runtime_types::{
     ContainerEndpointRequest, NodeContainerRunSpec, NodeLogsTailRequest, NodeLogsTailResult,
     NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeStopContainerRequest,
 };
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady,
@@ -117,6 +118,47 @@ pub enum NodeContainerRemoveRpcResponse {
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeContainerRemoveDomainError {
     RemoveFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeContainerStopRpcRequest {
+    pub operation_id: OperationId,
+    pub container_id: ContainerId,
+    pub expected_identity: crate::docker::labels::ManagedContainerIdentity,
+}
+
+impl From<NodeStopContainerRequest> for NodeContainerStopRpcRequest {
+    fn from(value: NodeStopContainerRequest) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            container_id: value.container_id,
+            expected_identity: value.expected_identity,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeContainerStopRpcResponse {
+    Ok {
+        node_id: NodeId,
+        container_id: ContainerId,
+    },
+    DomainError {
+        node_id: NodeId,
+        error: NodeContainerStopDomainError,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeContainerStopDomainError {
+    StopFailed {
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,

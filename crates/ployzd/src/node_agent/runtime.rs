@@ -55,6 +55,10 @@ pub enum NodeContainerRunnerError {
         container_id: ContainerId,
         message: String,
     },
+    Stop {
+        container_id: ContainerId,
+        message: String,
+    },
     Remove {
         container_id: ContainerId,
         message: String,
@@ -91,6 +95,12 @@ pub trait NodeContainerRunner {
     fn start_managed_container(
         &self,
         container_id: &ContainerId,
+    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+
+    fn stop_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
     ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
 
     fn remove_managed_container(

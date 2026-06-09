@@ -350,6 +350,7 @@ pub fn node_observation_scope(node_id: &NodeId) -> String {
 pub enum NodeServiceEndpoint {
     Inspect,
     ContainerRun,
+    ContainerStop,
     ContainerRemove,
     WireGuardEbpfPrepare,
     LogsTail,
@@ -361,6 +362,7 @@ impl NodeServiceEndpoint {
         match self {
             Self::Inspect => "inspect",
             Self::ContainerRun => "container.run",
+            Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
             Self::WireGuardEbpfPrepare => "wireguard_ebpf.prepare",
             Self::LogsTail => "logs.tail",

@@ -25,8 +25,8 @@ use ployzd::deploy_worker::{
     DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
     DeployOperationRecordError, DeployOperationRecorder, NodeContainerRuntime,
     NodeContainerRuntimeError, NodeRemoveContainerRequest, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
-    prepare_deploy_execution_command,
+    NodeRunContainerRequest, NodeRuntimeUnavailableReason, NodeStopContainerRequest,
+    WireGuardEbpfPreparer, prepare_deploy_execution_command,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -37,6 +37,7 @@ use std::time::Duration;
 pub(super) struct RecordingOperations {
     pub(super) records: Vec<RecordedOperation>,
     fail_completed_transition_remaining: usize,
+    fail_cleanup_evidence_remaining: usize,
     pub(super) completed_transition_attempts: usize,
 }
 
@@ -45,6 +46,16 @@ impl RecordingOperations {
         Self {
             records: Vec::new(),
             fail_completed_transition_remaining: times,
+            fail_cleanup_evidence_remaining: 0,
+            completed_transition_attempts: 0,
+        }
+    }
+
+    pub(super) const fn fail_cleanup_evidence_times(times: usize) -> Self {
+        Self {
+            records: Vec::new(),
+            fail_completed_transition_remaining: 0,
+            fail_cleanup_evidence_remaining: times,
             completed_transition_attempts: 0,
         }
     }
@@ -78,7 +89,7 @@ impl DeployOperationRecorder for RecordingOperations {
     ) -> Result<(), DeployOperationRecordError> {
         assert_eq!(recorded_operation_id, &operation_id("op_123"));
         if self.fail_completed_transition_remaining > 0
-            && transition == (DeployTransition::completed())
+            && matches!(transition, DeployTransition::Completed { .. })
         {
             self.fail_completed_transition_remaining -= 1;
             self.completed_transition_attempts += 1;
@@ -120,6 +131,12 @@ impl DeployOperationRecorder for RecordingOperations {
                 self.records.push(RecordedOperation::HealthCheckStarted);
             }
             DeployEvidence::CleanupFinished { removed, failed } => {
+                if self.fail_cleanup_evidence_remaining > 0 {
+                    self.fail_cleanup_evidence_remaining -= 1;
+                    return Err(DeployOperationRecordError::Synthetic {
+                        message: "cleanup evidence record failed",
+                    });
+                }
                 self.records
                     .push(RecordedOperation::CleanupFinished { removed, failed });
             }
@@ -130,6 +147,7 @@ impl DeployOperationRecorder for RecordingOperations {
 
 pub(super) struct RecordingRuntime {
     pub(super) requests: Vec<NodeRunContainerRequest>,
+    pub(super) stops: Vec<NodeStopContainerRequest>,
     pub(super) removals: Vec<NodeRemoveContainerRequest>,
     containers: Vec<ContainerId>,
     fail_after_first: bool,
@@ -448,6 +466,7 @@ impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             requests: Vec::new(),
+            stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
@@ -460,6 +479,7 @@ impl RecordingRuntime {
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             requests: Vec::new(),
+            stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
@@ -472,6 +492,7 @@ impl RecordingRuntime {
     pub(super) fn failing_after_first_container() -> Self {
         Self {
             requests: Vec::new(),
+            stops: Vec::new(),
             removals: Vec::new(),
             containers: vec![container_id("ctr_1")],
             fail_after_first: true,
@@ -484,6 +505,7 @@ impl RecordingRuntime {
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
             requests: Vec::new(),
+            stops: Vec::new(),
             removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
             fail_after_first: false,
@@ -557,6 +579,14 @@ impl NodeContainerRuntime for RecordingRuntime {
             });
         }
 
+        Ok(())
+    }
+
+    async fn stop_container(
+        &mut self,
+        request: NodeStopContainerRequest,
+    ) -> Result<(), NodeContainerRuntimeError> {
+        self.stops.push(request);
         Ok(())
     }
 }
