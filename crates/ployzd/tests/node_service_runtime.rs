@@ -16,11 +16,12 @@ use ployzd::deploy_worker::{
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    NodeContainerRunner, NodeContainerRunnerError,
+    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
 use ployzd::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+    NodeLogsTailRpcRequest, NodeLogsTailRpcResponse, NodeWireGuardEbpfPrepareRpcRequest,
+    NodeWireGuardEbpfPrepareRpcResponse,
 };
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::{
@@ -39,6 +40,7 @@ async fn node_runtime_service_creates_missing_container() {
         node_id("node_a"),
         RecordingRunner::new(state.clone()).with_next_container("ctr_created"),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -75,6 +77,7 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
         RecordingRunner::new(state.clone())
             .with_existing(existing_container("ctr_existing", managed_labels())),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -107,6 +110,7 @@ async fn node_runtime_service_starts_existing_stopped_operation_step_container()
             ExistingManagedContainerState::StartableStopped,
         )),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -136,6 +140,7 @@ async fn node_runtime_service_reports_start_failure_with_container_evidence() {
         node_id("node_a"),
         RecordingRunner::new(state).with_start_failure("ctr_created", "exec format error"),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -166,6 +171,7 @@ async fn node_runtime_service_reports_existing_start_failure_without_created_evi
         node_id("node_a"),
         RecordingRunner::new(state).with_existing_start_failure("ctr_existing", "still stopping"),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -201,6 +207,7 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
             conflicting_labels.clone(),
         )),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -231,6 +238,7 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
         node_id("node_a"),
         RecordingRunner::new(RecordingRunnerState::default()).with_create_failure("disk full"),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -261,6 +269,7 @@ async fn node_runtime_service_removes_container() {
         node_id("node_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -297,6 +306,7 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
         RecordingRunner::new(RecordingRunnerState::default())
             .with_remove_failure("ctr_old", "busy"),
         ready_wireguard_ebpf(),
+        idle_logs(),
     )
     .await
     .expect("node runtime service starts");
@@ -328,6 +338,45 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
 }
 
 #[tokio::test]
+async fn node_runtime_service_tails_container_logs() {
+    let nats = test_nats().await;
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_existing(existing_container("ctr_failed", managed_labels())),
+        ready_wireguard_ebpf(),
+        RecordingLogReader::new("ctr_failed", "panic: missing DATABASE_URL\n"),
+    )
+    .await
+    .expect("node runtime service starts");
+
+    let response = request_json::<_, NodeLogsTailRpcResponse>(
+        &nats.client,
+        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::LogsTail),
+        &NodeLogsTailRpcRequest {
+            container_id: container_id("ctr_failed"),
+            tail_lines: Some(50),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("node service responds");
+
+    assert_eq!(
+        response,
+        NodeLogsTailRpcResponse::Ok {
+            value: ployzd::node_runtime_types::NodeLogsTailResult {
+                node_id: node_id("node_a"),
+                container_id: container_id("ctr_failed"),
+                text: "panic: missing DATABASE_URL\n".to_owned(),
+                truncated: false,
+            },
+        }
+    );
+}
+
+#[tokio::test]
 async fn node_wireguard_ebpf_service_calls_local_preparer() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
@@ -336,6 +385,7 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
         node_id("node_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
+        idle_logs(),
     )
     .await
     .expect("node wireguard ebpf service starts");
@@ -359,6 +409,7 @@ async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
         node_id("node_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
+        idle_logs(),
     )
     .await
     .expect("node wireguard ebpf service starts");
@@ -404,6 +455,7 @@ async fn node_wireguard_ebpf_service_preserves_prepare_failure() {
             component: WireGuardEbpfComponent::EbpfForwarding,
             message: failure_message("ebpf program missing"),
         }),
+        idle_logs(),
     )
     .await
     .expect("node wireguard ebpf service starts");
@@ -676,8 +728,52 @@ fn idle_runner() -> RecordingRunner {
     RecordingRunner::new(RecordingRunnerState::default())
 }
 
+fn idle_logs() -> RecordingLogReader {
+    RecordingLogReader::empty()
+}
+
 fn ready_wireguard_ebpf() -> RecordingWireGuardEbpf {
     RecordingWireGuardEbpf::new(RecordingWireGuardEbpfState::default())
+}
+
+#[derive(Clone)]
+struct RecordingLogReader {
+    container_id: Option<ContainerId>,
+    text: String,
+}
+
+impl RecordingLogReader {
+    fn empty() -> Self {
+        Self {
+            container_id: None,
+            text: String::new(),
+        }
+    }
+
+    fn new(container_id: &str, text: &str) -> Self {
+        Self {
+            container_id: Some(self::container_id(container_id)),
+            text: text.to_owned(),
+        }
+    }
+}
+
+impl NodeLogReader for RecordingLogReader {
+    async fn tail_container_logs(
+        &self,
+        container_id: &ContainerId,
+        _tail_lines: Option<u16>,
+    ) -> Result<NodeLogTail, NodeLogReaderError> {
+        match &self.container_id {
+            Some(expected) if expected == container_id => Ok(NodeLogTail {
+                text: self.text.clone(),
+                truncated: false,
+            }),
+            _ => Err(NodeLogReaderError::NotFound {
+                container_id: container_id.clone(),
+            }),
+        }
+    }
 }
 
 struct TestNats {

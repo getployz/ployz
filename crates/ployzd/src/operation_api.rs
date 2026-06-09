@@ -5,7 +5,9 @@ use crate::controllers::{
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
 };
 use crate::deploy_runtime::DeployOperationRuntime;
-use ployz_core::ids::{NodeId, OperationId};
+use crate::node_rpc::{NatsNodeLogsTailer, NodeLogsTailRuntimeError};
+use crate::node_runtime_types::NodeLogsTailRequest as NodeRuntimeLogsTailRequest;
+use ployz_core::ids::{ContainerId, NodeId, OperationId};
 use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease, OperationStatus,
@@ -31,7 +33,8 @@ use ployz_nats::operations::{
 use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, BackupCreateUnavailableSource,
     BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
-    DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
+    DeploySubmitUnavailableSource, EventReplayFailure, LogsTailError, LogsTailRequest,
+    LogsTailResult, LogsTailUnavailableSource, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineAddUnavailableSource, MachineInspectError, MachineInspectRequest,
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult,
     MachineJoinRedeemUnavailableSource, MachineJoinRedeemed, MachineJoinReportError,
@@ -52,6 +55,7 @@ pub struct OperationApiHandlers {
     deploy_execution: DeploySubmitExecution,
     machine_query: MachineQueryExecution,
     service_query: ServiceQueryExecution,
+    logs_query: LogsQueryExecution,
 }
 
 impl OperationApiHandlers {
@@ -62,6 +66,7 @@ impl OperationApiHandlers {
             deploy_execution: DeploySubmitExecution::AcceptOnly,
             machine_query: MachineQueryExecution::Unavailable,
             service_query: ServiceQueryExecution::Unavailable,
+            logs_query: LogsQueryExecution::Unavailable,
         }
     }
 
@@ -70,13 +75,16 @@ impl OperationApiHandlers {
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,
         machine_query: MachineQueryRuntime,
+        logs_tailer: NatsNodeLogsTailer,
     ) -> Self {
         let service_query = ServiceQueryRuntime::new(machine_query.core_state.clone());
+        let logs_query = LogsQueryRuntime::new(machine_query.observations.clone(), logs_tailer);
         Self {
             controllers,
             deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
             machine_query: MachineQueryExecution::Execute(Arc::new(machine_query)),
             service_query: ServiceQueryExecution::Execute(Arc::new(service_query)),
+            logs_query: LogsQueryExecution::Execute(Arc::new(logs_query)),
         }
     }
 
@@ -105,6 +113,12 @@ pub enum ServiceQueryExecution {
 }
 
 #[derive(Clone)]
+pub enum LogsQueryExecution {
+    Unavailable,
+    Execute(Arc<LogsQueryRuntime>),
+}
+
+#[derive(Clone)]
 pub struct MachineQueryRuntime {
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
@@ -113,6 +127,82 @@ pub struct MachineQueryRuntime {
 #[derive(Clone)]
 pub struct ServiceQueryRuntime {
     core_state: AsyncNatsCoreStateStore,
+}
+
+#[derive(Clone)]
+pub struct LogsQueryRuntime {
+    observations: AsyncNatsObservationStore,
+    tailer: NatsNodeLogsTailer,
+}
+
+impl LogsQueryRuntime {
+    #[must_use]
+    pub const fn new(observations: AsyncNatsObservationStore, tailer: NatsNodeLogsTailer) -> Self {
+        Self {
+            observations,
+            tailer,
+        }
+    }
+
+    async fn tail(&self, request: LogsTailRequest) -> Result<LogsTailResult, LogsTailError> {
+        let node_id = match request.node_id {
+            Some(node_id) => node_id,
+            None => self
+                .find_container_node(&request.container_id)
+                .await?
+                .ok_or_else(|| LogsTailError::NoSuchContainer {
+                    container_id: request.container_id.clone(),
+                })?,
+        };
+
+        self.tailer
+            .tail_logs(NodeRuntimeLogsTailRequest {
+                node_id,
+                container_id: request.container_id,
+                tail_lines: request.tail_lines.map(|lines| lines.get()),
+            })
+            .await
+            .map(|value| LogsTailResult {
+                node_id: value.node_id,
+                container_id: value.container_id,
+                text: value.text,
+                truncated: value.truncated,
+            })
+            .map_err(logs_tail_node_error)
+    }
+
+    async fn find_container_node(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<NodeId>, LogsTailError> {
+        let mut matches = self
+            .observations
+            .node_snapshot_records()
+            .await
+            .map_err(|_| LogsTailError::Unavailable {
+                source: LogsTailUnavailableSource::Observations,
+                node_id: None,
+            })?
+            .into_iter()
+            .filter_map(|record| {
+                record
+                    .snapshot
+                    .container(container_id)
+                    .map(|_| record.snapshot.node_id().clone())
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+
+        match matches.as_slice() {
+            [] => Ok(None),
+            [node_id] => Ok(Some(node_id.clone())),
+            node_ids => Err(LogsTailError::AmbiguousContainer {
+                container_id: container_id.clone(),
+                node_ids: node_ids.to_vec(),
+            }),
+        }
+    }
 }
 
 impl ServiceQueryRuntime {
@@ -329,6 +419,40 @@ pub async fn service_inspect(
         });
     };
     runtime.inspect(&request.service_id).await
+}
+
+pub async fn logs_tail(
+    handlers: &OperationApiHandlers,
+    request: LogsTailRequest,
+) -> Result<LogsTailResult, LogsTailError> {
+    let LogsQueryExecution::Execute(runtime) = &handlers.logs_query else {
+        return Err(LogsTailError::Unavailable {
+            source: LogsTailUnavailableSource::NodeRpc,
+            node_id: None,
+        });
+    };
+    runtime.tail(request).await
+}
+
+fn logs_tail_node_error(error: NodeLogsTailRuntimeError) -> LogsTailError {
+    match error {
+        NodeLogsTailRuntimeError::NotFound { container_id, .. } => {
+            LogsTailError::NoSuchContainer { container_id }
+        }
+        NodeLogsTailRuntimeError::ReadFailed {
+            node_id,
+            container_id,
+            message,
+        } => LogsTailError::ReadFailed {
+            node_id,
+            container_id,
+            message,
+        },
+        NodeLogsTailRuntimeError::Unavailable { node_id, .. } => LogsTailError::Unavailable {
+            source: LogsTailUnavailableSource::NodeRpc,
+            node_id: Some(node_id),
+        },
+    }
 }
 
 fn machine_list_core_error(_error: ActiveMachineReadError) -> MachineListError {

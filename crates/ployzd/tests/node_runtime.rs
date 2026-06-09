@@ -23,6 +23,7 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
         support::ReadyWireGuardEbpf,
+        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
     )
     .await
     .expect("node runtime starts");
@@ -58,6 +59,7 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
         support::ReadyWireGuardEbpf,
+        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
     )
     .await
     .expect("node runtime starts");
@@ -99,6 +101,7 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
         support::ReadyWireGuardEbpf,
+        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
     )
     .await
     .expect("node runtime starts");

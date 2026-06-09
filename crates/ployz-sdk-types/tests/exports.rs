@@ -6,16 +6,16 @@ use ployz_sdk_types::{
     CertTextError, CertValidAt, CertValidityWindow, DeployOperationState, DeployRequest,
     DeployRunningStage, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     EventSequence, EventSequenceError, ImageReference, ImageReferenceError, InstallContractError,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
-    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineInspectError,
-    MachineInspectRequest, MachineJoinBundle, MachineJoinCoreIrohEndpoint,
-    MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
-    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
-    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError, MachineListRequest,
-    MachineListResult, MachineName, MachineSnapshot, NodeId, NonEmptyTextError,
+    LogsTailError, LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    MachineAddAccepted, MachineAddError, MachineAddGateway, MachineAddRequest, MachineAddResponse,
+    MachineBootstrapUrl, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
+    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
+    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
+    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
+    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinToken, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError,
+    MachineListRequest, MachineListResult, MachineName, MachineSnapshot, NodeId, NonEmptyTextError,
     OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
@@ -25,9 +25,9 @@ use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
     ServiceSnapshot, SubjectTokenError,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
-        ServiceInspectApi, ServiceListApi,
+        BackupCreateApi, DeploySubmitApi, LogsTailApi, MachineAddApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, OperationApiContract,
+        OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -281,6 +281,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<ServiceListApi, ServiceListRequest, ServiceListResult, ServiceListError>();
     assert_contract::<ServiceInspectApi, ServiceInspectRequest, ServiceSnapshot, ServiceInspectError>(
     );
+    assert_contract::<LogsTailApi, LogsTailRequest, LogsTailResult, LogsTailError>();
     assert_contract::<
         MachineJoinRedeemApi,
         MachineJoinRedeemRequest,
@@ -377,6 +378,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "ServiceSnapshot".to_owned(),
                 "ServiceInspectError".to_owned(),
                 "ServiceInspectResponse",
+            ),
+            (
+                "logs.tail",
+                "plz.v1.svc.api.logs.tail",
+                OperationApiEndpointExecution::Query,
+                "LogsTailRequest".to_owned(),
+                "LogsTailResult".to_owned(),
+                "LogsTailError".to_owned(),
+                "LogsTailResponse",
             ),
             (
                 "ops.status",

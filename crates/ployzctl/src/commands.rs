@@ -5,6 +5,7 @@ use std::fmt;
 pub mod backup;
 pub mod deploy;
 pub mod init;
+pub mod logs;
 pub mod machine;
 pub mod ops;
 pub mod service;
@@ -22,6 +23,7 @@ ployzctl machine list
 ployzctl machine inspect <node_id>
 ployzctl service list
 ployzctl service inspect <service_id>
+ployzctl logs <container_id> [--node <node_id>] [--tail <n>]
 ployzctl ops status <operation_id>
 ployzctl ops watch <operation_id>";
 
@@ -43,6 +45,7 @@ pub enum PloyzctlCommand {
     MachineInspect(machine::MachineInspectCommand),
     ServiceList(service::ServiceListCommand),
     ServiceInspect(service::ServiceInspectCommand),
+    LogsTail(logs::LogsTailCommand),
     OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
     Help,
@@ -110,6 +113,9 @@ pub fn parse_command(
         }
         [command, subcommand, rest @ ..] if command == "service" && subcommand == "inspect" => {
             service::parse_service_inspect_command(rest).map(PloyzctlCommand::ServiceInspect)
+        }
+        [command, rest @ ..] if command == "logs" => {
+            logs::parse_logs_tail_command(rest).map(PloyzctlCommand::LogsTail)
         }
         [command, subcommand, rest @ ..] if command == "ops" && subcommand == "status" => {
             ops::parse_ops_status_command(rest).map(PloyzctlCommand::OpsStatus)

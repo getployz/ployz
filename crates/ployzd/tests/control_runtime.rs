@@ -282,6 +282,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
         support::ReadyWireGuardEbpf,
+        support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
     )
     .await
     .expect("node runtime starts");

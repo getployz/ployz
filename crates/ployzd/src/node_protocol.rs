@@ -2,8 +2,8 @@
 
 use crate::docker::labels::ManagedContainerLabels;
 use crate::node_runtime_types::{
-    ContainerEndpointRequest, NodeContainerRunSpec, NodeRemoveContainerRequest,
-    NodeRunContainerOutcome, NodeRunContainerRequest,
+    ContainerEndpointRequest, NodeContainerRunSpec, NodeLogsTailRequest, NodeLogsTailResult,
+    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
 };
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
@@ -119,6 +119,47 @@ pub enum NodeContainerRemoveDomainError {
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLogsTailRpcRequest {
+    pub container_id: ContainerId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_lines: Option<u16>,
+}
+
+impl From<NodeLogsTailRequest> for NodeLogsTailRpcRequest {
+    fn from(value: NodeLogsTailRequest) -> Self {
+        Self {
+            container_id: value.container_id,
+            tail_lines: value.tail_lines,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeLogsTailRpcResponse {
+    Ok {
+        value: NodeLogsTailResult,
+    },
+    DomainError {
+        node_id: NodeId,
+        error: NodeLogsTailDomainError,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeLogsTailDomainError {
+    NotFound {
+        container_id: ContainerId,
+    },
+    ReadFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
     },
 }
 

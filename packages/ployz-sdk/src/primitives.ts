@@ -1,4 +1,5 @@
 import {
+  MAX_LOGS_TAIL_LINES,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
   type AcmeChallengeToken,
   type AcmeChallengeTtlSeconds,
@@ -11,6 +12,7 @@ import {
   type EventSequence,
   type FailureMessage,
   type ImageReference,
+  type LogsTailLines,
   type MachineBootstrapUrl,
   type MachineJoinToken,
   type MachineName,
@@ -141,6 +143,14 @@ export function operationEventReplayLimit(
   }
 
   return value as OperationEventReplayLimit;
+}
+
+export function logsTailLines(value: number | LogsTailLines): LogsTailLines {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_LOGS_TAIL_LINES) {
+    throw new RangeError(`logs tail lines must be an integer from 1 to ${MAX_LOGS_TAIL_LINES}`);
+  }
+
+  return value as LogsTailLines;
 }
 
 export function routeHostname(value: string): RouteHostname {

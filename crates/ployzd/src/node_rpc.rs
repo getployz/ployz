@@ -7,11 +7,13 @@ use crate::deploy_worker::{
 use crate::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
+    NodeLogsTailDomainError, NodeLogsTailRpcRequest, NodeLogsTailRpcResponse,
     NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
     NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::{
-    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeLogsTailRequest, NodeLogsTailResult, NodeRemoveContainerRequest, NodeRunContainerOutcome,
+    NodeRunContainerRequest,
 };
 use crate::services::node_endpoint_subject;
 use ployz_core::dataplane::{
@@ -38,6 +40,79 @@ pub struct NatsNodeContainerRuntime {
 pub struct NatsNodeWireGuardEbpfPreparer {
     client: async_nats::Client,
     request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsNodeLogsTailer {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeLogsTailRuntimeError {
+    NotFound {
+        node_id: NodeId,
+        container_id: ployz_core::ids::ContainerId,
+    },
+    ReadFailed {
+        node_id: NodeId,
+        container_id: ployz_core::ids::ContainerId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    Unavailable {
+        node_id: NodeId,
+        reason: NodeRuntimeUnavailableReason,
+    },
+}
+
+impl NatsNodeLogsTailer {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_NODE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn tail_logs(
+        &self,
+        request: NodeLogsTailRequest,
+    ) -> Result<NodeLogsTailResult, NodeLogsTailRuntimeError> {
+        let node_id = request.node_id.clone();
+        let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::LogsTail);
+        let response = request_json::<_, NodeLogsTailRpcResponse>(
+            &self.client,
+            subject,
+            &NodeLogsTailRpcRequest::from(request),
+            self.request_timeout,
+        )
+        .await
+        .map_err(|error| logs_request_error(&node_id, error))?;
+
+        match response {
+            NodeLogsTailRpcResponse::Ok { value } => {
+                if let Some(reason) = wrong_response_node(&node_id, value.node_id.clone()) {
+                    return Err(NodeLogsTailRuntimeError::Unavailable { node_id, reason });
+                }
+                Ok(value)
+            }
+            NodeLogsTailRpcResponse::DomainError {
+                node_id: actual_node_id,
+                error,
+            } => {
+                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
+                    return Err(NodeLogsTailRuntimeError::Unavailable { node_id, reason });
+                }
+                Err(error.into_runtime_error(node_id))
+            }
+        }
+    }
 }
 
 impl NatsNodeWireGuardEbpfPreparer {
@@ -144,6 +219,25 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
                 }
                 Err(error.into_runtime_error(node_id))
             }
+        }
+    }
+}
+
+impl NodeLogsTailDomainError {
+    fn into_runtime_error(self, node_id: NodeId) -> NodeLogsTailRuntimeError {
+        match self {
+            Self::NotFound { container_id } => NodeLogsTailRuntimeError::NotFound {
+                node_id,
+                container_id,
+            },
+            Self::ReadFailed {
+                container_id,
+                message,
+            } => NodeLogsTailRuntimeError::ReadFailed {
+                node_id,
+                container_id,
+                message,
+            },
         }
     }
 }
@@ -314,6 +408,34 @@ fn node_request_error(
     error: NatsJsonServiceRequestError,
 ) -> NodeContainerRuntimeError {
     NodeContainerRuntimeError::Unavailable {
+        node_id: node_id.clone(),
+        reason: match error {
+            NatsJsonServiceRequestError::EncodeRequest { message } => {
+                NodeRuntimeUnavailableReason::EncodeRequest { message }
+            }
+            NatsJsonServiceRequestError::Request { failure } => {
+                node_request_failure_reason(failure)
+            }
+            NatsJsonServiceRequestError::Service { failure } => {
+                node_service_failure_reason(failure)
+            }
+            NatsJsonServiceRequestError::ServiceProtocol { error } => {
+                NodeRuntimeUnavailableReason::MalformedServiceError {
+                    message: error.to_string(),
+                }
+            }
+            NatsJsonServiceRequestError::DecodeResponse { message } => {
+                NodeRuntimeUnavailableReason::DecodeResponse { message }
+            }
+        },
+    }
+}
+
+fn logs_request_error(
+    node_id: &NodeId,
+    error: NatsJsonServiceRequestError,
+) -> NodeLogsTailRuntimeError {
+    NodeLogsTailRuntimeError::Unavailable {
         node_id: node_id.clone(),
         reason: match error {
             NatsJsonServiceRequestError::EncodeRequest { message } => {

@@ -9,6 +9,8 @@ import type {
   BackupCreateResponse,
   DeploySubmitRequest,
   DeploySubmitResponse,
+  LogsTailRequest,
+  LogsTailResponse,
   MachineAddRequest,
   MachineAddResponse,
   MachineInspectRequest,
@@ -121,6 +123,10 @@ export class PloyzNatsTransport {
 
   serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse> {
     return this.#request("service.inspect", request);
+  }
+
+  logsTail(request: LogsTailRequest): Promise<LogsTailResponse> {
+    return this.#request("logs.tail", request);
   }
 
   opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse> {

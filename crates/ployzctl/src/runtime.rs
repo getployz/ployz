@@ -19,8 +19,9 @@ use ployz_nats::connect::{
     NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
 };
 use ployz_sdk_types::{
-    BackupCreateError, DeploySubmitError, MachineAddError, MachineInspectError, MachineListError,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, ServiceInspectError, ServiceListError,
+    BackupCreateError, DeploySubmitError, LogsTailError, MachineAddError, MachineInspectError,
+    MachineListError, OpsStatusError, OpsStatusRequest, OpsWatchError, ServiceInspectError,
+    ServiceListError,
 };
 use tokio::time::sleep as async_sleep;
 
@@ -195,6 +196,18 @@ pub async fn execute_command(
 
             Ok(PloyzctlExecutionOutput::stdout(
                 crate::commands::service::ServiceInspectOutput::new(service).render(),
+            ))
+        }
+        PloyzctlCommand::LogsTail(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let result = api
+                .logs_tail(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::LogsTailApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::logs::LogsTailOutput::new(result).render(),
             ))
         }
         PloyzctlCommand::OpsStatus(command) => {
@@ -635,6 +648,9 @@ pub enum PloyzctlExecutionError {
     ServiceInspectApi {
         source: OperationApiClientError<ServiceInspectError>,
     },
+    LogsTailApi {
+        source: OperationApiClientError<LogsTailError>,
+    },
     OpsStatusApi {
         source: OperationApiClientError<OpsStatusError>,
     },
@@ -669,6 +685,7 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::MachineInspectApi { source } => write!(formatter, "{source}"),
             Self::ServiceListApi { source } => write!(formatter, "{source}"),
             Self::ServiceInspectApi { source } => write!(formatter, "{source}"),
+            Self::LogsTailApi { source } => write!(formatter, "{source}"),
             Self::OpsStatusApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchStatusApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),

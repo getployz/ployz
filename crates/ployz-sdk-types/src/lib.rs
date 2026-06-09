@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use ts_rs::TS;
 
+pub const MAX_LOGS_TAIL_LINES: u16 = 1_000;
 pub mod operation_api;
 pub mod typescript;
 
@@ -111,6 +112,8 @@ pub type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceLi
 
 pub type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
 
+pub type LogsTailResponse = OperationApiResponse<LogsTailResult, LogsTailError>;
+
 pub type MachineJoinRedeemResponse =
     OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
@@ -157,6 +160,75 @@ pub struct ServiceListRequest {}
 #[serde(deny_unknown_fields)]
 pub struct ServiceInspectRequest {
     pub service_id: ServiceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct LogsTailRequest {
+    pub container_id: ContainerId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_lines: Option<LogsTailLines>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct LogsTailResult {
+    pub node_id: NodeId,
+    pub container_id: ContainerId,
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(type = "SafeInteger<\"LogsTailLines\">")]
+#[serde(transparent)]
+pub struct LogsTailLines(u16);
+
+impl LogsTailLines {
+    pub fn try_new(value: u16) -> Result<Self, LogsTailLinesError> {
+        if value == 0 {
+            return Err(LogsTailLinesError::Zero);
+        }
+        if value > MAX_LOGS_TAIL_LINES {
+            return Err(LogsTailLinesError::TooLarge { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogsTailLinesError {
+    Zero,
+    TooLarge { value: u16 },
+}
+
+impl fmt::Display for LogsTailLinesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => write!(formatter, "logs tail lines must be greater than zero"),
+            Self::TooLarge { .. } => write!(
+                formatter,
+                "logs tail lines must be at most {MAX_LOGS_TAIL_LINES}"
+            ),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LogsTailLines {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u16::deserialize(deserializer)?;
+        Self::try_new(value).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -216,6 +288,35 @@ pub enum ServiceInspectError {
     Unavailable {
         source: ServiceQueryUnavailableSource,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LogsTailError {
+    NoSuchContainer {
+        container_id: ContainerId,
+    },
+    AmbiguousContainer {
+        container_id: ContainerId,
+        node_ids: Vec<NodeId>,
+    },
+    ReadFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+    },
+    Unavailable {
+        source: LogsTailUnavailableSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<NodeId>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LogsTailUnavailableSource {
+    Observations,
+    NodeRpc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

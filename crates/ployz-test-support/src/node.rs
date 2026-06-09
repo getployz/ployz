@@ -11,7 +11,7 @@ use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError}
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    NodeContainerRunner, NodeContainerRunnerError,
+    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
 use ployzd::node_runtime_types::ContainerEndpointRequest;
 use ployzd::node_service_runtime::NodeWireGuardEbpfPreparer;
@@ -169,6 +169,38 @@ impl NodeContainerRunner for ObservingContainerRunner {
             .replace_node_containers(&snapshot)
             .await
             .map_err(|error| node_observation_remove_error(container_id, error))
+    }
+}
+
+impl NodeLogReader for ObservingContainerRunner {
+    async fn tail_container_logs(
+        &self,
+        container_id: &ContainerId,
+        _tail_lines: Option<u16>,
+    ) -> Result<NodeLogTail, NodeLogReaderError> {
+        let Some(snapshot) = self
+            .observations
+            .node_snapshot(&self.node_id)
+            .await
+            .map_err(|error| NodeLogReaderError::ReadFailed {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?
+        else {
+            return Err(NodeLogReaderError::NotFound {
+                container_id: container_id.clone(),
+            });
+        };
+        if snapshot.container(container_id).is_none() {
+            return Err(NodeLogReaderError::NotFound {
+                container_id: container_id.clone(),
+            });
+        }
+
+        Ok(NodeLogTail {
+            text: format!("logs for {}\n", container_id.as_str()),
+            truncated: false,
+        })
     }
 }
 

@@ -18,20 +18,22 @@ use crate::{
     GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure, ImageReference,
     InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest, IssuedJoinToken,
     JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, KvBucketSnapshot,
-    KvEntrySnapshot, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError,
-    MachineAddFailure, MachineAddGateway, MachineAddOperationState, MachineAddOperationStateName,
-    MachineAddRequest, MachineAddUnavailableSource, MachineBootstrapUrl, MachineInspectError,
-    MachineInspectRequest, MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey,
-    MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
-    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError,
-    MachineListRequest, MachineListResult, MachineName, MachineQueryUnavailableSource,
-    MachineReadinessCheck, MachineReadinessEvidence, MachineSnapshot, ManagedContainerKind, NodeId,
+    KvEntrySnapshot, LogsTailError, LogsTailLines, LogsTailRequest, LogsTailResult,
+    LogsTailUnavailableSource, MAX_LOGS_TAIL_LINES, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    MachineAddAccepted, MachineAddError, MachineAddFailure, MachineAddGateway,
+    MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest,
+    MachineAddUnavailableSource, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
+    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
+    MachineJoinIrohTicket, MachineJoinMaterial, MachineJoinNatsCredentials,
+    MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,
+    MachineJoinReportRequest, MachineJoinReportUnavailableSource, MachineJoinReported,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
+    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError, MachineListRequest,
+    MachineListResult, MachineName, MachineQueryUnavailableSource, MachineReadinessCheck,
+    MachineReadinessEvidence, MachineSnapshot, ManagedContainerKind, NodeId,
     NodePublicIpObservation, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest, OperationId,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
@@ -59,6 +61,9 @@ pub fn generated_typescript() -> String {
     );
     output.push_str(&format!(
         "export const MAX_OPERATION_EVENT_REPLAY_LIMIT = {MAX_OPERATION_EVENT_REPLAY_LIMIT} as const;\n\n"
+    ));
+    output.push_str(&format!(
+        "export const MAX_LOGS_TAIL_LINES = {MAX_LOGS_TAIL_LINES} as const;\n\n"
     ));
 
     push_contract_decls(&mut output, &config);
@@ -189,6 +194,11 @@ macro_rules! exported_types {
             ServiceInspectRequest,
             ServiceInspectError,
             ServiceQueryUnavailableSource,
+            LogsTailLines,
+            LogsTailRequest,
+            LogsTailResult,
+            LogsTailError,
+            LogsTailUnavailableSource,
             MachineJoinClusterName,
             MachineJoinRuntimeNatsUrl,
             MachineJoinMaterial,

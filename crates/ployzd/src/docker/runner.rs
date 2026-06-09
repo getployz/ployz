@@ -3,7 +3,7 @@ use crate::docker::labels::{
 };
 use crate::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    NodeContainerRunner, NodeContainerRunnerError,
+    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
@@ -13,7 +13,8 @@ use bollard::models::{
     NetworkingConfig,
 };
 use bollard::query_parameters::{
-    CreateImageOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    CreateImageOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder,
+    RemoveContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
@@ -24,6 +25,9 @@ use std::fmt;
 use std::net::IpAddr;
 
 const ENDPOINT_NETWORK_NAME: &str = "ployz";
+const DEFAULT_LOG_TAIL_LINES: u16 = 200;
+const MAX_LOG_TAIL_LINES: u16 = 1_000;
+const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -92,6 +96,22 @@ impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
         runner
             .remove_managed_container(container_id, expected_identity)
             .await
+    }
+}
+
+impl NodeLogReader for LazyLocalDockerManagedContainerRunner {
+    async fn tail_container_logs(
+        &self,
+        container_id: &ContainerId,
+        tail_lines: Option<u16>,
+    ) -> Result<NodeLogTail, NodeLogReaderError> {
+        let runner = DockerManagedContainerRunner::local_defaults().map_err(|error| {
+            NodeLogReaderError::ReadFailed {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        runner.tail_container_logs(container_id, tail_lines).await
     }
 }
 
@@ -189,6 +209,52 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             }),
         }
+    }
+}
+
+impl NodeLogReader for DockerManagedContainerRunner {
+    async fn tail_container_logs(
+        &self,
+        container_id: &ContainerId,
+        tail_lines: Option<u16>,
+    ) -> Result<NodeLogTail, NodeLogReaderError> {
+        let mut output = Vec::new();
+        let mut truncated = false;
+        let mut stream = self.docker.logs(
+            container_id.as_str(),
+            Some(logs_options(capped_tail_lines(tail_lines))),
+        );
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    let remaining = MAX_LOG_TAIL_BYTES.saturating_sub(output.len());
+                    let bytes = chunk.as_ref();
+                    if bytes.len() > remaining {
+                        output.extend_from_slice(&bytes[..remaining]);
+                        truncated = true;
+                        break;
+                    }
+                    output.extend_from_slice(bytes);
+                }
+                Err(error) if is_container_missing(&error) => {
+                    return Err(NodeLogReaderError::NotFound {
+                        container_id: container_id.clone(),
+                    });
+                }
+                Err(error) => {
+                    return Err(NodeLogReaderError::ReadFailed {
+                        container_id: container_id.clone(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(NodeLogTail {
+            text: String::from_utf8_lossy(&output).into_owned(),
+            truncated,
+        })
     }
 }
 
@@ -313,6 +379,23 @@ fn managed_container_list_options() -> bollard::query_parameters::ListContainers
         .all(true)
         .filters(&filters)
         .build()
+}
+
+fn logs_options(tail_lines: u16) -> bollard::query_parameters::LogsOptions {
+    let tail = tail_lines.to_string();
+    LogsOptionsBuilder::default()
+        .stdout(true)
+        .stderr(true)
+        .tail(&tail)
+        .build()
+}
+
+const fn capped_tail_lines(tail_lines: Option<u16>) -> u16 {
+    match tail_lines {
+        Some(lines) if lines > MAX_LOG_TAIL_LINES => MAX_LOG_TAIL_LINES,
+        Some(lines) => lines,
+        None => DEFAULT_LOG_TAIL_LINES,
+    }
 }
 
 fn create_body(command: CreateManagedContainer) -> ContainerCreateBody {

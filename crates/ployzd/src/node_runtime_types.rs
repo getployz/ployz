@@ -44,6 +44,24 @@ pub struct NodeRemoveContainerRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLogsTailRequest {
+    pub node_id: NodeId,
+    pub container_id: ContainerId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_lines: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLogsTailResult {
+    pub node_id: NodeId,
+    pub container_id: ContainerId,
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeRunContainerOutcome {
     Created { container_id: ContainerId },

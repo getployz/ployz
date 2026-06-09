@@ -7,17 +7,17 @@ use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, OperationApiResponse,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, ServiceInspectError,
-    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
-    ServiceSnapshot,
+    DeploySubmitRequest, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
+    MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
+    MachineListResult, MachineSnapshot, OperationApiResponse, OpsStatusError, OpsStatusRequest,
+    OpsWatchError, OpsWatchRequest, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceSnapshot,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
-        ServiceInspectApi, ServiceListApi,
+        BackupCreateApi, DeploySubmitApi, LogsTailApi, MachineAddApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, OperationApiContract,
+        OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -102,6 +102,13 @@ impl OperationApiClient {
         request: &ServiceInspectRequest,
     ) -> Result<ServiceSnapshot, OperationApiClientError<ServiceInspectError>> {
         self.request_api::<ServiceInspectApi>(request).await
+    }
+
+    pub async fn logs_tail(
+        &self,
+        request: &LogsTailRequest,
+    ) -> Result<LogsTailResult, OperationApiClientError<LogsTailError>> {
+        self.request_api::<LogsTailApi>(request).await
     }
 
     pub async fn machine_join_redeem(

@@ -2,7 +2,7 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{
-    OperationApiHandlers, backup_create, deploy_submit, machine_add, machine_inspect,
+    OperationApiHandlers, backup_create, deploy_submit, logs_tail, machine_add, machine_inspect,
     machine_join_redeem, machine_join_report, machine_list, ops_status, ops_watch, service_inspect,
     service_list,
 };
@@ -15,9 +15,9 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
-        ServiceInspectApi, ServiceListApi,
+        BackupCreateApi, DeploySubmitApi, LogsTailApi, MachineAddApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, OperationApiContract,
+        OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -104,6 +104,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { service_inspect(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::LogsTail => {
+            bind_operation_contract::<LogsTailApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { logs_tail(&handlers, request).await },
             )
             .await
         }

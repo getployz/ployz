@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url";
 import {
   backupCreateRequest,
   certBundleRef,
+  containerId,
   deploySubmitRequest,
   eventSequence,
+  logsTailRequest,
+  logsTailLines,
   machineInspectRequest,
   machineAddRequest,
   machineBootstrapUrl,
@@ -36,6 +39,9 @@ import type {
   BackupCreateRequest,
   DeploySubmitResponse,
   DeploySubmitRequest,
+  LogsTailResponse,
+  LogsTailRequest,
+  LogsTailResult,
   MachineAddAccepted,
   MachineAddResponse,
   MachineAddRequest,
@@ -150,6 +156,21 @@ test("service queries return current active service snapshots", async () => {
   ]);
   assert.deepEqual(services, fixture.service_snapshots);
   assert.deepEqual(service, fixture.service_snapshots[0]);
+});
+
+test("logs tail returns recent container evidence", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+  const input = { containerId: "ctr_failed", nodeId: "node_a", tailLines: 25 };
+  const result: LogsTailResult = await client.logsTail(input);
+
+  assert.deepEqual(transport.logsTailRequests, [logsTailRequest(input)]);
+  assert.deepEqual(result, {
+    node_id: nodeId("node_a"),
+    container_id: containerId("ctr_failed"),
+    text: "hello\n",
+    truncated: false,
+  });
 });
 
 test("machine join redeem returns joined machine facts", async () => {
@@ -340,12 +361,27 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
   assert.deepEqual(serviceListRequest(), {});
   assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
   assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
+  assert.deepEqual(logsTailRequest("ctr_failed"), { container_id: "ctr_failed" });
+  assert.deepEqual(logsTailRequest({ containerId: "ctr_failed", tailLines: 25 }), {
+    container_id: "ctr_failed",
+    tail_lines: logsTailLines(25),
+  });
+  assert.deepEqual(
+    logsTailRequest({ containerId: "ctr_failed", nodeId: "node_a", tailLines: 25 }),
+    {
+      container_id: "ctr_failed",
+      node_id: "node_a",
+      tail_lines: logsTailLines(25),
+    },
+  );
   assert.throws(
     () => backupCreateRequest({ operationId: "op.backup", idempotencyKey: "idem_backup" }),
     /operation id/,
   );
   assert.throws(() => machineInspectRequest("node.2"), /node id/);
   assert.throws(() => serviceInspectRequest("svc.api"), /service id/);
+  assert.throws(() => logsTailRequest({ containerId: "ctr.failed" }), /container id/);
+  assert.throws(() => logsTailRequest({ containerId: "ctr_failed", tailLines: 1001 }), /logs tail/);
 });
 
 test("sdk maps raw machine join redeem input to the wire request", () => {
@@ -442,6 +478,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "ServiceInspectResponse",
     },
     {
+      name: "logs.tail",
+      subject: "plz.v1.svc.api.logs.tail",
+      execution: "query",
+      request: "LogsTailRequest",
+      success: "LogsTailResult",
+      error: "LogsTailError",
+      response: "LogsTailResponse",
+    },
+    {
       name: "ops.status",
       subject: "plz.v1.svc.api.ops.status",
       execution: "query",
@@ -495,6 +540,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly machineJoinRedeemRequests: MachineJoinRedeemRequest[] = [];
   readonly serviceListRequests: ServiceListRequest[] = [];
   readonly serviceInspectRequests: ServiceInspectRequest[] = [];
+  readonly logsTailRequests: LogsTailRequest[] = [];
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
@@ -514,6 +560,7 @@ class RecordingTransport implements PloyzOperationTransport {
   machineJoinRedeemResponse?: MachineJoinRedeemResponse;
   serviceListResponse?: ServiceListResponse;
   serviceInspectResponse?: ServiceInspectResponse;
+  logsTailResponse?: LogsTailResponse;
   statusResponse?: OpsStatusResponse;
   watchResponse?: OpsWatchResponse;
 
@@ -585,6 +632,19 @@ class RecordingTransport implements PloyzOperationTransport {
     return this.serviceInspectResponse ?? {
       status: "ok",
       value: this.serviceSnapshots[0],
+    };
+  }
+
+  async logsTail(request: LogsTailRequest): Promise<LogsTailResponse> {
+    this.logsTailRequests.push(request);
+    return this.logsTailResponse ?? {
+      status: "ok",
+      value: {
+        node_id: nodeId("node_a"),
+        container_id: request.container_id,
+        text: "hello\n",
+        truncated: false,
+      },
     };
   }
 

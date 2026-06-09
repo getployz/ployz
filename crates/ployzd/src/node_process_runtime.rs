@@ -4,7 +4,7 @@ use crate::config::NodeProcessConfig;
 use crate::dataplane_runtime::HostWireGuardEbpfPreparer;
 use crate::docker::runner::LazyLocalDockerManagedContainerRunner;
 use crate::node_agent::runtime::{
-    ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError,
+    ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError, NodeLogReader,
 };
 use crate::node_runtime::{
     NodeRuntimeStartError, RunningNodeRuntime, start_node_runtime_with_ports,
@@ -64,28 +64,36 @@ pub async fn start_node_process_runtime(
         config.node_id.clone(),
         runner,
         preparer,
+        runner,
         config.public_ip,
         NODE_OBSERVATION_INTERVAL,
     )
     .await
 }
 
-pub async fn start_node_process_runtime_with_ports<R, P>(
+pub async fn start_node_process_runtime_with_ports<R, P, L>(
     client: NatsClient,
     node_id: NodeId,
     runner: R,
     preparer: P,
+    log_reader: L,
     public_ip: Option<IpAddr>,
     observation_interval: Duration,
 ) -> Result<RunningNodeProcessRuntime, NodeProcessRuntimeError>
 where
     R: Clone + NodeContainerRunner + Send + Sync + 'static,
     P: Clone + crate::node_service_runtime::NodeWireGuardEbpfPreparer + Send + Sync + 'static,
+    L: Clone + NodeLogReader + Send + Sync + 'static,
 {
-    let node_service =
-        start_node_runtime_with_ports(client.clone(), node_id.clone(), runner.clone(), preparer)
-            .await
-            .map_err(NodeProcessRuntimeError::StartNodeService)?;
+    let node_service = start_node_runtime_with_ports(
+        client.clone(),
+        node_id.clone(),
+        runner.clone(),
+        preparer,
+        log_reader,
+    )
+    .await
+    .map_err(NodeProcessRuntimeError::StartNodeService)?;
     let observer =
         start_node_observer_runtime(node_id, runner, client, public_ip, observation_interval);
 
@@ -385,7 +393,7 @@ mod tests {
     use crate::docker::labels::ManagedContainerIdentity;
     use crate::node_agent::runtime::{
         CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner,
-        NodeContainerRunnerError,
+        NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
     };
     use ployz_core::dataplane::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
@@ -417,8 +425,9 @@ mod tests {
         let runtime = start_node_process_runtime_with_ports(
             nats.client.clone(),
             node_id("node_a"),
-            runner,
+            runner.clone(),
             ReadyWireGuardEbpf,
+            runner,
             None,
             Duration::from_secs(60),
         )
@@ -523,6 +532,19 @@ mod tests {
             Err(NodeContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
+            })
+        }
+    }
+
+    impl NodeLogReader for FailingListRunner {
+        async fn tail_container_logs(
+            &self,
+            container_id: &ContainerId,
+            _tail_lines: Option<u16>,
+        ) -> Result<NodeLogTail, NodeLogReaderError> {
+            Err(NodeLogReaderError::ReadFailed {
+                container_id: container_id.clone(),
+                message: "docker unavailable".to_owned(),
             })
         }
     }

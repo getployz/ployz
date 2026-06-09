@@ -61,6 +61,23 @@ pub enum NodeContainerRunnerError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeLogReaderError {
+    NotFound {
+        container_id: ContainerId,
+    },
+    ReadFailed {
+        container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeLogTail {
+    pub text: String,
+    pub truncated: bool,
+}
+
 pub trait NodeContainerRunner {
     fn existing_managed_containers(
         &self,
@@ -81,6 +98,14 @@ pub trait NodeContainerRunner {
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
     ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+}
+
+pub trait NodeLogReader {
+    fn tail_container_logs(
+        &self,
+        container_id: &ContainerId,
+        tail_lines: Option<u16>,
+    ) -> impl Future<Output = Result<NodeLogTail, NodeLogReaderError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2,15 +2,17 @@
 
 use crate::node_agent::runtime::{
     CreateManagedContainer, NodeContainerRunConflict, NodeContainerRunDecision,
-    NodeContainerRunner, NodeContainerRunnerError, decide_container_run, managed_container_labels,
+    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
+    decide_container_run, managed_container_labels,
 };
 use crate::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
+    NodeLogsTailDomainError, NodeLogsTailRpcRequest, NodeLogsTailRpcResponse,
     NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
     NodeWireGuardEbpfPrepareRpcResponse,
 };
-use crate::node_runtime_types::NodeRunContainerOutcome;
+use crate::node_runtime_types::{NodeLogsTailResult, NodeRunContainerOutcome};
 use crate::services::{node_endpoint_spec, node_runtime_service_base};
 use ployz_core::dataplane::{
     WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfReady,
@@ -22,15 +24,17 @@ use ployz_nats::service_runtime::{
     RunningNatsService, decode_json_request, start_nats_service,
 };
 
-pub async fn start_node_runtime_service<R, P>(
+pub async fn start_node_runtime_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     node_id: NodeId,
     runner: R,
     preparer: P,
+    log_reader: L,
 ) -> Result<RunningNatsService, NodeServiceRuntimeError>
 where
     R: Clone + NodeContainerRunner + Send + Sync + 'static,
     P: Clone + NodeWireGuardEbpfPreparer + Send + Sync + 'static,
+    L: Clone + NodeLogReader + Send + Sync + 'static,
 {
     let spec = node_runtime_service_base(&node_id);
     let container_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRun);
@@ -38,6 +42,7 @@ where
         node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRemove);
     let wireguard_ebpf_endpoint =
         node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
+    let logs_tail_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::LogsTail);
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
@@ -68,11 +73,22 @@ where
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
 
+    let wireguard_node_id = node_id.clone();
     runtime
         .bind_endpoint(&wireguard_ebpf_endpoint, move |request| {
-            let node_id = node_id.clone();
+            let node_id = wireguard_node_id.clone();
             let preparer = preparer.clone();
             async move { handle_wireguard_ebpf_prepare(node_id, preparer, request).await }
+        })
+        .await
+        .map_err(NodeServiceRuntimeError::Nats)?;
+
+    runtime
+        .bind_endpoint(&logs_tail_endpoint, move |request| {
+            let node_id = node_id.clone();
+            let runner = runner.clone();
+            let log_reader = log_reader.clone();
+            async move { handle_logs_tail(node_id, runner, log_reader, request).await }
         })
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
@@ -186,6 +202,68 @@ where
             },
         }),
         Err(error) => runner_error(error),
+    }
+}
+
+async fn handle_logs_tail<R, L>(
+    node_id: NodeId,
+    runner: R,
+    log_reader: L,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: NodeContainerRunner,
+    L: NodeLogReader,
+{
+    let request = match decode_json_request::<NodeLogsTailRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    let existing = match runner.existing_managed_containers().await {
+        Ok(existing) => existing,
+        Err(error) => return runner_error(error),
+    };
+    if !existing
+        .iter()
+        .any(|container| container.container_id == request.container_id)
+    {
+        return node_domain_error(NodeLogsTailRpcResponse::DomainError {
+            node_id,
+            error: NodeLogsTailDomainError::NotFound {
+                container_id: request.container_id,
+            },
+        });
+    }
+
+    match log_reader
+        .tail_container_logs(&request.container_id, request.tail_lines)
+        .await
+    {
+        Ok(NodeLogTail { text, truncated }) => node_success(NodeLogsTailRpcResponse::Ok {
+            value: NodeLogsTailResult {
+                node_id,
+                container_id: request.container_id,
+                text,
+                truncated,
+            },
+        }),
+        Err(NodeLogReaderError::NotFound { container_id }) => {
+            node_domain_error(NodeLogsTailRpcResponse::DomainError {
+                node_id,
+                error: NodeLogsTailDomainError::NotFound { container_id },
+            })
+        }
+        Err(NodeLogReaderError::ReadFailed {
+            container_id,
+            message,
+        }) => node_domain_error(NodeLogsTailRpcResponse::DomainError {
+            node_id,
+            error: NodeLogsTailDomainError::ReadFailed {
+                container_id,
+                message: failure_message(message),
+            },
+        }),
     }
 }
 

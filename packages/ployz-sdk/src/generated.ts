@@ -6,6 +6,8 @@ export type SafeInteger<B extends string> = Brand<number, `safe_integer:${B}`>;
 
 export const MAX_OPERATION_EVENT_REPLAY_LIMIT = 512 as const;
 
+export const MAX_LOGS_TAIL_LINES = 1000 as const;
+
 export type OperationId = Brand<string, "OperationId">;
 
 export type OperationOwnerId = Brand<string, "OperationOwnerId">;
@@ -244,6 +246,16 @@ export type ServiceInspectError = { "error": "no_such_service", service_id: Serv
 
 export type ServiceQueryUnavailableSource = { "source": "core_state" };
 
+export type LogsTailLines = SafeInteger<"LogsTailLines">;
+
+export type LogsTailRequest = { container_id: ContainerId, node_id?: NodeId | null, tail_lines?: LogsTailLines | null, };
+
+export type LogsTailResult = { node_id: NodeId, container_id: ContainerId, text: string, truncated: boolean, };
+
+export type LogsTailError = { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, node_ids: Array<NodeId>, } | { "error": "read_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", source: LogsTailUnavailableSource, node_id?: NodeId | null, };
+
+export type LogsTailUnavailableSource = { "source": "observations" } | { "source": "node_rpc" };
+
 export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
@@ -360,6 +372,8 @@ export type ServiceListResponse = OperationApiResponse<ServiceListResult, Servic
 
 export type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
 
+export type LogsTailResponse = OperationApiResponse<LogsTailResult, LogsTailError>;
+
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 export type OpsWatchRequest = OperationEventReplayRequest;
@@ -377,6 +391,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
   { name: "service.list", subject: "plz.v1.svc.api.service.list", execution: "query", request: "ServiceListRequest", success: "ServiceListResult", error: "ServiceListError", response: "ServiceListResponse" },
   { name: "service.inspect", subject: "plz.v1.svc.api.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
+  { name: "logs.tail", subject: "plz.v1.svc.api.logs.tail", execution: "query", request: "LogsTailRequest", success: "LogsTailResult", error: "LogsTailError", response: "LogsTailResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
   { name: "backup.create", subject: "plz.v1.svc.api.backup.create", execution: "accepts_operation", request: "BackupCreateRequest", success: "AcceptedOperation", error: "BackupCreateError", response: "BackupCreateResponse" },

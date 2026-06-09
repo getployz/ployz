@@ -2,13 +2,13 @@
 
 use crate::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot,
-    OperationStatusSnapshot, OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceSnapshot,
+    DeploySubmitRequest, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
+    MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
+    MachineListResult, MachineSnapshot, OperationStatusSnapshot, OpsStatusError, OpsStatusRequest,
+    OpsWatchError, OpsWatchRequest, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -35,6 +35,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::ServiceListApi,
             $crate::operation_api::ServiceInspectApi,
+            $crate::operation_api::LogsTailApi,
             $crate::operation_api::OpsStatusApi,
             $crate::operation_api::OpsWatchApi,
             $crate::operation_api::BackupCreateApi
@@ -124,6 +125,18 @@ impl OperationApiContract for ServiceInspectApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::ServiceInspect;
     const RESPONSE_ALIAS: &'static str = "ServiceInspectResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogsTailApi;
+
+impl OperationApiContract for LogsTailApi {
+    type Request = LogsTailRequest;
+    type Success = LogsTailResult;
+    type Error = LogsTailError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::LogsTail;
+    const RESPONSE_ALIAS: &'static str = "LogsTailResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

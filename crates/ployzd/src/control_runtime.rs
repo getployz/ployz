@@ -6,6 +6,7 @@ use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
 use crate::deploy_worker::DeployExecutionNodeScope;
+use crate::node_rpc::NatsNodeLogsTailer;
 use crate::operation_api::{MachineQueryRuntime, OperationApiHandlers};
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
@@ -92,6 +93,7 @@ pub async fn start_control_runtime_with_client(
         deploy_tasks.clone(),
     );
     let machine_query = MachineQueryRuntime::new(core_state, observations);
+    let logs_tailer = NatsNodeLogsTailer::new(client.clone());
     let backup_launcher = OwnedBackupLauncher::new(
         jetstream,
         controllers.clone(),
@@ -104,7 +106,12 @@ pub async fn start_control_runtime_with_client(
         .map_err(ControlRuntimeError::StartBackupWorker)?;
     let operation_api = start_operation_api_service_with_handlers(
         client,
-        OperationApiHandlers::execute_operations(controllers, deploy_runtime, machine_query),
+        OperationApiHandlers::execute_operations(
+            controllers,
+            deploy_runtime,
+            machine_query,
+            logs_tailer,
+        ),
     )
     .await
     .map_err(ControlRuntimeError::StartOperationApi)?;

@@ -2,7 +2,7 @@ use std::fs;
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
@@ -13,7 +13,9 @@ use ployz_core::state::{
     ActiveMachineState, ActiveServiceState, GatewayServingStatus, GatewayStatusObservation,
     NodePublicIpObservation,
 };
-use ployz_sdk_types::{AcceptedOperation, MachineAddGateway, MachineSnapshot, ServiceSnapshot};
+use ployz_sdk_types::{
+    AcceptedOperation, LogsTailLines, MachineAddGateway, MachineSnapshot, ServiceSnapshot,
+};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinToken,
@@ -358,6 +360,27 @@ fn cli_dispatches_service_inspect_request() {
     assert_eq!(
         command.into_request().service_id,
         ServiceId::try_new("svc_api").expect("valid service id")
+    );
+}
+
+#[test]
+fn cli_dispatches_logs_tail_request() {
+    let command = parse_command(
+        ["logs", "ctr_failed", "--node", "node_a", "--tail", "50"].map(str::to_owned),
+    )
+    .expect("logs tail command parses");
+
+    let PloyzctlCommand::LogsTail(command) = command else {
+        panic!("expected logs tail command");
+    };
+
+    assert_eq!(
+        command.into_request(),
+        ployz_sdk_types::LogsTailRequest {
+            container_id: ContainerId::try_new("ctr_failed").expect("valid container id"),
+            node_id: Some(node_id("node_a")),
+            tail_lines: Some(LogsTailLines::try_new(50).expect("valid logs tail lines")),
+        }
     );
 }
 

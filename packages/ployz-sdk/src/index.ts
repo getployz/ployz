@@ -6,6 +6,7 @@ import {
 
 export type * from "./generated.ts";
 export {
+  MAX_LOGS_TAIL_LINES,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
   OPERATION_API_CONTRACTS,
 } from "./generated.ts";
@@ -22,6 +23,7 @@ export {
   eventSequence,
   failureMessage,
   imageReference,
+  logsTailLines,
   machineBootstrapUrl,
   machineJoinToken,
   machineName,
@@ -43,7 +45,9 @@ import {
   OPERATION_API_CONTRACTS,
 } from "./generated.ts";
 import {
+  containerId,
   imageReference,
+  logsTailLines,
   machineName,
   machineJoinToken,
   nodeId,
@@ -65,6 +69,11 @@ import type {
   DeploySubmitRequest,
   DeploySubmitResponse,
   EventSequence,
+  LogsTailError,
+  LogsTailLines,
+  LogsTailRequest,
+  LogsTailResponse,
+  LogsTailResult,
   MachineAddAccepted,
   MachineAddError,
   MachineAddGateway,
@@ -118,6 +127,7 @@ export interface PloyzOperationTransport {
   serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse>;
   opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse>;
   opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse>;
+  logsTail(request: LogsTailRequest): Promise<LogsTailResponse>;
 }
 
 export class PloyzApiError<E> extends Error {
@@ -171,6 +181,12 @@ export interface PloyzMachineInspectInput {
 
 export interface PloyzServiceInspectInput {
   serviceId: string;
+}
+
+export interface PloyzLogsTailInput {
+  containerId: string;
+  nodeId?: string;
+  tailLines?: number | LogsTailLines;
 }
 
 export class PloyzClient {
@@ -237,6 +253,13 @@ export class PloyzClient {
     return unwrapApiResponse(
       "service.inspect",
       await this.#transport.serviceInspect(serviceInspectRequest(input)),
+    );
+  }
+
+  async logsTail(input: string | PloyzLogsTailInput): Promise<LogsTailResult> {
+    return unwrapApiResponse(
+      "logs.tail",
+      await this.#transport.logsTail(logsTailRequest(input)),
     );
   }
 }
@@ -344,6 +367,20 @@ export function serviceInspectRequest(
   };
 }
 
+export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailRequest {
+  if (typeof input === "string") {
+    return {
+      container_id: containerId(input),
+    };
+  }
+
+  return {
+    container_id: containerId(input.containerId),
+    ...(input.nodeId ? { node_id: nodeId(input.nodeId) } : {}),
+    ...(input.tailLines === undefined ? {} : { tail_lines: logsTailLines(input.tailLines) }),
+  };
+}
+
 export class OperationHandle {
   readonly #transport: PloyzOperationTransport;
   readonly accepted: AcceptedOperation;
@@ -438,6 +475,7 @@ export type PloyzOperationError =
   | PloyzApiError<MachineListError>
   | PloyzApiError<MachineInspectError>
   | PloyzApiError<MachineJoinRedeemError>
+  | PloyzApiError<LogsTailError>
   | PloyzApiError<ServiceListError>
   | PloyzApiError<ServiceInspectError>
   | PloyzApiError<OpsStatusError>
