@@ -54,6 +54,7 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains(" init join-template "));
     assert!(script.contains("tunnel identity --secret-key-file"));
     assert!(script.contains("core_iroh_public_key="));
+    assert!(!script.contains(">\"$core_iroh_identity_log\""));
     assert!(script.contains("edge_runtime_nats_addr=\"127.0.0.1:7422\""));
     assert!(script.contains("edge_runtime_nats_url=\"nats://${edge_runtime_nats_addr}\""));
     assert!(!script.contains("edge_bootstrap_nats_url="));

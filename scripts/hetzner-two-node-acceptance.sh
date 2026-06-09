@@ -468,7 +468,7 @@ case "$command" in
 JSON
     core_iroh_identity_log="${log_dir}/core-iroh-identity.log"
     run_remote_logged core-iroh-identity "$core_ip" \
-      "'$remote_ployzd' tunnel identity --secret-key-file '$remote_core_iroh_secret'" >"$core_iroh_identity_log"
+      "'$remote_ployzd' tunnel identity --secret-key-file '$remote_core_iroh_secret'"
     core_iroh_public_key="$(awk '$1 == "public-key" { print $2 }' "$core_iroh_identity_log" | tail -n 1)"
     [ -n "$core_iroh_public_key" ] || die "core iroh identity did not print a public key; output: ${core_iroh_identity_log}"
 
