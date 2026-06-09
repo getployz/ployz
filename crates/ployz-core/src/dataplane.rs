@@ -44,6 +44,27 @@ impl WireGuardEbpfPrepareRequest {
     }
 
     #[must_use]
+    pub fn for_deploy_plan_with_dataplane_nodes_and_peer_endpoints(
+        operation_id: OperationId,
+        plan: &DeployPlan,
+        dataplane_nodes: &[NodeId],
+        peer_endpoints: &[WireGuardPeerEndpoint],
+    ) -> Self {
+        let nodes = sorted_unique_nodes(
+            plan.target_nodes()
+                .into_iter()
+                .chain(dataplane_nodes.iter().cloned()),
+        );
+        let requested = nodes.iter().collect::<BTreeSet<_>>();
+        let peer_endpoints = peer_endpoints
+            .iter()
+            .filter(|peer| requested.contains(&peer.node_id))
+            .cloned()
+            .collect();
+        Self::for_nodes(operation_id, nodes, peer_endpoints, Vec::new())
+    }
+
+    #[must_use]
     pub fn with_peers(mut self, peers: Vec<WireGuardPeer>) -> Self {
         self.peers = peers;
         self
@@ -78,6 +99,14 @@ impl WireGuardEbpfPrepareRequest {
             peers,
         }
     }
+}
+
+fn sorted_unique_nodes(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
+    nodes
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

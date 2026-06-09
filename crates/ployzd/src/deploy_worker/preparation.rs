@@ -16,6 +16,7 @@ pub struct DeployExecutionFacts {
     pub active_service: Option<ActiveServiceState>,
     pub active_route: Option<ActiveRouteState>,
     pub eligible_nodes: Vec<NodeId>,
+    pub dataplane_nodes: Vec<NodeId>,
     pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
     pub wireguard_peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub step_timeout: Duration,
@@ -42,6 +43,7 @@ pub fn prepare_deploy_execution_command(
         eligible_nodes: prepared.eligible_nodes,
         existing_replicas: prepared.existing_replicas,
         cleanup_candidates: prepared.cleanup_candidates,
+        dataplane_nodes: facts.dataplane_nodes,
         wireguard_peer_endpoints: facts.wireguard_peer_endpoints,
         step_timeout: facts.step_timeout,
     })

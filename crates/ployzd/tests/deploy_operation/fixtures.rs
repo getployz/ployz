@@ -586,6 +586,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             active_service: None,
             active_route: None,
             eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
+            dataplane_nodes: Vec::new(),
             observed_nodes: Vec::new(),
             wireguard_peer_endpoints: wireguard_peer_endpoints(&[
                 node_id("node_a"),
@@ -653,6 +654,7 @@ fn prepared_deploy_command(
             active_service: None,
             active_route: None,
             wireguard_peer_endpoints: wireguard_peer_endpoints(&eligible_nodes),
+            dataplane_nodes: Vec::new(),
             eligible_nodes,
             observed_nodes,
             step_timeout: Duration::from_secs(5),

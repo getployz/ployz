@@ -41,6 +41,11 @@ pub async fn load_deploy_execution_facts_from_nats(
     observations: &AsyncNatsObservationStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
+    let routed_dataplane_fallback = if request.route.is_some() {
+        node_scope.observed_node_ids.clone()
+    } else {
+        Vec::new()
+    };
     let active_service = core_state
         .active_service(&request.service_id)
         .await
@@ -61,17 +66,48 @@ pub async fn load_deploy_execution_facts_from_nats(
         .flatten();
     let node_scope = load_active_machine_node_scope(core_state, node_scope).await?;
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
+    let dataplane_nodes =
+        load_routed_dataplane_nodes(request, observations, routed_dataplane_fallback).await?;
+    let peer_endpoint_node_ids = sorted_unique_nodes(
+        node_scope
+            .eligible_nodes
+            .iter()
+            .chain(dataplane_nodes.iter()),
+    );
     let wireguard_peer_endpoints =
-        load_wireguard_peer_endpoints(observations, &node_scope.eligible_nodes).await?;
+        load_wireguard_peer_endpoints(observations, &peer_endpoint_node_ids).await?;
 
     Ok(DeployExecutionFacts {
         active_service,
         active_route,
         eligible_nodes: node_scope.eligible_nodes,
+        dataplane_nodes,
         observed_nodes,
         wireguard_peer_endpoints,
         step_timeout,
     })
+}
+
+async fn load_routed_dataplane_nodes(
+    request: &DeployRequest,
+    observations: &AsyncNatsObservationStore,
+    fallback_nodes: Vec<NodeId>,
+) -> Result<Vec<NodeId>, DeployFactLoadError> {
+    if request.route.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let gateways = observations.gateway_statuses().await.map_err(|source| {
+        DeployFactLoadError::GatewayStatusObservationRead {
+            failure: observation_read_failure(source),
+        }
+    })?;
+    Ok(sorted_unique_nodes(
+        gateways
+            .iter()
+            .map(|gateway| &gateway.node_id)
+            .chain(fallback_nodes.iter()),
+    ))
 }
 
 async fn load_active_machine_node_scope(
@@ -149,6 +185,15 @@ fn peer_endpoint_from_public_ip(observation: NodePublicIpObservation) -> WireGua
     )
 }
 
+fn sorted_unique_nodes<'a>(nodes: impl IntoIterator<Item = &'a NodeId>) -> Vec<NodeId> {
+    nodes
+        .into_iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
     ActiveServiceRead {
@@ -167,6 +212,9 @@ pub enum DeployFactLoadError {
         failure: ObservationReadFailure,
     },
     NodePublicIpObservationRead {
+        failure: ObservationReadFailure,
+    },
+    GatewayStatusObservationRead {
         failure: ObservationReadFailure,
     },
 }
@@ -397,6 +445,12 @@ impl fmt::Display for DeployFactLoadError {
                 write!(
                     formatter,
                     "node public ip observations could not be read: {failure}"
+                )
+            }
+            Self::GatewayStatusObservationRead { failure } => {
+                write!(
+                    formatter,
+                    "gateway observations could not be read: {failure}"
                 )
             }
         }

@@ -79,7 +79,7 @@ fn hetzner_h0_script_drives_the_product_path() {
     ));
     assert!(script.contains(" deploy --detach"));
     assert!(script.contains(" ops watch op_deploy_smoke"));
-    assert!(script.contains("curl -fsS -H 'Host: smoke.local' \"http://${edge_ip}:8080/\""));
+    assert!(script.contains("curl -fsS -H 'Host: smoke.local' \"http://${core_ip}:8080/\""));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_BYTECODE"));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_CTL"));
     assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));

@@ -1,15 +1,18 @@
 use async_nats::jetstream;
 use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, WireGuardPeerEndpoint};
-use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
+};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::machine::MachineName;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService, NodePublicIpObservation,
+    ExpectedActiveService, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -185,6 +188,53 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     assert_eq!(
         command.wireguard_peer_endpoints(),
         [wireguard_peer_endpoint("edge_2", 7)]
+    );
+}
+
+#[tokio::test]
+async fn routed_nats_preparation_includes_gateway_nodes_in_dataplane_scope() {
+    let nats = test_nats().await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    core_state
+        .replace_active_machine(&active_machine("edge_2"))
+        .await
+        .expect("active edge stores");
+    observations
+        .replace_gateway_status(&gateway_status("core_1"))
+        .await
+        .expect("core gateway status stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("core_1", 1))
+        .await
+        .expect("core public ip stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("edge_2", 2))
+        .await
+        .expect("edge public ip stores");
+
+    let command = prepare_command_from_nats(
+        operation_id("op_123"),
+        routed_deploy_request(),
+        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        &core_state,
+        &observations,
+        Duration::from_secs(7),
+    )
+    .await;
+
+    assert_eq!(command.eligible_nodes(), [node_id("edge_2")]);
+    assert_eq!(command.dataplane_nodes(), [node_id("core_1")]);
+    assert_eq!(
+        command.wireguard_peer_endpoints(),
+        [
+            wireguard_peer_endpoint("core_1", 1),
+            wireguard_peer_endpoint("edge_2", 2),
+        ]
     );
 }
 
@@ -373,6 +423,19 @@ fn deploy_request() -> DeployRequest {
     }
 }
 
+fn routed_deploy_request() -> DeployRequest {
+    DeployRequest {
+        route: Some(DeployRoute {
+            target: RouteTarget {
+                hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
+                port: route_port(8080),
+            },
+            endpoint_port: route_port(80),
+        }),
+        ..deploy_request()
+    }
+}
+
 fn node_snapshot(
     node_id: &str,
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
@@ -415,6 +478,15 @@ fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
     }
 }
 
+fn gateway_status(node_id: &str) -> GatewayStatusObservation {
+    GatewayStatusObservation {
+        node_id: self::node_id(node_id),
+        listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
+        serving: GatewayServingStatus::Current,
+        route_count: 1,
+    }
+}
+
 fn wireguard_peer_endpoint(node_id: &str, last_octet: u8) -> WireGuardPeerEndpoint {
     WireGuardPeerEndpoint::new(
         self::node_id(node_id),
@@ -435,6 +507,10 @@ fn service_id(value: &str) -> ServiceId {
 
 fn revision_id(value: &str) -> RevisionId {
     RevisionId::try_new(value).expect("valid revision id")
+}
+
+fn route_port(value: u16) -> RoutePort {
+    RoutePort::try_new(value).expect("valid route port")
 }
 
 fn node_id(value: &str) -> NodeId {

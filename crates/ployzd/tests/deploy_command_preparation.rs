@@ -15,6 +15,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         active_service: None,
         active_route: None,
         eligible_nodes: vec![node_id("node_a")],
+        dataplane_nodes: Vec::new(),
         observed_nodes: vec![
             NodeContainerObservationSnapshot::try_new(
                 node_id("node_a"),
@@ -56,6 +57,7 @@ async fn uses_active_service_revision_and_target_replicas() {
         }),
         active_route: None,
         eligible_nodes: vec![node_id("node_a")],
+        dataplane_nodes: Vec::new(),
         observed_nodes: vec![
             NodeContainerObservationSnapshot::try_new(
                 node_id("node_a"),
@@ -97,6 +99,7 @@ async fn rejects_active_state_for_a_different_service() {
             }),
             active_route: None,
             eligible_nodes: vec![node_id("node_a")],
+            dataplane_nodes: Vec::new(),
             observed_nodes: Vec::new(),
             wireguard_peer_endpoints: Vec::new(),
             step_timeout: Duration::from_secs(5),

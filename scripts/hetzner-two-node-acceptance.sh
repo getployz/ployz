@@ -392,7 +392,7 @@ JSON
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch op_deploy_smoke"
 
     echo "curling smoke service" >&2
-    curl -fsS -H 'Host: smoke.local' "http://${edge_ip}:8080/" >"${log_dir}/curl-smoke.log"
+    curl -fsS -H 'Host: smoke.local' "http://${core_ip}:8080/" >"${log_dir}/curl-smoke.log"
     cat "${log_dir}/curl-smoke.log"
 
     if [ "${PLOYZ_ACCEPTANCE_KEEP:-0}" != "1" ]; then

@@ -197,6 +197,9 @@ fn fact_load_failure_message(source: &DeployFactLoadError) -> &'static str {
         DeployFactLoadError::NodePublicIpObservationRead { .. } => {
             "node public ip observations could not be loaded"
         }
+        DeployFactLoadError::GatewayStatusObservationRead { .. } => {
+            "gateway observations could not be loaded"
+        }
     }
 }
 
