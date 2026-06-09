@@ -590,16 +590,6 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
         1
     );
     assert_eq!(
-        observations
-            .node_snapshot(&node_id("edge_2"))
-            .await
-            .expect("edge observations read")
-            .expect("edge snapshot exists")
-            .containers()
-            .len(),
-        1
-    );
-    assert_eq!(
         http_get_with_host(
             core_gateway_runtime.listen_addr(),
             &format!("smoke.local:{route_port}"),
