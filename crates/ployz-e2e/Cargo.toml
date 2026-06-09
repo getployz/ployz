@@ -19,6 +19,7 @@ ployz-core.workspace = true
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 ployz-test-support.workspace = true
+ployz-transport.workspace = true
 ployzctl = { path = "../ployzctl" }
 ployzd = { path = "../ployzd" }
 serde_json.workspace = true

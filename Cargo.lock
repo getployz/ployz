@@ -2540,6 +2540,7 @@ dependencies = [
  "ployz-nats",
  "ployz-sdk-types",
  "ployz-test-support",
+ "ployz-transport",
  "ployzctl",
  "ployzd",
  "serde_json",
