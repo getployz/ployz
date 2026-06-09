@@ -1,8 +1,15 @@
+import {
+  connectPloyzNatsTransport,
+  type PloyzNatsConnectOptions,
+  type PloyzNatsTransport,
+} from "./nats.ts";
+
 export type * from "./generated.ts";
 export {
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
   OPERATION_API_CONTRACTS,
 } from "./generated.ts";
+export * from "./nats.ts";
 export {
   acmeChallengeToken,
   acmeChallengeTtlSeconds,
@@ -69,6 +76,8 @@ import type {
   MachineJoinRedeemRequest,
   MachineJoinRedeemResponse,
   MachineJoinRedeemed,
+  MachineJoinReportRequest,
+  MachineJoinReportResponse,
   MachineInspectError,
   MachineInspectRequest,
   MachineInspectResponse,
@@ -104,6 +113,7 @@ export interface PloyzOperationTransport {
   machineList(request: MachineListRequest): Promise<MachineListResponse>;
   machineInspect(request: MachineInspectRequest): Promise<MachineInspectResponse>;
   machineJoinRedeem(request: MachineJoinRedeemRequest): Promise<MachineJoinRedeemResponse>;
+  machineJoinReport(request: MachineJoinReportRequest): Promise<MachineJoinReportResponse>;
   serviceList(request: ServiceListRequest): Promise<ServiceListResponse>;
   serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse>;
   opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse>;
@@ -229,6 +239,36 @@ export class PloyzClient {
       await this.#transport.serviceInspect(serviceInspectRequest(input)),
     );
   }
+}
+
+export class ConnectedPloyzClient {
+  readonly client: PloyzClient;
+  readonly transport: PloyzNatsTransport;
+
+  constructor(transport: PloyzNatsTransport) {
+    this.transport = transport;
+    this.client = new PloyzClient(transport);
+  }
+
+  close(): Promise<void> {
+    return this.transport.close();
+  }
+
+  drain(): Promise<void> {
+    return this.transport.drain();
+  }
+}
+
+export async function connectPloyzNatsClient(
+  options: PloyzNatsConnectOptions = {},
+): Promise<ConnectedPloyzClient> {
+  return new ConnectedPloyzClient(await connectPloyzNatsTransport(options));
+}
+
+export async function connectPloyzNats(
+  options: PloyzNatsConnectOptions = {},
+): Promise<PloyzClient> {
+  return (await connectPloyzNatsClient(options)).client;
 }
 
 export function backupCreateRequest(input: PloyzBackupCreateInput): BackupCreateRequest {

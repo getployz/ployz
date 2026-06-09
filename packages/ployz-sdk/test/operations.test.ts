@@ -46,6 +46,8 @@ import type {
   MachineJoinRedeemed,
   MachineJoinRedeemResponse,
   MachineJoinRedeemRequest,
+  MachineJoinReportRequest,
+  MachineJoinReportResponse,
   MachineListResponse,
   MachineListRequest,
   MachineSnapshot,
@@ -562,6 +564,12 @@ class RecordingTransport implements PloyzOperationTransport {
   ): Promise<MachineJoinRedeemResponse> {
     this.machineJoinRedeemRequests.push(request);
     return this.machineJoinRedeemResponse ?? { status: "ok", value: this.machineJoinRedeemed };
+  }
+
+  async machineJoinReport(
+    _request: MachineJoinReportRequest,
+  ): Promise<MachineJoinReportResponse> {
+    throw new Error("machine join report is not used by ergonomic client tests");
   }
 
   async serviceList(request: ServiceListRequest): Promise<ServiceListResponse> {
