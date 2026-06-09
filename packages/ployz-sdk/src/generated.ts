@@ -88,7 +88,7 @@ export type FirstNodeGateway = "install" | "skip";
 
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed" } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
-export type DeployRunningStage = "preparing_wireguard_ebpf" | "starting_containers" | "waiting_for_health" | "active_service_commit";
+export type DeployRunningStage = "preparing_wireguard_ebpf" | "starting_containers" | "waiting_for_health" | "route_cutover" | "active_service_commit";
 
 export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 

@@ -49,6 +49,7 @@ pub enum DeployRunningStage {
     PreparingWireGuardEbpf,
     StartingContainers,
     WaitingForHealth,
+    RouteCutover,
     ActiveServiceCommit,
 }
 

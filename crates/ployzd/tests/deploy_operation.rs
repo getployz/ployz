@@ -10,11 +10,10 @@ use ployz_core::state::{
     ExpectedActiveService,
 };
 use ployzd::deploy_worker::{
-    ActiveRouteCommitter, ActiveServiceCommitter, DeployCompletionRecord,
-    DeployCompletionRecordFailure, DeployExecutionCommand, DeployExecutionError,
+    ActiveRouteCommitter, ActiveServiceCommitter, DeployExecutionCommand, DeployExecutionError,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
-    DeployHealthChecker, DeployOperationRecorder, NodeContainerRuntime, NodeContainerRuntimeError,
-    WireGuardEbpfPreparer, execute_deploy_operation,
+    DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, NodeContainerRuntime,
+    NodeContainerRuntimeError, WireGuardEbpfPreparer, execute_deploy_operation,
 };
 use ployzd::node_agent::runtime::managed_container_labels;
 use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
@@ -22,6 +21,30 @@ use std::time::Duration;
 
 fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("test failure message is non-empty")
+}
+
+fn assert_deploy_event_order(
+    records: &[RecordedOperation],
+    before: DeployRunningStage,
+    after: DeployRunningStage,
+) {
+    let before_position = records
+        .iter()
+        .position(|record| {
+            record == &RecordedOperation::Transition(DeployTransition::Running { stage: before })
+        })
+        .expect("before stage is recorded");
+    let after_position = records
+        .iter()
+        .position(|record| {
+            record == &RecordedOperation::Transition(DeployTransition::Running { stage: after })
+        })
+        .expect("after stage is recorded");
+
+    assert!(
+        before_position < after_position,
+        "{before:?} should be recorded before {after:?}"
+    );
 }
 
 async fn execute_deploy<R, D, N, H, C, A>(
@@ -92,7 +115,7 @@ async fn deploy_worker_runs_containers_then_completes() {
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
-    assert_eq!(outcome.completion_record, DeployCompletionRecord::Recorded);
+    assert_eq!(outcome.terminal_event, DeployTerminalEvent::Recorded);
     assert_eq!(
         outcome
             .containers
@@ -671,6 +694,11 @@ async fn routed_deploy_commits_route_before_completion() {
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::Completed))
     );
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::RouteCutover,
+        DeployRunningStage::ActiveServiceCommit,
+    );
 }
 
 #[tokio::test]
@@ -713,7 +741,19 @@ async fn routed_deploy_fails_before_completion_when_route_is_stale() {
             && retained_artifacts == vec![retained_container("node_a", "ctr_1")]
     ));
     assert_eq!(route_state.requests.len(), 1);
-    assert_eq!(active_state.requests.len(), 1);
+    assert!(active_state.requests.is_empty());
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Failed {
+            failure: DeployOperationFailure::RouteCutoverFailed {
+                route: route_target("api.example.com", 443),
+                reason: ployz_core::ops::RouteCutoverFailureReason::RouteRejected {
+                    message: failure_message("route changed before cutover"),
+                },
+                retained_artifacts: vec![retained_container("node_a", "ctr_1")],
+            }
+        }))
+    );
     assert!(
         !recorder
             .records
@@ -765,7 +805,7 @@ async fn deploy_worker_times_out_hanging_steps() {
 }
 
 #[tokio::test]
-async fn deploy_worker_keeps_success_when_completion_record_fails_after_active_commit() {
+async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_commit() {
     let mut recorder = RecordingOperations::fail_completed_transition_times(1);
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
@@ -790,12 +830,7 @@ async fn deploy_worker_keeps_success_when_completion_record_fails_after_active_c
 
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
-    assert_eq!(
-        outcome.completion_record,
-        DeployCompletionRecord::Missing {
-            reason: DeployCompletionRecordFailure::RecordRejected,
-        }
-    );
+    assert_eq!(outcome.terminal_event, DeployTerminalEvent::Missing);
 
     assert_eq!(
         recorder.records,

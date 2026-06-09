@@ -36,8 +36,8 @@ pub use crate::node_runtime_types::{
     NodeRunContainerRequest,
 };
 pub use types::{
-    DeployCompletionRecord, DeployCompletionRecordFailure, DeployContainer, DeployExecutionCommand,
-    DeployExecutionOutcome, DeployExecutionPorts,
+    DeployContainer, DeployExecutionCommand, DeployExecutionOutcome, DeployExecutionPorts,
+    DeployTerminalEvent,
 };
 
 pub async fn execute_deploy_operation<R, D, N, H, C, A>(
@@ -153,6 +153,19 @@ where
     .await
     .map_err(|source| failure(command, source, &started_containers))?;
 
+    if command.active_route_commit_request().is_some() {
+        record_running_stage(
+            command,
+            &mut *ports.recorder,
+            DeployRunningStage::RouteCutover,
+        )
+        .await
+        .map_err(|source| failure(command, source, &started_containers))?;
+
+        cutover_route(command, &mut *ports.route_state)
+            .await
+            .map_err(|source| failure(command, source, &started_containers))?;
+    }
     record_running_stage(
         command,
         &mut *ports.recorder,
@@ -164,16 +177,13 @@ where
     commit_active_service(command, &mut *ports.active_state)
         .await
         .map_err(|source| failure(command, source, &started_containers))?;
-    cutover_route(command, &mut *ports.route_state)
-        .await
-        .map_err(|source| failure(command, source, &started_containers))?;
-    let completion_record = record_completion_best_effort(command, &mut *ports.recorder).await;
+    let terminal_event = record_completion_best_effort(command, &mut *ports.recorder).await;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
         target_revision: plan.target_revision,
         containers,
-        completion_record,
+        terminal_event,
     };
 
     Ok(outcome)
@@ -182,20 +192,13 @@ where
 async fn record_completion_best_effort<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
-) -> DeployCompletionRecord
+) -> DeployTerminalEvent
 where
     R: DeployOperationRecorder,
 {
     match record_stage(command, recorder, DeployTransition::Completed).await {
-        Ok(()) => DeployCompletionRecord::Recorded,
-        Err(DeployExecutionError::StepTimedOut { timeout, .. }) => {
-            DeployCompletionRecord::Missing {
-                reason: DeployCompletionRecordFailure::TimedOut { timeout },
-            }
-        }
-        Err(_) => DeployCompletionRecord::Missing {
-            reason: DeployCompletionRecordFailure::RecordRejected,
-        },
+        Ok(()) => DeployTerminalEvent::Recorded,
+        Err(_) => DeployTerminalEvent::Missing,
     }
 }
 

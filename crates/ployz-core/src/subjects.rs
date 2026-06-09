@@ -273,6 +273,7 @@ impl DeployRunningStage {
             Self::PreparingWireGuardEbpf => "preparing_wireguard_ebpf",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
+            Self::RouteCutover => "route_cutover",
             Self::ActiveServiceCommit => "active_service_commit",
         }
     }

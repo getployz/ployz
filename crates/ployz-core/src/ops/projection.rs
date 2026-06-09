@@ -763,7 +763,8 @@ fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
         DeployRunningStage::PreparingWireGuardEbpf => 0,
         DeployRunningStage::StartingContainers => 1,
         DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::ActiveServiceCommit => 3,
+        DeployRunningStage::RouteCutover => 3,
+        DeployRunningStage::ActiveServiceCommit => 4,
     }
 }
 
@@ -776,6 +777,12 @@ fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningSta
         ) | (
             DeployRunningStage::StartingContainers,
             DeployRunningStage::WaitingForHealth
+        ) | (
+            DeployRunningStage::WaitingForHealth,
+            DeployRunningStage::RouteCutover
+        ) | (
+            DeployRunningStage::RouteCutover,
+            DeployRunningStage::ActiveServiceCommit
         ) | (
             DeployRunningStage::WaitingForHealth,
             DeployRunningStage::ActiveServiceCommit

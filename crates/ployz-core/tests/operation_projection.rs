@@ -164,7 +164,7 @@ fn deploy_running_stages_reject_unmodeled_large_skips() {
 }
 
 #[test]
-fn deploy_completion_is_allowed_after_active_commit_checkpoint() {
+fn deploy_completion_is_allowed_after_active_commit_stage() {
     let committing = OperationStatus::Deploy {
         id: operation_id("op_123"),
         service_id: service_id("svc_api"),
@@ -181,6 +181,51 @@ fn deploy_completion_is_allowed_after_active_commit_checkpoint() {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::Completed,
+                last_event_sequence: event_sequence(6),
+            }),
+        })
+    );
+}
+
+#[test]
+fn deploy_route_cutover_can_precede_active_service_commit() {
+    let waiting = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        state: DeployOperationState::Running {
+            stage: DeployRunningStage::WaitingForHealth,
+        },
+        last_event_sequence: event_sequence(4),
+    };
+
+    let route_cutover = project_deploy_transition(
+        &waiting,
+        DeployTransition::Running {
+            stage: DeployRunningStage::RouteCutover,
+        },
+        event_sequence(5),
+    )
+    .expect("route cutover follows health");
+
+    let DeployProjection::Updated { status } = route_cutover else {
+        panic!("route cutover updates status");
+    };
+
+    assert_eq!(
+        project_deploy_transition(
+            &status,
+            DeployTransition::Running {
+                stage: active_service_running(),
+            },
+            event_sequence(6),
+        ),
+        Ok(DeployProjection::Updated {
+            status: Box::new(OperationStatus::Deploy {
+                id: operation_id("op_123"),
+                service_id: service_id("svc_api"),
+                state: DeployOperationState::Running {
+                    stage: active_service_running(),
+                },
                 last_event_sequence: event_sequence(6),
             }),
         })
