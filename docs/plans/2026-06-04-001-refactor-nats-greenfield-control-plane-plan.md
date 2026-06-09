@@ -107,14 +107,15 @@ plain sequence:
 accept request
 create operation
 acquire deploy lock
-load current service state
-plan changed containers
+observe runtime state
+plan namespace diff
 run predeploy
 start replacements
 wait for health
-switch route
-remove old containers
-commit active revision
+promote phase services
+retire replaced containers
+run final cleanup
+write deploy outcome
 complete operation
 ```
 
@@ -140,12 +141,15 @@ commands over iroh.
 ### Product Behavior
 
 - R1. Every mutating command returns an operation id quickly.
-- R2. Every operation has durable events and one explicit terminal state:
-  `completed`, `failed`, or `cancelled`.
+- R2. Every operation has directly written status and one explicit terminal
+  result. Deploy operations use the deploy outcome enum:
+  `completed`, `completed_with_warnings`, `partially_completed`,
+  `partially_completed_with_warnings`, `failed`, or `cancelled`.
 - R3. Failed deploys preserve useful evidence after container start, including
   node id, container id, retained artifact type, and log access instructions.
-- R4. Successful deploys commit active service state only after replacement
-  health and route cutover succeed.
+- R4. Successful deploy phases update serving target entries only after
+  replacement health succeeds and route or certificate preconditions are
+  satisfied. Role-process convergence is warning evidence, not a success gate.
 - R5. Operators, cloud workflows, CLIs, SDKs, and agents all consume the same
   primitive command surface.
 - R6. Cloud/Inngest may orchestrate product workflows, but runtime truth and
@@ -188,7 +192,7 @@ commands over iroh.
 - R18. NATS credentials, account permissions, and subject permissions remain the
   authority boundary even when the transport is iroh-encrypted.
 - R19. Bootstrap material includes node id, NATS credentials, trusted NATS
-  server identity/config, and one or more core iroh endpoint addresses/tickets.
+  server identity/config, and the core iroh endpoint address/ticket.
 - R20. If iroh direct path fails, relay fallback is acceptable for control-plane
   traffic. The system reports whether the current NATS tunnel is direct,
   relayed, reconnecting, or down.
@@ -232,7 +236,7 @@ commands over iroh.
 - R36. Keeper background reconciliation is not part of v1. If keeper notices
   drift after bootstrap, it reports local health/evidence and waits for an
   explicit operation; it does not silently change product/runtime truth such as
-  active services, routes, certs, or cluster membership.
+  serving targets, routes, certs, or cluster membership.
 - R37. `ployzd` does not update itself in v1. Upgrade and rollout behavior is
   deferred until install, machine add, deploy, and the real data plane are
   proven on disposable hosts.
@@ -587,14 +591,14 @@ from Docker/KV observations.
 2 nodes:
   node 1 = core
   node 2 = edge
-  not HA
 
 3-200 nodes:
-  core-1/core-2/core-3 = NATS + JetStream quorum
+  one explicit core node runs NATS + JetStream
   edges = keeper plus assigned ployzd node/gateway/dns/tunnel roles
 ```
 
-Do not pretend two nodes are HA. Two is transitional.
+Multi-core control-plane replication is out of v1. The recovery primitive is a
+clear backup/restore path, not replicated topology management.
 
 ### State Layers
 
@@ -916,7 +920,7 @@ ployz machine add user@host --name node-2
     node id
     trusted NATS server identity/config
     node NATS creds
-    core iroh endpoint address/ticket list
+    core iroh endpoint address/ticket
     relay map / relay policy
     assigned ployzd roles
     target ployzd artifact version
@@ -1068,11 +1072,11 @@ real gap. U11 has now converted deploy execution to direct owned operation
 functions under advisory leases. U9 added CLI/SDK ergonomics and U9a
 centralizes the user-facing operation API contract so service catalog, runtime
 binding, Rust client calls, and generated TypeScript metadata share one
-endpoint registry. U10a now models core topology/quorum, R1/R3 NATS resource
-manifests, and the canonical control-plane backup scope. The major remaining
+endpoint registry. U10a now needs to be narrowed to single-core NATS resource
+manifests and the canonical control-plane backup scope. The major remaining
 gaps are keeper bootstrap/install execution, real Docker execution depth,
-deeper gateway/DNS data-plane integration, HA promotion commands,
-backup/restore execution, and broader end-to-end failure coverage.
+deeper gateway/DNS data-plane integration, backup/restore execution, and
+broader end-to-end failure coverage.
 
 ### Execution And Review Loop
 
@@ -1439,7 +1443,7 @@ Pipeline finish:
 ### U7. First Deploy Operation
 
 - **Goal:** Ship the smallest real deploy primitive with retained failure
-  evidence and commit-on-success semantics.
+  evidence and phase-promotion-on-success semantics.
 - **Requirements:** R1, R2, R3, R4, R5, R6, R22, R24, R30
 - **Dependencies:** U4, U6, U11
 - **Files:**
@@ -1450,17 +1454,18 @@ Pipeline finish:
   - `crates/ployzd/tests/deploy_operation.rs`
   - `crates/ployzd/tests/deploy_failure_retention.rs`
 - **Approach:** Implement one sequential deploy path first. Plan from
-  `KV_CORE` active state plus `KV_OBS`/node inspection. Call node services for
-  container run/start/stop/remove. Wait for health. Commit active service state
-  to `KV_CORE` only after success.
+  Docker/node observations plus current serving target and route records. Call
+  node services for container run/start/stop/remove. Wait for health. Update
+  serving target entries for each successful phase and write deploy outcome
+  status directly.
 - **Test scenarios:**
-  - New service deploy creates container, waits healthy, commits active state,
-    and marks operation completed.
+  - New service deploy creates container, waits healthy, updates the serving
+    target, and records a completed deploy outcome.
   - Start-first replacement keeps old container running until new container is
     healthy.
   - Health failure after container start stops and retains the failed new
-    container and marks operation failed.
-  - Failed deploy does not overwrite active service state.
+    container and records a failed deploy outcome.
+  - Failed phase does not overwrite serving target entries for that phase.
   - Next successful deploy plans from reality and can remove stale failed
     artifacts.
   - Owner death after container create leaves ownership visibly expired;
@@ -1587,80 +1592,56 @@ Pipeline finish:
     registry.
 - **Verification:** `cargo test -p ployz-sdk-types --test exports && cargo test -p ployzd --test services && cargo test -p ployzctl --test api_client_nats && pnpm --dir packages/ployz-sdk test`
 
-### U10a. HA And Backup Foundation
+### U10a. Backup Foundation
 
-- **Goal:** Make HA and backup scope explicit before adding promotion command
-  plumbing.
+- **Goal:** Define the single-core control-plane backup scope and restore
+  contract without adding multi-core topology work.
 - **Requirements:** R9, R10, R15
 - **Dependencies:** U1, U5, U7
 - **Files:**
   - `crates/ployz-core/src/backup.rs`
-  - `crates/ployz-core/src/ha.rs`
   - `crates/ployz-core/tests/backup_scope.rs`
-  - `crates/ployz-core/tests/ha_topology.rs`
   - `crates/ployz-nats/src/bootstrap.rs`
   - `crates/ployz-nats/tests/bootstrap.rs`
-- **Approach:** Model final core topology as an explicit canonical node set
-  behind a private representation. Final topology is either one core or three
-  cores. A two-core set is promotion progress, not cluster topology.
-  Quorum status is computed directly from observed core node ids so unknown,
-  duplicate, and impossible availability cannot be smuggled in as a count or
-  detached from the topology or promotion-progress value that validated it.
-  Two-core promotion progress reports transitional/degraded availability and
-  still reports unavailable when no core is reachable. Single-node NATS facts
-  carry the server's node id, and three-core facts carry a JetStream peer set;
-  topology bootstrap validates those facts exactly match the core node ids
-  before rendering R1/R3 KV/stream/Object Store manifests. Three-core mode
-  remains quorum-healthy with one core down. Normal bootstrap refuses
-  replication drift; HA promotion gets a separate operation-owned replication
-  promotion plan so it does not bypass reconciliation later. Canonical backup
-  scope is product
-  policy in `ployz-core`: one exhaustive enum policy includes JetStream state,
-  NATS credentials/config, Ployz domain config, and backup manifests while
-  excluding Docker images, app volumes, container runtime state, and node-local
-  caches.
+- **Approach:** Keep v1 topology explicit and boring: one core node owns the
+  NATS + JetStream authority for the cluster. Bootstrap renders single-replica
+  KV, stream, and Object Store resources only. Backup scope is product policy
+  in `ployz-core`: one exhaustive enum policy includes JetStream state, NATS
+  credentials/config, Ployz domain config, and backup manifests while excluding
+  Docker images, app volumes, container runtime state, and node-local caches.
+  Restore is defined as recreating the control-plane authority on one core, then
+  letting nodes reconnect and observations repopulate from reality.
 - **Test scenarios:**
-  - One-node mode reports non-HA healthy.
-  - Two-core promotion progress reports transitional/degraded, not HA.
-  - Two-core final topology is rejected.
-  - Topology and JetStream peers have set semantics, not caller-order
-    semantics.
-  - Single-node bootstrap refuses NATS facts for a different node id.
-  - Three-core bootstrap refuses missing or extra JetStream peers.
-  - Three-core mode remains healthy with two available cores.
-  - Unknown or duplicate available core observations are rejected.
-  - HA bootstrap creates R3 streams/buckets/object buckets.
-  - HA topology bootstrap refuses R3 manifests when JetStream peer ids do not
-    cover the core topology.
-  - HA bootstrap refuses existing R1 resources as replication drift.
-  - HA replication promotion plan marks existing R1 resources for upgrade.
+  - Single-core bootstrap creates the expected KV buckets, streams, and Object
+    Store buckets.
+  - Bootstrap refuses an existing resource whose retention, TTL, or storage
+    policy conflicts with the v1 manifest.
   - Backup item lists partition every known backup item exactly once.
   - Backup excludes Docker images and app volumes.
-- **Verification:** `cargo test -p ployz-core --test ha_topology && cargo test -p ployz-core --test backup_scope && cargo test -p ployz-nats --test bootstrap`
+- **Verification:** `cargo test -p ployz-core --test backup_scope && cargo test -p ployz-nats --test bootstrap`
 
-### U10b. HA Promotion And Backup Commands
+### U10b. Backup Commands
 
-- **Goal:** Support the 1-node to 3-core transition without hiding HA
-  complexity.
+- **Goal:** Provide operation-backed backup and restore commands for the
+  single-core control plane.
 - **Requirements:** R9, R10, R15
 - **Dependencies:** U10a
 - **Files:**
-  - `crates/ployzd/src/controllers/core.rs`
   - `crates/ployzctl/src/commands/core.rs`
   - `crates/ployzctl/src/commands/backup.rs`
-  - `crates/ployzd/tests/ha_promotion.rs`
   - `crates/ployzd/tests/backup_restore.rs`
-- **Approach:** `ha enable` selects three explicit eligible nodes, configures
-  NATS clustering, moves streams/KV to replicas=3, verifies quorum, and reports
-  2-core as transitional/degraded. Backup snapshots JetStream state, NATS
-  credentials/config, and Ployz domain config.
+- **Approach:** `backup create` is a mutating operation that snapshots
+  JetStream state, NATS credentials/config, Ployz domain config, and a manifest
+  describing versions and included artifacts. `backup restore` is an explicit
+  operator command for a stopped or fresh single-core control plane; it restores
+  control-plane state and then reports that node observations are expected to
+  repopulate after agents reconnect.
 - **Test scenarios:**
-  - One-node mode reports non-HA healthy.
-  - Two-core final state reports invalid/degraded.
-  - Three-core mode creates R3 streams/buckets and survives one core down.
   - Backup excludes Docker images and app volumes.
   - Restore recreates KV/streams/object metadata needed for service inspect.
-- **Verification:** `cargo test -p ployzd ha_promotion backup_restore`
+  - Restore reports stale observations as expected rebuildable state, not data
+    loss.
+- **Verification:** `cargo test -p ployzd backup_restore`
 
 ### H0. Disposable Product Smoke Proof
 
@@ -1741,8 +1722,6 @@ Pipeline finish:
 | Public IP changes | `KV_OBS` updates and DNS/cert jobs are triggered | `crates/ployzd/tests/public_ip_change.rs` |
 | Object Store bundle missing | Operation fails before runtime mutation | `crates/ployzd/tests/bundle_missing.rs` |
 | Schedule unsupported by server | Fallback scheduler publishes same job subject | `crates/ployzd/tests/scheduler_fallback.rs` |
-| 2-core HA requested | Command refuses final healthy state | `crates/ployzd/tests/ha_promotion.rs` |
-| 3-core one node down | Mutations continue if quorum remains | `crates/ployzd/tests/ha_promotion.rs` |
 | Disposable host setup fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
 | Second-node machine add fails | Machine operation fails with node/bootstrap evidence; machine is not active | `crates/ployz-core/tests/machine_lifecycle.rs` |
 | WireGuard setup fails | Deploy/join fails with network-prep evidence; no healthy dataplane is claimed | `crates/ployzd/tests/wireguard_dataplane.rs` |
@@ -1782,6 +1761,7 @@ Do not build these in v1:
 - Per-tenant NATS account maze.
 - Complex scheduler scoring.
 - Automatic core election.
+- Multi-core control-plane replication.
 - Automatic durable workflow takeover after operation owner death.
 - Automatic cleanup of failed artifacts.
 - Docker layer storage in Object Store.
@@ -1794,12 +1774,12 @@ Do not build these in v1:
 
 ## Acceptance Examples
 
-- AE1. A single-node user runs `ployz deploy`, receives an operation id, watches
-  durable operation events, and sees terminal success without any hidden
+- AE1. A single-node user runs `ployz deploy`, receives an operation id, tails
+  operation transcript output, and sees terminal success without any hidden
   reconciler loop.
 - AE2. A failed deploy after container start leaves the failed container stopped
-  and inspectable, keeps the old active service state, and reports exactly how
-  to view logs/inspect/cleanup.
+  and inspectable, keeps the prior serving target entries, and reports exactly
+  how to view logs/inspect/cleanup.
 - AE3. Killing the operation owner leaves visible expired/recoverable ownership
   after lease expiry; the system does not run hidden automatic takeover in v1.
 - AE4. A node credential cannot publish deploy requests, write `KV_CORE`, or
@@ -1842,8 +1822,8 @@ Do not build these in v1:
 15. U9 CLI/SDK ergonomics.
 16. U9a operation API contract registry.
 17. H0 disposable product smoke proof.
-18. U10a HA/backup foundation.
-19. U10b HA promotion and backup commands.
+18. U10a backup foundation.
+19. U10b backup commands.
 
 The first proof should be Pre-U0 through U4 with a fake direct execution path
 over the operation contract harness. The second proof should be U0-U4a over
