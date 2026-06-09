@@ -12,11 +12,11 @@ use ployzd::app::{
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, NodeProcessConfig, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV,
-    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DNS_LISTEN_ADDR_ENV,
-    PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV,
-    PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV,
-    PLOYZ_NODE_ID_ENV, PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV,
-    PLOYZ_TUNNEL_CORE_NODE_ENV, PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
+    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_EBPF_BYTECODE_ENV,
+    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
+    PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
+    PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
     PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV,
     PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV, PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV, TunnelProcessConfig,
     load_daemon_process_config,
@@ -94,7 +94,8 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
         url.clone(),
         socket(8080),
     ));
-    let dns_config = DaemonProcessConfig::Dns(DnsProcessConfig::new(url.clone(), socket(53)));
+    let dns_config =
+        DaemonProcessConfig::Dns(DnsProcessConfig::new(node_id("node_7"), url.clone()));
 
     let RoleProcessPlan::Gateway(gateway) = plan_configured_process(&gateway_config) else {
         panic!("gateway role should produce a gateway process plan");
@@ -108,8 +109,8 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
     assert_eq!(gateway.node_id, node_id("node_7"));
     assert_eq!(gateway.nats_url, url);
     assert_eq!(gateway.listen_addr, socket(8080));
+    assert_eq!(dns.node_id, node_id("node_7"));
     assert_eq!(dns.nats_url, url);
-    assert_eq!(dns.listen_addr, socket(53));
     assert_eq!(
         gateway.work,
         &[
@@ -331,22 +332,6 @@ fn gateway_role_loads_optional_listen_addr() {
 }
 
 #[test]
-fn dns_role_loads_optional_listen_addr() {
-    let config = load_daemon_process_config(DaemonProcessRole::Dns, |name| match name {
-        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
-        PLOYZ_DNS_LISTEN_ADDR_ENV => Some("127.0.0.1:1053".to_owned()),
-        _ => None,
-    })
-    .expect("DNS role config loads");
-
-    let DaemonProcessConfig::Dns(config) = config else {
-        panic!("DNS role should produce DNS config");
-    };
-    assert_eq!(config.nats_url, NatsClientUrl::loopback(4222));
-    assert_eq!(config.listen_addr, socket(1053));
-}
-
-#[test]
 fn gateway_role_rejects_invalid_listen_addr() {
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
@@ -416,6 +401,7 @@ fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Dns, |name| {
             match name {
+                PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
                 PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222\nnext".to_owned()),
                 _ => None,
             }
