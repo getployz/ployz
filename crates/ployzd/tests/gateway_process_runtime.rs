@@ -70,7 +70,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
         .expect("observation stores");
 
     wait_until(Duration::from_secs(2), || {
-        runtime.served_projection().is_some()
+        gateway_serves_route(&runtime, "10.0.0.7", 8080)
     })
     .await;
 

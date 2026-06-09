@@ -19,6 +19,7 @@ use ployz_core::ops::{
     OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
     OperationOwnershipStatus, OperationStatus, RouteHostname, RoutePort, RouteTarget,
 };
+use ployz_core::state::NodePublicIpObservation;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -250,15 +251,18 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
 
     assert_eq!(accepted.operation_id, operation_id("op_e2e_run"));
     let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_run")).await;
-    assert!(matches!(
-        status,
-        OperationStatus::Deploy {
-            state: DeployOperationState::Completed {
-                outcome: DeployCompletionOutcome::Completed,
-            },
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected deploy to complete, got {status:?}"
+    );
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
@@ -389,6 +393,10 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
         .await
         .expect("open observation store");
+    observations
+        .replace_node_public_ip(&node_public_ip("node_a", 7))
+        .await
+        .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
     let node_runtime = start_node_runtime_with_ports(
         client.clone(),
@@ -421,15 +429,18 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let accepted = api.deploy_submit(&request).await?;
 
     let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_route")).await;
-    assert!(matches!(
-        status,
-        OperationStatus::Deploy {
-            state: DeployOperationState::Completed {
-                outcome: DeployCompletionOutcome::Completed,
-            },
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected routed deploy to complete, got {status:?}"
+    );
     assert_eq!(accepted.operation_id, operation_id("op_e2e_route"));
     wait_for_gateway_route(&gateway_runtime).await;
 
@@ -455,6 +466,167 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .shutdown()
         .await
         .expect("node runtime shuts down");
+    control_runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let nats = TestNats::start_jetstream().await?;
+    let client = async_nats::connect(nats.url()).await?;
+    let jetstream = jetstream::new(client.clone());
+    let route_port = free_loopback_port().await?;
+    let config = ControlProcessConfig::new(
+        NatsServerRuntime::External(nats_client_url(nats.url())),
+        node_id("core_1"),
+    )
+    .with_deploy_nodes(vec![node_id("core_1"), node_id("edge_2")])
+    .with_deploy_step_timeout(Duration::from_secs(2))
+    .with_machine_bootstrap(machine_bootstrap_config());
+    let control_runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .expect("open observation store");
+    observations
+        .replace_node_public_ip(&node_public_ip("core_1", 1))
+        .await
+        .expect("core public ip stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("edge_2", 2))
+        .await
+        .expect("edge public ip stores");
+    let core_runner = ObservingContainerRunner::new(node_id("core_1"), observations.clone());
+    let edge_runner = ObservingContainerRunner::new(node_id("edge_2"), observations.clone());
+    let core_node_runtime = start_node_runtime_with_ports(
+        client.clone(),
+        node_id("core_1"),
+        core_runner.clone(),
+        ReadyWireGuardEbpf,
+        core_runner,
+    )
+    .await?;
+    let edge_node_runtime = start_node_runtime_with_ports(
+        client.clone(),
+        node_id("edge_2"),
+        edge_runner.clone(),
+        ReadyWireGuardEbpf,
+        edge_runner,
+    )
+    .await?;
+    let core_gateway_runtime = start_gateway_process_runtime_with_client(
+        client.clone(),
+        Duration::from_millis(10),
+        format!("127.0.0.1:{route_port}").parse()?,
+        node_id("core_1"),
+    )
+    .await?;
+    let edge_gateway_runtime = start_gateway_process_runtime_with_client(
+        client.clone(),
+        Duration::from_millis(10),
+        format!("[::1]:{route_port}").parse()?,
+        node_id("edge_2"),
+    )
+    .await?;
+    let upstream = TestUpstream::start_with_expected_requests(2).await;
+    let api = OperationApiClient::new(client.clone());
+    let request = DeploySubmitRequest {
+        operation_id: operation_id("op_e2e_two_node_route"),
+        target: deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
+        idempotency_key: idempotency_key("idem_e2e_two_node_route"),
+    };
+
+    let accepted = api.deploy_submit(&request).await?;
+
+    let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_two_node_route")).await;
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected two-node routed deploy to complete, got {status:?}"
+    );
+    assert_eq!(
+        operation_events(
+            &api,
+            operation_id("op_e2e_two_node_route"),
+            accepted.start_sequence,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|event| match event {
+            OperationEvent::DeployWireGuardEbpfPrepared { report, .. } => Some(
+                report
+                    .nodes
+                    .into_iter()
+                    .map(|node| node.node_id().clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>(),
+        vec![vec![node_id("core_1"), node_id("edge_2")]]
+    );
+    wait_for_gateway_route(&core_gateway_runtime).await;
+    wait_for_gateway_route(&edge_gateway_runtime).await;
+    assert_eq!(
+        observations
+            .node_snapshot(&node_id("core_1"))
+            .await
+            .expect("core observations read")
+            .expect("core snapshot exists")
+            .containers()
+            .len(),
+        1
+    );
+    assert_eq!(
+        observations
+            .node_snapshot(&node_id("edge_2"))
+            .await
+            .expect("edge observations read")
+            .expect("edge snapshot exists")
+            .containers()
+            .len(),
+        1
+    );
+    assert_eq!(
+        http_get_with_host(
+            core_gateway_runtime.listen_addr(),
+            &format!("smoke.local:{route_port}"),
+        )
+        .await?,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(
+        http_get_with_host(
+            edge_gateway_runtime.listen_addr(),
+            &format!("smoke.local:{route_port}"),
+        )
+        .await?,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(upstream.requests().await.len(), 2);
+
+    edge_gateway_runtime.shutdown().await;
+    core_gateway_runtime.shutdown().await;
+    edge_node_runtime
+        .shutdown()
+        .await
+        .expect("edge node runtime shuts down");
+    core_node_runtime
+        .shutdown()
+        .await
+        .expect("core node runtime shuts down");
     control_runtime
         .shutdown()
         .await
@@ -609,6 +781,13 @@ fn route_port(value: u16) -> RoutePort {
     RoutePort::try_new(value).expect("valid route port")
 }
 
+fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
+    NodePublicIpObservation {
+        node_id: self::node_id(node_id),
+        public_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, last_octet)),
+    }
+}
+
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
 }
@@ -623,30 +802,40 @@ fn idempotency_key(value: &str) -> OperationIdempotencyKey {
 
 struct TestUpstream {
     addr: std::net::SocketAddr,
-    request: tokio::sync::oneshot::Receiver<String>,
+    requests: tokio::sync::mpsc::Receiver<String>,
+    expected_requests: usize,
 }
 
 impl TestUpstream {
     async fn start() -> Self {
+        Self::start_with_expected_requests(1).await
+    }
+
+    async fn start_with_expected_requests(expected_requests: usize) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind upstream");
         let addr = listener.local_addr().expect("upstream local addr");
-        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        let (request_tx, request_rx) = tokio::sync::mpsc::channel(expected_requests);
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept upstream");
-            let mut request = Vec::new();
-            read_until_http_head(&mut stream, &mut request).await;
-            let _ = request_tx.send(String::from_utf8(request).expect("request is utf8"));
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
-                .await
-                .expect("write upstream response");
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.expect("accept upstream");
+                let mut request = Vec::new();
+                read_until_http_head(&mut stream, &mut request).await;
+                let _ = request_tx
+                    .send(String::from_utf8(request).expect("request is utf8"))
+                    .await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
+                    .await
+                    .expect("write upstream response");
+            }
         });
 
         Self {
             addr,
-            request: request_rx,
+            requests: request_rx,
+            expected_requests,
         }
     }
 
@@ -655,8 +844,45 @@ impl TestUpstream {
     }
 
     async fn request(self) -> String {
-        self.request.await.expect("upstream receives request")
+        let [request] = self.requests().await.try_into().unwrap_or_else(|_| {
+            panic!("expected one upstream request");
+        });
+        request
     }
+
+    async fn requests(mut self) -> Vec<String> {
+        let mut requests = Vec::with_capacity(self.expected_requests);
+        for _ in 0..self.expected_requests {
+            requests.push(
+                self.requests
+                    .recv()
+                    .await
+                    .expect("upstream receives request"),
+            );
+        }
+        requests
+    }
+}
+
+async fn http_get_with_host(
+    addr: std::net::SocketAddr,
+    host: &str,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let mut client = TcpStream::connect(addr).await?;
+    client
+        .write_all(format!("GET /smoke HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+        .await?;
+    client.shutdown().await?;
+    let mut response = String::new();
+    client.read_to_string(&mut response).await?;
+    Ok(response)
+}
+
+async fn free_loopback_port() -> Result<u16, std::io::Error> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
 }
 
 async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) {
@@ -717,6 +943,18 @@ fn machine_join_template() -> MachineJoinTemplate {
         "source": "/tmp/ployzd",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "install_path": "/usr/local/bin/ployzd"
+      },
+      "ebpf_bytecode": {
+        "version": "0.1.0",
+        "source": "/tmp/ployz-ebpf-tc",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+      },
+      "ebpf_ctl": {
+        "version": "0.1.0",
+        "source": "/tmp/ployz-ebpf-ctl",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
       }
     }
   },
