@@ -1121,8 +1121,6 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
         join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-            .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
     }
     .render();
@@ -1149,8 +1147,6 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
         join_bundle: machine_join_bundle("nats://127.0.0.1:7423"),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7423")
-            .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
     }
     .render();
@@ -1170,8 +1166,6 @@ fn machine_add_debug_redacts_join_token() {
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
         join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-            .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
     };
 
@@ -1190,8 +1184,6 @@ fn machine_add_shell_quotes_join_material() {
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh/bootstrap?x='quoted'")
             .expect("valid bootstrap url"),
         join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-            .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join'quoted'").expect("valid join token"),
     }
     .render();

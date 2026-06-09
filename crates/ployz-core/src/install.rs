@@ -194,6 +194,31 @@ pub struct MachineJoinTemplate {
     pub secret_delivery: MachineJoinSecretDelivery,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineJoinEdgeTunnel {
+    pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
+    pub listen_addr: SocketAddr,
+    pub core_node: NodeId,
+    pub core_public_key: MachineJoinIrohPublicKey,
+    pub core_direct_addresses: Vec<MachineJoinIrohDirectAddress>,
+    pub core_relay_url: Option<MachineJoinIrohRelayUrl>,
+}
+
+impl MachineJoinEdgeTunnel {
+    #[must_use]
+    pub fn from_join_bundle(join_bundle: &MachineJoinBundle) -> Self {
+        let runtime_nats_url = join_bundle.material.runtime_nats_url.clone();
+        Self {
+            listen_addr: runtime_nats_url.socket_addr(),
+            runtime_nats_url,
+            core_node: join_bundle.material.core_iroh.node_id.clone(),
+            core_public_key: join_bundle.material.core_iroh.public_key.clone(),
+            core_direct_addresses: join_bundle.material.core_iroh.direct_addresses.clone(),
+            core_relay_url: join_bundle.material.core_iroh.relay_url.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]

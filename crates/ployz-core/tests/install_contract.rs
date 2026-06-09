@@ -2,10 +2,11 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
-    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress,
-    MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
-    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinEdgeTunnel,
+    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
+    MachineJoinIrohTicket, MachineJoinMaterial, MachineJoinNatsCredentials,
+    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
+    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -110,6 +111,43 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(AbsoluteInstallPath::try_new("/").is_err());
     assert!(AbsoluteInstallPath::try_new("/usr/local/bin/").is_err());
     assert!(AbsoluteInstallPath::try_new("/usr/local/bin/ployzd").is_ok());
+}
+
+#[test]
+fn machine_join_edge_tunnel_is_derived_from_join_bundle() {
+    let mut join_bundle = machine_join_bundle();
+    join_bundle.material.runtime_nats_url =
+        MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7423")
+            .expect("valid runtime nats url");
+    join_bundle.material.core_iroh.direct_addresses = vec![
+        MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433").expect("valid direct address"),
+        MachineJoinIrohDirectAddress::try_new("203.0.113.11:4433").expect("valid direct address"),
+    ];
+    join_bundle.material.core_iroh.relay_url = Some(
+        MachineJoinIrohRelayUrl::try_new("https://relay.example.test").expect("valid relay url"),
+    );
+
+    let tunnel = MachineJoinEdgeTunnel::from_join_bundle(&join_bundle);
+
+    assert_eq!(tunnel.runtime_nats_url.as_str(), "nats://127.0.0.1:7423");
+    assert_eq!(tunnel.listen_addr.to_string(), "127.0.0.1:7423");
+    assert_eq!(tunnel.core_node.as_str(), "core_1");
+    assert_eq!(tunnel.core_public_key.as_str(), "core-public-key");
+    assert_eq!(
+        tunnel
+            .core_direct_addresses
+            .iter()
+            .map(MachineJoinIrohDirectAddress::as_str)
+            .collect::<Vec<_>>(),
+        vec!["203.0.113.10:4433", "203.0.113.11:4433"]
+    );
+    assert_eq!(
+        tunnel
+            .core_relay_url
+            .as_ref()
+            .map(MachineJoinIrohRelayUrl::as_str),
+        Some("https://relay.example.test")
+    );
 }
 
 #[test]

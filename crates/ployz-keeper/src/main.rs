@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ployz_core::install::MachineJoinEdgeTunnel;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::joined_node_process_set;
 use ployz_keeper::artifacts::{
@@ -345,27 +346,17 @@ fn keeper_join_target_with_public_ip(
             .to_vec(),
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
-    let runtime_nats_url = redeemed.join_bundle.material.runtime_nats_url.clone();
-    let runtime_nats_client_url = NatsClientUrl::try_new(runtime_nats_url.as_str())
+    let edge_tunnel = MachineJoinEdgeTunnel::from_join_bundle(&redeemed.join_bundle);
+    let runtime_nats_client_url = NatsClientUrl::try_new(edge_tunnel.runtime_nats_url.as_str())
         .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
-    let tunnel_listen_addr = runtime_nats_url.socket_addr();
-    let core_node = redeemed.join_bundle.material.core_iroh.node_id.clone();
-    let core_public_key = redeemed.join_bundle.material.core_iroh.public_key.clone();
-    let core_direct_addresses = redeemed
-        .join_bundle
-        .material
-        .core_iroh
-        .direct_addresses
-        .clone();
-    let core_relay_url = redeemed.join_bundle.material.core_iroh.relay_url.clone();
     let mut role_environment =
         PloyzdRoleEnvironmentTarget::default_path(node_id.clone(), runtime_nats_client_url)
             .with_edge_tunnel(
-                tunnel_listen_addr,
-                core_node,
-                core_public_key,
-                core_direct_addresses,
-                core_relay_url,
+                edge_tunnel.listen_addr,
+                edge_tunnel.core_node,
+                edge_tunnel.core_public_key,
+                edge_tunnel.core_direct_addresses,
+                edge_tunnel.core_relay_url,
             );
     if let Some(public_ip) = node_public_ip {
         role_environment = role_environment.with_node_public_ip(public_ip);
