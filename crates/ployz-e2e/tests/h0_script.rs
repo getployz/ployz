@@ -80,7 +80,8 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains("start-bootstrap-tunnel"));
     assert!(script.contains("machine add did not print the joined node runtime NATS URL"));
     assert!(script.contains("${bootstrap_tunnel_command%ployzd tunnel --side edge}"));
-    assert!(script.contains("nohup sh -c \\\"$bootstrap_tunnel_command\\\""));
+    assert!(script.contains("nohup env $bootstrap_tunnel_command"));
+    assert!(!script.contains("nohup sh -c"));
     assert!(script.contains("PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret'"));
     assert!(script.contains("PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public'"));
     assert!(!script.contains("PLOYZ_TUNNEL_LISTEN_ADDR='$edge_runtime_nats_addr'"));

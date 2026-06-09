@@ -490,9 +490,9 @@ JSON
     [ -n "$bootstrap_tunnel_command" ] || die "machine add did not print a bootstrap tunnel command; output: ${machine_log}"
     grep -q "PLOYZ_NATS_URL='$edge_runtime_nats_url'" "$machine_log" || die "machine add did not print the joined node runtime NATS URL; output: ${machine_log}"
 
-    bootstrap_tunnel_command="exec ${bootstrap_tunnel_command%ployzd tunnel --side edge}'$remote_ployzd' tunnel --side edge"
+    bootstrap_tunnel_command="${bootstrap_tunnel_command%ployzd tunnel --side edge}'$remote_ployzd' tunnel --side edge"
     run_remote_logged start-bootstrap-tunnel "$edge_ip" \
-      "PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 nohup sh -c \"$bootstrap_tunnel_command\" > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
+      "PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 nohup env $bootstrap_tunnel_command > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
 
     run_remote_logged join-edge "$edge_ip" \
       "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"
