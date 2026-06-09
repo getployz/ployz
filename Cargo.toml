@@ -4,6 +4,7 @@ members = [
     "crates/ployz-nats",
     "crates/ployz-transport",
     "crates/ployz-keeper",
+    "crates/ployz-test-support",
     "crates/ployz-e2e",
     "crates/ployzd",
     "crates/ployzctl",
@@ -23,6 +24,7 @@ ployz-core = { path = "crates/ployz-core" }
 ployz-nats = { path = "crates/ployz-nats" }
 ployz-transport = { path = "crates/ployz-transport" }
 ployz-sdk-types = { path = "crates/ployz-sdk-types" }
+ployz-test-support = { path = "crates/ployz-test-support" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

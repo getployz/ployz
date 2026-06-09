@@ -766,6 +766,7 @@ dependencies = [
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",
+ "ployz-test-support",
  "ployzctl",
  "ployzd",
  "serde_json",
@@ -809,6 +810,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-test-support"
+version = "0.1.0"
+dependencies = [
+ "ployz-core",
+ "ployz-nats",
+ "ployzd",
+]
+
+[[package]]
 name = "ployz-transport"
 version = "0.1.0"
 dependencies = [
@@ -841,6 +851,7 @@ dependencies = [
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",
+ "ployz-test-support",
  "ployz-transport",
  "serde",
  "serde_json",

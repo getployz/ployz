@@ -1,0 +1,18 @@
+[package]
+name = "ployz-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ployz-core.workspace = true
+ployz-nats.workspace = true
+ployzd = { path = "../ployzd" }
+
+[lib]
+path = "src/lib.rs"

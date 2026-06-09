@@ -1,21 +1,31 @@
 use std::error::Error;
+use std::time::Duration;
 
 use async_nats::jetstream;
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployPlanningInput, DeployRequest, ImageReference, ReplicaCount, plan_service_deploy,
+};
 use ployz_core::ha::CoreTopology;
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    DeployOperationState, DeployTransition, EventSequence, OperationEvent,
+    DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnershipStatus, OperationStatus,
 };
+use ployz_nats::connect::NatsClientUrl;
+use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     DeployOperationSubmission, OperationLeaseClaim,
 };
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
+use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
+use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::OperationControllers;
+use ployzd::nats_process::NatsServerRuntime;
+use ployzd::node_runtime::start_node_runtime_with_ports;
 
 mod support;
 
@@ -187,6 +197,132 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     Ok(())
 }
 
+#[tokio::test]
+async fn e2e_control_and_node_complete_deploy_over_real_nats()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let nats = TestNats::start_jetstream().await?;
+    let client = async_nats::connect(nats.url()).await?;
+    let jetstream = jetstream::new(client.clone());
+    let config = ControlProcessConfig::new(
+        NatsServerRuntime::External(nats_client_url(nats.url())),
+        node_id("core_1"),
+    )
+    .with_deploy_nodes(vec![node_id("node_a")])
+    .with_deploy_step_timeout(Duration::from_secs(2));
+    let control_runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .expect("open observation store");
+    let node_runtime = start_node_runtime_with_ports(
+        client.clone(),
+        node_id("node_a"),
+        ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        ReadyWireGuardEbpf,
+    )
+    .await?;
+    let api = OperationApiClient::new(client.clone());
+    let request = DeploySubmitRequest {
+        operation_id: operation_id("op_e2e_run"),
+        target: deploy_target("svc_api"),
+        idempotency_key: idempotency_key("idem_e2e_run"),
+    };
+
+    let accepted = api.deploy_submit(&request).await?;
+
+    assert_eq!(accepted.operation_id, operation_id("op_e2e_run"));
+    let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_run")).await;
+    assert!(matches!(
+        status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed,
+            ..
+        }
+    ));
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    assert_eq!(
+        core_state
+            .active_service(&service_id("svc_api"))
+            .await
+            .expect("active service reads")
+            .expect("active service committed")
+            .active_revision,
+        revision_id("rev_2")
+    );
+    assert_eq!(
+        operation_events(&api, operation_id("op_e2e_run"), accepted.start_sequence).await?,
+        vec![
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id("op_e2e_run"),
+                target: deploy_target("svc_api"),
+            },
+            OperationEvent::DeployPlanningStarted {
+                operation_id: operation_id("op_e2e_run"),
+            },
+            OperationEvent::DeployPlanCreated {
+                operation_id: operation_id("op_e2e_run"),
+                plan: plan_service_deploy(DeployPlanningInput {
+                    request: deploy_target("svc_api"),
+                    eligible_nodes: vec![node_id("node_a")],
+                    existing_replicas: Vec::new(),
+                })
+                .expect("single-node deploy plan is valid"),
+            },
+            OperationEvent::DeployRunning {
+                operation_id: operation_id("op_e2e_run"),
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+            OperationEvent::DeployRunning {
+                operation_id: operation_id("op_e2e_run"),
+                stage: DeployRunningStage::StartingContainers,
+            },
+            OperationEvent::DeployContainerStarted {
+                operation_id: operation_id("op_e2e_run"),
+                node_id: node_id("node_a"),
+                container_id: ployz_core::ids::ContainerId::try_new("ctr_1")
+                    .expect("valid container id"),
+            },
+            OperationEvent::DeployRunning {
+                operation_id: operation_id("op_e2e_run"),
+                stage: DeployRunningStage::WaitingForHealth,
+            },
+            OperationEvent::DeployHealthCheckStarted {
+                operation_id: operation_id("op_e2e_run"),
+            },
+            OperationEvent::DeployRunning {
+                operation_id: operation_id("op_e2e_run"),
+                stage: DeployRunningStage::ActiveServiceCommit,
+            },
+            OperationEvent::DeployCompleted {
+                operation_id: operation_id("op_e2e_run"),
+            },
+        ]
+    );
+    assert_eq!(
+        observations
+            .node_snapshot(&node_id("node_a"))
+            .await
+            .expect("node observations read")
+            .expect("node snapshot exists")
+            .containers()
+            .len(),
+        1
+    );
+
+    node_runtime
+        .shutdown()
+        .await
+        .expect("node runtime shuts down");
+    control_runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+
+    Ok(())
+}
+
 async fn operation_replay_page(
     repository: &AsyncNatsOperationRepository,
     start_sequence: EventSequence,
@@ -199,6 +335,47 @@ async fn operation_replay_page(
         })
         .await
         .expect("operation event replay succeeds")
+}
+
+async fn wait_for_terminal_deploy_status(
+    api: &OperationApiClient,
+    operation_id: OperationId,
+) -> OperationStatus {
+    for _ in 0..80 {
+        let status = api
+            .ops_status(&OpsStatusRequest {
+                operation_id: operation_id.clone(),
+            })
+            .await
+            .expect("status is readable")
+            .status;
+        let OperationStatus::Deploy { state, .. } = &status else {
+            panic!("expected deploy status");
+        };
+        if state.is_terminal() {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    panic!("deploy did not reach terminal status");
+}
+
+async fn operation_events(
+    api: &OperationApiClient,
+    operation_id: OperationId,
+    start_sequence: EventSequence,
+) -> Result<Vec<OperationEvent>, Box<dyn Error + Send + Sync>> {
+    let page = api
+        .ops_watch(&OperationEventReplayRequest {
+            operation_id,
+            start_sequence,
+            limit: event_replay_limit(32),
+        })
+        .await?;
+    assert_eq!(page.cursor, OperationEventReplayCursor::Terminal);
+
+    Ok(page.events.into_iter().map(|event| event.event).collect())
 }
 
 async fn bootstrap_nats_resources(
@@ -222,6 +399,10 @@ fn operation_id(value: &str) -> OperationId {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn nats_client_url(value: &str) -> NatsClientUrl {
+    NatsClientUrl::try_new(value).expect("valid nats client url")
 }
 
 fn service_id(value: &str) -> ServiceId {

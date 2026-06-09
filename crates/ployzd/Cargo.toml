@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", 
 
 [dev-dependencies]
 nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
+ployz-test-support.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]
