@@ -4,7 +4,8 @@ use std::time::Duration;
 use async_nats::jetstream;
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfNodeReady,
-    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -299,6 +300,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
                         node_id("node_a"),
                         WireGuardEbpfReady {
                             wireguard: WireGuardReady {
+                                public_key: wireguard_public_key("test-public-key"),
                                 evidence: vec![WireGuardReadyEvidence::Command {
                                     program: "wg".to_owned(),
                                     args: vec!["--version".to_owned()],
@@ -527,6 +529,10 @@ fn operation_id(value: &str) -> OperationId {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
+    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn nats_client_url(value: &str) -> NatsClientUrl {

@@ -8,8 +8,8 @@ use crate::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeLogsTailDomainError, NodeLogsTailRpcRequest, NodeLogsTailRpcResponse,
-    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
-    NodeWireGuardEbpfPrepareRpcResponse,
+    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
+    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::{
     NodeLogsTailRequest, NodeLogsTailResult, NodeRemoveContainerRequest, NodeRunContainerOutcome,
@@ -19,6 +19,7 @@ use crate::services::node_endpoint_subject;
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
     WireGuardEbpfPrepareReport, WireGuardEbpfPrepareReportError, WireGuardEbpfPrepareRequest,
+    WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::NodeServiceEndpoint;
@@ -331,14 +332,119 @@ impl WireGuardEbpfPreparer for NatsNodeWireGuardEbpfPreparer {
         &mut self,
         request: WireGuardEbpfPrepareRequest,
     ) -> Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError> {
-        let rpc_request = NodeWireGuardEbpfPrepareRpcRequest::from(request.clone());
+        let peers = if request.peers.is_empty() && request.nodes.len() > 1 {
+            let rpc_request = read_public_key_request(&request);
+            let mut public_keys = Vec::new();
+            for node_id in &request.nodes {
+                public_keys
+                    .push(read_node_wireguard_public_key(self, node_id, &rpc_request).await?);
+            }
+            wireguard_peers_from_public_keys(&request, &public_keys)?
+        } else {
+            request.peers.clone()
+        };
+
+        let final_request = request.with_peers(peers);
+        let rpc_request = NodeWireGuardEbpfPrepareRpcRequest::from(final_request.clone());
         let mut nodes = Vec::new();
-        for node_id in &request.nodes {
+        for node_id in &final_request.nodes {
             nodes.push(prepare_node_wireguard_ebpf(self, node_id, &rpc_request).await?);
         }
 
-        WireGuardEbpfPrepareReport::for_request(&request, nodes)
+        WireGuardEbpfPrepareReport::for_request(&final_request, nodes)
             .map_err(wireguard_ebpf_report_error)
+    }
+}
+
+fn read_public_key_request(
+    request: &WireGuardEbpfPrepareRequest,
+) -> NodeWireGuardEbpfPrepareRpcRequest {
+    NodeWireGuardEbpfPrepareRpcRequest {
+        phase: NodeWireGuardEbpfPreparePhase::ReadPublicKey,
+        operation_id: request.operation_id.clone(),
+        nodes: request.nodes.clone(),
+        endpoint_routes: Vec::new(),
+        peer_endpoints: Vec::new(),
+        peers: Vec::new(),
+    }
+}
+
+fn wireguard_peers_from_public_keys(
+    request: &WireGuardEbpfPrepareRequest,
+    public_keys: &[(NodeId, WireGuardPublicKey)],
+) -> Result<Vec<WireGuardPeer>, WireGuardEbpfPrepareError> {
+    if request.nodes.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let mut peers = Vec::new();
+    for node_id in &request.nodes {
+        let Some(endpoint) = request
+            .peer_endpoints
+            .iter()
+            .find(|endpoint| endpoint.node_id == *node_id)
+            .cloned()
+        else {
+            return Err(invalid_wireguard_report(format!(
+                "wireguard endpoint is missing for {}",
+                node_id.as_str()
+            )));
+        };
+        let Some((_, public_key)) = public_keys
+            .iter()
+            .find(|(ready_node_id, _)| ready_node_id == node_id)
+        else {
+            return Err(invalid_wireguard_report(format!(
+                "wireguard public key is missing for {}",
+                node_id.as_str()
+            )));
+        };
+        peers.push(WireGuardPeer::from_endpoint(endpoint, public_key.clone()));
+    }
+
+    Ok(peers)
+}
+
+async fn read_node_wireguard_public_key(
+    preparer: &NatsNodeWireGuardEbpfPreparer,
+    node_id: &NodeId,
+    request: &NodeWireGuardEbpfPrepareRpcRequest,
+) -> Result<(NodeId, WireGuardPublicKey), WireGuardEbpfPrepareError> {
+    let subject = node_endpoint_subject(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
+    let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
+        &preparer.client,
+        subject,
+        request,
+        preparer.request_timeout,
+    )
+    .await
+    .map_err(|error| wireguard_ebpf_request_error(node_id, error))?;
+
+    match response {
+        NodeWireGuardEbpfPrepareRpcResponse::PublicKey {
+            node_id: actual_node_id,
+            public_key,
+        } => match wrong_response_node(node_id, actual_node_id.clone()) {
+            Some(reason) => Err(wireguard_ebpf_unavailable(
+                node_id,
+                reason.failure_message(),
+            )),
+            None => Ok((actual_node_id, public_key)),
+        },
+        NodeWireGuardEbpfPrepareRpcResponse::Ok { .. } => Err(invalid_wireguard_report(format!(
+            "node {} returned dataplane readiness for public key request",
+            node_id.as_str()
+        ))),
+        NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+            node_id: actual_node_id,
+            error,
+        } => match wrong_response_node(node_id, actual_node_id) {
+            Some(reason) => Err(wireguard_ebpf_unavailable(
+                node_id,
+                reason.failure_message(),
+            )),
+            None => Err(error.into_prepare_error(node_id.clone())),
+        },
     }
 }
 
@@ -366,6 +472,12 @@ async fn prepare_node_wireguard_ebpf(
                 )),
                 None => Ok(readiness),
             }
+        }
+        NodeWireGuardEbpfPrepareRpcResponse::PublicKey { .. } => {
+            Err(invalid_wireguard_report(format!(
+                "node {} returned public key for dataplane prepare request",
+                node_id.as_str()
+            )))
         }
         NodeWireGuardEbpfPrepareRpcResponse::DomainError {
             node_id: actual_node_id,
@@ -539,6 +651,13 @@ fn wireguard_ebpf_report_error(
             "wireguard/eBPF report did not match requested nodes"
         }
     };
+    WireGuardEbpfPrepareError::InvalidReport {
+        message: ployz_core::ops::FailureMessage::try_new(message)
+            .expect("generated dataplane failure message is non-empty"),
+    }
+}
+
+fn invalid_wireguard_report(message: String) -> WireGuardEbpfPrepareError {
     WireGuardEbpfPrepareError::InvalidReport {
         message: ployz_core::ops::FailureMessage::try_new(message)
             .expect("generated dataplane failure message is non-empty"),

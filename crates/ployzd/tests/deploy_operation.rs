@@ -182,6 +182,8 @@ async fn deploy_worker_runs_containers_then_completes() {
             ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_b"))
         ]
     );
+    assert_eq!(wireguard_ebpf_request.peer_endpoints.len(), 2);
+    assert!(wireguard_ebpf_request.peers.is_empty());
     assert_eq!(
         active_state.requests,
         vec![ActiveServiceCommitRequest {

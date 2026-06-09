@@ -9,14 +9,14 @@ use crate::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeLogsTailDomainError, NodeLogsTailRpcRequest, NodeLogsTailRpcResponse,
-    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
-    NodeWireGuardEbpfPrepareRpcResponse,
+    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
+    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::{NodeLogsTailResult, NodeRunContainerOutcome};
 use crate::services::{node_endpoint_spec, node_runtime_service_base};
 use ployz_core::dataplane::{
     WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
-    WireGuardEbpfReady,
+    WireGuardEbpfReady, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::subjects::NodeServiceEndpoint;
@@ -430,9 +430,14 @@ fn inspect_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
 }
 
 pub trait NodeWireGuardEbpfPreparer {
+    fn read_wireguard_public_key(
+        &self,
+    ) -> impl std::future::Future<Output = Result<WireGuardPublicKey, WireGuardEbpfPrepareError>> + Send;
+
     fn prepare_wireguard_ebpf(
         &self,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
+        peers: &[WireGuardPeer],
     ) -> impl std::future::Future<Output = Result<WireGuardEbpfReady, WireGuardEbpfPrepareError>> + Send;
 }
 
@@ -459,17 +464,33 @@ where
         });
     }
 
-    match preparer
-        .prepare_wireguard_ebpf(&request.endpoint_routes)
-        .await
-    {
-        Ok(ready) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok {
-            readiness: WireGuardEbpfNodeReady::new(node_id, ready),
-        }),
-        Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
-            node_id,
-            error: error.into(),
-        }),
+    match request.phase {
+        NodeWireGuardEbpfPreparePhase::ReadPublicKey => {
+            match preparer.read_wireguard_public_key().await {
+                Ok(public_key) => node_success(NodeWireGuardEbpfPrepareRpcResponse::PublicKey {
+                    node_id,
+                    public_key,
+                }),
+                Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+                    node_id,
+                    error: error.into(),
+                }),
+            }
+        }
+        NodeWireGuardEbpfPreparePhase::PrepareDataplane => {
+            match preparer
+                .prepare_wireguard_ebpf(&request.endpoint_routes, &request.peers)
+                .await
+            {
+                Ok(ready) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok {
+                    readiness: WireGuardEbpfNodeReady::new(node_id, ready),
+                }),
+                Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
+                    node_id,
+                    error: error.into(),
+                }),
+            }
+        }
     }
 }
 

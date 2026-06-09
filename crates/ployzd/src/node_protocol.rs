@@ -7,7 +7,8 @@ use crate::node_runtime_types::{
 };
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady,
-    WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest, WireGuardPeer, WireGuardPeerEndpoint,
+    WireGuardPublicKey,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
@@ -166,17 +167,30 @@ pub enum NodeLogsTailDomainError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeWireGuardEbpfPrepareRpcRequest {
+    pub phase: NodeWireGuardEbpfPreparePhase,
     pub operation_id: OperationId,
     pub nodes: Vec<NodeId>,
     pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
+    pub peer_endpoints: Vec<WireGuardPeerEndpoint>,
+    pub peers: Vec<WireGuardPeer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeWireGuardEbpfPreparePhase {
+    ReadPublicKey,
+    PrepareDataplane,
 }
 
 impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
     fn from(value: WireGuardEbpfPrepareRequest) -> Self {
         Self {
+            phase: NodeWireGuardEbpfPreparePhase::PrepareDataplane,
             operation_id: value.operation_id,
             nodes: value.nodes,
             endpoint_routes: value.endpoint_routes,
+            peer_endpoints: value.peer_endpoints,
+            peers: value.peers,
         }
     }
 }
@@ -186,6 +200,10 @@ impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
 pub enum NodeWireGuardEbpfPrepareRpcResponse {
     Ok {
         readiness: WireGuardEbpfNodeReady,
+    },
+    PublicKey {
+        node_id: NodeId,
+        public_key: WireGuardPublicKey,
     },
     DomainError {
         node_id: NodeId,

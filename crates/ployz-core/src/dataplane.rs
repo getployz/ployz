@@ -2,22 +2,71 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::fmt;
+use std::net::SocketAddr;
 
 use crate::deploy::DeployPlan;
 use crate::ids::{NodeId, OperationId};
 use crate::ops::FailureMessage;
+
+pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireGuardEbpfPrepareRequest {
     pub operation_id: OperationId,
     pub nodes: Vec<NodeId>,
     pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
+    pub peer_endpoints: Vec<WireGuardPeerEndpoint>,
+    pub peers: Vec<WireGuardPeer>,
 }
 
 impl WireGuardEbpfPrepareRequest {
     #[must_use]
     pub fn for_deploy_plan(operation_id: OperationId, plan: &DeployPlan) -> Self {
         let nodes = plan.target_nodes();
+        Self::for_nodes(operation_id, nodes, Vec::new(), Vec::new())
+    }
+
+    #[must_use]
+    pub fn for_deploy_plan_with_peer_endpoints(
+        operation_id: OperationId,
+        plan: &DeployPlan,
+        peer_endpoints: &[WireGuardPeerEndpoint],
+    ) -> Self {
+        let nodes = plan.target_nodes();
+        let requested = nodes.iter().collect::<BTreeSet<_>>();
+        let peer_endpoints = peer_endpoints
+            .iter()
+            .filter(|peer| requested.contains(&peer.node_id))
+            .cloned()
+            .collect();
+        Self::for_nodes(operation_id, nodes, peer_endpoints, Vec::new())
+    }
+
+    #[must_use]
+    pub fn with_peers(mut self, peers: Vec<WireGuardPeer>) -> Self {
+        self.peers = peers;
+        self
+    }
+
+    #[must_use]
+    pub fn peerless(&self) -> Self {
+        Self {
+            operation_id: self.operation_id.clone(),
+            nodes: self.nodes.clone(),
+            endpoint_routes: self.endpoint_routes.clone(),
+            peer_endpoints: self.peer_endpoints.clone(),
+            peers: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    fn for_nodes(
+        operation_id: OperationId,
+        nodes: Vec<NodeId>,
+        peer_endpoints: Vec<WireGuardPeerEndpoint>,
+        peers: Vec<WireGuardPeer>,
+    ) -> Self {
         Self {
             operation_id,
             endpoint_routes: nodes
@@ -25,6 +74,8 @@ impl WireGuardEbpfPrepareRequest {
                 .map(WireGuardEbpfEndpointRoute::default_for_node)
                 .collect(),
             nodes,
+            peer_endpoints,
+            peers,
         }
     }
 }
@@ -43,6 +94,118 @@ impl WireGuardEbpfEndpointRoute {
         Self {
             node_id: node_id.clone(),
             endpoint_subnet: default_endpoint_subnet(node_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct WireGuardPeerEndpoint {
+    pub node_id: NodeId,
+    pub endpoint_subnet: String,
+    pub public_endpoint: SocketAddr,
+}
+
+impl WireGuardPeerEndpoint {
+    #[must_use]
+    pub fn new(node_id: NodeId, public_endpoint: SocketAddr) -> Self {
+        Self {
+            endpoint_subnet: default_endpoint_subnet(&node_id),
+            node_id,
+            public_endpoint,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct WireGuardPeer {
+    pub node_id: NodeId,
+    pub endpoint_subnet: String,
+    pub public_endpoint: SocketAddr,
+    pub public_key: WireGuardPublicKey,
+}
+
+impl WireGuardPeer {
+    #[must_use]
+    pub fn from_endpoint(endpoint: WireGuardPeerEndpoint, public_key: WireGuardPublicKey) -> Self {
+        Self {
+            node_id: endpoint.node_id,
+            endpoint_subnet: endpoint.endpoint_subnet,
+            public_endpoint: endpoint.public_endpoint,
+            public_key,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct WireGuardPublicKey(String);
+
+impl WireGuardPublicKey {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, WireGuardPublicKeyError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(WireGuardPublicKeyError::Empty);
+        }
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(WireGuardPublicKeyError::Invalid { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for WireGuardPublicKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("WireGuardPublicKey")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl TryFrom<String> for WireGuardPublicKey {
+    type Error = WireGuardPublicKeyError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<WireGuardPublicKey> for String {
+    fn from(value: WireGuardPublicKey) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireGuardPublicKeyError {
+    Empty,
+    Invalid { value: String },
+}
+
+impl fmt::Display for WireGuardPublicKeyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("wireguard public key is empty"),
+            Self::Invalid { value } => {
+                write!(
+                    formatter,
+                    "wireguard public key {value:?} must not contain whitespace"
+                )
+            }
         }
     }
 }
@@ -183,6 +346,7 @@ pub struct WireGuardEbpfReady {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardReady {
+    pub public_key: WireGuardPublicKey,
     pub evidence: Vec<WireGuardReadyEvidence>,
 }
 

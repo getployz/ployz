@@ -644,12 +644,28 @@ mod tests {
     struct ReadyWireGuardEbpf;
 
     impl crate::node_service_runtime::NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+        async fn read_wireguard_public_key(
+            &self,
+        ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {
+            ployz_core::dataplane::WireGuardPublicKey::try_new("test-public-key").map_err(
+                |source| WireGuardEbpfPrepareError::InvalidReport {
+                    message: ployz_core::ops::FailureMessage::try_new(source.to_string())
+                        .expect("wireguard public key error is non-empty"),
+                },
+            )
+        }
+
         async fn prepare_wireguard_ebpf(
             &self,
             _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+            _peers: &[ployz_core::dataplane::WireGuardPeer],
         ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
             Ok(WireGuardEbpfReady {
                 wireguard: WireGuardReady {
+                    public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                        "test-public-key",
+                    )
+                    .expect("test public key is valid"),
                     evidence: vec![WireGuardReadyEvidence::Command {
                         program: "wg".to_owned(),
                         args: vec!["--version".to_owned()],

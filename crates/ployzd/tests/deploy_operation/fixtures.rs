@@ -1,7 +1,8 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
     WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport,
-    WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardPeerEndpoint, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -28,6 +29,7 @@ use ployzd::deploy_worker::{
     prepare_deploy_execution_command,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -184,10 +186,12 @@ impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
 }
 
 fn ready_node(node_id: NodeId) -> WireGuardEbpfNodeReady {
+    let public_key = wireguard_public_key(format!("public-{}", node_id.as_str()));
     WireGuardEbpfNodeReady::new(
         node_id,
         WireGuardEbpfReady {
             wireguard: WireGuardReady {
+                public_key,
                 evidence: vec![WireGuardReadyEvidence::Command {
                     program: "wg".to_owned(),
                     args: vec!["--version".to_owned()],
@@ -583,6 +587,10 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             active_route: None,
             eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
             observed_nodes: Vec::new(),
+            wireguard_peer_endpoints: wireguard_peer_endpoints(&[
+                node_id("node_a"),
+                node_id("node_b"),
+            ]),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -644,12 +652,33 @@ fn prepared_deploy_command(
         DeployExecutionFacts {
             active_service: None,
             active_route: None,
+            wireguard_peer_endpoints: wireguard_peer_endpoints(&eligible_nodes),
             eligible_nodes,
             observed_nodes,
             step_timeout: Duration::from_secs(5),
         },
     )
     .expect("deploy command preparation succeeds")
+}
+
+fn wireguard_peer_endpoints(nodes: &[NodeId]) -> Vec<WireGuardPeerEndpoint> {
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node_id)| {
+            WireGuardPeerEndpoint::new(
+                node_id.clone(),
+                SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, (index + 1) as u8)),
+                    ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
+    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn observed_service_container(

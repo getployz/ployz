@@ -1,4 +1,5 @@
 use async_nats::jetstream;
+use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, WireGuardPeerEndpoint};
 use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::machine::MachineName;
@@ -8,7 +9,7 @@ use ployz_core::node::{
 };
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService,
+    ExpectedActiveService, NodePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -17,6 +18,7 @@ use ployzd::deploy_worker::{
     ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
     load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 #[tokio::test]
@@ -72,6 +74,14 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ))
         .await
         .expect("node_b observations store");
+    observations
+        .replace_node_public_ip(&node_public_ip("node_a", 1))
+        .await
+        .expect("node_a public ip stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("node_b", 2))
+        .await
+        .expect("node_b public ip stores");
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
@@ -114,6 +124,13 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ]
     );
     assert_eq!(command.step_timeout(), Duration::from_secs(7));
+    assert_eq!(
+        command.wireguard_peer_endpoints(),
+        [
+            wireguard_peer_endpoint("node_a", 1),
+            wireguard_peer_endpoint("node_b", 2)
+        ]
+    );
 }
 
 #[tokio::test]
@@ -142,6 +159,10 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         ))
         .await
         .expect("edge observations store");
+    observations
+        .replace_node_public_ip(&node_public_ip("edge_2", 7))
+        .await
+        .expect("edge public ip stores");
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
@@ -160,6 +181,10 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
             node_id: node_id("edge_2"),
             container_id: container_id("ctr_target")
         }]
+    );
+    assert_eq!(
+        command.wireguard_peer_endpoints(),
+        [wireguard_peer_endpoint("edge_2", 7)]
     );
 }
 
@@ -381,6 +406,23 @@ fn active_machine(node_id: &str) -> ActiveMachineState {
         name: MachineName::try_new(node_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
     }
+}
+
+fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
+    NodePublicIpObservation {
+        node_id: self::node_id(node_id),
+        public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
+    }
+}
+
+fn wireguard_peer_endpoint(node_id: &str, last_octet: u8) -> WireGuardPeerEndpoint {
+    WireGuardPeerEndpoint::new(
+        self::node_id(node_id),
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
+            DEFAULT_WIREGUARD_LISTEN_PORT,
+        ),
+    )
 }
 
 fn operation_id(value: &str) -> OperationId {

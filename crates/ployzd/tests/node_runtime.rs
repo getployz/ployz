@@ -116,6 +116,8 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
                     "node_a",
                 )),
             ],
+            peer_endpoints: Vec::new(),
+            peers: Vec::new(),
         })
         .await
         .expect("wireguard ebpf prepare succeeds");

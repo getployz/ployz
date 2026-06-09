@@ -31,6 +31,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             )
             .expect("valid node observation snapshot"),
         ],
+        wireguard_peer_endpoints: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -62,6 +63,7 @@ async fn uses_active_service_revision_and_target_replicas() {
             )
             .expect("valid node observation snapshot"),
         ],
+        wireguard_peer_endpoints: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -96,6 +98,7 @@ async fn rejects_active_state_for_a_different_service() {
             active_route: None,
             eligible_nodes: vec![node_id("node_a")],
             observed_nodes: Vec::new(),
+            wireguard_peer_endpoints: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )

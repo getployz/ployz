@@ -1,7 +1,8 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
-    WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
+    WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardPeerEndpoint, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
@@ -18,10 +19,12 @@ use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
-    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+    NodeWireGuardEbpfPreparePhase, NodeWireGuardEbpfPrepareRpcRequest,
+    NodeWireGuardEbpfPrepareRpcResponse,
 };
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::services::{node_endpoint_subject, node_runtime_service};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -310,11 +313,86 @@ async fn nats_node_preparer_calls_wireguard_ebpf_prepare_service() {
             .expect("received request lock is not poisoned")
             .as_slice(),
         [NodeWireGuardEbpfPrepareRpcRequest {
+            phase: NodeWireGuardEbpfPreparePhase::PrepareDataplane,
             operation_id: operation_id("op_123"),
             nodes: vec![node_id("node_a")],
             endpoint_routes: endpoint_routes(&["node_a"]),
+            peer_endpoints: peer_endpoints(&["node_a"]),
+            peers: Vec::new(),
         }]
     );
+}
+
+#[tokio::test]
+async fn nats_node_preparer_bootstraps_public_keys_then_programs_peers() {
+    let nats = test_nats().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let mut services = Vec::new();
+    for node in ["node_a", "node_b"] {
+        let received = Arc::clone(&received);
+        services.push(
+            start_wireguard_ebpf_prepare_service(
+                nats.client.clone(),
+                &node_id(node),
+                move |request| {
+                    received
+                        .lock()
+                        .expect("received request lock is not poisoned")
+                        .push(request);
+                    WireGuardEbpfPrepareResult::Ok
+                },
+            )
+            .await,
+        );
+    }
+    let mut preparer = NatsNodeWireGuardEbpfPreparer::new(nats.client);
+
+    let report = preparer
+        .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a", "node_b"]))
+        .await
+        .expect("wireguard ebpf prepare succeeds");
+
+    assert_eq!(
+        report.nodes,
+        vec![ready_node("node_a"), ready_node("node_b")]
+    );
+    let received = received
+        .lock()
+        .expect("received request lock is not poisoned")
+        .clone();
+    assert_eq!(received.len(), 4);
+    assert_eq!(
+        received[0].phase,
+        NodeWireGuardEbpfPreparePhase::ReadPublicKey
+    );
+    assert_eq!(
+        received[1].phase,
+        NodeWireGuardEbpfPreparePhase::ReadPublicKey
+    );
+    assert_eq!(
+        received[2].phase,
+        NodeWireGuardEbpfPreparePhase::PrepareDataplane
+    );
+    assert_eq!(
+        received[3].phase,
+        NodeWireGuardEbpfPreparePhase::PrepareDataplane
+    );
+    assert!(received[0].peers.is_empty());
+    assert!(received[1].peers.is_empty());
+    assert_eq!(
+        received[2].peers,
+        vec![
+            ployz_core::dataplane::WireGuardPeer::from_endpoint(
+                peer_endpoint("node_a", 1),
+                wireguard_public_key("public-node_a"),
+            ),
+            ployz_core::dataplane::WireGuardPeer::from_endpoint(
+                peer_endpoint("node_b", 2),
+                wireguard_public_key("public-node_b"),
+            ),
+        ]
+    );
+    assert_eq!(received[3].peers, received[2].peers);
 }
 
 #[tokio::test]
@@ -442,9 +520,10 @@ async fn start_wireguard_ebpf_prepare_service(
 ) -> ployz_nats::service_runtime::RunningNatsService {
     let node_id = node_id.clone();
     start_wireguard_ebpf_prepare_raw_service(client, node_id.clone(), move |request| {
-        let response = decode_wireguard_ebpf_request(request)
-            .map(&handler)
-            .map(|result| result.into_nats_response(node_id.clone()));
+        let response = decode_wireguard_ebpf_request(request).map(|request| {
+            let phase = request.phase;
+            handler(request).into_nats_response(node_id.clone(), phase)
+        });
         match response {
             Ok(response) => response,
             Err(message) => NatsServiceResponse::transport_error(
@@ -564,13 +643,23 @@ enum WireGuardEbpfPrepareResult {
 }
 
 impl WireGuardEbpfPrepareResult {
-    fn into_nats_response(self, node_id: NodeId) -> NatsServiceResponse {
-        match self {
-            Self::Ok => NatsServiceResponse::ok(encode_wireguard_ebpf_response(
-                NodeWireGuardEbpfPrepareRpcResponse::Ok {
+    fn into_nats_response(
+        self,
+        node_id: NodeId,
+        phase: NodeWireGuardEbpfPreparePhase,
+    ) -> NatsServiceResponse {
+        match (self, phase) {
+            (Self::Ok, NodeWireGuardEbpfPreparePhase::ReadPublicKey) => NatsServiceResponse::ok(
+                encode_wireguard_ebpf_response(NodeWireGuardEbpfPrepareRpcResponse::PublicKey {
+                    public_key: wireguard_public_key(format!("public-{}", node_id.as_str())),
+                    node_id,
+                }),
+            ),
+            (Self::Ok, NodeWireGuardEbpfPreparePhase::PrepareDataplane) => NatsServiceResponse::ok(
+                encode_wireguard_ebpf_response(NodeWireGuardEbpfPrepareRpcResponse::Ok {
                     readiness: ready_node_for_id(node_id),
-                },
-            )),
+                }),
+            ),
         }
     }
 }
@@ -580,10 +669,12 @@ fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
 }
 
 fn ready_node_for_id(node_id: NodeId) -> WireGuardEbpfNodeReady {
+    let public_key = wireguard_public_key(format!("public-{}", node_id.as_str()));
     WireGuardEbpfNodeReady::new(
         node_id,
         WireGuardEbpfReady {
             wireguard: WireGuardReady {
+                public_key,
                 evidence: vec![WireGuardReadyEvidence::Command {
                     program: "wg".to_owned(),
                     args: vec!["--version".to_owned()],
@@ -613,7 +704,39 @@ fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
         operation_id: operation_id("op_123"),
         nodes: nodes.iter().map(|node| node_id(node)).collect(),
         endpoint_routes: endpoint_routes(nodes),
+        peer_endpoints: peer_endpoints(nodes),
+        peers: Vec::new(),
     }
+}
+
+fn peer_endpoints(nodes: &[&str]) -> Vec<WireGuardPeerEndpoint> {
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            WireGuardPeerEndpoint::new(
+                node_id(node),
+                SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(203, 0, 113, (index + 1) as u8)),
+                    DEFAULT_WIREGUARD_LISTEN_PORT,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn peer_endpoint(node: &str, last_octet: u8) -> WireGuardPeerEndpoint {
+    WireGuardPeerEndpoint::new(
+        node_id(node),
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
+            DEFAULT_WIREGUARD_LISTEN_PORT,
+        ),
+    )
+}
+
+fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
+    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn endpoint_routes(nodes: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute> {

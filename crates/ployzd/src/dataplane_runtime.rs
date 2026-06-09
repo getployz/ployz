@@ -2,8 +2,8 @@
 
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardEbpfReady, WireGuardReady,
-    WireGuardReadyEvidence,
+    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardEbpfReady, WireGuardPeer,
+    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::NodeId;
 use ployz_core::ops::FailureMessage;
@@ -22,6 +22,8 @@ pub struct HostWireGuardEbpfPreparer {
     node_id: NodeId,
     requirements: Vec<HostDataplaneRequirement>,
     route_programming: Option<HostDataplaneRouteProgramming>,
+    peer_programming: Option<HostDataplanePeerProgramming>,
+    public_key: HostWireGuardPublicKey,
     command_timeout: Duration,
 }
 
@@ -45,8 +47,12 @@ impl HostWireGuardEbpfPreparer {
             ),
             route_programming: Some(HostDataplaneRouteProgramming {
                 ebpf_ctl_program,
-                wg_ifname,
+                wg_ifname: wg_ifname.clone(),
             }),
+            peer_programming: Some(HostDataplanePeerProgramming {
+                wg_ifname: wg_ifname.clone(),
+            }),
+            public_key: HostWireGuardPublicKey::Command { wg_ifname },
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -60,6 +66,10 @@ impl HostWireGuardEbpfPreparer {
             node_id,
             requirements: requirements.into_iter().collect(),
             route_programming: None,
+            peer_programming: None,
+            public_key: HostWireGuardPublicKey::Static(
+                WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"),
+            ),
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -72,9 +82,18 @@ impl HostWireGuardEbpfPreparer {
 }
 
 impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
+    async fn read_wireguard_public_key(
+        &self,
+    ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
+        self.public_key
+            .read(&self.node_id, self.command_timeout)
+            .await
+    }
+
     async fn prepare_wireguard_ebpf(
         &self,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
+        peers: &[WireGuardPeer],
     ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
         let mut wireguard = Vec::new();
         let mut ebpf_forwarding = Vec::new();
@@ -100,6 +119,23 @@ impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
                 }
             }
         }
+        if let Some(peer_programming) = &self.peer_programming {
+            for requirement in peer_programming.requirements_for(&self.node_id, peers) {
+                match requirement
+                    .check(&self.node_id, self.command_timeout)
+                    .await?
+                {
+                    HostDataplaneEvidence::WireGuard(evidence) => wireguard.push(evidence),
+                    HostDataplaneEvidence::EbpfForwarding(evidence) => {
+                        ebpf_forwarding.push(evidence);
+                    }
+                }
+            }
+        }
+        let public_key = self
+            .public_key
+            .read(&self.node_id, self.command_timeout)
+            .await?;
         if wireguard.is_empty() {
             return Err(unavailable(
                 &self.node_id,
@@ -117,12 +153,34 @@ impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
 
         Ok(WireGuardEbpfReady {
             wireguard: WireGuardReady {
+                public_key,
                 evidence: wireguard,
             },
             ebpf_forwarding: EbpfForwardingReady {
                 evidence: ebpf_forwarding,
             },
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HostWireGuardPublicKey {
+    Static(WireGuardPublicKey),
+    Command { wg_ifname: String },
+}
+
+impl HostWireGuardPublicKey {
+    async fn read(
+        &self,
+        node_id: &NodeId,
+        command_timeout: Duration,
+    ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
+        match self {
+            Self::Static(public_key) => Ok(public_key.clone()),
+            Self::Command { wg_ifname } => {
+                read_wireguard_public_key(node_id, wg_ifname, command_timeout).await
+            }
+        }
     }
 }
 
@@ -150,6 +208,42 @@ impl HostDataplaneRouteProgramming {
                         "add-ifname".to_owned(),
                         route.endpoint_subnet.clone(),
                         self.wg_ifname.clone(),
+                    ],
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostDataplanePeerProgramming {
+    wg_ifname: String,
+}
+
+impl HostDataplanePeerProgramming {
+    fn requirements_for(
+        &self,
+        node_id: &NodeId,
+        peers: &[WireGuardPeer],
+    ) -> Vec<HostDataplaneRequirement> {
+        peers
+            .iter()
+            .filter(|peer| peer.node_id != *node_id)
+            .map(|peer| {
+                HostDataplaneRequirement::command_succeeds(
+                    WireGuardEbpfComponent::WireGuard,
+                    "wg",
+                    [
+                        "set".to_owned(),
+                        self.wg_ifname.clone(),
+                        "peer".to_owned(),
+                        peer.public_key.as_str().to_owned(),
+                        "endpoint".to_owned(),
+                        peer.public_endpoint.to_string(),
+                        "allowed-ips".to_owned(),
+                        peer.endpoint_subnet.clone(),
+                        "persistent-keepalive".to_owned(),
+                        "25".to_owned(),
                     ],
                 )
             })
@@ -404,6 +498,56 @@ fn validate_ployz_tc_bytecode(
     })
 }
 
+async fn read_wireguard_public_key(
+    node_id: &NodeId,
+    wg_ifname: &str,
+    command_timeout: Duration,
+) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
+    let mut command = Command::new("wg");
+    command
+        .args(["show", wg_ifname, "public-key"])
+        .kill_on_drop(true);
+    let output = match tokio::time::timeout(command_timeout, command.output()).await {
+        Ok(output) => output,
+        Err(_) => {
+            return Err(unavailable(
+                node_id,
+                WireGuardEbpfComponent::WireGuard,
+                format!(
+                    "wireguard public key command timed out after {}s: wg show {} public-key",
+                    command_timeout.as_secs(),
+                    wg_ifname,
+                ),
+            ));
+        }
+    };
+    let output = output.map_err(|source| {
+        unavailable(
+            node_id,
+            WireGuardEbpfComponent::WireGuard,
+            format!("wireguard public key command could not start: {source}"),
+        )
+    })?;
+    if !output.status.success() {
+        return Err(unavailable(
+            node_id,
+            WireGuardEbpfComponent::WireGuard,
+            format!(
+                "wireguard public key command failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ));
+    }
+    let public_key = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    WireGuardPublicKey::try_new(public_key).map_err(|source| {
+        unavailable(
+            node_id,
+            WireGuardEbpfComponent::WireGuard,
+            format!("wireguard public key is invalid: {source}"),
+        )
+    })
+}
+
 fn component_ready_path(component: WireGuardEbpfComponent, path: String) -> HostDataplaneEvidence {
     match component {
         WireGuardEbpfComponent::WireGuard => {
@@ -458,7 +602,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf(&[])
+            .prepare_wireguard_ebpf(&[], &[])
             .await
             .expect_err("empty requirements fail");
 
@@ -598,6 +742,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn peer_programming_adds_only_peer_wireguard_peers() {
+        let peer_programming = HostDataplanePeerProgramming {
+            wg_ifname: "ployz-wg0".to_owned(),
+        };
+        let requirements = peer_programming.requirements_for(
+            &node_id("node_a"),
+            &[
+                WireGuardPeer {
+                    node_id: node_id("node_a"),
+                    endpoint_subnet: "10.42.1.0/24".to_owned(),
+                    public_endpoint: "203.0.113.1:51820".parse().expect("valid endpoint"),
+                    public_key: wireguard_public_key("public-node_a"),
+                },
+                WireGuardPeer {
+                    node_id: node_id("node_b"),
+                    endpoint_subnet: "10.42.2.0/24".to_owned(),
+                    public_endpoint: "203.0.113.2:51820".parse().expect("valid endpoint"),
+                    public_key: wireguard_public_key("public-node_b"),
+                },
+            ],
+        );
+
+        assert_eq!(
+            requirements,
+            vec![HostDataplaneRequirement::command_succeeds(
+                WireGuardEbpfComponent::WireGuard,
+                "wg",
+                [
+                    "set",
+                    "ployz-wg0",
+                    "peer",
+                    "public-node_b",
+                    "endpoint",
+                    "203.0.113.2:51820",
+                    "allowed-ips",
+                    "10.42.2.0/24",
+                    "persistent-keepalive",
+                    "25"
+                ]
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn host_preparer_reports_missing_required_path() {
         let preparer = HostWireGuardEbpfPreparer::with_requirements(
@@ -609,7 +797,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf(&[])
+            .prepare_wireguard_ebpf(&[], &[])
             .await
             .expect_err("missing path fails");
 
@@ -636,7 +824,7 @@ mod tests {
         .with_command_timeout(Duration::from_millis(1));
 
         let error = preparer
-            .prepare_wireguard_ebpf(&[])
+            .prepare_wireguard_ebpf(&[], &[])
             .await
             .expect_err("hung command fails");
 
@@ -665,7 +853,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf(&[])
+            .prepare_wireguard_ebpf(&[], &[])
             .await
             .expect_err("text with symbols is not a BPF object");
 
@@ -693,7 +881,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf(&[])
+            .prepare_wireguard_ebpf(&[], &[])
             .await
             .expect_err("missing bytecode symbols fail");
 
@@ -710,5 +898,9 @@ mod tests {
 
     fn node_id(value: &str) -> NodeId {
         NodeId::try_new(value).expect("valid node id")
+    }
+
+    fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
+        WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
     }
 }

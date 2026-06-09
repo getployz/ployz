@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady,
-    WireGuardReadyEvidence,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
@@ -46,6 +46,7 @@ fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
             node_id("node_7"),
             WireGuardEbpfReady {
                 wireguard: WireGuardReady {
+                    public_key: wireguard_public_key("test-public-key"),
                     evidence: vec![WireGuardReadyEvidence::Command {
                         program: "wg".to_owned(),
                         args: vec!["--version".to_owned()],
@@ -67,7 +68,7 @@ fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
         concat!(
             r#"{"event":"deploy_wireguard_ebpf_prepared","operation_id":"op_123","#,
             r#""report":{"nodes":[{"node_id":"node_7","#,
-            r#""wireguard":{"evidence":[{"kind":"command","program":"wg","args":["--version"]}]},"#,
+            r#""wireguard":{"public_key":"test-public-key","evidence":[{"kind":"command","program":"wg","args":["--version"]}]},"#,
             r#""ebpf_forwarding":{"evidence":[{"kind":"ployz_tc_bytecode","#,
             r#""path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc","#,
             r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}"#
@@ -469,6 +470,10 @@ fn active_service_running() -> DeployRunningStage {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
+    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn container_id(value: &str) -> ContainerId {

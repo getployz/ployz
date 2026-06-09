@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
     WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
-    WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
@@ -20,8 +20,8 @@ use ployzd::node_agent::runtime::{
 };
 use ployzd::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeLogsTailRpcRequest, NodeLogsTailRpcResponse, NodeWireGuardEbpfPrepareRpcRequest,
-    NodeWireGuardEbpfPrepareRpcResponse,
+    NodeLogsTailRpcRequest, NodeLogsTailRpcResponse, NodeWireGuardEbpfPreparePhase,
+    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::{
@@ -398,6 +398,7 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
 
     assert_eq!(state.prepare_count(), 1);
     assert_eq!(state.endpoint_routes(), endpoint_routes(&["node_a"]));
+    assert_eq!(state.peers(), Vec::new());
     assert_eq!(report.nodes, vec![ready_node("node_a")]);
 }
 
@@ -421,9 +422,12 @@ async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
             NodeServiceEndpoint::WireGuardEbpfPrepare,
         ),
         &NodeWireGuardEbpfPrepareRpcRequest {
+            phase: NodeWireGuardEbpfPreparePhase::PrepareDataplane,
             operation_id: operation_id("op_123"),
             nodes: vec![node_id("node_b")],
             endpoint_routes: endpoint_routes(&["node_b"]),
+            peer_endpoints: Vec::new(),
+            peers: Vec::new(),
         },
         Duration::from_secs(1),
     )
@@ -669,12 +673,21 @@ impl RecordingWireGuardEbpfState {
             .endpoint_routes
             .clone()
     }
+
+    fn peers(&self) -> Vec<ployz_core::dataplane::WireGuardPeer> {
+        self.inner
+            .lock()
+            .expect("recording wireguard ebpf lock is not poisoned")
+            .peers
+            .clone()
+    }
 }
 
 #[derive(Default)]
 struct RecordingWireGuardEbpfInner {
     prepare_count: usize,
     endpoint_routes: Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute>,
+    peers: Vec<ployz_core::dataplane::WireGuardPeer>,
 }
 
 #[derive(Clone)]
@@ -698,9 +711,16 @@ impl RecordingWireGuardEbpf {
 }
 
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
+    async fn read_wireguard_public_key(
+        &self,
+    ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
+        Ok(WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"))
+    }
+
     async fn prepare_wireguard_ebpf(
         &self,
         endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+        peers: &[ployz_core::dataplane::WireGuardPeer],
     ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
         let mut state = self
             .state
@@ -709,6 +729,7 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
             .expect("recording wireguard ebpf lock is not poisoned");
         state.prepare_count += 1;
         state.endpoint_routes = endpoint_routes.to_vec();
+        state.peers = peers.to_vec();
         drop(state);
 
         match &self.failure {
@@ -725,6 +746,8 @@ fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
 fn ready_components() -> WireGuardEbpfReady {
     WireGuardEbpfReady {
         wireguard: WireGuardReady {
+            public_key: WireGuardPublicKey::try_new("test-public-key")
+                .expect("test public key is valid"),
             evidence: vec![WireGuardReadyEvidence::Command {
                 program: "wg".to_owned(),
                 args: vec!["--version".to_owned()],
@@ -826,6 +849,8 @@ fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
         operation_id: operation_id("op_123"),
         nodes: nodes.iter().map(|node| node_id(node)).collect(),
         endpoint_routes: endpoint_routes(nodes),
+        peer_endpoints: Vec::new(),
+        peers: Vec::new(),
     }
 }
 

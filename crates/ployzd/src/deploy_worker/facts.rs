@@ -1,14 +1,17 @@
 //! Load deploy execution facts from current-state stores.
 
 use futures_util::{StreamExt, stream};
+use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, WireGuardPeerEndpoint};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NodeId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
+use ployz_core::state::NodePublicIpObservation;
 use ployz_nats::core_state::{
     ActiveMachineReadError, ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::fmt;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use super::DeployExecutionFacts;
@@ -58,12 +61,15 @@ pub async fn load_deploy_execution_facts_from_nats(
         .flatten();
     let node_scope = load_active_machine_node_scope(core_state, node_scope).await?;
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
+    let wireguard_peer_endpoints =
+        load_wireguard_peer_endpoints(observations, &node_scope.eligible_nodes).await?;
 
     Ok(DeployExecutionFacts {
         active_service,
         active_route,
         eligible_nodes: node_scope.eligible_nodes,
         observed_nodes,
+        wireguard_peer_endpoints,
         step_timeout,
     })
 }
@@ -116,6 +122,33 @@ async fn load_node_snapshots(
     Ok(snapshots)
 }
 
+async fn load_wireguard_peer_endpoints(
+    observations: &AsyncNatsObservationStore,
+    node_ids: &[NodeId],
+) -> Result<Vec<WireGuardPeerEndpoint>, DeployFactLoadError> {
+    let requested = node_ids.iter().collect::<std::collections::BTreeSet<_>>();
+    let mut endpoints = observations
+        .node_public_ips()
+        .await
+        .map_err(|source| DeployFactLoadError::NodePublicIpObservationRead {
+            failure: observation_read_failure(source),
+        })?
+        .into_iter()
+        .filter(|observation| requested.contains(&observation.node_id))
+        .map(peer_endpoint_from_public_ip)
+        .collect::<Vec<_>>();
+
+    endpoints.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+    Ok(endpoints)
+}
+
+fn peer_endpoint_from_public_ip(observation: NodePublicIpObservation) -> WireGuardPeerEndpoint {
+    WireGuardPeerEndpoint::new(
+        observation.node_id,
+        SocketAddr::new(observation.public_ip, DEFAULT_WIREGUARD_LISTEN_PORT),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
     ActiveServiceRead {
@@ -131,6 +164,9 @@ pub enum DeployFactLoadError {
     },
     NodeObservationRead {
         node_id: NodeId,
+        failure: ObservationReadFailure,
+    },
+    NodePublicIpObservationRead {
         failure: ObservationReadFailure,
     },
 }
@@ -357,6 +393,12 @@ impl fmt::Display for DeployFactLoadError {
                 node_id.as_str(),
                 failure
             ),
+            Self::NodePublicIpObservationRead { failure } => {
+                write!(
+                    formatter,
+                    "node public ip observations could not be read: {failure}"
+                )
+            }
         }
     }
 }

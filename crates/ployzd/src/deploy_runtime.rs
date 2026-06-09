@@ -194,6 +194,9 @@ fn fact_load_failure_message(source: &DeployFactLoadError) -> &'static str {
         DeployFactLoadError::ActiveRouteRead { .. } => "active route state could not be loaded",
         DeployFactLoadError::ActiveMachineRead { .. } => "active machines could not be loaded",
         DeployFactLoadError::NodeObservationRead { .. } => "node observations could not be loaded",
+        DeployFactLoadError::NodePublicIpObservationRead { .. } => {
+            "node public ip observations could not be loaded"
+        }
     }
 }
 

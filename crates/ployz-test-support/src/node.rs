@@ -1,6 +1,6 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
-    WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::{
@@ -289,12 +289,21 @@ impl ObservingContainerRunnerState {
 pub struct ReadyWireGuardEbpf;
 
 impl NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+    async fn read_wireguard_public_key(
+        &self,
+    ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
+        Ok(WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"))
+    }
+
     async fn prepare_wireguard_ebpf(
         &self,
         _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+        _peers: &[ployz_core::dataplane::WireGuardPeer],
     ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
         Ok(WireGuardEbpfReady {
             wireguard: WireGuardReady {
+                public_key: WireGuardPublicKey::try_new("test-public-key")
+                    .expect("test public key is valid"),
                 evidence: vec![WireGuardReadyEvidence::Command {
                     program: "wg".to_owned(),
                     args: vec!["--version".to_owned()],
