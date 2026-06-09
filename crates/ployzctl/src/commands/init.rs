@@ -4,6 +4,7 @@ use ployz_core::install::{
     KeeperFirstNodeInstall, MachineBootstrapUrl,
 };
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
+use std::net::IpAddr;
 
 use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
 
@@ -167,6 +168,10 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
             set_once(&mut parsed.node_id, value, "--node")?;
             continue;
         }
+        if let Some(value) = args.take_value("--node-public-ip")? {
+            set_once(&mut parsed.node_public_ip, value, "--node-public-ip")?;
+            continue;
+        }
         if let Some(value) = args.take_value("--ployzd-version")? {
             set_once(&mut parsed.ployzd_version, value, "--ployzd-version")?;
             continue;
@@ -288,6 +293,7 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
 struct ParsedInitArgs {
     keeper_install_mode: ParsedKeeperInstallMode,
     node_id: Option<String>,
+    node_public_ip: Option<String>,
     gateway: FirstNodeGateway,
     ployzd_version: Option<String>,
     ployzd_source: Option<String>,
@@ -316,6 +322,7 @@ impl Default for ParsedInitArgs {
         Self {
             keeper_install_mode: ParsedKeeperInstallMode::None,
             node_id: None,
+            node_public_ip: None,
             gateway: FirstNodeGateway::Skip,
             ployzd_version: None,
             ployzd_source: None,
@@ -381,6 +388,7 @@ impl ParsedInitArgs {
         let Self {
             keeper_install_mode,
             node_id,
+            node_public_ip,
             gateway,
             ployzd_version,
             ployzd_source,
@@ -404,6 +412,7 @@ impl ParsedInitArgs {
             keeper_binary,
         } = self;
         let keeper_install = ParsedKeeperInstallArgs {
+            node_public_ip,
             ployzd_version,
             ployzd_source,
             ployzd_sha256,
@@ -469,6 +478,7 @@ enum ParsedKeeperInstallMode {
 }
 
 struct ParsedKeeperInstallArgs {
+    node_public_ip: Option<String>,
     ployzd_version: Option<String>,
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
@@ -499,6 +509,7 @@ impl ParsedKeeperInstallArgs {
         Ok(KeeperFirstNodeInstall {
             node_id,
             gateway,
+            node_public_ip: self.node_public_ip.map(parse_node_public_ip).transpose()?,
             machine_bootstrap_url: self
                 .machine_bootstrap_url
                 .map(MachineBootstrapUrl::try_new)
@@ -608,5 +619,12 @@ impl ParsedKeeperInstallArgs {
             || self.nats_config.is_some()
             || self.machine_bootstrap_url.is_some()
             || self.machine_join_template_file.is_some()
+            || self.node_public_ip.is_some()
     }
+}
+
+fn parse_node_public_ip(value: String) -> Result<IpAddr, PloyzctlCliError> {
+    value
+        .parse()
+        .map_err(|error| invalid_value("--node-public-ip", error))
 }

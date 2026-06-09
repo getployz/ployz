@@ -63,19 +63,23 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(!script.contains("--core-iroh-public-key acceptance-core"));
     assert!(!script.contains("--nats-credentials"));
     assert!(!script.contains("--trusted-nats-config-sha256"));
-    assert!(script.contains(" init --node core_1"));
+    assert!(script.contains(" init --node core_1 --node-public-ip '$core_ip'"));
     assert!(script.contains(" machine add --node edge_2"));
     assert!(script.contains("start-bootstrap-tunnel"));
     assert!(script.contains("PLOYZ_TUNNEL_LISTEN_ADDR='$edge_bootstrap_tunnel_listen_addr'"));
     assert!(script.contains("PLOYZ_TUNNEL_CORE_PUBLIC_KEY='$core_iroh_public_key'"));
     assert!(script.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}'"));
     assert!(script.contains(" sh '$remote_ployz_sh' --join-token"));
-    assert!(script.contains("PLOYZ_NATS_URL='$edge_bootstrap_nats_url' sh '$remote_ployz_sh'"));
+    assert!(script.contains("PLOYZ_NATS_URL='$edge_bootstrap_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh'"));
+    assert!(script.contains("wait_for_machine_ready \"$core_ip\" edge_2 \"$edge_ip\""));
+    assert!(script.contains("gateway current"));
     assert!(script.contains("inspect-edge-through-runtime-tunnel"));
-    assert!(script.contains("PLOYZ_NATS_URL='$edge_runtime_nats_url' '$remote_ployzctl' machine inspect edge_2"));
+    assert!(script.contains(
+        "PLOYZ_NATS_URL='$edge_runtime_nats_url' '$remote_ployzctl' machine inspect edge_2"
+    ));
     assert!(script.contains(" deploy --detach"));
     assert!(script.contains(" ops watch op_deploy_smoke"));
-    assert!(script.contains("curl -fsS -H 'Host: smoke.local'"));
+    assert!(script.contains("curl -fsS -H 'Host: smoke.local' \"http://${edge_ip}:8080/\""));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_BYTECODE"));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_CTL"));
     assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));

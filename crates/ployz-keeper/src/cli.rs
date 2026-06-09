@@ -122,6 +122,7 @@ pub enum KeeperCliError {
     MissingValue { flag: String },
     DuplicateArgument { flag: &'static str },
     InvalidUtf8Argument { flag: &'static str },
+    InvalidNodePublicIp { value: String },
     UnexpectedArgument { value: String },
     JoinTokenFile(JoinTokenFileError),
     NodeId(SubjectTokenError),
@@ -173,6 +174,9 @@ impl fmt::Display for KeeperCliError {
             Self::InvalidUtf8Argument { flag } => {
                 write!(formatter, "{flag} must be valid UTF-8")
             }
+            Self::InvalidNodePublicIp { value } => {
+                write!(formatter, "--node-public-ip={value:?} is invalid")
+            }
             Self::UnexpectedArgument { value } => {
                 write!(formatter, "unexpected keeper argument: {value}")
             }
@@ -187,7 +191,7 @@ impl fmt::Display for KeeperCliError {
 
 impl std::error::Error for KeeperCliError {}
 
-pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--gateway]";
+pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--node-public-ip <ip>] [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--gateway]";
 
 #[cfg(test)]
 mod tests {

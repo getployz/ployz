@@ -1,6 +1,7 @@
 //! First-node install argument parsing.
 
 use std::ffi::OsString;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
@@ -51,6 +52,7 @@ pub(crate) fn parse_first_node_install_args(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FirstNodeInstallArgs {
     node: Option<OsString>,
+    node_public_ip: Option<OsString>,
     gateway: FirstNodeGateway,
     ployzd_version: Option<OsString>,
     ployzd_source: Option<OsString>,
@@ -77,6 +79,7 @@ impl FirstNodeInstallArgs {
     fn new() -> Self {
         Self {
             node: None,
+            node_public_ip: None,
             gateway: FirstNodeGateway::Skip,
             ployzd_version: None,
             ployzd_source: None,
@@ -111,6 +114,9 @@ impl FirstNodeInstallArgs {
     fn set_value(&mut self, flag: &OsString, value: &OsString) -> Result<(), KeeperCliError> {
         if flag == "--node" {
             return set_once(&mut self.node, value, "--node");
+        }
+        if flag == "--node-public-ip" {
+            return set_once(&mut self.node_public_ip, value, "--node-public-ip");
         }
         if flag == "--ployzd-version" {
             return set_once(&mut self.ployzd_version, value, "--ployzd-version");
@@ -210,6 +216,7 @@ impl FirstNodeInstallArgs {
     fn into_target(self) -> Result<FirstNodeInstallTarget, KeeperCliError> {
         let Self {
             node,
+            node_public_ip,
             gateway,
             ployzd_version,
             ployzd_source,
@@ -232,6 +239,7 @@ impl FirstNodeInstallArgs {
             machine_join_template_file,
         } = self;
         let node = parse_node_id(required(node, "--node")?)?;
+        let node_public_ip = node_public_ip.map(parse_node_public_ip).transpose()?;
         let ployzd_artifact = PloyzdArtifactTarget::new(
             parse_version(
                 required(ployzd_version, "--ployzd-version")?,
@@ -297,6 +305,9 @@ impl FirstNodeInstallArgs {
             target =
                 target.with_machine_join_template_file(parse_machine_join_template_file(path)?);
         }
+        if let Some(public_ip) = node_public_ip {
+            target = target.with_node_public_ip(public_ip);
+        }
         Ok(target)
     }
 }
@@ -352,6 +363,13 @@ fn parse_machine_join_template_file(
         .map_err(KeeperCliError::from)
 }
 
+fn parse_node_public_ip(value: OsString) -> Result<IpAddr, KeeperCliError> {
+    let value = utf8_value(value, "--node-public-ip")?;
+    value
+        .parse()
+        .map_err(|_| KeeperCliError::InvalidNodePublicIp { value })
+}
+
 fn utf8_value(value: OsString, flag: &'static str) -> Result<String, KeeperCliError> {
     value
         .into_string()
@@ -360,6 +378,7 @@ fn utf8_value(value: OsString, flag: &'static str) -> Result<String, KeeperCliEr
 
 fn is_value_flag(value: &OsString) -> bool {
     value == "--node"
+        || value == "--node-public-ip"
         || value == "--ployzd-version"
         || value == "--ployzd-source"
         || value == "--ployzd-sha256"
@@ -430,6 +449,8 @@ mod tests {
             "0.1.0".into(),
             "--node".into(),
             "node_1".into(),
+            "--node-public-ip".into(),
+            "203.0.113.10".into(),
         ])
         .expect("valid first-node install args parse");
 
@@ -439,6 +460,12 @@ mod tests {
             target.role_environment.render().contains(
                 "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/etc/ployz/machine-join-template.json\n"
             )
+        );
+        assert!(
+            target
+                .role_environment
+                .render()
+                .contains("PLOYZ_NODE_PUBLIC_IP=203.0.113.10\n")
         );
     }
 

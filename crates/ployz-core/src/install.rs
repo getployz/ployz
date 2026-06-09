@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct KeeperFirstNodeInstall {
     pub node_id: NodeId,
     pub gateway: FirstNodeGateway,
+    pub node_public_ip: Option<IpAddr>,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub machine_join_template_file: Option<AbsoluteInstallPath>,
     pub ployzd_version: InstallArtifactVersion,
@@ -75,6 +77,9 @@ impl KeeperFirstNodeInstall {
         ];
         if self.gateway == FirstNodeGateway::Install {
             args.push("--gateway".to_owned());
+        }
+        if let Some(node_public_ip) = self.node_public_ip {
+            args.extend(["--node-public-ip".to_owned(), node_public_ip.to_string()]);
         }
         if let Some(machine_bootstrap_url) = &self.machine_bootstrap_url {
             args.extend([

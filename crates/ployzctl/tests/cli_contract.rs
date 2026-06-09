@@ -63,6 +63,23 @@ fn cli_init_can_emit_keeper_first_node_install_command() {
 }
 
 #[test]
+fn cli_init_can_pass_first_node_public_ip_to_keeper_install() {
+    let command = parse_command(
+        init_with_keeper_install_arg_refs()
+            .into_iter()
+            .chain(["--node-public-ip", "203.0.113.10"])
+            .map(str::to_owned),
+    )
+    .expect("init command parses");
+
+    let PloyzctlCommand::Init(command) = command else {
+        panic!("expected init command");
+    };
+
+    assert!(command.render().contains("--node-public-ip '203.0.113.10'"));
+}
+
+#[test]
 fn cli_init_requires_complete_keeper_install_inputs() {
     assert!(matches!(
         parse_command(

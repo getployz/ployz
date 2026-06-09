@@ -222,6 +222,28 @@ extract_join_token() {
   awk '$1 == "join-token" { print $2 }' "$1" | tail -n 1
 }
 
+wait_for_machine_ready() {
+  ip="$1"
+  node="$2"
+  expected_public_ip="$3"
+  deadline=$(( $(date +%s) + 120 ))
+  log_file="${log_dir}/machine-${node}-ready.log"
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if remote_sh "$ip" "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' machine inspect '$node'" >"$log_file" 2>&1; then
+      if grep -q "public-ip ${expected_public_ip}" "$log_file" && grep -q "gateway current" "$log_file"; then
+        cat "$log_file"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+
+  echo "machine ${node} did not become ready; last output:" >&2
+  cat "$log_file" >&2 || true
+  return 1
+}
+
 on_exit() {
   status="$?"
   if [ -n "${known_hosts_file:-}" ]; then
@@ -342,7 +364,7 @@ JSON
       "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key '$core_iroh_public_key' --core-iroh-direct-address '${core_ip}:${core_iroh_port}' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
 
     run_remote_logged init-core "$core_ip" \
-      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --node-public-ip '$core_ip' --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
 
     machine_log="${log_dir}/machine-add.log"
     run_remote_logged machine-add "$core_ip" \
@@ -354,9 +376,11 @@ JSON
       "PLOYZ_NATS_URL='$edge_bootstrap_nats_url' PLOYZ_NODE_ID=edge_2 PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 PLOYZ_TUNNEL_LISTEN_ADDR='$edge_bootstrap_tunnel_listen_addr' PLOYZ_TUNNEL_CORE_NODE=core_1 PLOYZ_TUNNEL_CORE_PUBLIC_KEY='$core_iroh_public_key' PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}' nohup '$remote_ployzd' tunnel --side edge > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
 
     run_remote_logged join-edge "$edge_ip" \
-      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_bootstrap_nats_url' sh '$remote_ployz_sh' --join-token '$join_token'"
+      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_bootstrap_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"
 
     remote_sh "$edge_ip" "if [ -f '$remote_bootstrap_tunnel_pid' ]; then kill \"\$(cat '$remote_bootstrap_tunnel_pid')\" >/dev/null 2>&1 || true; fi"
+
+    wait_for_machine_ready "$core_ip" edge_2 "$edge_ip"
 
     run_remote_logged inspect-edge-through-runtime-tunnel "$edge_ip" \
       "PLOYZ_NATS_URL='$edge_runtime_nats_url' '$remote_ployzctl' machine inspect edge_2"
@@ -368,7 +392,7 @@ JSON
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch op_deploy_smoke"
 
     echo "curling smoke service" >&2
-    curl -fsS -H 'Host: smoke.local' "http://${core_ip}:8080/" >"${log_dir}/curl-smoke.log"
+    curl -fsS -H 'Host: smoke.local' "http://${edge_ip}:8080/" >"${log_dir}/curl-smoke.log"
     cat "${log_dir}/curl-smoke.log"
 
     if [ "${PLOYZ_ACCEPTANCE_KEEP:-0}" != "1" ]; then

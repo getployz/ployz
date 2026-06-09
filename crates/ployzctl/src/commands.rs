@@ -13,7 +13,7 @@ pub mod service;
 pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
-ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--keeper-binary <path>]]
+ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--node-public-ip <ip>] [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--keeper-binary <path>]]
 ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --core-iroh-public-key <key> [--core-iroh-direct-address <addr>] [--core-iroh-relay-url <url>] --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --secret-delivery-file <path>
 ployzctl backup create --operation <id> --idempotency-key <key>
 ployzctl backup restore --plan

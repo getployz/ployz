@@ -24,6 +24,7 @@ use crate::systemd::{
 
 const DEFAULT_NATS_PORT: u16 = 4222;
 const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
+const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
@@ -477,6 +478,12 @@ impl FirstNodeInstallTarget {
         self.role_environment = self.role_environment.with_machine_join_template_file(path);
         self
     }
+
+    #[must_use]
+    pub fn with_node_public_ip(mut self, public_ip: IpAddr) -> Self {
+        self.role_environment = self.role_environment.with_node_public_ip(public_ip);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,6 +491,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     file: PloyzdRoleEnvironmentFile,
     node_id: NodeId,
     nats_url: NatsClientUrl,
+    node_public_ip: Option<IpAddr>,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
     machine_join_template_file: Option<AbsoluteInstallPath>,
     ebpf_bytecode_path: Option<PathBuf>,
@@ -501,6 +509,7 @@ impl PloyzdRoleEnvironmentTarget {
             file,
             node_id,
             nats_url,
+            node_public_ip: None,
             machine_bootstrap_url: None,
             machine_join_template_file: None,
             ebpf_bytecode_path: None,
@@ -525,6 +534,12 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_machine_bootstrap_url(mut self, url: MachineBootstrapUrl) -> Self {
         self.machine_bootstrap_url = Some(url);
+        self
+    }
+
+    #[must_use]
+    pub fn with_node_public_ip(mut self, public_ip: IpAddr) -> Self {
+        self.node_public_ip = Some(public_ip);
         self
     }
 
@@ -597,6 +612,12 @@ impl PloyzdRoleEnvironmentTarget {
         output.push('=');
         output.push_str(self.node_id.as_str());
         output.push('\n');
+        if let Some(public_ip) = self.node_public_ip {
+            output.push_str(PLOYZ_NODE_PUBLIC_IP_ENV);
+            output.push('=');
+            output.push_str(&public_ip.to_string());
+            output.push('\n');
+        }
         if let Some(url) = &self.machine_bootstrap_url {
             output.push_str("PLOYZ_MACHINE_BOOTSTRAP_URL=");
             output.push_str(url.as_str());

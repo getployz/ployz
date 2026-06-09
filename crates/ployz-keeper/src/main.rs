@@ -28,6 +28,7 @@ use ployz_sdk_types::{
 };
 
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() -> ExitCode {
@@ -124,12 +125,14 @@ fn failure_summary(failure: &KeeperPlanFailure) -> &str {
 
 struct SystemJoinRedeemer {
     nats_url: Result<NatsClientUrl, KeeperNatsUrlError>,
+    node_public_ip: Result<Option<std::net::IpAddr>, KeeperNodePublicIpError>,
 }
 
 impl SystemJoinRedeemer {
     fn from_env() -> Self {
         Self {
             nats_url: load_nats_url_from_env(),
+            node_public_ip: load_node_public_ip_from_env(),
         }
     }
 }
@@ -141,6 +144,10 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
     ) -> Result<RedeemedKeeperJoin, FailureMessage> {
         let nats_url = self
             .nats_url
+            .clone()
+            .map_err(|error| failure_message(&format!("{error}")))?;
+        let node_public_ip = self
+            .node_public_ip
             .clone()
             .map_err(|error| failure_message(&format!("{error}")))?;
         let join_token = MachineJoinToken::try_new(token.as_str())
@@ -161,7 +168,7 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
                 .map_err(|error| failure_message(&format!("failed to redeem join token: {error}")))
         })?;
 
-        keeper_join_target(redeemed)
+        keeper_join_target_with_public_ip(redeemed, node_public_ip)
     }
 }
 
@@ -233,12 +240,33 @@ fn load_nats_url_from_env() -> Result<NatsClientUrl, KeeperNatsUrlError> {
         .map_err(|source| KeeperNatsUrlError::Invalid { value, source })
 }
 
+fn load_node_public_ip_from_env() -> Result<Option<std::net::IpAddr>, KeeperNodePublicIpError> {
+    let Some(value) = std::env::var(PLOYZ_NODE_PUBLIC_IP_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    value
+        .parse()
+        .map(Some)
+        .map_err(|source| KeeperNodePublicIpError::Invalid { value, source })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KeeperNatsUrlError {
     Missing,
     Invalid {
         value: String,
         source: NatsClientUrlError,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeeperNodePublicIpError {
+    Invalid {
+        value: String,
+        source: std::net::AddrParseError,
     },
 }
 
@@ -253,7 +281,20 @@ impl std::fmt::Display for KeeperNatsUrlError {
     }
 }
 
-fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoin, FailureMessage> {
+impl std::fmt::Display for KeeperNodePublicIpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid { value, .. } => {
+                write!(formatter, "{PLOYZ_NODE_PUBLIC_IP_ENV}={value:?} is invalid")
+            }
+        }
+    }
+}
+
+fn keeper_join_target_with_public_ip(
+    redeemed: MachineJoinRedeemed,
+    node_public_ip: Option<std::net::IpAddr>,
+) -> Result<RedeemedKeeperJoin, FailureMessage> {
     let node_id = redeemed.node_id.clone();
     let material = KeeperJoinMaterial::from_join_payload(
         node_id.clone(),
@@ -317,6 +358,19 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
         .direct_addresses
         .clone();
     let core_relay_url = redeemed.join_bundle.material.core_iroh.relay_url.clone();
+    let mut role_environment =
+        PloyzdRoleEnvironmentTarget::default_path(node_id.clone(), runtime_nats_client_url)
+            .with_edge_tunnel(
+                tunnel_listen_addr,
+                core_node,
+                core_public_key,
+                core_direct_addresses,
+                core_relay_url,
+            );
+    if let Some(public_ip) = node_public_ip {
+        role_environment = role_environment.with_node_public_ip(public_ip);
+    }
+
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
         node_id.clone(),
@@ -325,14 +379,7 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
             ployzd_artifact,
             DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
             roles,
-            PloyzdRoleEnvironmentTarget::default_path(node_id, runtime_nats_client_url)
-                .with_edge_tunnel(
-                    tunnel_listen_addr,
-                    core_node,
-                    core_public_key,
-                    core_direct_addresses,
-                    core_relay_url,
-                ),
+            role_environment,
         ),
     ))
 }
@@ -355,7 +402,7 @@ impl KeeperJoinTokenConsumer for StartupJoinTokenConsumer {
 
 #[cfg(test)]
 mod tests {
-    use super::keeper_join_target;
+    use super::keeper_join_target_with_public_ip;
     use ployz_core::ids::{NodeId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
@@ -384,13 +431,43 @@ mod tests {
             result: MachineJoinRedeemResult::Joined,
         };
 
-        let target = keeper_join_target(redeemed)
+        let target = keeper_join_target_with_public_ip(redeemed, None)
             .expect("redeemed bundle converts")
             .target;
 
         assert_eq!(
             target.role_environment.render(),
             "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\nPLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
+        );
+    }
+
+    #[test]
+    fn keeper_join_target_can_carry_node_public_ip_from_bootstrap_env() {
+        let redeemed = MachineJoinRedeemed {
+            operation_id: OperationId::try_new("op_machine").expect("valid operation id"),
+            node_id: NodeId::try_new("node_2").expect("valid node id"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: FirstNodeGateway::Skip,
+            join_bundle: machine_join_bundle(),
+            secret_delivery: machine_join_secret_delivery(),
+            joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
+            last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+                .expect("valid sequence"),
+            result: MachineJoinRedeemResult::Joined,
+        };
+
+        let target = keeper_join_target_with_public_ip(
+            redeemed,
+            Some("203.0.113.20".parse().expect("valid IP")),
+        )
+        .expect("redeemed bundle converts")
+        .target;
+
+        assert!(
+            target
+                .role_environment
+                .render()
+                .contains("PLOYZ_NODE_PUBLIC_IP=203.0.113.20\n")
         );
     }
 

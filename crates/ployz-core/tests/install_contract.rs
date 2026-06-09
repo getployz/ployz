@@ -56,6 +56,18 @@ fn keeper_first_node_install_can_carry_machine_join_template_file() {
 }
 
 #[test]
+fn keeper_first_node_install_can_carry_node_public_ip() {
+    let mut install = keeper_install(FirstNodeGateway::Skip);
+    install.node_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
+
+    assert!(
+        install
+            .render_command()
+            .contains("--node-public-ip '203.0.113.10'")
+    );
+}
+
+#[test]
 fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinClusterName::try_new("").is_err());
     assert!(MachineJoinClusterName::try_new("prod\nother").is_err());
@@ -183,6 +195,7 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
     KeeperFirstNodeInstall {
         node_id: NodeId::try_new("node_1").expect("valid node id"),
         gateway,
+        node_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,
         ployzd_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
