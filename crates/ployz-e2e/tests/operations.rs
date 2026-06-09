@@ -41,8 +41,13 @@ use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::{MachineAddBootstrapConfig, OperationControllers};
+use ployzd::deploy_worker::{
+    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerRequest,
+    NodeRuntimeUnavailableReason,
+};
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
 use ployzd::nats_process::NatsServerRuntime;
+use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 
 mod support;
@@ -467,6 +472,112 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .shutdown()
         .await
         .expect("node runtime shuts down");
+    control_runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let nats = TestNats::start_jetstream().await?;
+    let client = async_nats::connect(nats.url()).await?;
+    let jetstream = jetstream::new(client.clone());
+    let config = ControlProcessConfig::new(
+        NatsServerRuntime::External(nats_client_url(nats.url())),
+        node_id("core_1"),
+    )
+    .with_deploy_nodes(vec![node_id("node_a")])
+    .with_deploy_step_timeout(Duration::from_secs(2))
+    .with_machine_bootstrap(machine_bootstrap_config());
+    let control_runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .expect("open observation store");
+    observations
+        .replace_node_public_ip(&node_public_ip("node_a", 7))
+        .await
+        .expect("node public ip stores");
+    let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
+    let node_runtime = start_node_runtime_with_ports(
+        client.clone(),
+        node_id("node_a"),
+        runner.clone(),
+        ReadyWireGuardEbpf,
+        runner,
+    )
+    .await?;
+    let gateway_runtime = start_gateway_process_runtime_with_client(
+        client.clone(),
+        Duration::from_millis(10),
+        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        node_id("node_a"),
+    )
+    .await?;
+    let upstream = TestUpstream::start_with_expected_requests(2).await;
+    let api = OperationApiClient::new(client.clone());
+    let route_port = route_port(gateway_runtime.listen_addr().port());
+    let route_host = format!("node-down.local:{}", route_port.get());
+    let request = DeploySubmitRequest {
+        operation_id: operation_id("op_e2e_node_runtime_down_route"),
+        target: deploy_target_with_route(
+            "svc_api",
+            "node-down.local",
+            route_port.get(),
+            upstream.port(),
+        ),
+        idempotency_key: idempotency_key("idem_e2e_node_runtime_down_route"),
+    };
+
+    api.deploy_submit(&request).await?;
+
+    let status =
+        wait_for_terminal_deploy_status(&api, operation_id("op_e2e_node_runtime_down_route")).await;
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected routed deploy to complete, got {status:?}"
+    );
+    wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", upstream.port()).await;
+    assert_eq!(
+        http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+
+    node_runtime
+        .shutdown()
+        .await
+        .expect("node runtime shuts down");
+    let mut node_rpc = NatsNodeContainerRuntime::new(client.clone())
+        .with_request_timeout(Duration::from_millis(200));
+    assert_eq!(
+        node_rpc
+            .run_container(node_rpc_probe_request("node_a"))
+            .await
+            .expect_err("node service is unavailable after node runtime shutdown"),
+        NodeContainerRuntimeError::Unavailable {
+            node_id: node_id("node_a"),
+            reason: NodeRuntimeUnavailableReason::NoResponders,
+        }
+    );
+    assert_eq!(
+        http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(upstream.requests().await.len(), 2);
+
+    gateway_runtime.shutdown().await;
     control_runtime
         .shutdown()
         .await
@@ -1037,6 +1148,21 @@ fn deploy_target_with_route(
             endpoint_port: self::route_port(endpoint_port),
         }),
         ..deploy_target(service_id)
+    }
+}
+
+fn node_rpc_probe_request(node_id: &str) -> NodeRunContainerRequest {
+    NodeRunContainerRequest {
+        node_id: self::node_id(node_id),
+        image: image("ghcr.io/acme/api:probe"),
+        endpoint: None,
+        container: NodeContainerRunSpec {
+            service_id: service_id("svc_probe"),
+            revision_id: revision_id("rev_probe"),
+            operation_id: operation_id("op_probe"),
+            step_id: step_id("step_probe"),
+            kind: ManagedContainerKind::Service,
+        },
     }
 }
 

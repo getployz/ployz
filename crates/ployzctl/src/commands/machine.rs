@@ -1,6 +1,7 @@
 use std::fmt;
 
 use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::state::GatewayServingStatus;
 use ployz_sdk_types::{
@@ -43,6 +44,7 @@ pub struct MachineAddOutput {
     pub node_id: NodeId,
     pub accepted: AcceptedOperation,
     pub bootstrap_url: MachineBootstrapUrl,
+    pub join_bundle: MachineJoinBundle,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub join_token: MachineJoinToken,
 }
@@ -50,11 +52,14 @@ pub struct MachineAddOutput {
 impl MachineAddOutput {
     #[must_use]
     pub fn from_accepted(accepted: MachineAddAccepted) -> Self {
+        let join_bundle = accepted.join_bundle;
+        let runtime_nats_url = join_bundle.material.runtime_nats_url.clone();
         Self {
             node_id: accepted.node_id,
             accepted: accepted.accepted,
             bootstrap_url: accepted.bootstrap_url,
-            runtime_nats_url: accepted.join_bundle.material.runtime_nats_url,
+            join_bundle,
+            runtime_nats_url,
             join_token: accepted.join_token,
         }
     }
@@ -62,10 +67,11 @@ impl MachineAddOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nnode {}\njoin-token {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
+            "operation {}\nnode {}\njoin-token {}\nbootstrap-tunnel {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
             self.accepted.operation_id.as_str(),
             self.node_id.as_str(),
             self.join_token.as_str(),
+            self.render_bootstrap_tunnel_command(),
             shell_quote(self.bootstrap_url.as_str()),
             format_args!(
                 "PLOYZ_NATS_URL={} sh",
@@ -73,6 +79,52 @@ impl MachineAddOutput {
             ),
             shell_quote(self.join_token.as_str())
         )
+    }
+
+    #[must_use]
+    fn render_bootstrap_tunnel_command(&self) -> String {
+        let core = &self.join_bundle.material.core_iroh;
+        let listen_addr = self
+            .runtime_nats_url
+            .as_str()
+            .strip_prefix("nats://")
+            .expect("machine join runtime NATS URL is nats://");
+        let direct_addresses = core
+            .direct_addresses
+            .iter()
+            .map(ployz_core::install::MachineJoinIrohDirectAddress::as_str)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut env = vec![
+            format!(
+                "PLOYZ_NATS_URL={}",
+                shell_quote(self.runtime_nats_url.as_str())
+            ),
+            format!("PLOYZ_NODE_ID={}", shell_quote(self.node_id.as_str())),
+            format!("PLOYZ_TUNNEL_LISTEN_ADDR={}", shell_quote(listen_addr)),
+            format!(
+                "PLOYZ_TUNNEL_CORE_NODE={}",
+                shell_quote(core.node_id.as_str())
+            ),
+            format!(
+                "PLOYZ_TUNNEL_CORE_PUBLIC_KEY={}",
+                shell_quote(core.public_key.as_str())
+            ),
+        ];
+        if !direct_addresses.is_empty() {
+            env.push(format!(
+                "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS={}",
+                shell_quote(&direct_addresses)
+            ));
+        }
+        if let Some(relay_url) = &core.relay_url {
+            env.push(format!(
+                "PLOYZ_TUNNEL_CORE_RELAY_URL={}",
+                shell_quote(relay_url.as_str())
+            ));
+        }
+        env.push("ployzd tunnel --side edge".to_owned());
+        env.join(" ")
     }
 }
 
@@ -83,6 +135,7 @@ impl fmt::Debug for MachineAddOutput {
             .field("node_id", &self.node_id)
             .field("accepted", &self.accepted)
             .field("bootstrap_url", &self.bootstrap_url)
+            .field("join_bundle", &self.join_bundle)
             .field("runtime_nats_url", &self.runtime_nats_url)
             .field("join_token", &self.join_token)
             .finish()

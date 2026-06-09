@@ -3,6 +3,12 @@ use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::install::{
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
+    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinMaterial,
+    MachineJoinPloyzdArtifact, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
@@ -987,6 +993,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
+        join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
             .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
@@ -996,6 +1003,11 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     assert!(output.contains("operation op_machine"));
     assert!(output.contains("node node_2"));
     assert!(output.contains("join-token join_once_123"));
+    assert!(output.contains("bootstrap-tunnel "));
+    assert!(output.contains("PLOYZ_TUNNEL_LISTEN_ADDR='127.0.0.1:7422'"));
+    assert!(output.contains("PLOYZ_TUNNEL_CORE_PUBLIC_KEY='core-public-key'"));
+    assert!(output.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='203.0.113.10:4433'"));
+    assert!(output.contains("ployzd tunnel --side edge"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:7422' sh -s -- "));
     assert!(output.contains("--join-token 'join_once_123'"));
@@ -1009,6 +1021,7 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
+        join_bundle: machine_join_bundle("nats://127.0.0.1:7423"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7423")
             .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
@@ -1017,6 +1030,7 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains("join-token join_once_123"));
+    assert!(output.contains("PLOYZ_TUNNEL_LISTEN_ADDR='127.0.0.1:7423'"));
     assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:7423' sh -s -- "));
     assert!(output.contains("--join-token 'join_once_123'"));
 }
@@ -1028,6 +1042,7 @@ fn machine_add_debug_redacts_join_token() {
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
             .expect("valid bootstrap url"),
+        join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
             .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
@@ -1047,6 +1062,7 @@ fn machine_add_shell_quotes_join_material() {
         accepted: accepted_operation("op_machine"),
         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh/bootstrap?x='quoted'")
             .expect("valid bootstrap url"),
+        join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
             .expect("valid runtime NATS URL"),
         join_token: MachineJoinToken::try_new("join'quoted'").expect("valid join token"),
@@ -1328,6 +1344,67 @@ fn node_id(value: &str) -> NodeId {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
+    MachineJoinBundle {
+        material: MachineJoinMaterial {
+            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
+                .expect("valid runtime NATS URL"),
+            trusted_nats: MachineJoinTrustedNats {
+                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                    .expect("valid NATS server id"),
+                config_sha256: digest(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
+            },
+            core_iroh: MachineJoinCoreIrohEndpoint {
+                node_id: node_id("core_1"),
+                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                    .expect("valid core public key"),
+                direct_addresses: vec![
+                    MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
+                        .expect("valid direct address"),
+                ],
+                relay_url: None,
+            },
+            ployzd: MachineJoinPloyzdArtifact {
+                version: version("0.1.0"),
+                source: source("/tmp/ployzd"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/bin/ployzd"),
+            },
+            ebpf_bytecode: MachineJoinArtifact {
+                version: version("0.1.0"),
+                source: source("/tmp/ployz-ebpf-tc"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
+            },
+            ebpf_ctl: MachineJoinArtifact {
+                version: version("0.1.0"),
+                source: source("/tmp/ployz-ebpf-ctl"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/bin/ployz-ebpf-ctl"),
+            },
+        },
+    }
+}
+
+fn version(value: &str) -> InstallArtifactVersion {
+    InstallArtifactVersion::try_new(value).expect("valid artifact version")
+}
+
+fn source(value: &str) -> InstallArtifactSource {
+    InstallArtifactSource::try_new(value).expect("valid artifact source")
+}
+
+fn digest(value: &str) -> InstallSha256Digest {
+    InstallSha256Digest::try_new(value).expect("valid digest")
+}
+
+fn absolute_path(value: &str) -> AbsoluteInstallPath {
+    AbsoluteInstallPath::try_new(value).expect("valid absolute path")
 }
 
 fn run_ployzctl(args: &[&str]) -> Output {
