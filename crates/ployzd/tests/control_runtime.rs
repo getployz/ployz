@@ -76,17 +76,6 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .get_object_store("PLZ_BUNDLES")
         .await
         .expect("control runtime created PLZ_BUNDLES");
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state");
-    let first_node = core_state
-        .active_machine(&node_id("core_1"))
-        .await
-        .expect("first node active machine reads")
-        .expect("first node is active");
-    assert_eq!(first_node.node_id, node_id("core_1"));
-    assert_eq!(first_node.name.as_str(), "core_1");
-    assert_eq!(first_node.activated_by, operation_id("op_init"));
 
     runtime
         .shutdown()
@@ -95,7 +84,7 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 }
 
 #[tokio::test]
-async fn control_runtime_does_not_overwrite_existing_first_node_machine() {
+async fn control_runtime_does_not_mutate_machine_state_on_startup() {
     let nats = TestNats::start().await;
     let config = control_config();
     let runtime =
@@ -105,34 +94,16 @@ async fn control_runtime_does_not_overwrite_existing_first_node_machine() {
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state");
-    let existing = ActiveMachineState {
-        node_id: node_id("core_1"),
-        name: ployz_sdk_types::MachineName::try_new("first_core").expect("valid machine name"),
-        activated_by: operation_id("op_existing"),
-    };
-    core_state
-        .replace_active_machine(&existing)
-        .await
-        .expect("existing machine state stores");
 
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-    let restarted =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime restarts");
-
-    assert_eq!(
+    assert!(
         core_state
-            .active_machine(&node_id("core_1"))
+            .active_machines()
             .await
-            .expect("first node active machine reads"),
-        Some(existing)
+            .expect("active machines read")
+            .is_empty()
     );
 
-    restarted
+    runtime
         .shutdown()
         .await
         .expect("control runtime shuts down");
@@ -245,12 +216,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .await
         .expect("machines list")
         .machines;
-    assert!(
-        machines
-            .iter()
-            .any(|machine| machine.active.node_id == node_id("core_1"))
-    );
-    assert!(machines.contains(&inspected));
+    assert_eq!(machines, vec![inspected]);
 
     runtime
         .shutdown()
@@ -340,6 +306,13 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observations");
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state");
+    core_state
+        .replace_active_machine(&active_machine("node_a"))
+        .await
+        .expect("active machine stores");
     let node_runtime = start_node_runtime_with_ports(
         nats.client.clone(),
         node_id("node_a"),
@@ -427,6 +400,13 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observations");
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state");
+    core_state
+        .replace_active_machine(&active_machine("node_a"))
+        .await
+        .expect("active machine stores");
     observations
         .replace_node_public_ip(&NodePublicIpObservation {
             node_id: node_id("node_a"),
@@ -700,6 +680,14 @@ fn idempotency_key(value: &str) -> OperationIdempotencyKey {
 
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+fn active_machine(value: &str) -> ActiveMachineState {
+    ActiveMachineState {
+        node_id: node_id(value),
+        name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
+        activated_by: operation_id("op_machine_add"),
+    }
 }
 
 fn deploy_target(service_id: &str) -> DeployRequest {
