@@ -19,6 +19,7 @@ ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
 ployzctl machine list
 ployzctl machine inspect <node_id>
+ployzctl ops status <operation_id>
 ployzctl ops watch <operation_id>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,7 @@ pub enum PloyzctlCommand {
     MachineAdd(machine::MachineAddCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
+    OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
     Help,
 }
@@ -97,6 +99,9 @@ pub fn parse_command(
         }
         [command, subcommand, rest @ ..] if command == "machine" && subcommand == "inspect" => {
             machine::parse_machine_inspect_command(rest).map(PloyzctlCommand::MachineInspect)
+        }
+        [command, subcommand, rest @ ..] if command == "ops" && subcommand == "status" => {
+            ops::parse_ops_status_command(rest).map(PloyzctlCommand::OpsStatus)
         }
         [command, subcommand, rest @ ..] if command == "ops" && subcommand == "watch" => {
             ops::parse_ops_watch_command(rest).map(PloyzctlCommand::OpsWatch)

@@ -4,8 +4,10 @@ use std::process::{Command, Output};
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
+    DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationOwnerLease, OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
+    ReplayedOperationEvent,
 };
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
@@ -16,7 +18,7 @@ use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinToken,
     MachineListOutput, MachineName,
 };
-use ployzctl::commands::ops::WatchOutput;
+use ployzctl::commands::ops::{StatusOutput, WatchOutput};
 use ployzctl::commands::{
     PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, parse_invocation,
 };
@@ -190,6 +192,29 @@ fn cli_dispatches_ops_watch_request() {
 }
 
 #[test]
+fn cli_dispatches_ops_status_request() {
+    let command = parse_command(["ops", "status", "op_deploy"].map(str::to_owned))
+        .expect("ops status parses");
+
+    let PloyzctlCommand::OpsStatus(command) = command else {
+        panic!("expected ops status command");
+    };
+
+    assert_eq!(
+        command.into_request().operation_id,
+        operation_id("op_deploy")
+    );
+}
+
+#[test]
+fn cli_requires_ops_status_operation_id() {
+    assert!(matches!(
+        parse_command(["ops", "status"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<operation_id>"
+    ));
+}
+
+#[test]
 fn cli_requires_ops_watch_operation_id() {
     assert!(matches!(
         parse_command(["ops", "watch"].map(str::to_owned)),
@@ -359,6 +384,7 @@ fn binary_help_only_advertises_implemented_commands() {
     ));
     assert!(stdout(&output).contains("ployzctl machine list"));
     assert!(stdout(&output).contains("ployzctl machine inspect <node_id>"));
+    assert!(stdout(&output).contains("ployzctl ops status <operation_id>"));
     assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
 }
@@ -612,6 +638,19 @@ fn binary_ops_watch_requires_nats_url() {
 }
 
 #[test]
+fn binary_ops_status_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .args(["ops", "status", "op_deploy"])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+}
+
+#[test]
 fn binary_machine_list_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
@@ -680,6 +719,54 @@ fn ops_watch_renders_no_output_when_no_events_are_replayed() {
     let output = WatchOutput { events: Vec::new() }.render();
 
     assert_eq!(output, "");
+}
+
+#[test]
+fn ops_status_renders_operation_state_and_owner_lease() {
+    let output = StatusOutput::new(OperationStatusSnapshot::new(
+        OperationStatus::Deploy {
+            id: operation_id("op_deploy"),
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            state: DeployOperationState::Running {
+                stage: DeployRunningStage::WaitingForHealth,
+            },
+            last_event_sequence: event_sequence(7),
+        },
+        OperationOwnershipStatus::Owned {
+            lease: OperationOwnerLease::new(
+                operation_id("op_deploy"),
+                OperationOwnerId::try_new("control").expect("valid owner id"),
+                OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
+            ),
+        },
+    ))
+    .render();
+
+    assert_eq!(
+        output,
+        "operation op_deploy\nkind deploy\nservice svc_api\nstate running:waiting-for-health\nlast-event 7\nownership owned control expires-at 120\n"
+    );
+}
+
+#[test]
+fn ops_status_renders_unclaimed_machine_add() {
+    let output = StatusOutput::new(OperationStatusSnapshot::new(
+        OperationStatus::MachineAdd {
+            id: operation_id("op_machine"),
+            node_id: node_id("node_2"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: FirstNodeGateway::Skip,
+            state: ployz_core::machine::MachineAddOperationState::Completed,
+            last_event_sequence: event_sequence(9),
+        },
+        OperationOwnershipStatus::Unclaimed,
+    ))
+    .render();
+
+    assert_eq!(
+        output,
+        "operation op_machine\nkind machine-add\nnode node_2 name edge_2 gateway skip\nstate completed\nlast-event 9\nownership unclaimed\n"
+    );
 }
 
 #[test]

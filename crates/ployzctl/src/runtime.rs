@@ -16,7 +16,7 @@ use ployz_nats::connect::{
 };
 use ployz_sdk_types::{
     BackupCreateError, DeploySubmitError, MachineAddError, MachineInspectError, MachineListError,
-    OpsWatchError,
+    OpsStatusError, OpsWatchError,
 };
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -149,6 +149,18 @@ pub async fn execute_command(
 
             Ok(PloyzctlExecutionOutput::stdout(
                 crate::commands::machine::MachineInspectOutput::new(machine).render(),
+            ))
+        }
+        PloyzctlCommand::OpsStatus(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let snapshot = api
+                .ops_status(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::OpsStatusApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::ops::StatusOutput::new(snapshot).render(),
             ))
         }
         PloyzctlCommand::OpsWatch(command) => {
@@ -509,6 +521,9 @@ pub enum PloyzctlExecutionError {
     MachineInspectApi {
         source: OperationApiClientError<MachineInspectError>,
     },
+    OpsStatusApi {
+        source: OperationApiClientError<OpsStatusError>,
+    },
     OpsWatchApi {
         source: OperationApiClientError<OpsWatchError>,
     },
@@ -531,6 +546,7 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::MachineAddApi { source } => write!(formatter, "{source}"),
             Self::MachineListApi { source } => write!(formatter, "{source}"),
             Self::MachineInspectApi { source } => write!(formatter, "{source}"),
+            Self::OpsStatusApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),
         }
     }
