@@ -12,7 +12,9 @@ use crate::node_protocol::{
 };
 use crate::node_runtime_types::NodeRunContainerOutcome;
 use crate::services::{node_endpoint_spec, node_runtime_service_base};
-use ployz_core::dataplane::WireGuardEbpfPrepareError;
+use ployz_core::dataplane::{
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfReady,
+};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::{
@@ -351,7 +353,7 @@ fn inspect_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
 pub trait NodeWireGuardEbpfPreparer {
     fn prepare_wireguard_ebpf(
         &self,
-    ) -> impl std::future::Future<Output = Result<(), WireGuardEbpfPrepareError>> + Send;
+    ) -> impl std::future::Future<Output = Result<WireGuardEbpfReady, WireGuardEbpfPrepareError>> + Send;
 }
 
 async fn handle_wireguard_ebpf_prepare<P>(
@@ -378,7 +380,9 @@ where
     }
 
     match preparer.prepare_wireguard_ebpf().await {
-        Ok(()) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok { node_id }),
+        Ok(ready) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok {
+            readiness: WireGuardEbpfNodeReady::new(node_id, ready),
+        }),
         Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
             node_id,
             error: error.into(),

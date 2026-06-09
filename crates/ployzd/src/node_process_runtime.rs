@@ -357,7 +357,10 @@ mod tests {
         CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner,
         NodeContainerRunnerError,
     };
-    use ployz_core::dataplane::WireGuardEbpfPrepareError;
+    use ployz_core::dataplane::{
+        EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
+        WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    };
     use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
     use ployz_core::node::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
@@ -528,8 +531,23 @@ mod tests {
     struct ReadyWireGuardEbpf;
 
     impl crate::node_service_runtime::NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
-        async fn prepare_wireguard_ebpf(&self) -> Result<(), WireGuardEbpfPrepareError> {
-            Ok(())
+        async fn prepare_wireguard_ebpf(
+            &self,
+        ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
+            Ok(WireGuardEbpfReady {
+                wireguard: WireGuardReady {
+                    evidence: vec![WireGuardReadyEvidence::Command {
+                        program: "wg".to_owned(),
+                        args: vec!["--version".to_owned()],
+                    }],
+                },
+                ebpf_forwarding: EbpfForwardingReady {
+                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                        symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                    }],
+                },
+            })
         }
     }
 

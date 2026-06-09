@@ -1,4 +1,8 @@
-use ployz_core::dataplane::WireGuardEbpfComponent;
+use ployz_core::dataplane::{
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady,
+    WireGuardReadyEvidence,
+};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
@@ -31,6 +35,43 @@ fn wireguard_ebpf_running_stage_has_stable_wire_name() {
     assert_eq!(
         serde_json::to_string(&state).expect("state serializes"),
         r#"{"state":"running","stage":"preparing_wireguard_ebpf"}"#
+    );
+}
+
+#[test]
+fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
+    let event = OperationEvent::DeployWireGuardEbpfPrepared {
+        operation_id: operation_id("op_123"),
+        report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady::new(
+            node_id("node_7"),
+            WireGuardEbpfReady {
+                wireguard: WireGuardReady {
+                    evidence: vec![WireGuardReadyEvidence::Command {
+                        program: "wg".to_owned(),
+                        args: vec!["--version".to_owned()],
+                    }],
+                },
+                ebpf_forwarding: EbpfForwardingReady {
+                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                        symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                    }],
+                },
+            },
+        )])
+        .expect("valid report"),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&event).expect("event serializes"),
+        concat!(
+            r#"{"event":"deploy_wireguard_ebpf_prepared","operation_id":"op_123","#,
+            r#""report":{"nodes":[{"node_id":"node_7","#,
+            r#""wireguard":{"evidence":[{"kind":"command","program":"wg","args":["--version"]}]},"#,
+            r#""ebpf_forwarding":{"evidence":[{"kind":"ployz_tc_bytecode","#,
+            r#""path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc","#,
+            r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}"#
+        )
     );
 }
 

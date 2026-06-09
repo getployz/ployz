@@ -5,8 +5,9 @@ use ployz_core::subjects::{
     node_observation, node_service, op_cert_challenge_published, op_cert_completed, op_cert_failed,
     op_cert_submitted, op_cert_validation_started, op_deploy_completed,
     op_deploy_container_started, op_deploy_health_check_started, op_deploy_plan_created,
-    op_deploy_planning_started, op_deploy_running, op_deploy_submitted, op_machine_add_completed,
-    op_machine_add_failed, op_machine_add_joined, op_machine_add_submitted, op_watch,
+    op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
+    op_deploy_wireguard_ebpf_prepared, op_machine_add_completed, op_machine_add_failed,
+    op_machine_add_joined, op_machine_add_submitted, op_watch,
 };
 
 #[test]
@@ -29,6 +30,10 @@ fn operation_subjects_use_validated_operation_ids() {
     assert_eq!(
         op_deploy_running(&op_id, DeployRunningStage::ActiveServiceCommit),
         "plz.v1.op.op_123.deploy.running.active_service_commit"
+    );
+    assert_eq!(
+        op_deploy_wireguard_ebpf_prepared(&op_id),
+        "plz.v1.op.op_123.deploy.wireguard_ebpf.prepared"
     );
     assert_eq!(
         op_deploy_container_started(&op_id, &node_id("node_7"), &container_id("ctr_1")),

@@ -315,6 +315,12 @@ fn wireguard_ebpf_deploy_failure(
             message: message.clone(),
             retained_artifacts,
         },
+        WireGuardEbpfPrepareError::InvalidReport { message } => {
+            DeployOperationFailure::WireGuardEbpfInvalidReport {
+                message: message.clone(),
+                retained_artifacts,
+            }
+        }
     }
 }
 

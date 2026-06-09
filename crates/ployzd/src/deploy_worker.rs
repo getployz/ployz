@@ -98,7 +98,10 @@ where
     )
     .await
     .map_err(|source| failure(command, source, &started_containers))?;
-    prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
+    let dataplane = prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
+        .await
+        .map_err(|source| failure(command, source, &started_containers))?;
+    record_wireguard_ebpf_prepared(command, &mut *ports.recorder, dataplane)
         .await
         .map_err(|source| failure(command, source, &started_containers))?;
     record_running_stage(
@@ -378,7 +381,7 @@ async fn prepare_wireguard_ebpf<D>(
     command: &DeployExecutionCommand,
     plan: &DeployPlan,
     wireguard_ebpf: &mut D,
-) -> Result<(), DeployExecutionError>
+) -> Result<ployz_core::dataplane::WireGuardEbpfPrepareReport, DeployExecutionError>
 where
     D: WireGuardEbpfPreparer,
 {
@@ -390,6 +393,26 @@ where
         },
         wireguard_ebpf.prepare_wireguard_ebpf(request),
     )
+    .await
+}
+
+async fn record_wireguard_ebpf_prepared<R>(
+    command: &DeployExecutionCommand,
+    recorder: &mut R,
+    report: ployz_core::dataplane::WireGuardEbpfPrepareReport,
+) -> Result<(), DeployExecutionError>
+where
+    R: DeployOperationRecorder,
+{
+    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
+        recorder
+            .record_deploy_evidence(
+                &command.operation_id,
+                DeployEvidence::WireGuardEbpfPrepared { report },
+            )
+            .await
+            .map_err(DeployExecutionError::RecordEvidence)
+    })
     .await
 }
 

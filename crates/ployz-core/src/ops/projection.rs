@@ -115,6 +115,10 @@ pub fn validate_fresh_deploy_evidence(
     };
     let valid = match evidence {
         DeployEvidence::PlanCreated { .. } => matches!(state, DeployOperationState::Planning),
+        DeployEvidence::WireGuardEbpfPrepared { .. } => evidence_is_current_or_past_running_stage(
+            state,
+            DeployRunningStage::PreparingWireGuardEbpf,
+        ),
         DeployEvidence::ContainerStarted { .. } => {
             evidence_is_current_or_past_running_stage(state, DeployRunningStage::StartingContainers)
         }
@@ -160,6 +164,9 @@ fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
 fn deploy_evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence {
         DeployEvidence::PlanCreated { .. } => DeployOperationState::Planning,
+        DeployEvidence::WireGuardEbpfPrepared { .. } => DeployOperationState::Running {
+            stage: DeployRunningStage::PreparingWireGuardEbpf,
+        },
         DeployEvidence::ContainerStarted { .. } => DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
         },
@@ -421,6 +428,27 @@ fn project_deploy_event(
                     evidence_is_satisfied_after_stage(
                         state,
                         DeployRunningStage::StartingContainers,
+                    ),
+                    current,
+                    event_sequence,
+                );
+            }
+
+            Ok(OperationEventProjection::StatusChanged {
+                status: Box::new(evidence_status(current, event_sequence)),
+            })
+        }
+        DeployEvent::Evidence(DeployEvidence::WireGuardEbpfPrepared { .. }) => {
+            if !matches!(
+                state,
+                DeployOperationState::Running {
+                    stage: DeployRunningStage::PreparingWireGuardEbpf
+                }
+            ) {
+                return evidence_cursor_after_stage(
+                    evidence_is_satisfied_after_stage(
+                        state,
+                        DeployRunningStage::PreparingWireGuardEbpf,
                     ),
                     current,
                     event_sequence,

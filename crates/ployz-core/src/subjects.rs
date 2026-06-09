@@ -123,6 +123,14 @@ pub fn op_deploy_running(operation_id: &OperationId, stage: DeployRunningStage) 
 }
 
 #[must_use]
+pub fn op_deploy_wireguard_ebpf_prepared(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.deploy.wireguard_ebpf.prepared",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
 pub fn op_deploy_container_started(
     operation_id: &OperationId,
     node_id: &NodeId,

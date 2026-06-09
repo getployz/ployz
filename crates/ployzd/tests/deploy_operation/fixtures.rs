@@ -1,5 +1,7 @@
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport,
+    WireGuardEbpfPrepareRequest, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
@@ -52,6 +54,9 @@ pub(super) enum RecordedOperation {
     PlanCreated {
         replica_count: usize,
     },
+    WireGuardEbpfPrepared {
+        node_count: usize,
+    },
     HealthCheckStarted,
     ContainerStarted {
         node_id: NodeId,
@@ -93,6 +98,11 @@ impl DeployOperationRecorder for RecordingOperations {
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {
                     replica_count: plan.steps.len(),
+                });
+            }
+            DeployEvidence::WireGuardEbpfPrepared { report } => {
+                self.records.push(RecordedOperation::WireGuardEbpfPrepared {
+                    node_count: report.nodes.len(),
                 });
             }
             DeployEvidence::ContainerStarted {
@@ -154,13 +164,43 @@ impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
     async fn prepare_wireguard_ebpf(
         &mut self,
         request: WireGuardEbpfPrepareRequest,
-    ) -> Result<(), WireGuardEbpfPrepareError> {
+    ) -> Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError> {
+        let ready_nodes = request
+            .nodes
+            .iter()
+            .cloned()
+            .map(ready_node)
+            .collect::<Vec<_>>();
         self.requests.push(request);
         match &self.failure {
             Some(error) => Err(error.clone()),
-            None => Ok(()),
+            None => Ok(WireGuardEbpfPrepareReport::for_request(
+                self.requests.last().expect("request was just pushed"),
+                ready_nodes,
+            )
+            .expect("recording report matches request nodes")),
         }
     }
+}
+
+fn ready_node(node_id: NodeId) -> WireGuardEbpfNodeReady {
+    WireGuardEbpfNodeReady::new(
+        node_id,
+        WireGuardEbpfReady {
+            wireguard: WireGuardReady {
+                evidence: vec![WireGuardReadyEvidence::Command {
+                    program: "wg".to_owned(),
+                    args: vec!["--version".to_owned()],
+                }],
+            },
+            ebpf_forwarding: EbpfForwardingReady {
+                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                    symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                }],
+            },
+        },
+    )
 }
 
 pub(super) struct RecordingActiveState {

@@ -6,7 +6,7 @@ use std::num::{NonZeroU16, NonZeroU64};
 
 use crate::backup::BackupManifest;
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertValidityWindow};
-use crate::dataplane::WireGuardEbpfComponent;
+use crate::dataplane::{WireGuardEbpfComponent, WireGuardEbpfPrepareReport};
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
@@ -138,6 +138,11 @@ pub enum DeployOperationFailure {
     WireGuardEbpfPreparationTimedOut {
         nodes: Vec<NodeId>,
         timeout_seconds: u32,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    #[serde(rename = "wireguard_ebpf_invalid_report")]
+    WireGuardEbpfInvalidReport {
+        message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
     RuntimeUnavailable {
@@ -565,6 +570,9 @@ pub enum DeployEvidence {
     PlanCreated {
         plan: DeployPlan,
     },
+    WireGuardEbpfPrepared {
+        report: WireGuardEbpfPrepareReport,
+    },
     ContainerStarted {
         node_id: NodeId,
         container_id: ContainerId,
@@ -615,6 +623,10 @@ impl DeployEvidence {
             Self::PlanCreated { plan } => OperationEvent::DeployPlanCreated {
                 operation_id: operation_id.clone(),
                 plan: plan.clone(),
+            },
+            Self::WireGuardEbpfPrepared { report } => OperationEvent::DeployWireGuardEbpfPrepared {
+                operation_id: operation_id.clone(),
+                report: report.clone(),
             },
             Self::ContainerStarted {
                 node_id,
@@ -909,6 +921,11 @@ pub enum OperationEvent {
     DeployRunning {
         operation_id: OperationId,
         stage: DeployRunningStage,
+    },
+    #[serde(rename = "deploy_wireguard_ebpf_prepared")]
+    DeployWireGuardEbpfPrepared {
+        operation_id: OperationId,
+        report: WireGuardEbpfPrepareReport,
     },
     DeployContainerStarted {
         operation_id: OperationId,

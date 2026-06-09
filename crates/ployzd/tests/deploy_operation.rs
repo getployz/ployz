@@ -145,6 +145,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -251,6 +252,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -512,6 +514,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -719,6 +722,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -962,6 +966,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -1028,6 +1033,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
@@ -1093,6 +1099,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
+            RecordedOperation::WireGuardEbpfPrepared { node_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),

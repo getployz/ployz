@@ -1,5 +1,7 @@
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
@@ -296,10 +298,11 @@ async fn nats_node_preparer_calls_wireguard_ebpf_prepare_service() {
     .await;
     let mut preparer = NatsNodeWireGuardEbpfPreparer::new(nats.client);
 
-    preparer
+    let report = preparer
         .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a"]))
         .await
         .expect("wireguard ebpf prepare succeeds");
+    assert_eq!(report.nodes, vec![ready_node("node_a")]);
 
     assert_eq!(
         received
@@ -563,10 +566,36 @@ impl WireGuardEbpfPrepareResult {
     fn into_nats_response(self, node_id: NodeId) -> NatsServiceResponse {
         match self {
             Self::Ok => NatsServiceResponse::ok(encode_wireguard_ebpf_response(
-                NodeWireGuardEbpfPrepareRpcResponse::Ok { node_id },
+                NodeWireGuardEbpfPrepareRpcResponse::Ok {
+                    readiness: ready_node_for_id(node_id),
+                },
             )),
         }
     }
+}
+
+fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
+    ready_node_for_id(self::node_id(node_id))
+}
+
+fn ready_node_for_id(node_id: NodeId) -> WireGuardEbpfNodeReady {
+    WireGuardEbpfNodeReady::new(
+        node_id,
+        WireGuardEbpfReady {
+            wireguard: WireGuardReady {
+                evidence: vec![WireGuardReadyEvidence::Command {
+                    program: "wg".to_owned(),
+                    args: vec!["--version".to_owned()],
+                }],
+            },
+            ebpf_forwarding: EbpfForwardingReady {
+                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                    symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                }],
+            },
+        },
+    )
 }
 
 fn remove_request(node_id: &str, container_id: &str) -> NodeRemoveContainerRequest {

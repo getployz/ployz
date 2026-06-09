@@ -643,6 +643,11 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         OperationEvent::DeployPlanCreated { plan, .. } => {
             Some(DeployEvidence::PlanCreated { plan: plan.clone() })
         }
+        OperationEvent::DeployWireGuardEbpfPrepared { report, .. } => {
+            Some(DeployEvidence::WireGuardEbpfPrepared {
+                report: report.clone(),
+            })
+        }
         OperationEvent::DeployContainerStarted {
             node_id,
             container_id,

@@ -22,7 +22,11 @@ pub use ployz_core::cert::{
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
 };
-pub use ployz_core::dataplane::WireGuardEbpfComponent;
+pub use ployz_core::dataplane::{
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady,
+    WireGuardReadyEvidence,
+};
 pub use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference, ImageReferenceError,
     ReplicaCount, ReplicaCountError, ReplicaSlot,

@@ -1,5 +1,7 @@
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
@@ -339,12 +341,13 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
     .expect("node wireguard ebpf service starts");
     let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
 
-    client
+    let report = client
         .prepare_wireguard_ebpf(wireguard_ebpf_request(&["node_a"]))
         .await
         .expect("wireguard ebpf prepare succeeds");
 
     assert_eq!(state.prepare_count(), 1);
+    assert_eq!(report.nodes, vec![ready_node("node_a")]);
 }
 
 #[tokio::test]
@@ -632,7 +635,9 @@ impl RecordingWireGuardEbpf {
 }
 
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
-    async fn prepare_wireguard_ebpf(&self) -> Result<(), WireGuardEbpfPrepareError> {
+    async fn prepare_wireguard_ebpf(
+        &self,
+    ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
         self.state
             .inner
             .lock()
@@ -641,8 +646,29 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 
         match &self.failure {
             Some(error) => Err(error.clone()),
-            None => Ok(()),
+            None => Ok(ready_components()),
         }
+    }
+}
+
+fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
+    WireGuardEbpfNodeReady::new(self::node_id(node_id), ready_components())
+}
+
+fn ready_components() -> WireGuardEbpfReady {
+    WireGuardEbpfReady {
+        wireguard: WireGuardReady {
+            evidence: vec![WireGuardReadyEvidence::Command {
+                program: "wg".to_owned(),
+                args: vec!["--version".to_owned()],
+            }],
+        },
+        ebpf_forwarding: EbpfForwardingReady {
+            evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+            }],
+        },
     }
 }
 

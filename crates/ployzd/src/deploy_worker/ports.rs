@@ -1,4 +1,6 @@
-use ployz_core::dataplane::{WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest};
+use ployz_core::dataplane::{
+    WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport, WireGuardEbpfPrepareRequest,
+};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{DeployEvidence, DeployTransition};
 use ployz_core::state::{
@@ -43,7 +45,7 @@ pub trait WireGuardEbpfPreparer {
     fn prepare_wireguard_ebpf(
         &mut self,
         request: WireGuardEbpfPrepareRequest,
-    ) -> impl Future<Output = Result<(), WireGuardEbpfPrepareError>> + Send;
+    ) -> impl Future<Output = Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError>> + Send;
 }
 
 pub trait DeployHealthChecker {

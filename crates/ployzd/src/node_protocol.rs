@@ -6,7 +6,8 @@ use crate::node_runtime_types::{
     NodeRunContainerOutcome, NodeRunContainerRequest,
 };
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
+    WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
+    WireGuardEbpfPrepareRequest,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
@@ -141,7 +142,7 @@ impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeWireGuardEbpfPrepareRpcResponse {
     Ok {
-        node_id: NodeId,
+        readiness: WireGuardEbpfNodeReady,
     },
     DomainError {
         node_id: NodeId,
@@ -164,6 +165,10 @@ impl From<WireGuardEbpfPrepareError> for NodeWireGuardEbpfPrepareDomainError {
             WireGuardEbpfPrepareError::Unavailable {
                 component, message, ..
             } => Self::Unavailable { component, message },
+            WireGuardEbpfPrepareError::InvalidReport { message } => Self::Unavailable {
+                component: WireGuardEbpfComponent::WireGuard,
+                message,
+            },
         }
     }
 }
