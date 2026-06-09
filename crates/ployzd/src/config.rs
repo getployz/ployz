@@ -81,14 +81,18 @@ pub fn load_daemon_process_config(
         }
         DaemonProcessRole::Node(node_id) => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(DaemonProcessConfig::Node(NodeProcessConfig::new(
-                node_id.clone(),
-                nats_url,
-                load_ebpf_bytecode_path(&env),
-                load_ebpf_ctl_path(&env),
+            let artifacts =
+                NodeProcessArtifacts::new(load_ebpf_bytecode_path(&env), load_ebpf_ctl_path(&env));
+            let dataplane = NodeDataplaneConfig::new(
                 load_dataplane_bridge_ifname(&env),
                 load_dataplane_wg_ifname(&env),
                 load_dataplane_endpoint_subnet(&env, node_id),
+            );
+            Ok(DaemonProcessConfig::Node(NodeProcessConfig::new(
+                node_id.clone(),
+                nats_url,
+                artifacts,
+                dataplane,
                 load_node_public_ip(&env)?,
             )))
         }
@@ -648,26 +652,57 @@ pub struct NodeProcessConfig {
     pub public_ip: Option<IpAddr>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeProcessArtifacts {
+    pub ebpf_bytecode_path: std::path::PathBuf,
+    pub ebpf_ctl_path: std::path::PathBuf,
+}
+
+impl NodeProcessArtifacts {
+    #[must_use]
+    pub fn new(ebpf_bytecode_path: std::path::PathBuf, ebpf_ctl_path: std::path::PathBuf) -> Self {
+        Self {
+            ebpf_bytecode_path,
+            ebpf_ctl_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeDataplaneConfig {
+    pub bridge_ifname: String,
+    pub wg_ifname: String,
+    pub endpoint_subnet: String,
+}
+
+impl NodeDataplaneConfig {
+    #[must_use]
+    pub fn new(bridge_ifname: String, wg_ifname: String, endpoint_subnet: String) -> Self {
+        Self {
+            bridge_ifname,
+            wg_ifname,
+            endpoint_subnet,
+        }
+    }
+}
+
 impl NodeProcessConfig {
     #[must_use]
     pub fn new(
         node_id: NodeId,
         nats_url: NatsClientUrl,
-        ebpf_bytecode_path: std::path::PathBuf,
-        ebpf_ctl_path: std::path::PathBuf,
-        dataplane_bridge_ifname: String,
-        dataplane_wg_ifname: String,
-        dataplane_endpoint_subnet: String,
+        artifacts: NodeProcessArtifacts,
+        dataplane: NodeDataplaneConfig,
         public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
             node_id,
             nats_url,
-            ebpf_bytecode_path,
-            ebpf_ctl_path,
-            dataplane_bridge_ifname,
-            dataplane_wg_ifname,
-            dataplane_endpoint_subnet,
+            ebpf_bytecode_path: artifacts.ebpf_bytecode_path,
+            ebpf_ctl_path: artifacts.ebpf_ctl_path,
+            dataplane_bridge_ifname: dataplane.bridge_ifname,
+            dataplane_wg_ifname: dataplane.wg_ifname,
+            dataplane_endpoint_subnet: dataplane.endpoint_subnet,
             public_ip,
         }
     }

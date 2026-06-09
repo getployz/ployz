@@ -39,6 +39,7 @@ impl TestHttpUpstream {
         }
     }
 
+    #[must_use]
     pub fn port(&self) -> u16 {
         self.addr.port()
     }
@@ -55,7 +56,9 @@ async fn read_until_http_head(stream: &mut tokio::net::TcpStream, request: &mut 
         if read == 0 {
             return;
         }
-        request.extend_from_slice(&chunk[..read]);
+        if let Some(bytes) = chunk.get(..read) {
+            request.extend_from_slice(bytes);
+        }
         if request.windows(4).any(|window| window == b"\r\n\r\n") {
             return;
         }

@@ -66,7 +66,6 @@ fn cli_init_activate_first_node_is_explicit_subcommand() {
 
     assert_eq!(command.node_id, node_id("node_1"));
     assert_eq!(command.gateway, FirstNodeGateway::Install);
-    assert_eq!(command.render(), "activate first node node_1\n");
 }
 
 #[test]

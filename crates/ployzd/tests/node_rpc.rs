@@ -360,27 +360,29 @@ async fn nats_node_preparer_bootstraps_public_keys_then_programs_peers() {
         .lock()
         .expect("received request lock is not poisoned")
         .clone();
-    assert_eq!(received.len(), 4);
+    let [first_read, second_read, first_prepare, second_prepare] = received.as_slice() else {
+        panic!("expected two read requests and two prepare requests");
+    };
     assert_eq!(
-        received[0].phase,
+        first_read.phase,
         NodeWireGuardEbpfPreparePhase::ReadPublicKey
     );
     assert_eq!(
-        received[1].phase,
+        second_read.phase,
         NodeWireGuardEbpfPreparePhase::ReadPublicKey
     );
     assert_eq!(
-        received[2].phase,
+        first_prepare.phase,
         NodeWireGuardEbpfPreparePhase::PrepareDataplane
     );
     assert_eq!(
-        received[3].phase,
+        second_prepare.phase,
         NodeWireGuardEbpfPreparePhase::PrepareDataplane
     );
-    assert!(received[0].peers.is_empty());
-    assert!(received[1].peers.is_empty());
+    assert!(first_read.peers.is_empty());
+    assert!(second_read.peers.is_empty());
     assert_eq!(
-        received[2].peers,
+        first_prepare.peers,
         vec![
             ployz_core::dataplane::WireGuardPeer::from_endpoint(
                 peer_endpoint("node_a", 1),
@@ -392,7 +394,7 @@ async fn nats_node_preparer_bootstraps_public_keys_then_programs_peers() {
             ),
         ]
     );
-    assert_eq!(received[3].peers, received[2].peers);
+    assert_eq!(second_prepare.peers, first_prepare.peers);
 }
 
 #[tokio::test]

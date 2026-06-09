@@ -313,7 +313,9 @@ impl NodeLogReader for DockerManagedContainerRunner {
                     let remaining = MAX_LOG_TAIL_BYTES.saturating_sub(output.len());
                     let bytes = chunk.as_ref();
                     if bytes.len() > remaining {
-                        output.extend_from_slice(&bytes[..remaining]);
+                        if let Some(capped) = bytes.get(..remaining) {
+                            output.extend_from_slice(capped);
+                        }
                         truncated = true;
                         break;
                     }

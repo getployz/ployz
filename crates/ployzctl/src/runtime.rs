@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{OperationApiClient, OperationApiClientError, OperationApiRequestFailure};
 use crate::commands::init::{
-    FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeGateway, FirstNodeInitMode,
+    FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeInitMode,
 };
 use crate::commands::{PloyzctlCommand, USAGE};
 use ployz_core::ids::OperationId;
@@ -21,9 +21,9 @@ use ployz_nats::connect::{
     NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
 };
 use ployz_sdk_types::{
-    BackupCreateError, DeploySubmitError, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
-    LogsTailError, MachineAddError, MachineInspectError, MachineListError, OpsStatusError,
-    OpsStatusRequest, OpsWatchError, ServiceInspectError, ServiceListError,
+    BackupCreateError, DeploySubmitError, InitFirstNodeActivateError, LogsTailError,
+    MachineAddError, MachineInspectError, MachineListError, OpsStatusError, OpsStatusRequest,
+    OpsWatchError, ServiceInspectError, ServiceListError,
 };
 use tokio::time::sleep as async_sleep;
 
@@ -349,10 +349,7 @@ async fn activate_first_node_machine_once(
 ) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
     let api = operation_api_client(config).await?;
     let activated = api
-        .init_first_node_activate(&InitFirstNodeActivateRequest {
-            node_id: command.node_id.clone(),
-            gateway: machine_add_gateway(command.gateway),
-        })
+        .init_first_node_activate(&command.clone().into_request())
         .await
         .map_err(|source| PloyzctlExecutionError::FirstNodeActivateApi { source })?;
 
@@ -360,13 +357,6 @@ async fn activate_first_node_machine_once(
         operation_id: activated.operation_id,
         node_id: activated.node_id,
     })
-}
-
-const fn machine_add_gateway(gateway: FirstNodeGateway) -> ployz_sdk_types::MachineAddGateway {
-    match gateway {
-        FirstNodeGateway::Install => ployz_sdk_types::MachineAddGateway::Install,
-        FirstNodeGateway::Skip => ployz_sdk_types::MachineAddGateway::Skip,
-    }
 }
 
 fn run_keeper_first_node_install(

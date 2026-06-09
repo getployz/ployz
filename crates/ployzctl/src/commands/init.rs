@@ -7,6 +7,7 @@ pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 use std::net::IpAddr;
 
 use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+use ployz_sdk_types::{InitFirstNodeActivateRequest, MachineAddGateway};
 
 pub mod join_template;
 
@@ -106,8 +107,14 @@ impl FirstNodeActivateCommand {
     }
 
     #[must_use]
-    pub fn render(&self) -> String {
-        format!("activate first node {}\n", self.node_id.as_str())
+    pub fn into_request(self) -> InitFirstNodeActivateRequest {
+        InitFirstNodeActivateRequest {
+            node_id: self.node_id,
+            gateway: match self.gateway {
+                FirstNodeGateway::Install => MachineAddGateway::Install,
+                FirstNodeGateway::Skip => MachineAddGateway::Skip,
+            },
+        }
     }
 }
 

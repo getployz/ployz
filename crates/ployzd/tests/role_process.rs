@@ -11,9 +11,10 @@ use ployzd::app::{
 };
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, NodeProcessConfig, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV,
-    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_EBPF_BYTECODE_ENV,
-    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    GatewayProcessConfig, NodeDataplaneConfig, NodeProcessArtifacts, NodeProcessConfig,
+    PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
+    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV,
+    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
     PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
     PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
@@ -61,11 +62,12 @@ fn node_process_owns_node_rpc_and_observations_only() {
     let config = DaemonProcessConfig::Node(NodeProcessConfig::new(
         node_id.clone(),
         url.clone(),
-        "/tmp/ployz-ebpf".into(),
-        "/tmp/ployz-ebpf-ctl".into(),
-        "docker0".to_owned(),
-        "ployz-wg0".to_owned(),
-        "10.42.7.0/24".to_owned(),
+        NodeProcessArtifacts::new("/tmp/ployz-ebpf".into(), "/tmp/ployz-ebpf-ctl".into()),
+        NodeDataplaneConfig::new(
+            "docker0".to_owned(),
+            "ployz-wg0".to_owned(),
+            "10.42.7.0/24".to_owned(),
+        ),
         None,
     ));
     let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
