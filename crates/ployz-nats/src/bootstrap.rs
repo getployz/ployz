@@ -11,8 +11,6 @@ use crate::replication::ReplicationFactor;
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError, ScheduleCapability};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
-use ployz_core::ha::CoreTopology;
-use ployz_core::ids::NodeId;
 use ployz_core::subjects::{
     AUDIT_STREAM_SUBJECT, JOBS_STREAM_SUBJECT, OBS_TRANSITION_STREAM_SUBJECT, OPS_STREAM_SUBJECT,
     SCHEDULE_STREAM_SUBJECT,
@@ -45,11 +43,7 @@ pub struct BootstrapPlan {
 }
 
 impl BootstrapPlan {
-    pub fn for_single_server_client_and_topology(
-        client: &async_nats::Client,
-        _topology: &CoreTopology,
-        node_id: NodeId,
-    ) -> Result<Self, BootstrapRefusal> {
+    pub fn for_single_server_client(client: &async_nats::Client) -> Result<Self, BootstrapRefusal> {
         let server = client.server_info();
         let version = NatsServerVersion::parse(&server.version).map_err(|source| {
             BootstrapRefusal::InvalidServerVersion {
@@ -57,16 +51,7 @@ impl BootstrapPlan {
                 source,
             }
         })?;
-        let capabilities = NatsServerCapabilities::new(version, server.jetstream, node_id);
-
-        Self::for_single_core(capabilities)
-    }
-
-    pub fn for_core_topology(
-        capabilities: NatsServerCapabilities,
-        topology: &CoreTopology,
-    ) -> Result<Self, BootstrapRefusal> {
-        let _single_core = topology.node();
+        let capabilities = NatsServerCapabilities::new(version, server.jetstream);
 
         Self::for_single_core(capabilities)
     }
@@ -184,16 +169,14 @@ impl BootstrapPlan {
 pub struct NatsServerCapabilities {
     pub version: NatsServerVersion,
     pub jetstream_enabled: bool,
-    pub configured_node_id: NodeId,
 }
 
 impl NatsServerCapabilities {
     #[must_use]
-    pub const fn new(version: NatsServerVersion, jetstream_enabled: bool, node_id: NodeId) -> Self {
+    pub const fn new(version: NatsServerVersion, jetstream_enabled: bool) -> Self {
         Self {
             version,
             jetstream_enabled,
-            configured_node_id: node_id,
         }
     }
 }

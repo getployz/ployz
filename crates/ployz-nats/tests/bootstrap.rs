@@ -1,5 +1,3 @@
-use ployz_core::ha::CoreTopology;
-use ployz_core::ids::NodeId;
 use ployz_nats::bootstrap::{
     BootstrapPlan, BootstrapRefusal, BootstrapResourceAction, BootstrapResourceRefusal,
     ExistingResources, NatsServerCapabilities, assure_nats_resources,
@@ -9,13 +7,8 @@ use ployz_nats::schedules::NatsServerVersion;
 use ployz_nats::streams::{DiscardPolicy, RetentionPolicy};
 
 fn supported_single_core_plan() -> BootstrapPlan {
-    let topology = CoreTopology::single(node_id("core_1"));
-
-    BootstrapPlan::for_core_topology(
-        single_capabilities("core_1", NatsServerVersion::new(2, 14, 2), true),
-        &topology,
-    )
-    .expect("supported nats-server can be bootstrapped")
+    BootstrapPlan::for_single_core(single_capabilities(NatsServerVersion::new(2, 14, 2), true))
+        .expect("supported nats-server can be bootstrapped")
 }
 
 fn existing_from_plan(plan: &BootstrapPlan) -> ExistingResources {
@@ -105,22 +98,6 @@ fn operation_stream_is_retained_history_not_work_queue() {
 }
 
 #[test]
-fn bootstrap_uses_core_topology_as_single_core_shape() {
-    let topology = CoreTopology::single(node_id("core_1"));
-    let plan = BootstrapPlan::for_core_topology(
-        single_capabilities("configured_core", NatsServerVersion::new(2, 14, 2), true),
-        &topology,
-    )
-    .expect("single-core topology is enough to render v1 resources");
-
-    assert!(
-        plan.kv_buckets
-            .iter()
-            .all(|bucket| bucket.replicas == ReplicationFactor::One)
-    );
-}
-
-#[test]
 fn jobs_stream_is_separate_from_operation_history() {
     let plan = supported_single_core_plan();
     let jobs = plan
@@ -135,12 +112,9 @@ fn jobs_stream_is_separate_from_operation_history() {
 
 #[test]
 fn schedule_stream_tracks_server_capability() {
-    let topology = CoreTopology::single(node_id("core_1"));
-    let plan = BootstrapPlan::for_core_topology(
-        single_capabilities("core_1", NatsServerVersion::new(2, 12, 0), true),
-        &topology,
-    )
-    .expect("minimum supported nats-server can be bootstrapped");
+    let plan =
+        BootstrapPlan::for_single_core(single_capabilities(NatsServerVersion::new(2, 12, 0), true))
+            .expect("minimum supported nats-server can be bootstrapped");
     let schedule_stream = plan
         .streams
         .iter()
@@ -254,22 +228,20 @@ fn bootstrap_creates_missing_resource_by_name() {
 
 #[test]
 fn bootstrap_refuses_without_jetstream() {
-    let topology = CoreTopology::single(node_id("core_1"));
-    let capabilities = single_capabilities("core_1", NatsServerVersion::new(2, 14, 2), false);
+    let capabilities = single_capabilities(NatsServerVersion::new(2, 14, 2), false);
 
     assert_eq!(
-        BootstrapPlan::for_core_topology(capabilities, &topology),
+        BootstrapPlan::for_single_core(capabilities),
         Err(BootstrapRefusal::JetStreamDisabled)
     );
 }
 
 #[test]
 fn bootstrap_refuses_old_nats_server() {
-    let topology = CoreTopology::single(node_id("core_1"));
-    let capabilities = single_capabilities("core_1", NatsServerVersion::new(2, 11, 9), true);
+    let capabilities = single_capabilities(NatsServerVersion::new(2, 11, 9), true);
 
     assert_eq!(
-        BootstrapPlan::for_core_topology(capabilities, &topology),
+        BootstrapPlan::for_single_core(capabilities),
         Err(BootstrapRefusal::UnsupportedServerVersion {
             minimum: NatsServerVersion::new(2, 12, 0),
             actual: NatsServerVersion::new(2, 11, 9),
@@ -277,14 +249,9 @@ fn bootstrap_refuses_old_nats_server() {
     );
 }
 
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
 fn single_capabilities(
-    node: &str,
     version: NatsServerVersion,
     jetstream_enabled: bool,
 ) -> NatsServerCapabilities {
-    NatsServerCapabilities::new(version, jetstream_enabled, node_id(node))
+    NatsServerCapabilities::new(version, jetstream_enabled)
 }

@@ -52,12 +52,8 @@ pub async fn start_control_runtime_with_client(
     if config.machine_bootstrap.join_template.is_none() {
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
     }
-    let plan = BootstrapPlan::for_single_server_client_and_topology(
-        &client,
-        &config.core_topology,
-        config.core_node_id.clone(),
-    )
-    .map_err(ControlRuntimeError::PlanBootstrap)?;
+    let plan = BootstrapPlan::for_single_server_client(&client)
+        .map_err(ControlRuntimeError::PlanBootstrap)?;
     let jetstream = async_nats::jetstream::new(client.clone());
     ployz_nats::bootstrap::assure_nats_resources(&jetstream, &plan)
         .await

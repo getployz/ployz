@@ -5,7 +5,6 @@ use async_nats::jetstream;
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, ImageReference, ReplicaCount, plan_service_deploy,
 };
-use ployz_core::ha::CoreTopology;
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
 use ployz_core::ops::{
@@ -389,12 +388,7 @@ async fn bootstrap_nats_resources(
     client: &async_nats::Client,
     jetstream: &jetstream::Context,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let node_id = node_id("core_1");
-    let topology =
-        CoreTopology::from_nodes(vec![node_id.clone()]).expect("single-node topology is valid");
-    let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client_and_topology(
-        client, &topology, node_id,
-    )?;
+    let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client(client)?;
     ployz_nats::bootstrap::assure_nats_resources(jetstream, &plan)
         .await
         .map_err(Into::into)

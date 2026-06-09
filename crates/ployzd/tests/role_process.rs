@@ -36,8 +36,7 @@ fn control_process_owns_api_and_nats_assurance() {
     let DaemonProcessConfig::Control(config) = &config else {
         panic!("control config stays typed");
     };
-    assert_eq!(config.core_node_id, node_id("core_1"));
-    assert_eq!(config.core_topology.nodes(), &[node_id("core_1")]);
+    assert_eq!(config.deploy_nodes, vec![node_id("core_1")]);
     assert_eq!(plan.nats, NatsServerRuntime::External(url.clone()));
     assert_eq!(plan.nats_url(), url);
     assert_eq!(

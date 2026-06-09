@@ -1,7 +1,6 @@
 use async_nats::jetstream;
 use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
 use ployz_core::deploy::ImageReference;
-use ployz_core::ha::CoreTopology;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -104,13 +103,8 @@ impl TestNats {
 }
 
 async fn bootstrap_nats_resources(client: &async_nats::Client, jetstream: &jetstream::Context) {
-    let node_id = node_id("core_1");
-    let topology =
-        CoreTopology::from_nodes(vec![node_id.clone()]).expect("single-node topology is valid");
-    let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client_and_topology(
-        client, &topology, node_id,
-    )
-    .expect("bootstrap plan builds");
+    let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client(client)
+        .expect("bootstrap plan builds");
     ployz_nats::bootstrap::assure_nats_resources(jetstream, &plan)
         .await
         .expect("nats resources are bootstrapped");

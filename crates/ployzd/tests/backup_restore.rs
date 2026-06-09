@@ -207,13 +207,8 @@ impl TestNats {
 }
 
 async fn assure_control_resources(nats: &TestNats) {
-    let config = config();
-    let plan = BootstrapPlan::for_single_server_client_and_topology(
-        &nats.client,
-        &config.core_topology,
-        config.core_node_id,
-    )
-    .expect("bootstrap plan builds");
+    let plan =
+        BootstrapPlan::for_single_server_client(&nats.client).expect("bootstrap plan builds");
     assure_nats_resources(&nats.jetstream, &plan)
         .await
         .expect("bootstrap resources are assured");

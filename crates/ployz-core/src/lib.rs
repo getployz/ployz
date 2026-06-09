@@ -11,7 +11,6 @@ pub mod backup;
 pub mod cert;
 pub mod dataplane;
 pub mod deploy;
-pub mod ha;
 pub mod ids;
 pub mod install;
 pub mod machine;

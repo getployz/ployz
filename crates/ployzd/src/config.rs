@@ -1,6 +1,5 @@
 //! Role-specific daemon configuration.
 
-use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{InstallContractError, MachineBootstrapUrl, MachineJoinTemplate};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -379,8 +378,6 @@ impl std::error::Error for DaemonProcessConfigError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlProcessConfig {
     pub nats: NatsServerRuntime,
-    pub core_node_id: NodeId,
-    pub core_topology: CoreTopology,
     pub deploy_nodes: Vec<NodeId>,
     pub deploy_step_timeout: Duration,
     pub machine_bootstrap: MachineAddBootstrapConfig,
@@ -388,14 +385,10 @@ pub struct ControlProcessConfig {
 
 impl ControlProcessConfig {
     #[must_use]
-    pub fn new(nats: NatsServerRuntime, core_node_id: NodeId) -> Self {
-        let core_topology = CoreTopology::from_nodes(vec![core_node_id.clone()])
-            .expect("single-core process config uses a valid topology");
+    pub fn new(nats: NatsServerRuntime, first_deploy_node: NodeId) -> Self {
         Self {
             nats,
-            core_node_id: core_node_id.clone(),
-            core_topology,
-            deploy_nodes: vec![core_node_id],
+            deploy_nodes: vec![first_deploy_node],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
             machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
         }
