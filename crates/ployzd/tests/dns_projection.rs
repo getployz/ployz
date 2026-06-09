@@ -1,7 +1,7 @@
 use ployz_core::ops::RouteHostname;
 use ployzd::dns::{
     DnsAnswer, DnsProjection, DnsProjectionError, DnsProjectionInput, DnsProjectionState,
-    DnsProjectionUpdate, DnsRecordSet, apply_dns_update, project_dns,
+    DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, apply_dns_update, project_dns,
 };
 
 #[test]
@@ -104,6 +104,39 @@ fn dns_keeps_failure_evidence_when_invalid_source_then_disappears() {
 }
 
 #[test]
+fn dns_runtime_keeps_serving_last_good_answers_after_source_disappears() {
+    let mut runtime = DnsRuntime::new();
+    let hostname = route_hostname("api.example.com");
+    let first_tick =
+        runtime.apply_source_update(DnsProjectionUpdate::SourceAvailable(DnsProjectionInput {
+            records: vec![record("api.example.com", ["203.0.113.10"])],
+        }));
+
+    assert_eq!(
+        first_tick.serving,
+        DnsServingState::Current { record_count: 1 }
+    );
+    assert_eq!(
+        runtime.answers().answers_for(&hostname),
+        &[DnsAnswer::try_new("203.0.113.10").expect("valid answer")]
+    );
+
+    let second_tick = runtime.apply_source_update(DnsProjectionUpdate::SourceUnavailable);
+
+    assert!(matches!(
+        second_tick.serving,
+        DnsServingState::LastKnownGood {
+            record_count: 1,
+            ..
+        }
+    ));
+    assert_eq!(
+        runtime.answers().answers_for(&hostname),
+        &[DnsAnswer::try_new("203.0.113.10").expect("valid answer")]
+    );
+}
+
+#[test]
 fn dns_answers_reject_empty_and_whitespace_values() {
     assert_eq!(
         DnsAnswer::try_new(""),
@@ -119,9 +152,13 @@ fn dns_answers_reject_empty_and_whitespace_values() {
     );
 }
 
+fn route_hostname(value: &str) -> RouteHostname {
+    RouteHostname::try_new(value).expect("valid route hostname")
+}
+
 fn record<const N: usize>(hostname: &str, answers: [&str; N]) -> DnsRecordSet {
     DnsRecordSet {
-        hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
+        hostname: route_hostname(hostname),
         answers: answers
             .into_iter()
             .map(|answer| DnsAnswer::try_new(answer).expect("valid DNS answer"))
