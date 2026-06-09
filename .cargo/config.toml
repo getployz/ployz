@@ -1,0 +1,4 @@
+[build]
+# Keep build artifacts in /tmp. macOS Gatekeeper slows Codex down when it
+# repeatedly spawns newly built binaries from the repo checkout.
+target-dir = "/tmp/ployz-build-target"

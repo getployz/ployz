@@ -87,6 +87,9 @@ fn hetzner_h0_script_drives_the_product_path() {
     ));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_BYTECODE"));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_CTL"));
+    assert!(script.contains("PLOYZ_ACCEPTANCE_TARGET_DIR=/tmp/ployz-build-target"));
+    assert!(script.contains("CARGO_TARGET_DIR:-/tmp/ployz-build-target"));
+    assert!(!script.contains("/tmp/ployz-rust-target"));
     assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));
     assert!(script.contains("/usr/local/bin/ployz-ebpf-ctl"));
     assert!(script.contains("wireguard-tools iproute2"));
