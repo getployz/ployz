@@ -7,7 +7,7 @@ use std::num::{NonZeroU16, NonZeroU64};
 use crate::backup::BackupManifest;
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::dataplane::WireGuardEbpfComponent;
-use crate::deploy::{DeployPlan, DeployRequest};
+use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
 use crate::ids::{
     CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
     SubjectToken, SubjectTokenError,
@@ -51,6 +51,7 @@ pub enum DeployRunningStage {
     WaitingForHealth,
     RouteCutover,
     ActiveServiceCommit,
+    RemovingSupersededContainers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,6 +570,18 @@ pub enum DeployEvidence {
         container_id: ContainerId,
     },
     HealthCheckStarted,
+    CleanupFinished {
+        removed: Vec<DeployCleanupContainer>,
+        failed: Vec<DeployCleanupFailure>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployCleanupFailure {
+    pub target: DeployCleanupContainer,
+    pub message: FailureMessage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -613,6 +626,11 @@ impl DeployEvidence {
             },
             Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {
                 operation_id: operation_id.clone(),
+            },
+            Self::CleanupFinished { removed, failed } => OperationEvent::DeployCleanupFinished {
+                operation_id: operation_id.clone(),
+                removed: removed.clone(),
+                failed: failed.clone(),
             },
         }
     }
@@ -899,6 +917,11 @@ pub enum OperationEvent {
     },
     DeployHealthCheckStarted {
         operation_id: OperationId,
+    },
+    DeployCleanupFinished {
+        operation_id: OperationId,
+        removed: Vec<DeployCleanupContainer>,
+        failed: Vec<DeployCleanupFailure>,
     },
     DeployCompleted {
         operation_id: OperationId,

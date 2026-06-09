@@ -39,6 +39,7 @@ pub fn prepare_deploy_execution_command(
         route_commit: prepared.route_commit,
         eligible_nodes: prepared.eligible_nodes,
         existing_replicas: prepared.existing_replicas,
+        cleanup_candidates: prepared.cleanup_candidates,
         step_timeout: facts.step_timeout,
     })
 }

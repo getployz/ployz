@@ -352,6 +352,7 @@ impl std::error::Error for NodeProcessRuntimeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docker::labels::ManagedContainerIdentity;
     use crate::node_agent::runtime::{
         CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner,
         NodeContainerRunnerError,
@@ -436,6 +437,17 @@ mod tests {
                 message: "not used".to_owned(),
             })
         }
+
+        async fn remove_managed_container(
+            &self,
+            container_id: &ContainerId,
+            _expected_identity: &ManagedContainerIdentity,
+        ) -> Result<(), NodeContainerRunnerError> {
+            Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -464,6 +476,17 @@ mod tests {
             container_id: &ContainerId,
         ) -> Result<(), NodeContainerRunnerError> {
             Err(NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: "not used".to_owned(),
+            })
+        }
+
+        async fn remove_managed_container(
+            &self,
+            container_id: &ContainerId,
+            _expected_identity: &ManagedContainerIdentity,
+        ) -> Result<(), NodeContainerRunnerError> {
+            Err(NodeContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU16;
 
-use crate::ids::{ContainerId, NodeId, RevisionId, ServiceId};
-use crate::node::NodeContainerObservationSnapshot;
+use crate::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use crate::node::{ManagedContainerKind, NodeContainerObservationSnapshot};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{
     ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceState, ExpectedActiveRoute,
@@ -37,12 +37,28 @@ pub struct DeployPlanningInput {
     pub request: DeployRequest,
     pub eligible_nodes: Vec<NodeId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
+    pub cleanup_candidates: Vec<DeployCleanupContainer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingServiceReplica {
     pub node_id: NodeId,
     pub container_id: ContainerId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployCleanupContainer {
+    pub node_id: NodeId,
+    pub container_id: ContainerId,
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+    pub operation_id: OperationId,
+    pub step_id: StepId,
+    pub kind: ManagedContainerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_port: Option<RoutePort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +77,7 @@ pub struct PreparedDeploy {
     pub route_commit: Option<ActiveRouteCommitRequest>,
     pub eligible_nodes: Vec<NodeId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
+    pub cleanup_candidates: Vec<DeployCleanupContainer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +87,8 @@ pub struct DeployPlan {
     pub service_id: ServiceId,
     pub target_revision: RevisionId,
     pub steps: Vec<DeployPlanStep>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleanup_containers: Vec<DeployCleanupContainer>,
 }
 
 impl DeployPlan {
@@ -199,6 +218,7 @@ pub fn prepare_deploy(
     let expected_active = expected_active_service(&input.request, input.active_service)?;
     let route_commit = active_route_commit_request(&input.request, input.active_route)?;
     let existing_replicas = existing_replicas(&input.request, &input.observed_nodes);
+    let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_nodes);
 
     Ok(PreparedDeploy {
         request: input.request,
@@ -206,6 +226,7 @@ pub fn prepare_deploy(
         route_commit,
         eligible_nodes: input.eligible_nodes,
         existing_replicas,
+        cleanup_candidates,
     })
 }
 
@@ -243,6 +264,31 @@ fn existing_replicas(
         .map(|container| ExistingServiceReplica {
             node_id: container.node_id.clone(),
             container_id: container.container_id.clone(),
+        })
+        .collect()
+}
+
+fn cleanup_candidates(
+    request: &DeployRequest,
+    observed_nodes: &[NodeContainerObservationSnapshot],
+) -> Vec<DeployCleanupContainer> {
+    observed_nodes
+        .iter()
+        .flat_map(NodeContainerObservationSnapshot::containers)
+        .filter(|container| {
+            container.is_running_service() && container.service_id == request.service_id
+        })
+        .map(|container| DeployCleanupContainer {
+            node_id: container.node_id.clone(),
+            container_id: container.container_id.clone(),
+            service_id: container.service_id.clone(),
+            revision_id: container.revision_id.clone(),
+            operation_id: container.operation_id.clone(),
+            step_id: container.step_id.clone(),
+            kind: container.kind,
+            endpoint_port: container
+                .running_service_endpoint()
+                .map(|endpoint| endpoint.port),
         })
         .collect()
 }
@@ -338,11 +384,29 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
                 }
             }),
     );
+    let selected_containers = steps
+        .iter()
+        .filter_map(|step| match step {
+            DeployPlanStep::UseExistingContainer { container_id, .. } => Some(container_id),
+            DeployPlanStep::RunContainer { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let mut cleanup_containers = input.cleanup_candidates;
+    cleanup_containers.retain(|candidate| !selected_containers.contains(&&candidate.container_id));
+    cleanup_containers.sort_by(|left, right| {
+        left.node_id
+            .cmp(&right.node_id)
+            .then_with(|| left.container_id.cmp(&right.container_id))
+    });
+    cleanup_containers.dedup_by(|left, right| {
+        left.node_id == right.node_id && left.container_id == right.container_id
+    });
 
     Ok(DeployPlan {
         service_id: input.request.service_id,
         target_revision: input.request.target_revision,
         steps,
+        cleanup_containers,
     })
 }
 

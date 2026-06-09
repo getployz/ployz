@@ -1,7 +1,9 @@
 use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
-use ployz_core::deploy::{DeployPlan, DeployRequest, ExistingServiceReplica};
+use ployz_core::deploy::{
+    DeployCleanupContainer, DeployPlan, DeployRequest, ExistingServiceReplica,
+};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
-use ployz_core::ops::{OperatorHint, RetainedArtifact, RoutePort};
+use ployz_core::ops::{FailureMessage, OperatorHint, RetainedArtifact, RoutePort};
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveService,
 };
@@ -17,6 +19,7 @@ pub struct DeployExecutionCommand {
     pub(super) route_commit: Option<ActiveRouteCommitRequest>,
     pub(super) eligible_nodes: Vec<NodeId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
+    pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) step_timeout: Duration,
 }
 
@@ -34,6 +37,11 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
         &self.existing_replicas
+    }
+
+    #[must_use]
+    pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
+        &self.cleanup_candidates
     }
 
     #[must_use]
@@ -81,7 +89,17 @@ pub struct DeployExecutionOutcome {
     pub service_id: ployz_core::ids::ServiceId,
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
+    pub cleanup: Vec<DeployCleanupResult>,
     pub terminal_event: DeployTerminalEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployCleanupResult {
+    Removed(DeployCleanupContainer),
+    Failed {
+        target: DeployCleanupContainer,
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

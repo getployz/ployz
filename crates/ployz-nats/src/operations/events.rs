@@ -14,11 +14,11 @@ use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::{
     backup_create_job, op_backup_completed, op_backup_failed, op_backup_running,
     op_backup_submitted, op_cancelled, op_cert_challenge_published, op_cert_completed,
-    op_cert_failed, op_cert_submitted, op_cert_validation_started, op_deploy_completed,
-    op_deploy_container_started, op_deploy_failed, op_deploy_health_check_started,
-    op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
-    op_machine_add_completed, op_machine_add_failed, op_machine_add_joined,
-    op_machine_add_submitted, op_watch,
+    op_cert_failed, op_cert_submitted, op_cert_validation_started, op_deploy_cleanup_finished,
+    op_deploy_completed, op_deploy_container_started, op_deploy_failed,
+    op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
+    op_deploy_running, op_deploy_submitted, op_machine_add_completed, op_machine_add_failed,
+    op_machine_add_joined, op_machine_add_submitted, op_watch,
 };
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -554,6 +554,9 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::DeployHealthCheckStarted { operation_id } => {
             op_deploy_health_check_started(operation_id)
         }
+        OperationEvent::DeployCleanupFinished { operation_id, .. } => {
+            op_deploy_cleanup_finished(operation_id)
+        }
         OperationEvent::DeployCompleted { operation_id, .. } => op_deploy_completed(operation_id),
         OperationEvent::DeployFailed { operation_id, .. } => op_deploy_failed(operation_id),
         OperationEvent::CertRenewalSubmitted { operation_id, .. } => {
@@ -655,6 +658,9 @@ fn evidence_message_id(operation_id: &OperationId, evidence: &DeployEvidence) ->
         ),
         DeployEvidence::HealthCheckStarted => {
             format!("deploy.health_check.started.{}", operation_id.as_str())
+        }
+        DeployEvidence::CleanupFinished { .. } => {
+            format!("deploy.cleanup.finished.{}", operation_id.as_str())
         }
     };
     MessageId::new(value)

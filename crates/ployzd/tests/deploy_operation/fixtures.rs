@@ -1,15 +1,17 @@
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
 };
-use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
+use ployz_core::deploy::{
+    DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
+};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{
-    DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage, OperatorHint,
-    RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
+    DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
+    OperatorHint, RetainedArtifact, RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceCommit,
@@ -19,8 +21,9 @@ use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
     DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
     DeployOperationRecordError, DeployOperationRecorder, NodeContainerRuntime,
-    NodeContainerRuntimeError, NodeRunContainerOutcome, NodeRunContainerRequest,
-    NodeRuntimeUnavailableReason, WireGuardEbpfPreparer, prepare_deploy_execution_command,
+    NodeContainerRuntimeError, NodeRemoveContainerRequest, NodeRunContainerOutcome,
+    NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    prepare_deploy_execution_command,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
 use std::sync::{Arc, Mutex};
@@ -53,6 +56,10 @@ pub(super) enum RecordedOperation {
     ContainerStarted {
         node_id: NodeId,
         container_id: ContainerId,
+    },
+    CleanupFinished {
+        removed: Vec<DeployCleanupContainer>,
+        failed: Vec<DeployCleanupFailure>,
     },
 }
 
@@ -100,6 +107,10 @@ impl DeployOperationRecorder for RecordingOperations {
             DeployEvidence::HealthCheckStarted => {
                 self.records.push(RecordedOperation::HealthCheckStarted);
             }
+            DeployEvidence::CleanupFinished { removed, failed } => {
+                self.records
+                    .push(RecordedOperation::CleanupFinished { removed, failed });
+            }
         }
         Ok(())
     }
@@ -107,10 +118,12 @@ impl DeployOperationRecorder for RecordingOperations {
 
 pub(super) struct RecordingRuntime {
     pub(super) requests: Vec<NodeRunContainerRequest>,
+    pub(super) removals: Vec<NodeRemoveContainerRequest>,
     containers: Vec<ContainerId>,
     fail_after_first: bool,
     reuse_existing: bool,
     fail_start: bool,
+    fail_remove: bool,
 }
 
 #[derive(Default)]
@@ -391,41 +404,54 @@ impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             requests: Vec::new(),
+            removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
             reuse_existing: false,
             fail_start: false,
+            fail_remove: false,
         }
     }
 
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             requests: Vec::new(),
+            removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
             reuse_existing: true,
             fail_start: false,
+            fail_remove: false,
         }
     }
 
     pub(super) fn failing_after_first_container() -> Self {
         Self {
             requests: Vec::new(),
+            removals: Vec::new(),
             containers: vec![container_id("ctr_1")],
             fail_after_first: true,
             reuse_existing: false,
             fail_start: false,
+            fail_remove: false,
         }
     }
 
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
             requests: Vec::new(),
+            removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
             fail_after_first: false,
             reuse_existing: false,
             fail_start: true,
+            fail_remove: false,
         }
+    }
+
+    pub(super) fn with_remove_failure(mut self) -> Self {
+        self.fail_remove = true;
+        self
     }
 }
 
@@ -467,6 +493,27 @@ impl NodeContainerRuntime for RecordingRuntime {
         } else {
             Ok(NodeRunContainerOutcome::Created { container_id })
         }
+    }
+
+    async fn remove_container(
+        &mut self,
+        request: NodeRemoveContainerRequest,
+    ) -> Result<(), NodeContainerRuntimeError> {
+        self.removals.push(request.clone());
+        if self.fail_remove {
+            return Err(NodeContainerRuntimeError::RemoveContainerFailed {
+                node_id: request.node_id,
+                container_id: request.container_id.clone(),
+                message: runtime_failure_message("container remove failed: busy"),
+                inspect_hint: OperatorHint::try_new(format!(
+                    "ployz container inspect {}",
+                    request.container_id.as_str()
+                ))
+                .expect("valid inspect hint"),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -514,6 +561,23 @@ pub(super) fn deploy_command_with_existing_container(
     let snapshot = NodeContainerObservationSnapshot::try_new(
         self::node_id(node_id),
         [observed_service_container(node_id, container_id, "rev_2")],
+    )
+    .expect("valid node observation snapshot");
+    prepared_deploy_command(
+        replicas,
+        vec![self::node_id("node_a"), self::node_id("node_b")],
+        vec![snapshot],
+    )
+}
+
+pub(super) fn deploy_command_replacing_old_container(
+    replicas: u16,
+    node_id: &str,
+    container_id: &str,
+) -> DeployExecutionCommand {
+    let snapshot = NodeContainerObservationSnapshot::try_new(
+        self::node_id(node_id),
+        [observed_service_container(node_id, container_id, "rev_old")],
     )
     .expect("valid node observation snapshot");
     prepared_deploy_command(
@@ -610,6 +674,23 @@ pub(super) fn retained_container(node_id: &str, container_id: &str) -> RetainedA
         container_id: self::container_id(container_id),
         log_hint: OperatorHint::try_new(format!("ployz logs {container_id}"))
             .expect("valid log hint"),
+    }
+}
+
+pub(super) fn cleanup_container(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        service_id: service_id("svc_api"),
+        revision_id: self::revision_id(revision_id),
+        operation_id: operation_id("op_existing"),
+        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

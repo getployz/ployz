@@ -87,6 +87,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployRunning { .. } => "deploy.running",
         OperationEvent::DeployContainerStarted { .. } => "deploy.container_started",
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
+        OperationEvent::DeployCleanupFinished { .. } => "deploy.cleanup_finished",
         OperationEvent::DeployCompleted { .. } => "deploy.completed",
         OperationEvent::DeployFailed { .. } => "deploy.failed",
         OperationEvent::CertRenewalSubmitted { .. } => "cert.submitted",

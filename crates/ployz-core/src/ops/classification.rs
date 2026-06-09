@@ -89,6 +89,15 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::HealthCheckStarted),
             },
+            OperationEvent::DeployCleanupFinished {
+                operation_id,
+                removed,
+                failed,
+                ..
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::CleanupFinished { removed, failed }),
+            },
             OperationEvent::DeployCompleted { operation_id, .. } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Completed),

@@ -145,6 +145,14 @@ pub fn op_deploy_health_check_started(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
+pub fn op_deploy_cleanup_finished(operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.op.{}.deploy.cleanup.finished",
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
 pub fn op_deploy_completed(operation_id: &OperationId) -> String {
     format!("plz.v1.op.{}.deploy.completed", operation_id.as_str())
 }
@@ -275,6 +283,7 @@ impl DeployRunningStage {
             Self::WaitingForHealth => "waiting_for_health",
             Self::RouteCutover => "route_cutover",
             Self::ActiveServiceCommit => "active_service_commit",
+            Self::RemovingSupersededContainers => "removing_superseded_containers",
         }
     }
 }
@@ -307,6 +316,7 @@ pub fn node_observation_scope(node_id: &NodeId) -> String {
 pub enum NodeServiceEndpoint {
     Inspect,
     ContainerRun,
+    ContainerRemove,
     WireGuardEbpfPrepare,
     LogsTail,
 }
@@ -317,6 +327,7 @@ impl NodeServiceEndpoint {
         match self {
             Self::Inspect => "inspect",
             Self::ContainerRun => "container.run",
+            Self::ContainerRemove => "container.remove",
             Self::WireGuardEbpfPrepare => "wireguard_ebpf.prepare",
             Self::LogsTail => "logs.tail",
         }

@@ -8,11 +8,13 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployzd::deploy_worker::{
-    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
+    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_protocol::{
+    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
@@ -208,6 +210,76 @@ async fn nats_node_runtime_rejects_response_for_different_node() {
 }
 
 #[tokio::test]
+async fn nats_node_runtime_calls_container_remove_service() {
+    let nats = test_nats().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let _service = start_container_remove_service(nats.client.clone(), &node_id("node_a"), {
+        let received = Arc::clone(&received);
+        move |request| {
+            received
+                .lock()
+                .expect("received remove request lock is not poisoned")
+                .push(request);
+            NodeRemoveContainerResult::Ok {
+                container_id: container_id("ctr_old"),
+            }
+        }
+    })
+    .await;
+    let mut runtime = NatsNodeContainerRuntime::new(nats.client);
+
+    runtime
+        .remove_container(remove_request("node_a", "ctr_old"))
+        .await
+        .expect("node container remove succeeds");
+
+    assert_eq!(
+        received
+            .lock()
+            .expect("received remove request lock is not poisoned")
+            .as_slice(),
+        [NodeContainerRemoveRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_old"),
+            expected_identity: managed_labels().identity(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn nats_node_runtime_preserves_remove_domain_error() {
+    let nats = test_nats().await;
+    let failure = NodeContainerRemoveDomainError::RemoveFailed {
+        container_id: container_id("ctr_old"),
+        message: failure_message("container remove failed: busy"),
+        inspect_hint: inspect_hint("ctr_old"),
+    };
+    let _service = start_container_remove_service(nats.client.clone(), &node_id("node_a"), {
+        let failure = failure.clone();
+        move |_request| NodeRemoveContainerResult::DomainError {
+            error: failure.clone(),
+        }
+    })
+    .await;
+    let mut runtime = NatsNodeContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .remove_container(remove_request("node_a", "ctr_old"))
+        .await
+        .expect_err("remove domain error is preserved");
+
+    assert_eq!(
+        error,
+        NodeContainerRuntimeError::RemoveContainerFailed {
+            node_id: node_id("node_a"),
+            container_id: container_id("ctr_old"),
+            message: failure_message("container remove failed: busy"),
+            inspect_hint: inspect_hint("ctr_old"),
+        }
+    );
+}
+
+#[tokio::test]
 async fn nats_node_preparer_calls_wireguard_ebpf_prepare_service() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -308,6 +380,54 @@ async fn start_container_run_raw_service(
     service
 }
 
+async fn start_container_remove_service(
+    client: async_nats::Client,
+    node_id: &NodeId,
+    handler: impl Fn(NodeContainerRemoveRpcRequest) -> NodeRemoveContainerResult + Send + Sync + 'static,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let node_id = node_id.clone();
+    start_container_remove_raw_service(client, node_id.clone(), move |request| {
+        let response = decode_remove_request(request)
+            .map(&handler)
+            .map(|result| result.into_nats_response(node_id.clone()));
+        match response {
+            Ok(response) => response,
+            Err(message) => NatsServiceResponse::transport_error(
+                ployz_nats::service_runtime::NatsServiceError::bad_request(message),
+            ),
+        }
+    })
+    .await
+}
+
+async fn start_container_remove_raw_service(
+    client: async_nats::Client,
+    node_id: NodeId,
+    handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let spec = node_runtime_service(&node_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject
+                == node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRemove)
+        })
+        .expect("container.remove endpoint exists")
+        .clone();
+    let mut service = start_nats_service(client, &spec)
+        .await
+        .expect("start node service");
+    service
+        .bind_endpoint(&endpoint, move |request| {
+            let response = handler(request);
+            async move { response }
+        })
+        .await
+        .expect("bind container.remove endpoint");
+    service
+}
+
 async fn start_wireguard_ebpf_prepare_service(
     client: async_nats::Client,
     node_id: &NodeId,
@@ -367,6 +487,16 @@ fn encode_run_response(response: NodeContainerRunRpcResponse) -> Vec<u8> {
     serde_json::to_vec(&response).expect("node run response encodes")
 }
 
+fn decode_remove_request(
+    request: NatsServiceRequest,
+) -> Result<NodeContainerRemoveRpcRequest, String> {
+    serde_json::from_slice(&request.payload).map_err(|error| error.to_string())
+}
+
+fn encode_remove_response(response: NodeContainerRemoveRpcResponse) -> Vec<u8> {
+    serde_json::to_vec(&response).expect("node remove response encodes")
+}
+
 fn decode_wireguard_ebpf_request(
     request: NatsServiceRequest,
 ) -> Result<NodeWireGuardEbpfPrepareRpcRequest, String> {
@@ -398,6 +528,33 @@ impl NodeRunContainerResult {
     }
 }
 
+enum NodeRemoveContainerResult {
+    Ok {
+        container_id: ContainerId,
+    },
+    DomainError {
+        error: NodeContainerRemoveDomainError,
+    },
+}
+
+impl NodeRemoveContainerResult {
+    fn into_nats_response(self, node_id: NodeId) -> NatsServiceResponse {
+        match self {
+            Self::Ok { container_id } => NatsServiceResponse::ok(encode_remove_response(
+                NodeContainerRemoveRpcResponse::Ok {
+                    node_id,
+                    container_id,
+                },
+            )),
+            Self::DomainError { error } => {
+                NatsServiceResponse::domain_error(encode_remove_response(
+                    NodeContainerRemoveRpcResponse::DomainError { node_id, error },
+                ))
+            }
+        }
+    }
+}
+
 enum WireGuardEbpfPrepareResult {
     Ok,
 }
@@ -412,6 +569,15 @@ impl WireGuardEbpfPrepareResult {
     }
 }
 
+fn remove_request(node_id: &str, container_id: &str) -> NodeRemoveContainerRequest {
+    NodeRemoveContainerRequest {
+        node_id: self::node_id(node_id),
+        operation_id: operation_id("op_123"),
+        container_id: self::container_id(container_id),
+        expected_identity: managed_labels().identity(),
+    }
+}
+
 fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
     WireGuardEbpfPrepareRequest {
         operation_id: operation_id("op_123"),
@@ -421,6 +587,11 @@ fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
 
 fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("valid failure message")
+}
+
+fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
+    ployz_core::ops::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
+        .expect("valid inspect hint")
 }
 
 struct TestNats {

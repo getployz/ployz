@@ -146,6 +146,8 @@ impl CertId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"StepId\">"))]
 #[serde(transparent)]
 pub struct StepId(SubjectToken);
 

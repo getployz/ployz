@@ -121,6 +121,7 @@ pub fn validate_fresh_deploy_evidence(
         DeployEvidence::HealthCheckStarted => {
             evidence_is_current_or_past_running_stage(state, DeployRunningStage::WaitingForHealth)
         }
+        DeployEvidence::CleanupFinished { .. } => cleanup_evidence_is_valid(state),
     };
     if valid {
         return Ok(());
@@ -146,6 +147,16 @@ fn evidence_is_current_or_past_running_stage(
     deploy_stage_rank(*stage) >= deploy_stage_rank(evidence_stage)
 }
 
+fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
+    matches!(
+        state,
+        DeployOperationState::Running {
+            stage: DeployRunningStage::ActiveServiceCommit
+                | DeployRunningStage::RemovingSupersededContainers
+        }
+    )
+}
+
 fn deploy_evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence {
         DeployEvidence::PlanCreated { .. } => DeployOperationState::Planning,
@@ -154,6 +165,9 @@ fn deploy_evidence_required_state(evidence: &DeployEvidence) -> DeployOperationS
         },
         DeployEvidence::HealthCheckStarted => DeployOperationState::Running {
             stage: DeployRunningStage::WaitingForHealth,
+        },
+        DeployEvidence::CleanupFinished { .. } => DeployOperationState::Running {
+            stage: DeployRunningStage::RemovingSupersededContainers,
         },
     }
 }
@@ -426,6 +440,22 @@ fn project_deploy_event(
             ) {
                 return evidence_cursor_after_stage(
                     evidence_is_satisfied_after_stage(state, DeployRunningStage::WaitingForHealth),
+                    current,
+                    event_sequence,
+                );
+            }
+
+            Ok(OperationEventProjection::StatusChanged {
+                status: Box::new(evidence_status(current, event_sequence)),
+            })
+        }
+        DeployEvent::Evidence(DeployEvidence::CleanupFinished { .. }) => {
+            if !cleanup_evidence_is_valid(state) {
+                return evidence_cursor_after_stage(
+                    evidence_is_satisfied_after_stage(
+                        state,
+                        DeployRunningStage::RemovingSupersededContainers,
+                    ),
                     current,
                     event_sequence,
                 );
@@ -738,6 +768,12 @@ fn deploy_transition_allowed(
                 stage: DeployRunningStage::ActiveServiceCommit,
             },
             DeployOperationState::Completed,
+        )
+        | (
+            DeployOperationState::Running {
+                stage: DeployRunningStage::RemovingSupersededContainers,
+            },
+            DeployOperationState::Completed,
         ) => true,
         (
             DeployOperationState::Planning,
@@ -765,6 +801,7 @@ fn deploy_stage_rank(stage: DeployRunningStage) -> u8 {
         DeployRunningStage::WaitingForHealth => 2,
         DeployRunningStage::RouteCutover => 3,
         DeployRunningStage::ActiveServiceCommit => 4,
+        DeployRunningStage::RemovingSupersededContainers => 5,
     }
 }
 
@@ -783,6 +820,9 @@ fn deploy_stage_is_next(current: DeployRunningStage, attempted: DeployRunningSta
         ) | (
             DeployRunningStage::RouteCutover,
             DeployRunningStage::ActiveServiceCommit
+        ) | (
+            DeployRunningStage::ActiveServiceCommit,
+            DeployRunningStage::RemovingSupersededContainers
         ) | (
             DeployRunningStage::WaitingForHealth,
             DeployRunningStage::ActiveServiceCommit

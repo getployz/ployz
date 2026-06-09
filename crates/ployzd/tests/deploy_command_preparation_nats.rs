@@ -1,5 +1,5 @@
 use async_nats::jetstream;
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
@@ -95,6 +95,13 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
             node_id: node_id("node_a"),
             container_id: container_id("ctr_target")
         }]
+    );
+    assert_eq!(
+        command.cleanup_candidates(),
+        [
+            cleanup_container("node_a", "ctr_target", "rev_2"),
+            cleanup_container("node_b", "ctr_old", "rev_1"),
+        ]
     );
     assert_eq!(
         command.eligible_nodes(),
@@ -337,4 +344,21 @@ fn node_id(value: &str) -> NodeId {
 
 fn container_id(value: &str) -> ContainerId {
     ContainerId::try_new(value).expect("valid container id")
+}
+
+fn cleanup_container(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        service_id: service_id("svc_api"),
+        revision_id: self::revision_id(revision_id),
+        operation_id: operation_id("op_existing"),
+        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
+    }
 }

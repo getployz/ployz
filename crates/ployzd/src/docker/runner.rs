@@ -1,4 +1,6 @@
-use crate::docker::labels::{MANAGED_LABEL, ManagedContainerLabelError, ManagedContainerLabels};
+use crate::docker::labels::{
+    MANAGED_LABEL, ManagedContainerIdentity, ManagedContainerLabelError, ManagedContainerLabels,
+};
 use crate::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError,
@@ -10,7 +12,7 @@ use bollard::models::{
     ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkCreateRequest,
     NetworkingConfig,
 };
-use bollard::query_parameters::ListContainersOptionsBuilder;
+use bollard::query_parameters::{ListContainersOptionsBuilder, RemoveContainerOptionsBuilder};
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::node::ContainerEndpoint;
 use ployz_core::ops::RoutePort;
@@ -72,6 +74,22 @@ impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
         })?;
         runner.start_managed_container(container_id).await
     }
+
+    async fn remove_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let runner = DockerManagedContainerRunner::local_defaults().map_err(|error| {
+            NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        runner
+            .remove_managed_container(container_id, expected_identity)
+            .await
+    }
 }
 
 impl NodeContainerRunner for DockerManagedContainerRunner {
@@ -128,6 +146,45 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             })
     }
+
+    async fn remove_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let existing = self
+            .existing_managed_containers()
+            .await?
+            .into_iter()
+            .find(|container| container.container_id == *container_id);
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+        if existing.labels.identity() != *expected_identity {
+            return Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: format!(
+                    "container identity did not match cleanup target: expected {:?}, found {:?}",
+                    expected_identity,
+                    existing.labels.identity()
+                ),
+            });
+        }
+
+        let options = RemoveContainerOptionsBuilder::new().force(true).build();
+        match self
+            .docker
+            .remove_container(container_id.as_str(), Some(options))
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) if is_container_missing(&error) => Ok(()),
+            Err(error) => Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            }),
+        }
+    }
 }
 
 impl DockerManagedContainerRunner {
@@ -161,6 +218,16 @@ fn is_network_already_exists(error: &BollardError) -> bool {
             status_code: 409,
             message
         } if message.contains("already exists")
+    )
+}
+
+fn is_container_missing(error: &BollardError) -> bool {
+    matches!(
+        error,
+        BollardError::DockerResponseServerError {
+            status_code: 404,
+            ..
+        }
     )
 }
 

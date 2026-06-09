@@ -2,8 +2,8 @@
 
 use crate::docker::labels::ManagedContainerLabels;
 use crate::node_runtime_types::{
-    ContainerEndpointRequest, NodeContainerRunSpec, NodeRunContainerOutcome,
-    NodeRunContainerRequest,
+    ContainerEndpointRequest, NodeContainerRunSpec, NodeRemoveContainerRequest,
+    NodeRunContainerOutcome, NodeRunContainerRequest,
 };
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
@@ -77,6 +77,47 @@ pub enum NodeContainerRunDomainError {
         container_id: ContainerId,
         message: FailureMessage,
         log_hint: OperatorHint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeContainerRemoveRpcRequest {
+    pub operation_id: OperationId,
+    pub container_id: ContainerId,
+    pub expected_identity: crate::docker::labels::ManagedContainerIdentity,
+}
+
+impl From<NodeRemoveContainerRequest> for NodeContainerRemoveRpcRequest {
+    fn from(value: NodeRemoveContainerRequest) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            container_id: value.container_id,
+            expected_identity: value.expected_identity,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeContainerRemoveRpcResponse {
+    Ok {
+        node_id: NodeId,
+        container_id: ContainerId,
+    },
+    DomainError {
+        node_id: NodeId,
+        error: NodeContainerRemoveDomainError,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeContainerRemoveDomainError {
+    RemoveFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
     },
 }
 

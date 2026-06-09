@@ -5,6 +5,7 @@ use crate::node_agent::runtime::{
     NodeContainerRunner, NodeContainerRunnerError, decide_container_run, managed_container_labels,
 };
 use crate::node_protocol::{
+    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
     NodeWireGuardEbpfPrepareRpcResponse,
@@ -31,6 +32,8 @@ where
 {
     let spec = node_runtime_service_base(&node_id);
     let container_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRun);
+    let container_remove_endpoint =
+        node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRemove);
     let wireguard_ebpf_endpoint =
         node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
     let mut runtime = start_nats_service(client, &spec)
@@ -45,6 +48,19 @@ where
                 let node_id = node_id.clone();
                 let runner = runner.clone();
                 async move { handle_container_run(node_id, runner, request).await }
+            }
+        })
+        .await
+        .map_err(NodeServiceRuntimeError::Nats)?;
+
+    runtime
+        .bind_endpoint(&container_remove_endpoint, {
+            let node_id = node_id.clone();
+            let runner = runner.clone();
+            move |request| {
+                let node_id = node_id.clone();
+                let runner = runner.clone();
+                async move { handle_container_remove(node_id, runner, request).await }
             }
         })
         .await
@@ -135,6 +151,42 @@ where
     }
 }
 
+async fn handle_container_remove<R>(
+    node_id: NodeId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: NodeContainerRunner,
+{
+    let request = match decode_json_request::<NodeContainerRemoveRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+
+    match runner
+        .remove_managed_container(&request.container_id, &request.expected_identity)
+        .await
+    {
+        Ok(()) => node_success(NodeContainerRemoveRpcResponse::Ok {
+            node_id,
+            container_id: request.container_id,
+        }),
+        Err(NodeContainerRunnerError::Remove {
+            container_id,
+            message,
+        }) => node_domain_error(NodeContainerRemoveRpcResponse::DomainError {
+            node_id,
+            error: NodeContainerRemoveDomainError::RemoveFailed {
+                container_id: container_id.clone(),
+                message: failure_message(format!("container remove failed: {message}")),
+                inspect_hint: inspect_hint(&container_id),
+            },
+        }),
+        Err(error) => runner_error(error),
+    }
+}
+
 fn container_created_response(
     node_id: NodeId,
     container_id: ContainerId,
@@ -214,6 +266,9 @@ fn runner_error(error: NodeContainerRunnerError) -> NatsServiceResponse {
         NodeContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container start failed: {message}")),
         ),
+        NodeContainerRunnerError::Remove { message, .. } => NatsServiceResponse::transport_error(
+            NatsServiceError::internal(format!("container remove failed: {message}")),
+        ),
     }
 }
 
@@ -239,6 +294,13 @@ fn created_container_start_error(
         NodeContainerRunnerError::Create { message } => {
             runner_error(NodeContainerRunnerError::Create { message })
         }
+        NodeContainerRunnerError::Remove {
+            container_id,
+            message,
+        } => runner_error(NodeContainerRunnerError::Remove {
+            container_id,
+            message,
+        }),
     }
 }
 
@@ -264,6 +326,13 @@ fn existing_container_start_error(
         NodeContainerRunnerError::Create { message } => {
             runner_error(NodeContainerRunnerError::Create { message })
         }
+        NodeContainerRunnerError::Remove {
+            container_id,
+            message,
+        } => runner_error(NodeContainerRunnerError::Remove {
+            container_id,
+            message,
+        }),
     }
 }
 

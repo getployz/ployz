@@ -4,7 +4,7 @@ use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployzd::docker::labels::ManagedContainerLabels;
+use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError,
@@ -115,6 +115,61 @@ impl NodeContainerRunner for ObservingContainerRunner {
                 message: error.to_string(),
             })
     }
+
+    async fn remove_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let Some(snapshot) = self
+            .observations
+            .node_snapshot(&self.node_id)
+            .await
+            .map_err(|error| node_observation_remove_error(container_id, error))?
+        else {
+            return Ok(());
+        };
+
+        let existing = snapshot
+            .containers()
+            .iter()
+            .find(|container| container.container_id == *container_id);
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+        if observation_identity(existing) != *expected_identity {
+            return Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: "container identity did not match cleanup target".to_owned(),
+            });
+        }
+
+        let containers = snapshot
+            .containers()
+            .iter()
+            .filter(|container| container.container_id != *container_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let snapshot = NodeContainerObservationSnapshot::try_new(self.node_id.clone(), containers)
+            .map_err(|error| NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        self.observations
+            .replace_node_containers(&snapshot)
+            .await
+            .map_err(|error| node_observation_remove_error(container_id, error))
+    }
+}
+
+fn observation_identity(observation: &ManagedContainerObservation) -> ManagedContainerIdentity {
+    ManagedContainerIdentity {
+        service_id: observation.service_id.clone(),
+        revision_id: observation.revision_id.clone(),
+        operation_id: observation.operation_id.clone(),
+        step_id: observation.step_id.clone(),
+        kind: observation.kind,
+    }
 }
 
 impl ObservingContainerRunner {
@@ -202,6 +257,16 @@ fn node_observation_list_error(error: ObservationStoreError) -> NodeContainerRun
 
 fn node_observation_create_error(error: ObservationStoreError) -> NodeContainerRunnerError {
     NodeContainerRunnerError::Create {
+        message: error.to_string(),
+    }
+}
+
+fn node_observation_remove_error(
+    container_id: &ContainerId,
+    error: ObservationStoreError,
+) -> NodeContainerRunnerError {
+    NodeContainerRunnerError::Remove {
+        container_id: container_id.clone(),
         message: error.to_string(),
     }
 }

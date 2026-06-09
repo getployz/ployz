@@ -273,6 +273,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
                     request: deploy_target("svc_api"),
                     eligible_nodes: vec![node_id("node_a")],
                     existing_replicas: Vec::new(),
+                    cleanup_candidates: Vec::new(),
                 })
                 .expect("single-node deploy plan is valid"),
             },

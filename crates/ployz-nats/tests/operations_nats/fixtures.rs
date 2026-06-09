@@ -231,6 +231,7 @@ pub(super) fn deploy_plan_on(node: &str) -> DeployPlan {
             node_id: node_id(node),
             slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
         }],
+        cleanup_containers: Vec::new(),
     }
 }
 

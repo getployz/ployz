@@ -2,6 +2,7 @@
 mod fixtures;
 
 use fixtures::*;
+use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployOperationFailure, DeployRunningStage, DeployTransition, FailureMessage,
 };
@@ -10,11 +11,13 @@ use ployz_core::state::{
     ExpectedActiveService,
 };
 use ployzd::deploy_worker::{
-    ActiveRouteCommitter, ActiveServiceCommitter, DeployExecutionCommand, DeployExecutionError,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
-    DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, NodeContainerRuntime,
-    NodeContainerRuntimeError, WireGuardEbpfPreparer, execute_deploy_operation,
+    ActiveRouteCommitter, ActiveServiceCommitter, DeployCleanupResult, DeployExecutionCommand,
+    DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
+    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent,
+    NodeContainerRuntime, NodeContainerRuntimeError, WireGuardEbpfPreparer,
+    execute_deploy_operation,
 };
+use ployzd::docker::labels::ManagedContainerIdentity;
 use ployzd::node_agent::runtime::managed_container_labels;
 use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
@@ -45,6 +48,16 @@ fn assert_deploy_event_order(
         before_position < after_position,
         "{before:?} should be recorded before {after:?}"
     );
+}
+
+fn cleanup_expected_identity(target: &DeployCleanupContainer) -> ManagedContainerIdentity {
+    ManagedContainerIdentity {
+        service_id: target.service_id.clone(),
+        revision_id: target.revision_id.clone(),
+        operation_id: target.operation_id.clone(),
+        step_id: target.step_id.clone(),
+        kind: target.kind,
+    }
 }
 
 async fn execute_deploy<R, D, N, H, C, A>(
@@ -254,6 +267,115 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             }),
             RecordedOperation::Transition(DeployTransition::Completed),
         ]
+    );
+}
+
+#[tokio::test]
+async fn deploy_worker_removes_superseded_containers_after_active_commit() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds and cleans up old containers");
+
+    assert_eq!(
+        runtime.removals,
+        vec![ployzd::deploy_worker::NodeRemoveContainerRequest {
+            node_id: node_id("node_b"),
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_old"),
+            expected_identity: cleanup_expected_identity(&cleanup_container(
+                "node_b", "ctr_old", "rev_old",
+            )),
+        }]
+    );
+    let cleanup_target = cleanup_container("node_b", "ctr_old", "rev_old");
+    assert_eq!(
+        outcome.cleanup,
+        vec![DeployCleanupResult::Removed(cleanup_target.clone())]
+    );
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::ActiveServiceCommit,
+        DeployRunningStage::RemovingSupersededContainers,
+    );
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Completed))
+    );
+    assert!(
+        recorder
+            .records
+            .contains(&RecordedOperation::CleanupFinished {
+                removed: vec![cleanup_target],
+                failed: Vec::new(),
+            })
+    );
+}
+
+#[tokio::test]
+async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]).with_remove_failure();
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds even when old-container cleanup fails");
+
+    assert_eq!(active_state.requests.len(), 1);
+    let cleanup_target = cleanup_container("node_b", "ctr_old", "rev_old");
+    assert_eq!(
+        outcome.cleanup,
+        vec![DeployCleanupResult::Failed {
+            target: cleanup_target.clone(),
+            message: failure_message("container remove failed: busy"),
+        }]
+    );
+    assert!(
+        recorder
+            .records
+            .contains(&RecordedOperation::CleanupFinished {
+                removed: Vec::new(),
+                failed: vec![ployz_core::ops::DeployCleanupFailure {
+                    target: cleanup_target,
+                    message: failure_message("container remove failed: busy"),
+                }],
+            })
+    );
+    assert_eq!(
+        recorder.records.last(),
+        Some(&RecordedOperation::Transition(DeployTransition::Completed))
     );
 }
 

@@ -5,10 +5,12 @@ use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, S
 use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
+use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_runtime::start_node_runtime_with_ports;
 use ployzd::node_runtime_types::{
-    NodeContainerRunSpec, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeContainerRunSpec, NodeRemoveContainerRequest, NodeRunContainerOutcome,
+    NodeRunContainerRequest,
 };
 
 mod support;
@@ -43,6 +45,47 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
         NodeRunContainerOutcome::ReusedRunning {
             container_id: first_container_id
         }
+    );
+
+    runtime.shutdown().await.expect("node runtime shuts down");
+}
+
+#[tokio::test]
+async fn node_runtime_serves_container_remove_and_updates_observations() {
+    let nats = TestNats::start_bootstrapped().await;
+    let runtime = start_node_runtime_with_ports(
+        nats.client.clone(),
+        node_id("node_a"),
+        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        support::ReadyWireGuardEbpf,
+    )
+    .await
+    .expect("node runtime starts");
+    let mut container_runtime = NatsNodeContainerRuntime::new(nats.client.clone());
+
+    let created = container_runtime
+        .run_container(run_request("run_1"))
+        .await
+        .expect("container run succeeds");
+    let container_id = created.container_id().clone();
+    assert_observed_running(&nats.observations, &container_id).await;
+
+    container_runtime
+        .remove_container(NodeRemoveContainerRequest {
+            node_id: node_id("node_a"),
+            operation_id: operation_id("op_123"),
+            container_id: container_id.clone(),
+            expected_identity: managed_labels("run_1").identity(),
+        })
+        .await
+        .expect("container remove succeeds");
+
+    assert!(
+        nats.observations
+            .container(&node_id("node_a"), &container_id)
+            .await
+            .expect("observation reads")
+            .is_none()
     );
 
     runtime.shutdown().await.expect("node runtime shuts down");
@@ -143,6 +186,17 @@ fn run_request(step: &str) -> NodeRunContainerRequest {
             step_id: step_id(step),
             kind: ManagedContainerKind::Service,
         },
+    }
+}
+
+fn managed_labels(step: &str) -> ManagedContainerLabels {
+    ManagedContainerLabels {
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_2"),
+        operation_id: operation_id("op_123"),
+        step_id: step_id(step),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

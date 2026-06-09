@@ -652,6 +652,12 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
             container_id: container_id.clone(),
         }),
         OperationEvent::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),
+        OperationEvent::DeployCleanupFinished {
+            removed, failed, ..
+        } => Some(DeployEvidence::CleanupFinished {
+            removed: removed.clone(),
+            failed: failed.clone(),
+        }),
         OperationEvent::DeploySubmitted { .. }
         | OperationEvent::DeployPlanningStarted { .. }
         | OperationEvent::DeployRunning { .. }

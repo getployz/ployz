@@ -47,6 +47,18 @@ fn route_cutover_running_stage_has_stable_wire_name() {
 }
 
 #[test]
+fn removing_superseded_containers_stage_has_stable_wire_name() {
+    let state = DeployOperationState::Running {
+        stage: DeployRunningStage::RemovingSupersededContainers,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&state).expect("state serializes"),
+        r#"{"state":"running","stage":"removing_superseded_containers"}"#
+    );
+}
+
+#[test]
 fn running_operation_status_round_trips_through_json() {
     let status = OperationStatus::Deploy {
         id: operation_id("op_123"),

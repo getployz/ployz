@@ -6,6 +6,8 @@ use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::RoutePort;
 use serde::{Deserialize, Serialize};
 
+use crate::docker::labels::ManagedContainerIdentity;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerEndpointRequest {
@@ -30,6 +32,15 @@ pub struct NodeRunContainerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<ContainerEndpointRequest>,
     pub container: NodeContainerRunSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeRemoveContainerRequest {
+    pub node_id: NodeId,
+    pub operation_id: OperationId,
+    pub container_id: ContainerId,
+    pub expected_identity: ManagedContainerIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

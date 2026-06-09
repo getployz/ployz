@@ -25,7 +25,28 @@ pub struct ManagedContainerLabels {
     pub endpoint_port: Option<RoutePort>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedContainerIdentity {
+    pub service_id: ServiceId,
+    pub revision_id: RevisionId,
+    pub operation_id: OperationId,
+    pub step_id: StepId,
+    pub kind: ManagedContainerKind,
+}
+
 impl ManagedContainerLabels {
+    #[must_use]
+    pub fn identity(&self) -> ManagedContainerIdentity {
+        ManagedContainerIdentity {
+            service_id: self.service_id.clone(),
+            revision_id: self.revision_id.clone(),
+            operation_id: self.operation_id.clone(),
+            step_id: self.step_id.clone(),
+            kind: self.kind,
+        }
+    }
+
     #[must_use]
     pub fn render(&self) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::from([

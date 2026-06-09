@@ -4,7 +4,7 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::node::ContainerEndpoint;
 
-use crate::docker::labels::ManagedContainerLabels;
+use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use crate::node_runtime_types::{ContainerEndpointRequest, NodeContainerRunSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +55,10 @@ pub enum NodeContainerRunnerError {
         container_id: ContainerId,
         message: String,
     },
+    Remove {
+        container_id: ContainerId,
+        message: String,
+    },
 }
 
 pub trait NodeContainerRunner {
@@ -70,6 +74,12 @@ pub trait NodeContainerRunner {
     fn start_managed_container(
         &self,
         container_id: &ContainerId,
+    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
+
+    fn remove_managed_container(
+        &self,
+        container_id: &ContainerId,
+        expected_identity: &ManagedContainerIdentity,
     ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
 }
 

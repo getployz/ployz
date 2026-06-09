@@ -1,7 +1,8 @@
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput, DeployPreparationError,
-    DeployPreparationInput, DeployRequest, DeployRoute, ExistingServiceReplica, ImageReference,
-    ReplicaCount, ReplicaSlot, plan_service_deploy, prepare_deploy,
+    DeployCleanupContainer, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
+    DeployPreparationError, DeployPreparationInput, DeployRequest, DeployRoute,
+    ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, plan_service_deploy,
+    prepare_deploy,
 };
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
@@ -26,6 +27,7 @@ fn new_service_plan_runs_replicas_across_eligible_nodes() {
                 run_step("node_b", 2),
                 run_step("node_a", 3),
             ],
+            cleanup_containers: Vec::new(),
         }
     );
 }
@@ -45,6 +47,7 @@ fn service_plan_reuses_running_target_revision_containers() {
                 run_step("node_a", 2),
                 run_step("node_b", 3),
             ],
+            cleanup_containers: Vec::new(),
         }
     );
 }
@@ -66,6 +69,7 @@ fn service_plan_counts_duplicate_observations_once() {
                 use_existing_step("node_b", "ctr_existing", 1),
                 run_step("node_a", 2),
             ],
+            cleanup_containers: Vec::new(),
         }
     );
 }
@@ -81,6 +85,34 @@ fn service_plan_does_not_require_eligible_nodes_when_reality_already_satisfies_r
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_1"),
             steps: vec![use_existing_step("node_b", "ctr_existing", 1)],
+            cleanup_containers: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn service_plan_cleans_up_unselected_service_containers_after_success() {
+    let mut input = planning_input(1, [node_id("node_a")]);
+    input.existing_replicas = vec![
+        existing_replica("node_b", "ctr_target_keep"),
+        existing_replica("node_b", "ctr_target_extra"),
+    ];
+    input.cleanup_candidates = vec![
+        cleanup_container("node_b", "ctr_target_keep"),
+        cleanup_container("node_b", "ctr_target_extra"),
+        cleanup_container("node_b", "ctr_old"),
+    ];
+
+    assert_eq!(
+        plan_service_deploy(input).expect("plan succeeds"),
+        DeployPlan {
+            service_id: service_id("svc_api"),
+            target_revision: revision_id("rev_1"),
+            steps: vec![use_existing_step("node_b", "ctr_target_extra", 1)],
+            cleanup_containers: vec![
+                cleanup_container("node_b", "ctr_old"),
+                cleanup_container("node_b", "ctr_target_keep"),
+            ],
         }
     );
 }
@@ -155,6 +187,13 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     assert_eq!(
         prepared.existing_replicas,
         vec![existing_replica("node_b", "ctr_target")]
+    );
+    assert_eq!(
+        prepared.cleanup_candidates,
+        vec![
+            cleanup_container_with_revision("node_b", "ctr_target", "rev_1"),
+            cleanup_container_with_revision("node_b", "ctr_old", "rev_old"),
+        ]
     );
 }
 
@@ -287,6 +326,7 @@ fn planning_input(
         request: deploy_request(replicas),
         eligible_nodes: eligible_nodes.into_iter().collect(),
         existing_replicas: Vec::new(),
+        cleanup_candidates: Vec::new(),
     }
 }
 
@@ -368,6 +408,27 @@ fn existing_replica(node: &str, container: &str) -> ExistingServiceReplica {
     ExistingServiceReplica {
         node_id: node_id(node),
         container_id: container_id(container),
+    }
+}
+
+fn cleanup_container(node: &str, container: &str) -> DeployCleanupContainer {
+    cleanup_container_with_revision(node, container, "rev_1")
+}
+
+fn cleanup_container_with_revision(
+    node: &str,
+    container: &str,
+    revision: &str,
+) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        node_id: node_id(node),
+        container_id: container_id(container),
+        service_id: service_id("svc_api"),
+        revision_id: revision_id(revision),
+        operation_id: operation_id("op_existing"),
+        step_id: step_id(container),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

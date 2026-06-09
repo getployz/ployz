@@ -1,4 +1,4 @@
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
@@ -9,7 +9,7 @@ use ployzd::deploy_worker::{DeployExecutionFacts, prepare_deploy_execution_comma
 use std::time::Duration;
 
 #[tokio::test]
-async fn ignores_observed_containers_that_are_not_running_target_services() {
+async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         active_service: None,
@@ -38,6 +38,10 @@ async fn ignores_observed_containers_that_are_not_running_target_services() {
         .expect("deploy command preparation succeeds");
 
     assert!(command.existing_replicas().is_empty());
+    assert_eq!(
+        command.cleanup_candidates(),
+        [cleanup_container("node_a", "ctr_old", "rev_old")]
+    );
     assert_eq!(command.expected_active(), &ExpectedActiveService::Absent);
 }
 
@@ -71,6 +75,10 @@ async fn uses_active_service_revision_and_target_replicas() {
     assert_eq!(
         command.existing_replicas(),
         vec![existing_service_replica("node_a", "ctr_target")]
+    );
+    assert_eq!(
+        command.cleanup_candidates(),
+        [cleanup_container("node_a", "ctr_target", "rev_2")]
     );
 }
 
@@ -141,6 +149,23 @@ fn existing_service_replica(
     ployz_core::deploy::ExistingServiceReplica {
         node_id: self::node_id(node_id),
         container_id: self::container_id(container_id),
+    }
+}
+
+fn cleanup_container(
+    node_id: &str,
+    container_id: &str,
+    revision_id: &str,
+) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        node_id: self::node_id(node_id),
+        container_id: self::container_id(container_id),
+        service_id: service_id("svc_api"),
+        revision_id: self::revision_id(revision_id),
+        operation_id: operation_id("op_existing"),
+        step_id: StepId::try_new(format!("existing_{container_id}")).expect("valid step id"),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
     }
 }
 

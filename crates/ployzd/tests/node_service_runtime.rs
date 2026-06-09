@@ -11,12 +11,13 @@ use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
     NodeRunContainerRequest, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
 };
-use ployzd::docker::labels::ManagedContainerLabels;
+use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError,
 };
 use ployzd::node_protocol::{
+    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
@@ -250,6 +251,81 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
 }
 
 #[tokio::test]
+async fn node_runtime_service_removes_container() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+    )
+    .await
+    .expect("node runtime service starts");
+
+    let response = request_json::<_, NodeContainerRemoveRpcResponse>(
+        &nats.client,
+        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
+        &NodeContainerRemoveRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_old"),
+            expected_identity: managed_labels().identity(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("node service responds");
+
+    assert_eq!(
+        response,
+        NodeContainerRemoveRpcResponse::Ok {
+            node_id: node_id("node_a"),
+            container_id: container_id("ctr_old"),
+        }
+    );
+    assert_eq!(state.removes(), vec![container_id("ctr_old")]);
+}
+
+#[tokio::test]
+async fn node_runtime_service_reports_remove_failure_as_domain_error() {
+    let nats = test_nats().await;
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_remove_failure("ctr_old", "busy"),
+        ready_wireguard_ebpf(),
+    )
+    .await
+    .expect("node runtime service starts");
+
+    let response = request_json::<_, NodeContainerRemoveRpcResponse>(
+        &nats.client,
+        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
+        &NodeContainerRemoveRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_old"),
+            expected_identity: managed_labels().identity(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("node service responds");
+
+    assert_eq!(
+        response,
+        NodeContainerRemoveRpcResponse::DomainError {
+            node_id: node_id("node_a"),
+            error: NodeContainerRemoveDomainError::RemoveFailed {
+                container_id: container_id("ctr_old"),
+                message: failure_message("container remove failed: busy"),
+                inspect_hint: inspect_hint("ctr_old"),
+            },
+        }
+    );
+}
+
+#[tokio::test]
 async fn node_wireguard_ebpf_service_calls_local_preparer() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
@@ -366,12 +442,21 @@ impl RecordingRunnerState {
             .starts
             .clone()
     }
+
+    fn removes(&self) -> Vec<ContainerId> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .removes
+            .clone()
+    }
 }
 
 #[derive(Default)]
 struct RecordingRunnerInner {
     creates: Vec<CreateManagedContainer>,
     starts: Vec<ContainerId>,
+    removes: Vec<ContainerId>,
 }
 
 #[derive(Clone)]
@@ -381,6 +466,7 @@ struct RecordingRunner {
     next_container: Option<ContainerId>,
     create_failure: Option<String>,
     start_failure: Option<(ContainerId, String)>,
+    remove_failure: Option<(ContainerId, String)>,
 }
 
 impl RecordingRunner {
@@ -391,6 +477,7 @@ impl RecordingRunner {
             next_container: None,
             create_failure: None,
             start_failure: None,
+            remove_failure: None,
         }
     }
 
@@ -422,6 +509,11 @@ impl RecordingRunner {
             ExistingManagedContainerState::StartableStopped,
         ));
         self.start_failure = Some((self::container_id(container_id), message.to_owned()));
+        self
+    }
+
+    fn with_remove_failure(mut self, container_id: &str, message: &str) -> Self {
+        self.remove_failure = Some((self::container_id(container_id), message.to_owned()));
         self
     }
 }
@@ -472,6 +564,29 @@ impl NodeContainerRunner for RecordingRunner {
             .lock()
             .expect("recording runner lock is not poisoned")
             .starts
+            .push(container_id.clone());
+        Ok(())
+    }
+
+    async fn remove_managed_container(
+        &self,
+        container_id: &ContainerId,
+        _expected_identity: &ManagedContainerIdentity,
+    ) -> Result<(), NodeContainerRunnerError> {
+        if let Some((failed_container_id, message)) = self.remove_failure.clone()
+            && failed_container_id == *container_id
+        {
+            return Err(NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message,
+            });
+        }
+
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .removes
             .push(container_id.clone());
         Ok(())
     }

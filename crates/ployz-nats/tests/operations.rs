@@ -1,10 +1,13 @@
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
+    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, ImageReference,
+    ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{CertId, OperationId, RevisionId, ServiceId};
 use ployz_core::machine::JoinTokenRedeemedAt;
+use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployRunningStage, DeployTransition, EventSequence, OperationEvent, OperationIdempotencyKey,
+    DeployEvidence, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
+    OperationIdempotencyKey,
 };
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::{MessageId, OperationEventStream};
@@ -92,6 +95,32 @@ fn deploy_health_check_started_append_uses_stable_message_id() {
         append.payload(),
         &OperationEvent::DeployHealthCheckStarted {
             operation_id: operation_id("op_123"),
+        }
+    );
+}
+
+#[test]
+fn deploy_cleanup_finished_append_uses_stable_message_id() {
+    let removed = vec![cleanup_container("node_b", "ctr_old")];
+    let append = OperationEventAppend::deploy_evidence(
+        &operation_id("op_123"),
+        &DeployEvidence::CleanupFinished {
+            removed: removed.clone(),
+            failed: Vec::new(),
+        },
+    );
+
+    assert_eq!(append.subject(), "plz.v1.op.op_123.deploy.cleanup.finished");
+    assert_eq!(
+        append.message_id().as_str(),
+        "deploy.cleanup.finished.op_123"
+    );
+    assert_eq!(
+        append.payload(),
+        &OperationEvent::DeployCleanupFinished {
+            operation_id: operation_id("op_123"),
+            removed,
+            failed: Vec::new(),
         }
     );
 }
@@ -237,6 +266,23 @@ fn container_id(value: &str) -> ployz_core::ids::ContainerId {
     ployz_core::ids::ContainerId::try_new(value).expect("valid container id")
 }
 
+fn step_id(value: &str) -> ployz_core::ids::StepId {
+    ployz_core::ids::StepId::try_new(value).expect("valid step id")
+}
+
+fn cleanup_container(node: &str, container: &str) -> DeployCleanupContainer {
+    DeployCleanupContainer {
+        node_id: node_id(node),
+        container_id: container_id(container),
+        service_id: service_id("svc_api"),
+        revision_id: revision_id("rev_old"),
+        operation_id: operation_id("op_existing"),
+        step_id: step_id(container),
+        kind: ManagedContainerKind::Service,
+        endpoint_port: None,
+    }
+}
+
 fn deploy_plan() -> DeployPlan {
     DeployPlan {
         service_id: service_id("svc_api"),
@@ -245,6 +291,7 @@ fn deploy_plan() -> DeployPlan {
             node_id: node_id("node_a"),
             slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
         }],
+        cleanup_containers: Vec::new(),
     }
 }
 

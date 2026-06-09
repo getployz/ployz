@@ -8,6 +8,7 @@ use crate::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId
 use crate::ops::RoutePort;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedContainerKind {
     Service,

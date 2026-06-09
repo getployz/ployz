@@ -233,6 +233,72 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
 }
 
 #[test]
+fn deploy_cleanup_can_follow_active_service_commit() {
+    let committing = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        state: DeployOperationState::Running {
+            stage: active_service_running(),
+        },
+        last_event_sequence: event_sequence(6),
+    };
+
+    assert_eq!(
+        project_deploy_transition(
+            &committing,
+            DeployTransition::Running {
+                stage: DeployRunningStage::RemovingSupersededContainers,
+            },
+            event_sequence(7),
+        ),
+        Ok(DeployProjection::Updated {
+            status: Box::new(OperationStatus::Deploy {
+                id: operation_id("op_123"),
+                service_id: service_id("svc_api"),
+                state: DeployOperationState::Running {
+                    stage: DeployRunningStage::RemovingSupersededContainers,
+                },
+                last_event_sequence: event_sequence(7),
+            }),
+        })
+    );
+}
+
+#[test]
+fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
+    let committing = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        state: DeployOperationState::Running {
+            stage: active_service_running(),
+        },
+        last_event_sequence: event_sequence(6),
+    };
+
+    assert_eq!(
+        project_operation_event(
+            &committing,
+            OperationEvent::DeployCleanupFinished {
+                operation_id: operation_id("op_123"),
+                removed: Vec::new(),
+                failed: Vec::new(),
+            },
+            event_sequence(7),
+        ),
+        Ok(OperationEventProjection::StatusChanged {
+            status: Box::new(OperationStatus::Deploy {
+                id: operation_id("op_123"),
+                service_id: service_id("svc_api"),
+                state: DeployOperationState::Running {
+                    stage: active_service_running(),
+                },
+                last_event_sequence: event_sequence(7),
+            }),
+        })
+    );
+}
+
+#[test]
 fn invalid_deploy_transitions_are_rejected() {
     let accepted = OperationStatus::deploy_accepted(
         operation_id("op_123"),
@@ -837,6 +903,7 @@ fn plan_created_event() -> OperationEvent {
                 node_id: node_id("node_a"),
                 slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
             }],
+            cleanup_containers: Vec::new(),
         },
     }
 }

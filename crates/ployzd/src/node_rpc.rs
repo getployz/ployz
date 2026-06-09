@@ -5,11 +5,14 @@ use crate::deploy_worker::{
     WireGuardEbpfPreparer,
 };
 use crate::node_protocol::{
+    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPrepareRpcRequest,
     NodeWireGuardEbpfPrepareRpcResponse,
 };
-use crate::node_runtime_types::{NodeRunContainerOutcome, NodeRunContainerRequest};
+use crate::node_runtime_types::{
+    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+};
 use crate::services::node_endpoint_subject;
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
@@ -105,6 +108,43 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
             }
         }
     }
+
+    async fn remove_container(
+        &mut self,
+        request: NodeRemoveContainerRequest,
+    ) -> Result<(), NodeContainerRuntimeError> {
+        let node_id = request.node_id.clone();
+        let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRemove);
+        let response = request_json::<_, NodeContainerRemoveRpcResponse>(
+            &self.client,
+            subject,
+            &NodeContainerRemoveRpcRequest::from(request),
+            self.request_timeout,
+        )
+        .await
+        .map_err(|error| node_request_error(&node_id, error))?;
+
+        match response {
+            NodeContainerRemoveRpcResponse::Ok {
+                node_id: actual_node_id,
+                ..
+            } => {
+                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
+                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
+                }
+                Ok(())
+            }
+            NodeContainerRemoveRpcResponse::DomainError {
+                node_id: actual_node_id,
+                error,
+            } => {
+                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
+                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
+                }
+                Err(error.into_runtime_error(node_id))
+            }
+        }
+    }
 }
 
 impl NodeContainerRunDomainError {
@@ -169,6 +209,23 @@ impl NodeContainerRunDomainError {
                 container_id,
                 message,
                 log_hint,
+            },
+        }
+    }
+}
+
+impl NodeContainerRemoveDomainError {
+    fn into_runtime_error(self, node_id: NodeId) -> NodeContainerRuntimeError {
+        match self {
+            Self::RemoveFailed {
+                container_id,
+                message,
+                inspect_hint,
+            } => NodeContainerRuntimeError::RemoveContainerFailed {
+                node_id,
+                container_id,
+                message,
+                inspect_hint,
             },
         }
     }

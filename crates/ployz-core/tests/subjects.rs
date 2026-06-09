@@ -75,6 +75,10 @@ fn node_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.svc.node.node_7.container.run"
     );
     assert_eq!(
+        node_service(&node_id, NodeServiceEndpoint::ContainerRemove),
+        "plz.v1.svc.node.node_7.container.remove"
+    );
+    assert_eq!(
         node_service(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare),
         "plz.v1.svc.node.node_7.wireguard_ebpf.prepare"
     );

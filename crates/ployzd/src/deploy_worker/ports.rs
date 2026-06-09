@@ -9,7 +9,8 @@ use std::future::Future;
 
 use super::{
     ActiveServiceCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    NodeContainerRuntimeError, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeContainerRuntimeError, NodeRemoveContainerRequest, NodeRunContainerOutcome,
+    NodeRunContainerRequest,
 };
 
 pub trait DeployOperationRecorder {
@@ -31,6 +32,11 @@ pub trait NodeContainerRuntime {
         &mut self,
         request: NodeRunContainerRequest,
     ) -> impl Future<Output = Result<NodeRunContainerOutcome, NodeContainerRuntimeError>> + Send;
+
+    fn remove_container(
+        &mut self,
+        request: NodeRemoveContainerRequest,
+    ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
 }
 
 pub trait WireGuardEbpfPreparer {
