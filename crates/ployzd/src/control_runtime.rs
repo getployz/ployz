@@ -8,10 +8,14 @@ use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
 use crate::deploy_worker::DeployExecutionNodeScope;
 use crate::node_rpc::NatsNodeLogsTailer;
 use crate::operation_api::{MachineQueryRuntime, OperationApiHandlers};
-use ployz_core::ids::OperationOwnerId;
+use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::machine::MachineName;
+use ployz_core::state::ActiveMachineState;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
-use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::core_state::{
+    ActiveMachineReadError, ActiveMachineWriteError, AsyncNatsCoreStateStore, CoreStateStoreError,
+};
 use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
@@ -64,6 +68,9 @@ pub async fn start_control_runtime_with_client(
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenCoreState)?;
+    assure_first_node_active(&core_state, config)
+        .await
+        .map_err(ControlRuntimeError::ActivateFirstNode)?;
     let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenObservations)?;
@@ -120,6 +127,51 @@ pub async fn start_control_runtime_with_client(
     })
 }
 
+async fn assure_first_node_active(
+    core_state: &AsyncNatsCoreStateStore,
+    config: &ControlProcessConfig,
+) -> Result<(), FirstNodeActivationError> {
+    let Some(first_node) = config.deploy_nodes.first() else {
+        return Ok(());
+    };
+    if core_state
+        .active_machine(first_node)
+        .await
+        .map_err(FirstNodeActivationError::Read)?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    core_state
+        .replace_active_machine(&ActiveMachineState {
+            node_id: first_node.clone(),
+            name: MachineName::try_new(first_node.as_str())
+                .expect("node ids are valid machine-name tokens"),
+            activated_by: OperationId::try_new("op_init")
+                .expect("static init operation id is valid"),
+        })
+        .await
+        .map_err(FirstNodeActivationError::Write)
+}
+
+#[derive(Debug)]
+pub enum FirstNodeActivationError {
+    Read(ActiveMachineReadError),
+    Write(ActiveMachineWriteError),
+}
+
+impl fmt::Display for FirstNodeActivationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(error) => write!(formatter, "read first node machine state: {error}"),
+            Self::Write(error) => write!(formatter, "write first node machine state: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for FirstNodeActivationError {}
+
 pub async fn run_control_until_shutdown(
     config: &ControlProcessConfig,
 ) -> Result<(), ControlRuntimeError> {
@@ -144,6 +196,7 @@ pub enum ControlRuntimeError {
     PlanBootstrap(BootstrapRefusal),
     AssureBootstrap(BootstrapAssuranceError),
     OpenCoreState(CoreStateStoreError),
+    ActivateFirstNode(FirstNodeActivationError),
     OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     OpenBackupObjects(BackupObjectStoreError),
@@ -163,6 +216,9 @@ impl fmt::Display for ControlRuntimeError {
             Self::AssureBootstrap(error) => write!(formatter, "{error}"),
             Self::OpenCoreState(error) => {
                 write!(formatter, "failed to open core state store: {error}")
+            }
+            Self::ActivateFirstNode(error) => {
+                write!(formatter, "failed to register first node: {error}")
             }
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")

@@ -15,7 +15,7 @@ use ployz_core::ops::{
     OperationStatus, RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{
-    ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
+    ActiveMachineState, ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
     GatewayStatusObservation, NodePublicIpObservation,
 };
 use ployz_nats::connect::NatsClientUrl;
@@ -76,8 +76,63 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .get_object_store("PLZ_BUNDLES")
         .await
         .expect("control runtime created PLZ_BUNDLES");
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state");
+    let first_node = core_state
+        .active_machine(&node_id("core_1"))
+        .await
+        .expect("first node active machine reads")
+        .expect("first node is active");
+    assert_eq!(first_node.node_id, node_id("core_1"));
+    assert_eq!(first_node.name.as_str(), "core_1");
+    assert_eq!(first_node.activated_by, operation_id("op_init"));
 
     runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_does_not_overwrite_existing_first_node_machine() {
+    let nats = TestNats::start().await;
+    let config = control_config();
+    let runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
+            .await
+            .expect("control runtime starts");
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state");
+    let existing = ActiveMachineState {
+        node_id: node_id("core_1"),
+        name: ployz_sdk_types::MachineName::try_new("first_core").expect("valid machine name"),
+        activated_by: operation_id("op_existing"),
+    };
+    core_state
+        .replace_active_machine(&existing)
+        .await
+        .expect("existing machine state stores");
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+    let restarted =
+        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
+            .await
+            .expect("control runtime restarts");
+
+    assert_eq!(
+        core_state
+            .active_machine(&node_id("core_1"))
+            .await
+            .expect("first node active machine reads"),
+        Some(existing)
+    );
+
+    restarted
         .shutdown()
         .await
         .expect("control runtime shuts down");
@@ -185,13 +240,17 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             .serving,
         GatewayServingStatus::Current
     );
-    assert_eq!(
-        api.machine_list(&MachineListRequest {})
-            .await
-            .expect("machines list")
-            .machines,
-        vec![inspected]
+    let machines = api
+        .machine_list(&MachineListRequest {})
+        .await
+        .expect("machines list")
+        .machines;
+    assert!(
+        machines
+            .iter()
+            .any(|machine| machine.active.node_id == node_id("core_1"))
     );
+    assert!(machines.contains(&inspected));
 
     runtime
         .shutdown()
@@ -304,15 +363,18 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 
     assert_eq!(accepted.operation_id, operation_id("op_run"));
     let status = wait_for_terminal_deploy_status(&api, operation_id("op_run")).await;
-    assert!(matches!(
-        status,
-        OperationStatus::Deploy {
-            state: DeployOperationState::Completed {
-                outcome: DeployCompletionOutcome::Completed,
-            },
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected deploy to complete, got {status:?}"
+    );
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state");
@@ -365,6 +427,13 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observations");
+    observations
+        .replace_node_public_ip(&NodePublicIpObservation {
+            node_id: node_id("node_a"),
+            public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
+        })
+        .await
+        .expect("node public ip stores");
     let node_runtime = start_node_runtime_with_ports(
         nats.client.clone(),
         node_id("node_a"),
@@ -400,15 +469,18 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
 
     assert_eq!(accepted.operation_id, operation_id("op_routed"));
     let status = wait_for_terminal_deploy_status(&api, operation_id("op_routed")).await;
-    assert!(matches!(
-        status,
-        OperationStatus::Deploy {
-            state: DeployOperationState::Completed {
-                outcome: DeployCompletionOutcome::Completed,
-            },
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected routed deploy to complete, got {status:?}"
+    );
     wait_until(Duration::from_secs(2), || {
         gateway.served_projection().is_some_and(|projection| {
             matches!(
