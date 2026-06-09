@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use async_nats::jetstream;
@@ -30,20 +29,18 @@ use ployz_nats::operations::{
 };
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
-use ployz_transport::iroh_endpoint::IrohEndpoint;
 use ployzctl::api_client::OperationApiClient;
-use ployzd::config::{ControlProcessConfig, TunnelProcessConfig};
+use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::{MachineAddBootstrapConfig, OperationControllers};
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::iroh_tunnel::{PreparedTunnelService, start_tunnel_runtime_with_iroh_bind_addr};
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 
 mod support;
 
+use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
+use support::nats::start_edge_nats_tunnel;
 
 #[tokio::test]
 async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -447,16 +444,8 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     assert_eq!(accepted.operation_id, operation_id("op_e2e_route"));
     wait_for_gateway_route(&gateway_runtime).await;
 
-    let mut client = TcpStream::connect(gateway_runtime.listen_addr()).await?;
-    client
-        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
-        .await?;
-    client.shutdown().await?;
-    let mut response = String::new();
-    client.read_to_string(&mut response).await?;
-
     assert_eq!(
-        response,
+        http_get_with_host(gateway_runtime.listen_addr(), "api.example.com").await?,
         "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
     );
     assert_eq!(
@@ -633,7 +622,7 @@ async fn e2e_edge_node_and_gateway_use_nats_over_iroh_tunnel()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_jetstream().await?;
     let core_client = async_nats::connect(nats.url()).await?;
-    let edge_nats = start_edge_nats_tunnel(nats_socket(nats.url())).await?;
+    let edge_nats = start_edge_nats_tunnel(node_id("core_1"), nats.socket_addr()).await?;
     let edge_client = async_nats::connect(edge_nats.url()).await?;
     let jetstream = jetstream::new(core_client.clone());
     let route_port = free_loopback_port().await?;
@@ -844,70 +833,6 @@ fn nats_client_url(value: &str) -> NatsClientUrl {
     NatsClientUrl::try_new(value).expect("valid nats client url")
 }
 
-fn nats_socket(value: &str) -> SocketAddr {
-    let authority = value
-        .strip_prefix("nats://")
-        .expect("test nats url has nats scheme")
-        .trim_end_matches('/');
-    let authority = authority
-        .strip_prefix("localhost:")
-        .map_or_else(|| authority.to_owned(), |port| format!("127.0.0.1:{port}"));
-    authority
-        .parse()
-        .unwrap_or_else(|error| panic!("test nats url {value:?} has socket authority: {error}"))
-}
-
-struct EdgeNatsTunnel {
-    url: String,
-    edge: ployzd::iroh_tunnel::RunningTunnelRuntime,
-    core: ployzd::iroh_tunnel::RunningTunnelRuntime,
-}
-
-impl EdgeNatsTunnel {
-    fn url(&self) -> &str {
-        &self.url
-    }
-
-    async fn shutdown(self) {
-        self.edge.shutdown().await;
-        self.core.shutdown().await;
-    }
-}
-
-async fn start_edge_nats_tunnel(
-    core_nats_socket: SocketAddr,
-) -> Result<EdgeNatsTunnel, Box<dyn Error + Send + Sync>> {
-    let core_config = TunnelProcessConfig::new(PreparedTunnelService::core(
-        "e2e-nats-tunnel-core",
-        core_nats_socket,
-    ));
-    let core = start_tunnel_runtime_with_iroh_bind_addr(
-        &core_config,
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-    )
-    .await?;
-    let core_iroh_addr = core
-        .endpoint_direct_addresses()
-        .into_iter()
-        .find(|addr| addr.ip().is_loopback())
-        .expect("core tunnel exposes a loopback iroh address");
-    let edge_config = TunnelProcessConfig::new(PreparedTunnelService::edge(
-        "e2e-nats-tunnel-edge",
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        IrohEndpoint::new(node_id("core_1"), core.endpoint_public_key())
-            .with_direct_address(core_iroh_addr),
-    ));
-    let edge = start_tunnel_runtime_with_iroh_bind_addr(
-        &edge_config,
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-    )
-    .await?;
-    let listen_addr = edge.listen_addr().expect("edge tunnel listens locally");
-    let url = format!("nats://{listen_addr}");
-
-    Ok(EdgeNatsTunnel { url, edge, core })
-}
-
 fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
@@ -990,110 +915,6 @@ fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
 
 fn idempotency_key(value: &str) -> OperationIdempotencyKey {
     OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
-}
-
-struct TestUpstream {
-    addr: std::net::SocketAddr,
-    requests: tokio::sync::mpsc::Receiver<String>,
-    expected_requests: usize,
-}
-
-impl TestUpstream {
-    async fn start() -> Self {
-        Self::start_with_expected_requests(1).await
-    }
-
-    async fn start_with_expected_requests(expected_requests: usize) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind upstream");
-        let addr = listener.local_addr().expect("upstream local addr");
-        let (request_tx, request_rx) = tokio::sync::mpsc::channel(expected_requests);
-        tokio::spawn(async move {
-            for _ in 0..expected_requests {
-                let (mut stream, _) = listener.accept().await.expect("accept upstream");
-                let mut request = Vec::new();
-                read_until_http_head(&mut stream, &mut request).await;
-                let _ = request_tx
-                    .send(String::from_utf8(request).expect("request is utf8"))
-                    .await;
-                stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
-                    .await
-                    .expect("write upstream response");
-            }
-        });
-
-        Self {
-            addr,
-            requests: request_rx,
-            expected_requests,
-        }
-    }
-
-    fn port(&self) -> u16 {
-        self.addr.port()
-    }
-
-    async fn request(self) -> String {
-        let [request] = self.requests().await.try_into().unwrap_or_else(|_| {
-            panic!("expected one upstream request");
-        });
-        request
-    }
-
-    async fn requests(mut self) -> Vec<String> {
-        let mut requests = Vec::with_capacity(self.expected_requests);
-        for _ in 0..self.expected_requests {
-            requests.push(
-                self.requests
-                    .recv()
-                    .await
-                    .expect("upstream receives request"),
-            );
-        }
-        requests
-    }
-}
-
-async fn http_get_with_host(
-    addr: std::net::SocketAddr,
-    host: &str,
-) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let mut client = TcpStream::connect(addr).await?;
-    client
-        .write_all(format!("GET /smoke HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
-        .await?;
-    client.shutdown().await?;
-    let mut response = String::new();
-    client.read_to_string(&mut response).await?;
-    Ok(response)
-}
-
-async fn free_loopback_port() -> Result<u16, std::io::Error> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
-async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) {
-    let mut chunk = [0; 1024];
-    loop {
-        let read = stream
-            .read(&mut chunk)
-            .await
-            .expect("read upstream request");
-        assert!(read > 0, "client closed before complete HTTP head");
-        request.extend_from_slice(
-            chunk
-                .get(..read)
-                .expect("read byte count is within buffer length"),
-        );
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            return;
-        }
-    }
 }
 
 fn test_lease_claim() -> OperationLeaseClaim {
