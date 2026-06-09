@@ -480,7 +480,7 @@ fn binary_tunnel_role_enters_runtime_when_configured() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("ployzd tunnel-edge runtime is not implemented yet"),
+            .contains("core iroh public key \"core-public-key\" is invalid"),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );

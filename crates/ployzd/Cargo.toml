@@ -21,6 +21,7 @@ serde_json.workspace = true
 nuid.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 object = { version = "0.37.3", default-features = false, features = ["read"] }
+iroh = "1.0.0-rc.1"
 
 [dev-dependencies]
 nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
