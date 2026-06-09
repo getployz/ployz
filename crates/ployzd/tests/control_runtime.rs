@@ -1,6 +1,6 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
-use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
+use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
@@ -11,7 +11,8 @@ use ployz_core::install::{
     MachineJoinTrustedNatsServerId,
 };
 use ployz_core::ops::{
-    DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
+    DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus, RouteHostname,
+    RoutePort, RouteTarget,
 };
 use ployz_core::state::{
     ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
@@ -28,10 +29,13 @@ use ployz_sdk_types::{
 };
 use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::MachineAddBootstrapConfig;
+use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 mod support;
 
@@ -347,6 +351,105 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 }
 
 #[tokio::test]
+async fn control_runtime_routed_deploy_serves_through_gateway() {
+    let nats = TestNats::start().await;
+    let config = control_config()
+        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2));
+    let runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
+            .await
+            .expect("control runtime starts");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observations");
+    let node_runtime = start_node_runtime_with_ports(
+        nats.client.clone(),
+        node_id("node_a"),
+        support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        support::ReadyWireGuardEbpf,
+        support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+    )
+    .await
+    .expect("node runtime starts");
+    let gateway = start_gateway_process_runtime_with_client(
+        nats.client.clone(),
+        Duration::from_millis(10),
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        node_id("node_gateway"),
+    )
+    .await
+    .expect("gateway runtime starts");
+    let upstream = support::TestHttpUpstream::start("smoke").await;
+    let api = OperationApiClient::new(nats.client.clone());
+
+    let accepted = api
+        .deploy_submit(&DeploySubmitRequest {
+            operation_id: operation_id("op_routed"),
+            target: deploy_target_with_route(
+                "svc_api",
+                gateway.listen_addr().port(),
+                upstream.port(),
+            ),
+            idempotency_key: idempotency_key("idem_routed"),
+        })
+        .await
+        .expect("operation API accepts routed deploy");
+
+    assert_eq!(accepted.operation_id, operation_id("op_routed"));
+    let status = wait_for_terminal_deploy_status(&api, operation_id("op_routed")).await;
+    assert!(matches!(
+        status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed,
+            ..
+        }
+    ));
+    wait_until(Duration::from_secs(2), || {
+        gateway.served_projection().is_some_and(|projection| {
+            matches!(
+                projection.routes.as_slice(),
+                [route] if !route.upstreams.is_empty()
+            )
+        })
+    })
+    .await;
+
+    let mut client = TcpStream::connect(gateway.listen_addr())
+        .await
+        .expect("connect gateway");
+    client
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
+        .await
+        .expect("write gateway request");
+    client.shutdown().await.expect("finish gateway request");
+    let mut response = String::new();
+    client
+        .read_to_string(&mut response)
+        .await
+        .expect("read gateway response");
+
+    assert_eq!(
+        response,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(
+        upstream.request().await,
+        "GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
+    );
+
+    gateway.shutdown().await;
+    node_runtime
+        .shutdown()
+        .await
+        .expect("node runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn control_runtime_refuses_bootstrap_resource_drift() {
     let nats = TestNats::start().await;
     nats.jetstream
@@ -533,6 +636,31 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
+fn deploy_target_with_route(
+    service_id: &str,
+    gateway_port: u16,
+    endpoint_port: u16,
+) -> DeployRequest {
+    DeployRequest {
+        route: Some(DeployRoute {
+            target: RouteTarget::try_new(
+                route_hostname("api.example.com"),
+                route_port(gateway_port),
+            ),
+            endpoint_port: route_port(endpoint_port),
+        }),
+        ..deploy_target(service_id)
+    }
+}
+
+fn route_hostname(value: &str) -> RouteHostname {
+    RouteHostname::try_new(value).expect("valid route hostname")
+}
+
+fn route_port(value: u16) -> RoutePort {
+    RoutePort::try_new(value).expect("valid route port")
+}
+
 async fn wait_for_terminal_deploy_status(
     api: &OperationApiClient,
     operation_id: OperationId,
@@ -555,4 +683,15 @@ async fn wait_for_terminal_deploy_status(
     }
 
     panic!("deploy did not reach terminal status");
+}
+
+async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if predicate() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(predicate(), "condition did not become true before timeout");
 }
