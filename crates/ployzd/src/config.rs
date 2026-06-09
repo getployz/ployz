@@ -31,6 +31,12 @@ pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
 pub const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
 pub const PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV: &str = "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS";
 pub const PLOYZ_TUNNEL_CORE_RELAY_URL_ENV: &str = "PLOYZ_TUNNEL_CORE_RELAY_URL";
+pub const PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV: &str = "PLOYZ_TUNNEL_IROH_BIND_ADDR";
+pub const PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_SECRET_KEY_FILE";
+pub const PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_PUBLIC_KEY_FILE";
+pub const DEFAULT_TUNNEL_SECRET_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.key";
+pub const DEFAULT_TUNNEL_PUBLIC_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.public";
+pub const DEFAULT_CORE_TUNNEL_IROH_PORT: u16 = 4433;
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,13 +217,10 @@ fn load_tunnel_config(
     side: TunnelSide,
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<TunnelProcessConfig, DaemonProcessConfigError> {
-    match side {
+    let service = match side {
         TunnelSide::Core => {
             let nats_socket = load_tunnel_socket(side, PLOYZ_TUNNEL_NATS_ADDR_ENV, env)?;
-            Ok(TunnelProcessConfig::new(PreparedTunnelService::core(
-                "ployzd-tunnel-core",
-                nats_socket,
-            )))
+            PreparedTunnelService::core("ployzd-tunnel-core", nats_socket)
         }
         TunnelSide::Edge => {
             let local_listen = load_tunnel_socket(side, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, env)?;
@@ -244,13 +247,16 @@ fn load_tunnel_config(
             if let Some(relay_url) = load_tunnel_core_relay_url(env)? {
                 endpoint = endpoint.with_relay_url(relay_url);
             }
-            Ok(TunnelProcessConfig::new(PreparedTunnelService::edge(
-                "ployzd-tunnel-edge",
-                local_listen,
-                endpoint,
-            )))
+            PreparedTunnelService::edge("ployzd-tunnel-edge", local_listen, endpoint)
         }
-    }
+    };
+
+    Ok(TunnelProcessConfig::new(service)
+        .with_iroh_bind_addr(load_tunnel_iroh_bind_addr(side, env)?)
+        .with_identity_files(
+            load_tunnel_identity_file(env, PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV),
+            load_tunnel_identity_file(env, PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV),
+        ))
 }
 
 fn load_tunnel_core_direct_addresses(
@@ -303,6 +309,47 @@ fn load_tunnel_socket(
             env: env_name,
             value,
             source,
+        })
+}
+
+fn load_tunnel_iroh_bind_addr(
+    side: TunnelSide,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<SocketAddr, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(default_tunnel_iroh_bind_addr(side));
+    };
+    value
+        .parse()
+        .map_err(|source| DaemonProcessConfigError::InvalidTunnelSocket {
+            side,
+            env: PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV,
+            value,
+            source,
+        })
+}
+
+fn default_tunnel_iroh_bind_addr(side: TunnelSide) -> SocketAddr {
+    match side {
+        TunnelSide::Core => SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            DEFAULT_CORE_TUNNEL_IROH_PORT,
+        ),
+        TunnelSide::Edge => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+    }
+}
+
+fn load_tunnel_identity_file(
+    env: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+) -> Option<std::path::PathBuf> {
+    env(name)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| match name {
+            PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV => Some(DEFAULT_TUNNEL_SECRET_KEY_FILE.into()),
+            PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV => Some(DEFAULT_TUNNEL_PUBLIC_KEY_FILE.into()),
+            _ => None,
         })
 }
 
@@ -623,12 +670,38 @@ impl DnsProcessConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelProcessConfig {
     pub service: PreparedTunnelService,
+    pub iroh_bind_addr: SocketAddr,
+    pub secret_key_file: Option<std::path::PathBuf>,
+    pub public_key_file: Option<std::path::PathBuf>,
 }
 
 impl TunnelProcessConfig {
     #[must_use]
     pub fn new(service: PreparedTunnelService) -> Self {
-        Self { service }
+        let iroh_bind_addr = default_tunnel_iroh_bind_addr(service.side());
+        Self {
+            service,
+            iroh_bind_addr,
+            secret_key_file: None,
+            public_key_file: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_iroh_bind_addr(mut self, iroh_bind_addr: SocketAddr) -> Self {
+        self.iroh_bind_addr = iroh_bind_addr;
+        self
+    }
+
+    #[must_use]
+    pub fn with_identity_files(
+        mut self,
+        secret_key_file: Option<std::path::PathBuf>,
+        public_key_file: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.secret_key_file = secret_key_file;
+        self.public_key_file = public_key_file;
+        self
     }
 
     #[must_use]

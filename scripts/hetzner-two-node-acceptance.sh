@@ -297,6 +297,8 @@ case "$command" in
     remote_ebpf_bytecode_source="${remote_dir}/ployz-ebpf-tc"
     remote_join_template="/etc/ployz/machine-join-template.json"
     remote_secret_delivery="/etc/ployz/machine-join-secret-delivery.json"
+    remote_core_iroh_secret="/var/lib/ployz/iroh/endpoint.key"
+    core_iroh_port="4433"
     ployzd_sha256="$(sha256_file "$ployzd_bin")"
     keeper_sha256="$(sha256_file "$keeper_bin")"
     nats_sha256="$(sha256_file "$nats_server_bin")"
@@ -323,9 +325,14 @@ case "$command" in
     remote_sh "$core_ip" "umask 077; cat > '$remote_secret_delivery'" <<'JSON'
 {"nats_credentials":"acceptance-node-creds","core_iroh_ticket":"acceptance-core-ticket"}
 JSON
+    core_iroh_identity_log="${log_dir}/core-iroh-identity.log"
+    run_remote_logged core-iroh-identity "$core_ip" \
+      "'$remote_ployzd' tunnel identity --secret-key-file '$remote_core_iroh_secret'" >"$core_iroh_identity_log"
+    core_iroh_public_key="$(awk '$1 == "public-key" { print $2 }' "$core_iroh_identity_log" | tail -n 1)"
+    [ -n "$core_iroh_public_key" ] || die "core iroh identity did not print a public key; output: ${core_iroh_identity_log}"
 
     run_remote_logged render-join-template "$core_ip" \
-      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key acceptance-core --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key '$core_iroh_public_key' --core-iroh-direct-address '${core_ip}:${core_iroh_port}' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
 
     run_remote_logged init-core "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"

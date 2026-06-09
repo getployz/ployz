@@ -52,9 +52,14 @@ fn hetzner_h0_script_drives_the_product_path() {
     let script = std::fs::read_to_string(script_path()).expect("script is readable");
 
     assert!(script.contains(" init join-template "));
+    assert!(script.contains("tunnel identity --secret-key-file"));
+    assert!(script.contains("core_iroh_public_key="));
     assert!(script.contains("--runtime-nats-url '$edge_runtime_nats_url'"));
     assert!(script.contains("--trusted-first-node core_1"));
+    assert!(script.contains("--core-iroh-public-key '$core_iroh_public_key'"));
+    assert!(script.contains("--core-iroh-direct-address '${core_ip}:${core_iroh_port}'"));
     assert!(script.contains("--secret-delivery-file"));
+    assert!(!script.contains("--core-iroh-public-key acceptance-core"));
     assert!(!script.contains("--nats-credentials"));
     assert!(!script.contains("--trusted-nats-config-sha256"));
     assert!(script.contains(" init --node core_1"));

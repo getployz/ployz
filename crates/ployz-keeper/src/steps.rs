@@ -30,6 +30,12 @@ const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
 const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
 const PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV: &str = "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS";
 const PLOYZ_TUNNEL_CORE_RELAY_URL_ENV: &str = "PLOYZ_TUNNEL_CORE_RELAY_URL";
+const PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV: &str = "PLOYZ_TUNNEL_IROH_BIND_ADDR";
+const PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_SECRET_KEY_FILE";
+const PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_PUBLIC_KEY_FILE";
+const DEFAULT_CORE_TUNNEL_IROH_PORT: u16 = 4433;
+const DEFAULT_TUNNEL_SECRET_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.key";
+const DEFAULT_TUNNEL_PUBLIC_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.public";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepPlan {
@@ -483,6 +489,9 @@ pub struct PloyzdRoleEnvironmentTarget {
     ebpf_bytecode_path: Option<PathBuf>,
     ebpf_ctl_path: Option<PathBuf>,
     tunnel: Option<PloyzdTunnelEnvironment>,
+    tunnel_secret_key_file: PathBuf,
+    tunnel_public_key_file: PathBuf,
+    tunnel_iroh_bind_addr: SocketAddr,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -497,6 +506,9 @@ impl PloyzdRoleEnvironmentTarget {
             ebpf_bytecode_path: None,
             ebpf_ctl_path: None,
             tunnel: None,
+            tunnel_secret_key_file: PathBuf::from(DEFAULT_TUNNEL_SECRET_KEY_FILE),
+            tunnel_public_key_file: PathBuf::from(DEFAULT_TUNNEL_PUBLIC_KEY_FILE),
+            tunnel_iroh_bind_addr: default_edge_iroh_bind_socket(),
         }
     }
 
@@ -537,6 +549,7 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_core_tunnel_nats_addr(mut self, addr: SocketAddr) -> Self {
         self.tunnel = Some(PloyzdTunnelEnvironment::Core { nats_addr: addr });
+        self.tunnel_iroh_bind_addr = default_core_iroh_bind_socket();
         self
     }
 
@@ -556,6 +569,7 @@ impl PloyzdRoleEnvironmentTarget {
             core_direct_addresses,
             core_relay_url,
         });
+        self.tunnel_iroh_bind_addr = default_edge_iroh_bind_socket();
         self
     }
 
@@ -603,6 +617,18 @@ impl PloyzdRoleEnvironmentTarget {
             output.push_str(&path.display().to_string());
             output.push('\n');
         }
+        output.push_str(PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV);
+        output.push('=');
+        output.push_str(&self.tunnel_secret_key_file.display().to_string());
+        output.push('\n');
+        output.push_str(PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV);
+        output.push('=');
+        output.push_str(&self.tunnel_public_key_file.display().to_string());
+        output.push('\n');
+        output.push_str(PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV);
+        output.push('=');
+        output.push_str(&self.tunnel_iroh_bind_addr.to_string());
+        output.push('\n');
         match &self.tunnel {
             Some(PloyzdTunnelEnvironment::Core { nats_addr }) => {
                 output.push_str(PLOYZ_TUNNEL_NATS_ADDR_ENV);
@@ -670,6 +696,17 @@ pub enum PloyzdTunnelEnvironment {
 
 fn default_nats_socket() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_NATS_PORT)
+}
+
+fn default_core_iroh_bind_socket() -> SocketAddr {
+    SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        DEFAULT_CORE_TUNNEL_IROH_PORT,
+    )
+}
+
+fn default_edge_iroh_bind_socket() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

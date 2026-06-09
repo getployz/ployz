@@ -160,6 +160,13 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     let rendered_env = edge_role_environment().render();
     assert!(rendered_env.contains("PLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n"));
     assert!(rendered_env.contains("PLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"));
+    assert!(
+        rendered_env.contains("PLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\n")
+    );
+    assert!(
+        rendered_env.contains("PLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\n")
+    );
+    assert!(rendered_env.contains("PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\n"));
     assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS=203.0.113.10:4433\n"));
     assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_RELAY_URL=https://relay.example.test\n"));
 

@@ -121,7 +121,7 @@ fn local_effects_install_first_node_process_units() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:4433\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
             root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             root.join("bin/ployz-ebpf-ctl").display()
         )
@@ -164,7 +164,7 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:4433\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
             root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             root.join("bin/ployz-ebpf-ctl").display()
         )
@@ -205,7 +205,7 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:4433\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
             template_path.display(),
             root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             root.join("bin/ployz-ebpf-ctl").display()

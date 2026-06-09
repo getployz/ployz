@@ -1,8 +1,11 @@
 //! Supervised iroh tunnel service preparation and runtime.
 
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
+use std::{fs, io};
 
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
@@ -123,17 +126,33 @@ impl RunningTunnelRuntime {
 pub async fn start_tunnel_runtime(
     config: &TunnelProcessConfig,
 ) -> Result<RunningTunnelRuntime, TunnelRuntimeError> {
-    start_tunnel_runtime_with_iroh_bind_addr(config, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-        .await
+    start_tunnel_runtime_with_iroh_bind_addr(config, config.iroh_bind_addr).await
 }
 
 pub async fn start_tunnel_runtime_with_iroh_bind_addr(
     config: &TunnelProcessConfig,
     iroh_bind_addr: SocketAddr,
 ) -> Result<RunningTunnelRuntime, TunnelRuntimeError> {
+    let secret_key = tunnel_secret_key(config.secret_key_file.as_deref())?;
     match &config.service.tunnel {
-        NatsTunnelConfig::Core(core) => start_core_tunnel(core, iroh_bind_addr).await,
-        NatsTunnelConfig::Edge(edge) => start_edge_tunnel(edge, iroh_bind_addr).await,
+        NatsTunnelConfig::Core(core) => {
+            start_core_tunnel(
+                core,
+                iroh_bind_addr,
+                secret_key,
+                config.public_key_file.as_deref(),
+            )
+            .await
+        }
+        NatsTunnelConfig::Edge(edge) => {
+            start_edge_tunnel(
+                edge,
+                iroh_bind_addr,
+                secret_key,
+                config.public_key_file.as_deref(),
+            )
+            .await
+        }
     }
 }
 
@@ -156,9 +175,17 @@ pub async fn run_tunnel_until_shutdown(
 async fn start_core_tunnel(
     config: &CoreNatsTunnelConfig,
     iroh_bind_addr: SocketAddr,
+    secret_key: SecretKey,
+    public_key_file: Option<&Path>,
 ) -> Result<RunningTunnelRuntime, TunnelRuntimeError> {
-    let endpoint =
-        bind_iroh_endpoint(TunnelSide::Core, Some(NATS_TUNNEL_ALPN), iroh_bind_addr).await?;
+    let endpoint = bind_iroh_endpoint(
+        TunnelSide::Core,
+        Some(NATS_TUNNEL_ALPN),
+        iroh_bind_addr,
+        secret_key,
+    )
+    .await?;
+    write_tunnel_public_key(public_key_file, &endpoint)?;
     let (shutdown, _) = broadcast::channel(2);
     let (task_exits_tx, task_exits) = mpsc::unbounded_channel();
     let mut task_shutdown = shutdown.subscribe();
@@ -184,8 +211,11 @@ async fn start_core_tunnel(
 async fn start_edge_tunnel(
     config: &EdgeNatsTunnelConfig,
     iroh_bind_addr: SocketAddr,
+    secret_key: SecretKey,
+    public_key_file: Option<&Path>,
 ) -> Result<RunningTunnelRuntime, TunnelRuntimeError> {
-    let endpoint = bind_iroh_endpoint(TunnelSide::Edge, None, iroh_bind_addr).await?;
+    let endpoint = bind_iroh_endpoint(TunnelSide::Edge, None, iroh_bind_addr, secret_key).await?;
+    write_tunnel_public_key(public_key_file, &endpoint)?;
     let listener = TcpListener::bind(config.local_listen)
         .await
         .map_err(|source| TunnelRuntimeError::BindEdgeListener {
@@ -221,9 +251,10 @@ async fn bind_iroh_endpoint(
     side: TunnelSide,
     alpn: Option<&'static str>,
     bind_addr: SocketAddr,
+    secret_key: SecretKey,
 ) -> Result<Endpoint, TunnelRuntimeError> {
     let mut builder = Endpoint::builder(presets::N0)
-        .secret_key(SecretKey::generate())
+        .secret_key(secret_key)
         .relay_mode(RelayMode::Disabled)
         .bind_addr(bind_addr)
         .map_err(|source| TunnelRuntimeError::BindIrohEndpoint {
@@ -242,6 +273,144 @@ async fn bind_iroh_endpoint(
             addr: bind_addr,
             source: source.to_string(),
         })
+}
+
+pub fn assure_tunnel_identity_file(path: &Path) -> Result<String, TunnelRuntimeError> {
+    Ok(load_or_create_tunnel_secret_key(path)?.public().to_string())
+}
+
+fn tunnel_secret_key(path: Option<&Path>) -> Result<SecretKey, TunnelRuntimeError> {
+    match path {
+        Some(path) => load_or_create_tunnel_secret_key(path),
+        None => Ok(SecretKey::generate()),
+    }
+}
+
+fn load_or_create_tunnel_secret_key(path: &Path) -> Result<SecretKey, TunnelRuntimeError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => parse_tunnel_secret_key(path, &contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => create_tunnel_secret_key(path),
+        Err(source) => Err(TunnelRuntimeError::ReadIdentityFile {
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        }),
+    }
+}
+
+fn parse_tunnel_secret_key(path: &Path, contents: &str) -> Result<SecretKey, TunnelRuntimeError> {
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        return Err(TunnelRuntimeError::InvalidIdentityFile {
+            path: path.to_path_buf(),
+            message: "secret key file is empty".to_owned(),
+        });
+    }
+    SecretKey::from_str(trimmed).map_err(|source| TunnelRuntimeError::InvalidIdentityFile {
+        path: path.to_path_buf(),
+        message: source.to_string(),
+    })
+}
+
+fn create_tunnel_secret_key(path: &Path) -> Result<SecretKey, TunnelRuntimeError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| TunnelRuntimeError::WriteIdentityFile {
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        })?;
+    }
+    let secret_key = SecretKey::generate();
+    match write_secret_key_file(path, &secret_key)? {
+        SecretKeyFileWrite::Written => Ok(secret_key),
+        SecretKeyFileWrite::AlreadyExists => load_or_create_tunnel_secret_key(path),
+    }
+}
+
+enum SecretKeyFileWrite {
+    Written,
+    AlreadyExists,
+}
+
+fn write_secret_key_file(
+    path: &Path,
+    secret_key: &SecretKey,
+) -> Result<SecretKeyFileWrite, TunnelRuntimeError> {
+    let contents = format!("{}\n", hex_lower(&secret_key.to_bytes()));
+    let result = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+        }
+        #[cfg(not(unix))]
+        {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        }
+    };
+
+    match result {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(contents.as_bytes()).map_err(|source| {
+                TunnelRuntimeError::WriteIdentityFile {
+                    path: path.to_path_buf(),
+                    source: source.to_string(),
+                }
+            })?;
+            Ok(SecretKeyFileWrite::Written)
+        }
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            Ok(SecretKeyFileWrite::AlreadyExists)
+        }
+        Err(source) => Err(TunnelRuntimeError::WriteIdentityFile {
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        }),
+    }
+}
+
+fn write_tunnel_public_key(
+    path: Option<&Path>,
+    endpoint: &Endpoint,
+) -> Result<(), TunnelRuntimeError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| TunnelRuntimeError::WritePublicKeyFile {
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        })?;
+    }
+    fs::write(path, format!("{}\n", endpoint.id().to_z32())).map_err(|source| {
+        TunnelRuntimeError::WritePublicKeyFile {
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        }
+    })
+}
+
+fn hex_lower(bytes: &[u8; 32]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(hex_digit(byte >> 4));
+        output.push(hex_digit(byte & 0x0f));
+    }
+    output
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'a' + (value - 10)),
+        _ => unreachable!("nibble is in range"),
+    }
 }
 
 fn endpoint_addr_from_config(endpoint: &IrohEndpoint) -> Result<EndpointAddr, TunnelRuntimeError> {
@@ -442,6 +611,22 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 
 #[derive(Debug)]
 pub enum TunnelRuntimeError {
+    ReadIdentityFile {
+        path: PathBuf,
+        source: String,
+    },
+    WriteIdentityFile {
+        path: PathBuf,
+        source: String,
+    },
+    InvalidIdentityFile {
+        path: PathBuf,
+        message: String,
+    },
+    WritePublicKeyFile {
+        path: PathBuf,
+        source: String,
+    },
     BindIrohEndpoint {
         side: TunnelSide,
         addr: SocketAddr,
@@ -469,6 +654,26 @@ pub enum TunnelRuntimeError {
 impl fmt::Display for TunnelRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReadIdentityFile { path, source } => write!(
+                formatter,
+                "failed to read iroh tunnel identity {}: {source}",
+                path.display()
+            ),
+            Self::WriteIdentityFile { path, source } => write!(
+                formatter,
+                "failed to write iroh tunnel identity {}: {source}",
+                path.display()
+            ),
+            Self::InvalidIdentityFile { path, message } => write!(
+                formatter,
+                "iroh tunnel identity {} is invalid: {message}",
+                path.display()
+            ),
+            Self::WritePublicKeyFile { path, source } => write!(
+                formatter,
+                "failed to write iroh tunnel public key {}: {source}",
+                path.display()
+            ),
             Self::BindIrohEndpoint { side, addr, source } => write!(
                 formatter,
                 "failed to bind ployzd tunnel {} iroh endpoint on {addr}: {source}",

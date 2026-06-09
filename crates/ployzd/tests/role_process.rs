@@ -16,7 +16,8 @@ use ployzd::config::{
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
     PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
     PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
-    PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV, TunnelProcessConfig,
+    PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV,
+    PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV, PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV, TunnelProcessConfig,
     load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
@@ -418,12 +419,27 @@ fn tunnel_roles_load_core_and_edge_config() {
         config.service.local_client_endpoint().socket_addr(),
         Some(socket(4222))
     );
+    assert_eq!(
+        config.iroh_bind_addr,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4433)
+    );
+    assert_eq!(
+        config.secret_key_file.as_deref(),
+        Some(std::path::Path::new("/var/lib/ployz/iroh/endpoint.key"))
+    );
+    assert_eq!(
+        config.public_key_file.as_deref(),
+        Some(std::path::Path::new("/var/lib/ployz/iroh/endpoint.public"))
+    );
 
     let config =
         load_daemon_process_config(
             DaemonProcessRole::Tunnel(TunnelSide::Edge),
             |name| match name {
                 PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
+                PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV => Some("0.0.0.0:0".to_owned()),
+                PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV => Some("/tmp/edge.key".to_owned()),
+                PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV => Some("/tmp/edge.public".to_owned()),
                 PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
                 PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
                 PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV => {
@@ -442,6 +458,18 @@ fn tunnel_roles_load_core_and_edge_config() {
     assert_eq!(
         config.service.local_client_endpoint().socket_addr(),
         Some(socket(7422))
+    );
+    assert_eq!(
+        config.iroh_bind_addr,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+    );
+    assert_eq!(
+        config.secret_key_file.as_deref(),
+        Some(std::path::Path::new("/tmp/edge.key"))
+    );
+    assert_eq!(
+        config.public_key_file.as_deref(),
+        Some(std::path::Path::new("/tmp/edge.public"))
     );
     assert_eq!(
         config.service.tunnel,
@@ -511,13 +539,27 @@ fn edge_tunnel_rejects_invalid_core_dial_hints() {
 
 #[test]
 fn binary_tunnel_role_enters_runtime_when_configured() {
+    let identity_path = std::env::temp_dir().join(format!(
+        "ployzd-invalid-edge-identity-{}.key",
+        std::process::id()
+    ));
+    let public_path = std::env::temp_dir().join(format!(
+        "ployzd-invalid-edge-identity-{}.public",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&identity_path);
+    let _ = std::fs::remove_file(&public_path);
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["tunnel", "--side", "edge"])
         .env(PLOYZ_TUNNEL_LISTEN_ADDR_ENV, "127.0.0.1:7422")
+        .env(PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV, &identity_path)
+        .env(PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV, &public_path)
         .env(PLOYZ_TUNNEL_CORE_NODE_ENV, "core_1")
         .env(PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, "core-public-key")
         .output()
         .expect("ployzd binary runs");
+    let _ = std::fs::remove_file(&identity_path);
+    let _ = std::fs::remove_file(&public_path);
 
     assert!(!output.status.success());
     assert!(
@@ -526,6 +568,46 @@ fn binary_tunnel_role_enters_runtime_when_configured() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn binary_tunnel_identity_creates_reusable_identity_file() {
+    let identity_path = std::env::temp_dir().join(format!(
+        "ployzd-reusable-tunnel-identity-{}.key",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&identity_path);
+
+    let first = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args([
+            "tunnel",
+            "identity",
+            "--secret-key-file",
+            identity_path
+                .to_str()
+                .expect("temporary identity path is UTF-8"),
+        ])
+        .output()
+        .expect("ployzd binary runs");
+    let second = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args([
+            "tunnel",
+            "identity",
+            "--secret-key-file",
+            identity_path
+                .to_str()
+                .expect("temporary identity path is UTF-8"),
+        ])
+        .output()
+        .expect("ployzd binary runs again");
+    let _ = std::fs::remove_file(&identity_path);
+
+    assert!(first.status.success());
+    assert!(second.status.success());
+    assert!(String::from_utf8_lossy(&first.stdout).starts_with("public-key "));
+    assert_eq!(first.stdout, second.stdout);
+    assert_eq!(first.stderr, b"");
+    assert_eq!(second.stderr, b"");
 }
 
 #[test]
