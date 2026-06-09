@@ -24,9 +24,9 @@ use ployz_nats::operations::{
     RecordedMachineJoinReport, RedeemMachineJoinTokenError, ReplayOperationEventsError,
     StoredOperationEvent, SubmitBackupError, SubmitDeployError, SubmitMachineAddError,
 };
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use crate::operation_lease::OperationLeasePolicy;
 
 pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
@@ -64,12 +64,44 @@ pub struct MachineAddBootstrapMaterial {
     pub raw_join_token: RawJoinToken,
     pub join_token: IssuedJoinToken,
     pub bootstrap_url: MachineBootstrapUrl,
+    pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineAddBootstrapMaterialError {
     Clock { message: String },
     InvalidJoinTokenMaterial,
+    MissingJoinTemplate,
+    StatusRead { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineAddBootstrapConfig {
+    pub bootstrap_url: MachineBootstrapUrl,
+    pub join_template: Option<Box<MachineJoinTemplate>>,
+}
+
+impl MachineAddBootstrapConfig {
+    #[must_use]
+    pub fn new(bootstrap_url: MachineBootstrapUrl) -> Self {
+        Self {
+            bootstrap_url,
+            join_template: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_join_template(mut self, join_template: MachineJoinTemplate) -> Self {
+        self.join_template = Some(Box::new(join_template));
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineJoinTemplate {
+    pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +109,7 @@ pub struct OperationControllers {
     repository: AsyncNatsOperationRepository,
     owner_id: OperationOwnerId,
     lease_policy: OperationLeasePolicy,
-    machine_bootstrap_url: MachineBootstrapUrl,
+    machine_bootstrap: MachineAddBootstrapConfig,
 }
 
 impl OperationControllers {
@@ -86,13 +118,13 @@ impl OperationControllers {
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
         owner_id: OperationOwnerId,
-        machine_bootstrap_url: MachineBootstrapUrl,
+        machine_bootstrap: MachineAddBootstrapConfig,
     ) -> Self {
         Self::with_owner_and_lease_policy(
             event_log,
             status_store,
             owner_id,
-            machine_bootstrap_url,
+            machine_bootstrap,
             OperationLeasePolicy::default_policy(),
         )
     }
@@ -102,14 +134,14 @@ impl OperationControllers {
         event_log: AsyncNatsOperationEventLog,
         status_store: AsyncNatsOperationStatusStore,
         owner_id: OperationOwnerId,
-        machine_bootstrap_url: MachineBootstrapUrl,
+        machine_bootstrap: MachineAddBootstrapConfig,
         lease_policy: OperationLeasePolicy,
     ) -> Self {
         Self {
             repository: AsyncNatsOperationRepository::new(event_log, status_store),
             owner_id,
             lease_policy,
-            machine_bootstrap_url,
+            machine_bootstrap,
         }
     }
 
@@ -122,8 +154,10 @@ impl OperationControllers {
             event_log,
             status_store,
             test_owner_id(),
-            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
-                .expect("default machine bootstrap URL is valid"),
+            MachineAddBootstrapConfig::new(
+                MachineBootstrapUrl::try_new(crate::config::DEFAULT_MACHINE_BOOTSTRAP_URL)
+                    .expect("default machine bootstrap URL is valid"),
+            ),
         )
     }
 
@@ -187,6 +221,37 @@ impl OperationControllers {
         })
     }
 
+    pub async fn submitted_machine_add_bootstrap_material(
+        &self,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<Option<SubmittedMachineAddBootstrapMaterial>, MachineAddBootstrapMaterialError>
+    {
+        let Some(submission) = self
+            .repository
+            .machine_add_submission(idempotency_key)
+            .await
+            .map_err(machine_add_bootstrap_status_read_error)?
+        else {
+            return Ok(None);
+        };
+        let Some(secret_delivery) = self
+            .repository
+            .machine_add_secret_delivery(idempotency_key)
+            .await
+            .map_err(machine_add_bootstrap_status_read_error)?
+        else {
+            return Err(MachineAddBootstrapMaterialError::StatusRead {
+                message: "machine add submission is missing secret delivery".to_owned(),
+            });
+        };
+        Ok(Some(SubmittedMachineAddBootstrapMaterial {
+            join_bundle: submission.join_bundle,
+            secret_delivery: secret_delivery.secret_delivery,
+            join_token: submission.join_token,
+            raw_join_token: submission.raw_join_token,
+        }))
+    }
+
     pub async fn submit_backup(
         &self,
         command: BackupCreateCommand,
@@ -240,6 +305,9 @@ impl OperationControllers {
         &self,
         operation_id: &OperationId,
     ) -> Result<MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError> {
+        let Some(join_template) = self.machine_bootstrap.join_template.clone() else {
+            return Err(MachineAddBootstrapMaterialError::MissingJoinTemplate);
+        };
         let now =
             self.current_lease_time()
                 .map_err(|error| MachineAddBootstrapMaterialError::Clock {
@@ -260,7 +328,9 @@ impl OperationControllers {
         Ok(MachineAddBootstrapMaterial {
             raw_join_token,
             join_token: IssuedJoinToken::new(fingerprint, expires_at),
-            bootstrap_url: self.machine_bootstrap_url.clone(),
+            bootstrap_url: self.machine_bootstrap.bootstrap_url.clone(),
+            join_bundle: join_template.join_bundle.clone(),
+            secret_delivery: join_template.secret_delivery.clone(),
         })
     }
 
@@ -272,6 +342,16 @@ impl OperationControllers {
     #[must_use]
     pub const fn lease_policy(&self) -> OperationLeasePolicy {
         self.lease_policy
+    }
+
+    #[must_use]
+    pub fn machine_bootstrap_url(&self) -> &MachineBootstrapUrl {
+        &self.machine_bootstrap.bootstrap_url
+    }
+
+    #[must_use]
+    pub fn has_machine_join_template(&self) -> bool {
+        self.machine_bootstrap.join_template.is_some()
     }
 
     pub async fn record_deploy_transition(
@@ -360,6 +440,14 @@ impl OperationControllers {
     }
 }
 
+fn machine_add_bootstrap_status_read_error(
+    error: OperationStatusStoreError,
+) -> MachineAddBootstrapMaterialError {
+    MachineAddBootstrapMaterialError::StatusRead {
+        message: format!("{error:?}"),
+    }
+}
+
 impl OperationControllers {
     fn lease_claim(&self) -> Result<OperationLeaseClaim, SubmitDeployError> {
         self.build_lease_claim()
@@ -441,6 +529,14 @@ fn current_lease_time() -> Result<OperationLeaseExpiresAt, OperationLeaseClockEr
     OperationLeaseExpiresAt::try_new(seconds).map_err(|error| OperationLeaseClockError {
         message: error.to_string(),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmittedMachineAddBootstrapMaterial {
+    pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
+    pub join_token: IssuedJoinToken,
+    pub raw_join_token: RawJoinToken,
 }
 
 fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenError> {

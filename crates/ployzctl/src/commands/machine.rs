@@ -1,17 +1,9 @@
-use std::{fmt, fs};
+use std::fmt;
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey,
-    MachineJoinIrohTicket, MachineJoinMaterial, MachineJoinNatsCredentials,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
-    MachineJoinTrustedNatsServerId,
-};
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineJoinBundle,
-    MachineJoinPloyzdArtifact,
+    AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -27,8 +19,6 @@ pub struct MachineAddCommand {
     pub node_id: NodeId,
     pub name: MachineName,
     pub gateway: MachineAddGateway,
-    pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 impl MachineAddCommand {
@@ -40,8 +30,6 @@ impl MachineAddCommand {
             node_id: self.node_id,
             name: self.name,
             gateway: self.gateway,
-            join_bundle: self.join_bundle,
-            secret_delivery: self.secret_delivery,
         }
     }
 }
@@ -110,17 +98,6 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
     let mut gateway = MachineAddGateway::Skip;
     let mut operation_id = None;
     let mut idempotency_key = None;
-    let mut cluster_name = None;
-    let mut runtime_nats_url = None;
-    let mut nats_credentials_file = None;
-    let mut trusted_nats_server = None;
-    let mut trusted_nats_config_sha256 = None;
-    let mut core_iroh_public_key = None;
-    let mut core_iroh_ticket_file = None;
-    let mut ployzd_version = None;
-    let mut ployzd_source = None;
-    let mut ployzd_sha256 = None;
-    let mut ployzd_install_path = None;
     let mut args = ArgCursor::new(args);
 
     while !args.is_empty() {
@@ -154,115 +131,8 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
             set_once(&mut idempotency_key, parsed, "--idempotency-key")?;
             continue;
         }
-        if let Some(value) = args.take_value("--cluster")? {
-            set_once(&mut cluster_name, value, "--cluster")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--runtime-nats-url")? {
-            set_once(&mut runtime_nats_url, value, "--runtime-nats-url")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--nats-credentials-file")? {
-            set_once(&mut nats_credentials_file, value, "--nats-credentials-file")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--trusted-nats-server")? {
-            set_once(&mut trusted_nats_server, value, "--trusted-nats-server")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--trusted-nats-config-sha256")? {
-            set_once(
-                &mut trusted_nats_config_sha256,
-                value,
-                "--trusted-nats-config-sha256",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--core-iroh-public-key")? {
-            set_once(&mut core_iroh_public_key, value, "--core-iroh-public-key")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--core-iroh-ticket-file")? {
-            set_once(&mut core_iroh_ticket_file, value, "--core-iroh-ticket-file")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-version")? {
-            set_once(&mut ployzd_version, value, "--ployzd-version")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-source")? {
-            set_once(&mut ployzd_source, value, "--ployzd-source")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-sha256")? {
-            set_once(&mut ployzd_sha256, value, "--ployzd-sha256")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-install-path")? {
-            set_once(&mut ployzd_install_path, value, "--ployzd-install-path")?;
-            continue;
-        }
         return Err(args.unexpected());
     }
-
-    let join_bundle = MachineJoinBundle {
-        material: MachineJoinMaterial {
-            cluster_name: MachineJoinClusterName::try_new(required(cluster_name, "--cluster")?)
-                .map_err(|error| invalid_value("--cluster", error))?,
-            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(required(
-                runtime_nats_url,
-                "--runtime-nats-url",
-            )?)
-            .map_err(|error| invalid_value("--runtime-nats-url", error))?,
-            trusted_nats: MachineJoinTrustedNats {
-                server_id: MachineJoinTrustedNatsServerId::try_new(required(
-                    trusted_nats_server,
-                    "--trusted-nats-server",
-                )?)
-                .map_err(|error| invalid_value("--trusted-nats-server", error))?,
-                config_sha256: InstallSha256Digest::try_new(required(
-                    trusted_nats_config_sha256,
-                    "--trusted-nats-config-sha256",
-                )?)
-                .map_err(|error| invalid_value("--trusted-nats-config-sha256", error))?,
-            },
-            core_iroh: MachineJoinCoreIrohEndpoint {
-                public_key: MachineJoinIrohPublicKey::try_new(required(
-                    core_iroh_public_key,
-                    "--core-iroh-public-key",
-                )?)
-                .map_err(|error| invalid_value("--core-iroh-public-key", error))?,
-            },
-            ployzd: MachineJoinPloyzdArtifact {
-                version: InstallArtifactVersion::try_new(required(
-                    ployzd_version,
-                    "--ployzd-version",
-                )?)
-                .map_err(|error| invalid_value("--ployzd-version", error))?,
-                source: InstallArtifactSource::try_new(required(ployzd_source, "--ployzd-source")?)
-                    .map_err(|error| invalid_value("--ployzd-source", error))?,
-                sha256: InstallSha256Digest::try_new(required(ployzd_sha256, "--ployzd-sha256")?)
-                    .map_err(|error| invalid_value("--ployzd-sha256", error))?,
-                install_path: AbsoluteInstallPath::try_new(required(
-                    ployzd_install_path,
-                    "--ployzd-install-path",
-                )?)
-                .map_err(|error| invalid_value("--ployzd-install-path", error))?,
-            },
-        },
-    };
-    let secret_delivery = MachineJoinSecretDelivery {
-        nats_credentials: MachineJoinNatsCredentials::try_new(read_secret_file(
-            "--nats-credentials-file",
-            required(nats_credentials_file, "--nats-credentials-file")?,
-        )?)
-        .map_err(|error| invalid_value("--nats-credentials-file", error))?,
-        core_iroh_ticket: MachineJoinIrohTicket::try_new(read_token_file(
-            "--core-iroh-ticket-file",
-            required(core_iroh_ticket_file, "--core-iroh-ticket-file")?,
-        )?)
-        .map_err(|error| invalid_value("--core-iroh-ticket-file", error))?,
-    };
 
     Ok(MachineAddCommand {
         operation_id: required(operation_id, "--operation")?,
@@ -270,18 +140,5 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
         node_id: required(node_id, "--node")?,
         name: required(name, "--name")?,
         gateway,
-        join_bundle,
-        secret_delivery,
     })
-}
-
-fn read_secret_file(flag: &'static str, path: String) -> Result<String, PloyzctlCliError> {
-    fs::read_to_string(&path)
-        .map_err(|error| invalid_value(flag, format!("failed to read {path}: {error}")))
-}
-
-fn read_token_file(flag: &'static str, path: String) -> Result<String, PloyzctlCliError> {
-    Ok(read_secret_file(flag, path)?
-        .trim_end_matches(['\r', '\n'])
-        .to_owned())
 }

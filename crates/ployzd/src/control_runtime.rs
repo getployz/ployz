@@ -49,6 +49,9 @@ pub async fn start_control_runtime_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
+    if config.machine_bootstrap.join_template.is_none() {
+        return Err(ControlRuntimeError::MissingMachineJoinTemplate);
+    }
     let plan = BootstrapPlan::for_single_server_client_and_topology(
         &client,
         &config.core_topology,
@@ -79,7 +82,7 @@ pub async fn start_control_runtime_with_client(
         event_log,
         status_store,
         owner_id,
-        config.machine_bootstrap_url.clone(),
+        config.machine_bootstrap.clone(),
     );
     let deploy_tasks = DeployTaskRegistry::default();
     let backup_tasks = BackupTaskRegistry::default();
@@ -135,6 +138,7 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 
 #[derive(Debug)]
 pub enum ControlRuntimeError {
+    MissingMachineJoinTemplate,
     ConnectNats(NatsConnectError),
     PlanBootstrap(BootstrapRefusal),
     AssureBootstrap(BootstrapAssuranceError),
@@ -151,6 +155,9 @@ pub enum ControlRuntimeError {
 impl fmt::Display for ControlRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingMachineJoinTemplate => {
+                write!(formatter, "machine add requires configured join template")
+            }
             Self::ConnectNats(error) => write!(formatter, "{error}"),
             Self::PlanBootstrap(error) => write!(formatter, "NATS bootstrap refused: {error}"),
             Self::AssureBootstrap(error) => write!(formatter, "{error}"),

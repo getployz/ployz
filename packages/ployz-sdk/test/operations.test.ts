@@ -256,8 +256,6 @@ test("sdk maps raw machine add input to the wire request", () => {
     node_id: "node_2",
     name: "edge_2",
     gateway: "skip",
-    join_bundle: machineJoinBundle(),
-    secret_delivery: machineJoinSecretDelivery(),
   });
   assert.throws(
     () => machineAddRequest({ ...machineAddInput(), name: "edge.2" }),
@@ -508,8 +506,6 @@ function machineAddInput() {
     nodeId: "node_2",
     name: "edge_2",
     gateway: "skip" as const,
-    joinBundle: machineJoinBundle(),
-    secretDelivery: machineJoinSecretDelivery(),
   };
 }
 

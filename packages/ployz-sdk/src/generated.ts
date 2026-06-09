@@ -180,7 +180,7 @@ export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: 
 
 export type BackupCreateRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, };
 
-export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, };
+export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, };
 
 export type MachineAddGateway = "install" | "skip";
 
@@ -264,7 +264,7 @@ export type MachineAddError = { "error": "unavailable", operation_id: OperationI
 
 export type MachineAddUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "bootstrap_material", failure: BootstrapMaterialFailure, };
 
-export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token";
+export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token" | "missing_join_template";
 
 export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OpsStatusUnavailableSource, };
 

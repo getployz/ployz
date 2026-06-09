@@ -1,3 +1,4 @@
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Command;
 
@@ -11,8 +12,9 @@ use ployzd::app::{
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, LoadedDaemonProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
-    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_NATS_URL_ENV,
-    TunnelProcessConfig, load_daemon_process_config,
+    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, TunnelProcessConfig,
+    load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
@@ -221,8 +223,35 @@ fn control_role_loads_optional_machine_bootstrap_url() {
         panic!("control role should produce control config");
     };
     assert_eq!(
-        config.machine_bootstrap_url.as_str(),
+        config.machine_bootstrap.bootstrap_url.as_str(),
         "https://example.test/ployz.sh"
+    );
+}
+
+#[test]
+fn control_role_loads_optional_machine_join_template() {
+    let template_path = temp_join_template_file();
+    let LoadedDaemonProcessConfig::Configured(config) =
+        load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+            PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV => Some(template_path.clone()),
+            _ => None,
+        })
+        .expect("control role config loads")
+    else {
+        panic!("control role should be configured");
+    };
+
+    let DaemonProcessConfig::Control(config) = *config else {
+        panic!("control role should produce control config");
+    };
+    let Some(template) = config.machine_bootstrap.join_template else {
+        panic!("machine join template should load");
+    };
+    assert_eq!(template.join_bundle.material.cluster_name.as_str(), "prod");
+    assert_eq!(
+        template.secret_delivery.nats_credentials.secret(),
+        "user-jwt-and-seed"
     );
 }
 
@@ -344,6 +373,44 @@ fn binary_node_role_requires_nats_url() {
         String::from_utf8_lossy(&output.stderr),
         "PLOYZ_NATS_URL is required for ployzd node\n"
     );
+}
+
+fn temp_join_template_file() -> String {
+    let dir = std::env::temp_dir().join(format!("ployzd-join-template-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("join template dir can be created");
+    let path = dir.join("join-template.json");
+    fs::write(
+        &path,
+        r#"{
+  "join_bundle": {
+    "material": {
+      "cluster_name": "prod",
+      "runtime_nats_url": "nats://127.0.0.1:7422",
+      "trusted_nats": {
+        "server_id": "server_1",
+        "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "core_iroh": {
+        "public_key": "core-public-key"
+      },
+      "ployzd": {
+        "version": "0.1.0",
+        "source": "/tmp/ployzd",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/bin/ployzd"
+      }
+    }
+  },
+  "secret_delivery": {
+    "nats_credentials": "user-jwt-and-seed",
+    "core_iroh_ticket": "core-ticket"
+  }
+}
+"#,
+    )
+    .expect("join template can be written");
+    path.to_str().expect("temp path is utf-8").to_owned()
 }
 
 fn node_id(value: &str) -> NodeId {

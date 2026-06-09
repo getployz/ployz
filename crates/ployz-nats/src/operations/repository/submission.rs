@@ -16,6 +16,24 @@ use crate::operations::status_store::{
 };
 
 impl AsyncNatsOperationRepository {
+    pub async fn machine_add_submission(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        self.status_store
+            .machine_add_submission(idempotency_key)
+            .await
+    }
+
+    pub async fn machine_add_secret_delivery(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
+        self.status_store
+            .machine_add_secret_delivery(idempotency_key)
+            .await
+    }
+
     pub async fn submit_deploy(
         &self,
         submission: DeployOperationSubmission,

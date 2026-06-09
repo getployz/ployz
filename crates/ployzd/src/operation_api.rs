@@ -1,8 +1,8 @@
 //! User-facing operation service handlers.
 
 use crate::controllers::{
-    BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterialError,
-    MachineAddSubmitCommand, OperationControllers,
+    BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
 };
 use crate::deploy_runtime::DeployOperationRuntime;
 use ployz_core::ids::OperationId;
@@ -137,8 +137,8 @@ pub async fn machine_add(
     request: MachineAddRequest,
 ) -> Result<MachineAddAccepted, MachineAddError> {
     let operation_id = request.operation_id.clone();
-    let material = controllers
-        .issue_machine_add_bootstrap_material(&operation_id)
+    let material = machine_add_bootstrap_material(controllers, &request)
+        .await
         .map_err(|error| MachineAddError::Unavailable {
             operation_id: operation_id.clone(),
             source: MachineAddUnavailableSource::BootstrapMaterial {
@@ -151,8 +151,8 @@ pub async fn machine_add(
         node_id: request.node_id,
         name: request.name,
         gateway: first_node_gateway(request.gateway),
-        join_bundle: request.join_bundle,
-        secret_delivery: request.secret_delivery,
+        join_bundle: material.join_bundle,
+        secret_delivery: material.secret_delivery,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,
     };
@@ -179,6 +179,25 @@ pub async fn machine_add(
         node_id: accepted.node_id,
         bootstrap_url: material.bootstrap_url,
         join_token: raw_token,
+    })
+}
+
+async fn machine_add_bootstrap_material(
+    controllers: &OperationControllers,
+    request: &MachineAddRequest,
+) -> Result<MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError> {
+    let Some(existing) = controllers
+        .submitted_machine_add_bootstrap_material(&request.idempotency_key)
+        .await?
+    else {
+        return controllers.issue_machine_add_bootstrap_material(&request.operation_id);
+    };
+    Ok(MachineAddBootstrapMaterial {
+        raw_join_token: existing.raw_join_token,
+        join_token: existing.join_token,
+        bootstrap_url: controllers.machine_bootstrap_url().clone(),
+        join_bundle: existing.join_bundle,
+        secret_delivery: existing.secret_delivery,
     })
 }
 
@@ -709,8 +728,12 @@ fn first_node_gateway(gateway: ployz_sdk_types::MachineAddGateway) -> FirstNodeG
 fn bootstrap_material_failure(error: MachineAddBootstrapMaterialError) -> BootstrapMaterialFailure {
     match error {
         MachineAddBootstrapMaterialError::Clock { .. }
-        | MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial => {
+        | MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial
+        | MachineAddBootstrapMaterialError::StatusRead { .. } => {
             BootstrapMaterialFailure::IssueJoinToken
+        }
+        MachineAddBootstrapMaterialError::MissingJoinTemplate => {
+            BootstrapMaterialFailure::MissingJoinTemplate
         }
     }
 }

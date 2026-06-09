@@ -17,7 +17,9 @@ use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore, KV_OPS_BUCKET, PLZ_OPS_STREAM,
 };
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
-use ployzd::controllers::{DeploySubmitCommand, IdempotencyKey, OperationControllers};
+use ployzd::controllers::{
+    DeploySubmitCommand, IdempotencyKey, MachineAddBootstrapConfig, OperationControllers,
+};
 use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
@@ -404,8 +406,10 @@ async fn operation_controllers_with_policy(
             .await
             .expect("open operation status store"),
         operation_owner_id(owner_id),
-        MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
-            .expect("default bootstrap URL is valid"),
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL is valid"),
+        ),
         lease_policy,
     )
 }

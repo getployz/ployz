@@ -14,7 +14,9 @@ use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
 use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
-use ployzd::controllers::{BackupCreateCommand, OperationControllers};
+use ployzd::controllers::{
+    BackupCreateCommand, MachineAddBootstrapConfig, MachineJoinTemplate, OperationControllers,
+};
 use ployzd::nats_process::NatsServerRuntime;
 use tokio::io::AsyncReadExt;
 
@@ -136,6 +138,47 @@ fn config() -> ControlProcessConfig {
         ),
         node_id("core_1"),
     )
+    .with_machine_bootstrap(machine_bootstrap_config())
+}
+
+fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
+    MachineAddBootstrapConfig::new(
+        MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+            .expect("default bootstrap URL is valid"),
+    )
+    .with_join_template(machine_join_template())
+}
+
+fn machine_join_template() -> MachineJoinTemplate {
+    serde_json::from_str(
+        r#"{
+  "join_bundle": {
+    "material": {
+      "cluster_name": "prod",
+      "runtime_nats_url": "nats://127.0.0.1:7422",
+      "trusted_nats": {
+        "server_id": "server_1",
+        "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "core_iroh": {
+        "public_key": "core-public-key"
+      },
+      "ployzd": {
+        "version": "0.1.0",
+        "source": "/tmp/ployzd",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/bin/ployzd"
+      }
+    }
+  },
+  "secret_delivery": {
+    "nats_credentials": "user-jwt-and-seed",
+    "core_iroh_ticket": "core-ticket"
+  }
+}
+"#,
+    )
+    .expect("test join template is valid")
 }
 
 struct TestNats {
@@ -186,8 +229,10 @@ async fn seed_controllers(nats: &TestNats) -> OperationControllers {
         event_log,
         status_store,
         operation_owner_id("control"),
-        MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
-            .expect("default bootstrap URL is valid"),
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL is valid"),
+        ),
     )
 }
 

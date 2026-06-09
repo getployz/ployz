@@ -37,6 +37,9 @@ pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
     handlers: OperationApiHandlers,
 ) -> Result<RunningNatsService, ApiServiceRuntimeError> {
+    if !handlers.controllers().has_machine_join_template() {
+        return Err(ApiServiceRuntimeError::MissingMachineJoinTemplate);
+    }
     let spec = api_service();
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -179,6 +182,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiServiceRuntimeError {
+    MissingMachineJoinTemplate,
     Nats(NatsServiceRuntimeError),
 }
 

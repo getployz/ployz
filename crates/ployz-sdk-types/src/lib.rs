@@ -92,8 +92,6 @@ pub struct MachineAddRequest {
     pub node_id: NodeId,
     pub name: MachineName,
     pub gateway: MachineAddGateway,
-    pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
@@ -276,6 +274,7 @@ pub enum MachineAddUnavailableSource {
 pub enum BootstrapMaterialFailure {
     EncodeJoinBundle,
     IssueJoinToken,
+    MissingJoinTemplate,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

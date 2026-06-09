@@ -171,8 +171,6 @@ fn sdk_exports_operation_api_wire_types() {
         node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
-        join_bundle: machine_join_bundle(),
-        secret_delivery: machine_join_secret_delivery(),
     };
     let machine_response: MachineAddResponse = OperationApiResponse::Ok {
         value: MachineAddAccepted {
@@ -192,7 +190,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip"}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),

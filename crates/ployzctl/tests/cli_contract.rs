@@ -7,9 +7,7 @@ use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
 };
-use ployz_sdk_types::{
-    AcceptedOperation, MachineAddGateway, MachineJoinBundle, MachineJoinPloyzdArtifact,
-};
+use ployz_sdk_types::{AcceptedOperation, MachineAddGateway};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineJoinToken, MachineName,
@@ -257,8 +255,6 @@ fn cli_dispatches_machine_add_request() {
         MachineName::try_new("edge_2").expect("valid machine name")
     );
     assert_eq!(command.gateway, MachineAddGateway::Install);
-    assert_eq!(command.join_bundle, machine_join_bundle());
-    assert_eq!(command.secret_delivery, machine_join_secret_delivery());
 }
 
 #[test]
@@ -319,7 +315,7 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert!(stdout(&output).contains("ployzctl backup restore --plan"));
     assert!(stdout(&output).contains(
-        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --runtime-nats-url <url> --nats-credentials-file <path> --trusted-nats-server <id> --trusted-nats-config-sha256 <sha256> --core-iroh-public-key <key> --core-iroh-ticket-file <path> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
+        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]"
     ));
     assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
@@ -749,7 +745,6 @@ fn machine_add_args_without(flag: &str) -> Vec<String> {
 }
 
 fn machine_add_arg_refs() -> Vec<String> {
-    let secrets = machine_add_secret_files();
     vec![
         "machine".to_owned(),
         "add".to_owned(),
@@ -761,84 +756,11 @@ fn machine_add_arg_refs() -> Vec<String> {
         "op_machine".to_owned(),
         "--idempotency-key".to_owned(),
         "idem_machine".to_owned(),
-        "--cluster".to_owned(),
-        "prod".to_owned(),
-        "--runtime-nats-url".to_owned(),
-        "nats://127.0.0.1:7422".to_owned(),
-        "--nats-credentials-file".to_owned(),
-        secrets.nats_credentials,
-        "--trusted-nats-server".to_owned(),
-        "server_1".to_owned(),
-        "--trusted-nats-config-sha256".to_owned(),
-        NATS_CONFIG_DIGEST.to_owned(),
-        "--core-iroh-public-key".to_owned(),
-        "core-public-key".to_owned(),
-        "--core-iroh-ticket-file".to_owned(),
-        secrets.core_iroh_ticket,
-        "--ployzd-version".to_owned(),
-        "0.1.0".to_owned(),
-        "--ployzd-source".to_owned(),
-        "/tmp/ployzd".to_owned(),
-        "--ployzd-sha256".to_owned(),
-        PLOYZ_NEWLINE_SHA256.to_owned(),
-        "--ployzd-install-path".to_owned(),
-        "/usr/local/bin/ployzd".to_owned(),
     ]
-}
-
-fn machine_join_bundle() -> MachineJoinBundle {
-    MachineJoinBundle {
-        material: ployz_core::install::MachineJoinMaterial {
-            cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
-                .expect("valid cluster name"),
-            runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
-                "nats://127.0.0.1:7422",
-            )
-            .expect("valid runtime nats url"),
-            trusted_nats: ployz_core::install::MachineJoinTrustedNats {
-                server_id: ployz_core::install::MachineJoinTrustedNatsServerId::try_new("server_1")
-                    .expect("valid nats server id"),
-                config_sha256: ployz_core::install::InstallSha256Digest::try_new(
-                    NATS_CONFIG_DIGEST,
-                )
-                .expect("valid nats config digest"),
-            },
-            core_iroh: ployz_core::install::MachineJoinCoreIrohEndpoint {
-                public_key: ployz_core::install::MachineJoinIrohPublicKey::try_new(
-                    "core-public-key",
-                )
-                .expect("valid core iroh public key"),
-            },
-            ployzd: MachineJoinPloyzdArtifact {
-                version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-                    .expect("valid version"),
-                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
-                    .expect("valid source"),
-                sha256: ployz_core::install::InstallSha256Digest::try_new(PLOYZ_NEWLINE_SHA256)
-                    .expect("valid digest"),
-                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
-                    "/usr/local/bin/ployzd",
-                )
-                .expect("valid install path"),
-            },
-        },
-    }
-}
-
-fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
-    ployz_core::install::MachineJoinSecretDelivery {
-        nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
-            "user-jwt-and-seed",
-        )
-        .expect("valid nats credentials"),
-        core_iroh_ticket: ployz_core::install::MachineJoinIrohTicket::try_new("core-ticket")
-            .expect("valid core iroh ticket"),
-    }
 }
 
 const PLOYZ_NEWLINE_SHA256: &str =
     "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e";
-const NATS_CONFIG_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
     init_with_keeper_install_arg_refs()
@@ -940,29 +862,6 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("temp dir can be created");
     dir
-}
-
-struct MachineAddSecretFiles {
-    nats_credentials: String,
-    core_iroh_ticket: String,
-}
-
-fn machine_add_secret_files() -> MachineAddSecretFiles {
-    let dir = temp_dir("ployzctl-machine-add-secrets");
-    let nats_credentials = dir.join("nats.creds");
-    let core_iroh_ticket = dir.join("core-iroh.ticket");
-    fs::write(&nats_credentials, "user-jwt-and-seed").expect("nats credentials can be written");
-    fs::write(&core_iroh_ticket, "core-ticket").expect("core iroh ticket can be written");
-    MachineAddSecretFiles {
-        nats_credentials: nats_credentials
-            .to_str()
-            .expect("temp path is utf-8")
-            .to_owned(),
-        core_iroh_ticket: core_iroh_ticket
-            .to_str()
-            .expect("temp path is utf-8")
-            .to_owned(),
-    }
 }
 
 #[cfg(unix)]

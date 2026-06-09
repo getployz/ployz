@@ -7,6 +7,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ha::CoreTopology;
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
@@ -23,7 +24,7 @@ use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::config::ControlProcessConfig;
-use ployzd::controllers::OperationControllers;
+use ployzd::controllers::{MachineAddBootstrapConfig, MachineJoinTemplate, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 
@@ -119,7 +120,12 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         .await
         .expect("open operation status store");
     let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
-    let controllers = OperationControllers::for_test(event_log, status_store);
+    let controllers = OperationControllers::with_owner(
+        event_log,
+        status_store,
+        OperationOwnerId::try_new("control").expect("valid owner id"),
+        machine_bootstrap_config(),
+    );
     let _runtime = ployzd::api_runtime::start_operation_api_service(client.clone(), controllers)
         .await
         .expect("api service starts");
@@ -208,7 +214,8 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
         node_id("core_1"),
     )
     .with_deploy_nodes(vec![node_id("node_a")])
-    .with_deploy_step_timeout(Duration::from_secs(2));
+    .with_deploy_step_timeout(Duration::from_secs(2))
+    .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
     let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
@@ -450,6 +457,46 @@ fn test_lease_claim() -> OperationLeaseClaim {
         lease_time(160),
     )
     .expect("valid lease claim")
+}
+
+fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
+    MachineAddBootstrapConfig::new(
+        MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
+            .expect("valid bootstrap url"),
+    )
+    .with_join_template(machine_join_template())
+}
+
+fn machine_join_template() -> MachineJoinTemplate {
+    serde_json::from_str(
+        r#"{
+  "join_bundle": {
+    "material": {
+      "cluster_name": "prod",
+      "runtime_nats_url": "nats://127.0.0.1:7422",
+      "trusted_nats": {
+        "server_id": "server_1",
+        "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "core_iroh": {
+        "public_key": "core-public-key"
+      },
+      "ployzd": {
+        "version": "0.1.0",
+        "source": "/tmp/ployzd",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/bin/ployzd"
+      }
+    }
+  },
+  "secret_delivery": {
+    "nats_credentials": "user-jwt-and-seed",
+    "core_iroh_ticket": "core-ticket"
+  }
+}
+"#,
+    )
+    .expect("test join template is valid")
 }
 
 fn lease_time(value: u64) -> OperationLeaseExpiresAt {

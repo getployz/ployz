@@ -20,6 +20,7 @@ use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddGateway, MachineAddRequest, OpsStatusRequest,
 };
 use ployzd::config::ControlProcessConfig;
+use ployzd::controllers::{MachineAddBootstrapConfig, MachineJoinTemplate};
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 use std::time::Duration;
@@ -73,8 +74,12 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 #[tokio::test]
 async fn control_runtime_uses_configured_machine_bootstrap_url() {
     let nats = TestNats::start().await;
-    let config = control_config().with_machine_bootstrap_url(
-        MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
+    let config = control_config().with_machine_bootstrap(
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new("https://example.test/ployz.sh")
+                .expect("valid bootstrap url"),
+        )
+        .with_join_template(machine_join_template()),
     );
     let runtime =
         ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
@@ -89,43 +94,6 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             node_id: node_id("node_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
             gateway: MachineAddGateway::Skip,
-            join_bundle: ployz_core::install::MachineJoinBundle {
-                material: MachineJoinMaterial {
-                    cluster_name: MachineJoinClusterName::try_new("prod")
-                        .expect("valid cluster name"),
-                    runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-                        .expect("valid runtime nats url"),
-                    trusted_nats: MachineJoinTrustedNats {
-                        server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
-                            .expect("valid nats server id"),
-                        config_sha256: InstallSha256Digest::try_new(
-                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        )
-                        .expect("valid nats config digest"),
-                    },
-                    core_iroh: MachineJoinCoreIrohEndpoint {
-                        public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
-                            .expect("valid core iroh public key"),
-                    },
-                    ployzd: MachineJoinPloyzdArtifact {
-                        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                        source: InstallArtifactSource::try_new("/tmp/ployzd")
-                            .expect("valid source"),
-                        sha256: InstallSha256Digest::try_new(
-                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        )
-                        .expect("valid digest"),
-                        install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-                            .expect("valid install path"),
-                    },
-                },
-            },
-            secret_delivery: MachineJoinSecretDelivery {
-                nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
-                    .expect("valid nats credentials"),
-                core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
-                    .expect("valid core iroh ticket"),
-            },
         })
         .await
         .expect("machine add succeeds");
@@ -134,11 +102,38 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         accepted.bootstrap_url.as_str(),
         "https://example.test/ployz.sh"
     );
+    let retry = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_machine_retry"),
+            idempotency_key: idempotency_key("idem_machine"),
+            node_id: node_id("node_2"),
+            name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
+            gateway: MachineAddGateway::Skip,
+        })
+        .await
+        .expect("machine add retry succeeds");
+    assert_eq!(retry.accepted.operation_id, operation_id("op_machine"));
+    assert_eq!(retry.join_token, accepted.join_token);
 
     runtime
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_refuses_machine_add_without_join_template() {
+    let nats = TestNats::start().await;
+    let result = ployzd::control_runtime::start_control_runtime_with_client(
+        nats.client.clone(),
+        &control_config_without_join_template(),
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(ployzd::control_runtime::ControlRuntimeError::MissingMachineJoinTemplate)
+    ));
 }
 
 #[tokio::test]
@@ -300,10 +295,60 @@ fn node_id(value: &str) -> NodeId {
 }
 
 fn control_config() -> ControlProcessConfig {
+    control_config_without_join_template().with_machine_bootstrap(
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
+                .expect("valid bootstrap url"),
+        )
+        .with_join_template(machine_join_template()),
+    )
+}
+
+fn control_config_without_join_template() -> ControlProcessConfig {
     ControlProcessConfig::new(
         NatsServerRuntime::External(NatsClientUrl::loopback(4222)),
         ployz_core::ids::NodeId::try_new("core_1").expect("valid node id"),
     )
+}
+
+fn machine_join_template() -> MachineJoinTemplate {
+    MachineJoinTemplate {
+        join_bundle: ployz_core::install::MachineJoinBundle {
+            material: MachineJoinMaterial {
+                cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                    .expect("valid runtime nats url"),
+                trusted_nats: MachineJoinTrustedNats {
+                    server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                        .expect("valid nats server id"),
+                    config_sha256: InstallSha256Digest::try_new(
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    )
+                    .expect("valid nats config digest"),
+                },
+                core_iroh: MachineJoinCoreIrohEndpoint {
+                    public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                        .expect("valid core iroh public key"),
+                },
+                ployzd: MachineJoinPloyzdArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                        .expect("valid install path"),
+                },
+            },
+        },
+        secret_delivery: MachineJoinSecretDelivery {
+            nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
+                .expect("valid nats credentials"),
+            core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
+                .expect("valid core iroh ticket"),
+        },
+    }
 }
 
 fn service_id(value: &str) -> ServiceId {

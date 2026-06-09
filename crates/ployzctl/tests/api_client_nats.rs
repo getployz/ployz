@@ -410,8 +410,6 @@ fn machine_add_request() -> MachineAddRequest {
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
-        join_bundle: machine_join_bundle(),
-        secret_delivery: machine_join_secret_delivery(),
     }
 }
 

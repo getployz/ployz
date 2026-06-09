@@ -59,30 +59,7 @@
     "idempotency_key": "idem_machine",
     "node_id": "node_2",
     "name": "edge_2",
-    "gateway": "skip",
-    "join_bundle": {
-      "material": {
-        "cluster_name": "prod",
-        "runtime_nats_url": "nats://127.0.0.1:7422",
-        "trusted_nats": {
-          "server_id": "server_1",
-          "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        },
-        "core_iroh": {
-          "public_key": "core-public-key"
-        },
-        "ployzd": {
-          "version": "0.1.0",
-          "source": "/tmp/ployzd",
-          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "install_path": "/usr/local/bin/ployzd"
-        }
-      }
-    },
-    "secret_delivery": {
-      "nats_credentials": "user-jwt-and-seed",
-      "core_iroh_ticket": "core-ticket"
-    }
+    "gateway": "skip"
   },
   "machine_add_response": {
     "status": "ok",

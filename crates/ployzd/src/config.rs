@@ -3,12 +3,13 @@
 use ployz_core::ha::CoreTopology;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{InstallContractError, MachineBootstrapUrl};
-use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::{fmt, fs};
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use std::time::Duration;
 
+use crate::controllers::{MachineAddBootstrapConfig, MachineJoinTemplate};
 use crate::iroh_tunnel::PreparedTunnelService;
 use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};
@@ -16,6 +17,7 @@ use crate::role::{DaemonProcessRole, TunnelSide};
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
+pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
 pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
@@ -60,7 +62,7 @@ pub fn load_daemon_process_config(
                 NatsServerRuntime::External(nats_url),
                 NodeId::try_new("core_1").expect("default single-core node id is valid"),
             )
-            .with_machine_bootstrap_url(load_machine_bootstrap_url(&env)?);
+            .with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(LoadedDaemonProcessConfig::Configured(Box::new(
                 DaemonProcessConfig::Control(control),
             )))
@@ -128,6 +130,37 @@ fn load_machine_bootstrap_url(
         .map_err(|source| DaemonProcessConfigError::InvalidMachineBootstrapUrl { value, source })
 }
 
+fn load_machine_bootstrap(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<MachineAddBootstrapConfig, DaemonProcessConfigError> {
+    let bootstrap_url = load_machine_bootstrap_url(env)?;
+    let Some(join_template) = load_machine_join_template(env)? else {
+        return Ok(MachineAddBootstrapConfig::new(bootstrap_url));
+    };
+    Ok(MachineAddBootstrapConfig::new(bootstrap_url).with_join_template(join_template))
+}
+
+fn load_machine_join_template(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<MachineJoinTemplate>, DaemonProcessConfigError> {
+    let Some(path) = env(PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV).filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let json = fs::read_to_string(&path).map_err(|source| {
+        DaemonProcessConfigError::ReadMachineJoinTemplate {
+            path: path.clone(),
+            source: source.to_string(),
+        }
+    })?;
+    serde_json::from_str(&json).map(Some).map_err(|source| {
+        DaemonProcessConfigError::InvalidMachineJoinTemplate {
+            path,
+            source: source.to_string(),
+        }
+    })
+}
+
 fn load_gateway_listen_addr(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<SocketAddr, DaemonProcessConfigError> {
@@ -162,6 +195,14 @@ pub enum DaemonProcessConfigError {
         value: String,
         source: InstallContractError,
     },
+    ReadMachineJoinTemplate {
+        path: String,
+        source: String,
+    },
+    InvalidMachineJoinTemplate {
+        path: String,
+        source: String,
+    },
     InvalidGatewayListenAddr {
         value: String,
         source: std::net::AddrParseError,
@@ -188,6 +229,20 @@ impl fmt::Display for DaemonProcessConfigError {
                 "{}={value:?} is invalid",
                 PLOYZ_MACHINE_BOOTSTRAP_URL_ENV
             ),
+            Self::ReadMachineJoinTemplate { path, .. } => {
+                write!(
+                    formatter,
+                    "{} points to unreadable file {path:?}",
+                    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV
+                )
+            }
+            Self::InvalidMachineJoinTemplate { path, .. } => {
+                write!(
+                    formatter,
+                    "{} file {path:?} is invalid",
+                    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV
+                )
+            }
             Self::InvalidGatewayListenAddr { value, .. } => write!(
                 formatter,
                 "{}={value:?} is invalid",
@@ -206,7 +261,7 @@ pub struct ControlProcessConfig {
     pub core_topology: CoreTopology,
     pub deploy_nodes: Vec<NodeId>,
     pub deploy_step_timeout: Duration,
-    pub machine_bootstrap_url: MachineBootstrapUrl,
+    pub machine_bootstrap: MachineAddBootstrapConfig,
 }
 
 impl ControlProcessConfig {
@@ -220,7 +275,7 @@ impl ControlProcessConfig {
             core_topology,
             deploy_nodes: vec![core_node_id],
             deploy_step_timeout: DEFAULT_DEPLOY_STEP_TIMEOUT,
-            machine_bootstrap_url: default_machine_bootstrap_url(),
+            machine_bootstrap: MachineAddBootstrapConfig::new(default_machine_bootstrap_url()),
         }
     }
 
@@ -241,7 +296,13 @@ impl ControlProcessConfig {
         mut self,
         machine_bootstrap_url: MachineBootstrapUrl,
     ) -> Self {
-        self.machine_bootstrap_url = machine_bootstrap_url;
+        self.machine_bootstrap.bootstrap_url = machine_bootstrap_url;
+        self
+    }
+
+    #[must_use]
+    pub fn with_machine_bootstrap(mut self, machine_bootstrap: MachineAddBootstrapConfig) -> Self {
+        self.machine_bootstrap = machine_bootstrap;
         self
     }
 
