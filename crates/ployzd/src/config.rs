@@ -7,6 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{fmt, fs};
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
+use ployz_transport::iroh_endpoint::IrohEndpoint;
 use std::time::Duration;
 
 use crate::controllers::MachineAddBootstrapConfig;
@@ -21,6 +22,10 @@ pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPL
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
 pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
+pub const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
+pub const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
+pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
+pub const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,16 +50,10 @@ impl DaemonProcessConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LoadedDaemonProcessConfig {
-    Configured(Box<DaemonProcessConfig>),
-    TunnelConfigPending { side: TunnelSide },
-}
-
 pub fn load_daemon_process_config(
     role: DaemonProcessRole,
     env: impl Fn(&str) -> Option<String>,
-) -> Result<LoadedDaemonProcessConfig, DaemonProcessConfigError> {
+) -> Result<DaemonProcessConfig, DaemonProcessConfigError> {
     match &role {
         DaemonProcessRole::Control => {
             let nats_url = load_nats_url(&role, &env)?;
@@ -63,38 +62,30 @@ pub fn load_daemon_process_config(
                 NodeId::try_new("core_1").expect("default single-core node id is valid"),
             )
             .with_machine_bootstrap(load_machine_bootstrap(&env)?);
-            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
-                DaemonProcessConfig::Control(control),
-            )))
+            Ok(DaemonProcessConfig::Control(control))
         }
         DaemonProcessRole::Node(node_id) => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
-                DaemonProcessConfig::Node(NodeProcessConfig::new(
-                    node_id.clone(),
-                    nats_url,
-                    load_ebpf_bytecode_path(env),
-                )),
+            Ok(DaemonProcessConfig::Node(NodeProcessConfig::new(
+                node_id.clone(),
+                nats_url,
+                load_ebpf_bytecode_path(env),
             )))
         }
         DaemonProcessRole::Gateway => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
-                DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
-                    nats_url,
-                    load_gateway_listen_addr(&env)?,
-                )),
+            Ok(DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
+                nats_url,
+                load_gateway_listen_addr(&env)?,
             )))
         }
         DaemonProcessRole::Dns => {
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(LoadedDaemonProcessConfig::Configured(Box::new(
-                DaemonProcessConfig::Dns(DnsProcessConfig::new(nats_url)),
-            )))
+            Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(nats_url)))
         }
-        DaemonProcessRole::Tunnel(side) => {
-            Ok(LoadedDaemonProcessConfig::TunnelConfigPending { side: *side })
-        }
+        DaemonProcessRole::Tunnel(side) => Ok(DaemonProcessConfig::Tunnel(load_tunnel_config(
+            *side, &env,
+        )?)),
     }
 }
 
@@ -172,6 +163,87 @@ fn load_gateway_listen_addr(
         .map_err(|source| DaemonProcessConfigError::InvalidGatewayListenAddr { value, source })
 }
 
+fn load_tunnel_config(
+    side: TunnelSide,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<TunnelProcessConfig, DaemonProcessConfigError> {
+    match side {
+        TunnelSide::Core => {
+            let nats_socket = load_tunnel_socket(side, PLOYZ_TUNNEL_NATS_ADDR_ENV, env)?;
+            Ok(TunnelProcessConfig::new(PreparedTunnelService::core(
+                "ployzd-tunnel-core",
+                nats_socket,
+            )))
+        }
+        TunnelSide::Edge => {
+            let local_listen = load_tunnel_socket(side, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, env)?;
+            if !local_listen.ip().is_loopback() {
+                return Err(DaemonProcessConfigError::NonLoopbackTunnelListenAddr {
+                    side,
+                    value: local_listen,
+                });
+            }
+            let core_node = load_tunnel_core_node(env)?;
+            let public_key =
+                load_required_tunnel_value(side, PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, env)?;
+            if !is_valid_tunnel_public_key(&public_key) {
+                return Err(DaemonProcessConfigError::InvalidTunnelValue {
+                    side,
+                    env: PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV,
+                    value: public_key,
+                });
+            }
+            Ok(TunnelProcessConfig::new(PreparedTunnelService::edge(
+                "ployzd-tunnel-edge",
+                local_listen,
+                IrohEndpoint::new(core_node, public_key),
+            )))
+        }
+    }
+}
+
+fn load_tunnel_socket(
+    side: TunnelSide,
+    env_name: &'static str,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<SocketAddr, DaemonProcessConfigError> {
+    let value = load_required_tunnel_value(side, env_name, env)?;
+    value
+        .parse()
+        .map_err(|source| DaemonProcessConfigError::InvalidTunnelSocket {
+            side,
+            env: env_name,
+            value,
+            source,
+        })
+}
+
+fn load_tunnel_core_node(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<NodeId, DaemonProcessConfigError> {
+    let value = load_required_tunnel_value(TunnelSide::Edge, PLOYZ_TUNNEL_CORE_NODE_ENV, env)?;
+    NodeId::try_new(value.clone())
+        .map_err(|_| DaemonProcessConfigError::InvalidTunnelCoreNode { value })
+}
+
+fn load_required_tunnel_value(
+    side: TunnelSide,
+    env_name: &'static str,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<String, DaemonProcessConfigError> {
+    let Some(value) = env(env_name).filter(|value| !value.is_empty()) else {
+        return Err(DaemonProcessConfigError::MissingTunnelConfig {
+            side,
+            env: env_name,
+        });
+    };
+    Ok(value)
+}
+
+fn is_valid_tunnel_public_key(value: &str) -> bool {
+    !value.chars().any(char::is_control) && !value.chars().any(char::is_whitespace)
+}
+
 fn default_machine_bootstrap_url() -> MachineBootstrapUrl {
     MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
         .expect("default machine bootstrap URL is valid")
@@ -206,6 +278,28 @@ pub enum DaemonProcessConfigError {
     InvalidGatewayListenAddr {
         value: String,
         source: std::net::AddrParseError,
+    },
+    MissingTunnelConfig {
+        side: TunnelSide,
+        env: &'static str,
+    },
+    InvalidTunnelSocket {
+        side: TunnelSide,
+        env: &'static str,
+        value: String,
+        source: std::net::AddrParseError,
+    },
+    NonLoopbackTunnelListenAddr {
+        side: TunnelSide,
+        value: SocketAddr,
+    },
+    InvalidTunnelCoreNode {
+        value: String,
+    },
+    InvalidTunnelValue {
+        side: TunnelSide,
+        env: &'static str,
+        value: String,
     },
 }
 
@@ -247,6 +341,34 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_GATEWAY_LISTEN_ADDR_ENV
+            ),
+            Self::MissingTunnelConfig { side, env } => write!(
+                formatter,
+                "{env} is required for ployzd tunnel {}",
+                side.as_str()
+            ),
+            Self::InvalidTunnelSocket {
+                side, env, value, ..
+            } => write!(
+                formatter,
+                "{env}={value:?} is invalid for ployzd tunnel {}",
+                side.as_str()
+            ),
+            Self::NonLoopbackTunnelListenAddr { side, value } => write!(
+                formatter,
+                "{}={value} must be loopback for ployzd tunnel {}",
+                PLOYZ_TUNNEL_LISTEN_ADDR_ENV,
+                side.as_str()
+            ),
+            Self::InvalidTunnelCoreNode { value } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_TUNNEL_CORE_NODE_ENV
+            ),
+            Self::InvalidTunnelValue { side, env, value } => write!(
+                formatter,
+                "{env}={value:?} is invalid for ployzd tunnel {}",
+                side.as_str()
             ),
         }
     }

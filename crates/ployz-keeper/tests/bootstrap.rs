@@ -1,8 +1,10 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::MachineJoinIrohPublicKey;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
@@ -134,7 +136,7 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         material.clone(),
         ployzd_artifact(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
-        role_environment(),
+        edge_role_environment(),
     ));
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
@@ -145,7 +147,9 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     );
     assert!(
         plan.steps()
-            .contains(&KeeperStep::WritePloyzdRoleEnvironment(role_environment()))
+            .contains(&KeeperStep::WritePloyzdRoleEnvironment(
+                edge_role_environment()
+            ))
     );
 
     for role in roles {
@@ -839,6 +843,24 @@ fn role_environment() -> PloyzdRoleEnvironmentTarget {
             .expect("valid role environment path"),
         NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid NATS URL"),
     )
+    .with_core_tunnel_nats_addr(socket(4222))
+}
+
+fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
+    PloyzdRoleEnvironmentTarget::new(
+        PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
+            .expect("valid role environment path"),
+        NatsClientUrl::try_new("nats://127.0.0.1:7422").expect("valid NATS URL"),
+    )
+    .with_edge_tunnel(
+        socket(7422),
+        node_id("server_1"),
+        MachineJoinIrohPublicKey::try_new("core-public-key").expect("valid core public key"),
+    )
+}
+
+fn socket(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }
 
 fn version(value: &str) -> ArtifactVersion {

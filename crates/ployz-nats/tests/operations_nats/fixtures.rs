@@ -151,6 +151,7 @@ pub(super) fn machine_join_bundle() -> MachineJoinBundle {
                 .expect("valid nats config digest"),
             },
             core_iroh: ployz_core::install::MachineJoinCoreIrohEndpoint {
+                node_id: ployz_core::ids::NodeId::try_new("core_1").expect("valid core node id"),
                 public_key: ployz_core::install::MachineJoinIrohPublicKey::try_new(
                     "core-public-key",
                 )

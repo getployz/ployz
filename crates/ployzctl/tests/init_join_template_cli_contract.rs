@@ -76,6 +76,10 @@ fn assert_join_template(template: MachineJoinTemplate) {
         FIRST_NODE_NATS_CONFIG_SHA256
     );
     assert_eq!(
+        template.join_bundle.material.core_iroh.node_id.as_str(),
+        "core_1"
+    );
+    assert_eq!(
         template.join_bundle.material.ployzd.install_path.as_str(),
         "/usr/local/bin/ployzd"
     );

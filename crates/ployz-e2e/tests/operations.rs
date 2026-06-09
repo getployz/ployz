@@ -479,6 +479,7 @@ fn machine_join_template() -> MachineJoinTemplate {
         "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "core_iroh": {
+        "node_id": "core_1",
         "public_key": "core-public-key"
       },
       "ployzd": {

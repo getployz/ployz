@@ -1,11 +1,13 @@
 //! Typed keeper step plans.
 
 use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
-    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
+    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinIrohPublicKey,
+    MachineJoinSecretDelivery,
 };
 use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
@@ -19,6 +21,12 @@ use crate::artifacts::{
 use crate::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
 };
+
+const DEFAULT_NATS_PORT: u16 = 4222;
+const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
+const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
+const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
+const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepPlan {
@@ -355,7 +363,8 @@ impl FirstNodeInstallTarget {
         )
         .expect("validated nats-server artifact install path is a valid unit path");
         let role_environment =
-            PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback(4222));
+            PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback(DEFAULT_NATS_PORT))
+                .with_core_tunnel_nats_addr(default_nats_socket());
         Self {
             node_id,
             ployzd_artifact,
@@ -374,7 +383,7 @@ impl FirstNodeInstallTarget {
 
     #[must_use]
     pub fn with_role_environment(mut self, role_environment: PloyzdRoleEnvironmentTarget) -> Self {
-        self.role_environment = role_environment;
+        self.role_environment = role_environment.with_core_tunnel_nats_addr(default_nats_socket());
         self
     }
 
@@ -397,6 +406,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     nats_url: NatsClientUrl,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
     machine_join_template_file: Option<AbsoluteInstallPath>,
+    tunnel: Option<PloyzdTunnelEnvironment>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -407,6 +417,7 @@ impl PloyzdRoleEnvironmentTarget {
             nats_url,
             machine_bootstrap_url: None,
             machine_join_template_file: None,
+            tunnel: None,
         }
     }
 
@@ -429,6 +440,27 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_machine_join_template_file(mut self, path: AbsoluteInstallPath) -> Self {
         self.machine_join_template_file = Some(path);
+        self
+    }
+
+    #[must_use]
+    pub fn with_core_tunnel_nats_addr(mut self, addr: SocketAddr) -> Self {
+        self.tunnel = Some(PloyzdTunnelEnvironment::Core { nats_addr: addr });
+        self
+    }
+
+    #[must_use]
+    pub fn with_edge_tunnel(
+        mut self,
+        listen_addr: SocketAddr,
+        core_node: NodeId,
+        core_public_key: MachineJoinIrohPublicKey,
+    ) -> Self {
+        self.tunnel = Some(PloyzdTunnelEnvironment::Edge {
+            listen_addr,
+            core_node,
+            core_public_key,
+        });
         self
     }
 
@@ -462,8 +494,51 @@ impl PloyzdRoleEnvironmentTarget {
             output.push_str(path.as_str());
             output.push('\n');
         }
+        match &self.tunnel {
+            Some(PloyzdTunnelEnvironment::Core { nats_addr }) => {
+                output.push_str(PLOYZ_TUNNEL_NATS_ADDR_ENV);
+                output.push('=');
+                output.push_str(&nats_addr.to_string());
+                output.push('\n');
+            }
+            Some(PloyzdTunnelEnvironment::Edge {
+                listen_addr,
+                core_node,
+                core_public_key,
+            }) => {
+                output.push_str(PLOYZ_TUNNEL_LISTEN_ADDR_ENV);
+                output.push('=');
+                output.push_str(&listen_addr.to_string());
+                output.push('\n');
+                output.push_str(PLOYZ_TUNNEL_CORE_NODE_ENV);
+                output.push('=');
+                output.push_str(core_node.as_str());
+                output.push('\n');
+                output.push_str(PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV);
+                output.push('=');
+                output.push_str(core_public_key.as_str());
+                output.push('\n');
+            }
+            None => {}
+        }
         output
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PloyzdTunnelEnvironment {
+    Core {
+        nats_addr: SocketAddr,
+    },
+    Edge {
+        listen_addr: SocketAddr,
+        core_node: NodeId,
+        core_public_key: MachineJoinIrohPublicKey,
+    },
+}
+
+fn default_nats_socket() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_NATS_PORT)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

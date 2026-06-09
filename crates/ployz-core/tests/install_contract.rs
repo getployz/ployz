@@ -66,6 +66,7 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinRuntimeNatsUrl::try_new("").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("http://127.0.0.1:7422").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422\n").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://localhost:7422").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422").is_ok());
     assert!(MachineJoinNatsCredentials::try_new("").is_err());
     assert!(MachineJoinNatsCredentials::try_new("creds\0bad").is_err());
@@ -104,6 +105,7 @@ fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
                 "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             },
             "core_iroh": {
+                "node_id": "core_1",
                 "public_key": "core-public-key"
             },
             "ployzd": {
@@ -133,6 +135,7 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                     "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 },
                 "core_iroh": {
+                    "node_id": "core_1",
                     "public_key": "core-public-key"
                 },
                 "ployzd": {
@@ -196,6 +199,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 .expect("valid nats config digest"),
             },
             core_iroh: MachineJoinCoreIrohEndpoint {
+                node_id: NodeId::try_new("core_1").expect("valid core node id"),
                 public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
                     .expect("valid core iroh public key"),
             },

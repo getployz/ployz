@@ -132,8 +132,9 @@ impl ParsedMachineJoinTemplateArgs {
                         "--runtime-nats-url",
                     )?)
                     .map_err(|error| invalid_value("--runtime-nats-url", error))?,
-                    trusted_nats: trusted_nats_for_first_node(trusted_first_node),
+                    trusted_nats: trusted_nats_for_first_node(trusted_first_node.clone()),
                     core_iroh: MachineJoinCoreIrohEndpoint {
+                        node_id: trusted_first_node,
                         public_key: MachineJoinIrohPublicKey::try_new(required(
                             self.core_iroh_public_key,
                             "--core-iroh-public-key",

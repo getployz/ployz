@@ -275,9 +275,12 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
             .to_vec(),
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
-    let runtime_nats_url =
-        NatsClientUrl::try_new(redeemed.join_bundle.material.runtime_nats_url.as_str())
-            .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
+    let runtime_nats_url = redeemed.join_bundle.material.runtime_nats_url.clone();
+    let runtime_nats_client_url = NatsClientUrl::try_new(runtime_nats_url.as_str())
+        .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
+    let tunnel_listen_addr = runtime_nats_url.socket_addr();
+    let core_node = redeemed.join_bundle.material.core_iroh.node_id.clone();
+    let core_public_key = redeemed.join_bundle.material.core_iroh.public_key.clone();
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
         redeemed.node_id,
@@ -285,7 +288,11 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
             material,
             artifact,
             roles,
-            PloyzdRoleEnvironmentTarget::default_path(runtime_nats_url),
+            PloyzdRoleEnvironmentTarget::default_path(runtime_nats_client_url).with_edge_tunnel(
+                tunnel_listen_addr,
+                core_node,
+                core_public_key,
+            ),
         ),
     ))
 }
@@ -342,7 +349,7 @@ mod tests {
 
         assert_eq!(
             target.role_environment.render(),
-            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\n"
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
         );
     }
 
@@ -361,6 +368,7 @@ mod tests {
                     .expect("valid nats config digest"),
                 },
                 core_iroh: MachineJoinCoreIrohEndpoint {
+                    node_id: NodeId::try_new("core_1").expect("valid core node id"),
                     public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
                         .expect("valid core iroh public key"),
                 },

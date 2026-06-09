@@ -120,7 +120,7 @@ fn local_effects_install_first_node_process_units() {
     );
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\n"
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
     );
     assert!(systemd_dir.join("ployzd-tunnel-core.service").exists());
     assert!(systemd_dir.join("ployzd-node-node_1.service").exists());
@@ -158,7 +158,7 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\n"
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
     );
 }
 
@@ -195,7 +195,7 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
             template_path.display()
         )
     );

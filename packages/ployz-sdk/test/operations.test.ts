@@ -520,6 +520,7 @@ function machineJoinBundle(): MachineJoinBundle {
           "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       },
       core_iroh: {
+        node_id: nodeId("core_1"),
         public_key: "core-public-key",
       },
       ployzd: {

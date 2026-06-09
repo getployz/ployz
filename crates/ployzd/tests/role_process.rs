@@ -11,10 +11,11 @@ use ployzd::app::{
 };
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, LoadedDaemonProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
+    GatewayProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
     PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
-    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, TunnelProcessConfig,
-    load_daemon_process_config,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
+    PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV,
+    TunnelProcessConfig, load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
@@ -183,19 +184,18 @@ fn role_parser_accepts_the_supervisor_process_commands() {
 
 #[test]
 fn nats_client_roles_load_the_keeper_written_nats_url() {
-    let LoadedDaemonProcessConfig::Configured(config) = load_daemon_process_config(
-        DaemonProcessRole::Node(node_id("node_7")),
-        |name| match name {
-            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
-            PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
-            _ => None,
-        },
-    )
-    .expect("node role config loads") else {
-        panic!("node role should be configured");
-    };
+    let config =
+        load_daemon_process_config(
+            DaemonProcessRole::Node(node_id("node_7")),
+            |name| match name {
+                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+                PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
+                _ => None,
+            },
+        )
+        .expect("node role config loads");
 
-    let DaemonProcessConfig::Node(config) = *config else {
+    let DaemonProcessConfig::Node(config) = config else {
         panic!("node role should produce node config");
     };
     assert_eq!(config.node_id, node_id("node_7"));
@@ -208,18 +208,14 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
 
 #[test]
 fn control_role_loads_optional_machine_bootstrap_url() {
-    let LoadedDaemonProcessConfig::Configured(config) =
-        load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
-            PLOYZ_MACHINE_BOOTSTRAP_URL_ENV => Some("https://example.test/ployz.sh".to_owned()),
-            _ => None,
-        })
-        .expect("control role config loads")
-    else {
-        panic!("control role should be configured");
-    };
+    let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+        PLOYZ_MACHINE_BOOTSTRAP_URL_ENV => Some("https://example.test/ployz.sh".to_owned()),
+        _ => None,
+    })
+    .expect("control role config loads");
 
-    let DaemonProcessConfig::Control(config) = *config else {
+    let DaemonProcessConfig::Control(config) = config else {
         panic!("control role should produce control config");
     };
     assert_eq!(
@@ -231,18 +227,14 @@ fn control_role_loads_optional_machine_bootstrap_url() {
 #[test]
 fn control_role_loads_optional_machine_join_template() {
     let template_path = temp_join_template_file();
-    let LoadedDaemonProcessConfig::Configured(config) =
-        load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
-            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
-            PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV => Some(template_path.clone()),
-            _ => None,
-        })
-        .expect("control role config loads")
-    else {
-        panic!("control role should be configured");
-    };
+    let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+        PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV => Some(template_path.clone()),
+        _ => None,
+    })
+    .expect("control role config loads");
 
-    let DaemonProcessConfig::Control(config) = *config else {
+    let DaemonProcessConfig::Control(config) = config else {
         panic!("control role should produce control config");
     };
     let Some(template) = config.machine_bootstrap.join_template else {
@@ -257,18 +249,14 @@ fn control_role_loads_optional_machine_join_template() {
 
 #[test]
 fn gateway_role_loads_optional_listen_addr() {
-    let LoadedDaemonProcessConfig::Configured(config) =
-        load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
-            PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
-            PLOYZ_GATEWAY_LISTEN_ADDR_ENV => Some("127.0.0.1:18080".to_owned()),
-            _ => None,
-        })
-        .expect("gateway role config loads")
-    else {
-        panic!("gateway role should be configured");
-    };
+    let config = load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
+        PLOYZ_GATEWAY_LISTEN_ADDR_ENV => Some("127.0.0.1:18080".to_owned()),
+        _ => None,
+    })
+    .expect("gateway role config loads");
 
-    let DaemonProcessConfig::Gateway(config) = *config else {
+    let DaemonProcessConfig::Gateway(config) = config else {
         panic!("gateway role should produce gateway config");
     };
     assert_eq!(config.nats_url, NatsClientUrl::loopback(4222));
@@ -351,12 +339,101 @@ fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
 }
 
 #[test]
-fn tunnel_roles_wait_for_transport_join_material() {
+fn tunnel_roles_require_explicit_transport_config() {
     assert_eq!(
         load_daemon_process_config(DaemonProcessRole::Tunnel(TunnelSide::Edge), |_| None),
-        Ok(LoadedDaemonProcessConfig::TunnelConfigPending {
-            side: TunnelSide::Edge
+        Err(DaemonProcessConfigError::MissingTunnelConfig {
+            side: TunnelSide::Edge,
+            env: PLOYZ_TUNNEL_LISTEN_ADDR_ENV,
         })
+    );
+    assert_eq!(
+        load_daemon_process_config(DaemonProcessRole::Tunnel(TunnelSide::Core), |_| None),
+        Err(DaemonProcessConfigError::MissingTunnelConfig {
+            side: TunnelSide::Core,
+            env: PLOYZ_TUNNEL_NATS_ADDR_ENV,
+        })
+    );
+}
+
+#[test]
+fn tunnel_roles_load_core_and_edge_config() {
+    let config =
+        load_daemon_process_config(
+            DaemonProcessRole::Tunnel(TunnelSide::Core),
+            |name| match name {
+                PLOYZ_TUNNEL_NATS_ADDR_ENV => Some("127.0.0.1:4222".to_owned()),
+                _ => None,
+            },
+        )
+        .expect("core tunnel config loads");
+    let DaemonProcessConfig::Tunnel(config) = config else {
+        panic!("core tunnel role should produce tunnel config");
+    };
+    assert_eq!(config.side(), TunnelSide::Core);
+    assert_eq!(config.service.service_name, "ployzd-tunnel-core");
+    assert_eq!(
+        config.service.local_client_endpoint().socket_addr(),
+        Some(socket(4222))
+    );
+
+    let config =
+        load_daemon_process_config(
+            DaemonProcessRole::Tunnel(TunnelSide::Edge),
+            |name| match name {
+                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
+                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
+                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
+                _ => None,
+            },
+        )
+        .expect("edge tunnel config loads");
+    let DaemonProcessConfig::Tunnel(config) = config else {
+        panic!("edge tunnel role should produce tunnel config");
+    };
+    assert_eq!(config.side(), TunnelSide::Edge);
+    assert_eq!(config.service.service_name, "ployzd-tunnel-edge");
+    assert_eq!(
+        config.service.local_client_endpoint().socket_addr(),
+        Some(socket(7422))
+    );
+}
+
+#[test]
+fn edge_tunnel_rejects_non_loopback_listener() {
+    assert_eq!(
+        load_daemon_process_config(
+            DaemonProcessRole::Tunnel(TunnelSide::Edge),
+            |name| match name {
+                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("0.0.0.0:7422".to_owned()),
+                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
+                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
+                _ => None,
+            }
+        ),
+        Err(DaemonProcessConfigError::NonLoopbackTunnelListenAddr {
+            side: TunnelSide::Edge,
+            value: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7422),
+        })
+    );
+}
+
+#[test]
+fn binary_tunnel_role_enters_runtime_when_configured() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["tunnel", "--side", "edge"])
+        .env(PLOYZ_TUNNEL_LISTEN_ADDR_ENV, "127.0.0.1:7422")
+        .env(PLOYZ_TUNNEL_CORE_NODE_ENV, "core_1")
+        .env(PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, "core-public-key")
+        .output()
+        .expect("ployzd binary runs");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ployzd tunnel-edge runtime is not implemented yet"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -392,6 +469,7 @@ fn temp_join_template_file() -> String {
         "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "core_iroh": {
+        "node_id": "core_1",
         "public_key": "core-public-key"
       },
       "ployzd": {

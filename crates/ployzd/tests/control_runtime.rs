@@ -328,6 +328,7 @@ fn machine_join_template() -> MachineJoinTemplate {
                     .expect("valid nats config digest"),
                 },
                 core_iroh: MachineJoinCoreIrohEndpoint {
+                    node_id: NodeId::try_new("core_1").expect("valid core node id"),
                     public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
                         .expect("valid core iroh public key"),
                 },

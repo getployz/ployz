@@ -206,7 +206,7 @@ export type MachineJoinIrohPublicKey = string;
 
 export type MachineJoinIrohTicket = string;
 
-export type MachineJoinCoreIrohEndpoint = { public_key: MachineJoinIrohPublicKey, };
+export type MachineJoinCoreIrohEndpoint = { node_id: NodeId, public_key: MachineJoinIrohPublicKey, };
 
 export type InstallArtifactVersion = string;
 

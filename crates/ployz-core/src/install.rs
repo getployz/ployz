@@ -1,4 +1,5 @@
 use std::fmt;
+use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::ids::NodeId;
@@ -174,6 +175,7 @@ pub struct MachineJoinTrustedNats {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinCoreIrohEndpoint {
+    pub node_id: NodeId,
     pub public_key: MachineJoinIrohPublicKey,
 }
 
@@ -364,10 +366,10 @@ impl MachineJoinRuntimeNatsUrl {
         if value.is_empty() {
             return Err(InstallContractError::EmptyRuntimeNatsUrl);
         }
-        if !value.starts_with("nats://")
-            || value
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+            || nats_url_socket_addr(&value).is_none()
         {
             return Err(InstallContractError::InvalidRuntimeNatsUrl { value });
         }
@@ -378,6 +380,15 @@ impl MachineJoinRuntimeNatsUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[must_use]
+    pub fn socket_addr(&self) -> SocketAddr {
+        nats_url_socket_addr(&self.0).expect("runtime NATS URL is validated as a socket URL")
+    }
+}
+
+fn nats_url_socket_addr(value: &str) -> Option<SocketAddr> {
+    value.strip_prefix("nats://")?.parse().ok()
 }
 
 impl TryFrom<String> for MachineJoinRuntimeNatsUrl {
