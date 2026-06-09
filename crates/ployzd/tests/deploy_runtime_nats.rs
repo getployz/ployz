@@ -5,12 +5,14 @@ mod fixtures;
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
 use fixtures::*;
+use futures_util::StreamExt;
 use ployz_core::deploy::{DeployRequest, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
     OperationLeaseDurationSeconds, OperationStatus,
 };
+use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
@@ -27,6 +29,7 @@ use ployzd::deploy_runtime::{
 use ployzd::deploy_worker::DeployExecutionNodeScope;
 use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::operation_lease::OperationLeasePolicy;
+use ployzd::services::node_endpoint_subject;
 use std::time::Duration;
 
 #[tokio::test]
@@ -224,6 +227,76 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
             ..
         }) if failed_node_id == node_id("node_missing")
             && message.as_str() == "node runtime has no responders"
+            && retained_artifacts.is_empty()
+    ));
+}
+
+#[tokio::test]
+async fn node_service_timeout_marks_deploy_failed_without_committing_active_state() {
+    let nats = test_nats().await;
+    let _unresponsive_node =
+        start_unresponsive_container_run_subscription(nats.client.clone(), node_id("node_slow"))
+            .await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observations");
+    let controllers = operation_controllers(&nats.jetstream).await;
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(deploy_request(1)))
+        .await
+        .expect("deploy operation accepted");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = NatsNodeContainerRuntime::new(nats.client.clone())
+        .with_request_timeout(Duration::from_millis(50));
+    let mut health = RecordingHealth::healthy();
+
+    let error = run_deploy_operation(
+        accepted,
+        DeployExecutionNodeScope::same_nodes(vec![node_id("node_slow")]),
+        DeployOperationStores {
+            core_state: core_state.clone(),
+            observations,
+            controllers: controllers.clone(),
+        },
+        DeployOperationPorts {
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("timed out node service fails deploy");
+
+    assert!(matches!(error, DeployOperationRunError::Execute(_)));
+    assert!(
+        core_state
+            .active_service(&service_id("svc_api"))
+            .await
+            .expect("active state reads")
+            .is_none()
+    );
+    assert!(matches!(
+        controllers
+            .operation_status(&operation_id("op_123"))
+            .await
+            .expect("operation status reads"),
+        Some(OperationStatus::Deploy {
+            state:
+                DeployOperationState::Failed {
+                    failure:
+                        DeployOperationFailure::RuntimeUnavailable {
+                            node_id: failed_node_id,
+                            message,
+                            retained_artifacts,
+                        },
+                },
+            ..
+        }) if failed_node_id == node_id("node_slow")
+            && message.as_str() == "node runtime request timed out"
             && retained_artifacts.is_empty()
     ));
 }
@@ -454,6 +527,22 @@ async fn bootstrap_nats(jetstream: &jetstream::Context) {
             .await
             .expect("create KV bucket");
     }
+}
+
+async fn start_unresponsive_container_run_subscription(
+    client: async_nats::Client,
+    node_id: ployz_core::ids::NodeId,
+) -> tokio::task::JoinHandle<()> {
+    let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRun);
+    let mut subscriber = client
+        .subscribe(subject)
+        .await
+        .expect("subscribe unresponsive node service");
+    tokio::spawn(async move {
+        while subscriber.next().await.is_some() {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    })
 }
 
 async fn operation_controllers(jetstream: &jetstream::Context) -> OperationControllers {
