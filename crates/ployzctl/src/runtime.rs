@@ -231,6 +231,7 @@ pub async fn execute_command(
         }
         PloyzctlCommand::OpsWatch(command) => {
             let api = operation_api_client(config).await?;
+            let output = command.output;
             let request = command.into_request();
             let events = watch_operation_until_terminal(
                 &api,
@@ -241,7 +242,7 @@ pub async fn execute_command(
             .await?;
 
             Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::ops::WatchOutput { events }.render(),
+                crate::commands::ops::WatchOutput { events, output }.render(),
             ))
         }
     }

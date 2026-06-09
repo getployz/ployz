@@ -274,12 +274,14 @@ wait_for_deploy_operation() {
   log_file="${log_dir}/watch-deploy.log"
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if remote_sh "$ip" "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch '$operation_id'" >"$log_file" 2>&1; then
-      if grep -q "deploy.wireguard_ebpf_prepared" "$log_file" && grep -q "deploy.completed" "$log_file"; then
+    if remote_sh "$ip" "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch --json '$operation_id'" >"$log_file" 2>&1; then
+      if deploy_has_event "$log_file" deploy_wireguard_ebpf_prepared \
+        && deploy_has_event "$log_file" deploy_completed; then
+        require_deploy_dataplane_evidence "$log_file"
         cat "$log_file"
         return 0
       fi
-      if grep -q "deploy.failed" "$log_file"; then
+      if deploy_has_event "$log_file" deploy_failed; then
         echo "deploy operation ${operation_id} failed; output:" >&2
         cat "$log_file" >&2
         return 1
@@ -291,6 +293,42 @@ wait_for_deploy_operation() {
   echo "deploy operation ${operation_id} did not reach dataplane-ready completion; last output:" >&2
   cat "$log_file" >&2 || true
   return 1
+}
+
+require_deploy_dataplane_evidence() {
+  log_file="$1"
+  require_deploy_event "$log_file" "deploy did not expose WireGuard public key evidence" \
+    'select(.event.event == "deploy_wireguard_ebpf_prepared") | .event.report.nodes[] | select(.wireguard.public_key != null)'
+  require_deploy_event "$log_file" "deploy did not expose WireGuard peer programming evidence" \
+    'select(.event.event == "deploy_wireguard_ebpf_prepared") | .event.report.nodes[] | .wireguard.evidence[] | select(.kind == "command" and .program == "wg" and .args[0] == "set" and (.args | index("peer") != null))'
+  require_deploy_event "$log_file" "deploy did not expose Ployz eBPF bytecode evidence" \
+    --arg path "$remote_ebpf_path" \
+    'select(.event.event == "deploy_wireguard_ebpf_prepared") | .event.report.nodes[] | .ebpf_forwarding.evidence[] | select(.kind == "ployz_tc_bytecode" and .path == $path)'
+  require_deploy_event "$log_file" "deploy did not expose eBPF attach evidence" \
+    --arg ctl "$remote_ebpf_ctl" \
+    'select(.event.event == "deploy_wireguard_ebpf_prepared") | .event.report.nodes[] | .ebpf_forwarding.evidence[] | select(.kind == "command" and .program == $ctl and .args[0] == "ensure-attached")'
+  require_deploy_event "$log_file" "deploy did not expose eBPF route programming evidence" \
+    --arg ctl "$remote_ebpf_ctl" \
+    'select(.event.event == "deploy_wireguard_ebpf_prepared") | .event.report.nodes[] | .ebpf_forwarding.evidence[] | select(.kind == "command" and .program == $ctl and .args[0] == "route" and .args[1] == "add-ifname")'
+}
+
+require_deploy_event() {
+  log_file="$1"
+  message="$2"
+  shift 2
+  if ! deploy_event_json "$log_file" | jq -c "$@" | grep -q .; then
+    die "${message}; output: ${log_file}"
+  fi
+}
+
+deploy_has_event() {
+  log_file="$1"
+  event="$2"
+  deploy_event_json "$log_file" | jq -c --arg event "$event" 'select(.event.event == $event)' | grep -q .
+}
+
+deploy_event_json() {
+  cat "$1"
 }
 
 wait_for_machine_add_operation() {
@@ -452,8 +490,9 @@ JSON
     [ -n "$bootstrap_tunnel_command" ] || die "machine add did not print a bootstrap tunnel command; output: ${machine_log}"
     grep -q "PLOYZ_NATS_URL='$edge_runtime_nats_url'" "$machine_log" || die "machine add did not print the joined node runtime NATS URL; output: ${machine_log}"
 
+    bootstrap_tunnel_command="exec ${bootstrap_tunnel_command%ployzd tunnel --side edge}'$remote_ployzd' tunnel --side edge"
     run_remote_logged start-bootstrap-tunnel "$edge_ip" \
-      "PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 nohup ${bootstrap_tunnel_command%ployzd tunnel --side edge}'$remote_ployzd' tunnel --side edge > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
+      "PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 nohup sh -c \"$bootstrap_tunnel_command\" > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
 
     run_remote_logged join-edge "$edge_ip" \
       "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"

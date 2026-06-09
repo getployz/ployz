@@ -26,7 +26,7 @@ ployzctl service list
 ployzctl service inspect <service_id>
 ployzctl logs <container_id> [--node <node_id>] [--tail <n>]
 ployzctl ops status <operation_id>
-ployzctl ops watch <operation_id>";
+ployzctl ops watch [--json] <operation_id>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzctlInvocation {

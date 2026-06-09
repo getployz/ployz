@@ -28,6 +28,7 @@ impl OpsStatusCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsWatchCommand {
     pub operation_id: OperationId,
+    pub output: OpsWatchOutput,
 }
 
 impl OpsWatchCommand {
@@ -42,6 +43,12 @@ impl OpsWatchCommand {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpsWatchOutput {
+    Text,
+    Json,
+}
+
 pub fn parse_ops_status_command(args: &[String]) -> Result<OpsStatusCommand, PloyzctlCliError> {
     let operation_id = parse_operation_id_arg(args)?;
 
@@ -49,9 +56,27 @@ pub fn parse_ops_status_command(args: &[String]) -> Result<OpsStatusCommand, Plo
 }
 
 pub fn parse_ops_watch_command(args: &[String]) -> Result<OpsWatchCommand, PloyzctlCliError> {
-    let operation_id = parse_operation_id_arg(args)?;
+    let (operation_id, output) = match args {
+        [operation_id] => (operation_id, OpsWatchOutput::Text),
+        [flag, operation_id] if flag == "--json" => (operation_id, OpsWatchOutput::Json),
+        [operation_id, flag] if flag == "--json" => (operation_id, OpsWatchOutput::Json),
+        [] => {
+            return Err(PloyzctlCliError::MissingRequiredArgument {
+                flag: "<operation_id>",
+            });
+        }
+        [_, unexpected, ..] => {
+            return Err(PloyzctlCliError::UnexpectedArgument {
+                value: unexpected.clone(),
+            });
+        }
+    };
+    let operation_id = parse_operation_id(operation_id)?;
 
-    Ok(OpsWatchCommand { operation_id })
+    Ok(OpsWatchCommand {
+        operation_id,
+        output,
+    })
 }
 
 fn parse_operation_id_arg(args: &[String]) -> Result<OperationId, PloyzctlCliError> {
@@ -69,14 +94,14 @@ fn parse_operation_id_arg(args: &[String]) -> Result<OperationId, PloyzctlCliErr
         }
     };
 
-    let operation_id = OperationId::try_new(operation_id.clone()).map_err(|error| {
-        PloyzctlCliError::InvalidValue {
-            flag: "<operation_id>",
-            message: error.to_string(),
-        }
-    })?;
+    parse_operation_id(operation_id)
+}
 
-    Ok(operation_id)
+fn parse_operation_id(operation_id: &str) -> Result<OperationId, PloyzctlCliError> {
+    OperationId::try_new(operation_id.to_owned()).map_err(|error| PloyzctlCliError::InvalidValue {
+        flag: "<operation_id>",
+        message: error.to_string(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,17 +132,26 @@ impl StatusOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchOutput {
     pub events: Vec<ReplayedOperationEvent>,
+    pub output: OpsWatchOutput,
 }
 
 impl WatchOutput {
     #[must_use]
     pub fn render(&self) -> String {
-        let rendered = self
-            .events
-            .iter()
-            .map(render_replayed_event)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let rendered = match self.output {
+            OpsWatchOutput::Text => self
+                .events
+                .iter()
+                .map(render_replayed_event_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            OpsWatchOutput::Json => self
+                .events
+                .iter()
+                .map(render_replayed_event_json)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
 
         if rendered.is_empty() {
             rendered
@@ -308,12 +342,16 @@ fn backup_running_stage(stage: &BackupRunningStage) -> String {
     }
 }
 
-fn render_replayed_event(event: &ReplayedOperationEvent) -> String {
+fn render_replayed_event_text(event: &ReplayedOperationEvent) -> String {
     format!(
         "{} {}",
         event.sequence.get(),
         operation_event_label(&event.event)
     )
+}
+
+fn render_replayed_event_json(event: &ReplayedOperationEvent) -> String {
+    serde_json::to_string(event).expect("replayed operation events serialize")
 }
 
 fn operation_event_label(event: &OperationEvent) -> &'static str {

@@ -1,6 +1,11 @@
 use std::fs;
 use std::process::{Command, Output};
 
+use ployz_core::dataplane::{
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfNodeReady,
+    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence,
+};
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::install::{
@@ -27,7 +32,7 @@ use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinRuntimeNatsUrl,
     MachineJoinToken, MachineListOutput, MachineName,
 };
-use ployzctl::commands::ops::{StatusOutput, WatchOutput};
+use ployzctl::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployzctl::commands::service::{ServiceInspectOutput, ServiceListOutput};
 use ployzctl::commands::{
     PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, parse_invocation,
@@ -245,6 +250,7 @@ fn cli_dispatches_ops_watch_request() {
     let PloyzctlCommand::OpsWatch(command) = command else {
         panic!("expected ops watch command");
     };
+    assert_eq!(command.output, OpsWatchOutput::Text);
     let request = command.into_request();
 
     assert_eq!(request.operation_id, operation_id("op_deploy"));
@@ -254,6 +260,19 @@ fn cli_dispatches_ops_watch_request() {
         OperationEventReplayLimit::try_new(MAX_OPERATION_EVENT_REPLAY_LIMIT)
             .expect("valid replay limit")
     );
+}
+
+#[test]
+fn cli_dispatches_ops_watch_json_request() {
+    let command = parse_command(["ops", "watch", "--json", "op_deploy"].map(str::to_owned))
+        .expect("ops watch json parses");
+
+    let PloyzctlCommand::OpsWatch(command) = command else {
+        panic!("expected ops watch command");
+    };
+
+    assert_eq!(command.operation_id, operation_id("op_deploy"));
+    assert_eq!(command.output, OpsWatchOutput::Json);
 }
 
 #[test]
@@ -512,7 +531,7 @@ fn binary_help_only_advertises_implemented_commands() {
     assert!(stdout(&output).contains("ployzctl machine list"));
     assert!(stdout(&output).contains("ployzctl machine inspect <node_id>"));
     assert!(stdout(&output).contains("ployzctl ops status <operation_id>"));
-    assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
+    assert!(stdout(&output).contains("ployzctl ops watch [--json] <operation_id>"));
     assert_eq!(stderr(&output), "");
 }
 
@@ -892,6 +911,7 @@ fn ops_watch_renders_persisted_operation_events() {
                 },
             ),
         ],
+        output: OpsWatchOutput::Text,
     }
     .render();
 
@@ -899,8 +919,115 @@ fn ops_watch_renders_persisted_operation_events() {
 }
 
 #[test]
+fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
+    let event = replayed(
+        3,
+        ployz_core::ops::OperationEvent::DeployWireGuardEbpfPrepared {
+            operation_id: operation_id("op_123"),
+            report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady::new(
+                node_id("node_1"),
+                WireGuardEbpfReady {
+                    wireguard: WireGuardReady {
+                        public_key: WireGuardPublicKey::try_new("public-key-1")
+                            .expect("valid wireguard public key"),
+                        evidence: vec![
+                            WireGuardReadyEvidence::HostPath {
+                                path: "/dev/net/tun".to_owned(),
+                            },
+                            WireGuardReadyEvidence::Command {
+                                program: "wg".to_owned(),
+                                args: vec![
+                                    "set".to_owned(),
+                                    "ployz-wg0".to_owned(),
+                                    "peer".to_owned(),
+                                    "public-key-2".to_owned(),
+                                ],
+                            },
+                        ],
+                    },
+                    ebpf_forwarding: EbpfForwardingReady {
+                        evidence: vec![
+                            EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                                path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                                symbols: vec![
+                                    "ployz_egress".to_owned(),
+                                    "ployz_ingress".to_owned(),
+                                ],
+                            },
+                            EbpfForwardingReadyEvidence::Command {
+                                program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
+                                args: vec![
+                                    "ensure-attached".to_owned(),
+                                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                                    "docker0".to_owned(),
+                                    "ployz-wg0".to_owned(),
+                                ],
+                            },
+                            EbpfForwardingReadyEvidence::Command {
+                                program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
+                                args: vec![
+                                    "route".to_owned(),
+                                    "add-ifname".to_owned(),
+                                    "10.42.2.0/24".to_owned(),
+                                    "ployz-wg0".to_owned(),
+                                ],
+                            },
+                        ],
+                    },
+                },
+            )])
+            .expect("dataplane report is valid"),
+        },
+    );
+
+    let text_output = WatchOutput {
+        events: vec![event.clone()],
+        output: OpsWatchOutput::Text,
+    }
+    .render();
+
+    assert_eq!(text_output, "3 deploy.wireguard_ebpf_prepared\n");
+
+    let json_output = WatchOutput {
+        events: vec![event],
+        output: OpsWatchOutput::Json,
+    }
+    .render();
+    let value: serde_json::Value =
+        serde_json::from_str(json_output.trim()).expect("json watch output is JSONL");
+    assert_eq!(
+        value
+            .pointer("/sequence")
+            .and_then(serde_json::Value::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        value
+            .pointer("/event/event")
+            .and_then(serde_json::Value::as_str),
+        Some("deploy_wireguard_ebpf_prepared")
+    );
+    assert_eq!(
+        value
+            .pointer("/event/report/nodes/0/wireguard/public_key")
+            .and_then(serde_json::Value::as_str),
+        Some("public-key-1")
+    );
+    assert_eq!(
+        value
+            .pointer("/event/report/nodes/0/ebpf_forwarding/evidence/0/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("ployz_tc_bytecode")
+    );
+}
+
+#[test]
 fn ops_watch_renders_no_output_when_no_events_are_replayed() {
-    let output = WatchOutput { events: Vec::new() }.render();
+    let output = WatchOutput {
+        events: Vec::new(),
+        output: OpsWatchOutput::Text,
+    }
+    .render();
 
     assert_eq!(output, "");
 }
