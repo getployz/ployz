@@ -11,17 +11,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::api_client::{OperationApiClient, OperationApiClientError};
 use crate::commands::init::FirstNodeInitMode;
 use crate::commands::{PloyzctlCommand, USAGE};
+use ployz_core::ids::OperationId;
+use ployz_core::ops::{
+    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, ReplayedOperationEvent,
+};
 use ployz_nats::connect::{
     NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
 };
 use ployz_sdk_types::{
     BackupCreateError, DeploySubmitError, MachineAddError, MachineInspectError, MachineListError,
-    OpsStatusError, OpsWatchError,
+    OpsStatusError, OpsStatusRequest, OpsWatchError,
 };
+use tokio::time::sleep as async_sleep;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_KEEPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+pub const DEFAULT_OPS_WATCH_TIMEOUT: Duration = Duration::from_secs(600);
+pub const DEFAULT_OPS_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_KEEPER_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -29,6 +36,8 @@ pub struct PloyzctlRuntimeConfig {
     pub nats_url: Option<String>,
     pub nats_connect_timeout: Option<Duration>,
     pub keeper_install_timeout: Option<Duration>,
+    pub ops_watch_timeout: Option<Duration>,
+    pub ops_watch_poll_interval: Option<Duration>,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -40,6 +49,8 @@ impl PloyzctlRuntimeConfig {
                 .filter(|value| !value.trim().is_empty()),
             nats_connect_timeout: None,
             keeper_install_timeout: None,
+            ops_watch_timeout: None,
+            ops_watch_poll_interval: None,
         }
     }
 
@@ -61,6 +72,17 @@ impl PloyzctlRuntimeConfig {
     pub fn keeper_install_timeout(&self) -> Duration {
         self.keeper_install_timeout
             .unwrap_or(DEFAULT_KEEPER_INSTALL_TIMEOUT)
+    }
+
+    #[must_use]
+    pub fn ops_watch_timeout(&self) -> Duration {
+        self.ops_watch_timeout.unwrap_or(DEFAULT_OPS_WATCH_TIMEOUT)
+    }
+
+    #[must_use]
+    pub fn ops_watch_poll_interval(&self) -> Duration {
+        self.ops_watch_poll_interval
+            .unwrap_or(DEFAULT_OPS_WATCH_POLL_INTERVAL)
     }
 }
 
@@ -166,19 +188,81 @@ pub async fn execute_command(
         PloyzctlCommand::OpsWatch(command) => {
             let api = operation_api_client(config).await?;
             let request = command.into_request();
-            let page = api
-                .ops_watch(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::OpsWatchApi { source })?;
+            let events = watch_operation_until_terminal(
+                &api,
+                request,
+                config.ops_watch_timeout(),
+                config.ops_watch_poll_interval(),
+            )
+            .await?;
 
             Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::ops::WatchOutput {
-                    events: page.events,
-                }
-                .render(),
+                crate::commands::ops::WatchOutput { events }.render(),
             ))
         }
     }
+}
+
+async fn watch_operation_until_terminal(
+    api: &OperationApiClient,
+    mut request: OperationEventReplayRequest,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+    let operation_id = request.operation_id.clone();
+    let started_at = Instant::now();
+    let mut events = Vec::new();
+
+    loop {
+        let page = api
+            .ops_watch(&request)
+            .await
+            .map_err(|source| PloyzctlExecutionError::OpsWatchApi { source })?;
+
+        let cursor = page.cursor;
+        if let Some(last_event) = page.events.last()
+            && let Some(next_sequence) = next_event_sequence(last_event.sequence)
+        {
+            request.start_sequence = next_sequence;
+        }
+        events.extend(page.events);
+
+        match cursor {
+            OperationEventReplayCursor::More {
+                next_start_sequence,
+            } => {
+                request.start_sequence = next_start_sequence;
+                continue;
+            }
+            OperationEventReplayCursor::Terminal => return Ok(events),
+            OperationEventReplayCursor::CaughtUp => {}
+        }
+
+        let snapshot = api
+            .ops_status(&OpsStatusRequest {
+                operation_id: operation_id.clone(),
+            })
+            .await
+            .map_err(|source| PloyzctlExecutionError::OpsWatchStatusApi { source })?;
+
+        if snapshot.status.is_terminal() {
+            return Ok(events);
+        }
+
+        if started_at.elapsed() >= timeout {
+            return Err(PloyzctlExecutionError::OpsWatchTimedOut {
+                operation_id,
+                timeout,
+            });
+        }
+
+        async_sleep(poll_interval).await;
+    }
+}
+
+fn next_event_sequence(sequence: EventSequence) -> Option<EventSequence> {
+    let next = sequence.get().checked_add(1)?;
+    EventSequence::try_new(next).ok()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -524,8 +608,15 @@ pub enum PloyzctlExecutionError {
     OpsStatusApi {
         source: OperationApiClientError<OpsStatusError>,
     },
+    OpsWatchStatusApi {
+        source: OperationApiClientError<OpsStatusError>,
+    },
     OpsWatchApi {
         source: OperationApiClientError<OpsWatchError>,
+    },
+    OpsWatchTimedOut {
+        operation_id: OperationId,
+        timeout: Duration,
     },
 }
 
@@ -547,7 +638,17 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::MachineListApi { source } => write!(formatter, "{source}"),
             Self::MachineInspectApi { source } => write!(formatter, "{source}"),
             Self::OpsStatusApi { source } => write!(formatter, "{source}"),
+            Self::OpsWatchStatusApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),
+            Self::OpsWatchTimedOut {
+                operation_id,
+                timeout,
+            } => write!(
+                formatter,
+                "operation {} did not reach a terminal state within {}s",
+                operation_id.as_str(),
+                timeout.as_secs()
+            ),
         }
     }
 }
