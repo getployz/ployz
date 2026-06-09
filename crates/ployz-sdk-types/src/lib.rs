@@ -25,8 +25,8 @@ pub use ployz_core::cert::{
 };
 pub use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady,
-    WireGuardReadyEvidence,
+    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference,
@@ -65,7 +65,7 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, DeployCleanupFailure,
-    DeployOperationFailure, DeployOperationState, DeployRunningStage,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployRunningStage,
 };
 pub use ployz_core::roles::FirstNodeGateway;
 pub use ployz_core::state::{

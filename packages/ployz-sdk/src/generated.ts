@@ -100,6 +100,8 @@ export type DeployOperationState = { "state": "accepted" } | { "state": "plannin
 
 export type DeployRunningStage = "preparing_wireguard_ebpf" | "starting_containers" | "waiting_for_health" | "route_cutover" | "active_service_commit" | "removing_superseded_containers";
 
+export type DeployCompletionOutcome = "completed" | "completed_with_warnings" | "partially_completed" | "partially_completed_with_warnings";
+
 export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
 export type CertRunningStage = "challenge_published" | "validation_started";
@@ -131,6 +133,8 @@ export type WireGuardEbpfPrepareReport = { nodes: Array<WireGuardEbpfNodeReady>,
 export type WireGuardEbpfNodeReady = { node_id: NodeId, wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
 
 export type WireGuardEbpfReady = { wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
+
+export type WireGuardPublicKey = string;
 
 export type WireGuardReady = { public_key: WireGuardPublicKey, evidence: Array<WireGuardReadyEvidence>, };
 
@@ -209,6 +213,12 @@ export type GatewayServingStatus = "current" | "last_known_good" | "unavailable"
 export type GatewayStatusObservation = { node_id: NodeId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
 export type MachineSnapshot = { active: ActiveMachineState, public_ip: NodePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
+
+export type InitFirstNodeActivateRequest = { node_id: NodeId, gateway: MachineAddGateway, };
+
+export type InitFirstNodeActivated = { operation_id: OperationId, node_id: NodeId, };
+
+export type InitFirstNodeActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, };
 
 export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
 
