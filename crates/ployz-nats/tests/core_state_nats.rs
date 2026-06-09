@@ -596,6 +596,7 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
         }
         other @ (ActiveRouteReadError::Decode(_)
         | ActiveRouteReadError::ListKeys { .. }
+        | ActiveRouteReadError::Watch { .. }
         | ActiveRouteReadError::Get { .. }
         | ActiveRouteReadError::CorruptActiveRouteKey { .. }
         | ActiveRouteReadError::Timeout { .. }) => {

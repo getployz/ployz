@@ -129,6 +129,7 @@ impl From<ActiveRouteReadError> for GatewaySourceError {
                 ),
             },
             error @ (ActiveRouteReadError::ListKeys { .. }
+            | ActiveRouteReadError::Watch { .. }
             | ActiveRouteReadError::Get { .. }
             | ActiveRouteReadError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),
@@ -151,6 +152,7 @@ impl From<ObservationStoreError> for GatewaySourceError {
             error @ (ObservationStoreError::OpenBucket { .. }
             | ObservationStoreError::Encode(_)
             | ObservationStoreError::ListKeys { .. }
+            | ObservationStoreError::Watch { .. }
             | ObservationStoreError::Put { .. }
             | ObservationStoreError::Get { .. }
             | ObservationStoreError::Timeout { .. }) => Self::Unavailable {

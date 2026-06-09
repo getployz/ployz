@@ -145,6 +145,19 @@ impl AsyncNatsObservationStore {
         });
         Ok(records)
     }
+
+    pub async fn watch_node_container_snapshot_changes(
+        &self,
+    ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
+        with_observation_timeout(
+            "node observation snapshot watch",
+            self.bucket.watch_with_history("containers.>"),
+        )
+        .await?
+        .map_err(|error| ObservationStoreError::Watch {
+            message: error.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +197,9 @@ pub enum ObservationStoreError {
     ListKeys {
         message: String,
     },
+    Watch {
+        message: String,
+    },
     Put {
         key: String,
         message: String,
@@ -212,6 +228,7 @@ impl fmt::Display for ObservationStoreError {
             Self::ListKeys { message } => {
                 write!(formatter, "list node observation keys: {message}")
             }
+            Self::Watch { message } => write!(formatter, "watch node observation keys: {message}"),
             Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::CorruptNodeSnapshotKey { key, actual_key } => write!(

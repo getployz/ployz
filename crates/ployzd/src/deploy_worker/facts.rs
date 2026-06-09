@@ -135,6 +135,7 @@ pub enum ActiveServiceReadFailure {
 pub enum ActiveRouteReadFailure {
     Decode { message: String },
     ListKeys { message: String },
+    Watch { message: String },
     Get { key: String, message: String },
     CorruptState { key: String, message: String },
     Timeout { operation: &'static str },
@@ -150,6 +151,9 @@ pub enum ObservationReadFailure {
         message: String,
     },
     ListKeys {
+        message: String,
+    },
+    Watch {
         message: String,
     },
     Get {
@@ -172,6 +176,7 @@ fn active_route_read_failure(source: ActiveRouteReadError) -> ActiveRouteReadFai
             message: error.to_string(),
         },
         ActiveRouteReadError::ListKeys { message } => ActiveRouteReadFailure::ListKeys { message },
+        ActiveRouteReadError::Watch { message } => ActiveRouteReadFailure::Watch { message },
         ActiveRouteReadError::Get { key, message } => ActiveRouteReadFailure::Get { key, message },
         ActiveRouteReadError::CorruptActiveRouteState {
             key,
@@ -231,6 +236,7 @@ fn observation_read_failure(source: ObservationStoreError) -> ObservationReadFai
             message: error.to_string(),
         },
         ObservationStoreError::ListKeys { message } => ObservationReadFailure::ListKeys { message },
+        ObservationStoreError::Watch { message } => ObservationReadFailure::Watch { message },
         ObservationStoreError::Get { key, message } => ObservationReadFailure::Get { key, message },
         ObservationStoreError::CorruptNodeSnapshotKey { key, actual_key } => {
             ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
@@ -305,6 +311,7 @@ impl fmt::Display for ActiveRouteReadFailure {
         match self {
             Self::Decode { message } => write!(formatter, "decode active route state: {message}"),
             Self::ListKeys { message } => write!(formatter, "list active route keys: {message}"),
+            Self::Watch { message } => write!(formatter, "watch active route keys: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::CorruptState { key, message } => {
                 write!(formatter, "corrupt route state at {key}: {message}")
@@ -324,6 +331,7 @@ impl fmt::Display for ObservationReadFailure {
                 write!(formatter, "decode observation snapshot: {message}")
             }
             Self::ListKeys { message } => write!(formatter, "list observation keys: {message}"),
+            Self::Watch { message } => write!(formatter, "watch observation keys: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::CorruptSnapshotKey { key, actual_key } => write!(
                 formatter,

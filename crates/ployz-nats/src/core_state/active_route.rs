@@ -127,6 +127,20 @@ impl AsyncNatsCoreStateStore {
         Ok(routes)
     }
 
+    pub async fn watch_active_route_changes(
+        &self,
+    ) -> Result<async_nats::jetstream::kv::Watch, ActiveRouteReadError> {
+        let route_key_filter = format!("{}.>", ployz_core::state::ACTIVE_ROUTE_STATE_PREFIX);
+        with_active_route_read_timeout(
+            "active route state watch",
+            self.bucket.watch_with_history(route_key_filter),
+        )
+        .await?
+        .map_err(|error| ActiveRouteReadError::Watch {
+            message: error.to_string(),
+        })
+    }
+
     async fn classify_active_route_commit_conflict(
         &self,
         target: &RouteTarget,
@@ -294,6 +308,9 @@ pub enum ActiveRouteReadError {
     ListKeys {
         message: String,
     },
+    Watch {
+        message: String,
+    },
     Get {
         key: String,
         message: String,
@@ -317,6 +334,7 @@ impl fmt::Display for ActiveRouteReadError {
         match self {
             Self::Decode(error) => write!(formatter, "decode active route state: {error}"),
             Self::ListKeys { message } => write!(formatter, "list active route keys: {message}"),
+            Self::Watch { message } => write!(formatter, "watch active route keys: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::CorruptActiveRouteState {
                 key,

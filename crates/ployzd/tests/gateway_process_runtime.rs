@@ -165,6 +165,55 @@ async fn gateway_process_serves_http_from_nats_projection() {
 }
 
 #[tokio::test]
+async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll() {
+    let nats = TestNats::start_without_buckets().await;
+    nats.create_gateway_buckets().await;
+    let runtime = start_gateway_process_runtime_with_client(
+        nats.client.clone(),
+        Duration::from_secs(60),
+        socket_addr("127.0.0.1:0"),
+    )
+    .await
+    .expect("gateway runtime starts");
+    let jetstream = jetstream::new(nats.client.clone());
+    let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .expect("open observation store");
+
+    routes
+        .commit_active_route(&ActiveRouteCommitRequest {
+            target: route_target("api.example.com", 443),
+            endpoint_port: route_port(8080),
+            expected_current: ExpectedActiveRoute::Absent,
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_1"),
+        })
+        .await
+        .expect("route stores");
+    observations
+        .replace_node_containers(&node_snapshot(
+            "node_7",
+            [managed_observation("node_7", "ctr_7")],
+        ))
+        .await
+        .expect("observation stores");
+
+    wait_until(Duration::from_secs(2), || {
+        gateway_serves_route(&runtime, "10.0.0.7", 8080)
+    })
+    .await;
+    assert_eq!(
+        runtime.health().last_attempt,
+        Some(GatewayProcessAttempt::Current { route_count: 1 })
+    );
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn gateway_process_records_http_proxy_failures() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
