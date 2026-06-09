@@ -160,7 +160,9 @@ fn machine_join_template() -> MachineJoinTemplate {
       },
       "core_iroh": {
         "node_id": "core_1",
-        "public_key": "core-public-key"
+        "public_key": "core-public-key",
+      "direct_addresses": [],
+      "relay_url": null
       },
       "ployzd": {
         "version": "0.1.0",

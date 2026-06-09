@@ -80,6 +80,32 @@ fn assert_join_template(template: MachineJoinTemplate) {
         "core_1"
     );
     assert_eq!(
+        template.join_bundle.material.core_iroh.public_key.as_str(),
+        "acceptance-core"
+    );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .core_iroh
+            .direct_addresses
+            .iter()
+            .map(|address| address.as_str())
+            .collect::<Vec<_>>(),
+        vec!["203.0.113.10:4433"]
+    );
+    assert_eq!(
+        template
+            .join_bundle
+            .material
+            .core_iroh
+            .relay_url
+            .as_ref()
+            .expect("relay url is configured")
+            .as_str(),
+        "https://relay.example.test"
+    );
+    assert_eq!(
         template.join_bundle.material.ployzd.install_path.as_str(),
         "/usr/local/bin/ployzd"
     );
@@ -105,6 +131,10 @@ fn init_join_template_args(secret_delivery_file: &Path) -> Vec<String> {
         "core_1",
         "--core-iroh-public-key",
         "acceptance-core",
+        "--core-iroh-direct-address",
+        "203.0.113.10:4433",
+        "--core-iroh-relay-url",
+        "https://relay.example.test",
         "--ployzd-version",
         "acceptance",
         "--ployzd-source",

@@ -28,26 +28,28 @@ pub use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 pub use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference, ImageReferenceError,
-    ReplicaCount, ReplicaCountError, ReplicaSlot,
+    DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute, ImageReference,
+    ImageReferenceError, ReplicaCount, ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
-    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
+    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, StepId,
     SubjectTokenError,
 };
 pub use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
-    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+    MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey,
+    MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
+    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
+    MachineJoinTrustedNatsServerId,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
     MachineReadinessCheck, MachineReadinessEvidence,
 };
+pub use ployz_core::node::ManagedContainerKind;
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,
     BackupOperationState, BackupRunningStage, CancellationReason, EventSequence,
@@ -61,8 +63,8 @@ pub use ployz_core::ops::{
     RouteTarget,
 };
 pub use ployz_core::ops::{
-    CertOperationFailure, CertOperationState, CertRunningStage, DeployOperationFailure,
-    DeployOperationState, DeployRunningStage,
+    CertOperationFailure, CertOperationState, CertRunningStage, DeployCleanupFailure,
+    DeployOperationFailure, DeployOperationState, DeployRunningStage,
 };
 pub use ployz_core::roles::FirstNodeGateway;
 pub use ployz_core::state::{

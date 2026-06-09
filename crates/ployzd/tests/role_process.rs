@@ -13,9 +13,10 @@ use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
     PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
-    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
-    PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV,
-    TunnelProcessConfig, load_daemon_process_config,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV,
+    PLOYZ_TUNNEL_CORE_NODE_ENV, PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
+    PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV, TunnelProcessConfig,
+    load_daemon_process_config,
 };
 use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
@@ -383,6 +384,10 @@ fn tunnel_roles_load_core_and_edge_config() {
                 PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
                 PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
                 PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
+                PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV => {
+                    Some("203.0.113.10:4433,203.0.113.11:4433".to_owned())
+                }
+                PLOYZ_TUNNEL_CORE_RELAY_URL_ENV => Some("https://relay.example.test".to_owned()),
                 _ => None,
             },
         )
@@ -395,6 +400,18 @@ fn tunnel_roles_load_core_and_edge_config() {
     assert_eq!(
         config.service.local_client_endpoint().socket_addr(),
         Some(socket(7422))
+    );
+    assert_eq!(
+        config.service.tunnel,
+        ployz_transport::nats_tunnel::NatsTunnelConfig::Edge(
+            ployz_transport::nats_tunnel::EdgeNatsTunnelConfig::new(
+                socket(7422),
+                IrohEndpoint::new(node_id("core_1"), "core-public-key")
+                    .with_direct_address("203.0.113.10:4433".parse().expect("valid address"))
+                    .with_direct_address("203.0.113.11:4433".parse().expect("valid address"))
+                    .with_relay_url("https://relay.example.test")
+            )
+        )
     );
 }
 
@@ -413,6 +430,39 @@ fn edge_tunnel_rejects_non_loopback_listener() {
         Err(DaemonProcessConfigError::NonLoopbackTunnelListenAddr {
             side: TunnelSide::Edge,
             value: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7422),
+        })
+    );
+}
+
+#[test]
+fn edge_tunnel_rejects_invalid_core_dial_hints() {
+    assert!(matches!(
+        load_daemon_process_config(
+            DaemonProcessRole::Tunnel(TunnelSide::Edge),
+            |name| match name {
+                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
+                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
+                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
+                PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV => Some("not-a-socket".to_owned()),
+                _ => None,
+            }
+        ),
+        Err(DaemonProcessConfigError::InvalidTunnelDirectAddress { value, .. })
+            if value == "not-a-socket"
+    ));
+    assert_eq!(
+        load_daemon_process_config(
+            DaemonProcessRole::Tunnel(TunnelSide::Edge),
+            |name| match name {
+                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
+                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
+                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
+                PLOYZ_TUNNEL_CORE_RELAY_URL_ENV => Some("http://relay.example.test".to_owned()),
+                _ => None,
+            }
+        ),
+        Err(DaemonProcessConfigError::InvalidTunnelRelayUrl {
+            value: "http://relay.example.test".to_owned(),
         })
     );
 }
@@ -469,7 +519,9 @@ fn temp_join_template_file() -> String {
       },
       "core_iroh": {
         "node_id": "core_1",
-        "public_key": "core-public-key"
+        "public_key": "core-public-key",
+        "direct_addresses": [],
+        "relay_url": null
       },
       "ployzd": {
         "version": "0.1.0",

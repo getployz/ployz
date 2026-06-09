@@ -4,7 +4,9 @@ use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::MachineJoinIrohPublicKey;
+use ployz_core::install::{
+    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
+};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
@@ -151,6 +153,9 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
                 edge_role_environment()
             ))
     );
+    let rendered_env = edge_role_environment().render();
+    assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS=203.0.113.10:4433\n"));
+    assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_RELAY_URL=https://relay.example.test\n"));
 
     for role in roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
@@ -856,6 +861,14 @@ fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
         socket(7422),
         node_id("server_1"),
         MachineJoinIrohPublicKey::try_new("core-public-key").expect("valid core public key"),
+        vec![
+            MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
+                .expect("valid direct address"),
+        ],
+        Some(
+            MachineJoinIrohRelayUrl::try_new("https://relay.example.test")
+                .expect("valid relay url"),
+        ),
     )
 }
 

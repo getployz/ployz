@@ -281,6 +281,13 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
     let tunnel_listen_addr = runtime_nats_url.socket_addr();
     let core_node = redeemed.join_bundle.material.core_iroh.node_id.clone();
     let core_public_key = redeemed.join_bundle.material.core_iroh.public_key.clone();
+    let core_direct_addresses = redeemed
+        .join_bundle
+        .material
+        .core_iroh
+        .direct_addresses
+        .clone();
+    let core_relay_url = redeemed.join_bundle.material.core_iroh.relay_url.clone();
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
         redeemed.node_id,
@@ -292,6 +299,8 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
                 tunnel_listen_addr,
                 core_node,
                 core_public_key,
+                core_direct_addresses,
+                core_relay_url,
             ),
         ),
     ))
@@ -371,6 +380,8 @@ mod tests {
                     node_id: NodeId::try_new("core_1").expect("valid core node id"),
                     public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
                         .expect("valid core iroh public key"),
+                    direct_addresses: Vec::new(),
+                    relay_url: None,
                 },
                 ployzd: MachineJoinPloyzdArtifact {
                     version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),

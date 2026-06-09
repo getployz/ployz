@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::{MachineJoinIrohDirectAddress, MachineJoinIrohRelayUrl};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::FirstNodeGateway;
 use ployz_keeper::artifacts::{
@@ -60,10 +61,7 @@ fn local_effects_install_keeper_and_start_its_unit() {
         effects.runner().systemctl_calls,
         vec![
             vec!["daemon-reload".to_owned()],
-            vec![
-                "enable".to_owned(),
-                "ployz-keeper.service".to_owned(),
-            ],
+            vec!["enable".to_owned(), "ployz-keeper.service".to_owned(),],
             vec!["restart".to_owned(), "ployz-keeper.service".to_owned()],
         ]
     );
@@ -599,10 +597,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         effects.runner().systemctl_calls,
         vec![
             vec!["daemon-reload".to_owned()],
-            vec![
-                "enable".to_owned(),
-                "ployzd-node-node_2.service".to_owned(),
-            ],
+            vec!["enable".to_owned(), "ployzd-node-node_2.service".to_owned(),],
             vec![
                 "restart".to_owned(),
                 "ployzd-node-node_2.service".to_owned(),
@@ -625,7 +620,17 @@ fn local_effects_store_redacted_join_material() {
         "core-public-key",
         "core-ticket",
     )
-    .expect("valid join material");
+    .expect("valid join material")
+    .with_core_iroh_hints(
+        vec![
+            MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
+                .expect("valid direct address"),
+        ],
+        Some(
+            MachineJoinIrohRelayUrl::try_new("https://relay.example.test")
+                .expect("valid relay url"),
+        ),
+    );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner::root_linux(),
@@ -645,7 +650,7 @@ fn local_effects_store_redacted_join_material() {
                 .join(JOIN_MATERIAL_FILE)
         )
         .expect("join material is stored"),
-        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ncore_iroh_public_key=core-public-key\ncore_iroh_ticket=[redacted]\n"
+        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ncore_iroh_public_key=core-public-key\ncore_iroh_ticket=[redacted]\ncore_iroh_direct_addresses=203.0.113.10:4433\ncore_iroh_relay_url=https://relay.example.test\n"
     );
     assert_eq!(
         fs::read_to_string(

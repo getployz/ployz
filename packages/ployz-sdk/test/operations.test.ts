@@ -522,6 +522,8 @@ function machineJoinBundle(): MachineJoinBundle {
       core_iroh: {
         node_id: nodeId("core_1"),
         public_key: "core-public-key",
+        direct_addresses: [],
+        relay_url: null,
       },
       ployzd: {
         version: "0.1.0",

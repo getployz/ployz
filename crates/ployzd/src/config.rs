@@ -25,6 +25,8 @@ pub const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 pub const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
 pub const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
+pub const PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV: &str = "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS";
+pub const PLOYZ_TUNNEL_CORE_RELAY_URL_ENV: &str = "PLOYZ_TUNNEL_CORE_RELAY_URL";
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,13 +194,57 @@ fn load_tunnel_config(
                     value: public_key,
                 });
             }
+            let mut endpoint = IrohEndpoint::new(core_node, public_key);
+            for address in load_tunnel_core_direct_addresses(env)? {
+                endpoint = endpoint.with_direct_address(address);
+            }
+            if let Some(relay_url) = load_tunnel_core_relay_url(env)? {
+                endpoint = endpoint.with_relay_url(relay_url);
+            }
             Ok(TunnelProcessConfig::new(PreparedTunnelService::edge(
                 "ployzd-tunnel-edge",
                 local_listen,
-                IrohEndpoint::new(core_node, public_key),
+                endpoint,
             )))
         }
     }
+}
+
+fn load_tunnel_core_direct_addresses(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Vec<SocketAddr>, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV).filter(|value| !value.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+
+    value
+        .split(',')
+        .map(|raw| {
+            raw.parse::<SocketAddr>().map_err(|source| {
+                DaemonProcessConfigError::InvalidTunnelDirectAddress {
+                    value: raw.to_owned(),
+                    source,
+                }
+            })
+        })
+        .collect()
+}
+
+fn load_tunnel_core_relay_url(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_TUNNEL_CORE_RELAY_URL_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !value.starts_with("https://")
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(DaemonProcessConfigError::InvalidTunnelRelayUrl { value });
+    }
+    Ok(Some(value))
 }
 
 fn load_tunnel_socket(
@@ -295,6 +341,13 @@ pub enum DaemonProcessConfigError {
     InvalidTunnelCoreNode {
         value: String,
     },
+    InvalidTunnelDirectAddress {
+        value: String,
+        source: std::net::AddrParseError,
+    },
+    InvalidTunnelRelayUrl {
+        value: String,
+    },
     InvalidTunnelValue {
         side: TunnelSide,
         env: &'static str,
@@ -363,6 +416,16 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_TUNNEL_CORE_NODE_ENV
+            ),
+            Self::InvalidTunnelDirectAddress { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV
+            ),
+            Self::InvalidTunnelRelayUrl { value } => write!(
+                formatter,
+                "{}={value:?} must be an HTTPS URL without whitespace",
+                PLOYZ_TUNNEL_CORE_RELAY_URL_ENV
             ),
             Self::InvalidTunnelValue { side, env, value } => write!(
                 formatter,

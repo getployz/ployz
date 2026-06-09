@@ -22,6 +22,8 @@ export type NodeId = Brand<string, "NodeId">;
 
 export type ContainerId = Brand<string, "ContainerId">;
 
+export type StepId = Brand<string, "StepId">;
+
 export type CertId = Brand<string, "CertId">;
 
 export type MachineName = Brand<string, "MachineName">;
@@ -49,6 +51,12 @@ export type DeployRequest = { service_id: ServiceId, target_revision: RevisionId
 export type DeployRoute = { target: RouteTarget, endpoint_port: RoutePort, };
 
 export type DeployPlan = { service_id: ServiceId, target_revision: RevisionId, steps: Array<DeployPlanStep>, cleanup_containers?: Array<DeployCleanupContainer>, };
+
+export type DeployCleanupContainer = { node_id: NodeId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
+
+export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
+
+export type ManagedContainerKind = "service" | "predeploy" | "job";
 
 export type DeployPlanStep = { "step": "use_existing_container", node_id: NodeId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", node_id: NodeId, slot: ReplicaSlot, };
 
@@ -218,9 +226,13 @@ export type MachineJoinTrustedNats = { server_id: MachineJoinTrustedNatsServerId
 
 export type MachineJoinIrohPublicKey = string;
 
+export type MachineJoinIrohDirectAddress = string;
+
+export type MachineJoinIrohRelayUrl = string;
+
 export type MachineJoinIrohTicket = string;
 
-export type MachineJoinCoreIrohEndpoint = { node_id: NodeId, public_key: MachineJoinIrohPublicKey, };
+export type MachineJoinCoreIrohEndpoint = { node_id: NodeId, public_key: MachineJoinIrohPublicKey, direct_addresses: Array<MachineJoinIrohDirectAddress>, relay_url: MachineJoinIrohRelayUrl | null, };
 
 export type InstallArtifactVersion = string;
 

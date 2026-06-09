@@ -227,11 +227,11 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
-        r#"{"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
+        r#"{"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
     );
 }
 
@@ -471,6 +471,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 node_id: NodeId::try_new("core_1").expect("valid core node id"),
                 public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
                     .expect("valid core iroh public key"),
+                direct_addresses: Vec::new(),
+                relay_url: None,
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")

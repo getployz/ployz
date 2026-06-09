@@ -194,9 +194,7 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
 
 impl DockerManagedContainerRunner {
     async fn pull_image(&self, image: &str) -> Result<(), NodeContainerRunnerError> {
-        let options = CreateImageOptionsBuilder::new()
-            .from_image(image)
-            .build();
+        let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = self.docker.create_image(Some(options), None, None);
 
         while let Some(result) = stream.next().await {

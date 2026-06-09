@@ -2,6 +2,10 @@ use std::error::Error;
 use std::time::Duration;
 
 use async_nats::jetstream;
+use ployz_core::dataplane::{
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfNodeReady,
+    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+};
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, ImageReference, ReplicaCount, plan_service_deploy,
 };
@@ -281,6 +285,31 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
                 operation_id: operation_id("op_e2e_run"),
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             },
+            OperationEvent::DeployWireGuardEbpfPrepared {
+                operation_id: operation_id("op_e2e_run"),
+                report: WireGuardEbpfPrepareReport {
+                    nodes: vec![WireGuardEbpfNodeReady::new(
+                        node_id("node_a"),
+                        WireGuardEbpfReady {
+                            wireguard: WireGuardReady {
+                                evidence: vec![WireGuardReadyEvidence::Command {
+                                    program: "wg".to_owned(),
+                                    args: vec!["--version".to_owned()],
+                                }],
+                            },
+                            ebpf_forwarding: EbpfForwardingReady {
+                                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                                    symbols: vec![
+                                        "ployz_egress".to_owned(),
+                                        "ployz_ingress".to_owned(),
+                                    ],
+                                }],
+                            },
+                        },
+                    )],
+                },
+            },
             OperationEvent::DeployRunning {
                 operation_id: operation_id("op_e2e_run"),
                 stage: DeployRunningStage::StartingContainers,
@@ -475,7 +504,9 @@ fn machine_join_template() -> MachineJoinTemplate {
       },
       "core_iroh": {
         "node_id": "core_1",
-        "public_key": "core-public-key"
+        "public_key": "core-public-key",
+      "direct_addresses": [],
+      "relay_url": null
       },
       "ployzd": {
         "version": "0.1.0",

@@ -81,7 +81,7 @@ impl std::error::Error for JoinTokenFileError {}
 
 #[must_use]
 pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
-    format!(
+    let mut rendered = format!(
         "node_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_server={}\ntrusted_nats_config_sha256={}\ncore_iroh_public_key={}\ncore_iroh_ticket={}\n",
         material.node_id.as_str(),
         material.cluster_name,
@@ -90,6 +90,16 @@ pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8>
         material.trusted_nats_config_sha256,
         material.core_iroh_public_key,
         "[redacted]"
-    )
-    .into_bytes()
+    );
+    if !material.core_iroh_direct_addresses.is_empty() {
+        rendered.push_str("core_iroh_direct_addresses=");
+        rendered.push_str(&material.core_iroh_direct_addresses.join(","));
+        rendered.push('\n');
+    }
+    if let Some(relay_url) = &material.core_iroh_relay_url {
+        rendered.push_str("core_iroh_relay_url=");
+        rendered.push_str(relay_url);
+        rendered.push('\n');
+    }
+    rendered.into_bytes()
 }

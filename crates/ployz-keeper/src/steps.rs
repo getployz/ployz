@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
-    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinIrohPublicKey,
-    MachineJoinSecretDelivery,
+    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinIrohDirectAddress,
+    MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl, MachineJoinSecretDelivery,
 };
 use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
@@ -27,6 +27,8 @@ const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
 const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
+const PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV: &str = "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS";
+const PLOYZ_TUNNEL_CORE_RELAY_URL_ENV: &str = "PLOYZ_TUNNEL_CORE_RELAY_URL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepPlan {
@@ -168,7 +170,7 @@ impl KeeperJoinMaterial {
         join_bundle: &MachineJoinBundle,
         secret_delivery: &MachineJoinSecretDelivery,
     ) -> Result<Self, JoinMaterialError> {
-        Self::new(
+        let material = Self::new(
             node_id,
             join_bundle.material.cluster_name.as_str(),
             secret_delivery.nats_credentials.secret(),
@@ -176,7 +178,11 @@ impl KeeperJoinMaterial {
             join_bundle.material.trusted_nats.config_sha256.as_str(),
             join_bundle.material.core_iroh.public_key.as_str(),
             secret_delivery.core_iroh_ticket.secret(),
-        )
+        )?;
+        Ok(material.with_core_iroh_hints(
+            join_bundle.material.core_iroh.direct_addresses.clone(),
+            join_bundle.material.core_iroh.relay_url.clone(),
+        ))
     }
 
     pub fn new(
@@ -210,6 +216,18 @@ impl KeeperJoinMaterial {
     }
 
     #[must_use]
+    pub fn with_core_iroh_hints(
+        mut self,
+        direct_addresses: Vec<MachineJoinIrohDirectAddress>,
+        relay_url: Option<MachineJoinIrohRelayUrl>,
+    ) -> Self {
+        self.redacted = self
+            .redacted
+            .with_core_iroh_hints(direct_addresses, relay_url);
+        self
+    }
+
+    #[must_use]
     pub fn nats_credentials(&self) -> &str {
         &self.nats_credentials
     }
@@ -238,6 +256,8 @@ pub struct RedactedJoinMaterial {
     pub trusted_nats_server: String,
     pub trusted_nats_config_sha256: String,
     pub core_iroh_public_key: String,
+    pub core_iroh_direct_addresses: Vec<String>,
+    pub core_iroh_relay_url: Option<String>,
 }
 
 impl RedactedJoinMaterial {
@@ -262,7 +282,23 @@ impl RedactedJoinMaterial {
             trusted_nats_server,
             trusted_nats_config_sha256,
             core_iroh_public_key,
+            core_iroh_direct_addresses: Vec::new(),
+            core_iroh_relay_url: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_core_iroh_hints(
+        mut self,
+        direct_addresses: Vec<MachineJoinIrohDirectAddress>,
+        relay_url: Option<MachineJoinIrohRelayUrl>,
+    ) -> Self {
+        self.core_iroh_direct_addresses = direct_addresses
+            .into_iter()
+            .map(|address| address.as_str().to_owned())
+            .collect();
+        self.core_iroh_relay_url = relay_url.map(|relay_url| relay_url.as_str().to_owned());
+        self
     }
 }
 
@@ -455,11 +491,15 @@ impl PloyzdRoleEnvironmentTarget {
         listen_addr: SocketAddr,
         core_node: NodeId,
         core_public_key: MachineJoinIrohPublicKey,
+        core_direct_addresses: Vec<MachineJoinIrohDirectAddress>,
+        core_relay_url: Option<MachineJoinIrohRelayUrl>,
     ) -> Self {
         self.tunnel = Some(PloyzdTunnelEnvironment::Edge {
             listen_addr,
             core_node,
             core_public_key,
+            core_direct_addresses,
+            core_relay_url,
         });
         self
     }
@@ -505,6 +545,8 @@ impl PloyzdRoleEnvironmentTarget {
                 listen_addr,
                 core_node,
                 core_public_key,
+                core_direct_addresses,
+                core_relay_url,
             }) => {
                 output.push_str(PLOYZ_TUNNEL_LISTEN_ADDR_ENV);
                 output.push('=');
@@ -518,6 +560,24 @@ impl PloyzdRoleEnvironmentTarget {
                 output.push('=');
                 output.push_str(core_public_key.as_str());
                 output.push('\n');
+                if !core_direct_addresses.is_empty() {
+                    output.push_str(PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV);
+                    output.push('=');
+                    output.push_str(
+                        &core_direct_addresses
+                            .iter()
+                            .map(MachineJoinIrohDirectAddress::as_str)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                    output.push('\n');
+                }
+                if let Some(relay_url) = core_relay_url {
+                    output.push_str(PLOYZ_TUNNEL_CORE_RELAY_URL_ENV);
+                    output.push('=');
+                    output.push_str(relay_url.as_str());
+                    output.push('\n');
+                }
             }
             None => {}
         }
@@ -534,6 +594,8 @@ pub enum PloyzdTunnelEnvironment {
         listen_addr: SocketAddr,
         core_node: NodeId,
         core_public_key: MachineJoinIrohPublicKey,
+        core_direct_addresses: Vec<MachineJoinIrohDirectAddress>,
+        core_relay_url: Option<MachineJoinIrohRelayUrl>,
     },
 }
 

@@ -442,6 +442,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
                     "core-public-key",
                 )
                 .expect("valid core iroh public key"),
+                direct_addresses: Vec::new(),
+                relay_url: None,
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")

@@ -177,6 +177,8 @@ pub struct MachineJoinTrustedNats {
 pub struct MachineJoinCoreIrohEndpoint {
     pub node_id: NodeId,
     pub public_key: MachineJoinIrohPublicKey,
+    pub direct_addresses: Vec<MachineJoinIrohDirectAddress>,
+    pub relay_url: Option<MachineJoinIrohRelayUrl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,6 +306,92 @@ impl TryFrom<String> for MachineJoinIrohPublicKey {
 
 impl From<MachineJoinIrohPublicKey> for String {
     fn from(value: MachineJoinIrohPublicKey) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinIrohDirectAddress(String);
+
+impl MachineJoinIrohDirectAddress {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InstallContractError::EmptyJoinToken {
+                label: "core iroh direct address",
+            });
+        }
+        value.parse::<SocketAddr>().map_err(|_| {
+            InstallContractError::InvalidIrohDirectAddress {
+                value: value.clone(),
+            }
+        })?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineJoinIrohDirectAddress {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinIrohDirectAddress> for String {
+    fn from(value: MachineJoinIrohDirectAddress) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinIrohRelayUrl(String);
+
+impl MachineJoinIrohRelayUrl {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InstallContractError::EmptyJoinToken {
+                label: "core iroh relay URL",
+            });
+        }
+        if !value.starts_with("https://")
+            || value
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(InstallContractError::InvalidIrohRelayUrl { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineJoinIrohRelayUrl {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinIrohRelayUrl> for String {
+    fn from(value: MachineJoinIrohRelayUrl) -> Self {
         value.0
     }
 }
@@ -616,6 +704,8 @@ pub enum InstallContractError {
     EmptyJoinToken { label: &'static str },
     InvalidTrustedNatsServerId { value: String },
     InvalidIrohPublicKey { value: String },
+    InvalidIrohDirectAddress { value: String },
+    InvalidIrohRelayUrl { value: String },
     InvalidIrohTicket { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
@@ -660,6 +750,14 @@ impl fmt::Display for InstallContractError {
             Self::InvalidIrohPublicKey { value } => write!(
                 formatter,
                 "core iroh public key {value:?} must not contain whitespace"
+            ),
+            Self::InvalidIrohDirectAddress { value } => write!(
+                formatter,
+                "core iroh direct address {value:?} must be a socket address"
+            ),
+            Self::InvalidIrohRelayUrl { value } => write!(
+                formatter,
+                "core iroh relay URL {value:?} must be an HTTPS URL without whitespace"
             ),
             Self::InvalidIrohTicket { value } => write!(
                 formatter,

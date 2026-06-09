@@ -2,10 +2,10 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
-    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
-    MachineJoinTrustedNatsServerId,
+    MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey,
+    MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
+    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -77,6 +77,12 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinIrohPublicKey::try_new("").is_err());
     assert!(MachineJoinIrohPublicKey::try_new("key one").is_err());
     assert!(MachineJoinIrohPublicKey::try_new("core-public-key").is_ok());
+    assert!(MachineJoinIrohDirectAddress::try_new("").is_err());
+    assert!(MachineJoinIrohDirectAddress::try_new("not-a-socket").is_err());
+    assert!(MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433").is_ok());
+    assert!(MachineJoinIrohRelayUrl::try_new("").is_err());
+    assert!(MachineJoinIrohRelayUrl::try_new("http://relay.example.test").is_err());
+    assert!(MachineJoinIrohRelayUrl::try_new("https://relay.example.test").is_ok());
     assert!(MachineJoinIrohTicket::try_new("").is_err());
     assert!(MachineJoinIrohTicket::try_new("ticket one").is_err());
     assert!(MachineJoinIrohTicket::try_new("iroh-ticket").is_ok());
@@ -106,7 +112,9 @@ fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
             },
             "core_iroh": {
                 "node_id": "core_1",
-                "public_key": "core-public-key"
+                "public_key": "core-public-key",
+            "direct_addresses": [],
+            "relay_url": null
             },
             "ployzd": {
                 "version": "0.1.0",
@@ -136,7 +144,9 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 },
                 "core_iroh": {
                     "node_id": "core_1",
-                    "public_key": "core-public-key"
+                    "public_key": "core-public-key",
+                "direct_addresses": [],
+                "relay_url": null
                 },
                 "ployzd": {
                     "version": "0.1.0",
@@ -202,6 +212,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 node_id: NodeId::try_new("core_1").expect("valid core node id"),
                 public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
                     .expect("valid core iroh public key"),
+                direct_addresses: Vec::new(),
+                relay_url: None,
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),

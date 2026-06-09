@@ -4,8 +4,9 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
-    MachineJoinIrohPublicKey, MachineJoinMaterial, MachineJoinPloyzdArtifact,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
+    MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate,
 };
 use ployz_core::nats_config::trusted_nats_for_first_node;
 
@@ -66,6 +67,18 @@ pub fn parse_machine_join_template_command(
             )?;
             continue;
         }
+        if let Some(value) = args.take_value("--core-iroh-direct-address")? {
+            parsed.core_iroh_direct_addresses.push(value);
+            continue;
+        }
+        if let Some(value) = args.take_value("--core-iroh-relay-url")? {
+            set_once(
+                &mut parsed.core_iroh_relay_url,
+                value,
+                "--core-iroh-relay-url",
+            )?;
+            continue;
+        }
         if let Some(value) = args.take_value("--ployzd-version")? {
             set_once(&mut parsed.ployzd_version, value, "--ployzd-version")?;
             continue;
@@ -106,6 +119,8 @@ struct ParsedMachineJoinTemplateArgs {
     runtime_nats_url: Option<String>,
     trusted_first_node: Option<String>,
     core_iroh_public_key: Option<String>,
+    core_iroh_direct_addresses: Vec<String>,
+    core_iroh_relay_url: Option<String>,
     ployzd_version: Option<String>,
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
@@ -140,6 +155,17 @@ impl ParsedMachineJoinTemplateArgs {
                             "--core-iroh-public-key",
                         )?)
                         .map_err(|error| invalid_value("--core-iroh-public-key", error))?,
+                        direct_addresses: self
+                            .core_iroh_direct_addresses
+                            .into_iter()
+                            .map(MachineJoinIrohDirectAddress::try_new)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|error| invalid_value("--core-iroh-direct-address", error))?,
+                        relay_url: self
+                            .core_iroh_relay_url
+                            .map(MachineJoinIrohRelayUrl::try_new)
+                            .transpose()
+                            .map_err(|error| invalid_value("--core-iroh-relay-url", error))?,
                     },
                     ployzd: MachineJoinPloyzdArtifact {
                         version: InstallArtifactVersion::try_new(required(
