@@ -6,6 +6,9 @@ use ployz_core::ops::{
     OperationLeaseExpiresAt, OperationOwnerLease,
 };
 use ployz_core::roles::FirstNodeGateway;
+use ployz_core::state::{
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
@@ -16,12 +19,14 @@ use ployz_nats::services::{
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineJoinBundle, MachineJoinPloyzdArtifact, MachineJoinRedeemRequest,
-    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
-    MachineName, OperationApiResponse, OpsStatusError, OpsStatusResponse,
+    MachineBootstrapUrl, MachineInspectRequest, MachineInspectResponse, MachineJoinBundle,
+    MachineJoinPloyzdArtifact, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
+    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken, MachineListResponse,
+    MachineListResult, MachineName, MachineSnapshot, OperationApiResponse, OpsStatusError,
+    OpsStatusResponse,
     operation_api::{
-        DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi, OperationApiContract, OpsStatusApi,
-        OpsWatchApi,
+        DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use ployzctl::api_client::{
@@ -156,6 +161,76 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
     assert_eq!(redeemed.operation_id, operation_id("op_machine"));
     assert_eq!(redeemed.node_id, node_id("node_2"));
     assert_eq!(redeemed.result, MachineJoinRedeemResult::Joined);
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_machine_list_success() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_api_service(MachineListApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            let response: MachineListResponse = OperationApiResponse::Ok {
+                value: MachineListResult {
+                    machines: vec![machine_snapshot("node_2")],
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let result = api
+        .machine_list(&ployz_sdk_types::MachineListRequest {})
+        .await
+        .expect("machine list responds");
+
+    assert_eq!(result.machines, vec![machine_snapshot("node_2")]);
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_machine_inspect_success() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_api_service(MachineInspectApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |request| async move {
+            let request: MachineInspectRequest =
+                serde_json::from_slice(&request.payload).expect("machine inspect request decodes");
+            assert_eq!(request.node_id, node_id("node_2"));
+
+            let response: MachineInspectResponse = OperationApiResponse::Ok {
+                value: machine_snapshot("node_2"),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let result = api
+        .machine_inspect(&MachineInspectRequest {
+            node_id: node_id("node_2"),
+        })
+        .await
+        .expect("machine inspect responds");
+
+    assert_eq!(result, machine_snapshot("node_2"));
 }
 
 #[tokio::test]
@@ -460,6 +535,28 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 .expect("valid install path"),
             },
         },
+    }
+}
+
+fn machine_snapshot(node_id: &str) -> MachineSnapshot {
+    let node_id = self::node_id(node_id);
+    MachineSnapshot {
+        active: ActiveMachineState {
+            node_id: node_id.clone(),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            activated_by: operation_id("op_machine"),
+        },
+        public_ip: Some(NodePublicIpObservation {
+            node_id: node_id.clone(),
+            public_ip: "203.0.113.10".parse().expect("valid public ip"),
+        }),
+        gateway: Some(GatewayStatusObservation {
+            node_id,
+            listen_addr: "127.0.0.1:8080".parse().expect("valid gateway listen addr"),
+            serving: GatewayServingStatus::Current,
+            route_count: 2,
+        }),
+        observed_container_count: 3,
     }
 }
 

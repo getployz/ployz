@@ -14,7 +14,10 @@ use crate::commands::{PloyzctlCommand, USAGE};
 use ployz_nats::connect::{
     NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
 };
-use ployz_sdk_types::{BackupCreateError, DeploySubmitError, MachineAddError, OpsWatchError};
+use ployz_sdk_types::{
+    BackupCreateError, DeploySubmitError, MachineAddError, MachineInspectError, MachineListError,
+    OpsWatchError,
+};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -122,6 +125,30 @@ pub async fn execute_command(
                 crate::commands::machine::MachineAddOutput::from_accepted(accepted)
                     .with_nats_url(config.nats_url.clone())
                     .render(),
+            ))
+        }
+        PloyzctlCommand::MachineList(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let result = api
+                .machine_list(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::MachineListApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::machine::MachineListOutput::from_result(result).render(),
+            ))
+        }
+        PloyzctlCommand::MachineInspect(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let machine = api
+                .machine_inspect(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::MachineInspectApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::machine::MachineInspectOutput::new(machine).render(),
             ))
         }
         PloyzctlCommand::OpsWatch(command) => {
@@ -476,6 +503,12 @@ pub enum PloyzctlExecutionError {
     MachineAddApi {
         source: OperationApiClientError<MachineAddError>,
     },
+    MachineListApi {
+        source: OperationApiClientError<MachineListError>,
+    },
+    MachineInspectApi {
+        source: OperationApiClientError<MachineInspectError>,
+    },
     OpsWatchApi {
         source: OperationApiClientError<OpsWatchError>,
     },
@@ -496,6 +529,8 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::DeploySubmitApi { source } => write!(formatter, "{source}"),
             Self::BackupCreateApi { source } => write!(formatter, "{source}"),
             Self::MachineAddApi { source } => write!(formatter, "{source}"),
+            Self::MachineListApi { source } => write!(formatter, "{source}"),
+            Self::MachineInspectApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),
         }
     }

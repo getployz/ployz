@@ -2,8 +2,10 @@ use std::fmt;
 
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::OperationIdempotencyKey;
+use ployz_core::state::GatewayServingStatus;
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
+    MachineInspectRequest, MachineListRequest, MachineListResult, MachineSnapshot,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -142,4 +144,150 @@ pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, P
         name: required(name, "--name")?,
         gateway,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineListCommand;
+
+impl MachineListCommand {
+    #[must_use]
+    pub const fn into_request(self) -> MachineListRequest {
+        MachineListRequest {}
+    }
+}
+
+pub fn parse_machine_list_command(args: &[String]) -> Result<MachineListCommand, PloyzctlCliError> {
+    match args {
+        [] => Ok(MachineListCommand),
+        [unexpected, ..] => Err(PloyzctlCliError::UnexpectedArgument {
+            value: unexpected.clone(),
+        }),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineInspectCommand {
+    pub node_id: NodeId,
+}
+
+impl MachineInspectCommand {
+    #[must_use]
+    pub fn into_request(self) -> MachineInspectRequest {
+        MachineInspectRequest {
+            node_id: self.node_id,
+        }
+    }
+}
+
+pub fn parse_machine_inspect_command(
+    args: &[String],
+) -> Result<MachineInspectCommand, PloyzctlCliError> {
+    let node_id = match args {
+        [] => {
+            return Err(PloyzctlCliError::MissingRequiredArgument { flag: "<node_id>" });
+        }
+        [node_id] => node_id,
+        [_, unexpected, ..] => {
+            return Err(PloyzctlCliError::UnexpectedArgument {
+                value: unexpected.clone(),
+            });
+        }
+    };
+    let node_id =
+        NodeId::try_new(node_id.clone()).map_err(|error| invalid_value("<node_id>", error))?;
+
+    Ok(MachineInspectCommand { node_id })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineListOutput {
+    pub machines: Vec<MachineSnapshot>,
+}
+
+impl MachineListOutput {
+    #[must_use]
+    pub fn from_result(result: MachineListResult) -> Self {
+        Self {
+            machines: result.machines,
+        }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        let rendered = self
+            .machines
+            .iter()
+            .map(render_machine_summary)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if rendered.is_empty() {
+            rendered
+        } else {
+            rendered + "\n"
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineInspectOutput {
+    pub machine: MachineSnapshot,
+}
+
+impl MachineInspectOutput {
+    #[must_use]
+    pub fn new(machine: MachineSnapshot) -> Self {
+        Self { machine }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "node {}\nname {}\nactivated-by {}\npublic-ip {}\ngateway {}\ncontainers {}\n",
+            self.machine.active.node_id.as_str(),
+            self.machine.active.name.as_str(),
+            self.machine.active.activated_by.as_str(),
+            render_public_ip(&self.machine),
+            render_gateway(&self.machine),
+            self.machine.observed_container_count,
+        )
+    }
+}
+
+fn render_machine_summary(machine: &MachineSnapshot) -> String {
+    format!(
+        "{} {} public-ip {} gateway {} containers {}",
+        machine.active.node_id.as_str(),
+        machine.active.name.as_str(),
+        render_public_ip(machine),
+        render_gateway(machine),
+        machine.observed_container_count,
+    )
+}
+
+fn render_public_ip(machine: &MachineSnapshot) -> String {
+    match &machine.public_ip {
+        Some(observation) => observation.public_ip.to_string(),
+        None => "unknown".to_owned(),
+    }
+}
+
+fn render_gateway(machine: &MachineSnapshot) -> String {
+    match &machine.gateway {
+        Some(observation) => format!(
+            "{} {} routes {}",
+            render_gateway_serving(observation.serving),
+            observation.listen_addr,
+            observation.route_count
+        ),
+        None => "none".to_owned(),
+    }
+}
+
+const fn render_gateway_serving(serving: GatewayServingStatus) -> &'static str {
+    match serving {
+        GatewayServingStatus::Current => "current",
+        GatewayServingStatus::LastKnownGood => "last-known-good",
+        GatewayServingStatus::Unavailable => "unavailable",
+    }
 }

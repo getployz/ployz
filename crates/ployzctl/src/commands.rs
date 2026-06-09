@@ -17,6 +17,8 @@ ployzctl backup create --operation <id> --idempotency-key <key>
 ployzctl backup restore --plan
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
+ployzctl machine list
+ployzctl machine inspect <node_id>
 ployzctl ops watch <operation_id>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +35,8 @@ pub enum PloyzctlCommand {
     Init(init::FirstNodeInitCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineAdd(machine::MachineAddCommand),
+    MachineList(machine::MachineListCommand),
+    MachineInspect(machine::MachineInspectCommand),
     OpsWatch(ops::OpsWatchCommand),
     Help,
 }
@@ -87,6 +91,12 @@ pub fn parse_command(
         }
         [command, subcommand, rest @ ..] if command == "machine" && subcommand == "add" => {
             machine::parse_machine_add_command(rest).map(PloyzctlCommand::MachineAdd)
+        }
+        [command, subcommand, rest @ ..] if command == "machine" && subcommand == "list" => {
+            machine::parse_machine_list_command(rest).map(PloyzctlCommand::MachineList)
+        }
+        [command, subcommand, rest @ ..] if command == "machine" && subcommand == "inspect" => {
+            machine::parse_machine_inspect_command(rest).map(PloyzctlCommand::MachineInspect)
         }
         [command, subcommand, rest @ ..] if command == "ops" && subcommand == "watch" => {
             ops::parse_ops_watch_command(rest).map(PloyzctlCommand::OpsWatch)

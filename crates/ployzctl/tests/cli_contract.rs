@@ -7,10 +7,14 @@ use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, ReplayedOperationEvent,
 };
-use ployz_sdk_types::{AcceptedOperation, MachineAddGateway};
+use ployz_core::state::{
+    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+};
+use ployz_sdk_types::{AcceptedOperation, MachineAddGateway, MachineSnapshot};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
-    MachineAddOutput, MachineBootstrapUrl, MachineJoinToken, MachineName,
+    MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinToken,
+    MachineListOutput, MachineName,
 };
 use ployzctl::commands::ops::WatchOutput;
 use ployzctl::commands::{
@@ -258,6 +262,41 @@ fn cli_dispatches_machine_add_request() {
 }
 
 #[test]
+fn cli_dispatches_machine_list_request() {
+    let command =
+        parse_command(["machine", "list"].map(str::to_owned)).expect("machine list command parses");
+
+    let PloyzctlCommand::MachineList(command) = command else {
+        panic!("expected machine list command");
+    };
+
+    assert_eq!(
+        command.into_request(),
+        ployz_sdk_types::MachineListRequest {}
+    );
+}
+
+#[test]
+fn cli_dispatches_machine_inspect_request() {
+    let command = parse_command(["machine", "inspect", "node_2"].map(str::to_owned))
+        .expect("machine inspect command parses");
+
+    let PloyzctlCommand::MachineInspect(command) = command else {
+        panic!("expected machine inspect command");
+    };
+
+    assert_eq!(command.into_request().node_id, node_id("node_2"));
+}
+
+#[test]
+fn cli_requires_machine_inspect_node_id() {
+    assert!(matches!(
+        parse_command(["machine", "inspect"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<node_id>"
+    ));
+}
+
+#[test]
 fn cli_parses_global_nats_url() {
     let invocation = parse_invocation(
         ["--nats", "nats://127.0.0.1:4222"]
@@ -318,6 +357,8 @@ fn binary_help_only_advertises_implemented_commands() {
     assert!(stdout(&output).contains(
         "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]"
     ));
+    assert!(stdout(&output).contains("ployzctl machine list"));
+    assert!(stdout(&output).contains("ployzctl machine inspect <node_id>"));
     assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
 }
@@ -571,6 +612,32 @@ fn binary_ops_watch_requires_nats_url() {
 }
 
 #[test]
+fn binary_machine_list_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .args(["machine", "list"])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+}
+
+#[test]
+fn binary_machine_inspect_requires_nats_url() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .args(["machine", "inspect", "node_2"])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+}
+
+#[test]
 fn init_first_node_can_include_gateway_role() {
     let output = FirstNodeInitOutput::summary(
         NodeId::try_new("node_1").expect("valid node id"),
@@ -702,6 +769,59 @@ fn machine_add_rejects_join_tokens_with_shell_invisible_characters() {
     assert!(MachineJoinToken::try_new("join\ntoken").is_err());
 }
 
+#[test]
+fn machine_list_renders_machine_summaries() {
+    let output = MachineListOutput {
+        machines: vec![machine_snapshot(
+            "node_1",
+            Some(GatewayServingStatus::Current),
+        )],
+    }
+    .render();
+
+    assert_eq!(
+        output,
+        "node_1 edge_1 public-ip 203.0.113.10 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
+    );
+}
+
+#[test]
+fn machine_list_renders_no_output_without_machines() {
+    let output = MachineListOutput {
+        machines: Vec::new(),
+    }
+    .render();
+
+    assert_eq!(output, "");
+}
+
+#[test]
+fn machine_inspect_renders_machine_detail() {
+    let output = MachineInspectOutput::new(machine_snapshot(
+        "node_1",
+        Some(GatewayServingStatus::LastKnownGood),
+    ))
+    .render();
+
+    assert_eq!(
+        output,
+        "node node_1\nname edge_1\nactivated-by op_machine\npublic-ip 203.0.113.10\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\n"
+    );
+}
+
+#[test]
+fn machine_inspect_renders_missing_observations_as_unknown() {
+    let mut machine = machine_snapshot("node_1", None);
+    machine.public_ip = None;
+
+    let output = MachineInspectOutput::new(machine).render();
+
+    assert_eq!(
+        output,
+        "node node_1\nname edge_1\nactivated-by op_machine\npublic-ip unknown\ngateway none\ncontainers 3\n"
+    );
+}
+
 fn accepted_operation(operation_id: &str) -> AcceptedOperation {
     AcceptedOperation {
         operation_id: self::operation_id(operation_id),
@@ -729,6 +849,28 @@ fn deploy_request() -> DeployRequest {
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         route: None,
+    }
+}
+
+fn machine_snapshot(node_id: &str, gateway: Option<GatewayServingStatus>) -> MachineSnapshot {
+    let node_id = self::node_id(node_id);
+    MachineSnapshot {
+        active: ActiveMachineState {
+            node_id: node_id.clone(),
+            name: MachineName::try_new("edge_1").expect("valid machine name"),
+            activated_by: operation_id("op_machine"),
+        },
+        public_ip: Some(NodePublicIpObservation {
+            node_id: node_id.clone(),
+            public_ip: "203.0.113.10".parse().expect("valid public ip"),
+        }),
+        gateway: gateway.map(|serving| GatewayStatusObservation {
+            node_id,
+            listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
+            serving,
+            route_count: 2,
+        }),
+        observed_container_count: 3,
     }
 }
 
