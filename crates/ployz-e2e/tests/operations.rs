@@ -7,7 +7,8 @@ use ployz_core::dataplane::{
     WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{
-    DeployPlanningInput, DeployRequest, ImageReference, ReplicaCount, plan_service_deploy,
+    DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
+    plan_service_deploy,
 };
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
@@ -15,6 +16,7 @@ use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnershipStatus, OperationStatus,
+    RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
@@ -28,8 +30,11 @@ use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::{MachineAddBootstrapConfig, OperationControllers};
+use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 mod support;
 
@@ -359,6 +364,93 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     Ok(())
 }
 
+#[tokio::test]
+async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn Error + Send + Sync>>
+{
+    let nats = TestNats::start_jetstream().await?;
+    let client = async_nats::connect(nats.url()).await?;
+    let jetstream = jetstream::new(client.clone());
+    let config = ControlProcessConfig::new(
+        NatsServerRuntime::External(nats_client_url(nats.url())),
+        node_id("core_1"),
+    )
+    .with_deploy_nodes(vec![node_id("node_a")])
+    .with_deploy_step_timeout(Duration::from_secs(2))
+    .with_machine_bootstrap(machine_bootstrap_config());
+    let control_runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .expect("open observation store");
+    let node_runtime = start_node_runtime_with_ports(
+        client.clone(),
+        node_id("node_a"),
+        ObservingContainerRunner::new(node_id("node_a"), observations),
+        ReadyWireGuardEbpf,
+    )
+    .await?;
+    let gateway_runtime = start_gateway_process_runtime_with_client(
+        client.clone(),
+        Duration::from_millis(10),
+        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+    )
+    .await?;
+    let upstream = TestUpstream::start().await;
+    let api = OperationApiClient::new(client.clone());
+    let request = DeploySubmitRequest {
+        operation_id: operation_id("op_e2e_route"),
+        target: deploy_target_with_route(
+            "svc_api",
+            "api.example.com",
+            gateway_runtime.listen_addr().port(),
+            upstream.port(),
+        ),
+        idempotency_key: idempotency_key("idem_e2e_route"),
+    };
+
+    let accepted = api.deploy_submit(&request).await?;
+
+    let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_route")).await;
+    assert!(matches!(
+        status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed,
+            ..
+        }
+    ));
+    assert_eq!(accepted.operation_id, operation_id("op_e2e_route"));
+    wait_for_gateway_route(&gateway_runtime).await;
+
+    let mut client = TcpStream::connect(gateway_runtime.listen_addr()).await?;
+    client
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
+        .await?;
+    client.shutdown().await?;
+    let mut response = String::new();
+    client.read_to_string(&mut response).await?;
+
+    assert_eq!(
+        response,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(
+        upstream.request().await,
+        "GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
+    );
+
+    gateway_runtime.shutdown().await;
+    node_runtime
+        .shutdown()
+        .await
+        .expect("node runtime shuts down");
+    control_runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+
+    Ok(())
+}
+
 async fn operation_replay_page(
     repository: &AsyncNatsOperationRepository,
     start_sequence: EventSequence,
@@ -462,6 +554,45 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
+fn deploy_target_with_route(
+    service_id: &str,
+    hostname: &str,
+    route_port: u16,
+    endpoint_port: u16,
+) -> DeployRequest {
+    DeployRequest {
+        route: Some(DeployRoute {
+            target: RouteTarget::try_new(route_hostname(hostname), self::route_port(route_port)),
+            endpoint_port: self::route_port(endpoint_port),
+        }),
+        ..deploy_target(service_id)
+    }
+}
+
+async fn wait_for_gateway_route(
+    runtime: &ployzd::gateway_process_runtime::RunningGatewayProcessRuntime,
+) {
+    for _ in 0..200 {
+        if runtime
+            .served_projection()
+            .is_some_and(|projection| !projection.routes.is_empty())
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!("gateway route did not become visible");
+}
+
+fn route_hostname(value: &str) -> RouteHostname {
+    RouteHostname::try_new(value).expect("valid route hostname")
+}
+
+fn route_port(value: u16) -> RoutePort {
+    RoutePort::try_new(value).expect("valid route port")
+}
+
 fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
 }
@@ -472,6 +603,63 @@ fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
 
 fn idempotency_key(value: &str) -> OperationIdempotencyKey {
     OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
+}
+
+struct TestUpstream {
+    addr: std::net::SocketAddr,
+    request: tokio::sync::oneshot::Receiver<String>,
+}
+
+impl TestUpstream {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream");
+        let addr = listener.local_addr().expect("upstream local addr");
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept upstream");
+            let mut request = Vec::new();
+            read_until_http_head(&mut stream, &mut request).await;
+            let _ = request_tx.send(String::from_utf8(request).expect("request is utf8"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
+                .await
+                .expect("write upstream response");
+        });
+
+        Self {
+            addr,
+            request: request_rx,
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.addr.port()
+    }
+
+    async fn request(self) -> String {
+        self.request.await.expect("upstream receives request")
+    }
+}
+
+async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) {
+    let mut chunk = [0; 1024];
+    loop {
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .expect("read upstream request");
+        assert!(read > 0, "client closed before complete HTTP head");
+        request.extend_from_slice(
+            chunk
+                .get(..read)
+                .expect("read byte count is within buffer length"),
+        );
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            return;
+        }
+    }
 }
 
 fn test_lease_claim() -> OperationLeaseClaim {

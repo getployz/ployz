@@ -4,7 +4,8 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerObservation,
+    NodeContainerObservationSnapshot,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
@@ -12,6 +13,7 @@ use ployzd::node_agent::runtime::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError,
 };
+use ployzd::node_runtime_types::ContainerEndpointRequest;
 use ployzd::node_service_runtime::NodeWireGuardEbpfPreparer;
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +60,7 @@ impl NodeContainerRunner for ObservingContainerRunner {
         command: CreateManagedContainer,
     ) -> Result<ContainerId, NodeContainerRunnerError> {
         let container_id = self.next_container_id()?;
+        self.store_endpoint(&container_id, command.endpoint)?;
         let observation = ManagedContainerObservation {
             node_id: self.node_id.clone(),
             container_id: container_id.clone(),
@@ -101,9 +104,13 @@ impl NodeContainerRunner for ObservingContainerRunner {
         let Some(observation) = snapshot.container(container_id).cloned() else {
             return Err(missing_container_start_error(container_id));
         };
+        let endpoint = self.endpoint_for(container_id)?;
         let snapshot = snapshot
             .with_container_replaced(ManagedContainerObservation {
-                state: ContainerRuntimeState::running_unroutable(),
+                state: endpoint.map_or_else(
+                    ContainerRuntimeState::running_unroutable,
+                    ContainerRuntimeState::running_at,
+                ),
                 ..observation
             })
             .map_err(|error| NodeContainerRunnerError::Start {
@@ -185,11 +192,54 @@ impl ObservingContainerRunner {
             })?;
         state.next_container_id()
     }
+
+    fn store_endpoint(
+        &self,
+        container_id: &ContainerId,
+        endpoint: Option<ContainerEndpointRequest>,
+    ) -> Result<(), NodeContainerRunnerError> {
+        let Some(endpoint) = endpoint else {
+            return Ok(());
+        };
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| NodeContainerRunnerError::Create {
+                message: error.to_string(),
+            })?;
+        state.endpoints.push((
+            container_id.clone(),
+            ContainerEndpoint {
+                ip: std::net::Ipv4Addr::LOCALHOST.into(),
+                port: endpoint.port,
+            },
+        ));
+        Ok(())
+    }
+
+    fn endpoint_for(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ContainerEndpoint>, NodeContainerRunnerError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|error| NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        Ok(state
+            .endpoints
+            .iter()
+            .find(|(id, _)| id == container_id)
+            .map(|(_, endpoint)| endpoint.clone()))
+    }
 }
 
 #[derive(Debug, Default)]
 struct ObservingContainerRunnerState {
     next_container_number: u64,
+    endpoints: Vec<(ContainerId, ContainerEndpoint)>,
 }
 
 impl ObservingContainerRunnerState {
