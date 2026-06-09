@@ -30,6 +30,58 @@ where
     })?
 }
 
+pub async fn write_gateway_http_error_response<S>(
+    stream: &mut S,
+    error: &GatewayHttpProxyError,
+) -> Result<(), std::io::ErrorKind>
+where
+    S: AsyncWrite + Unpin,
+{
+    let Some(response) = gateway_http_error_response(error) else {
+        return Ok(());
+    };
+    stream
+        .write_all(&response)
+        .await
+        .map_err(|source| source.kind())
+}
+
+fn gateway_http_error_response(error: &GatewayHttpProxyError) -> Option<Vec<u8>> {
+    let (status, body) = match error {
+        GatewayHttpProxyError::RequestTooLarge { .. } => (
+            "431 Request Header Fields Too Large",
+            "request header too large\n",
+        ),
+        GatewayHttpProxyError::MissingHost
+        | GatewayHttpProxyError::Route(GatewayHttpRouteError::InvalidTarget(_)) => {
+            ("400 Bad Request", "bad request\n")
+        }
+        GatewayHttpProxyError::Route(GatewayHttpRouteError::RouteSelection(
+            GatewayRouteSelectionError::NoRoute { .. },
+        )) => ("404 Not Found", "not found\n"),
+        GatewayHttpProxyError::Route(GatewayHttpRouteError::RouteSelection(
+            GatewayRouteSelectionError::RouteTableUnavailable
+            | GatewayRouteSelectionError::NoUpstream { .. },
+        ))
+        | GatewayHttpProxyError::ConnectUpstream { .. }
+        | GatewayHttpProxyError::WriteUpstream { .. } => {
+            ("503 Service Unavailable", "service unavailable\n")
+        }
+        GatewayHttpProxyError::ProxyTimedOut { .. } => ("504 Gateway Timeout", "gateway timeout\n"),
+        GatewayHttpProxyError::ReadClient { .. } | GatewayHttpProxyError::Relay { .. } => {
+            return None;
+        }
+    };
+
+    Some(
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes(),
+    )
+}
+
 async fn proxy_connection_by_first_http_host_without_timeout<S>(
     routes: &GatewayRouteTable,
     stream: &mut S,

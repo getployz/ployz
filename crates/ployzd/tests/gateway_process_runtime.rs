@@ -248,6 +248,11 @@ async fn gateway_process_records_http_proxy_failures() {
         .await
         .expect("write unroutable request");
     client.shutdown().await.expect("finish request");
+    let mut response = String::new();
+    client
+        .read_to_string(&mut response)
+        .await
+        .expect("read gateway error response");
 
     wait_until(Duration::from_secs(2), || {
         runtime.health().last_http_failure.is_some()
@@ -258,6 +263,10 @@ async fn gateway_process_records_http_proxy_failures() {
         Some(GatewayHttpFailure::Proxy { .. })
     ));
     assert_eq!(runtime.health().consecutive_http_failures, 1);
+    assert_eq!(
+        response,
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\nConnection: close\r\n\r\nnot found\n"
+    );
 
     runtime.shutdown().await;
 }

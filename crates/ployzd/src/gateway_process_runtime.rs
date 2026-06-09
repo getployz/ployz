@@ -2,7 +2,9 @@
 
 use crate::config::GatewayProcessConfig;
 use crate::gateway::{GatewayProjection, GatewayProjectionUpdate};
-use crate::gateway_http::{GatewayHttpProxyError, proxy_connection_by_first_http_host};
+use crate::gateway_http::{
+    GatewayHttpProxyError, proxy_connection_by_first_http_host, write_gateway_http_error_response,
+};
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
 use futures_util::StreamExt;
@@ -604,7 +606,12 @@ async fn proxy_gateway_http_connection(
     listener_port: RoutePort,
     stream: &mut TcpStream,
 ) -> Result<(), GatewayHttpProxyError> {
-    proxy_connection_by_first_http_host(&routes, stream, listener_port).await
+    let result = proxy_connection_by_first_http_host(&routes, stream, listener_port).await;
+    if let Err(error) = &result {
+        let _ = write_gateway_http_error_response(stream, error).await;
+    }
+
+    result
 }
 
 fn record_gateway_http_result(
