@@ -312,6 +312,7 @@ async fn nats_node_preparer_calls_wireguard_ebpf_prepare_service() {
         [NodeWireGuardEbpfPrepareRpcRequest {
             operation_id: operation_id("op_123"),
             nodes: vec![node_id("node_a")],
+            endpoint_routes: endpoint_routes(&["node_a"]),
         }]
     );
 }
@@ -611,7 +612,17 @@ fn wireguard_ebpf_request(nodes: &[&str]) -> WireGuardEbpfPrepareRequest {
     WireGuardEbpfPrepareRequest {
         operation_id: operation_id("op_123"),
         nodes: nodes.iter().map(|node| node_id(node)).collect(),
+        endpoint_routes: endpoint_routes(nodes),
     }
+}
+
+fn endpoint_routes(nodes: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute> {
+    nodes
+        .iter()
+        .map(|node| {
+            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id(node))
+        })
+        .collect()
 }
 
 fn failure_message(value: &str) -> FailureMessage {

@@ -1,5 +1,6 @@
 //! Role-specific daemon configuration.
 
+use ployz_core::dataplane::default_endpoint_subnet;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{InstallContractError, MachineBootstrapUrl, MachineJoinTemplate};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -147,33 +148,7 @@ fn load_dataplane_endpoint_subnet(
 ) -> String {
     env(PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default_dataplane_endpoint_subnet(node_id))
-}
-
-fn default_dataplane_endpoint_subnet(node_id: &NodeId) -> String {
-    let octet = trailing_node_number(node_id.as_str())
-        .map(|number| ((number.saturating_sub(1)) % 254 + 1) as u8)
-        .unwrap_or_else(|| stable_node_octet(node_id.as_str()));
-    format!("10.42.{octet}.0/24")
-}
-
-fn trailing_node_number(value: &str) -> Option<u16> {
-    let digits = value
-        .chars()
-        .rev()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>();
-    if digits.is_empty() {
-        return None;
-    }
-    digits.chars().rev().collect::<String>().parse().ok()
-}
-
-fn stable_node_octet(value: &str) -> u8 {
-    let hash = value.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    });
-    (hash % 254 + 1) as u8
+        .unwrap_or_else(|| default_endpoint_subnet(node_id))
 }
 
 fn load_node_public_ip(

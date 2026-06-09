@@ -6,8 +6,8 @@ use crate::node_runtime_types::{
     NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
 };
 use ployz_core::dataplane::{
-    WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
-    WireGuardEbpfPrepareRequest,
+    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady,
+    WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
@@ -168,6 +168,7 @@ pub enum NodeLogsTailDomainError {
 pub struct NodeWireGuardEbpfPrepareRpcRequest {
     pub operation_id: OperationId,
     pub nodes: Vec<NodeId>,
+    pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
 }
 
 impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
@@ -175,6 +176,7 @@ impl From<WireGuardEbpfPrepareRequest> for NodeWireGuardEbpfPrepareRpcRequest {
         Self {
             operation_id: value.operation_id,
             nodes: value.nodes,
+            endpoint_routes: value.endpoint_routes,
         }
     }
 }

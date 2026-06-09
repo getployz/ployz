@@ -111,6 +111,11 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
         .prepare_wireguard_ebpf(WireGuardEbpfPrepareRequest {
             operation_id: operation_id("op_123"),
             nodes: vec![node_id("node_a")],
+            endpoint_routes: vec![
+                ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id(
+                    "node_a",
+                )),
+            ],
         })
         .await
         .expect("wireguard ebpf prepare succeeds");

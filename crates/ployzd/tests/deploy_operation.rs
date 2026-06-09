@@ -176,6 +176,13 @@ async fn deploy_worker_runs_containers_then_completes() {
         vec![node_id("node_a"), node_id("node_b")]
     );
     assert_eq!(
+        wireguard_ebpf_request.endpoint_routes,
+        vec![
+            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_a")),
+            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_b"))
+        ]
+    );
+    assert_eq!(
         active_state.requests,
         vec![ActiveServiceCommitRequest {
             service_id: service_id("svc_api"),
