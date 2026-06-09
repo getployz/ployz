@@ -184,7 +184,6 @@ prepare_host_runtime() {
   remote_sh "$ip" "systemctl enable --now docker"
   remote_sh "$ip" "docker info >/dev/null"
   remote_sh "$ip" "mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf"
-  remote_sh "$ip" "install -d -m 0700 /etc/ployz && if ! ip link show ployz-wg0 >/dev/null 2>&1; then umask 077; wg genkey > /etc/ployz/wireguard.key; ip link add dev ployz-wg0 type wireguard; wg set ployz-wg0 private-key /etc/ployz/wireguard.key; ip link set up dev ployz-wg0; fi"
 }
 
 stage_host() {

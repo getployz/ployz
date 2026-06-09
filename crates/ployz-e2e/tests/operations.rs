@@ -229,11 +229,13 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
         .await
         .expect("open observation store");
+    let runner = ObservingContainerRunner::new(node_id("node_a"), observations.clone());
     let node_runtime = start_node_runtime_with_ports(
         client.clone(),
         node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
+        runner.clone(),
         ReadyWireGuardEbpf,
+        runner,
     )
     .await?;
     let api = OperationApiClient::new(client.clone());
@@ -382,11 +384,13 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
         .await
         .expect("open observation store");
+    let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
     let node_runtime = start_node_runtime_with_ports(
         client.clone(),
         node_id("node_a"),
-        ObservingContainerRunner::new(node_id("node_a"), observations),
+        runner.clone(),
         ReadyWireGuardEbpf,
+        runner,
     )
     .await?;
     let gateway_runtime = start_gateway_process_runtime_with_client(

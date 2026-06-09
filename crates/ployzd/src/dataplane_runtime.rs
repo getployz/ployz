@@ -14,6 +14,8 @@ use tokio::process::Command;
 use crate::node_service_runtime::NodeWireGuardEbpfPreparer;
 
 const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_WIREGUARD_KEY_DIR: &str = "/etc/ployz";
+const DEFAULT_WIREGUARD_PRIVATE_KEY: &str = "/etc/ployz/wireguard.key";
 
 #[derive(Debug, Clone)]
 pub struct HostWireGuardEbpfPreparer {
@@ -299,6 +301,51 @@ fn default_requirements(
             "wg",
             ["--version"],
         ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "install",
+            ["-d", "-m", "0700", DEFAULT_WIREGUARD_KEY_DIR],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "sh",
+            [
+                "-c",
+                "test -s /etc/ployz/wireguard.key || (umask 077 && wg genkey > /etc/ployz/wireguard.key)",
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "sh",
+            [
+                "-c".to_owned(),
+                "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard"
+                    .to_owned(),
+                "--".to_owned(),
+                wg_ifname.clone(),
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "wg",
+            [
+                "set".to_owned(),
+                wg_ifname.clone(),
+                "private-key".to_owned(),
+                DEFAULT_WIREGUARD_PRIVATE_KEY.to_owned(),
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "ip",
+            [
+                "link".to_owned(),
+                "set".to_owned(),
+                "up".to_owned(),
+                "dev".to_owned(),
+                wg_ifname.clone(),
+            ],
+        ),
         HostDataplaneRequirement::existing_path(
             WireGuardEbpfComponent::EbpfForwarding,
             "/sys/fs/bpf",
@@ -448,6 +495,78 @@ mod tests {
                         "docker0",
                         "ployz-wg0"
                     ]
+            )
+        }));
+    }
+
+    #[test]
+    fn default_requirements_ensure_wireguard_interface_and_key() {
+        let requirements = default_requirements(
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+            "/usr/local/bin/ployz-ebpf-ctl".into(),
+            "docker0".to_owned(),
+            "ployz-wg0".to_owned(),
+        );
+
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::WireGuard,
+                    program,
+                    args,
+                } if program == "install" && args == &["-d", "-m", "0700", "/etc/ployz"]
+            )
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::WireGuard,
+                    program,
+                    args,
+                } if program == "sh"
+                    && args == &[
+                        "-c",
+                        "test -s /etc/ployz/wireguard.key || (umask 077 && wg genkey > /etc/ployz/wireguard.key)"
+                    ]
+            )
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::WireGuard,
+                    program,
+                    args,
+                } if program == "sh"
+                    && args == &[
+                        "-c",
+                        "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard",
+                        "--",
+                        "ployz-wg0"
+                    ]
+            )
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::WireGuard,
+                    program,
+                    args,
+                } if program == "wg"
+                    && args == &["set", "ployz-wg0", "private-key", "/etc/ployz/wireguard.key"]
+            )
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::WireGuard,
+                    program,
+                    args,
+                } if program == "ip" && args == &["link", "set", "up", "dev", "ployz-wg0"]
             )
         }));
     }
