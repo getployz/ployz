@@ -82,6 +82,9 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}'"));
     assert!(script.contains(" sh '$remote_ployz_sh' --join-token"));
     assert!(script.contains("PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh'"));
+    assert!(script.contains("wait_for_machine_add_operation \"$core_ip\" op_machine_add"));
+    assert!(script.contains("machine.add.completed"));
+    assert!(script.contains("machine.add.failed"));
     assert!(script.contains("wait_for_machine_ready \"$core_ip\" edge_2 \"$edge_ip\""));
     assert!(script.contains("gateway current"));
     assert!(script.contains("inspect-edge-through-runtime-tunnel"));

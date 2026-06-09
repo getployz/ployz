@@ -284,6 +284,32 @@ wait_for_deploy_operation() {
   return 1
 }
 
+wait_for_machine_add_operation() {
+  ip="$1"
+  operation_id="$2"
+  deadline=$(( $(date +%s) + 120 ))
+  log_file="${log_dir}/watch-machine-add.log"
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if remote_sh "$ip" "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch '$operation_id'" >"$log_file" 2>&1; then
+      if grep -q "machine.add.completed" "$log_file"; then
+        cat "$log_file"
+        return 0
+      fi
+      if grep -q "machine.add.failed" "$log_file"; then
+        echo "machine add operation ${operation_id} failed; output:" >&2
+        cat "$log_file" >&2
+        return 1
+      fi
+    fi
+    sleep 2
+  done
+
+  echo "machine add operation ${operation_id} did not complete; last output:" >&2
+  cat "$log_file" >&2 || true
+  return 1
+}
+
 on_exit() {
   status="$?"
   if [ -n "${known_hosts_file:-}" ]; then
@@ -422,6 +448,8 @@ JSON
       "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"
 
     remote_sh "$edge_ip" "if [ -f '$remote_bootstrap_tunnel_pid' ]; then kill \"\$(cat '$remote_bootstrap_tunnel_pid')\" >/dev/null 2>&1 || true; fi"
+
+    wait_for_machine_add_operation "$core_ip" op_machine_add
 
     wait_for_machine_ready "$core_ip" edge_2 "$edge_ip"
 
