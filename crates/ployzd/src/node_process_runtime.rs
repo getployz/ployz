@@ -14,10 +14,12 @@ use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
     NodeContainerObservationSnapshotError,
 };
+use ployz_core::state::NodePublicIpObservation;
 use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError};
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -59,6 +61,7 @@ pub async fn start_node_process_runtime(
         config.node_id.clone(),
         runner,
         preparer,
+        config.public_ip,
         NODE_OBSERVATION_INTERVAL,
     )
     .await
@@ -69,6 +72,7 @@ pub async fn start_node_process_runtime_with_ports<R, P>(
     node_id: NodeId,
     runner: R,
     preparer: P,
+    public_ip: Option<IpAddr>,
     observation_interval: Duration,
 ) -> Result<RunningNodeProcessRuntime, NodeProcessRuntimeError>
 where
@@ -79,7 +83,8 @@ where
         start_node_runtime_with_ports(client.clone(), node_id.clone(), runner.clone(), preparer)
             .await
             .map_err(NodeProcessRuntimeError::StartNodeService)?;
-    let observer = start_node_observer_runtime(node_id, runner, client, observation_interval);
+    let observer =
+        start_node_observer_runtime(node_id, runner, client, public_ip, observation_interval);
 
     Ok(RunningNodeProcessRuntime {
         node_service,
@@ -123,6 +128,7 @@ fn start_node_observer_runtime<R>(
     node_id: NodeId,
     runner: R,
     client: NatsClient,
+    public_ip: Option<IpAddr>,
     interval: Duration,
 ) -> RunningNodeObserverRuntime
 where
@@ -139,7 +145,7 @@ where
         let mut publisher = NodeObservationPublisher::new(client);
         loop {
             let attempt = publisher
-                .publish_with_timeout(&node_id, &runner, NODE_OBSERVATION_TIMEOUT)
+                .publish_with_timeout(&node_id, &runner, public_ip, NODE_OBSERVATION_TIMEOUT)
                 .await;
             backoff = record_observer_attempt(&task_health, attempt, interval, backoff);
             tokio::select! {
@@ -200,12 +206,13 @@ impl NodeObservationPublisher {
         &mut self,
         node_id: &NodeId,
         runner: &R,
+        public_ip: Option<IpAddr>,
         timeout: Duration,
     ) -> Result<(), NodeProcessRuntimeError>
     where
         R: NodeContainerRunner,
     {
-        tokio::time::timeout(timeout, self.publish(node_id, runner))
+        tokio::time::timeout(timeout, self.publish(node_id, runner, public_ip))
             .await
             .map_err(|_| NodeProcessRuntimeError::ObservationTimedOut { timeout })?
     }
@@ -214,6 +221,7 @@ impl NodeObservationPublisher {
         &mut self,
         node_id: &NodeId,
         runner: &R,
+        public_ip: Option<IpAddr>,
     ) -> Result<(), NodeProcessRuntimeError>
     where
         R: NodeContainerRunner,
@@ -234,7 +242,26 @@ impl NodeObservationPublisher {
                 .as_ref()
                 .expect("observation store is opened before publish"),
         )
-        .await
+        .await?;
+
+        let observations = self
+            .observations
+            .as_ref()
+            .expect("observation store is opened before publish");
+        match public_ip {
+            Some(public_ip) => {
+                observations
+                    .replace_node_public_ip(&NodePublicIpObservation {
+                        node_id: node_id.clone(),
+                        public_ip,
+                    })
+                    .await
+            }
+            None => observations.clear_node_public_ip(node_id).await,
+        }
+        .map_err(NodeProcessRuntimeError::PublishObservation)?;
+
+        Ok(())
     }
 }
 
@@ -389,6 +416,7 @@ mod tests {
             node_id("node_a"),
             runner,
             ReadyWireGuardEbpf,
+            None,
             Duration::from_secs(60),
         )
         .await
@@ -507,7 +535,7 @@ mod tests {
 
         let mut publisher = NodeObservationPublisher::new(nats.client.clone());
         publisher
-            .publish_with_timeout(&node_id("node_a"), &runner, Duration::from_secs(1))
+            .publish_with_timeout(&node_id("node_a"), &runner, None, Duration::from_secs(1))
             .await
             .expect("snapshot publishes");
 
@@ -524,6 +552,63 @@ mod tests {
                 .expect("container exists")
                 .state,
             ContainerRuntimeState::running_unroutable()
+        );
+    }
+
+    #[tokio::test]
+    async fn node_observation_publish_records_configured_public_ip() {
+        let nats = TestNats::start_bootstrapped().await;
+        let runner = StaticRunner::new([]);
+
+        let mut publisher = NodeObservationPublisher::new(nats.client.clone());
+        publisher
+            .publish_with_timeout(
+                &node_id("node_a"),
+                &runner,
+                Some("203.0.113.7".parse::<IpAddr>().expect("valid public ip")),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("snapshot publishes");
+
+        assert_eq!(
+            nats.observations
+                .node_public_ip(&node_id("node_a"))
+                .await
+                .expect("public ip reads")
+                .expect("public ip exists")
+                .public_ip,
+            "203.0.113.7".parse::<IpAddr>().expect("valid public ip")
+        );
+    }
+
+    #[tokio::test]
+    async fn node_observation_publish_clears_public_ip_when_unset() {
+        let nats = TestNats::start_bootstrapped().await;
+        let runner = StaticRunner::new([]);
+        let mut publisher = NodeObservationPublisher::new(nats.client.clone());
+        let node_id = node_id("node_a");
+
+        publisher
+            .publish_with_timeout(
+                &node_id,
+                &runner,
+                Some("203.0.113.7".parse::<IpAddr>().expect("valid public ip")),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("public ip publishes");
+        publisher
+            .publish_with_timeout(&node_id, &runner, None, Duration::from_secs(1))
+            .await
+            .expect("public ip clears");
+
+        assert_eq!(
+            nats.observations
+                .node_public_ip(&node_id)
+                .await
+                .expect("public ip reads"),
+            None
         );
     }
 

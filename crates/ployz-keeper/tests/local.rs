@@ -118,7 +118,7 @@ fn local_effects_install_first_node_process_units() {
     );
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
     );
     assert!(systemd_dir.join("ployzd-tunnel-core.service").exists());
     assert!(systemd_dir.join("ployzd-node-node_1.service").exists());
@@ -156,7 +156,7 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
     );
 }
 
@@ -193,7 +193,7 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
             template_path.display()
         )
     );
@@ -524,7 +524,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             "node_2",
         ))])
         .expect("non-empty role set"),
-        role_env(&root),
+        role_env_for_node(&root, node_id("node_2")),
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
@@ -588,7 +588,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     assert!(root.join("join/bin/ployzd").exists());
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\n"
+        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_2\n"
     );
     assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
     assert_eq!(reporter.reports, vec![JoinReport::Completed]);
@@ -854,9 +854,14 @@ fn nats_unit(root: &Path) -> NatsServerUnitTarget {
 }
 
 fn role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
+    role_env_for_node(root, node_id("node_1"))
+}
+
+fn role_env_for_node(root: &Path, node_id: NodeId) -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(root.join("etc/ployzd.env"))
             .expect("valid ployzd role environment target"),
+        node_id,
         NatsClientUrl::loopback(4222),
     )
 }

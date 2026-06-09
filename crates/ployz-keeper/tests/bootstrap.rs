@@ -846,6 +846,7 @@ fn role_environment() -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
             .expect("valid role environment path"),
+        node_id("node_1"),
         NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid NATS URL"),
     )
     .with_core_tunnel_nats_addr(socket(4222))
@@ -855,6 +856,7 @@ fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
             .expect("valid role environment path"),
+        node_id("node_7"),
         NatsClientUrl::try_new("nats://127.0.0.1:7422").expect("valid NATS URL"),
     )
     .with_edge_tunnel(

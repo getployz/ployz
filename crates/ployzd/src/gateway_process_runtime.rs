@@ -6,7 +6,9 @@ use crate::gateway_http::{GatewayHttpProxyError, proxy_connection_by_first_http_
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
 use futures_util::StreamExt;
+use ployz_core::ids::NodeId;
 use ployz_core::ops::RoutePort;
+use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
@@ -70,14 +72,20 @@ pub async fn start_gateway_process_runtime(
     let client = connect_with_timeout(&config.nats_url, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(GatewayProcessRuntimeError::ConnectNats)?;
-    start_gateway_process_runtime_with_client(client, GATEWAY_REFRESH_INTERVAL, config.listen_addr)
-        .await
+    start_gateway_process_runtime_with_client(
+        client,
+        GATEWAY_REFRESH_INTERVAL,
+        config.listen_addr,
+        config.node_id.clone(),
+    )
+    .await
 }
 
 pub async fn start_gateway_process_runtime_with_client(
     client: NatsClient,
     refresh_interval: Duration,
     listen_addr: SocketAddr,
+    node_id: NodeId,
 ) -> Result<RunningGatewayProcessRuntime, GatewayProcessRuntimeError> {
     let listener = TcpListener::bind(listen_addr).await.map_err(|source| {
         GatewayProcessRuntimeError::BindHttp {
@@ -98,6 +106,8 @@ pub async fn start_gateway_process_runtime_with_client(
         consecutive_http_failures: 0,
         last_watch_failure: None,
         consecutive_watch_failures: 0,
+        last_status_publish_failure: None,
+        consecutive_status_publish_failures: 0,
     }));
     let (shutdown, _) = broadcast::channel(2);
     let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
@@ -113,7 +123,12 @@ pub async fn start_gateway_process_runtime_with_client(
         loop {
             while refresh_wake_rx.try_recv().is_ok() {}
             let attempt = source.refresh_with_timeout(&task_runtime).await;
+            let observed = gateway_observation_from_attempt(&node_id, listen_addr, &attempt);
             backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
+            record_gateway_status_publish_result(
+                &task_health,
+                source.replace_gateway_status(&observed).await,
+            );
 
             tokio::select! {
                 () = tokio::time::sleep(backoff) => {}
@@ -169,6 +184,8 @@ pub struct GatewayProcessHealth {
     pub consecutive_http_failures: u64,
     pub last_watch_failure: Option<GatewayWatchFailure>,
     pub consecutive_watch_failures: u64,
+    pub last_status_publish_failure: Option<GatewayStatusPublishFailure>,
+    pub consecutive_status_publish_failures: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +206,11 @@ pub enum GatewayWatchFailure {
     Open { message: String },
     Stream { message: String },
     Ended { source: &'static str },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewayStatusPublishFailure {
+    Write { message: String },
 }
 
 struct GatewayProcessSource {
@@ -233,6 +255,18 @@ impl GatewayProcessSource {
             load_gateway_projection_update_from_nats(&stores.core_state, &stores.observations)
                 .await,
         )
+    }
+
+    async fn replace_gateway_status(
+        &mut self,
+        status: &GatewayStatusObservation,
+    ) -> Result<(), GatewayProcessRuntimeError> {
+        let stores = self.stores().await?;
+        stores
+            .observations
+            .replace_gateway_status(status)
+            .await
+            .map_err(GatewayProcessRuntimeError::WriteObservations)
     }
 
     async fn stores(&mut self) -> Result<&GatewayProcessStores, GatewayProcessRuntimeError> {
@@ -403,6 +437,25 @@ fn record_gateway_watch_failure(
     health.consecutive_watch_failures += 1;
 }
 
+fn record_gateway_status_publish_result(
+    health: &Mutex<GatewayProcessHealth>,
+    result: Result<(), GatewayProcessRuntimeError>,
+) {
+    let mut health = health.lock().expect("gateway health lock is not poisoned");
+    match result {
+        Ok(()) => {
+            health.last_status_publish_failure = None;
+            health.consecutive_status_publish_failures = 0;
+        }
+        Err(error) => {
+            health.last_status_publish_failure = Some(GatewayStatusPublishFailure::Write {
+                message: error.to_string(),
+            });
+            health.consecutive_status_publish_failures += 1;
+        }
+    }
+}
+
 async fn sleep_or_shutdown(duration: Duration, shutdown: &mut broadcast::Receiver<()>) -> bool {
     tokio::select! {
         () = tokio::time::sleep(duration) => false,
@@ -454,6 +507,41 @@ fn gateway_attempt_from_tick(tick: GatewayRuntimeTick) -> GatewayProcessAttempt 
             message: error
                 .map(|error| format!("{error:?}"))
                 .unwrap_or_else(|| "gateway source unavailable".to_owned()),
+        },
+    }
+}
+
+fn gateway_observation_from_attempt(
+    node_id: &NodeId,
+    listen_addr: SocketAddr,
+    attempt: &Result<GatewayRuntimeTick, GatewayProcessRuntimeError>,
+) -> GatewayStatusObservation {
+    match attempt {
+        Ok(tick) => match &tick.serving {
+            GatewayServingState::Current { route_count } => GatewayStatusObservation {
+                node_id: node_id.clone(),
+                listen_addr,
+                serving: GatewayServingStatus::Current,
+                route_count: *route_count,
+            },
+            GatewayServingState::LastKnownGood { route_count, .. } => GatewayStatusObservation {
+                node_id: node_id.clone(),
+                listen_addr,
+                serving: GatewayServingStatus::LastKnownGood,
+                route_count: *route_count,
+            },
+            GatewayServingState::Unavailable { .. } => GatewayStatusObservation {
+                node_id: node_id.clone(),
+                listen_addr,
+                serving: GatewayServingStatus::Unavailable,
+                route_count: 0,
+            },
+        },
+        Err(_) => GatewayStatusObservation {
+            node_id: node_id.clone(),
+            listen_addr,
+            serving: GatewayServingStatus::Unavailable,
+            route_count: 0,
         },
     }
 }
@@ -570,6 +658,7 @@ pub enum GatewayProcessRuntimeError {
     ReadHttpListenerAddr(std::io::Error),
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
+    WriteObservations(ObservationStoreError),
     WatchRoutes(ployz_nats::core_state::ActiveRouteReadError),
     WatchObservations(ObservationStoreError),
     RefreshTimedOut {
@@ -599,6 +688,9 @@ impl fmt::Display for GatewayProcessRuntimeError {
             }
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")
+            }
+            Self::WriteObservations(error) => {
+                write!(formatter, "failed to write gateway observation: {error}")
             }
             Self::WatchRoutes(error) => write!(formatter, "failed to watch routes: {error}"),
             Self::WatchObservations(error) => {
@@ -635,6 +727,8 @@ mod tests {
             consecutive_http_failures: 0,
             last_watch_failure: None,
             consecutive_watch_failures: 0,
+            last_status_publish_failure: None,
+            consecutive_status_publish_failures: 0,
         });
         let interval = Duration::from_secs(1);
 
@@ -680,6 +774,8 @@ mod tests {
             consecutive_http_failures: 0,
             last_watch_failure: None,
             consecutive_watch_failures: 0,
+            last_status_publish_failure: None,
+            consecutive_status_publish_failures: 0,
         });
 
         let next = record_gateway_attempt(

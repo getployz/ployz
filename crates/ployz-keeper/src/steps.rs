@@ -23,6 +23,7 @@ use crate::systemd::{
 };
 
 const DEFAULT_NATS_PORT: u16 = 4222;
+const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
 const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
@@ -398,9 +399,11 @@ impl FirstNodeInstallTarget {
                 .to_path_buf(),
         )
         .expect("validated nats-server artifact install path is a valid unit path");
-        let role_environment =
-            PloyzdRoleEnvironmentTarget::default_path(NatsClientUrl::loopback(DEFAULT_NATS_PORT))
-                .with_core_tunnel_nats_addr(default_nats_socket());
+        let role_environment = PloyzdRoleEnvironmentTarget::default_path(
+            node_id.clone(),
+            NatsClientUrl::loopback(DEFAULT_NATS_PORT),
+        )
+        .with_core_tunnel_nats_addr(default_nats_socket());
         Self {
             node_id,
             ployzd_artifact,
@@ -439,6 +442,7 @@ impl FirstNodeInstallTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzdRoleEnvironmentTarget {
     file: PloyzdRoleEnvironmentFile,
+    node_id: NodeId,
     nats_url: NatsClientUrl,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
     machine_join_template_file: Option<AbsoluteInstallPath>,
@@ -447,9 +451,10 @@ pub struct PloyzdRoleEnvironmentTarget {
 
 impl PloyzdRoleEnvironmentTarget {
     #[must_use]
-    pub fn new(file: PloyzdRoleEnvironmentFile, nats_url: NatsClientUrl) -> Self {
+    pub fn new(file: PloyzdRoleEnvironmentFile, node_id: NodeId, nats_url: NatsClientUrl) -> Self {
         Self {
             file,
+            node_id,
             nats_url,
             machine_bootstrap_url: None,
             machine_join_template_file: None,
@@ -458,8 +463,8 @@ impl PloyzdRoleEnvironmentTarget {
     }
 
     #[must_use]
-    pub fn default_path(nats_url: NatsClientUrl) -> Self {
-        Self::new(PloyzdRoleEnvironmentFile::default_path(), nats_url)
+    pub fn default_path(node_id: NodeId, nats_url: NatsClientUrl) -> Self {
+        Self::new(PloyzdRoleEnvironmentFile::default_path(), node_id, nats_url)
     }
 
     #[must_use]
@@ -524,6 +529,10 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn render(&self) -> String {
         let mut output = format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str());
+        output.push_str(PLOYZ_NODE_ID_ENV);
+        output.push('=');
+        output.push_str(self.node_id.as_str());
+        output.push('\n');
         if let Some(url) = &self.machine_bootstrap_url {
             output.push_str("PLOYZ_MACHINE_BOOTSTRAP_URL=");
             output.push_str(url.as_str());

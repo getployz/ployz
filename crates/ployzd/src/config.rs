@@ -15,6 +15,8 @@ use crate::nats_process::NatsServerRuntime;
 use crate::role::{DaemonProcessRole, TunnelSide};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
+pub const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
 pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
@@ -70,19 +72,25 @@ pub fn load_daemon_process_config(
             Ok(DaemonProcessConfig::Node(NodeProcessConfig::new(
                 node_id.clone(),
                 nats_url,
-                load_ebpf_bytecode_path(env),
+                load_ebpf_bytecode_path(&env),
+                load_node_public_ip(&env)?,
             )))
         }
         DaemonProcessRole::Gateway => {
+            let node_id = load_process_node_id(&role, &env)?;
             let nats_url = load_nats_url(&role, &env)?;
             Ok(DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
+                node_id,
                 nats_url,
                 load_gateway_listen_addr(&env)?,
             )))
         }
         DaemonProcessRole::Dns => {
+            let node_id = load_process_node_id(&role, &env)?;
             let nats_url = load_nats_url(&role, &env)?;
-            Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(nats_url)))
+            Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(
+                node_id, nats_url,
+            )))
         }
         DaemonProcessRole::Tunnel(side) => Ok(DaemonProcessConfig::Tunnel(load_tunnel_config(
             *side, &env,
@@ -90,11 +98,24 @@ pub fn load_daemon_process_config(
     }
 }
 
-fn load_ebpf_bytecode_path(env: impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
+fn load_ebpf_bytecode_path(env: &impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
     env(PLOYZ_EBPF_BYTECODE_ENV)
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_BYTECODE_PATH))
+}
+
+fn load_node_public_ip(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<IpAddr>, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_NODE_PUBLIC_IP_ENV).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    value
+        .parse()
+        .map(Some)
+        .map_err(|source| DaemonProcessConfigError::InvalidNodePublicIp { value, source })
 }
 
 fn load_nats_url(
@@ -109,6 +130,18 @@ fn load_nats_url(
             value,
             source,
         }
+    })
+}
+
+fn load_process_node_id(
+    role: &DaemonProcessRole,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<NodeId, DaemonProcessConfigError> {
+    let value = env(PLOYZ_NODE_ID_ENV)
+        .ok_or_else(|| DaemonProcessConfigError::MissingNodeId { role: role.clone() })?;
+    NodeId::try_new(value.clone()).map_err(|_source| DaemonProcessConfigError::InvalidNodeId {
+        role: role.clone(),
+        value,
     })
 }
 
@@ -300,6 +333,17 @@ fn default_gateway_listen_addr() -> SocketAddr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfigError {
+    MissingNodeId {
+        role: DaemonProcessRole,
+    },
+    InvalidNodeId {
+        role: DaemonProcessRole,
+        value: String,
+    },
+    InvalidNodePublicIp {
+        value: String,
+        source: std::net::AddrParseError,
+    },
     MissingNatsUrl {
         role: DaemonProcessRole,
     },
@@ -358,6 +402,23 @@ pub enum DaemonProcessConfigError {
 impl fmt::Display for DaemonProcessConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingNodeId { role } => write!(
+                formatter,
+                "{} is required for ployzd {}",
+                PLOYZ_NODE_ID_ENV,
+                role.process_name()
+            ),
+            Self::InvalidNodeId { role, value } => write!(
+                formatter,
+                "{}={value:?} is invalid for ployzd {}",
+                PLOYZ_NODE_ID_ENV,
+                role.process_name()
+            ),
+            Self::InvalidNodePublicIp { value, .. } => write!(
+                formatter,
+                "{}={value:?} is invalid",
+                PLOYZ_NODE_PUBLIC_IP_ENV
+            ),
             Self::MissingNatsUrl { role } => write!(
                 formatter,
                 "{} is required for ployzd {}",
@@ -495,6 +556,7 @@ pub struct NodeProcessConfig {
     pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
     pub ebpf_bytecode_path: std::path::PathBuf,
+    pub public_ip: Option<IpAddr>,
 }
 
 impl NodeProcessConfig {
@@ -503,25 +565,29 @@ impl NodeProcessConfig {
         node_id: NodeId,
         nats_url: NatsClientUrl,
         ebpf_bytecode_path: std::path::PathBuf,
+        public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
             node_id,
             nats_url,
             ebpf_bytecode_path,
+            public_ip,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProcessConfig {
+    pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
     pub listen_addr: SocketAddr,
 }
 
 impl GatewayProcessConfig {
     #[must_use]
-    pub fn new(nats_url: NatsClientUrl, listen_addr: SocketAddr) -> Self {
+    pub fn new(node_id: NodeId, nats_url: NatsClientUrl, listen_addr: SocketAddr) -> Self {
         Self {
+            node_id,
             nats_url,
             listen_addr,
         }
@@ -530,13 +596,14 @@ impl GatewayProcessConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsProcessConfig {
+    pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
 }
 
 impl DnsProcessConfig {
     #[must_use]
-    pub fn new(nats_url: NatsClientUrl) -> Self {
-        Self { nats_url }
+    pub fn new(node_id: NodeId, nats_url: NatsClientUrl) -> Self {
+        Self { node_id, nats_url }
     }
 }
 

@@ -4,7 +4,9 @@ use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
 };
+use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation};
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[tokio::test]
 async fn container_observation_store_writes_latest_container_to_kv_obs() {
@@ -118,6 +120,112 @@ async fn node_observation_snapshots_list_sorted_current_snapshots() {
 }
 
 #[tokio::test]
+async fn node_public_ip_observations_are_latest_per_node() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    let old = node_public_ip("node_7", [203, 0, 113, 7]);
+    let current = node_public_ip("node_7", [203, 0, 113, 8]);
+    let other = node_public_ip("node_8", [203, 0, 113, 9]);
+
+    store
+        .replace_node_public_ip(&old)
+        .await
+        .expect("old ip stores");
+    store
+        .replace_node_public_ip(&other)
+        .await
+        .expect("other ip stores");
+    store
+        .replace_node_public_ip(&current)
+        .await
+        .expect("current ip stores");
+
+    assert_eq!(
+        store
+            .node_public_ip(&node_id("node_7"))
+            .await
+            .expect("public ip loads"),
+        Some(current.clone())
+    );
+    assert_eq!(
+        store.node_public_ips().await.expect("public ips list"),
+        vec![current, other]
+    );
+}
+
+#[tokio::test]
+async fn node_public_ip_observation_clear_removes_stale_value() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    let node_id = node_id("node_7");
+    let stale = node_public_ip("node_7", [203, 0, 113, 7]);
+
+    store
+        .replace_node_public_ip(&stale)
+        .await
+        .expect("public ip stores");
+    store
+        .clear_node_public_ip(&node_id)
+        .await
+        .expect("public ip clears");
+
+    assert_eq!(
+        store
+            .node_public_ip(&node_id)
+            .await
+            .expect("public ip lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        store.node_public_ips().await.expect("public ips list"),
+        Vec::<NodePublicIpObservation>::new()
+    );
+}
+
+#[tokio::test]
+async fn gateway_status_observations_are_latest_per_node() {
+    let nats = test_nats().await;
+    let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    let old = gateway_status("node_7", GatewayServingStatus::Unavailable, 0);
+    let current = gateway_status("node_7", GatewayServingStatus::Current, 2);
+    let other = gateway_status("node_8", GatewayServingStatus::LastKnownGood, 1);
+
+    store
+        .replace_gateway_status(&old)
+        .await
+        .expect("old gateway status stores");
+    store
+        .replace_gateway_status(&other)
+        .await
+        .expect("other gateway status stores");
+    store
+        .replace_gateway_status(&current)
+        .await
+        .expect("current gateway status stores");
+
+    assert_eq!(
+        store
+            .gateway_status(&node_id("node_7"))
+            .await
+            .expect("gateway status loads"),
+        Some(current.clone())
+    );
+    assert_eq!(
+        store
+            .gateway_statuses()
+            .await
+            .expect("gateway statuses list"),
+        vec![current, other]
+    );
+}
+
+#[tokio::test]
 async fn container_observation_snapshot_rejects_wrong_node_before_store_write() {
     let mut wrong_node =
         managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
@@ -210,6 +318,26 @@ fn node_snapshot_for(
 ) -> NodeContainerObservationSnapshot {
     NodeContainerObservationSnapshot::try_new(node_id(node_id_value), containers)
         .expect("matching node snapshot")
+}
+
+fn node_public_ip(node_id_value: &str, octets: [u8; 4]) -> NodePublicIpObservation {
+    NodePublicIpObservation {
+        node_id: node_id(node_id_value),
+        public_ip: IpAddr::V4(Ipv4Addr::from(octets)),
+    }
+}
+
+fn gateway_status(
+    node_id_value: &str,
+    serving: GatewayServingStatus,
+    route_count: usize,
+) -> GatewayStatusObservation {
+    GatewayStatusObservation {
+        node_id: node_id(node_id_value),
+        listen_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 8080)),
+        serving,
+        route_count,
+    }
 }
 
 fn node_id(value: &str) -> NodeId {

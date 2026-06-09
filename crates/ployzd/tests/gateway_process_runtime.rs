@@ -5,13 +5,14 @@ use ployz_core::node::{
     NodeContainerObservationSnapshot,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::{ActiveRouteCommitRequest, ExpectedActiveRoute};
+use ployz_core::state::{ActiveRouteCommitRequest, ExpectedActiveRoute, GatewayServingStatus};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
-    GatewayHttpFailure, GatewayProcessAttempt, start_gateway_process_runtime_with_client,
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayStatusPublishFailure,
+    start_gateway_process_runtime_with_client,
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,6 +25,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
         nats.client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
+        node_id("node_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -35,6 +37,10 @@ async fn gateway_process_starts_before_projection_sources_exist() {
     assert!(matches!(
         runtime.health().last_attempt,
         Some(GatewayProcessAttempt::Failed { .. })
+    ));
+    assert!(matches!(
+        runtime.health().last_status_publish_failure,
+        Some(GatewayStatusPublishFailure::Write { .. })
     ));
 
     nats.create_gateway_buckets().await;
@@ -86,6 +92,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
         runtime.health().last_attempt,
         Some(GatewayProcessAttempt::Current { route_count: 1 })
     );
+    assert_eq!(runtime.health().last_status_publish_failure, None);
 
     runtime.shutdown().await;
 }
@@ -99,6 +106,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
         nats.client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
+        node_id("node_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -172,6 +180,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
         nats.client.clone(),
         Duration::from_secs(60),
         socket_addr("127.0.0.1:0"),
+        node_id("node_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -209,6 +218,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
         runtime.health().last_attempt,
         Some(GatewayProcessAttempt::Current { route_count: 1 })
     );
+    wait_until_gateway_status_current(&observations, "node_7").await;
 
     runtime.shutdown().await;
 }
@@ -221,6 +231,7 @@ async fn gateway_process_records_http_proxy_failures() {
         nats.client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
+        node_id("node_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -249,6 +260,26 @@ async fn gateway_process_records_http_proxy_failures() {
     assert_eq!(runtime.health().consecutive_http_failures, 1);
 
     runtime.shutdown().await;
+}
+
+async fn wait_until_gateway_status_current(
+    observations: &AsyncNatsObservationStore,
+    node_id_value: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let status = observations
+            .gateway_status(&node_id(node_id_value))
+            .await
+            .expect("gateway status loads");
+        if status.is_some_and(|status| {
+            status.serving == GatewayServingStatus::Current && status.route_count == 1
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("gateway status did not become current before timeout");
 }
 
 fn gateway_serves_route(

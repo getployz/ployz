@@ -241,12 +241,16 @@ fn observation_read_failure(source: ObservationStoreError) -> ObservationReadFai
         ObservationStoreError::CorruptNodeSnapshotKey { key, actual_key } => {
             ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
         }
+        ObservationStoreError::CorruptNodePublicIpKey { key, actual_key }
+        | ObservationStoreError::CorruptGatewayStatusKey { key, actual_key } => {
+            ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
+        }
         ObservationStoreError::Timeout { operation } => {
             ObservationReadFailure::Timeout { operation }
         }
-        ObservationStoreError::Encode(_) | ObservationStoreError::Put { .. } => {
-            ObservationReadFailure::UnexpectedWriteFailure
-        }
+        ObservationStoreError::Encode(_)
+        | ObservationStoreError::Put { .. }
+        | ObservationStoreError::Delete { .. } => ObservationReadFailure::UnexpectedWriteFailure,
     }
 }
 

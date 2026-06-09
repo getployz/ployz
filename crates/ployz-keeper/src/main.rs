@@ -253,8 +253,9 @@ impl std::fmt::Display for KeeperNatsUrlError {
 }
 
 fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoin, FailureMessage> {
+    let node_id = redeemed.node_id.clone();
     let material = KeeperJoinMaterial::from_join_payload(
-        redeemed.node_id.clone(),
+        node_id.clone(),
         &redeemed.join_bundle,
         &redeemed.secret_delivery,
     )
@@ -270,7 +271,7 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
     )
     .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(
-        joined_node_process_set(&redeemed.node_id, redeemed.gateway)
+        joined_node_process_set(&node_id, redeemed.gateway)
             .roles()
             .to_vec(),
     )
@@ -290,18 +291,19 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
     let core_relay_url = redeemed.join_bundle.material.core_iroh.relay_url.clone();
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
-        redeemed.node_id,
+        node_id.clone(),
         KeeperJoinTarget::new(
             material,
             artifact,
             roles,
-            PloyzdRoleEnvironmentTarget::default_path(runtime_nats_client_url).with_edge_tunnel(
-                tunnel_listen_addr,
-                core_node,
-                core_public_key,
-                core_direct_addresses,
-                core_relay_url,
-            ),
+            PloyzdRoleEnvironmentTarget::default_path(node_id, runtime_nats_client_url)
+                .with_edge_tunnel(
+                    tunnel_listen_addr,
+                    core_node,
+                    core_public_key,
+                    core_direct_addresses,
+                    core_relay_url,
+                ),
         ),
     ))
 }
@@ -358,7 +360,7 @@ mod tests {
 
         assert_eq!(
             target.role_environment.render(),
-            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
         );
     }
 

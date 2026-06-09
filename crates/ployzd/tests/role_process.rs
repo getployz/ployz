@@ -13,8 +13,9 @@ use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
     PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
-    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV,
-    PLOYZ_TUNNEL_CORE_NODE_ENV, PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
+    PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
+    PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
     PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV, TunnelProcessConfig,
     load_daemon_process_config,
 };
@@ -59,6 +60,7 @@ fn node_process_owns_node_rpc_and_observations_only() {
         node_id.clone(),
         url.clone(),
         "/tmp/ployz-ebpf".into(),
+        None,
     ));
     let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
         panic!("node role should produce a node process plan");
@@ -81,9 +83,13 @@ fn node_process_owns_node_rpc_and_observations_only() {
 #[test]
 fn gateway_and_dns_are_watchers_not_command_surfaces() {
     let url = NatsClientUrl::loopback(7422);
-    let gateway_config =
-        DaemonProcessConfig::Gateway(GatewayProcessConfig::new(url.clone(), socket(8080)));
-    let dns_config = DaemonProcessConfig::Dns(DnsProcessConfig::new(url.clone()));
+    let gateway_config = DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
+        node_id("node_7"),
+        url.clone(),
+        socket(8080),
+    ));
+    let dns_config =
+        DaemonProcessConfig::Dns(DnsProcessConfig::new(node_id("node_7"), url.clone()));
 
     let RoleProcessPlan::Gateway(gateway) = plan_configured_process(&gateway_config) else {
         panic!("gateway role should produce a gateway process plan");
@@ -94,8 +100,10 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
 
     assert_eq!(gateway_config.role(), DaemonProcessRole::Gateway);
     assert_eq!(dns_config.role(), DaemonProcessRole::Dns);
+    assert_eq!(gateway.node_id, node_id("node_7"));
     assert_eq!(gateway.nats_url, url);
     assert_eq!(gateway.listen_addr, socket(8080));
+    assert_eq!(dns.node_id, node_id("node_7"));
     assert_eq!(dns.nats_url, url);
     assert_eq!(
         gateway.work,
@@ -190,6 +198,7 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
             |name| match name {
                 PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
                 PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
+                PLOYZ_NODE_PUBLIC_IP_ENV => Some("203.0.113.7".to_owned()),
                 _ => None,
             },
         )
@@ -204,6 +213,25 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
         config.ebpf_bytecode_path,
         std::path::PathBuf::from("/tmp/ployz-ebpf")
     );
+    assert_eq!(
+        config.public_ip,
+        Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
+    );
+}
+
+#[test]
+fn node_role_rejects_invalid_public_ip() {
+    assert!(matches!(
+        load_daemon_process_config(
+            DaemonProcessRole::Node(node_id("node_7")),
+            |name| match name {
+                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+                PLOYZ_NODE_PUBLIC_IP_ENV => Some("not-an-ip".to_owned()),
+                _ => None,
+            }
+        ),
+        Err(DaemonProcessConfigError::InvalidNodePublicIp { .. })
+    ));
 }
 
 #[test]
@@ -250,6 +278,7 @@ fn control_role_loads_optional_machine_join_template() {
 #[test]
 fn gateway_role_loads_optional_listen_addr() {
     let config = load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
+        PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
         PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
         PLOYZ_GATEWAY_LISTEN_ADDR_ENV => Some("127.0.0.1:18080".to_owned()),
         _ => None,
@@ -259,6 +288,7 @@ fn gateway_role_loads_optional_listen_addr() {
     let DaemonProcessConfig::Gateway(config) = config else {
         panic!("gateway role should produce gateway config");
     };
+    assert_eq!(config.node_id, node_id("node_7"));
     assert_eq!(config.nats_url, NatsClientUrl::loopback(4222));
     assert_eq!(config.listen_addr, socket(18080));
 }
@@ -267,6 +297,7 @@ fn gateway_role_loads_optional_listen_addr() {
 fn gateway_role_rejects_invalid_listen_addr() {
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |name| match name {
+            PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
             PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222".to_owned()),
             PLOYZ_GATEWAY_LISTEN_ADDR_ENV => Some("127.0.0.1".to_owned()),
             _ => None,
@@ -307,6 +338,7 @@ fn binary_node_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
 fn binary_gateway_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["gateway"])
+        .env(PLOYZ_NODE_ID_ENV, "node_7")
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
         .output()
         .expect("ployzd binary runs");
@@ -323,13 +355,17 @@ fn binary_gateway_role_enters_real_runtime_and_fails_when_nats_is_unreachable() 
 fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
     assert_eq!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |_| None),
-        Err(DaemonProcessConfigError::MissingNatsUrl {
+        Err(DaemonProcessConfigError::MissingNodeId {
             role: DaemonProcessRole::Gateway,
         })
     );
     assert!(matches!(
         load_daemon_process_config(DaemonProcessRole::Dns, |name| {
-            (name == PLOYZ_NATS_URL_ENV).then(|| "nats://127.0.0.1:4222\nnext".to_owned())
+            match name {
+                PLOYZ_NODE_ID_ENV => Some("node_7".to_owned()),
+                PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:4222\nnext".to_owned()),
+                _ => None,
+            }
         }),
         Err(DaemonProcessConfigError::InvalidNatsUrl {
             role: DaemonProcessRole::Dns,

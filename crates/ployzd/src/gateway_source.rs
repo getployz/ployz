@@ -149,11 +149,18 @@ impl From<ObservationStoreError> for GatewaySourceError {
                     "node observation snapshot key {key} does not match snapshot key {actual_key}"
                 ),
             },
+            ObservationStoreError::CorruptNodePublicIpKey { key, actual_key } => Self::Invalid {
+                message: format!("node public ip key {key} does not match key {actual_key}"),
+            },
+            ObservationStoreError::CorruptGatewayStatusKey { key, actual_key } => Self::Invalid {
+                message: format!("gateway status key {key} does not match key {actual_key}"),
+            },
             error @ (ObservationStoreError::OpenBucket { .. }
             | ObservationStoreError::Encode(_)
             | ObservationStoreError::ListKeys { .. }
             | ObservationStoreError::Watch { .. }
             | ObservationStoreError::Put { .. }
+            | ObservationStoreError::Delete { .. }
             | ObservationStoreError::Get { .. }
             | ObservationStoreError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),

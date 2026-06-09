@@ -6,10 +6,13 @@ use std::fmt::Write as _;
 use crate::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
+use std::net::{IpAddr, SocketAddr};
 
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 pub const ACTIVE_ROUTE_STATE_PREFIX: &str = "routes";
+pub const NODE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "nodes";
+pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -36,6 +39,33 @@ pub struct ActiveMachineState {
     pub node_id: NodeId,
     pub name: MachineName,
     pub activated_by: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct NodePublicIpObservation {
+    pub node_id: NodeId,
+    pub public_ip: IpAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct GatewayStatusObservation {
+    pub node_id: NodeId,
+    pub listen_addr: SocketAddr,
+    pub serving: GatewayServingStatus,
+    pub route_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayServingStatus {
+    Current,
+    LastKnownGood,
+    Unavailable,
 }
 
 impl ActiveMachineState {
@@ -208,6 +238,50 @@ impl NodeContainerObservationKey {
     #[must_use]
     pub fn from_node_id(node_id: &NodeId) -> Self {
         Self(format!("containers.{}", node_id.as_str()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NodePublicIpObservationKey(String);
+
+impl NodePublicIpObservationKey {
+    #[must_use]
+    pub fn from_node_id(node_id: &NodeId) -> Self {
+        Self(format!(
+            "{NODE_PUBLIC_IP_OBSERVATION_PREFIX}.{}.public_ip",
+            node_id.as_str()
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn matches(value: &str) -> bool {
+        value.starts_with(&format!("{NODE_PUBLIC_IP_OBSERVATION_PREFIX}."))
+            && value.ends_with(".public_ip")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GatewayStatusObservationKey(String);
+
+impl GatewayStatusObservationKey {
+    #[must_use]
+    pub fn from_node_id(node_id: &NodeId) -> Self {
+        Self(format!(
+            "{GATEWAY_STATUS_OBSERVATION_PREFIX}.{}.status",
+            node_id.as_str()
+        ))
     }
 
     #[must_use]

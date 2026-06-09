@@ -5,7 +5,11 @@ use async_nats::jetstream;
 use async_nats::jetstream::kv::Operation;
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::{ManagedContainerObservation, NodeContainerObservationSnapshot};
-use ployz_core::state::NodeContainerObservationKey;
+use ployz_core::state::{
+    GATEWAY_STATUS_OBSERVATION_PREFIX, GatewayStatusObservation, GatewayStatusObservationKey,
+    NODE_PUBLIC_IP_OBSERVATION_PREFIX, NodeContainerObservationKey, NodePublicIpObservation,
+    NodePublicIpObservationKey,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
@@ -57,6 +61,132 @@ impl AsyncNatsObservationStore {
         })?;
 
         Ok(())
+    }
+
+    pub async fn replace_node_public_ip(
+        &self,
+        observation: &NodePublicIpObservation,
+    ) -> Result<(), ObservationStoreError> {
+        let key = NodePublicIpObservationKey::from_node_id(&observation.node_id);
+        put_observation(&self.bucket, key.as_str(), observation).await
+    }
+
+    pub async fn clear_node_public_ip(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<(), ObservationStoreError> {
+        if self.node_public_ip(node_id).await?.is_none() {
+            return Ok(());
+        }
+
+        let key = NodePublicIpObservationKey::from_node_id(node_id);
+        with_observation_timeout("node public ip delete", self.bucket.delete(key.as_str()))
+            .await?
+            .map_err(|error| ObservationStoreError::Delete {
+                key: key.as_str().to_owned(),
+                message: error.to_string(),
+            })?;
+
+        Ok(())
+    }
+
+    pub async fn node_public_ip(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<Option<NodePublicIpObservation>, ObservationStoreError> {
+        let key = NodePublicIpObservationKey::from_node_id(node_id);
+        let Some(observation) = get_observation(&self.bucket, key.as_str()).await? else {
+            return Ok(None);
+        };
+        verify_node_public_ip_key(&key, &observation)?;
+        Ok(Some(observation))
+    }
+
+    pub async fn node_public_ips(
+        &self,
+    ) -> Result<Vec<NodePublicIpObservation>, ObservationStoreError> {
+        let entries = bounded_bucket_key_scan_entries_with_prefix(
+            &self.bucket,
+            &format!("{NODE_PUBLIC_IP_OBSERVATION_PREFIX}."),
+            NATS_OBSERVATION_TIMEOUT,
+        )
+        .await
+        .map_err(|error| ObservationStoreError::ListKeys {
+            message: error.message,
+        })?;
+        let current_entries = current_kv_entries(entries);
+        let mut observations = Vec::new();
+
+        for entry in current_entries.into_values() {
+            if !NodePublicIpObservationKey::matches(&entry.key) {
+                continue;
+            }
+            let observation: NodePublicIpObservation =
+                serde_json::from_slice(&entry.value).map_err(ObservationStoreError::Decode)?;
+            let actual_key = NodePublicIpObservationKey::from_node_id(&observation.node_id);
+            if entry.key != actual_key.as_str() {
+                return Err(ObservationStoreError::CorruptNodePublicIpKey {
+                    key: entry.key,
+                    actual_key: actual_key.as_str().to_owned(),
+                });
+            }
+            observations.push(observation);
+        }
+
+        observations.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+        Ok(observations)
+    }
+
+    pub async fn replace_gateway_status(
+        &self,
+        observation: &GatewayStatusObservation,
+    ) -> Result<(), ObservationStoreError> {
+        let key = GatewayStatusObservationKey::from_node_id(&observation.node_id);
+        put_observation(&self.bucket, key.as_str(), observation).await
+    }
+
+    pub async fn gateway_status(
+        &self,
+        node_id: &NodeId,
+    ) -> Result<Option<GatewayStatusObservation>, ObservationStoreError> {
+        let key = GatewayStatusObservationKey::from_node_id(node_id);
+        let Some(observation) = get_observation(&self.bucket, key.as_str()).await? else {
+            return Ok(None);
+        };
+        verify_gateway_status_key(&key, &observation)?;
+        Ok(Some(observation))
+    }
+
+    pub async fn gateway_statuses(
+        &self,
+    ) -> Result<Vec<GatewayStatusObservation>, ObservationStoreError> {
+        let entries = bounded_bucket_key_scan_entries_with_prefix(
+            &self.bucket,
+            &format!("{GATEWAY_STATUS_OBSERVATION_PREFIX}."),
+            NATS_OBSERVATION_TIMEOUT,
+        )
+        .await
+        .map_err(|error| ObservationStoreError::ListKeys {
+            message: error.message,
+        })?;
+        let current_entries = current_kv_entries(entries);
+        let mut observations = Vec::new();
+
+        for entry in current_entries.into_values() {
+            let observation: GatewayStatusObservation =
+                serde_json::from_slice(&entry.value).map_err(ObservationStoreError::Decode)?;
+            let actual_key = GatewayStatusObservationKey::from_node_id(&observation.node_id);
+            if entry.key != actual_key.as_str() {
+                return Err(ObservationStoreError::CorruptGatewayStatusKey {
+                    key: entry.key,
+                    actual_key: actual_key.as_str().to_owned(),
+                });
+            }
+            observations.push(observation);
+        }
+
+        observations.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+        Ok(observations)
     }
 
     pub async fn container(
@@ -158,6 +288,34 @@ impl AsyncNatsObservationStore {
             message: error.to_string(),
         })
     }
+
+    pub async fn watch_node_public_ip_changes(
+        &self,
+    ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
+        with_observation_timeout(
+            "node public ip watch",
+            self.bucket
+                .watch_with_history(format!("{NODE_PUBLIC_IP_OBSERVATION_PREFIX}.*.public_ip")),
+        )
+        .await?
+        .map_err(|error| ObservationStoreError::Watch {
+            message: error.to_string(),
+        })
+    }
+
+    pub async fn watch_gateway_status_changes(
+        &self,
+    ) -> Result<jetstream::kv::Watch, ObservationStoreError> {
+        with_observation_timeout(
+            "gateway status watch",
+            self.bucket
+                .watch_with_history(format!("{GATEWAY_STATUS_OBSERVATION_PREFIX}.*.status")),
+        )
+        .await?
+        .map_err(|error| ObservationStoreError::Watch {
+            message: error.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,11 +362,23 @@ pub enum ObservationStoreError {
         key: String,
         message: String,
     },
+    Delete {
+        key: String,
+        message: String,
+    },
     Get {
         key: String,
         message: String,
     },
     CorruptNodeSnapshotKey {
+        key: String,
+        actual_key: String,
+    },
+    CorruptNodePublicIpKey {
+        key: String,
+        actual_key: String,
+    },
+    CorruptGatewayStatusKey {
         key: String,
         actual_key: String,
     },
@@ -230,15 +400,91 @@ impl fmt::Display for ObservationStoreError {
             }
             Self::Watch { message } => write!(formatter, "watch node observation keys: {message}"),
             Self::Put { key, message } => write!(formatter, "put {key}: {message}"),
+            Self::Delete { key, message } => write!(formatter, "delete {key}: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
             Self::CorruptNodeSnapshotKey { key, actual_key } => write!(
                 formatter,
                 "node observation snapshot key {} does not match snapshot key {}",
                 key, actual_key
             ),
+            Self::CorruptNodePublicIpKey { key, actual_key } => write!(
+                formatter,
+                "node public ip key {} does not match observation key {}",
+                key, actual_key
+            ),
+            Self::CorruptGatewayStatusKey { key, actual_key } => write!(
+                formatter,
+                "gateway status key {} does not match observation key {}",
+                key, actual_key
+            ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
     }
+}
+
+async fn put_observation<T: serde::Serialize>(
+    bucket: &jetstream::kv::Store,
+    key: &str,
+    observation: &T,
+) -> Result<(), ObservationStoreError> {
+    let payload = serde_json::to_vec(observation).map_err(ObservationStoreError::Encode)?;
+    with_observation_timeout("observation put", bucket.put(key, payload.into()))
+        .await?
+        .map_err(|error| ObservationStoreError::Put {
+            key: key.to_owned(),
+            message: error.to_string(),
+        })?;
+
+    Ok(())
+}
+
+async fn get_observation<T: serde::de::DeserializeOwned>(
+    bucket: &jetstream::kv::Store,
+    key: &str,
+) -> Result<Option<T>, ObservationStoreError> {
+    let Some(payload) = with_observation_timeout("observation get", bucket.get(key))
+        .await?
+        .map_err(|error| ObservationStoreError::Get {
+            key: key.to_owned(),
+            message: error.to_string(),
+        })?
+    else {
+        return Ok(None);
+    };
+
+    serde_json::from_slice(&payload)
+        .map(Some)
+        .map_err(ObservationStoreError::Decode)
+}
+
+fn verify_node_public_ip_key(
+    key: &NodePublicIpObservationKey,
+    observation: &NodePublicIpObservation,
+) -> Result<(), ObservationStoreError> {
+    let actual_key = NodePublicIpObservationKey::from_node_id(&observation.node_id);
+    if key.as_str() != actual_key.as_str() {
+        return Err(ObservationStoreError::CorruptNodePublicIpKey {
+            key: key.as_str().to_owned(),
+            actual_key: actual_key.as_str().to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn verify_gateway_status_key(
+    key: &GatewayStatusObservationKey,
+    observation: &GatewayStatusObservation,
+) -> Result<(), ObservationStoreError> {
+    let actual_key = GatewayStatusObservationKey::from_node_id(&observation.node_id);
+    if key.as_str() != actual_key.as_str() {
+        return Err(ObservationStoreError::CorruptGatewayStatusKey {
+            key: key.as_str().to_owned(),
+            actual_key: actual_key.as_str().to_owned(),
+        });
+    }
+
+    Ok(())
 }
 
 async fn with_observation_timeout<T>(
