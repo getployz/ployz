@@ -275,6 +275,11 @@ wait_for_deploy_operation() {
         cat "$log_file"
         return 0
       fi
+      if grep -q "deploy.failed" "$log_file"; then
+        echo "deploy operation ${operation_id} failed; output:" >&2
+        cat "$log_file" >&2
+        return 1
+      fi
     fi
     sleep 2
   done

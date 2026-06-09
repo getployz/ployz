@@ -95,6 +95,7 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains("wait_for_deploy_operation \"$core_ip\" op_deploy_smoke"));
     assert!(script.contains("deploy.wireguard_ebpf_prepared"));
     assert!(script.contains("deploy.completed"));
+    assert!(script.contains("deploy.failed"));
     assert!(script.contains("dataplane-ready completion"));
     assert!(script.contains("wait_for_smoke_service core \"$core_ip\""));
     assert!(script.contains("wait_for_smoke_service edge \"$edge_ip\""));
