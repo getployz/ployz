@@ -34,7 +34,7 @@ use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 
 #[test]
-fn local_effects_install_keeper_and_start_its_unit() {
+fn local_effects_install_keeper_only() {
     let root = temp_dir("ployz-keeper-local-bootstrap");
     let source = root.join("ployz-keeper-source");
     let install_path = root.join("bin/ployz-keeper");
@@ -54,18 +54,8 @@ fn local_effects_install_keeper_and_start_its_unit() {
 
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(fs::read_to_string(&install_path).unwrap(), "ployz\n");
-    let keeper_unit = fs::read_to_string(systemd_dir.join("ployz-keeper.service")).unwrap();
-    assert!(keeper_unit.contains("Description=Ployz Keeper"));
-    assert!(keeper_unit.contains("Type=exec"));
-    assert!(keeper_unit.contains(install_path.to_str().expect("path is utf-8")));
-    assert_eq!(
-        effects.runner().systemctl_calls,
-        vec![
-            vec!["daemon-reload".to_owned()],
-            vec!["enable".to_owned(), "ployz-keeper.service".to_owned(),],
-            vec!["restart".to_owned(), "ployz-keeper.service".to_owned()],
-        ]
-    );
+    assert!(!systemd_dir.join("ployz-keeper.service").exists());
+    assert_eq!(effects.runner().systemctl_calls, Vec::<Vec<String>>::new());
     assert_eq!(recorder.events, execution.events);
 }
 
@@ -443,44 +433,6 @@ fn local_effects_write_nats_config_before_nats_unit() {
 }
 
 #[test]
-fn local_effects_preserve_supervisor_start_failure_as_step_failure() {
-    let root = temp_dir("ployz-keeper-local-systemctl-fail");
-    let source = root.join("ployz-keeper-source");
-    let install_path = root.join("bin/ployz-keeper");
-    let systemd_dir = root.join("systemd");
-    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    fs::write(&source, "ployz\n").expect("artifact source can be written");
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact(
-        &source,
-        &install_path,
-    )));
-    let mut effects = KeeperLocalEffects::new(
-        local_config(&root, &systemd_dir),
-        RecordingRunner {
-            fail_systemctl: Some(vec![
-                "restart".to_owned(),
-                "ployz-keeper.service".to_owned(),
-            ]),
-            ..RecordingRunner::root_linux()
-        },
-    );
-    let mut recorder = RecordingRecorder::default();
-
-    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
-
-    assert!(matches!(
-        execution.terminal.failure(),
-        Some(KeeperPlanFailure::Step(KeeperStepFailure {
-            step: KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
-            reason: KeeperStepFailureReason::SupervisorStartFailed,
-            message,
-        })) if message.as_str() == "simulated systemctl failure"
-    ));
-    assert_eq!(fs::read_to_string(&install_path).unwrap(), "ployz\n");
-    assert!(systemd_dir.join("ployz-keeper.service").exists());
-}
-
-#[test]
 fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     let root = temp_dir("ployz-keeper-local-plan-artifact-source");
     let source = root.join("ployzd-source");
@@ -606,7 +558,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\n",
             root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             root.join("bin/ployz-ebpf-ctl").display()
         )

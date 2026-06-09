@@ -1,4 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::{env, fs};
@@ -30,7 +32,7 @@ use ployz_keeper::steps::{
     RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, first_node_install_plan,
     keeper_join_local_install_plan,
 };
-use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget};
+use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 
@@ -46,10 +48,6 @@ fn bootstrap_script_installs_keeper_only() {
         &[
             KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
             KeeperStep::InstallArtifact(ArtifactTarget::Keeper(keeper_artifact())),
-            KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::Keeper {
-                artifact: keeper_artifact(),
-            }),
-            KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
         ]
     );
 }
@@ -58,15 +56,11 @@ fn bootstrap_script_installs_keeper_only() {
 fn bootstrap_script_file_installs_only_keeper() {
     let script = fs::read_to_string(bootstrap_script_path()).expect("script is readable");
 
-    assert_eq!(
-        shell_keeper_unit_template(&script),
-        "[Unit]\nDescription=Ployz Keeper\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-${keeper_env_file}\nExecStart=${keeper_bin}${keeper_args}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
-    );
     assert!(script.contains("PLOYZ_KEEPER_URL"));
     assert!(script.contains("PLOYZ_NATS_URL"));
-    assert!(script.contains("/etc/ployz"));
     assert!(script.contains("PLOYZ_JOIN_TOKEN"));
     assert!(script.contains("join-token"));
+    assert!(script.contains("\"$keeper_bin\" --join-token-file \"$join_token_file\""));
     assert!(script.contains("not both"));
     assert!(script.contains("--join-token <token>"));
     assert!(script.contains("unknown ployz installer argument"));
@@ -74,8 +68,114 @@ fn bootstrap_script_file_installs_only_keeper() {
     assert!(script.contains("umask 077"));
     assert!(script.contains("uname -s"));
     assert!(script.contains("id -u"));
+    assert!(!script.contains("PLOYZ_INSTALL_DIR"));
+    assert!(!script.contains("PLOYZ_SYSTEMD_DIR"));
+    assert!(!script.contains("PLOYZ_KEEPER_STATE_DIR"));
+    assert!(!script.contains("cat > \"$keeper_unit\""));
+    assert!(!script.contains("systemctl enable ployz-keeper.service"));
+    assert!(!script.contains("systemctl restart ployz-keeper.service"));
+    assert!(!script.contains("ExecStart=${keeper_bin}${keeper_args}"));
     assert!(!script.contains("ployzd"));
     assert!(!script.contains("NATS_CREDS"));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_runs_join_directly_and_does_not_start_noop_service() {
+    let root = temp_dir("ployz-bootstrap-script-join");
+    let keeper_source = root.join("ployz-keeper-source");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    let keeper_args_log = root.join("keeper-args.log");
+    let keeper_token_log = root.join("keeper-token.log");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(
+        &keeper_source,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PLOYZ_TEST_KEEPER_ARGS_LOG\"\ncat \"$2\" > \"$PLOYZ_TEST_KEEPER_TOKEN_LOG\"\nexit \"${PLOYZ_TEST_KEEPER_EXIT:-0}\"\n",
+    )
+    .expect("fake keeper source can be written");
+    write_executable(&fake_bin.join("curl"), fake_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), "#!/bin/sh\nprintf 'Linux\\n'\n");
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--join-token", "join_once"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env(
+            "PLOYZ_KEEPER_URL",
+            format!("file://{}", keeper_source.display()),
+        )
+        .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_NATS_URL", "nats://127.0.0.1:4222")
+        .env("PLOYZ_TEST_KEEPER_ARGS_LOG", &keeper_args_log)
+        .env("PLOYZ_TEST_KEEPER_TOKEN_LOG", &keeper_token_log)
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected_args = format!(
+        "--join-token-file {}\n",
+        state_dir.join("join-token").display()
+    );
+    assert_eq!(
+        fs::read_to_string(&keeper_args_log).expect("keeper args are recorded"),
+        expected_args
+    );
+    assert_eq!(
+        fs::read_to_string(&keeper_token_log).expect("keeper token is recorded"),
+        "join_once\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_join_failure_is_not_masked_by_service_start() {
+    let root = temp_dir("ployz-bootstrap-script-join-failure");
+    let keeper_source = root.join("ployz-keeper-source");
+    let script_path = test_bootstrap_script_path(&root, &root.join("bin"), &root.join("state"));
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(&keeper_source, "#!/bin/sh\nexit 42\n").expect("fake keeper source can be written");
+    write_executable(&fake_bin.join("curl"), fake_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), "#!/bin/sh\nprintf 'Linux\\n'\n");
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--join-token", "join_once"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env(
+            "PLOYZ_KEEPER_URL",
+            format!("file://{}", keeper_source.display()),
+        )
+        .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(!output.status.success());
 }
 
 #[test]
@@ -316,11 +416,11 @@ fn join_material_rejects_persisted_line_breakers() {
 
 #[test]
 fn keeper_step_failure_is_bootstrap_scoped_and_typed() {
-    let step = KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper);
+    let step = KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer);
     assert_eq!(
         KeeperStepFailure::from_step(&step, failure_message("simulated supervisor start failure")),
         KeeperStepFailure {
-            step: KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
+            step: KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
             reason: KeeperStepFailureReason::SupervisorStartFailed,
             message: failure_message("simulated supervisor start failure"),
         },
@@ -985,11 +1085,51 @@ fn unique_temp_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(unique)
 }
 
+fn temp_dir(prefix: &str) -> PathBuf {
+    let path = unique_temp_path(prefix);
+    fs::create_dir_all(&path).expect("temp dir can be created");
+    path
+}
+
+#[cfg(unix)]
+fn write_executable(path: &std::path::Path, contents: &str) {
+    fs::write(path, contents).expect("executable can be written");
+    let mut permissions = fs::metadata(path)
+        .expect("executable metadata is readable")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("executable permissions can be set");
+}
+
+fn fake_curl_script() -> &'static str {
+    "#!/bin/sh\nurl=\ndest=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o)\n      dest=\"$2\"\n      shift 2\n      ;;\n    -*)\n      shift\n      ;;\n    *)\n      url=\"$1\"\n      shift\n      ;;\n  esac\ndone\ncase \"$url\" in\n  file://*) cp \"${url#file://}\" \"$dest\" ;;\n  *) exit 2 ;;\nesac\n"
+}
+
 fn bootstrap_script_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("scripts")
         .join("ployz.sh")
+}
+
+fn test_bootstrap_script_path(
+    root: &std::path::Path,
+    install_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+) -> PathBuf {
+    let source = fs::read_to_string(bootstrap_script_path()).expect("bootstrap script is readable");
+    let rewritten = source
+        .replace(
+            "install_dir=\"/usr/local/bin\"",
+            &format!("install_dir=\"{}\"", install_dir.display()),
+        )
+        .replace(
+            "state_dir=\"/var/lib/ployz/keeper\"",
+            &format!("state_dir=\"{}\"", state_dir.display()),
+        );
+    let path = root.join("ployz.sh");
+    fs::write(&path, rewritten).expect("test bootstrap script can be written");
+    path
 }
 
 fn run_bootstrap_script(args: &[&str], join_token_env: Option<&str>) -> Output {
@@ -1023,16 +1163,3 @@ fn assert_stderr_contains(output: &Output, expected: &str) {
 const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const NATS_CONFIG_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-
-fn shell_keeper_unit_template(script: &str) -> &str {
-    let start = script
-        .find("cat > \"$keeper_unit\" <<UNIT\n")
-        .expect("keeper unit heredoc starts")
-        + "cat > \"$keeper_unit\" <<UNIT\n".len();
-    let end = script[start..]
-        .find("\nUNIT\n")
-        .expect("keeper unit heredoc ends")
-        + start
-        + 1;
-    &script[start..end]
-}

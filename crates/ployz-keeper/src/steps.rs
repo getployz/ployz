@@ -802,10 +802,6 @@ pub fn bootstrap_script_plan(target: BootstrapScriptTarget) -> KeeperStepPlan {
     KeeperStepPlan::new(vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         KeeperStep::InstallArtifact(target.keeper_artifact.clone().into()),
-        KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::Keeper {
-            artifact: target.keeper_artifact,
-        }),
-        KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
     ])
 }
 

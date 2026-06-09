@@ -3,12 +3,11 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::artifacts::{KeeperArtifactTarget, PloyzdArtifactTarget};
+use crate::artifacts::PloyzdArtifactTarget;
 use ployz_core::roles::{DaemonProcessRole, TunnelSide};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorUnitTarget {
-    Keeper,
     NatsServer,
     PloyzdRole(DaemonProcessRole),
 }
@@ -17,7 +16,6 @@ impl SupervisorUnitTarget {
     #[must_use]
     pub fn unit_name(&self) -> String {
         match self {
-            Self::Keeper => "ployz-keeper.service".to_owned(),
             Self::NatsServer => "nats-server.service".to_owned(),
             Self::PloyzdRole(role) => role_unit_name(role),
         }
@@ -26,9 +24,6 @@ impl SupervisorUnitTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorUnitSpec {
-    Keeper {
-        artifact: KeeperArtifactTarget,
-    },
     NatsServer(NatsServerUnitTarget),
     PloyzdRole {
         role: DaemonProcessRole,
@@ -41,7 +36,6 @@ impl SupervisorUnitSpec {
     #[must_use]
     pub fn target(&self) -> SupervisorUnitTarget {
         match self {
-            Self::Keeper { .. } => SupervisorUnitTarget::Keeper,
             Self::NatsServer(_) => SupervisorUnitTarget::NatsServer,
             Self::PloyzdRole { role, .. } => SupervisorUnitTarget::PloyzdRole(role.clone()),
         }
@@ -54,7 +48,6 @@ impl SupervisorUnitSpec {
 
     pub fn render(&self) -> Result<String, SupervisorUnitFileError> {
         match self {
-            Self::Keeper { artifact } => Ok(KeeperUnit::new(artifact.install_path())?.render()),
             Self::NatsServer(target) => {
                 Ok(NatsServerUnit::new(target.binary_path(), target.config_path())?.render())
             }
@@ -94,36 +87,6 @@ impl PloyzdRoleEnvironmentFile {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeeperUnit {
-    exec_start: String,
-}
-
-impl KeeperUnit {
-    pub fn new(binary_path: impl AsRef<Path>) -> Result<Self, SupervisorUnitFileError> {
-        let exec_start = render_exec_start(binary_path.as_ref(), [])?;
-        Ok(Self { exec_start })
-    }
-
-    #[must_use]
-    pub const fn target(&self) -> SupervisorUnitTarget {
-        SupervisorUnitTarget::Keeper
-    }
-
-    #[must_use]
-    pub fn unit_name(&self) -> String {
-        self.target().unit_name()
-    }
-
-    #[must_use]
-    pub fn render(&self) -> String {
-        format!(
-            "[Unit]\nDescription=Ployz Keeper\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
-            self.exec_start,
-        )
     }
 }
 
