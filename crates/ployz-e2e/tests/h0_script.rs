@@ -16,9 +16,13 @@ fn hetzner_h0_rejects_invalid_run_id_before_external_work() {
 }
 
 #[test]
-fn hetzner_h0_requires_runtime_nats_url_before_hcloud() {
+fn hetzner_h0_requires_ebpf_bytecode_before_hcloud() {
     let temp = temp_path("ployz-h0-ssh-key");
+    let nats = temp_path("ployz-h0-nats-server");
+    let missing_ebpf = temp_path("ployz-h0-missing-ebpf");
     std::fs::write(&temp, "key").expect("ssh key can be written");
+    std::fs::write(&nats, "nats").expect("nats artifact can be written");
+    let _ = std::fs::remove_file(&missing_ebpf);
     let output = Command::new("sh")
         .arg(script_path())
         .arg("up")
@@ -27,13 +31,16 @@ fn hetzner_h0_requires_runtime_nats_url_before_hcloud() {
         .env("HCLOUD_TOKEN", "token")
         .env("HETZNER_SSH_KEY", "key")
         .env("PLOYZ_SSH_PRIVATE_KEY", &temp)
+        .env("PLOYZ_ACCEPTANCE_NATS_SERVER", &nats)
+        .env("PLOYZ_ACCEPTANCE_EBPF_BYTECODE", &missing_ebpf)
         .output()
         .expect("script runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert!(stderr(&output).contains("set PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL"));
+    assert!(stderr(&output).contains("Ployz eBPF bytecode does not exist"));
     let _ = std::fs::remove_file(temp);
+    let _ = std::fs::remove_file(nats);
 }
 
 #[test]
@@ -41,6 +48,7 @@ fn hetzner_h0_script_drives_the_product_path() {
     let script = std::fs::read_to_string(script_path()).expect("script is readable");
 
     assert!(script.contains(" init join-template "));
+    assert!(script.contains("--runtime-nats-url '$edge_runtime_nats_url'"));
     assert!(script.contains("--trusted-first-node core_1"));
     assert!(script.contains("--secret-delivery-file"));
     assert!(!script.contains("--nats-credentials"));
@@ -51,6 +59,9 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains(" deploy --detach"));
     assert!(script.contains(" ops watch op_deploy_smoke"));
     assert!(script.contains("curl -fsS -H 'Host: smoke.local'"));
+    assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_BYTECODE"));
+    assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));
+    assert!(!script.contains("PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL"));
     assert!(!script.contains("PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
     assert!(!script.contains("\"join_bundle\""));
     assert!(!script.contains("provider trait"));

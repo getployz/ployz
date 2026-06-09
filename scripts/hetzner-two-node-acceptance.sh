@@ -20,9 +20,9 @@ optional env:
   PLOYZ_ACCEPTANCE_PLOYZD=/tmp/ployz-rust-target/debug/ployzd
   PLOYZ_ACCEPTANCE_KEEPER=/tmp/ployz-rust-target/debug/ployz-keeper
   PLOYZ_ACCEPTANCE_NATS_SERVER=/path/to/nats-server
+  PLOYZ_ACCEPTANCE_EBPF_BYTECODE=/tmp/ployz-rust-ebpf-target/bpfel-unknown-none/release/ployz-ebpf-tc
   PLOYZ_ACCEPTANCE_PLOYZ_SH=scripts/ployz.sh
   PLOYZ_ACCEPTANCE_SMOKE_IMAGE=nginx:alpine
-  PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL=nats://127.0.0.1:7422
   PLOYZ_ACCEPTANCE_KEEP=1
 USAGE
 }
@@ -181,12 +181,15 @@ remote_sh() {
 stage_host() {
   ip="$1"
   remote_sh "$ip" "install -d -m 0755 '$remote_dir'"
+  remote_sh "$ip" "install -d -m 0755 /usr/local/lib/ployz/ebpf"
   scp_base "$ployzctl_bin" "$(ssh_target "$ip"):$remote_ployzctl" >/dev/null
   scp_base "$ployzd_bin" "$(ssh_target "$ip"):$remote_ployzd" >/dev/null
   scp_base "$keeper_bin" "$(ssh_target "$ip"):$remote_keeper" >/dev/null
   scp_base "$nats_server_bin" "$(ssh_target "$ip"):$remote_nats_server" >/dev/null
   scp_base "$ployz_sh" "$(ssh_target "$ip"):$remote_ployz_sh" >/dev/null
+  scp_base "$ebpf_bytecode" "$(ssh_target "$ip"):$remote_ebpf_path" >/dev/null
   remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh'"
+  remote_sh "$ip" "chmod 0644 '$remote_ebpf_path'"
 }
 
 run_remote_logged() {
@@ -241,9 +244,11 @@ ployzctl_bin="${PLOYZ_ACCEPTANCE_PLOYZCTL:-${acceptance_target_dir}/debug/ployzc
 ployzd_bin="${PLOYZ_ACCEPTANCE_PLOYZD:-${acceptance_target_dir}/debug/ployzd}"
 keeper_bin="${PLOYZ_ACCEPTANCE_KEEPER:-${acceptance_target_dir}/debug/ployz-keeper}"
 nats_server_bin="${PLOYZ_ACCEPTANCE_NATS_SERVER:-}"
+ebpf_bytecode="${PLOYZ_ACCEPTANCE_EBPF_BYTECODE:-/tmp/ployz-rust-ebpf-target/bpfel-unknown-none/release/ployz-ebpf-tc}"
 smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
 ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
-runtime_nats_url="${PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL:-}"
+edge_runtime_nats_url="nats://127.0.0.1:7422"
+remote_ebpf_path="/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
 
 case "$command" in
   up)
@@ -252,12 +257,12 @@ case "$command" in
     [ -n "${HETZNER_SSH_KEY:-}" ] || die "set HETZNER_SSH_KEY"
     [ -n "${PLOYZ_SSH_PRIVATE_KEY:-}" ] || die "set PLOYZ_SSH_PRIVATE_KEY"
     [ -f "$PLOYZ_SSH_PRIVATE_KEY" ] || die "PLOYZ_SSH_PRIVATE_KEY does not exist: ${PLOYZ_SSH_PRIVATE_KEY}"
-    [ -n "$runtime_nats_url" ] || die "set PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL to the edge-reachable NATS tunnel URL"
     [ -n "$nats_server_bin" ] || die "set PLOYZ_ACCEPTANCE_NATS_SERVER"
     need_file "$ployzctl_bin" "Ployz CLI"
     need_file "$ployzd_bin" "ployzd artifact"
     need_file "$keeper_bin" "ployz-keeper artifact"
     need_file "$nats_server_bin" "nats-server artifact"
+    need_file "$ebpf_bytecode" "Ployz eBPF bytecode"
     need_file "$ployz_sh" "ployz.sh"
     need_command hcloud
     need_command jq
@@ -303,7 +308,7 @@ case "$command" in
 JSON
 
     run_remote_logged render-join-template "$core_ip" \
-      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key acceptance-core --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key acceptance-core --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
 
     run_remote_logged init-core "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
@@ -315,7 +320,7 @@ JSON
     [ -n "$join_token" ] || die "machine add did not print a join token; output: ${machine_log}"
 
     run_remote_logged join-edge "$edge_ip" \
-      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$runtime_nats_url' sh '$remote_ployz_sh' --join-token '$join_token'"
+      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_runtime_nats_url' sh '$remote_ployz_sh' --join-token '$join_token'"
 
     run_remote_logged deploy-smoke "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' deploy --detach --service svc_smoke --revision rev_smoke_1 --image '$smoke_image' --replicas 1 --operation op_deploy_smoke --idempotency-key idem_deploy_smoke --route-hostname smoke.local --route-port 8080 --endpoint-port 80"

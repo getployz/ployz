@@ -3,6 +3,7 @@ members = [
     "crates/ployz-core",
     "crates/ployz-nats",
     "crates/ployz-transport",
+    "crates/ployz-ebpf-common",
     "crates/ployz-keeper",
     "crates/ployz-test-support",
     "crates/ployz-e2e",
