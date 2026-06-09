@@ -4,7 +4,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::NodeId;
-use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery};
+use ployz_core::install::{
+    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
+};
 use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
@@ -381,6 +383,12 @@ impl FirstNodeInstallTarget {
         self.role_environment = self.role_environment.with_machine_bootstrap_url(url);
         self
     }
+
+    #[must_use]
+    pub fn with_machine_join_template_file(mut self, path: AbsoluteInstallPath) -> Self {
+        self.role_environment = self.role_environment.with_machine_join_template_file(path);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,6 +396,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     file: PloyzdRoleEnvironmentFile,
     nats_url: NatsClientUrl,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
+    machine_join_template_file: Option<AbsoluteInstallPath>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -397,6 +406,7 @@ impl PloyzdRoleEnvironmentTarget {
             file,
             nats_url,
             machine_bootstrap_url: None,
+            machine_join_template_file: None,
         }
     }
 
@@ -413,6 +423,12 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_machine_bootstrap_url(mut self, url: MachineBootstrapUrl) -> Self {
         self.machine_bootstrap_url = Some(url);
+        self
+    }
+
+    #[must_use]
+    pub fn with_machine_join_template_file(mut self, path: AbsoluteInstallPath) -> Self {
+        self.machine_join_template_file = Some(path);
         self
     }
 
@@ -439,6 +455,11 @@ impl PloyzdRoleEnvironmentTarget {
         if let Some(url) = &self.machine_bootstrap_url {
             output.push_str("PLOYZ_MACHINE_BOOTSTRAP_URL=");
             output.push_str(url.as_str());
+            output.push('\n');
+        }
+        if let Some(path) = &self.machine_join_template_file {
+            output.push_str("PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=");
+            output.push_str(path.as_str());
             output.push('\n');
         }
         output

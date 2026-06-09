@@ -48,7 +48,7 @@ fn cli_init_can_emit_keeper_first_node_install_command() {
     assert_eq!(command.gateway(), FirstNodeGateway::Install);
     assert_eq!(
         command.render(),
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\ninstall ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\ninstall ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway --machine-join-template-file '/etc/ployz/machine-join-template.json'\n"
     );
 }
 
@@ -389,7 +389,7 @@ fn binary_init_can_run_keeper_first_node_install_command() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         fs::read_to_string(captured_args).expect("fake keeper captured args"),
-        "first-node-install\n--node\nnode_1\n--ployzd-version\n0.1.0\n--ployzd-source\n/tmp/ployzd\n--ployzd-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ployzd-install-path\n/usr/local/bin/ployzd\n--nats-version\n2.12.0\n--nats-source\n/tmp/nats-server\n--nats-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--nats-binary\n/usr/local/bin/nats-server\n--nats-config\n/etc/nats/nats-server.conf\n--gateway\n"
+        "first-node-install\n--node\nnode_1\n--ployzd-version\n0.1.0\n--ployzd-source\n/tmp/ployzd\n--ployzd-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ployzd-install-path\n/usr/local/bin/ployzd\n--nats-version\n2.12.0\n--nats-source\n/tmp/nats-server\n--nats-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--nats-binary\n/usr/local/bin/nats-server\n--nats-config\n/etc/nats/nats-server.conf\n--gateway\n--machine-join-template-file\n/etc/ployz/machine-join-template.json\n"
     );
 }
 
@@ -628,6 +628,7 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
 
     assert!(output.contains("operation op_machine"));
     assert!(output.contains("node node_2"));
+    assert!(output.contains("join-token join_once_123"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains("--join-token 'join_once_123'"));
     assert!(!output.contains("nats"));
@@ -647,6 +648,7 @@ fn machine_add_prints_nats_url_on_shell_side_of_pipe() {
     .render();
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
+    assert!(output.contains("join-token join_once_123"));
     assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:4222' sh -s -- "));
     assert!(output.contains("--join-token 'join_once_123'"));
 }
@@ -768,7 +770,7 @@ fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
         .map(str::to_owned)
 }
 
-fn init_with_keeper_install_arg_refs() -> [&'static str; 23] {
+fn init_with_keeper_install_arg_refs() -> [&'static str; 25] {
     [
         "init",
         "--node",
@@ -793,6 +795,8 @@ fn init_with_keeper_install_arg_refs() -> [&'static str; 23] {
         "/usr/local/bin/nats-server",
         "--nats-config",
         "/etc/nats/nats-server.conf",
+        "--machine-join-template-file",
+        "/etc/ployz/machine-join-template.json",
     ]
 }
 
@@ -821,6 +825,8 @@ fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<&str> {
         "/usr/local/bin/nats-server",
         "--nats-config",
         "/etc/nats/nats-server.conf",
+        "--machine-join-template-file",
+        "/etc/ployz/machine-join-template.json",
         "--keeper-binary",
         keeper_binary,
     ]

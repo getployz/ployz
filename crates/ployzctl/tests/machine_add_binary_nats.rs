@@ -87,7 +87,7 @@ async fn binary_machine_add_calls_nats_service() {
     assert_eq!(
         stdout(&output),
         format!(
-            "operation op_machine\nnode node_2\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='{}' sh -s -- --join-token 'join_once_123'\n",
+            "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='{}' sh -s -- --join-token 'join_once_123'\n",
             server.client_url()
         )
     );

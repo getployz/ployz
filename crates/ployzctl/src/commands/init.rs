@@ -213,6 +213,14 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
             )?;
             continue;
         }
+        if let Some(value) = args.take_value("--machine-join-template-file")? {
+            set_once(
+                &mut parsed.machine_join_template_file,
+                value,
+                "--machine-join-template-file",
+            )?;
+            continue;
+        }
         if let Some(value) = args.take_value("--keeper-binary")? {
             set_once(&mut parsed.keeper_binary, value, "--keeper-binary")?;
             continue;
@@ -237,6 +245,7 @@ struct ParsedInitArgs {
     nats_binary: Option<String>,
     nats_config: Option<String>,
     machine_bootstrap_url: Option<String>,
+    machine_join_template_file: Option<String>,
     keeper_binary: Option<String>,
 }
 
@@ -256,6 +265,7 @@ impl Default for ParsedInitArgs {
             nats_binary: None,
             nats_config: None,
             machine_bootstrap_url: None,
+            machine_join_template_file: None,
             keeper_binary: None,
         }
     }
@@ -312,6 +322,7 @@ impl ParsedInitArgs {
             nats_binary,
             nats_config,
             machine_bootstrap_url,
+            machine_join_template_file,
             keeper_binary,
         } = self;
         let keeper_install = ParsedKeeperInstallArgs {
@@ -325,6 +336,7 @@ impl ParsedInitArgs {
             nats_binary,
             nats_config,
             machine_bootstrap_url,
+            machine_join_template_file,
         };
         let has_keeper_install_value = keeper_install.has_any_value();
         let node_id = NodeId::try_new(required(node_id, "--node")?)
@@ -381,6 +393,7 @@ struct ParsedKeeperInstallArgs {
     nats_binary: Option<String>,
     nats_config: Option<String>,
     machine_bootstrap_url: Option<String>,
+    machine_join_template_file: Option<String>,
 }
 
 impl ParsedKeeperInstallArgs {
@@ -397,6 +410,11 @@ impl ParsedKeeperInstallArgs {
                 .map(MachineBootstrapUrl::try_new)
                 .transpose()
                 .map_err(|error| invalid_value("--machine-bootstrap-url", error))?,
+            machine_join_template_file: self
+                .machine_join_template_file
+                .map(AbsoluteInstallPath::try_new)
+                .transpose()
+                .map_err(|error| invalid_value("--machine-join-template-file", error))?,
             ployzd_version: InstallArtifactVersion::try_new(required(
                 self.ployzd_version,
                 "--ployzd-version",
@@ -447,5 +465,6 @@ impl ParsedKeeperInstallArgs {
             || self.nats_binary.is_some()
             || self.nats_config.is_some()
             || self.machine_bootstrap_url.is_some()
+            || self.machine_join_template_file.is_some()
     }
 }

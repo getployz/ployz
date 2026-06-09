@@ -41,6 +41,21 @@ fn keeper_first_node_install_can_carry_machine_bootstrap_url() {
 }
 
 #[test]
+fn keeper_first_node_install_can_carry_machine_join_template_file() {
+    let mut install = keeper_install(FirstNodeGateway::Skip);
+    install.machine_join_template_file = Some(
+        AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
+            .expect("valid template file path"),
+    );
+
+    assert!(
+        install
+            .render_command()
+            .contains("--machine-join-template-file '/etc/ployz/machine-join-template.json'")
+    );
+}
+
+#[test]
 fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinClusterName::try_new("").is_err());
     assert!(MachineJoinClusterName::try_new("prod\nother").is_err());
@@ -144,6 +159,7 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
         node_id: NodeId::try_new("node_1").expect("valid node id"),
         gateway,
         machine_bootstrap_url: None,
+        machine_join_template_file: None,
         ployzd_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
         ployzd_source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
         ployzd_sha256: InstallSha256Digest::try_new(

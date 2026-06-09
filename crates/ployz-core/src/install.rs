@@ -10,6 +10,7 @@ pub struct KeeperFirstNodeInstall {
     pub node_id: NodeId,
     pub gateway: FirstNodeGateway,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
+    pub machine_join_template_file: Option<AbsoluteInstallPath>,
     pub ployzd_version: InstallArtifactVersion,
     pub ployzd_source: InstallArtifactSource,
     pub ployzd_sha256: InstallSha256Digest,
@@ -54,6 +55,12 @@ impl KeeperFirstNodeInstall {
             args.extend([
                 "--machine-bootstrap-url".to_owned(),
                 machine_bootstrap_url.as_str().to_owned(),
+            ]);
+        }
+        if let Some(machine_join_template_file) = &self.machine_join_template_file {
+            args.extend([
+                "--machine-join-template-file".to_owned(),
+                machine_join_template_file.as_str().to_owned(),
             ]);
         }
         args

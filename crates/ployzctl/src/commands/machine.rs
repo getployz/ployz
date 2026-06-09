@@ -69,9 +69,10 @@ impl MachineAddOutput {
         };
 
         format!(
-            "operation {}\nnode {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
+            "operation {}\nnode {}\njoin-token {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
             self.accepted.operation_id.as_str(),
             self.node_id.as_str(),
+            self.join_token.as_str(),
             shell_quote(self.bootstrap_url.as_str()),
             shell,
             shell_quote(self.join_token.as_str())

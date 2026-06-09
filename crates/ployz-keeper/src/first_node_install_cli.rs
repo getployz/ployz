@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
-use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::install::{AbsoluteInstallPath, MachineBootstrapUrl};
 use ployz_core::roles::FirstNodeGateway;
 
 use crate::artifacts::{
@@ -61,6 +61,7 @@ struct FirstNodeInstallArgs {
     nats_binary: Option<OsString>,
     nats_config: Option<OsString>,
     machine_bootstrap_url: Option<OsString>,
+    machine_join_template_file: Option<OsString>,
 }
 
 impl FirstNodeInstallArgs {
@@ -78,6 +79,7 @@ impl FirstNodeInstallArgs {
             nats_binary: None,
             nats_config: None,
             machine_bootstrap_url: None,
+            machine_join_template_file: None,
         }
     }
 
@@ -131,6 +133,13 @@ impl FirstNodeInstallArgs {
                 "--machine-bootstrap-url",
             );
         }
+        if flag == "--machine-join-template-file" {
+            return set_once(
+                &mut self.machine_join_template_file,
+                value,
+                "--machine-join-template-file",
+            );
+        }
 
         Err(KeeperCliError::UnexpectedArgument {
             value: flag.to_string_lossy().into_owned(),
@@ -173,6 +182,10 @@ impl FirstNodeInstallArgs {
                 .with_nats_server_unit(nats_server_unit);
         if let Some(url) = self.machine_bootstrap_url {
             target = target.with_machine_bootstrap_url(parse_machine_bootstrap_url(url)?);
+        }
+        if let Some(path) = self.machine_join_template_file {
+            target =
+                target.with_machine_join_template_file(parse_machine_join_template_file(path)?);
         }
         Ok(target)
     }
@@ -222,6 +235,13 @@ fn parse_machine_bootstrap_url(value: OsString) -> Result<MachineBootstrapUrl, K
         .map_err(KeeperCliError::from)
 }
 
+fn parse_machine_join_template_file(
+    value: OsString,
+) -> Result<AbsoluteInstallPath, KeeperCliError> {
+    AbsoluteInstallPath::try_new(utf8_value(value, "--machine-join-template-file")?)
+        .map_err(KeeperCliError::from)
+}
+
 fn utf8_value(value: OsString, flag: &'static str) -> Result<String, KeeperCliError> {
     value
         .into_string()
@@ -240,6 +260,7 @@ fn is_value_flag(value: &OsString) -> bool {
         || value == "--nats-binary"
         || value == "--nats-config"
         || value == "--machine-bootstrap-url"
+        || value == "--machine-join-template-file"
 }
 
 #[cfg(test)]
@@ -263,6 +284,8 @@ mod tests {
             "2.12.0".into(),
             "--nats-sha256".into(),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            "--machine-join-template-file".into(),
+            "/etc/ployz/machine-join-template.json".into(),
             "--ployzd-install-path".into(),
             "/usr/local/bin/ployzd".into(),
             "--ployzd-sha256".into(),
@@ -278,6 +301,11 @@ mod tests {
 
         assert_eq!(target.node_id.as_str(), "node_1");
         assert_eq!(target.gateway, FirstNodeGateway::Install);
+        assert!(
+            target.role_environment.render().contains(
+                "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=/etc/ployz/machine-join-template.json\n"
+            )
+        );
     }
 
     #[test]

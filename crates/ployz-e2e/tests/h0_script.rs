@@ -1,0 +1,91 @@
+use std::process::Command;
+
+#[test]
+fn hetzner_h0_rejects_invalid_run_id_before_external_work() {
+    let output = Command::new("sh")
+        .arg(script_path())
+        .arg("up")
+        .arg("--run-id")
+        .arg("Bad_Run")
+        .output()
+        .expect("script runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(stderr(&output).contains("run id must contain only lowercase letters"));
+}
+
+#[test]
+fn hetzner_h0_requires_runtime_nats_url_before_hcloud() {
+    let temp = temp_path("ployz-h0-ssh-key");
+    std::fs::write(&temp, "key").expect("ssh key can be written");
+    let output = Command::new("sh")
+        .arg(script_path())
+        .arg("up")
+        .arg("--run-id")
+        .arg("valid-run")
+        .env("HCLOUD_TOKEN", "token")
+        .env("HETZNER_SSH_KEY", "key")
+        .env("PLOYZ_SSH_PRIVATE_KEY", &temp)
+        .output()
+        .expect("script runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(stderr(&output).contains("set PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL"));
+    let _ = std::fs::remove_file(temp);
+}
+
+#[test]
+fn hetzner_h0_requires_join_template_before_hcloud() {
+    let temp = temp_path("ployz-h0-ssh-key");
+    std::fs::write(&temp, "key").expect("ssh key can be written");
+    let output = Command::new("sh")
+        .arg(script_path())
+        .arg("up")
+        .arg("--run-id")
+        .arg("valid-run")
+        .env("HCLOUD_TOKEN", "token")
+        .env("HETZNER_SSH_KEY", "key")
+        .env("PLOYZ_SSH_PRIVATE_KEY", &temp)
+        .env("PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL", "nats://127.0.0.1:7422")
+        .output()
+        .expect("script runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(stderr(&output).contains("set PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
+    let _ = std::fs::remove_file(temp);
+}
+
+#[test]
+fn hetzner_h0_script_drives_the_product_path() {
+    let script = std::fs::read_to_string(script_path()).expect("script is readable");
+
+    assert!(script.contains(" init --node core_1"));
+    assert!(script.contains(" machine add --node edge_2"));
+    assert!(script.contains(" sh '$remote_ployz_sh' --join-token"));
+    assert!(script.contains(" deploy --detach"));
+    assert!(script.contains(" ops watch op_deploy_smoke"));
+    assert!(script.contains("curl -fsS -H 'Host: smoke.local'"));
+    assert!(script.contains("PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"));
+    assert!(!script.contains("\"join_bundle\""));
+    assert!(!script.contains("provider trait"));
+}
+
+fn script_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/hetzner-two-node-acceptance.sh")
+}
+
+fn stdout(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn temp_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
+}

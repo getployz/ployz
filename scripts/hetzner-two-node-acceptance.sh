@@ -15,6 +15,15 @@ optional env:
   HETZNER_IMAGE=ubuntu-24.04
   PLOYZ_SSH_USER=root
   PLOYZ_SSH_READY_TIMEOUT_SECONDS=300
+  PLOYZ_ACCEPTANCE_TARGET_DIR=/tmp/ployz-rust-target
+  PLOYZ_ACCEPTANCE_PLOYZCTL=/tmp/ployz-rust-target/debug/ployzctl
+  PLOYZ_ACCEPTANCE_PLOYZD=/tmp/ployz-rust-target/debug/ployzd
+  PLOYZ_ACCEPTANCE_KEEPER=/tmp/ployz-rust-target/debug/ployz-keeper
+  PLOYZ_ACCEPTANCE_NATS_SERVER=/path/to/nats-server
+  PLOYZ_ACCEPTANCE_PLOYZ_SH=scripts/ployz.sh
+  PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE=/path/to/machine-join-template.json
+  PLOYZ_ACCEPTANCE_SMOKE_IMAGE=nginx:alpine
+  PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL=nats://127.0.0.1:7422
   PLOYZ_ACCEPTANCE_KEEP=1
 USAGE
 }
@@ -26,6 +35,25 @@ die() {
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+need_file() {
+  path="$1"
+  label="$2"
+  [ -f "$path" ] || die "${label} does not exist: ${path}"
+}
+
+sha256_file() {
+  path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return 0
+  fi
+  die "missing required command: sha256sum or shasum"
 }
 
 parse_run_id() {
@@ -120,6 +148,69 @@ wait_for_ssh() {
   return 1
 }
 
+ssh_target() {
+  ip="$1"
+  printf '%s@%s' "$ssh_user" "$ip"
+}
+
+ssh_base() {
+  ssh \
+    -i "$PLOYZ_SSH_PRIVATE_KEY" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=10 \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$known_hosts_file" \
+    "$@"
+}
+
+scp_base() {
+  scp \
+    -i "$PLOYZ_SSH_PRIVATE_KEY" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=10 \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$known_hosts_file" \
+    "$@"
+}
+
+remote_sh() {
+  ip="$1"
+  shift
+  ssh_base "$(ssh_target "$ip")" "$@"
+}
+
+stage_host() {
+  ip="$1"
+  remote_sh "$ip" "install -d -m 0755 '$remote_dir'"
+  scp_base "$ployzctl_bin" "$(ssh_target "$ip"):$remote_ployzctl" >/dev/null
+  scp_base "$ployzd_bin" "$(ssh_target "$ip"):$remote_ployzd" >/dev/null
+  scp_base "$keeper_bin" "$(ssh_target "$ip"):$remote_keeper" >/dev/null
+  scp_base "$nats_server_bin" "$(ssh_target "$ip"):$remote_nats_server" >/dev/null
+  scp_base "$ployz_sh" "$(ssh_target "$ip"):$remote_ployz_sh" >/dev/null
+  remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh'"
+}
+
+run_remote_logged() {
+  label="$1"
+  ip="$2"
+  shift 2
+  log_file="${log_dir}/${label}.log"
+  echo "running ${label}" >&2
+  if remote_sh "$ip" "$@" >"$log_file" 2>&1; then
+    cat "$log_file"
+    return 0
+  fi
+  echo "command failed: ${label}" >&2
+  echo "output: ${log_file}" >&2
+  echo "cleanup command: $(cleanup_command)" >&2
+  cat "$log_file" >&2
+  return 1
+}
+
+extract_join_token() {
+  awk '$1 == "join-token" { print $2 }' "$1" | tail -n 1
+}
+
 on_exit() {
   status="$?"
   if [ -n "${known_hosts_file:-}" ]; then
@@ -146,20 +237,54 @@ server_type="${HETZNER_SERVER_TYPE:-cx22}"
 image="${HETZNER_IMAGE:-ubuntu-24.04}"
 ssh_user="${PLOYZ_SSH_USER:-root}"
 ssh_ready_timeout_seconds="${PLOYZ_SSH_READY_TIMEOUT_SECONDS:-300}"
+acceptance_target_dir="${PLOYZ_ACCEPTANCE_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/ployz-rust-target}}"
+ployzctl_bin="${PLOYZ_ACCEPTANCE_PLOYZCTL:-${acceptance_target_dir}/debug/ployzctl}"
+ployzd_bin="${PLOYZ_ACCEPTANCE_PLOYZD:-${acceptance_target_dir}/debug/ployzd}"
+keeper_bin="${PLOYZ_ACCEPTANCE_KEEPER:-${acceptance_target_dir}/debug/ployz-keeper}"
+nats_server_bin="${PLOYZ_ACCEPTANCE_NATS_SERVER:-}"
+machine_join_template_file="${PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE:-}"
+smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
+ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
+runtime_nats_url="${PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL:-}"
 
 case "$command" in
   up)
     parse_run_id "$@"
-    need_command hcloud
-    need_command jq
-    need_command ssh
     [ -n "${HCLOUD_TOKEN:-}" ] || die "set HCLOUD_TOKEN"
     [ -n "${HETZNER_SSH_KEY:-}" ] || die "set HETZNER_SSH_KEY"
     [ -n "${PLOYZ_SSH_PRIVATE_KEY:-}" ] || die "set PLOYZ_SSH_PRIVATE_KEY"
     [ -f "$PLOYZ_SSH_PRIVATE_KEY" ] || die "PLOYZ_SSH_PRIVATE_KEY does not exist: ${PLOYZ_SSH_PRIVATE_KEY}"
+    [ -n "$runtime_nats_url" ] || die "set PLOYZ_ACCEPTANCE_RUNTIME_NATS_URL to the edge-reachable NATS tunnel URL"
+    [ -n "$machine_join_template_file" ] || die "set PLOYZ_ACCEPTANCE_MACHINE_JOIN_TEMPLATE"
+    [ -n "$nats_server_bin" ] || die "set PLOYZ_ACCEPTANCE_NATS_SERVER"
+    need_file "$ployzctl_bin" "Ployz CLI"
+    need_file "$ployzd_bin" "ployzd artifact"
+    need_file "$keeper_bin" "ployz-keeper artifact"
+    need_file "$nats_server_bin" "nats-server artifact"
+    need_file "$ployz_sh" "ployz.sh"
+    need_file "$machine_join_template_file" "machine join template"
+    need_command hcloud
+    need_command jq
+    need_command ssh
+    need_command scp
+    need_command awk
+    need_command curl
 
     known_hosts_file="$(mktemp)"
+    log_dir="${TMPDIR:-/tmp}/ployz-acceptance-${run_id}-logs"
+    rm -rf "$log_dir"
+    mkdir -p "$log_dir"
     trap on_exit EXIT
+    remote_dir="/tmp/ployz-acceptance-${run_id}"
+    remote_ployzctl="${remote_dir}/ployzctl"
+    remote_ployzd="${remote_dir}/ployzd"
+    remote_keeper="${remote_dir}/ployz-keeper"
+    remote_nats_server="${remote_dir}/nats-server"
+    remote_ployz_sh="${remote_dir}/ployz.sh"
+    remote_join_template="/etc/ployz/machine-join-template.json"
+    ployzd_sha256="$(sha256_file "$ployzd_bin")"
+    keeper_sha256="$(sha256_file "$keeper_bin")"
+    nats_sha256="$(sha256_file "$nats_server_bin")"
 
     core_name="$(server_name core-1)"
     edge_name="$(server_name edge-2)"
@@ -172,6 +297,33 @@ case "$command" in
     echo "disposable hosts ready:"
     echo "  ${core_name} ${core_ip}"
     echo "  ${edge_name} ${edge_ip}"
+
+    stage_host "$core_ip"
+    stage_host "$edge_ip"
+    remote_sh "$core_ip" "install -d -m 0700 /etc/ployz"
+    scp_base "$machine_join_template_file" "$(ssh_target "$core_ip"):$remote_join_template" >/dev/null
+
+    run_remote_logged init-core "$core_ip" \
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
+
+    machine_log="${log_dir}/machine-add.log"
+    run_remote_logged machine-add "$core_ip" \
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' machine add --node edge_2 --name edge_2 --operation op_machine_add --idempotency-key idem_machine_add --gateway"
+    join_token="$(extract_join_token "$machine_log")"
+    [ -n "$join_token" ] || die "machine add did not print a join token; output: ${machine_log}"
+
+    run_remote_logged join-edge "$edge_ip" \
+      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$runtime_nats_url' sh '$remote_ployz_sh' --join-token '$join_token'"
+
+    run_remote_logged deploy-smoke "$core_ip" \
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' deploy --detach --service svc_smoke --revision rev_smoke_1 --image '$smoke_image' --replicas 1 --operation op_deploy_smoke --idempotency-key idem_deploy_smoke --route-hostname smoke.local --route-port 8080 --endpoint-port 80"
+
+    run_remote_logged watch-deploy "$core_ip" \
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch op_deploy_smoke"
+
+    echo "curling smoke service" >&2
+    curl -fsS -H 'Host: smoke.local' "http://${core_ip}:8080/" >"${log_dir}/curl-smoke.log"
+    cat "${log_dir}/curl-smoke.log"
 
     if [ "${PLOYZ_ACCEPTANCE_KEEP:-0}" != "1" ]; then
       cleanup_servers

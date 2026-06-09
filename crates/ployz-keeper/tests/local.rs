@@ -163,6 +163,45 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
 }
 
 #[test]
+fn first_node_install_writes_machine_join_template_file_when_configured() {
+    let root = temp_dir("ployz-keeper-first-node-join-template");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir exists");
+    let ployzd_source = root.join("ployzd-source");
+    let nats_source = root.join("nats-server-source");
+    fs::write(&ployzd_source, "ployz\n").expect("artifact source can be written");
+    fs::write(&nats_source, "ployz\n").expect("nats source can be written");
+    let runner = RecordingRunner::root_linux();
+    let template_path = root.join("etc/machine-join-template.json");
+    let target = FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
+        FirstNodeGateway::Skip,
+    )
+    .with_nats_server_unit(nats_unit(&root))
+    .with_role_environment(
+        role_env(&root).with_machine_join_template_file(
+            ployz_core::install::AbsoluteInstallPath::try_new(template_path.display().to_string())
+                .expect("valid template path"),
+        ),
+    );
+    let plan = first_node_install_plan(target);
+    let mut effects = KeeperLocalEffects::new(local_config(&root, &systemd_dir), runner);
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut RecordingRecorder::default());
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(
+        fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
+        format!(
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\n",
+            template_path.display()
+        )
+    );
+}
+
+#[test]
 fn local_effects_fail_before_work_when_host_is_not_root() {
     let root = temp_dir("ployz-keeper-local-not-root");
     let systemd_dir = root.join("systemd");
