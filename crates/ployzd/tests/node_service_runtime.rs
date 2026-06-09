@@ -397,6 +397,7 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
         .expect("wireguard ebpf prepare succeeds");
 
     assert_eq!(state.prepare_count(), 1);
+    assert_eq!(state.endpoint_routes(), endpoint_routes(&["node_a"]));
     assert_eq!(report.nodes, vec![ready_node("node_a")]);
 }
 
@@ -660,11 +661,20 @@ impl RecordingWireGuardEbpfState {
             .expect("recording wireguard ebpf lock is not poisoned")
             .prepare_count
     }
+
+    fn endpoint_routes(&self) -> Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute> {
+        self.inner
+            .lock()
+            .expect("recording wireguard ebpf lock is not poisoned")
+            .endpoint_routes
+            .clone()
+    }
 }
 
 #[derive(Default)]
 struct RecordingWireGuardEbpfInner {
     prepare_count: usize,
+    endpoint_routes: Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute>,
 }
 
 #[derive(Clone)]
@@ -690,12 +700,16 @@ impl RecordingWireGuardEbpf {
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
     async fn prepare_wireguard_ebpf(
         &self,
+        endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
     ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
-        self.state
+        let mut state = self
+            .state
             .inner
             .lock()
-            .expect("recording wireguard ebpf lock is not poisoned")
-            .prepare_count += 1;
+            .expect("recording wireguard ebpf lock is not poisoned");
+        state.prepare_count += 1;
+        state.endpoint_routes = endpoint_routes.to_vec();
+        drop(state);
 
         match &self.failure {
             Some(error) => Err(error.clone()),

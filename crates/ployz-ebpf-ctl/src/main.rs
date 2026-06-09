@@ -32,6 +32,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .map_err(|error| format!("invalid ifindex {ifindex:?}: {error}"))?;
             route_add(subnet, ifindex)
         }
+        [command, action, subnet, ifname] if command == "route" && action == "add-ifname" => {
+            route_add_ifname(parse_ipv4_subnet(subnet)?, ifname)
+        }
         [command, action, subnet] if command == "route" && action == "del" => {
             route_del(parse_ipv4_subnet(subnet)?)
         }
@@ -44,7 +47,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: ployz-ebpf-ctl validate <bytecode>\n       ployz-ebpf-ctl attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl ensure-attached <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl detach <bridge-ifname>\n       ployz-ebpf-ctl route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl route del <ipv4-subnet>".to_owned()
+    "usage: ployz-ebpf-ctl validate <bytecode>\n       ployz-ebpf-ctl attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl ensure-attached <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl detach <bridge-ifname>\n       ployz-ebpf-ctl route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl route add-ifname <ipv4-subnet> <ifname>\n       ployz-ebpf-ctl route del <ipv4-subnet>".to_owned()
 }
 
 fn validate_bytecode(path: &Path) -> Result<(), String> {
@@ -99,6 +102,16 @@ fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32) -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 fn route_add(_subnet: ipnet::Ipv4Net, _ifindex: u32) -> Result<(), String> {
     Err("route add requires Linux".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn route_add_ifname(subnet: ipnet::Ipv4Net, ifname: &str) -> Result<(), String> {
+    linux::route_add_ifname(subnet, ifname)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn route_add_ifname(_subnet: ipnet::Ipv4Net, _ifname: &str) -> Result<(), String> {
+    Err("route add-ifname requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
@@ -255,6 +268,10 @@ mod linux {
         .map_err(|error| format!("insert route {subnet}: {error}"))
     }
 
+    pub fn route_add_ifname(subnet: ipnet::Ipv4Net, ifname: &str) -> Result<(), String> {
+        route_add(subnet, resolve_ifindex(ifname)?)
+    }
+
     pub fn route_del(subnet: ipnet::Ipv4Net) -> Result<(), String> {
         let mut map = open_routes_map()?;
         let _ = map.remove(&PodRouteKey(subnet_to_key(subnet)));
@@ -316,6 +333,7 @@ mod tests {
 
         assert!(error.contains("ployz-ebpf-ctl validate <bytecode>"));
         assert!(error.contains("ployz-ebpf-ctl ensure-attached <bytecode>"));
+        assert!(error.contains("ployz-ebpf-ctl route add-ifname <ipv4-subnet> <ifname>"));
     }
 
     #[test]

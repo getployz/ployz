@@ -646,6 +646,7 @@ mod tests {
     impl crate::node_service_runtime::NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
         async fn prepare_wireguard_ebpf(
             &self,
+            _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
         ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
             Ok(WireGuardEbpfReady {
                 wireguard: WireGuardReady {

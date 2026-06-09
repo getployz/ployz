@@ -2,7 +2,8 @@
 
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfPrepareError, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardEbpfReady, WireGuardReady,
+    WireGuardReadyEvidence,
 };
 use ployz_core::ids::NodeId;
 use ployz_core::ops::FailureMessage;
@@ -18,6 +19,7 @@ const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct HostWireGuardEbpfPreparer {
     node_id: NodeId,
     requirements: Vec<HostDataplaneRequirement>,
+    route_programming: Option<HostDataplaneRouteProgramming>,
     command_timeout: Duration,
 }
 
@@ -30,14 +32,19 @@ impl HostWireGuardEbpfPreparer {
         bridge_ifname: String,
         wg_ifname: String,
     ) -> Self {
+        let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
         Self {
             node_id,
             requirements: default_requirements(
                 ebpf_bytecode_path,
                 ebpf_ctl_path,
                 bridge_ifname,
-                wg_ifname,
+                wg_ifname.clone(),
             ),
+            route_programming: Some(HostDataplaneRouteProgramming {
+                ebpf_ctl_program,
+                wg_ifname,
+            }),
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -50,6 +57,7 @@ impl HostWireGuardEbpfPreparer {
         Self {
             node_id,
             requirements: requirements.into_iter().collect(),
+            route_programming: None,
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -64,6 +72,7 @@ impl HostWireGuardEbpfPreparer {
 impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
     async fn prepare_wireguard_ebpf(
         &self,
+        endpoint_routes: &[WireGuardEbpfEndpointRoute],
     ) -> Result<WireGuardEbpfReady, WireGuardEbpfPrepareError> {
         let mut wireguard = Vec::new();
         let mut ebpf_forwarding = Vec::new();
@@ -74,6 +83,19 @@ impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
             {
                 HostDataplaneEvidence::WireGuard(evidence) => wireguard.push(evidence),
                 HostDataplaneEvidence::EbpfForwarding(evidence) => ebpf_forwarding.push(evidence),
+            }
+        }
+        if let Some(route_programming) = &self.route_programming {
+            for requirement in route_programming.requirements_for(&self.node_id, endpoint_routes) {
+                match requirement
+                    .check(&self.node_id, self.command_timeout)
+                    .await?
+                {
+                    HostDataplaneEvidence::WireGuard(evidence) => wireguard.push(evidence),
+                    HostDataplaneEvidence::EbpfForwarding(evidence) => {
+                        ebpf_forwarding.push(evidence);
+                    }
+                }
             }
         }
         if wireguard.is_empty() {
@@ -99,6 +121,37 @@ impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
                 evidence: ebpf_forwarding,
             },
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostDataplaneRouteProgramming {
+    ebpf_ctl_program: String,
+    wg_ifname: String,
+}
+
+impl HostDataplaneRouteProgramming {
+    fn requirements_for(
+        &self,
+        node_id: &NodeId,
+        endpoint_routes: &[WireGuardEbpfEndpointRoute],
+    ) -> Vec<HostDataplaneRequirement> {
+        endpoint_routes
+            .iter()
+            .filter(|route| route.node_id != *node_id)
+            .map(|route| {
+                HostDataplaneRequirement::command_succeeds(
+                    WireGuardEbpfComponent::EbpfForwarding,
+                    self.ebpf_ctl_program.clone(),
+                    [
+                        "route".to_owned(),
+                        "add-ifname".to_owned(),
+                        route.endpoint_subnet.clone(),
+                        self.wg_ifname.clone(),
+                    ],
+                )
+            })
+            .collect()
     }
 }
 
@@ -358,7 +411,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf()
+            .prepare_wireguard_ebpf(&[])
             .await
             .expect_err("empty requirements fail");
 
@@ -399,6 +452,33 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn route_programming_adds_only_peer_endpoint_subnets() {
+        let route_programming = HostDataplaneRouteProgramming {
+            ebpf_ctl_program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
+            wg_ifname: "ployz-wg0".to_owned(),
+        };
+        let requirements = route_programming.requirements_for(
+            &node_id("node_a"),
+            &[
+                WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_a")),
+                WireGuardEbpfEndpointRoute {
+                    node_id: node_id("node_b"),
+                    endpoint_subnet: "10.42.2.0/24".to_owned(),
+                },
+            ],
+        );
+
+        assert_eq!(
+            requirements,
+            vec![HostDataplaneRequirement::command_succeeds(
+                WireGuardEbpfComponent::EbpfForwarding,
+                "/usr/local/bin/ployz-ebpf-ctl",
+                ["route", "add-ifname", "10.42.2.0/24", "ployz-wg0"]
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn host_preparer_reports_missing_required_path() {
         let preparer = HostWireGuardEbpfPreparer::with_requirements(
@@ -410,7 +490,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf()
+            .prepare_wireguard_ebpf(&[])
             .await
             .expect_err("missing path fails");
 
@@ -437,7 +517,7 @@ mod tests {
         .with_command_timeout(Duration::from_millis(1));
 
         let error = preparer
-            .prepare_wireguard_ebpf()
+            .prepare_wireguard_ebpf(&[])
             .await
             .expect_err("hung command fails");
 
@@ -466,7 +546,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf()
+            .prepare_wireguard_ebpf(&[])
             .await
             .expect_err("text with symbols is not a BPF object");
 
@@ -494,7 +574,7 @@ mod tests {
         );
 
         let error = preparer
-            .prepare_wireguard_ebpf()
+            .prepare_wireguard_ebpf(&[])
             .await
             .expect_err("missing bytecode symbols fail");
 
