@@ -2,9 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{MachineJoinIrohDirectAddress, MachineJoinIrohRelayUrl};
+use ployz_core::install::{
+    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
+};
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
     EbpfCtlArtifactTarget, KeeperArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget,
@@ -486,14 +488,26 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             "core-public-key",
             "core-ticket",
         )
-        .expect("valid join material"),
+        .expect("valid join material")
+        .with_core_iroh_hints(
+            vec![
+                MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
+                    .expect("valid direct address"),
+            ],
+            Some(
+                MachineJoinIrohRelayUrl::try_new("https://relay.example.test")
+                    .expect("valid relay URL"),
+            ),
+        ),
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
         dataplane_artifacts(&root),
-        NonEmptyRoleSet::try_new(vec![ployz_core::roles::DaemonProcessRole::Node(node_id(
-            "node_2",
-        ))])
+        NonEmptyRoleSet::try_new(vec![
+            DaemonProcessRole::Tunnel(TunnelSide::Edge),
+            DaemonProcessRole::Node(node_id("node_2")),
+            DaemonProcessRole::Gateway,
+        ])
         .expect("non-empty role set"),
-        role_env_for_node(&root, node_id("node_2")),
+        edge_runtime_role_env(&root),
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
@@ -524,7 +538,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
                 .join(JOIN_MATERIAL_FILE)
         )
         .expect("join material is stored"),
-        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ncore_iroh_public_key=core-public-key\ncore_iroh_ticket=[redacted]\n"
+        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ncore_iroh_public_key=core-public-key\ncore_iroh_ticket=[redacted]\ncore_iroh_direct_addresses=203.0.113.10:4433\ncore_iroh_relay_url=https://relay.example.test\n"
     );
     assert_eq!(
         fs::read_to_string(
@@ -558,23 +572,34 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\nPLOYZ_TUNNEL_CORE_DIRECT_ADDRS=203.0.113.10:4433\nPLOYZ_TUNNEL_CORE_RELAY_URL=https://relay.example.test\n",
             root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             root.join("bin/ployz-ebpf-ctl").display()
         )
     );
+    assert!(systemd_dir.join("ployzd-tunnel-edge.service").exists());
     assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
+    assert!(systemd_dir.join("ployzd-gateway.service").exists());
     assert_eq!(reporter.reports, vec![JoinReport::Completed]);
     assert_eq!(token_consumer.consumed, 1);
     assert_eq!(
         effects.runner().systemctl_calls,
         vec![
             vec!["daemon-reload".to_owned()],
+            vec!["enable".to_owned(), "ployzd-tunnel-edge.service".to_owned()],
+            vec![
+                "restart".to_owned(),
+                "ployzd-tunnel-edge.service".to_owned(),
+            ],
+            vec!["daemon-reload".to_owned()],
             vec!["enable".to_owned(), "ployzd-node-node_2.service".to_owned(),],
             vec![
                 "restart".to_owned(),
                 "ployzd-node-node_2.service".to_owned(),
             ],
+            vec!["daemon-reload".to_owned()],
+            vec!["enable".to_owned(), "ployzd-gateway.service".to_owned()],
+            vec!["restart".to_owned(), "ployzd-gateway.service".to_owned()],
         ]
     );
 }
@@ -836,6 +861,28 @@ fn role_env_for_node(root: &Path, node_id: NodeId) -> PloyzdRoleEnvironmentTarge
             .expect("valid ployzd role environment target"),
         node_id,
         NatsClientUrl::loopback(4222),
+    )
+}
+
+fn edge_runtime_role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
+    PloyzdRoleEnvironmentTarget::new(
+        PloyzdRoleEnvironmentFile::new(root.join("etc/ployzd.env"))
+            .expect("valid ployzd role environment target"),
+        node_id("node_2"),
+        NatsClientUrl::loopback(7422),
+    )
+    .with_edge_tunnel(
+        "127.0.0.1:7422".parse().expect("valid tunnel listen addr"),
+        node_id("core_1"),
+        MachineJoinIrohPublicKey::try_new("core-public-key").expect("valid core public key"),
+        vec![
+            MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
+                .expect("valid direct address"),
+        ],
+        Some(
+            MachineJoinIrohRelayUrl::try_new("https://relay.example.test")
+                .expect("valid relay URL"),
+        ),
     )
 }
 
