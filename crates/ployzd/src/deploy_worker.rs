@@ -13,8 +13,8 @@ use ployz_core::deploy::{
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
-    RoutePort,
+    DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployRunningStage,
+    DeployTransition, FailureMessage, RoutePort,
 };
 
 pub use facts::{
@@ -199,13 +199,16 @@ where
         let _ = record_cleanup_finished(command, &mut *ports.recorder, cleanup_evidence(&cleanup))
             .await;
     }
-    let terminal_event = record_completion_best_effort(command, &mut *ports.recorder).await;
+    let completion_outcome = completion_outcome(&cleanup);
+    let terminal_event =
+        record_completion_best_effort(command, &mut *ports.recorder, completion_outcome).await;
 
     let outcome = DeployExecutionOutcome {
         service_id: plan.service_id,
         target_revision: plan.target_revision,
         containers,
         cleanup,
+        completion_outcome,
         terminal_event,
     };
 
@@ -303,13 +306,25 @@ fn cleanup_failure_message(error: NodeContainerRuntimeError) -> FailureMessage {
 async fn record_completion_best_effort<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
+    outcome: DeployCompletionOutcome,
 ) -> DeployTerminalEvent
 where
     R: DeployOperationRecorder,
 {
-    match record_stage(command, recorder, DeployTransition::completed()).await {
+    match record_stage(command, recorder, DeployTransition::Completed { outcome }).await {
         Ok(()) => DeployTerminalEvent::Recorded,
         Err(_) => DeployTerminalEvent::Missing,
+    }
+}
+
+fn completion_outcome(cleanup: &[DeployCleanupResult]) -> DeployCompletionOutcome {
+    if cleanup
+        .iter()
+        .any(|result| matches!(result, DeployCleanupResult::Failed { .. }))
+    {
+        DeployCompletionOutcome::CompletedWithWarnings
+    } else {
+        DeployCompletionOutcome::Completed
     }
 }
 

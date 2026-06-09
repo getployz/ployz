@@ -4,7 +4,8 @@ mod fixtures;
 use fixtures::*;
 use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
-    DeployOperationFailure, DeployRunningStage, DeployTransition, FailureMessage,
+    DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
+    FailureMessage,
 };
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveRoute,
@@ -373,6 +374,10 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             message: failure_message("container remove failed: busy"),
         }]
     );
+    assert_eq!(
+        outcome.completion_outcome,
+        DeployCompletionOutcome::CompletedWithWarnings
+    );
     assert!(
         recorder
             .records
@@ -386,7 +391,11 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
     );
     assert_eq!(
         recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::completed()))
+        Some(&RecordedOperation::Transition(
+            DeployTransition::Completed {
+                outcome: DeployCompletionOutcome::CompletedWithWarnings,
+            }
+        ))
     );
 }
 

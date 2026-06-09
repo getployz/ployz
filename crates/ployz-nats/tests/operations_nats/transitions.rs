@@ -1,5 +1,8 @@
 use super::fixtures::*;
-use ployz_core::ops::{DeployOperationState, DeployTransition, OperationStatus};
+use ployz_core::ops::{
+    DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
+    OperationStatus,
+};
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, OperationEventAppend, OperationStatusWrite,
     RecordDeployTransitionError,
@@ -42,6 +45,84 @@ async fn operation_repository_records_transition_status_against_real_nats() {
             service_id: service_id("svc_api"),
             state: DeployOperationState::Planning,
             last_event_sequence: event_sequence(2),
+        })
+    );
+}
+
+#[tokio::test]
+async fn operation_repository_records_deploy_completion_warning_outcome_against_real_nats() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    repository
+        .submit_deploy(
+            deploy_submission("op_123", "idem_1", "svc_api"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("submit accepted");
+    repository
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
+        .await
+        .expect("planning records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            },
+        )
+        .await
+        .expect("dataplane prep records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::StartingContainers,
+            },
+        )
+        .await
+        .expect("starting records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::WaitingForHealth,
+            },
+        )
+        .await
+        .expect("health records");
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Running {
+                stage: DeployRunningStage::ActiveServiceCommit,
+            },
+        )
+        .await
+        .expect("active commit records");
+
+    repository
+        .record_deploy_transition(
+            &operation_id("op_123"),
+            DeployTransition::Completed {
+                outcome: DeployCompletionOutcome::CompletedWithWarnings,
+            },
+        )
+        .await
+        .expect("warning completion records");
+
+    assert_eq!(
+        repository
+            .operation_status(&operation_id("op_123"))
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::Deploy {
+            id: operation_id("op_123"),
+            service_id: service_id("svc_api"),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::CompletedWithWarnings,
+            },
+            last_event_sequence: event_sequence(7),
         })
     );
 }

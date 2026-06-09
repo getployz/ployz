@@ -14,10 +14,10 @@ use ployz_core::deploy::{
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
 use ployz_core::ops::{
-    DeployOperationState, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnershipStatus, OperationStatus,
-    RouteHostname, RoutePort, RouteTarget,
+    DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
+    EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
+    OperationOwnershipStatus, OperationStatus, RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
@@ -253,7 +253,9 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::completed(),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
             ..
         }
     ));
@@ -342,7 +344,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployCompleted {
                 operation_id: operation_id("op_e2e_run"),
-                outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
+                outcome: DeployCompletionOutcome::Completed,
             },
         ]
     );
@@ -422,7 +424,9 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::completed(),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
             ..
         }
     ));

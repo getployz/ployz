@@ -11,8 +11,8 @@ use ployz_core::install::{
     MachineJoinTrustedNatsServerId,
 };
 use ployz_core::ops::{
-    DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus, RouteHostname,
-    RoutePort, RouteTarget,
+    DeployCompletionOutcome, DeployOperationState, EventSequence, OperationIdempotencyKey,
+    OperationStatus, RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{
     ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
@@ -307,7 +307,9 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::completed(),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
             ..
         }
     ));
@@ -401,7 +403,9 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     assert!(matches!(
         status,
         OperationStatus::Deploy {
-            state: DeployOperationState::completed(),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
             ..
         }
     ));

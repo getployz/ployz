@@ -3,7 +3,9 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, ExistingServiceReplica,
 };
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId};
-use ployz_core::ops::{FailureMessage, OperatorHint, RetainedArtifact, RoutePort};
+use ployz_core::ops::{
+    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RoutePort,
+};
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveService,
 };
@@ -107,6 +109,7 @@ pub struct DeployExecutionOutcome {
     pub target_revision: RevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
+    pub completion_outcome: DeployCompletionOutcome,
     pub terminal_event: DeployTerminalEvent,
 }
 

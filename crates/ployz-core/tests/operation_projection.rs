@@ -5,10 +5,10 @@ use ployz_core::machine::{
     MachineAddOperationState, MachineName, MachineReadinessCheck, MachineReadinessEvidence,
 };
 use ployz_core::ops::{
-    BackupOperationState, BackupRunningStage, DeployOperationState, DeployProjection,
-    DeployRunningStage, DeployTransition, EventSequence, FailureMessage, OperationEvent,
-    OperationEventProjection, OperationStatus, ProjectionOperationState, StatusProjectionError,
-    project_deploy_transition, project_operation_event,
+    BackupOperationState, BackupRunningStage, DeployCompletionOutcome, DeployOperationState,
+    DeployProjection, DeployRunningStage, DeployTransition, EventSequence, FailureMessage,
+    OperationEvent, OperationEventProjection, OperationStatus, ProjectionOperationState,
+    StatusProjectionError, project_deploy_transition, project_operation_event,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -185,6 +185,38 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
                 state: DeployOperationState::completed(),
+                last_event_sequence: event_sequence(6),
+            }),
+        })
+    );
+}
+
+#[test]
+fn deploy_completion_can_record_warning_outcome() {
+    let committing = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        service_id: service_id("svc_api"),
+        state: DeployOperationState::Running {
+            stage: active_service_running(),
+        },
+        last_event_sequence: event_sequence(5),
+    };
+
+    assert_eq!(
+        project_deploy_transition(
+            &committing,
+            DeployTransition::Completed {
+                outcome: DeployCompletionOutcome::CompletedWithWarnings,
+            },
+            event_sequence(6),
+        ),
+        Ok(DeployProjection::Updated {
+            status: Box::new(OperationStatus::Deploy {
+                id: operation_id("op_123"),
+                service_id: service_id("svc_api"),
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::CompletedWithWarnings,
+                },
                 last_event_sequence: event_sequence(6),
             }),
         })

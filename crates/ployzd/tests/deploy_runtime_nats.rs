@@ -8,7 +8,8 @@ use fixtures::*;
 use ployz_core::deploy::{DeployRequest, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
-    DeployOperationFailure, DeployOperationState, OperationLeaseDurationSeconds, OperationStatus,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
+    OperationLeaseDurationSeconds, OperationStatus,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -87,7 +88,9 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
-            state: DeployOperationState::completed(),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
             ..
         })
     ));
