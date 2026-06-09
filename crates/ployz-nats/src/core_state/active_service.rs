@@ -1,9 +1,12 @@
 use super::{AsyncNatsCoreStateStore, CoreStateStoreError, with_core_state_timeout};
+use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
+use async_nats::jetstream::kv::Operation;
 use ployz_core::ids::ServiceId;
 use ployz_core::state::{
-    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    CoreStateRevision, ExpectedActiveService,
+    ACTIVE_SERVICE_STATE_PREFIX, ActiveServiceCommit, ActiveServiceCommitRequest,
+    ActiveServiceState, ActiveServiceStateKey, CoreStateRevision, ExpectedActiveService,
 };
+use std::collections::BTreeMap;
 
 impl AsyncNatsCoreStateStore {
     pub async fn commit_active_service(
@@ -101,6 +104,30 @@ impl AsyncNatsCoreStateStore {
         decode_active_service_state(service_id, &key, &payload).map(Some)
     }
 
+    pub async fn active_services(&self) -> Result<Vec<ActiveServiceState>, CoreStateStoreError> {
+        let entries = bounded_bucket_key_scan_entries_with_prefix(
+            &self.bucket,
+            &format!("{ACTIVE_SERVICE_STATE_PREFIX}."),
+            super::NATS_CORE_STATE_TIMEOUT,
+        )
+        .await
+        .map_err(|error| CoreStateStoreError::ListKeys {
+            message: error.message,
+        })?;
+        let current_entries = current_kv_entries(entries);
+        let mut services = Vec::new();
+
+        for entry in current_entries.into_values() {
+            services.push(decode_active_service_state_for_key(
+                &entry.key,
+                &entry.value,
+            )?);
+        }
+
+        services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+        Ok(services)
+    }
+
     async fn classify_active_service_commit_conflict(
         &self,
         service_id: &ServiceId,
@@ -132,6 +159,43 @@ impl AsyncNatsCoreStateStore {
             attempted,
         ))
     }
+}
+
+fn current_kv_entries(
+    entries: impl IntoIterator<Item = async_nats::jetstream::kv::Entry>,
+) -> BTreeMap<String, async_nats::jetstream::kv::Entry> {
+    let mut current = BTreeMap::new();
+
+    for entry in entries {
+        match entry.operation {
+            Operation::Put => {
+                current.insert(entry.key.clone(), entry);
+            }
+            Operation::Delete | Operation::Purge => {
+                current.remove(&entry.key);
+            }
+        }
+    }
+
+    current
+}
+
+fn decode_active_service_state_for_key(
+    key: &str,
+    payload: &[u8],
+) -> Result<ActiveServiceState, CoreStateStoreError> {
+    let state: ActiveServiceState =
+        serde_json::from_slice(payload).map_err(CoreStateStoreError::Decode)?;
+    let actual_key = ActiveServiceStateKey::from_service_id(&state.service_id);
+    if key != actual_key.as_str() {
+        return Err(CoreStateStoreError::CorruptActiveServiceState {
+            key: key.to_owned(),
+            expected_service_id: state.service_id.clone(),
+            actual_service_id: state.service_id,
+        });
+    }
+
+    Ok(state)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

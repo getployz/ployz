@@ -89,6 +89,44 @@ async fn active_machines_list_sorted_by_node_id() {
 }
 
 #[tokio::test]
+async fn active_services_list_sorted_by_service_id() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let api = ActiveServiceState {
+        service_id: service_id("svc_api"),
+        active_revision: revision_id("rev_2"),
+    };
+    let worker = ActiveServiceState {
+        service_id: service_id("svc_worker"),
+        active_revision: revision_id("rev_1"),
+    };
+
+    store
+        .commit_active_service(&commit_request(
+            &worker.service_id,
+            ExpectedActiveService::Absent,
+            &worker.active_revision,
+        ))
+        .await
+        .expect("worker service stores");
+    store
+        .commit_active_service(&commit_request(
+            &api.service_id,
+            ExpectedActiveService::Absent,
+            &api.active_revision,
+        ))
+        .await
+        .expect("api service stores");
+
+    assert_eq!(
+        store.active_services().await.expect("services list"),
+        vec![api, worker]
+    );
+}
+
+#[tokio::test]
 async fn active_service_commit_rejects_stale_previous_revision() {
     let nats = test_nats().await;
     let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
@@ -337,6 +375,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         | CoreStateStoreError::Decode(_)
         | CoreStateStoreError::CasConflict { .. }
         | CoreStateStoreError::Get { .. }
+        | CoreStateStoreError::ListKeys { .. }
         | CoreStateStoreError::Timeout { .. }) => {
             panic!("unexpected error: {other:?}");
         }

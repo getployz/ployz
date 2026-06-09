@@ -13,7 +13,10 @@ use ployz_core::install::{
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
 };
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation};
+use ployz_core::state::{
+    ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
+    GatewayStatusObservation, NodePublicIpObservation,
+};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -21,7 +24,7 @@ use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddGateway, MachineAddRequest, MachineInspectRequest,
     MachineJoinRedeemRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
-    MachineListRequest, OpsStatusRequest,
+    MachineListRequest, OpsStatusRequest, ServiceInspectRequest, ServiceListRequest,
 };
 use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::MachineAddBootstrapConfig;
@@ -185,6 +188,52 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             .machines,
         vec![inspected]
     );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn control_runtime_serves_active_service_queries() {
+    let nats = TestNats::start().await;
+    let config = control_config();
+    let runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
+            .await
+            .expect("control runtime starts");
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state");
+    core_state
+        .commit_active_service(&ActiveServiceCommitRequest {
+            service_id: service_id("svc_api"),
+            expected_current: ExpectedActiveService::Absent,
+            target_revision: revision_id("rev_2"),
+        })
+        .await
+        .expect("service state stores");
+    let api = OperationApiClient::new(nats.client.clone());
+
+    let listed = api
+        .service_list(&ServiceListRequest {})
+        .await
+        .expect("services list");
+    let [service] = listed.services.as_slice() else {
+        panic!("expected one listed service, got {:?}", listed.services);
+    };
+    assert_eq!(service.active.service_id, service_id("svc_api"));
+    assert_eq!(service.active.active_revision, revision_id("rev_2"));
+
+    let inspected = api
+        .service_inspect(&ServiceInspectRequest {
+            service_id: service_id("svc_api"),
+        })
+        .await
+        .expect("service inspects");
+    assert_eq!(inspected.active.service_id, service_id("svc_api"));
+    assert_eq!(inspected.active.active_revision, revision_id("rev_2"));
 
     runtime
         .shutdown()

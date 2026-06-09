@@ -41,8 +41,10 @@ use crate::{
     OperatorHint, OpsStatusError, OpsStatusRequest, OpsStatusUnavailableSource, OpsWatchError,
     OpsWatchUnavailableSource, ReplayedOperationEvent, ReplicaCount, ReplicaSlot, RestoreStep,
     RetainedArtifact, RevisionId, RouteCutoverFailureReason, RouteHostname, RoutePort, RouteTarget,
-    ServiceId, StatusReadFailure, StepId, WireGuardEbpfComponent, WireGuardEbpfNodeReady,
-    WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
+    ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot, StatusReadFailure, StepId,
+    WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::subjects::OperationApiEndpointExecution;
 use ts_rs::{Config, TS};
@@ -180,6 +182,13 @@ macro_rules! exported_types {
             MachineInspectRequest,
             MachineInspectError,
             MachineQueryUnavailableSource,
+            ServiceListRequest,
+            ServiceListResult,
+            ServiceSnapshot,
+            ServiceListError,
+            ServiceInspectRequest,
+            ServiceInspectError,
+            ServiceQueryUnavailableSource,
             MachineJoinClusterName,
             MachineJoinRuntimeNatsUrl,
             MachineJoinMaterial,

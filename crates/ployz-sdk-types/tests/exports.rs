@@ -21,10 +21,13 @@ use ployz_sdk_types::{
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
     OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
     OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, ServiceInspectError,
+    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
+    ServiceSnapshot, SubjectTokenError,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -228,11 +231,11 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
-        r#"{"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
+        r#"{"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"node_id":"core_1","public_key":"core-public-key","direct_addresses":[],"relay_url":null},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
     );
 }
 
@@ -274,6 +277,9 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
+    );
+    assert_contract::<ServiceListApi, ServiceListRequest, ServiceListResult, ServiceListError>();
+    assert_contract::<ServiceInspectApi, ServiceInspectRequest, ServiceSnapshot, ServiceInspectError>(
     );
     assert_contract::<
         MachineJoinRedeemApi,
@@ -353,6 +359,24 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineJoinReported".to_owned(),
                 "MachineJoinReportError".to_owned(),
                 "MachineJoinReportResponse",
+            ),
+            (
+                "service.list",
+                "plz.v1.svc.api.service.list",
+                OperationApiEndpointExecution::Query,
+                "ServiceListRequest".to_owned(),
+                "ServiceListResult".to_owned(),
+                "ServiceListError".to_owned(),
+                "ServiceListResponse",
+            ),
+            (
+                "service.inspect",
+                "plz.v1.svc.api.service.inspect",
+                OperationApiEndpointExecution::Query,
+                "ServiceInspectRequest".to_owned(),
+                "ServiceSnapshot".to_owned(),
+                "ServiceInspectError".to_owned(),
+                "ServiceInspectResponse",
             ),
             (
                 "ops.status",
@@ -510,7 +534,30 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid install path"),
             },
+            ebpf_bytecode: machine_join_artifact(
+                "/tmp/ployz-ebpf-tc",
+                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            ),
+            ebpf_ctl: machine_join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
         },
+    }
+}
+
+fn machine_join_artifact(
+    source: &str,
+    install_path: &str,
+) -> ployz_core::install::MachineJoinArtifact {
+    ployz_core::install::MachineJoinArtifact {
+        version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+            .expect("valid artifact version"),
+        source: ployz_core::install::InstallArtifactSource::try_new(source)
+            .expect("valid artifact source"),
+        sha256: ployz_core::install::InstallSha256Digest::try_new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("valid artifact digest"),
+        install_path: ployz_core::install::AbsoluteInstallPath::try_new(install_path)
+            .expect("valid artifact install path"),
     }
 }
 

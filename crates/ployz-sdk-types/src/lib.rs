@@ -107,6 +107,10 @@ pub type MachineListResponse = OperationApiResponse<MachineListResult, MachineLi
 
 pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
 
+pub type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;
+
+pub type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
+
 pub type MachineJoinRedeemResponse =
     OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
@@ -147,6 +151,28 @@ pub struct MachineListResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+pub struct ServiceListRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceInspectRequest {
+    pub service_id: ServiceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceListResult {
+    pub services: Vec<ServiceSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceSnapshot {
+    pub active: ActiveServiceState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub active: ActiveMachineState,
     pub public_ip: Option<NodePublicIpObservation>,
@@ -171,6 +197,31 @@ pub enum MachineInspectError {
     Unavailable {
         source: MachineQueryUnavailableSource,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceListError {
+    Unavailable {
+        source: ServiceQueryUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceInspectError {
+    NoSuchService {
+        service_id: ServiceId,
+    },
+    Unavailable {
+        source: ServiceQueryUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceQueryUnavailableSource {
+    CoreState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

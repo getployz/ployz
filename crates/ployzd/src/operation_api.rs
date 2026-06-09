@@ -13,6 +13,7 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::state::ActiveMachineState;
+use ployz_core::state::ActiveServiceState;
 use ployz_core::subjects::op_watch;
 use ployz_nats::core_state::{
     ActiveMachineReadError, ActiveMachineWriteError, AsyncNatsCoreStateStore,
@@ -39,7 +40,8 @@ use ployz_sdk_types::{
     MachineListRequest, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
     OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
     OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource,
-    StatusReadFailure,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot, StatusReadFailure,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -49,6 +51,7 @@ pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_execution: DeploySubmitExecution,
     machine_query: MachineQueryExecution,
+    service_query: ServiceQueryExecution,
 }
 
 impl OperationApiHandlers {
@@ -58,6 +61,7 @@ impl OperationApiHandlers {
             controllers,
             deploy_execution: DeploySubmitExecution::AcceptOnly,
             machine_query: MachineQueryExecution::Unavailable,
+            service_query: ServiceQueryExecution::Unavailable,
         }
     }
 
@@ -67,10 +71,12 @@ impl OperationApiHandlers {
         deploy_runtime: DeployOperationRuntime,
         machine_query: MachineQueryRuntime,
     ) -> Self {
+        let service_query = ServiceQueryRuntime::new(machine_query.core_state.clone());
         Self {
             controllers,
             deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
             machine_query: MachineQueryExecution::Execute(Arc::new(machine_query)),
+            service_query: ServiceQueryExecution::Execute(Arc::new(service_query)),
         }
     }
 
@@ -93,9 +99,61 @@ pub enum MachineQueryExecution {
 }
 
 #[derive(Clone)]
+pub enum ServiceQueryExecution {
+    Unavailable,
+    Execute(Arc<ServiceQueryRuntime>),
+}
+
+#[derive(Clone)]
 pub struct MachineQueryRuntime {
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
+}
+
+#[derive(Clone)]
+pub struct ServiceQueryRuntime {
+    core_state: AsyncNatsCoreStateStore,
+}
+
+impl ServiceQueryRuntime {
+    #[must_use]
+    pub const fn new(core_state: AsyncNatsCoreStateStore) -> Self {
+        Self { core_state }
+    }
+
+    async fn list(&self) -> Result<ServiceListResult, ServiceListError> {
+        let services = self
+            .core_state
+            .active_services()
+            .await
+            .map_err(service_list_core_error)?
+            .into_iter()
+            .map(service_snapshot)
+            .collect();
+        Ok(ServiceListResult { services })
+    }
+
+    async fn inspect(
+        &self,
+        service_id: &ployz_core::ids::ServiceId,
+    ) -> Result<ServiceSnapshot, ServiceInspectError> {
+        let Some(active) = self
+            .core_state
+            .active_service(service_id)
+            .await
+            .map_err(service_inspect_core_error)?
+        else {
+            return Err(ServiceInspectError::NoSuchService {
+                service_id: service_id.clone(),
+            });
+        };
+
+        Ok(service_snapshot(active))
+    }
+}
+
+fn service_snapshot(active: ActiveServiceState) -> ServiceSnapshot {
+    ServiceSnapshot { active }
 }
 
 impl MachineQueryRuntime {
@@ -249,6 +307,30 @@ pub async fn machine_inspect(
     runtime.inspect(&request.node_id).await
 }
 
+pub async fn service_list(
+    handlers: &OperationApiHandlers,
+    _request: ServiceListRequest,
+) -> Result<ServiceListResult, ServiceListError> {
+    let ServiceQueryExecution::Execute(runtime) = &handlers.service_query else {
+        return Err(ServiceListError::Unavailable {
+            source: ServiceQueryUnavailableSource::CoreState,
+        });
+    };
+    runtime.list().await
+}
+
+pub async fn service_inspect(
+    handlers: &OperationApiHandlers,
+    request: ServiceInspectRequest,
+) -> Result<ServiceSnapshot, ServiceInspectError> {
+    let ServiceQueryExecution::Execute(runtime) = &handlers.service_query else {
+        return Err(ServiceInspectError::Unavailable {
+            source: ServiceQueryUnavailableSource::CoreState,
+        });
+    };
+    runtime.inspect(&request.service_id).await
+}
+
 fn machine_list_core_error(_error: ActiveMachineReadError) -> MachineListError {
     MachineListError::Unavailable {
         source: MachineQueryUnavailableSource::CoreState,
@@ -266,6 +348,22 @@ fn machine_inspect_error(error: MachineSnapshotError) -> MachineInspectError {
         MachineSnapshotError::Observations => MachineInspectError::Unavailable {
             source: MachineQueryUnavailableSource::Observations,
         },
+    }
+}
+
+fn service_list_core_error(
+    _error: ployz_nats::core_state::CoreStateStoreError,
+) -> ServiceListError {
+    ServiceListError::Unavailable {
+        source: ServiceQueryUnavailableSource::CoreState,
+    }
+}
+
+fn service_inspect_core_error(
+    _error: ployz_nats::core_state::CoreStateStoreError,
+) -> ServiceInspectError {
+    ServiceInspectError::Unavailable {
+        source: ServiceQueryUnavailableSource::CoreState,
     }
 }
 

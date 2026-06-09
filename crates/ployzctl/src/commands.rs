@@ -7,6 +7,7 @@ pub mod deploy;
 pub mod init;
 pub mod machine;
 pub mod ops;
+pub mod service;
 
 pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
@@ -19,6 +20,8 @@ ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas
 ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
 ployzctl machine list
 ployzctl machine inspect <node_id>
+ployzctl service list
+ployzctl service inspect <service_id>
 ployzctl ops status <operation_id>
 ployzctl ops watch <operation_id>";
 
@@ -38,6 +41,8 @@ pub enum PloyzctlCommand {
     MachineAdd(machine::MachineAddCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
+    ServiceList(service::ServiceListCommand),
+    ServiceInspect(service::ServiceInspectCommand),
     OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
     Help,
@@ -99,6 +104,12 @@ pub fn parse_command(
         }
         [command, subcommand, rest @ ..] if command == "machine" && subcommand == "inspect" => {
             machine::parse_machine_inspect_command(rest).map(PloyzctlCommand::MachineInspect)
+        }
+        [command, subcommand, rest @ ..] if command == "service" && subcommand == "list" => {
+            service::parse_service_list_command(rest).map(PloyzctlCommand::ServiceList)
+        }
+        [command, subcommand, rest @ ..] if command == "service" && subcommand == "inspect" => {
+            service::parse_service_inspect_command(rest).map(PloyzctlCommand::ServiceInspect)
         }
         [command, subcommand, rest @ ..] if command == "ops" && subcommand == "status" => {
             ops::parse_ops_status_command(rest).map(PloyzctlCommand::OpsStatus)

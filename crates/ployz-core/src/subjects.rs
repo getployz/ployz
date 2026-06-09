@@ -21,6 +21,8 @@ pub const API_MACHINE_LIST: &str = "plz.v1.svc.api.machine.list";
 pub const API_MACHINE_INSPECT: &str = "plz.v1.svc.api.machine.inspect";
 pub const API_MACHINE_JOIN_REDEEM: &str = "plz.v1.svc.api.machine.join.redeem";
 pub const API_MACHINE_JOIN_REPORT: &str = "plz.v1.svc.api.machine.join.report";
+pub const API_SERVICE_LIST: &str = "plz.v1.svc.api.service.list";
+pub const API_SERVICE_INSPECT: &str = "plz.v1.svc.api.service.inspect";
 pub const API_BACKUP_CREATE: &str = "plz.v1.svc.api.backup.create";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,18 +33,22 @@ pub enum OperationApiEndpoint {
     MachineInspect,
     MachineJoinRedeem,
     MachineJoinReport,
+    ServiceList,
+    ServiceInspect,
     OpsStatus,
     OpsWatch,
     BackupCreate,
 }
 
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 9] = [
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 11] = [
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
     OperationApiEndpoint::MachineJoinRedeem,
     OperationApiEndpoint::MachineJoinReport,
+    OperationApiEndpoint::ServiceList,
+    OperationApiEndpoint::ServiceInspect,
     OperationApiEndpoint::OpsStatus,
     OperationApiEndpoint::OpsWatch,
     OperationApiEndpoint::BackupCreate,
@@ -65,6 +71,8 @@ impl OperationApiEndpoint {
             Self::MachineInspect => "machine.inspect",
             Self::MachineJoinRedeem => "machine.join.redeem",
             Self::MachineJoinReport => "machine.join.report",
+            Self::ServiceList => "service.list",
+            Self::ServiceInspect => "service.inspect",
             Self::OpsStatus => "ops.status",
             Self::OpsWatch => "ops.watch",
             Self::BackupCreate => "backup.create",
@@ -80,6 +88,8 @@ impl OperationApiEndpoint {
             Self::MachineInspect => API_MACHINE_INSPECT,
             Self::MachineJoinRedeem => API_MACHINE_JOIN_REDEEM,
             Self::MachineJoinReport => API_MACHINE_JOIN_REPORT,
+            Self::ServiceList => API_SERVICE_LIST,
+            Self::ServiceInspect => API_SERVICE_INSPECT,
             Self::OpsStatus => API_OPS_STATUS,
             Self::OpsWatch => API_OPS_WATCH,
             Self::BackupCreate => API_BACKUP_CREATE,
@@ -95,9 +105,12 @@ impl OperationApiEndpoint {
             Self::MachineJoinRedeem | Self::MachineJoinReport => {
                 OperationApiEndpointExecution::MutatesOperation
             }
-            Self::MachineList | Self::MachineInspect | Self::OpsStatus | Self::OpsWatch => {
-                OperationApiEndpointExecution::Query
-            }
+            Self::MachineList
+            | Self::MachineInspect
+            | Self::ServiceList
+            | Self::ServiceInspect
+            | Self::OpsStatus
+            | Self::OpsWatch => OperationApiEndpointExecution::Query,
         }
     }
 }

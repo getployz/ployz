@@ -173,7 +173,30 @@ pub(super) fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid install path"),
             },
+            ebpf_bytecode: machine_join_artifact(
+                "/tmp/ployz-ebpf-tc",
+                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            ),
+            ebpf_ctl: machine_join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
         },
+    }
+}
+
+fn machine_join_artifact(
+    source: &str,
+    install_path: &str,
+) -> ployz_core::install::MachineJoinArtifact {
+    ployz_core::install::MachineJoinArtifact {
+        version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+            .expect("valid artifact version"),
+        source: ployz_core::install::InstallArtifactSource::try_new(source)
+            .expect("valid artifact source"),
+        sha256: ployz_core::install::InstallSha256Digest::try_new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("valid artifact digest"),
+        install_path: ployz_core::install::AbsoluteInstallPath::try_new(install_path)
+            .expect("valid artifact install path"),
     }
 }
 

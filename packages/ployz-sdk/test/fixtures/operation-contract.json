@@ -108,6 +108,18 @@
             "source": "/tmp/ployzd",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "install_path": "/usr/local/bin/ployzd"
+          },
+          "ebpf_bytecode": {
+            "version": "0.1.0",
+            "source": "/tmp/ployz-ebpf-tc",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+          },
+          "ebpf_ctl": {
+            "version": "0.1.0",
+            "source": "/tmp/ployz-ebpf-ctl",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install_path": "/usr/local/bin/ployz-ebpf-ctl"
           }
         }
       },

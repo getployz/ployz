@@ -228,11 +228,25 @@ export type MachineInspectError = { "error": "no_such_machine", node_id: NodeId,
 
 export type MachineQueryUnavailableSource = { "source": "core_state" } | { "source": "observations" };
 
+export type ServiceListRequest = Record<symbol, never>;
+
+export type ServiceListResult = { services: Array<ServiceSnapshot>, };
+
+export type ServiceSnapshot = { active: ActiveServiceState, };
+
+export type ServiceListError = { "error": "unavailable", source: ServiceQueryUnavailableSource, };
+
+export type ServiceInspectRequest = { service_id: ServiceId, };
+
+export type ServiceInspectError = { "error": "no_such_service", service_id: ServiceId, } | { "error": "unavailable", source: ServiceQueryUnavailableSource, };
+
+export type ServiceQueryUnavailableSource = { "source": "core_state" };
+
 export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
 
-export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, core_iroh: MachineJoinCoreIrohEndpoint, ployzd: MachineJoinPloyzdArtifact, };
+export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, core_iroh: MachineJoinCoreIrohEndpoint, ployzd: MachineJoinPloyzdArtifact, ebpf_bytecode: MachineJoinArtifact, ebpf_ctl: MachineJoinArtifact, };
 
 export type MachineJoinSecretDelivery = { nats_credentials: MachineJoinNatsCredentials, core_iroh_ticket: MachineJoinIrohTicket, };
 
@@ -338,6 +352,10 @@ export type MachineJoinRedeemResponse = OperationApiResponse<MachineJoinRedeemed
 
 export type MachineJoinReportResponse = OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
 
+export type ServiceListResponse = OperationApiResponse<ServiceListResult, ServiceListError>;
+
+export type ServiceInspectResponse = OperationApiResponse<ServiceSnapshot, ServiceInspectError>;
+
 export type OpsStatusResponse = OperationApiResponse<OperationStatusSnapshot, OpsStatusError>;
 
 export type OpsWatchRequest = OperationEventReplayRequest;
@@ -353,6 +371,8 @@ export const OPERATION_API_CONTRACTS = [
   { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
   { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
   { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
+  { name: "service.list", subject: "plz.v1.svc.api.service.list", execution: "query", request: "ServiceListRequest", success: "ServiceListResult", error: "ServiceListError", response: "ServiceListResponse" },
+  { name: "service.inspect", subject: "plz.v1.svc.api.service.inspect", execution: "query", request: "ServiceInspectRequest", success: "ServiceSnapshot", error: "ServiceInspectError", response: "ServiceInspectResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },
   { name: "ops.watch", subject: "plz.v1.svc.api.ops.watch", execution: "query", request: "OpsWatchRequest", success: "OperationEventReplayPage", error: "OpsWatchError", response: "OpsWatchResponse" },
   { name: "backup.create", subject: "plz.v1.svc.api.backup.create", execution: "accepts_operation", request: "BackupCreateRequest", success: "AcceptedOperation", error: "BackupCreateError", response: "BackupCreateResponse" },

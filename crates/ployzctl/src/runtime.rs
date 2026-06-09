@@ -20,7 +20,7 @@ use ployz_nats::connect::{
 };
 use ployz_sdk_types::{
     BackupCreateError, DeploySubmitError, MachineAddError, MachineInspectError, MachineListError,
-    OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, ServiceInspectError, ServiceListError,
 };
 use tokio::time::sleep as async_sleep;
 
@@ -171,6 +171,30 @@ pub async fn execute_command(
 
             Ok(PloyzctlExecutionOutput::stdout(
                 crate::commands::machine::MachineInspectOutput::new(machine).render(),
+            ))
+        }
+        PloyzctlCommand::ServiceList(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let result = api
+                .service_list(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::ServiceListApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::service::ServiceListOutput::from_result(result).render(),
+            ))
+        }
+        PloyzctlCommand::ServiceInspect(command) => {
+            let api = operation_api_client(config).await?;
+            let request = command.into_request();
+            let service = api
+                .service_inspect(&request)
+                .await
+                .map_err(|source| PloyzctlExecutionError::ServiceInspectApi { source })?;
+
+            Ok(PloyzctlExecutionOutput::stdout(
+                crate::commands::service::ServiceInspectOutput::new(service).render(),
             ))
         }
         PloyzctlCommand::OpsStatus(command) => {
@@ -605,6 +629,12 @@ pub enum PloyzctlExecutionError {
     MachineInspectApi {
         source: OperationApiClientError<MachineInspectError>,
     },
+    ServiceListApi {
+        source: OperationApiClientError<ServiceListError>,
+    },
+    ServiceInspectApi {
+        source: OperationApiClientError<ServiceInspectError>,
+    },
     OpsStatusApi {
         source: OperationApiClientError<OpsStatusError>,
     },
@@ -637,6 +667,8 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::MachineAddApi { source } => write!(formatter, "{source}"),
             Self::MachineListApi { source } => write!(formatter, "{source}"),
             Self::MachineInspectApi { source } => write!(formatter, "{source}"),
+            Self::ServiceListApi { source } => write!(formatter, "{source}"),
+            Self::ServiceInspectApi { source } => write!(formatter, "{source}"),
             Self::OpsStatusApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchStatusApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchApi { source } => write!(formatter, "{source}"),

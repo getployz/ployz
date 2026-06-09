@@ -10,15 +10,17 @@ use ployz_core::ops::{
     ReplayedOperationEvent,
 };
 use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+    ActiveMachineState, ActiveServiceState, GatewayServingStatus, GatewayStatusObservation,
+    NodePublicIpObservation,
 };
-use ployz_sdk_types::{AcceptedOperation, MachineAddGateway, MachineSnapshot};
+use ployz_sdk_types::{AcceptedOperation, MachineAddGateway, MachineSnapshot, ServiceSnapshot};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinToken,
     MachineListOutput, MachineName,
 };
 use ployzctl::commands::ops::{StatusOutput, WatchOutput};
+use ployzctl::commands::service::{ServiceInspectOutput, ServiceListOutput};
 use ployzctl::commands::{
     PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, parse_invocation,
 };
@@ -327,6 +329,44 @@ fn cli_dispatches_machine_inspect_request() {
     };
 
     assert_eq!(command.into_request().node_id, node_id("node_2"));
+}
+
+#[test]
+fn cli_dispatches_service_list_request() {
+    let command =
+        parse_command(["service", "list"].map(str::to_owned)).expect("service list command parses");
+
+    let PloyzctlCommand::ServiceList(command) = command else {
+        panic!("expected service list command");
+    };
+
+    assert_eq!(
+        command.into_request(),
+        ployz_sdk_types::ServiceListRequest {}
+    );
+}
+
+#[test]
+fn cli_dispatches_service_inspect_request() {
+    let command = parse_command(["service", "inspect", "svc_api"].map(str::to_owned))
+        .expect("service inspect command parses");
+
+    let PloyzctlCommand::ServiceInspect(command) = command else {
+        panic!("expected service inspect command");
+    };
+
+    assert_eq!(
+        command.into_request().service_id,
+        ServiceId::try_new("svc_api").expect("valid service id")
+    );
+}
+
+#[test]
+fn cli_requires_service_inspect_service_id() {
+    assert!(matches!(
+        parse_command(["service", "inspect"].map(str::to_owned)),
+        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<service_id>"
+    ));
 }
 
 #[test]
@@ -834,6 +874,39 @@ fn ops_status_renders_unclaimed_machine_add() {
 }
 
 #[test]
+fn service_list_renders_service_summaries() {
+    let output = ServiceListOutput {
+        services: vec![
+            service_snapshot("svc_api", "rev_2"),
+            service_snapshot("svc_worker", "rev_1"),
+        ],
+    }
+    .render();
+
+    assert_eq!(
+        output,
+        "svc_api active-revision rev_2\nsvc_worker active-revision rev_1\n"
+    );
+}
+
+#[test]
+fn service_list_renders_no_output_without_services() {
+    let output = ServiceListOutput {
+        services: Vec::new(),
+    }
+    .render();
+
+    assert_eq!(output, "");
+}
+
+#[test]
+fn service_inspect_renders_active_revision() {
+    let output = ServiceInspectOutput::new(service_snapshot("svc_api", "rev_2")).render();
+
+    assert_eq!(output, "service svc_api\nactive-revision rev_2\n");
+}
+
+#[test]
 fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     let output = MachineAddOutput {
         node_id: NodeId::try_new("node_2").expect("valid node id"),
@@ -990,6 +1063,15 @@ fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOp
     ReplayedOperationEvent {
         sequence: event_sequence(sequence),
         event,
+    }
+}
+
+fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
+    ServiceSnapshot {
+        active: ActiveServiceState {
+            service_id: ServiceId::try_new(service_id).expect("valid service id"),
+            active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
+        },
     }
 }
 

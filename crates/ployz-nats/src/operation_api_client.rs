@@ -11,10 +11,13 @@ use ployz_sdk_types::{
     MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, OperationApiResponse,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, ServiceInspectError,
+    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
+    ServiceSnapshot,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
         MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -85,6 +88,20 @@ impl OperationApiClient {
         request: &MachineInspectRequest,
     ) -> Result<MachineSnapshot, OperationApiClientError<MachineInspectError>> {
         self.request_api::<MachineInspectApi>(request).await
+    }
+
+    pub async fn service_list(
+        &self,
+        request: &ServiceListRequest,
+    ) -> Result<ServiceListResult, OperationApiClientError<ServiceListError>> {
+        self.request_api::<ServiceListApi>(request).await
+    }
+
+    pub async fn service_inspect(
+        &self,
+        request: &ServiceInspectRequest,
+    ) -> Result<ServiceSnapshot, OperationApiClientError<ServiceInspectError>> {
+        self.request_api::<ServiceInspectApi>(request).await
     }
 
     pub async fn machine_join_redeem(

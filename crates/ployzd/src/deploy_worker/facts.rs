@@ -209,6 +209,10 @@ fn active_service_read_failure(source: CoreStateStoreError) -> ActiveServiceRead
             message: error.to_string(),
         },
         CoreStateStoreError::Get { key, message } => ActiveServiceReadFailure::Get { key, message },
+        CoreStateStoreError::ListKeys { message } => ActiveServiceReadFailure::Get {
+            key: "services.*".to_owned(),
+            message,
+        },
         CoreStateStoreError::CorruptActiveServiceState {
             key,
             expected_service_id,

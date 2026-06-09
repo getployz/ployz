@@ -8,7 +8,8 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
+    ActiveMachineState, ActiveServiceState, GatewayServingStatus, GatewayStatusObservation,
+    NodePublicIpObservation,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{
@@ -24,10 +25,11 @@ use ployz_sdk_types::{
     MachineJoinPloyzdArtifact, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
     MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken, MachineListResponse,
     MachineListResult, MachineName, MachineSnapshot, OperationApiResponse, OpsStatusError,
-    OpsStatusResponse,
+    OpsStatusResponse, ServiceInspectRequest, ServiceInspectResponse, ServiceListResponse,
+    ServiceListResult, ServiceSnapshot,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineListApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use ployzctl::api_client::{
@@ -232,6 +234,79 @@ async fn operation_api_client_routes_machine_inspect_success() {
         .expect("machine inspect responds");
 
     assert_eq!(result, machine_snapshot("node_2"));
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_service_list_success() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_api_service(ServiceListApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            let response: ServiceListResponse = OperationApiResponse::Ok {
+                value: ServiceListResult {
+                    services: vec![service_snapshot("svc_api", "rev_2")],
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let result = api
+        .service_list(&ployz_sdk_types::ServiceListRequest {})
+        .await
+        .expect("service list responds");
+
+    assert_eq!(result.services, vec![service_snapshot("svc_api", "rev_2")]);
+}
+
+#[tokio::test]
+async fn operation_api_client_routes_service_inspect_success() {
+    let server = nats_server::run_basic_server();
+    let client = async_nats::connect(server.client_url())
+        .await
+        .expect("connect to test nats");
+    let spec = test_api_service(ServiceInspectApi::ENDPOINT);
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |request| async move {
+            let request: ServiceInspectRequest =
+                serde_json::from_slice(&request.payload).expect("service inspect request decodes");
+            assert_eq!(
+                request.service_id,
+                ployz_core::ids::ServiceId::try_new("svc_api").expect("valid service id")
+            );
+
+            let response: ServiceInspectResponse = OperationApiResponse::Ok {
+                value: service_snapshot("svc_api", "rev_2"),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    let api = OperationApiClient::new(client);
+
+    let result = api
+        .service_inspect(&ServiceInspectRequest {
+            service_id: ployz_core::ids::ServiceId::try_new("svc_api").expect("valid service id"),
+        })
+        .await
+        .expect("service inspect responds");
+
+    assert_eq!(result, service_snapshot("svc_api", "rev_2"));
 }
 
 #[tokio::test]
@@ -607,6 +682,15 @@ fn deploy_target(service_id: &str) -> DeployRequest {
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         route: None,
+    }
+}
+
+fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
+    ServiceSnapshot {
+        active: ActiveServiceState {
+            service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
+            active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
+        },
     }
 }
 
