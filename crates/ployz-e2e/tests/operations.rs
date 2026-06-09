@@ -11,15 +11,24 @@ use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
     plan_service_deploy,
 };
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ids::{
+    ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, StepId,
+};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
+use ployz_core::node::{
+    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
+    NodeContainerObservationSnapshot,
+};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
     OperationOwnershipStatus, OperationStatus, RouteHostname, RoutePort, RouteTarget,
 };
-use ployz_core::state::NodePublicIpObservation;
+use ployz_core::state::{
+    ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
+    NodePublicIpObservation,
+};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
@@ -467,6 +476,163 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
 }
 
 #[tokio::test]
+async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let nats = TestNats::start_jetstream().await?;
+    let client = async_nats::connect(nats.url()).await?;
+    let jetstream = jetstream::new(client.clone());
+    let config = ControlProcessConfig::new(
+        NatsServerRuntime::External(nats_client_url(nats.url())),
+        node_id("core_1"),
+    )
+    .with_deploy_nodes(vec![node_id("node_a")])
+    .with_deploy_step_timeout(Duration::from_secs(2))
+    .with_machine_bootstrap(machine_bootstrap_config());
+    let control_runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
+    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        .await
+        .expect("open observation store");
+    observations
+        .replace_node_public_ip(&node_public_ip("node_a", 7))
+        .await
+        .expect("node public ip stores");
+    let runner = ObservingContainerRunner::new(node_id("node_a"), observations.clone());
+    let node_runtime = start_node_runtime_with_ports(
+        client.clone(),
+        node_id("node_a"),
+        runner.clone(),
+        ReadyWireGuardEbpf,
+        runner,
+    )
+    .await?;
+    let gateway_runtime = start_gateway_process_runtime_with_client(
+        client.clone(),
+        Duration::from_millis(10),
+        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        node_id("node_a"),
+    )
+    .await?;
+    let first_upstream = TestUpstream::start().await;
+    let first_upstream_port = first_upstream.port();
+    let api = OperationApiClient::new(client.clone());
+    let route_hostname = route_hostname("control-down.local");
+    let route_port = route_port(gateway_runtime.listen_addr().port());
+    let request = DeploySubmitRequest {
+        operation_id: operation_id("op_e2e_control_down_route"),
+        target: deploy_target_with_route(
+            "svc_api",
+            route_hostname.as_str(),
+            route_port.get(),
+            first_upstream_port,
+        ),
+        idempotency_key: idempotency_key("idem_e2e_control_down_route"),
+    };
+
+    api.deploy_submit(&request).await?;
+
+    let status =
+        wait_for_terminal_deploy_status(&api, operation_id("op_e2e_control_down_route")).await;
+    assert!(
+        matches!(
+            status,
+            OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            }
+        ),
+        "expected routed deploy to complete, got {status:?}"
+    );
+    wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", first_upstream_port).await;
+    assert_eq!(
+        http_get_with_host(
+            gateway_runtime.listen_addr(),
+            &format!("control-down.local:{}", route_port.get()),
+        )
+        .await?,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(
+        first_upstream.request().await,
+        "GET /smoke HTTP/1.1\r\nHost: control-down.local:".to_owned()
+            + &route_port.get().to_string()
+            + "\r\n\r\n"
+    );
+
+    control_runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+
+    let second_upstream = TestUpstream::start().await;
+    let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    routes
+        .commit_active_route(&ActiveRouteCommitRequest {
+            target: RouteTarget::try_new(route_hostname.clone(), route_port),
+            endpoint_port: self::route_port(second_upstream.port()),
+            expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
+                service_id: service_id("svc_api"),
+                revision_id: revision_id("rev_2"),
+                endpoint_port: self::route_port(first_upstream_port),
+            }),
+            service_id: service_id("svc_api"),
+            revision_id: revision_id("rev_2"),
+        })
+        .await
+        .expect("route can change without control runtime");
+    observations
+        .replace_node_containers(
+            &NodeContainerObservationSnapshot::try_new(
+                node_id("node_a"),
+                [ManagedContainerObservation {
+                    node_id: node_id("node_a"),
+                    container_id: container_id("ctr_after_control_down"),
+                    service_id: service_id("svc_api"),
+                    revision_id: revision_id("rev_2"),
+                    operation_id: operation_id("op_e2e_control_down_route"),
+                    step_id: step_id("step_after_control_down"),
+                    kind: ManagedContainerKind::Service,
+                    state: ContainerRuntimeState::running_at(endpoint(
+                        "127.0.0.1",
+                        second_upstream.port(),
+                    )),
+                }],
+            )
+            .expect("manual observation matches node"),
+        )
+        .await
+        .expect("observation can change without control runtime");
+
+    wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", second_upstream.port()).await;
+    assert_eq!(
+        http_get_with_host(
+            gateway_runtime.listen_addr(),
+            &format!("control-down.local:{}", route_port.get()),
+        )
+        .await?,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    assert_eq!(
+        second_upstream.request().await,
+        "GET /smoke HTTP/1.1\r\nHost: control-down.local:".to_owned()
+            + &route_port.get().to_string()
+            + "\r\n\r\n"
+    );
+
+    gateway_runtime.shutdown().await;
+    node_runtime
+        .shutdown()
+        .await
+        .expect("node runtime shuts down");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_jetstream().await?;
@@ -890,6 +1056,28 @@ async fn wait_for_gateway_route(
     panic!("gateway route did not become visible");
 }
 
+async fn wait_for_gateway_upstream(
+    runtime: &ployzd::gateway_process_runtime::RunningGatewayProcessRuntime,
+    endpoint_ip: &str,
+    endpoint_port: u16,
+) {
+    for _ in 0..200 {
+        if runtime.served_projection().is_some_and(|projection| {
+            projection.routes.iter().any(|route| {
+                route.upstreams.iter().any(|upstream| {
+                    upstream.endpoint.ip.to_string() == endpoint_ip
+                        && upstream.endpoint.port.get() == endpoint_port
+                })
+            })
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!("gateway upstream did not become visible");
+}
+
 fn route_hostname(value: &str) -> RouteHostname {
     RouteHostname::try_new(value).expect("valid route hostname")
 }
@@ -902,6 +1090,21 @@ fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
     NodePublicIpObservation {
         node_id: self::node_id(node_id),
         public_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, last_octet)),
+    }
+}
+
+fn container_id(value: &str) -> ContainerId {
+    ContainerId::try_new(value).expect("valid container id")
+}
+
+fn step_id(value: &str) -> StepId {
+    StepId::try_new(value).expect("valid step id")
+}
+
+fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
+    ContainerEndpoint {
+        ip: ip.parse().expect("valid endpoint ip"),
+        port: route_port(port),
     }
 }
 
