@@ -62,9 +62,9 @@ fn local_effects_install_keeper_and_start_its_unit() {
             vec!["daemon-reload".to_owned()],
             vec![
                 "enable".to_owned(),
-                "--now".to_owned(),
                 "ployz-keeper.service".to_owned(),
             ],
+            vec!["restart".to_owned(), "ployz-keeper.service".to_owned()],
         ]
     );
     assert_eq!(recorder.events, execution.events);
@@ -445,8 +445,7 @@ fn local_effects_preserve_supervisor_start_failure_as_step_failure() {
         local_config(&root, &systemd_dir),
         RecordingRunner {
             fail_systemctl: Some(vec![
-                "enable".to_owned(),
-                "--now".to_owned(),
+                "restart".to_owned(),
                 "ployz-keeper.service".to_owned(),
             ]),
             ..RecordingRunner::root_linux()
@@ -602,7 +601,10 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
             vec!["daemon-reload".to_owned()],
             vec![
                 "enable".to_owned(),
-                "--now".to_owned(),
+                "ployzd-node-node_2.service".to_owned(),
+            ],
+            vec![
+                "restart".to_owned(),
                 "ployzd-node-node_2.service".to_owned(),
             ],
         ]

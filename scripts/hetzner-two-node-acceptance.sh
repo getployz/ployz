@@ -178,6 +178,13 @@ remote_sh() {
   ssh_base "$(ssh_target "$ip")" "$@"
 }
 
+prepare_host_runtime() {
+  ip="$1"
+  remote_sh "$ip" "if ! command -v docker >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl docker.io; fi"
+  remote_sh "$ip" "systemctl enable --now docker"
+  remote_sh "$ip" "docker info >/dev/null"
+}
+
 stage_host() {
   ip="$1"
   remote_sh "$ip" "install -d -m 0755 '$remote_dir'"
@@ -300,6 +307,8 @@ case "$command" in
     echo "  ${core_name} ${core_ip}"
     echo "  ${edge_name} ${edge_ip}"
 
+    prepare_host_runtime "$core_ip"
+    prepare_host_runtime "$edge_ip"
     stage_host "$core_ip"
     stage_host "$edge_ip"
     remote_sh "$core_ip" "install -d -m 0700 /etc/ployz"

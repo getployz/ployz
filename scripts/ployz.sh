@@ -104,4 +104,5 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now ployz-keeper.service
+systemctl enable ployz-keeper.service
+systemctl restart ployz-keeper.service

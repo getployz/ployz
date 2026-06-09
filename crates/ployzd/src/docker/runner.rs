@@ -12,7 +12,10 @@ use bollard::models::{
     ContainerSummaryStateEnum, EndpointSettings, HostConfig, NetworkCreateRequest,
     NetworkingConfig,
 };
-use bollard::query_parameters::{ListContainersOptionsBuilder, RemoveContainerOptionsBuilder};
+use bollard::query_parameters::{
+    CreateImageOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+};
+use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::node::ContainerEndpoint;
 use ployz_core::ops::RoutePort;
@@ -117,6 +120,8 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, NodeContainerRunnerError> {
+        self.pull_image(command.image.as_str()).await?;
+
         let requires_endpoint_network = command.endpoint.is_some();
         if requires_endpoint_network {
             self.ensure_endpoint_network().await?;
@@ -188,6 +193,21 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
 }
 
 impl DockerManagedContainerRunner {
+    async fn pull_image(&self, image: &str) -> Result<(), NodeContainerRunnerError> {
+        let options = CreateImageOptionsBuilder::new()
+            .from_image(image)
+            .build();
+        let mut stream = self.docker.create_image(Some(options), None, None);
+
+        while let Some(result) = stream.next().await {
+            result.map_err(|error| NodeContainerRunnerError::Create {
+                message: format!("pull Docker image {image}: {error}"),
+            })?;
+        }
+
+        Ok(())
+    }
+
     async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
         let request = NetworkCreateRequest {
             name: ENDPOINT_NETWORK_NAME.to_owned(),

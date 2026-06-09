@@ -147,7 +147,8 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
     ) -> Result<(), FailureMessage> {
         self.runner.systemctl(&["daemon-reload"])?;
         let unit_name = target.unit_name();
-        self.runner.systemctl(&["enable", "--now", &unit_name])
+        self.runner.systemctl(&["enable", &unit_name])?;
+        self.runner.systemctl(&["restart", &unit_name])
     }
 
     fn restart_supervisor_unit(
