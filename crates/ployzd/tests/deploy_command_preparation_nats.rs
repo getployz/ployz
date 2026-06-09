@@ -239,6 +239,49 @@ async fn routed_nats_preparation_includes_gateway_nodes_in_dataplane_scope() {
 }
 
 #[tokio::test]
+async fn routed_nats_preparation_uses_configured_node_as_dataplane_fallback() {
+    let nats = test_nats().await;
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observation store");
+    core_state
+        .replace_active_machine(&active_machine("edge_2"))
+        .await
+        .expect("active edge stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("core_1", 1))
+        .await
+        .expect("core public ip stores");
+    observations
+        .replace_node_public_ip(&node_public_ip("edge_2", 2))
+        .await
+        .expect("edge public ip stores");
+
+    let command = prepare_command_from_nats(
+        operation_id("op_123"),
+        routed_deploy_request(),
+        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        &core_state,
+        &observations,
+        Duration::from_secs(7),
+    )
+    .await;
+
+    assert_eq!(command.eligible_nodes(), [node_id("edge_2")]);
+    assert_eq!(command.dataplane_nodes(), [node_id("core_1")]);
+    assert_eq!(
+        command.wireguard_peer_endpoints(),
+        [
+            wireguard_peer_endpoint("core_1", 1),
+            wireguard_peer_endpoint("edge_2", 2),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let nats = test_nats().await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)

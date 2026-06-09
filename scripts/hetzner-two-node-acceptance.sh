@@ -244,6 +244,25 @@ wait_for_machine_ready() {
   return 1
 }
 
+wait_for_smoke_service() {
+  name="$1"
+  ip="$2"
+  deadline=$(( $(date +%s) + 120 ))
+  log_file="${log_dir}/curl-smoke-${name}.log"
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if curl -fsS -H 'Host: smoke.local' "http://${ip}:8080/" >"$log_file" 2>&1; then
+      cat "$log_file"
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "smoke service did not respond through ${name} gateway ${ip}; last output:" >&2
+  cat "$log_file" >&2 || true
+  return 1
+}
+
 on_exit() {
   status="$?"
   if [ -n "${known_hosts_file:-}" ]; then
@@ -391,9 +410,10 @@ JSON
     run_remote_logged watch-deploy "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch op_deploy_smoke"
 
-    echo "curling smoke service" >&2
-    curl -fsS -H 'Host: smoke.local' "http://${core_ip}:8080/" >"${log_dir}/curl-smoke.log"
-    cat "${log_dir}/curl-smoke.log"
+    echo "curling smoke service through core gateway" >&2
+    wait_for_smoke_service core "$core_ip"
+    echo "curling smoke service through edge gateway" >&2
+    wait_for_smoke_service edge "$edge_ip"
 
     if [ "${PLOYZ_ACCEPTANCE_KEEP:-0}" != "1" ]; then
       cleanup_servers
