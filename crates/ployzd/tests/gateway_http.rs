@@ -3,9 +3,168 @@ use ployz_core::node::ContainerEndpoint;
 use ployz_core::ops::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
 use ployzd::gateway::{GatewayProjectedRoute, GatewayProjection, GatewayUpstream};
 use ployzd::gateway_http::{
-    GatewayHttpRouteError, HttpRouteTargetError, route_target_from_authority, select_http_upstream,
+    GatewayHttpProxyError, GatewayHttpRouteError, HttpRouteTargetError,
+    proxy_connection_by_first_http_host, route_target_from_authority, select_http_upstream,
 };
 use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+
+#[tokio::test]
+async fn dumb_http_proxy_forwards_one_request_to_selected_upstream() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream_listener.accept().await.expect("accept upstream");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .await
+            .expect("read upstream request");
+        assert_eq!(
+            String::from_utf8(request).expect("request is utf8"),
+            "GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
+        );
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke")
+            .await
+            .expect("write upstream response");
+    });
+    let table = route_table([projected_route_to_endpoint(
+        "api.example.com",
+        443,
+        "127.0.0.1",
+        upstream_addr.port(),
+    )]);
+    let (mut client, mut gateway) = tokio::io::duplex(1024);
+    let gateway_task = tokio::spawn(async move {
+        proxy_connection_by_first_http_host(&table, &mut gateway, route_port(443))
+            .await
+            .expect("proxy request succeeds");
+    });
+
+    client
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\n\r\n")
+        .await
+        .expect("write client request");
+    client.shutdown().await.expect("finish client request");
+    let mut response = String::new();
+    client
+        .read_to_string(&mut response)
+        .await
+        .expect("read client response");
+
+    assert_eq!(
+        response,
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
+    );
+    gateway_task.await.expect("gateway task completes");
+    upstream_task.await.expect("upstream task completes");
+}
+
+#[tokio::test]
+async fn dumb_http_proxy_reports_missing_host_header() {
+    let table = route_table([projected_route("api.example.com", 443)]);
+    let (mut client, mut gateway) = tokio::io::duplex(1024);
+    let gateway_task = tokio::spawn(async move {
+        proxy_connection_by_first_http_host(&table, &mut gateway, route_port(443))
+            .await
+            .expect_err("missing host is reported")
+    });
+
+    client
+        .write_all(b"GET /smoke HTTP/1.1\r\n\r\n")
+        .await
+        .expect("write client request");
+    client.shutdown().await.expect("finish client request");
+
+    assert_eq!(
+        gateway_task.await.expect("gateway task completes"),
+        GatewayHttpProxyError::MissingHost
+    );
+}
+
+#[tokio::test]
+async fn dumb_http_proxy_preserves_body_bytes_buffered_with_headers() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream_listener.accept().await.expect("accept upstream");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .await
+            .expect("read upstream request");
+        assert_eq!(
+            String::from_utf8(request).expect("request is utf8"),
+            "POST /smoke HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 5\r\n\r\nsmoke"
+        );
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write upstream response");
+    });
+    let table = route_table([projected_route_to_endpoint(
+        "api.example.com",
+        443,
+        "127.0.0.1",
+        upstream_addr.port(),
+    )]);
+    let (mut client, mut gateway) = tokio::io::duplex(1024);
+    let gateway_task = tokio::spawn(async move {
+        proxy_connection_by_first_http_host(&table, &mut gateway, route_port(443))
+            .await
+            .expect("proxy request succeeds");
+    });
+
+    client
+        .write_all(
+            b"POST /smoke HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 5\r\n\r\nsmoke",
+        )
+        .await
+        .expect("write client request");
+    client.shutdown().await.expect("finish client request");
+    let mut response = String::new();
+    client
+        .read_to_string(&mut response)
+        .await
+        .expect("read client response");
+
+    assert_eq!(
+        response,
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"
+    );
+    gateway_task.await.expect("gateway task completes");
+    upstream_task.await.expect("upstream task completes");
+}
+
+#[tokio::test]
+async fn dumb_http_proxy_reports_incomplete_request_head() {
+    let table = route_table([projected_route("api.example.com", 443)]);
+    let (mut client, mut gateway) = tokio::io::duplex(1024);
+    let gateway_task = tokio::spawn(async move {
+        proxy_connection_by_first_http_host(&table, &mut gateway, route_port(443))
+            .await
+            .expect_err("incomplete head is reported")
+    });
+
+    client
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com")
+        .await
+        .expect("write incomplete client request");
+    client.shutdown().await.expect("finish client request");
+
+    assert_eq!(
+        gateway_task.await.expect("gateway task completes"),
+        GatewayHttpProxyError::ReadClient {
+            source: std::io::ErrorKind::UnexpectedEof,
+        }
+    );
+}
 
 #[test]
 fn http_gateway_selects_upstream_from_host_authority() {
@@ -141,20 +300,33 @@ fn route_table(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> Gatew
 }
 
 fn projected_route(hostname: &str, port: u16) -> GatewayProjectedRoute {
+    projected_route_to_endpoint(hostname, port, "10.0.0.1", 8080)
+}
+
+fn projected_route_to_endpoint(
+    hostname: &str,
+    port: u16,
+    endpoint_ip: &str,
+    endpoint_port: u16,
+) -> GatewayProjectedRoute {
     GatewayProjectedRoute {
         target: route_target(hostname, port),
-        upstreams: vec![upstream()],
+        upstreams: vec![upstream_to_endpoint(endpoint_ip, endpoint_port)],
         unroutable_containers: vec![],
     }
 }
 
 fn upstream() -> GatewayUpstream {
+    upstream_to_endpoint("10.0.0.1", 8080)
+}
+
+fn upstream_to_endpoint(ip: &str, port: u16) -> GatewayUpstream {
     GatewayUpstream {
         node_id: node_id("node_1"),
         container_id: container_id("ctr_1"),
         endpoint: ContainerEndpoint {
-            ip: "10.0.0.1".parse().expect("valid endpoint ip"),
-            port: route_port(8080),
+            ip: ip.parse().expect("valid endpoint ip"),
+            port: route_port(port),
         },
     }
 }
