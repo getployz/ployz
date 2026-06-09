@@ -451,6 +451,10 @@ export class MachineAddHandle extends OperationHandle {
     return this.machine.bootstrap_url;
   }
 
+  get bootstrapNatsUrl(): MachineAddAccepted["bootstrap_nats_url"] {
+    return this.machine.bootstrap_nats_url;
+  }
+
   get joinToken(): MachineAddAccepted["join_token"] {
     return this.machine.join_token;
   }

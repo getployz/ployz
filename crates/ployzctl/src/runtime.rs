@@ -155,9 +155,7 @@ pub async fn execute_command(
                 .map_err(|source| PloyzctlExecutionError::MachineAddApi { source })?;
 
             Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::machine::MachineAddOutput::from_accepted(accepted)
-                    .with_nats_url(config.nats_url.clone())
-                    .render(),
+                crate::commands::machine::MachineAddOutput::from_accepted(accepted).render(),
             ))
         }
         PloyzctlCommand::MachineList(command) => {

@@ -54,7 +54,10 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains(" init join-template "));
     assert!(script.contains("tunnel identity --secret-key-file"));
     assert!(script.contains("core_iroh_public_key="));
-    assert!(script.contains("edge_bootstrap_nats_url=\"nats://127.0.0.1:7423\""));
+    assert!(script.contains("edge_runtime_nats_url=\"nats://127.0.0.1:7422\""));
+    assert!(script.contains("edge_runtime_nats_addr=\"127.0.0.1:7422\""));
+    assert!(!script.contains("edge_bootstrap_nats_url="));
+    assert!(!script.contains("7423"));
     assert!(script.contains("--runtime-nats-url '$edge_runtime_nats_url'"));
     assert!(script.contains("--trusted-first-node core_1"));
     assert!(script.contains("--core-iroh-public-key '$core_iroh_public_key'"));
@@ -67,11 +70,12 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains("--activate-first-node"));
     assert!(script.contains(" machine add --node edge_2"));
     assert!(script.contains("start-bootstrap-tunnel"));
-    assert!(script.contains("PLOYZ_TUNNEL_LISTEN_ADDR='$edge_bootstrap_tunnel_listen_addr'"));
+    assert!(script.contains("machine add did not print the joined node runtime NATS URL"));
+    assert!(script.contains("PLOYZ_TUNNEL_LISTEN_ADDR='$edge_runtime_nats_addr'"));
     assert!(script.contains("PLOYZ_TUNNEL_CORE_PUBLIC_KEY='$core_iroh_public_key'"));
     assert!(script.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}'"));
     assert!(script.contains(" sh '$remote_ployz_sh' --join-token"));
-    assert!(script.contains("PLOYZ_NATS_URL='$edge_bootstrap_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh'"));
+    assert!(script.contains("PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh'"));
     assert!(script.contains("wait_for_machine_ready \"$core_ip\" edge_2 \"$edge_ip\""));
     assert!(script.contains("gateway current"));
     assert!(script.contains("inspect-edge-through-runtime-tunnel"));

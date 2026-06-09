@@ -320,8 +320,7 @@ ebpf_bytecode="${PLOYZ_ACCEPTANCE_EBPF_BYTECODE:-/tmp/ployz-rust-ebpf-target/bpf
 smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
 ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
 edge_runtime_nats_url="nats://127.0.0.1:7422"
-edge_bootstrap_nats_url="nats://127.0.0.1:7423"
-edge_bootstrap_tunnel_listen_addr="127.0.0.1:7423"
+edge_runtime_nats_addr="127.0.0.1:7422"
 remote_ebpf_path="/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
 remote_ebpf_ctl="/usr/local/bin/ployz-ebpf-ctl"
 
@@ -411,12 +410,13 @@ JSON
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' machine add --node edge_2 --name edge_2 --operation op_machine_add --idempotency-key idem_machine_add --gateway"
     join_token="$(extract_join_token "$machine_log")"
     [ -n "$join_token" ] || die "machine add did not print a join token; output: ${machine_log}"
+    grep -q "PLOYZ_NATS_URL='$edge_runtime_nats_url'" "$machine_log" || die "machine add did not print the joined node runtime NATS URL; output: ${machine_log}"
 
     run_remote_logged start-bootstrap-tunnel "$edge_ip" \
-      "PLOYZ_NATS_URL='$edge_bootstrap_nats_url' PLOYZ_NODE_ID=edge_2 PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 PLOYZ_TUNNEL_LISTEN_ADDR='$edge_bootstrap_tunnel_listen_addr' PLOYZ_TUNNEL_CORE_NODE=core_1 PLOYZ_TUNNEL_CORE_PUBLIC_KEY='$core_iroh_public_key' PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}' nohup '$remote_ployzd' tunnel --side edge > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
+      "PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_ID=edge_2 PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 PLOYZ_TUNNEL_LISTEN_ADDR='$edge_runtime_nats_addr' PLOYZ_TUNNEL_CORE_NODE=core_1 PLOYZ_TUNNEL_CORE_PUBLIC_KEY='$core_iroh_public_key' PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}' nohup '$remote_ployzd' tunnel --side edge > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
 
     run_remote_logged join-edge "$edge_ip" \
-      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_bootstrap_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"
+      "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"
 
     remote_sh "$edge_ip" "if [ -f '$remote_bootstrap_tunnel_pid' ]; then kill \"\$(cat '$remote_bootstrap_tunnel_pid')\" >/dev/null 2>&1 || true; fi"
 

@@ -76,6 +76,7 @@
       },
       "node_id": "node_2",
       "bootstrap_url": "https://get.ployz.sh",
+      "bootstrap_nats_url": "nats://127.0.0.1:7422",
       "join_token": "join_once_123"
     }
   },

@@ -150,6 +150,7 @@ pub struct MachineAddAccepted {
     pub accepted: AcceptedOperation,
     pub node_id: NodeId,
     pub bootstrap_url: MachineBootstrapUrl,
+    pub bootstrap_nats_url: MachineJoinRuntimeNatsUrl,
     pub join_token: MachineJoinToken,
 }
 

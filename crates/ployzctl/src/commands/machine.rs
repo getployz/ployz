@@ -9,7 +9,9 @@ use ployz_sdk_types::{
 };
 
 pub use ployz_sdk_types::MachineName;
-pub use ployz_sdk_types::{BootstrapCommandError, MachineBootstrapUrl, MachineJoinToken};
+pub use ployz_sdk_types::{
+    BootstrapCommandError, MachineBootstrapUrl, MachineJoinRuntimeNatsUrl, MachineJoinToken,
+};
 
 use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
 use crate::shell::shell_quote;
@@ -41,8 +43,8 @@ pub struct MachineAddOutput {
     pub node_id: NodeId,
     pub accepted: AcceptedOperation,
     pub bootstrap_url: MachineBootstrapUrl,
+    pub bootstrap_nats_url: MachineJoinRuntimeNatsUrl,
     pub join_token: MachineJoinToken,
-    pub nats_url: Option<String>,
 }
 
 impl MachineAddOutput {
@@ -52,31 +54,23 @@ impl MachineAddOutput {
             node_id: accepted.node_id,
             accepted: accepted.accepted,
             bootstrap_url: accepted.bootstrap_url,
+            bootstrap_nats_url: accepted.bootstrap_nats_url,
             join_token: accepted.join_token,
-            nats_url: None,
         }
     }
 
     #[must_use]
-    pub fn with_nats_url(mut self, nats_url: Option<String>) -> Self {
-        self.nats_url = nats_url;
-        self
-    }
-
-    #[must_use]
     pub fn render(&self) -> String {
-        let shell = match &self.nats_url {
-            Some(nats_url) => format!("PLOYZ_NATS_URL={} sh", shell_quote(nats_url)),
-            None => "sh".to_owned(),
-        };
-
         format!(
             "operation {}\nnode {}\njoin-token {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
             self.accepted.operation_id.as_str(),
             self.node_id.as_str(),
             self.join_token.as_str(),
             shell_quote(self.bootstrap_url.as_str()),
-            shell,
+            format_args!(
+                "PLOYZ_NATS_URL={} sh",
+                shell_quote(self.bootstrap_nats_url.as_str())
+            ),
             shell_quote(self.join_token.as_str())
         )
     }
@@ -89,8 +83,8 @@ impl fmt::Debug for MachineAddOutput {
             .field("node_id", &self.node_id)
             .field("accepted", &self.accepted)
             .field("bootstrap_url", &self.bootstrap_url)
+            .field("bootstrap_nats_url", &self.bootstrap_nats_url)
             .field("join_token", &self.join_token)
-            .field("nats_url", &self.nats_url.as_ref().map(|_| "[redacted]"))
             .finish()
     }
 }
