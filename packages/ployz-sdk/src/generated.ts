@@ -194,9 +194,17 @@ export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle
 
 export type ExpectedActiveService = "absent" | { "revision": RevisionId };
 
+export type ActiveMachineState = { node_id: NodeId, name: MachineName, activated_by: OperationId, };
+
 export type ActiveServiceState = { service_id: ServiceId, active_revision: RevisionId, };
 
 export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
+
+export type NodePublicIpObservation = { node_id: NodeId, public_ip: string, };
+
+export type GatewayStatusObservation = { node_id: NodeId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
+
+export type MachineSnapshot = { active: ActiveMachineState, public_ip: NodePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
 
 export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
 
@@ -207,6 +215,18 @@ export type MachineAddRequest = { operation_id: OperationId, idempotency_key: Op
 export type MachineAddGateway = "install" | "skip";
 
 export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_token: MachineJoinToken, };
+
+export type MachineListRequest = Record<symbol, never>;
+
+export type MachineListResult = { machines: Array<MachineSnapshot>, };
+
+export type MachineListError = { "error": "unavailable", source: MachineQueryUnavailableSource, };
+
+export type MachineInspectRequest = { node_id: NodeId, };
+
+export type MachineInspectError = { "error": "no_such_machine", node_id: NodeId, } | { "error": "unavailable", source: MachineQueryUnavailableSource, };
+
+export type MachineQueryUnavailableSource = { "source": "core_state" } | { "source": "observations" };
 
 export type MachineJoinClusterName = string;
 
@@ -266,7 +286,7 @@ export type MachineJoinReported = { operation_id: OperationId, node_id: NodeId, 
 
 export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", source: MachineJoinReportUnavailableSource, };
 
-export type MachineJoinReportUnavailableSource = { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "operation_corrupt" };
+export type MachineJoinReportUnavailableSource = { "source": "core_state" } | { "source": "status_read", failure: StatusReadFailure, } | { "source": "status_write", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "operation_corrupt" };
 
 export type OpsStatusRequest = { operation_id: OperationId, };
 
@@ -310,6 +330,10 @@ export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, Deplo
 
 export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
+export type MachineListResponse = OperationApiResponse<MachineListResult, MachineListError>;
+
+export type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
+
 export type MachineJoinRedeemResponse = OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
 export type MachineJoinReportResponse = OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
@@ -325,6 +349,8 @@ export type BackupCreateResponse = OperationApiResponse<AcceptedOperation, Backu
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
+  { name: "machine.list", subject: "plz.v1.svc.api.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
+  { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },
   { name: "machine.join.redeem", subject: "plz.v1.svc.api.machine.join.redeem", execution: "mutates_operation", request: "MachineJoinRedeemRequest", success: "MachineJoinRedeemed", error: "MachineJoinRedeemError", response: "MachineJoinRedeemResponse" },
   { name: "machine.join.report", subject: "plz.v1.svc.api.machine.join.report", execution: "mutates_operation", request: "MachineJoinReportRequest", success: "MachineJoinReported", error: "MachineJoinReportError", response: "MachineJoinReportResponse" },
   { name: "ops.status", subject: "plz.v1.svc.api.ops.status", execution: "query", request: "OpsStatusRequest", success: "OperationStatusSnapshot", error: "OpsStatusError", response: "OpsStatusResponse" },

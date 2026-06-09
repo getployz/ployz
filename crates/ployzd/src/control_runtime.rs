@@ -6,7 +6,7 @@ use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
 use crate::deploy_worker::DeployExecutionNodeScope;
-use crate::operation_api::OperationApiHandlers;
+use crate::operation_api::{MachineQueryRuntime, OperationApiHandlers};
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
@@ -84,13 +84,14 @@ pub async fn start_control_runtime_with_client(
     let backup_tasks = BackupTaskRegistry::default();
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
-        core_state,
-        observations,
+        core_state.clone(),
+        observations.clone(),
         controllers.clone(),
         DeployExecutionNodeScope::same_nodes(config.deploy_nodes.clone()),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );
+    let machine_query = MachineQueryRuntime::new(core_state, observations);
     let backup_launcher = OwnedBackupLauncher::new(
         jetstream,
         controllers.clone(),
@@ -103,7 +104,7 @@ pub async fn start_control_runtime_with_client(
         .map_err(ControlRuntimeError::StartBackupWorker)?;
     let operation_api = start_operation_api_service_with_handlers(
         client,
-        OperationApiHandlers::execute_operations(controllers, deploy_runtime),
+        OperationApiHandlers::execute_operations(controllers, deploy_runtime, machine_query),
     )
     .await
     .map_err(ControlRuntimeError::StartOperationApi)?;

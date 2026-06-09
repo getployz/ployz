@@ -5,14 +5,19 @@ use crate::controllers::{
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
 };
 use crate::deploy_runtime::DeployOperationRuntime;
-use ployz_core::ids::OperationId;
-use ployz_core::machine::RawJoinToken;
+use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease, OperationStatus,
     OperationStatusSnapshot, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_core::roles::FirstNodeGateway;
+use ployz_core::state::ActiveMachineState;
 use ployz_core::subjects::op_watch;
+use ployz_nats::core_state::{
+    ActiveMachineReadError, ActiveMachineWriteError, AsyncNatsCoreStateStore,
+};
+use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
     MachineJoinRedemption, OperationEventLogError, OperationEventReplayReadError,
     OperationStatusReadError, OperationStatusStoreError, RecordMachineAddEventError,
@@ -26,20 +31,24 @@ use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, BackupCreateUnavailableSource,
     BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitUnavailableSource, EventReplayFailure, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineAddUnavailableSource, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
-    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
-    MachineJoinReported, MachineJoinToken, OperationSubmitClockFailure,
-    OperationSubmitEventFailure, OperationSubmitStatusFailure, OpsStatusError,
-    OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource, StatusReadFailure,
+    MachineAddRequest, MachineAddUnavailableSource, MachineInspectError, MachineInspectRequest,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult,
+    MachineJoinRedeemUnavailableSource, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportFailure, MachineJoinReportOutcome, MachineJoinReportRequest,
+    MachineJoinReportUnavailableSource, MachineJoinReported, MachineJoinToken, MachineListError,
+    MachineListRequest, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
+    OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
+    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource,
+    StatusReadFailure,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_execution: DeploySubmitExecution,
+    machine_query: MachineQueryExecution,
 }
 
 impl OperationApiHandlers {
@@ -48,6 +57,7 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_execution: DeploySubmitExecution::AcceptOnly,
+            machine_query: MachineQueryExecution::Unavailable,
         }
     }
 
@@ -55,10 +65,12 @@ impl OperationApiHandlers {
     pub fn execute_operations(
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,
+        machine_query: MachineQueryRuntime,
     ) -> Self {
         Self {
             controllers,
             deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
+            machine_query: MachineQueryExecution::Execute(Arc::new(machine_query)),
         }
     }
 
@@ -72,6 +84,189 @@ impl OperationApiHandlers {
 pub enum DeploySubmitExecution {
     AcceptOnly,
     Execute(Arc<DeployOperationRuntime>),
+}
+
+#[derive(Clone)]
+pub enum MachineQueryExecution {
+    Unavailable,
+    Execute(Arc<MachineQueryRuntime>),
+}
+
+#[derive(Clone)]
+pub struct MachineQueryRuntime {
+    core_state: AsyncNatsCoreStateStore,
+    observations: AsyncNatsObservationStore,
+}
+
+impl MachineQueryRuntime {
+    #[must_use]
+    pub fn new(
+        core_state: AsyncNatsCoreStateStore,
+        observations: AsyncNatsObservationStore,
+    ) -> Self {
+        Self {
+            core_state,
+            observations,
+        }
+    }
+
+    async fn list(&self) -> Result<MachineListResult, MachineListError> {
+        let machines = self
+            .core_state
+            .active_machines()
+            .await
+            .map_err(machine_list_core_error)?;
+        let public_ips = self
+            .observations
+            .node_public_ips()
+            .await
+            .map_err(|_| MachineListError::Unavailable {
+                source: MachineQueryUnavailableSource::Observations,
+            })?
+            .into_iter()
+            .map(|observation| (observation.node_id.clone(), observation))
+            .collect::<BTreeMap<_, _>>();
+        let gateway_statuses = self
+            .observations
+            .gateway_statuses()
+            .await
+            .map_err(|_| MachineListError::Unavailable {
+                source: MachineQueryUnavailableSource::Observations,
+            })?
+            .into_iter()
+            .map(|observation| (observation.node_id.clone(), observation))
+            .collect::<BTreeMap<_, _>>();
+        let container_counts = self
+            .observations
+            .node_snapshot_records()
+            .await
+            .map_err(|_| MachineListError::Unavailable {
+                source: MachineQueryUnavailableSource::Observations,
+            })?
+            .into_iter()
+            .map(|record| {
+                (
+                    record.snapshot.node_id().clone(),
+                    record.snapshot.containers().len(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut snapshots = Vec::with_capacity(machines.len());
+        for machine in machines {
+            snapshots.push(MachineSnapshot {
+                public_ip: public_ips.get(&machine.node_id).cloned(),
+                gateway: gateway_statuses.get(&machine.node_id).cloned(),
+                observed_container_count: container_counts
+                    .get(&machine.node_id)
+                    .copied()
+                    .unwrap_or_default(),
+                active: machine,
+            });
+        }
+        Ok(MachineListResult {
+            machines: snapshots,
+        })
+    }
+
+    async fn inspect(&self, node_id: &NodeId) -> Result<MachineSnapshot, MachineInspectError> {
+        let Some(machine) = self
+            .core_state
+            .active_machine(node_id)
+            .await
+            .map_err(machine_inspect_core_error)?
+        else {
+            return Err(MachineInspectError::NoSuchMachine {
+                node_id: node_id.clone(),
+            });
+        };
+
+        self.snapshot(machine).await.map_err(machine_inspect_error)
+    }
+
+    async fn activate_machine(
+        &self,
+        machine: &ActiveMachineState,
+    ) -> Result<(), ActiveMachineWriteError> {
+        self.core_state.replace_active_machine(machine).await
+    }
+
+    async fn snapshot(
+        &self,
+        active: ActiveMachineState,
+    ) -> Result<MachineSnapshot, MachineSnapshotError> {
+        let public_ip = self
+            .observations
+            .node_public_ip(&active.node_id)
+            .await
+            .map_err(|_| MachineSnapshotError::Observations)?;
+        let gateway = self
+            .observations
+            .gateway_status(&active.node_id)
+            .await
+            .map_err(|_| MachineSnapshotError::Observations)?;
+        let observed_container_count = self
+            .observations
+            .node_snapshot(&active.node_id)
+            .await
+            .map_err(|_| MachineSnapshotError::Observations)?
+            .map(|snapshot| snapshot.containers().len())
+            .unwrap_or_default();
+
+        Ok(MachineSnapshot {
+            active,
+            public_ip,
+            gateway,
+            observed_container_count,
+        })
+    }
+}
+
+enum MachineSnapshotError {
+    Observations,
+}
+
+pub async fn machine_list(
+    handlers: &OperationApiHandlers,
+    _request: MachineListRequest,
+) -> Result<MachineListResult, MachineListError> {
+    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
+        return Err(MachineListError::Unavailable {
+            source: MachineQueryUnavailableSource::CoreState,
+        });
+    };
+    runtime.list().await
+}
+
+pub async fn machine_inspect(
+    handlers: &OperationApiHandlers,
+    request: MachineInspectRequest,
+) -> Result<MachineSnapshot, MachineInspectError> {
+    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
+        return Err(MachineInspectError::Unavailable {
+            source: MachineQueryUnavailableSource::CoreState,
+        });
+    };
+    runtime.inspect(&request.node_id).await
+}
+
+fn machine_list_core_error(_error: ActiveMachineReadError) -> MachineListError {
+    MachineListError::Unavailable {
+        source: MachineQueryUnavailableSource::CoreState,
+    }
+}
+
+fn machine_inspect_core_error(_error: ActiveMachineReadError) -> MachineInspectError {
+    MachineInspectError::Unavailable {
+        source: MachineQueryUnavailableSource::CoreState,
+    }
+}
+
+fn machine_inspect_error(error: MachineSnapshotError) -> MachineInspectError {
+    match error {
+        MachineSnapshotError::Observations => MachineInspectError::Unavailable {
+            source: MachineQueryUnavailableSource::Observations,
+        },
+    }
 }
 
 #[must_use]
@@ -233,7 +428,7 @@ pub async fn machine_join_redeem(
 }
 
 pub async fn machine_join_report(
-    controllers: &OperationControllers,
+    handlers: &OperationApiHandlers,
     request: MachineJoinReportRequest,
 ) -> Result<MachineJoinReported, MachineJoinReportError> {
     let raw_token = RawJoinToken::try_new(request.join_token.as_str())
@@ -241,10 +436,14 @@ pub async fn machine_join_report(
     let outcome = request.outcome;
     let result = match outcome.clone() {
         MachineJoinReportOutcome::Completed => {
-            controllers.record_machine_join_completed(&raw_token).await
+            handlers
+                .controllers
+                .record_machine_join_completed(&raw_token)
+                .await
         }
         MachineJoinReportOutcome::Failed { failure } => {
-            controllers
+            handlers
+                .controllers
                 .record_machine_join_failed(
                     &raw_token,
                     machine_add_failure_from_join_report_failure(failure),
@@ -252,9 +451,19 @@ pub async fn machine_join_report(
                 .await
         }
     };
-    let reported = result.map_err(machine_join_report_error)?;
+    let reported = match result {
+        Ok(reported) => reported,
+        Err(error) if matches!(outcome, MachineJoinReportOutcome::Completed) => {
+            if let Some(reported) = repair_completed_machine_join_report(handlers, &error).await? {
+                return Ok(reported);
+            }
+            return Err(machine_join_report_error(error));
+        }
+        Err(error) => return Err(machine_join_report_error(error)),
+    };
 
-    let status = controllers
+    let status = handlers
+        .controllers
         .operation_status(&reported.operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
@@ -268,6 +477,8 @@ pub async fn machine_join_report(
 
     let OperationStatus::MachineAdd {
         last_event_sequence,
+        name,
+        node_id,
         ..
     } = status
     else {
@@ -275,6 +486,9 @@ pub async fn machine_join_report(
             source: MachineJoinReportUnavailableSource::OperationCorrupt,
         });
     };
+    if let MachineJoinReportOutcome::Completed = outcome {
+        activate_reported_machine(handlers, &reported.operation_id, &node_id, &name).await?;
+    }
 
     Ok(MachineJoinReported {
         operation_id: reported.operation_id,
@@ -282,6 +496,104 @@ pub async fn machine_join_report(
         last_event_sequence,
         outcome,
     })
+}
+
+async fn repair_completed_machine_join_report(
+    handlers: &OperationApiHandlers,
+    error: &RecordMachineJoinReportError,
+) -> Result<Option<MachineJoinReported>, MachineJoinReportError> {
+    let Some(operation_id) = completed_machine_add_operation_id(error) else {
+        return Ok(None);
+    };
+    let Some(status) = handlers
+        .controllers
+        .operation_status(&operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::StatusRead {
+                failure: status_read_failure(&error),
+            },
+        })?
+    else {
+        return Err(MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::OperationCorrupt,
+        });
+    };
+    let OperationStatus::MachineAdd {
+        id,
+        node_id,
+        name,
+        state: ployz_core::machine::MachineAddOperationState::Completed,
+        last_event_sequence,
+        ..
+    } = status
+    else {
+        return Ok(None);
+    };
+
+    activate_reported_machine(handlers, &id, &node_id, &name).await?;
+    Ok(Some(MachineJoinReported {
+        operation_id: id,
+        node_id,
+        last_event_sequence,
+        outcome: MachineJoinReportOutcome::Completed,
+    }))
+}
+
+fn completed_machine_add_operation_id(error: &RecordMachineJoinReportError) -> Option<OperationId> {
+    let RecordMachineJoinReportError::RecordMachineAddEvent(
+        RecordMachineAddEventError::ProjectStatus(
+            StatusProjectionError::InvalidTransition {
+                operation_id,
+                current,
+                ..
+            }
+            | StatusProjectionError::TerminalState {
+                operation_id,
+                current,
+                ..
+            },
+        ),
+    ) = error
+    else {
+        return None;
+    };
+    let ProjectionOperationState::MachineAdd(state) = current.as_ref() else {
+        return None;
+    };
+    if state.name() == ployz_core::machine::MachineAddOperationStateName::Completed {
+        Some(operation_id.clone())
+    } else {
+        None
+    }
+}
+
+async fn activate_reported_machine(
+    handlers: &OperationApiHandlers,
+    operation_id: &OperationId,
+    node_id: &NodeId,
+    name: &MachineName,
+) -> Result<(), MachineJoinReportError> {
+    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
+        return Err(MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::OperationCorrupt,
+        });
+    };
+    let active_machine = active_machine_from_completed_add(
+        operation_id.clone(),
+        node_id.clone(),
+        name.clone(),
+        ployz_core::machine::MachineAddOperationState::Completed,
+    )
+    .map_err(|_| MachineJoinReportError::Unavailable {
+        source: MachineJoinReportUnavailableSource::OperationCorrupt,
+    })?;
+    runtime
+        .activate_machine(&active_machine)
+        .await
+        .map_err(|_| MachineJoinReportError::Unavailable {
+            source: MachineJoinReportUnavailableSource::CoreState,
+        })
 }
 
 fn machine_add_failure_from_join_report_failure(

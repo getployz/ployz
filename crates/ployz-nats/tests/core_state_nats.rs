@@ -1,10 +1,12 @@
 use async_nats::jetstream;
-use ployz_core::ids::{RevisionId, ServiceId};
+use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
+use ployz_core::machine::MachineName;
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{
-    ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveRouteStateKey,
-    ActiveServiceCommit, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveRoute, ExpectedActiveRouteRevision, ExpectedActiveService,
+    ActiveMachineState, ActiveMachineStateKey, ActiveRouteCommit, ActiveRouteCommitRequest,
+    ActiveRouteState, ActiveRouteStateKey, ActiveServiceCommit, ActiveServiceCommitRequest,
+    ActiveServiceState, ActiveServiceStateKey, ExpectedActiveRoute, ExpectedActiveRouteRevision,
+    ExpectedActiveService,
 };
 use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
@@ -37,6 +39,52 @@ async fn active_service_state_round_trips_through_kv_core() {
             service_id,
             active_revision: revision
         })
+    );
+}
+
+#[tokio::test]
+async fn active_machine_state_round_trips_through_kv_core() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let machine = active_machine_state("node_7", "edge_7", "op_machine");
+
+    store
+        .replace_active_machine(&machine)
+        .await
+        .expect("active machine stores");
+
+    assert_eq!(
+        store
+            .active_machine(&node_id("node_7"))
+            .await
+            .expect("active machine loads"),
+        Some(machine)
+    );
+}
+
+#[tokio::test]
+async fn active_machines_list_sorted_by_node_id() {
+    let nats = test_nats().await;
+    let store = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open core state store");
+    let node_8 = active_machine_state("node_8", "edge_8", "op_8");
+    let node_7 = active_machine_state("node_7", "edge_7", "op_7");
+
+    store
+        .replace_active_machine(&node_8)
+        .await
+        .expect("node 8 stores");
+    store
+        .replace_active_machine(&node_7)
+        .await
+        .expect("node 7 stores");
+
+    assert_eq!(
+        store.active_machines().await.expect("machines list"),
+        vec![node_7, node_8]
     );
 }
 
@@ -621,6 +669,14 @@ fn active_route_state_key_matches_kv_core_path() {
     );
 }
 
+#[test]
+fn active_machine_state_key_matches_kv_core_path() {
+    assert_eq!(
+        ActiveMachineStateKey::from_node_id(&node_id("node_7")).as_str(),
+        "machines.node_7"
+    );
+}
+
 struct TestNats {
     _server: nats_server::Server,
     jetstream: jetstream::Context,
@@ -650,6 +706,18 @@ fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
 
+fn node_id(value: &str) -> NodeId {
+    NodeId::try_new(value).expect("valid node id")
+}
+
+fn operation_id(value: &str) -> OperationId {
+    OperationId::try_new(value).expect("valid operation id")
+}
+
+fn machine_name(value: &str) -> MachineName {
+    MachineName::try_new(value).expect("valid machine name")
+}
+
 fn revision_id(value: &str) -> RevisionId {
     RevisionId::try_new(value).expect("valid revision id")
 }
@@ -672,6 +740,14 @@ fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> Ac
         endpoint_port: route_port(8080),
         service_id: service_id(service),
         revision_id: revision_id(revision),
+    }
+}
+
+fn active_machine_state(node: &str, name: &str, operation: &str) -> ActiveMachineState {
+    ActiveMachineState {
+        node_id: node_id(node),
+        name: machine_name(name),
+        activated_by: operation_id(operation),
     }
 }
 

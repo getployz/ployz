@@ -68,7 +68,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::FirstNodeGateway;
 pub use ployz_core::state::{
-    ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
+    ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
+    GatewayStatusObservation, NodePublicIpObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -102,6 +103,10 @@ pub struct MachineAddRequest {
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
+pub type MachineListResponse = OperationApiResponse<MachineListResult, MachineListError>;
+
+pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
+
 pub type MachineJoinRedeemResponse =
     OperationApiResponse<MachineJoinRedeemed, MachineJoinRedeemError>;
 
@@ -122,6 +127,57 @@ pub struct MachineAddAccepted {
     pub node_id: NodeId,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_token: MachineJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineListRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineInspectRequest {
+    pub node_id: NodeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineListResult {
+    pub machines: Vec<MachineSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MachineSnapshot {
+    pub active: ActiveMachineState,
+    pub public_ip: Option<NodePublicIpObservation>,
+    pub gateway: Option<GatewayStatusObservation>,
+    pub observed_container_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineListError {
+    Unavailable {
+        source: MachineQueryUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineInspectError {
+    NoSuchMachine {
+        node_id: NodeId,
+    },
+    Unavailable {
+        source: MachineQueryUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineQueryUnavailableSource {
+    CoreState,
+    Observations,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -215,6 +271,7 @@ pub enum MachineJoinReportError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineJoinReportUnavailableSource {
+    CoreState,
     StatusRead {
         failure: StatusReadFailure,
     },

@@ -2,8 +2,8 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{
-    OperationApiHandlers, backup_create, deploy_submit, machine_add, machine_join_redeem,
-    machine_join_report, ops_status, ops_watch,
+    OperationApiHandlers, backup_create, deploy_submit, machine_add, machine_inspect,
+    machine_join_redeem, machine_join_report, machine_list, ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -14,8 +14,8 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -73,6 +73,22 @@ async fn bind_operation_endpoint(
             |handlers, request| async move { machine_add(handlers.controllers(), request).await },
         )
         .await,
+        OperationApiEndpoint::MachineList => {
+            bind_operation_contract::<MachineListApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { machine_list(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::MachineInspect => {
+            bind_operation_contract::<MachineInspectApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { machine_inspect(&handlers, request).await },
+            )
+            .await
+        }
         OperationApiEndpoint::BackupCreate => {
             bind_operation_contract::<BackupCreateApi, _, _>(
                 runtime,
@@ -95,9 +111,7 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<MachineJoinReportApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move {
-                    machine_join_report(handlers.controllers(), request).await
-                },
+                |handlers, request| async move { machine_join_report(&handlers, request).await },
             )
             .await
         }

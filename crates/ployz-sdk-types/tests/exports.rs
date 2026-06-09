@@ -7,23 +7,24 @@ use ployz_sdk_types::{
     DeployRunningStage, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     EventSequence, EventSequenceError, ImageReference, ImageReferenceError, InstallContractError,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
-    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
-    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
-    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineName, NodeId,
-    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnerId, OperationOwnerLease, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
-    ReplicaCount, ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort,
-    RoutePortError, ServiceId, SubjectTokenError,
+    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineInspectError,
+    MachineInspectRequest, MachineJoinBundle, MachineJoinCoreIrohEndpoint,
+    MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
+    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
+    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError, MachineListRequest,
+    MachineListResult, MachineName, MachineSnapshot, NodeId, NonEmptyTextError,
+    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, SubjectTokenError,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -271,6 +272,9 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
 fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
+    assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
+    assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
+    );
     assert_contract::<
         MachineJoinRedeemApi,
         MachineJoinRedeemRequest,
@@ -313,6 +317,24 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineAddAccepted".to_owned(),
                 "MachineAddError".to_owned(),
                 "MachineAddResponse",
+            ),
+            (
+                "machine.list",
+                "plz.v1.svc.api.machine.list",
+                OperationApiEndpointExecution::Query,
+                "MachineListRequest".to_owned(),
+                "MachineListResult".to_owned(),
+                "MachineListError".to_owned(),
+                "MachineListResponse",
+            ),
+            (
+                "machine.inspect",
+                "plz.v1.svc.api.machine.inspect",
+                OperationApiEndpointExecution::Query,
+                "MachineInspectRequest".to_owned(),
+                "MachineSnapshot".to_owned(),
+                "MachineInspectError".to_owned(),
+                "MachineInspectResponse",
             ),
             (
                 "machine.join.redeem",

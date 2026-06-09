@@ -1,9 +1,11 @@
 //! NATS-backed canonical current-state adapters.
 
+mod active_machine;
 mod active_route;
 mod active_service;
 
 use crate::kv::KV_CORE_BUCKET;
+pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};
 pub use active_route::{ActiveRouteReadError, ActiveRouteWriteError};
 use async_nats::jetstream;
 use ployz_core::ids::ServiceId;

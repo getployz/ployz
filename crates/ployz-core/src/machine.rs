@@ -368,6 +368,25 @@ pub enum MachineActivationOutcome {
     Rejected(MachineTransitionRejected),
 }
 
+pub fn active_machine_from_completed_add(
+    operation_id: OperationId,
+    node_id: NodeId,
+    name: MachineName,
+    operation: MachineAddOperationState,
+) -> Result<ActiveMachineState, MachineTransitionRejected> {
+    let MachineAddOperationState::Completed = operation else {
+        return Err(MachineTransitionRejected {
+            current: operation.name(),
+        });
+    };
+
+    Ok(ActiveMachineState {
+        node_id,
+        name,
+        activated_by: operation_id,
+    })
+}
+
 #[must_use]
 pub fn activate_joined_machine(
     reservation: MachineReservation,

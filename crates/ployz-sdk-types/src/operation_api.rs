@@ -3,9 +3,10 @@
 use crate::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
     DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, OperationStatusSnapshot, OpsStatusError,
-    OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot,
+    OperationStatusSnapshot, OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -26,6 +27,8 @@ macro_rules! operation_api_contracts {
         $macro!(
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::MachineAddApi,
+            $crate::operation_api::MachineListApi,
+            $crate::operation_api::MachineInspectApi,
             $crate::operation_api::MachineJoinRedeemApi,
             $crate::operation_api::MachineJoinReportApi,
             $crate::operation_api::OpsStatusApi,
@@ -69,6 +72,30 @@ impl OperationApiContract for MachineAddApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineAdd;
     const RESPONSE_ALIAS: &'static str = "MachineAddResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineListApi;
+
+impl OperationApiContract for MachineListApi {
+    type Request = MachineListRequest;
+    type Success = MachineListResult;
+    type Error = MachineListError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineList;
+    const RESPONSE_ALIAS: &'static str = "MachineListResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineInspectApi;
+
+impl OperationApiContract for MachineInspectApi {
+    type Request = MachineInspectRequest;
+    type Success = MachineSnapshot;
+    type Error = MachineInspectError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineInspect;
+    const RESPONSE_ALIAS: &'static str = "MachineInspectResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

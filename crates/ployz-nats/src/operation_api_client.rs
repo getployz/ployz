@@ -8,12 +8,13 @@ use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
     DeploySubmitRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, OperationApiResponse, OpsStatusError,
-    OpsStatusRequest, OpsWatchError, OpsWatchRequest,
+    MachineInspectError, MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, OperationApiResponse,
+    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        BackupCreateApi, DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -70,6 +71,20 @@ impl OperationApiClient {
         request: &MachineAddRequest,
     ) -> Result<MachineAddAccepted, OperationApiClientError<MachineAddError>> {
         self.request_api::<MachineAddApi>(request).await
+    }
+
+    pub async fn machine_list(
+        &self,
+        request: &MachineListRequest,
+    ) -> Result<MachineListResult, OperationApiClientError<MachineListError>> {
+        self.request_api::<MachineListApi>(request).await
+    }
+
+    pub async fn machine_inspect(
+        &self,
+        request: &MachineInspectRequest,
+    ) -> Result<MachineSnapshot, OperationApiClientError<MachineInspectError>> {
+        self.request_api::<MachineInspectApi>(request).await
     }
 
     pub async fn machine_join_redeem(

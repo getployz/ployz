@@ -13,17 +13,21 @@ use ployz_core::install::{
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
 };
+use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
-    DeploySubmitRequest, MachineAddGateway, MachineAddRequest, OpsStatusRequest,
+    DeploySubmitRequest, MachineAddGateway, MachineAddRequest, MachineInspectRequest,
+    MachineJoinRedeemRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
+    MachineListRequest, OpsStatusRequest,
 };
 use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 mod support;
@@ -115,6 +119,72 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         .expect("machine add retry succeeds");
     assert_eq!(retry.accepted.operation_id, operation_id("op_machine"));
     assert_eq!(retry.join_token, accepted.join_token);
+
+    let redeemed = api
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: accepted.join_token.clone(),
+        })
+        .await
+        .expect("join token redeems");
+    assert_eq!(redeemed.node_id, node_id("node_2"));
+
+    api.machine_join_report(&MachineJoinReportRequest {
+        join_token: accepted.join_token.clone(),
+        outcome: MachineJoinReportOutcome::Completed,
+    })
+    .await
+    .expect("join completion reports");
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("open observations");
+    observations
+        .replace_node_public_ip(&NodePublicIpObservation {
+            node_id: node_id("node_2"),
+            public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2)),
+        })
+        .await
+        .expect("public ip stores");
+    observations
+        .replace_gateway_status(&GatewayStatusObservation {
+            node_id: node_id("node_2"),
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            serving: GatewayServingStatus::Current,
+            route_count: 0,
+        })
+        .await
+        .expect("gateway status stores");
+
+    let inspected = api
+        .machine_inspect(&MachineInspectRequest {
+            node_id: node_id("node_2"),
+        })
+        .await
+        .expect("machine inspects");
+    assert_eq!(inspected.active.node_id, node_id("node_2"));
+    assert_eq!(inspected.active.name.as_str(), "edge_2");
+    assert_eq!(
+        inspected
+            .public_ip
+            .as_ref()
+            .expect("public ip exists")
+            .public_ip,
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2))
+    );
+    assert_eq!(
+        inspected
+            .gateway
+            .as_ref()
+            .expect("gateway status exists")
+            .serving,
+        GatewayServingStatus::Current
+    );
+    assert_eq!(
+        api.machine_list(&MachineListRequest {})
+            .await
+            .expect("machines list")
+            .machines,
+        vec![inspected]
+    );
 
     runtime
         .shutdown()
