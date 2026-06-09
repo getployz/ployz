@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
+pub const JOIN_NATS_CREDENTIALS_FILE: &str = "nats.creds";
+pub const JOIN_CORE_IROH_TICKET_FILE: &str = "core-iroh.ticket";
+pub const JOIN_MATERIAL_DIR: &str = "join-material.d";
 
 pub fn read_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
     let contents = fs::read_to_string(path).map_err(|error| JoinTokenFileError::ReadFailed {
@@ -20,8 +23,11 @@ pub fn read_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError
                 JoinMaterialError::EmptyClusterName => {
                     unreachable!("token validation cannot inspect cluster names")
                 }
-                JoinMaterialError::InvalidClusterName { .. } => {
-                    unreachable!("token validation cannot inspect cluster names")
+                JoinMaterialError::EmptyJoinMaterialValue { .. }
+                | JoinMaterialError::InvalidJoinMaterialValue { .. }
+                | JoinMaterialError::EmptySecret
+                | JoinMaterialError::InvalidSecret => {
+                    unreachable!("token validation cannot inspect machine join material")
                 }
             },
         )?;
@@ -76,9 +82,14 @@ impl std::error::Error for JoinTokenFileError {}
 #[must_use]
 pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
     format!(
-        "node_id={}\ncluster_name={}\n",
+        "node_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_server={}\ntrusted_nats_config_sha256={}\ncore_iroh_public_key={}\ncore_iroh_ticket={}\n",
         material.node_id.as_str(),
-        material.cluster_name
+        material.cluster_name,
+        "[redacted]",
+        material.trusted_nats_server,
+        material.trusted_nats_config_sha256,
+        material.core_iroh_public_key,
+        "[redacted]"
     )
     .into_bytes()
 }

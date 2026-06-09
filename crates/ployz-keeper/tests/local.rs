@@ -12,17 +12,18 @@ use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
     execute_keeper_plan,
 };
-use ployz_keeper::join::JOIN_MATERIAL_FILE;
+use ployz_keeper::join::{
+    JOIN_CORE_IROH_TICKET_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
+};
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
     execute_keeper_join,
 };
 use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, KeeperStep,
-    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, bootstrap_script_plan,
-    first_node_install_plan,
+    BootstrapScriptTarget, FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
+    KeeperStep, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
+    PloyzdRoleEnvironmentTarget, bootstrap_script_plan, first_node_install_plan,
 };
 use ployz_keeper::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
@@ -182,8 +183,8 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
     let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::VerifyHost(_),
             reason: KeeperStepFailureReason::HostPrerequisiteFailed,
             message,
@@ -259,8 +260,8 @@ fn local_effects_remove_partial_remote_download_after_failure() {
     let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::InstallArtifact(_),
             reason: KeeperStepFailureReason::ArtifactDownloadFailed,
             message,
@@ -299,16 +300,16 @@ fn local_effects_report_remote_artifact_digest_mismatch_as_verification_failure(
     let second = execute_keeper_plan(&plan, &mut effects, &mut recorder);
 
     assert!(matches!(
-        first.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        first.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::InstallArtifact(_),
             reason: KeeperStepFailureReason::ArtifactVerificationFailed,
             ..
         }))
     ));
     assert!(matches!(
-        second.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        second.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::InstallArtifact(_),
             reason: KeeperStepFailureReason::ArtifactVerificationFailed,
             ..
@@ -417,8 +418,8 @@ fn local_effects_preserve_supervisor_start_failure_as_step_failure() {
     let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::Keeper),
             reason: KeeperStepFailureReason::SupervisorStartFailed,
             message,
@@ -472,7 +473,16 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     let source = root.join("ployzd-source");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let target = KeeperJoinTarget::new(
-        RedactedJoinMaterial::new(node_id("node_2"), "prod").expect("valid join material"),
+        KeeperJoinMaterial::new(
+            node_id("node_2"),
+            "prod",
+            "user-jwt-and-seed",
+            "server_1",
+            NATS_CONFIG_DIGEST,
+            "core-public-key",
+            "core-ticket",
+        )
+        .expect("valid join material"),
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
         NonEmptyRoleSet::try_new(vec![ployz_core::roles::DaemonProcessRole::Node(node_id(
             "node_2",
@@ -503,9 +513,41 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
 
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(
-        fs::read_to_string(root.join("state").join(JOIN_MATERIAL_FILE))
-            .expect("join material is stored"),
-        "node_id=node_2\ncluster_name=prod\n"
+        fs::read_to_string(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_MATERIAL_FILE)
+        )
+        .expect("join material is stored"),
+        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ncore_iroh_public_key=core-public-key\ncore_iroh_ticket=[redacted]\n"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_NATS_CREDENTIALS_FILE),
+        )
+        .expect("nats credentials are stored"),
+        "user-jwt-and-seed"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_CORE_IROH_TICKET_FILE),
+        )
+        .expect("core iroh ticket is stored"),
+        "core-ticket"
+    );
+    assert_secret_file_mode(
+        root.join("state")
+            .join(JOIN_MATERIAL_DIR)
+            .join(JOIN_NATS_CREDENTIALS_FILE),
+    );
+    assert_secret_file_mode(
+        root.join("state")
+            .join(JOIN_MATERIAL_DIR)
+            .join(JOIN_CORE_IROH_TICKET_FILE),
     );
     assert!(root.join("join/bin/ployzd").exists());
     assert_eq!(
@@ -533,8 +575,16 @@ fn local_effects_store_redacted_join_material() {
     let root = temp_dir("ployz-keeper-local-join-material");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let material =
-        RedactedJoinMaterial::new(node_id("node_2"), "prod").expect("valid join material");
+    let material = KeeperJoinMaterial::new(
+        node_id("node_2"),
+        "prod",
+        "user-jwt-and-seed",
+        "server_1",
+        NATS_CONFIG_DIGEST,
+        "core-public-key",
+        "core-ticket",
+    )
+    .expect("valid join material");
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner::root_linux(),
@@ -548,9 +598,41 @@ fn local_effects_store_redacted_join_material() {
         .expect("join material stores idempotently");
 
     assert_eq!(
-        fs::read_to_string(root.join("state").join(JOIN_MATERIAL_FILE))
-            .expect("join material is stored"),
-        "node_id=node_2\ncluster_name=prod\n"
+        fs::read_to_string(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_MATERIAL_FILE)
+        )
+        .expect("join material is stored"),
+        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ncore_iroh_public_key=core-public-key\ncore_iroh_ticket=[redacted]\n"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_NATS_CREDENTIALS_FILE),
+        )
+        .expect("nats credentials are stored"),
+        "user-jwt-and-seed"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            root.join("state")
+                .join(JOIN_MATERIAL_DIR)
+                .join(JOIN_CORE_IROH_TICKET_FILE),
+        )
+        .expect("core iroh ticket is stored"),
+        "core-ticket"
+    );
+    assert_secret_file_mode(
+        root.join("state")
+            .join(JOIN_MATERIAL_DIR)
+            .join(JOIN_NATS_CREDENTIALS_FILE),
+    );
+    assert_secret_file_mode(
+        root.join("state")
+            .join(JOIN_MATERIAL_DIR)
+            .join(JOIN_CORE_IROH_TICKET_FILE),
     );
 }
 
@@ -801,5 +883,21 @@ fn temp_dir(prefix: &str) -> PathBuf {
     path
 }
 
+#[cfg(unix)]
+fn assert_secret_file_mode(path: PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path)
+        .expect("secret file metadata is readable")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[cfg(not(unix))]
+fn assert_secret_file_mode(_path: PathBuf) {}
+
 const PLOYZ_NEWLINE_SHA256: &str =
     "2dcc3bb1142455239d3b3391d9569a8ce0fbdfb906cd0434329e5dd736592138";
+const NATS_CONFIG_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";

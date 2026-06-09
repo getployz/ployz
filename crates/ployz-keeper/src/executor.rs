@@ -16,7 +16,17 @@ pub struct KeeperPlanExecution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperPlanTerminal {
     Completed,
-    Failed(KeeperPlanFailure),
+    Failed(Box<KeeperPlanFailure>),
+}
+
+impl KeeperPlanTerminal {
+    #[must_use]
+    pub fn failure(&self) -> Option<&KeeperPlanFailure> {
+        match self {
+            Self::Completed => None,
+            Self::Failed(failure) => Some(failure),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +90,7 @@ pub(crate) fn execute_labeled_action<T>(
             }
             Err(Box::new(KeeperPlanExecution {
                 events: events.clone(),
-                terminal: KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(failure)),
+                terminal: KeeperPlanTerminal::Failed(Box::new(KeeperPlanFailure::Step(failure))),
             }))
         }
     }
@@ -118,7 +128,9 @@ pub fn execute_keeper_plan(
                 }
                 return KeeperPlanExecution {
                     events,
-                    terminal: KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(failure)),
+                    terminal: KeeperPlanTerminal::Failed(Box::new(KeeperPlanFailure::Step(
+                        failure,
+                    ))),
                 };
             }
         }
@@ -147,9 +159,8 @@ pub(crate) fn failed_recording(
 ) -> KeeperPlanExecution {
     KeeperPlanExecution {
         events,
-        terminal: KeeperPlanTerminal::Failed(KeeperPlanFailure::Record(KeeperRecordFailure {
-            event,
-            message,
-        })),
+        terminal: KeeperPlanTerminal::Failed(Box::new(KeeperPlanFailure::Record(
+            KeeperRecordFailure { event, message },
+        ))),
     }
 }

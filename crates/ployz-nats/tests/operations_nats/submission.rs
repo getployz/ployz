@@ -1,5 +1,7 @@
 use super::fixtures::*;
-use ployz_core::machine::{MachineAddFailure, MachineAddOperationState, MachineName};
+use ployz_core::machine::{
+    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
+};
 use ployz_core::ops::{
     DeployRunningStage, DeployTransition, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayRequest, OperationOwnershipStatus, OperationStatus,
@@ -64,7 +66,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
         .expect("first machine add accepted");
     let second = repository
         .submit_machine_add(
-            machine_add_submission("op_other", "idem_machine", "node_3", "edge_3"),
+            machine_add_submission("op_other", "idem_machine", "node_2", "edge_2"),
             default_lease_claim(),
         )
         .await
@@ -115,6 +117,36 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
             gateway: FirstNodeGateway::Skip,
             join_token: issued_join_token_for_raw("join_token"),
         }
+    );
+}
+
+#[tokio::test]
+async fn operation_repository_machine_add_retry_rejects_secret_delivery_drift() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+
+    repository
+        .submit_machine_add(
+            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("first machine add accepted");
+    let mut retry = machine_add_submission("op_other", "idem_machine", "node_2", "edge_2");
+    retry.secret_delivery = ployz_core::install::MachineJoinSecretDelivery {
+        nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
+            "different-user-jwt-and-seed",
+        )
+        .expect("valid nats credentials"),
+        core_iroh_ticket: ployz_core::install::MachineJoinIrohTicket::try_new("core-ticket")
+            .expect("valid iroh ticket"),
+    };
+
+    assert!(
+        repository
+            .submit_machine_add(retry, default_lease_claim())
+            .await
+            .is_err()
     );
 }
 
@@ -339,6 +371,7 @@ async fn operation_repository_repeated_machine_join_token_returns_joined_facts()
             name: accepted.name,
             gateway: accepted.gateway,
             join_bundle: accepted.join_bundle,
+            secret_delivery: machine_join_secret_delivery(),
             joined_at: joined_at(50),
             last_event_sequence: event_sequence(2),
         })
@@ -382,10 +415,42 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
             name: accepted.name,
             gateway: accepted.gateway,
             join_bundle: accepted.join_bundle,
+            secret_delivery: machine_join_secret_delivery(),
             joined_at: joined_at(50),
             last_event_sequence: event_sequence(2),
         })
     );
+}
+
+#[tokio::test]
+async fn operation_repository_completed_machine_join_redeem_does_not_need_secret_delivery() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    let accepted = repository
+        .submit_machine_add(
+            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
+            default_lease_claim(),
+        )
+        .await
+        .expect("machine add accepted");
+    repository
+        .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
+        .await
+        .expect("join token redeems");
+    repository
+        .record_machine_join_completed(&accepted.raw_join_token)
+        .await
+        .expect("machine join completes and clears secret delivery");
+
+    assert!(matches!(
+        repository
+            .redeem_machine_join_token(&accepted.raw_join_token, joined_at(55))
+            .await,
+        Err(RedeemMachineJoinTokenError::OperationNotPending {
+            operation_id,
+            current: MachineAddOperationStateName::Completed,
+        }) if operation_id == accepted.operation_id
+    ));
 }
 
 #[tokio::test]
@@ -411,6 +476,7 @@ async fn machine_add_partial_submission_does_not_expose_join_token_before_accept
     let idempotency_key = idempotency_key("idem_machine");
     let original = StoredMachineAddSubmission {
         operation_id: operation_id("op_machine"),
+        idempotency_key: idempotency_key.clone(),
         start_sequence: None,
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
@@ -436,12 +502,13 @@ async fn machine_add_partial_submission_does_not_expose_join_token_before_accept
         .submit_machine_add(
             MachineAddOperationSubmission {
                 operation_id: operation_id("op_other"),
-                node_id: node_id("node_3"),
-                name: MachineName::try_new("edge_3").expect("valid machine name"),
-                gateway: FirstNodeGateway::Install,
+                node_id: original.node_id.clone(),
+                name: original.name.clone(),
+                gateway: original.gateway,
                 join_bundle: machine_join_bundle(),
-                raw_join_token: raw_join_token("new_raw_join_token"),
-                join_token: issued_join_token_for_raw("new_raw_join_token"),
+                secret_delivery: machine_join_secret_delivery(),
+                raw_join_token: original.raw_join_token.clone(),
+                join_token: original.join_token.clone(),
                 idempotency_key,
             },
             default_lease_claim(),
@@ -468,6 +535,7 @@ async fn machine_add_join_token_index_rejects_unaccepted_submission() {
             &idempotency_key,
             &StoredMachineAddSubmission {
                 operation_id: operation_id("op_machine"),
+                idempotency_key: idempotency_key.clone(),
                 start_sequence: None,
                 node_id: node_id("node_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
@@ -514,6 +582,7 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
             &existing_idempotency_key,
             &StoredMachineAddSubmission {
                 operation_id: operation_id("op_existing"),
+                idempotency_key: existing_idempotency_key.clone(),
                 start_sequence: None,
                 node_id: node_id("node_existing"),
                 name: MachineName::try_new("edge_existing").expect("valid machine name"),
@@ -551,6 +620,7 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     gateway: FirstNodeGateway::Skip,
                     join_bundle: machine_join_bundle(),
+                    secret_delivery: machine_join_secret_delivery(),
                     raw_join_token,
                     join_token: issued_join_token_for_raw("shared_raw_join_token"),
                     idempotency_key: idempotency_key("idem_machine"),
@@ -581,6 +651,7 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
                 gateway: FirstNodeGateway::Skip,
                 join_bundle: machine_join_bundle(),
+                secret_delivery: machine_join_secret_delivery(),
                 raw_join_token: raw_join_token("short_lived_join_token"),
                 join_token: issued_join_token_for_raw_with_expiry("short_lived_join_token", 40),
                 idempotency_key: idempotency_key("idem_machine"),
@@ -675,6 +746,7 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
     let idempotency_key = idempotency_key("idem_machine");
     let original = StoredMachineAddSubmission {
         operation_id: operation_id("op_machine"),
+        idempotency_key: idempotency_key.clone(),
         start_sequence: None,
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
@@ -704,12 +776,13 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
         .submit_machine_add(
             MachineAddOperationSubmission {
                 operation_id: operation_id("op_other"),
-                node_id: node_id("node_3"),
-                name: MachineName::try_new("edge_3").expect("valid machine name"),
-                gateway: FirstNodeGateway::Install,
+                node_id: original.node_id.clone(),
+                name: original.name.clone(),
+                gateway: original.gateway,
                 join_bundle: machine_join_bundle(),
-                raw_join_token: raw_join_token("new_raw_join_token"),
-                join_token: issued_join_token_for_raw("new_raw_join_token"),
+                secret_delivery: machine_join_secret_delivery(),
+                raw_join_token: original.raw_join_token.clone(),
+                join_token: original.join_token.clone(),
                 idempotency_key,
             },
             default_lease_claim(),
@@ -750,6 +823,7 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
             &idempotency_key,
             &StoredMachineAddSubmission {
                 operation_id: operation_id("op_machine"),
+                idempotency_key: idempotency_key.clone(),
                 start_sequence: Some(original_event.sequence),
                 node_id: node_id("node_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
@@ -778,12 +852,13 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
         .submit_machine_add(
             MachineAddOperationSubmission {
                 operation_id: operation_id("op_other"),
-                node_id: node_id("node_3"),
-                name: MachineName::try_new("edge_3").expect("valid machine name"),
-                gateway: FirstNodeGateway::Install,
+                node_id: node_id("node_2"),
+                name: MachineName::try_new("edge_2").expect("valid machine name"),
+                gateway: FirstNodeGateway::Skip,
                 join_bundle: machine_join_bundle(),
-                raw_join_token: raw_join_token("new_raw_join_token"),
-                join_token: issued_join_token_for_raw("new_raw_join_token"),
+                secret_delivery: machine_join_secret_delivery(),
+                raw_join_token: raw_join_token("original_raw_join_token"),
+                join_token: issued_join_token_for_raw("original_raw_join_token"),
                 idempotency_key,
             },
             default_lease_claim(),

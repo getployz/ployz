@@ -2,7 +2,10 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
+    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+    MachineJoinTrustedNatsServerId,
 };
 use ployz_core::roles::FirstNodeGateway;
 
@@ -49,6 +52,18 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinRuntimeNatsUrl::try_new("http://127.0.0.1:7422").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422\n").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422").is_ok());
+    assert!(MachineJoinNatsCredentials::try_new("").is_err());
+    assert!(MachineJoinNatsCredentials::try_new("creds\0bad").is_err());
+    assert!(MachineJoinNatsCredentials::try_new("user-jwt-and-seed").is_ok());
+    assert!(MachineJoinTrustedNatsServerId::try_new("").is_err());
+    assert!(MachineJoinTrustedNatsServerId::try_new("server one").is_err());
+    assert!(MachineJoinTrustedNatsServerId::try_new("server_1").is_ok());
+    assert!(MachineJoinIrohPublicKey::try_new("").is_err());
+    assert!(MachineJoinIrohPublicKey::try_new("key one").is_err());
+    assert!(MachineJoinIrohPublicKey::try_new("core-public-key").is_ok());
+    assert!(MachineJoinIrohTicket::try_new("").is_err());
+    assert!(MachineJoinIrohTicket::try_new("ticket one").is_err());
+    assert!(MachineJoinIrohTicket::try_new("iroh-ticket").is_ok());
     assert!(InstallArtifactVersion::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
@@ -66,13 +81,22 @@ fn keeper_install_contract_validates_artifact_inputs() {
 #[test]
 fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
     let value = serde_json::json!({
-        "cluster_name": "prod",
-        "runtime_nats_url": "nats://127.0.0.1:7422",
-        "ployzd": {
-            "version": "0.1.0",
-            "source": "relative/ployzd",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "install_path": "/usr/local/bin/ployzd"
+        "material": {
+            "cluster_name": "prod",
+            "runtime_nats_url": "nats://127.0.0.1:7422",
+            "trusted_nats": {
+                "server_id": "server_1",
+                "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "core_iroh": {
+                "public_key": "core-public-key"
+            },
+            "ployzd": {
+                "version": "0.1.0",
+                "source": "relative/ployzd",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/bin/ployzd"
+            }
         }
     });
 
@@ -86,16 +110,33 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
     assert_eq!(
         value,
         serde_json::json!({
-            "cluster_name": "prod",
-            "runtime_nats_url": "nats://127.0.0.1:7422",
-            "ployzd": {
-                "version": "0.1.0",
-                "source": "/tmp/ployzd",
-                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "install_path": "/usr/local/bin/ployzd"
+            "material": {
+                "cluster_name": "prod",
+                "runtime_nats_url": "nats://127.0.0.1:7422",
+                "trusted_nats": {
+                    "server_id": "server_1",
+                    "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                "core_iroh": {
+                    "public_key": "core-public-key"
+                },
+                "ployzd": {
+                    "version": "0.1.0",
+                    "source": "/tmp/ployzd",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "install_path": "/usr/local/bin/ployzd"
+                }
             }
         })
     );
+}
+
+#[test]
+fn machine_join_bundle_debug_redacts_secrets() {
+    let rendered = format!("{:?}", machine_join_secret_delivery());
+
+    assert!(!rendered.contains("user-jwt-and-seed"));
+    assert!(!rendered.contains("core-ticket"));
 }
 
 fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
@@ -126,18 +167,41 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
 
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
-        cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-            .expect("valid runtime nats url"),
-        ployzd: MachineJoinPloyzdArtifact {
-            version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-            source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
-            sha256: InstallSha256Digest::try_new(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("valid digest"),
-            install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-                .expect("valid install path"),
+        material: MachineJoinMaterial {
+            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                .expect("valid runtime nats url"),
+            trusted_nats: MachineJoinTrustedNats {
+                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                    .expect("valid nats server id"),
+                config_sha256: InstallSha256Digest::try_new(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )
+                .expect("valid nats config digest"),
+            },
+            core_iroh: MachineJoinCoreIrohEndpoint {
+                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                    .expect("valid core iroh public key"),
+            },
+            ployzd: MachineJoinPloyzdArtifact {
+                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
+                sha256: InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                    .expect("valid install path"),
+            },
         },
+    }
+}
+
+fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
+    MachineJoinSecretDelivery {
+        nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
+            .expect("valid nats credentials"),
+        core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
+            .expect("valid core iroh ticket"),
     }
 }

@@ -152,6 +152,7 @@ pub async fn machine_add(
         name: request.name,
         gateway: first_node_gateway(request.gateway),
         join_bundle: request.join_bundle,
+        secret_delivery: request.secret_delivery,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,
     };
@@ -288,6 +289,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         name: joined.name,
         gateway: joined.gateway,
         join_bundle: joined.join_bundle,
+        secret_delivery: joined.secret_delivery,
         joined_at: joined.joined_at,
         last_event_sequence: joined.last_event_sequence,
         result,
@@ -376,6 +378,7 @@ fn machine_join_redeem_error_from_repository_error(
             }
         }
         RedeemMachineJoinTokenRepositoryError::MissingOperation { .. }
+        | RedeemMachineJoinTokenRepositoryError::MissingSecretDelivery { .. }
         | RedeemMachineJoinTokenRepositoryError::WrongOperationKind { .. }
         | RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { .. } => {
             MachineJoinRedeemError::Unavailable {

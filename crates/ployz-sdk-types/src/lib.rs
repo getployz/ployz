@@ -34,7 +34,10 @@ pub use ployz_core::ids::{
 pub use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
+    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+    MachineJoinTrustedNatsServerId,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
@@ -90,6 +93,7 @@ pub struct MachineAddRequest {
     pub name: MachineName,
     pub gateway: MachineAddGateway,
     pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
@@ -159,6 +163,7 @@ pub struct MachineJoinRedeemed {
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
     pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,
     pub last_event_sequence: EventSequence,
     pub result: MachineJoinRedeemResult,

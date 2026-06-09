@@ -1,6 +1,6 @@
 use async_nats::jetstream;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::MachineJoinBundle;
+use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
@@ -12,7 +12,8 @@ use std::future::Future;
 
 use super::keys::{
     backup_submission_key, cert_submission_key, deploy_submission_key, machine_add_join_token_key,
-    machine_add_submission_key, operation_owner_lease_key, operation_status_key,
+    machine_add_secret_delivery_key, machine_add_submission_key, operation_owner_lease_key,
+    operation_status_key,
 };
 use super::projection::{status_id, status_sequence};
 use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
@@ -37,6 +38,7 @@ pub struct StoredCertSubmission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddSubmission {
     pub operation_id: ployz_core::ids::OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
     pub start_sequence: Option<EventSequence>,
     pub node_id: ployz_core::ids::NodeId,
     pub name: MachineName,
@@ -44,6 +46,12 @@ pub struct StoredMachineAddSubmission {
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredMachineAddSecretDelivery {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +358,85 @@ impl AsyncNatsOperationStatusStore {
                 }
             }
         }
+    }
+
+    pub async fn machine_add_secret_delivery(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "machine add secret delivery get",
+            self.bucket
+                .get(machine_add_secret_delivery_key(idempotency_key)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeSubmission)
+    }
+
+    pub async fn put_machine_add_secret_delivery_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        secret_delivery: &StoredMachineAddSecretDelivery,
+    ) -> Result<StoredMachineAddSecretDelivery, OperationStatusStoreError> {
+        if let Some(existing) = self.machine_add_secret_delivery(idempotency_key).await? {
+            if existing == *secret_delivery {
+                return Ok(existing);
+            }
+            return Err(OperationStatusStoreError::CasConflict {
+                message: "machine add secret delivery is already assigned".to_owned(),
+            });
+        }
+
+        let key = machine_add_secret_delivery_key(idempotency_key);
+        let payload = serde_json::to_vec(secret_delivery)
+            .map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "machine add secret delivery create",
+            self.bucket.create(&key, payload.into()),
+        )
+        .await?
+        {
+            Ok(_) => Ok(secret_delivery.clone()),
+            Err(error) => {
+                let Some(existing) = self.machine_add_secret_delivery(idempotency_key).await?
+                else {
+                    return Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    });
+                };
+                if existing == *secret_delivery {
+                    Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: "machine add secret delivery is already assigned".to_owned(),
+                    })
+                }
+            }
+        }
+    }
+
+    pub async fn delete_machine_add_secret_delivery(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<(), OperationStatusStoreError> {
+        with_status_timeout(
+            "machine add secret delivery delete",
+            self.bucket
+                .delete(machine_add_secret_delivery_key(idempotency_key)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::CasConflict {
+            message: error.to_string(),
+        })
     }
 
     pub async fn put_machine_add_join_token_if_absent(

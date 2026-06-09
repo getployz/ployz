@@ -8,10 +8,12 @@ use ployz_sdk_types::{
     EventSequence, EventSequenceError, ImageReference, ImageReferenceError, InstallContractError,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
     MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineJoinBundle,
-    MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineJoinRuntimeNatsUrl, MachineJoinToken, MachineName, NonEmptyTextError,
+    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
+    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
+    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
+    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinToken,
+    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineName, NonEmptyTextError,
     OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
@@ -170,6 +172,7 @@ fn sdk_exports_operation_api_wire_types() {
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
         join_bundle: machine_join_bundle(),
+        secret_delivery: machine_join_secret_delivery(),
     };
     let machine_response: MachineAddResponse = OperationApiResponse::Ok {
         value: MachineAddAccepted {
@@ -189,7 +192,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"}}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
@@ -207,6 +210,7 @@ fn sdk_exports_operation_api_wire_types() {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             gateway: ployz_sdk_types::FirstNodeGateway::Skip,
             join_bundle: machine_join_bundle(),
+            secret_delivery: machine_join_secret_delivery(),
             joined_at: ployz_sdk_types::JoinTokenRedeemedAt::try_new(60)
                 .expect("valid redeemed timestamp"),
             last_event_sequence: EventSequence::try_new(8).expect("valid event sequence"),
@@ -220,7 +224,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","gateway":"skip","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"server_id":"server_1","config_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"core_iroh":{"public_key":"core-public-key"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"}}},"secret_delivery":{"nats_credentials":"user-jwt-and-seed","core_iroh_ticket":"core-ticket"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
 }
 
@@ -443,24 +447,47 @@ fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> Opera
 
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
-        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
-            .expect("valid cluster name"),
-        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-            .expect("valid runtime nats url"),
-        ployzd: MachineJoinPloyzdArtifact {
-            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-                .expect("valid version"),
-            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
-                .expect("valid source"),
-            sha256: ployz_core::install::InstallSha256Digest::try_new(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("valid digest"),
-            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
-                "/usr/local/bin/ployzd",
-            )
-            .expect("valid install path"),
+        material: MachineJoinMaterial {
+            cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+                .expect("valid cluster name"),
+            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                .expect("valid runtime nats url"),
+            trusted_nats: MachineJoinTrustedNats {
+                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                    .expect("valid nats server id"),
+                config_sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )
+                .expect("valid nats config digest"),
+            },
+            core_iroh: MachineJoinCoreIrohEndpoint {
+                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                    .expect("valid core iroh public key"),
+            },
+            ployzd: MachineJoinPloyzdArtifact {
+                version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                    .expect("valid version"),
+                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                    .expect("valid source"),
+                sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                    "/usr/local/bin/ployzd",
+                )
+                .expect("valid install path"),
+            },
         },
+    }
+}
+
+fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
+    MachineJoinSecretDelivery {
+        nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
+            .expect("valid nats credentials"),
+        core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
+            .expect("valid core iroh ticket"),
     }
 }
 

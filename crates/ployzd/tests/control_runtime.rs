@@ -4,8 +4,10 @@ use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinPloyzdArtifact,
-    MachineJoinRuntimeNatsUrl,
+    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+    MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
+    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 use ployz_core::ops::{
     DeployOperationState, EventSequence, OperationIdempotencyKey, OperationStatus,
@@ -88,19 +90,41 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
             gateway: MachineAddGateway::Skip,
             join_bundle: ployz_core::install::MachineJoinBundle {
-                cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-                    .expect("valid runtime nats url"),
-                ployzd: MachineJoinPloyzdArtifact {
-                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                    source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
-                    sha256: InstallSha256Digest::try_new(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .expect("valid digest"),
-                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-                        .expect("valid install path"),
+                material: MachineJoinMaterial {
+                    cluster_name: MachineJoinClusterName::try_new("prod")
+                        .expect("valid cluster name"),
+                    runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                        .expect("valid runtime nats url"),
+                    trusted_nats: MachineJoinTrustedNats {
+                        server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                            .expect("valid nats server id"),
+                        config_sha256: InstallSha256Digest::try_new(
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        )
+                        .expect("valid nats config digest"),
+                    },
+                    core_iroh: MachineJoinCoreIrohEndpoint {
+                        public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                            .expect("valid core iroh public key"),
+                    },
+                    ployzd: MachineJoinPloyzdArtifact {
+                        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                        source: InstallArtifactSource::try_new("/tmp/ployzd")
+                            .expect("valid source"),
+                        sha256: InstallSha256Digest::try_new(
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        )
+                        .expect("valid digest"),
+                        install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                            .expect("valid install path"),
+                    },
                 },
+            },
+            secret_delivery: MachineJoinSecretDelivery {
+                nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
+                    .expect("valid nats credentials"),
+                core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
+                    .expect("valid core iroh ticket"),
             },
         })
         .await

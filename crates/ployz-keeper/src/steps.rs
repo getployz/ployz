@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::NodeId;
-use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::nats_config::NatsServerConfig;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
@@ -68,7 +68,7 @@ pub enum KeeperStep {
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
-    StoreJoinMaterial(RedactedJoinMaterial),
+    StoreJoinMaterial(KeeperJoinMaterial),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +103,7 @@ impl KeeperStepLabel {
             KeeperStep::RestartSupervisorUnit(target) => {
                 Self::RestartSupervisorUnit(target.clone())
             }
-            KeeperStep::StoreJoinMaterial(material) => Self::StoreJoinMaterial(material.clone()),
+            KeeperStep::StoreJoinMaterial(material) => Self::StoreJoinMaterial(material.redacted()),
         }
     }
 }
@@ -145,30 +145,113 @@ impl fmt::Debug for JoinToken {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct KeeperJoinMaterial {
+    redacted: RedactedJoinMaterial,
+    nats_credentials: String,
+    core_iroh_ticket: String,
+}
+
+impl KeeperJoinMaterial {
+    pub fn from_join_payload(
+        node_id: NodeId,
+        join_bundle: &MachineJoinBundle,
+        secret_delivery: &MachineJoinSecretDelivery,
+    ) -> Result<Self, JoinMaterialError> {
+        Self::new(
+            node_id,
+            join_bundle.material.cluster_name.as_str(),
+            secret_delivery.nats_credentials.secret(),
+            join_bundle.material.trusted_nats.server_id.as_str(),
+            join_bundle.material.trusted_nats.config_sha256.as_str(),
+            join_bundle.material.core_iroh.public_key.as_str(),
+            secret_delivery.core_iroh_ticket.secret(),
+        )
+    }
+
+    pub fn new(
+        node_id: NodeId,
+        cluster_name: impl Into<String>,
+        nats_credentials: impl Into<String>,
+        trusted_nats_server: impl Into<String>,
+        trusted_nats_config_sha256: impl Into<String>,
+        core_iroh_public_key: impl Into<String>,
+        core_iroh_ticket: impl Into<String>,
+    ) -> Result<Self, JoinMaterialError> {
+        let redacted = RedactedJoinMaterial::new(
+            node_id,
+            cluster_name,
+            trusted_nats_server,
+            trusted_nats_config_sha256,
+            core_iroh_public_key,
+        )?;
+        let nats_credentials = secret_file_content(nats_credentials.into())?;
+        let core_iroh_ticket = secret_file_content(core_iroh_ticket.into())?;
+        Ok(Self {
+            redacted,
+            nats_credentials,
+            core_iroh_ticket,
+        })
+    }
+
+    #[must_use]
+    pub fn redacted(&self) -> RedactedJoinMaterial {
+        self.redacted.clone()
+    }
+
+    #[must_use]
+    pub fn nats_credentials(&self) -> &str {
+        &self.nats_credentials
+    }
+
+    #[must_use]
+    pub fn core_iroh_ticket(&self) -> &str {
+        &self.core_iroh_ticket
+    }
+}
+
+impl fmt::Debug for KeeperJoinMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KeeperJoinMaterial")
+            .field("redacted", &self.redacted)
+            .field("nats_credentials", &"[redacted]")
+            .field("core_iroh_ticket", &"[redacted]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactedJoinMaterial {
     pub node_id: NodeId,
     pub cluster_name: String,
+    pub trusted_nats_server: String,
+    pub trusted_nats_config_sha256: String,
+    pub core_iroh_public_key: String,
 }
 
 impl RedactedJoinMaterial {
     pub fn new(
         node_id: NodeId,
         cluster_name: impl Into<String>,
+        trusted_nats_server: impl Into<String>,
+        trusted_nats_config_sha256: impl Into<String>,
+        core_iroh_public_key: impl Into<String>,
     ) -> Result<Self, JoinMaterialError> {
-        let cluster_name = cluster_name.into();
-        if cluster_name.is_empty() {
-            return Err(JoinMaterialError::EmptyClusterName);
-        }
-        if cluster_name.contains(['\n', '\r', '=']) {
-            return Err(JoinMaterialError::InvalidClusterName {
-                value: cluster_name,
-            });
-        }
+        let cluster_name = line_value("cluster name", cluster_name.into())?;
+        let trusted_nats_server = line_value("trusted NATS server", trusted_nats_server.into())?;
+        let trusted_nats_config_sha256 = line_value(
+            "trusted NATS config digest",
+            trusted_nats_config_sha256.into(),
+        )?;
+        let core_iroh_public_key = line_value("core iroh public key", core_iroh_public_key.into())?;
 
         Ok(Self {
             node_id,
             cluster_name,
+            trusted_nats_server,
+            trusted_nats_config_sha256,
+            core_iroh_public_key,
         })
     }
 }
@@ -177,7 +260,34 @@ impl RedactedJoinMaterial {
 pub enum JoinMaterialError {
     EmptyJoinToken,
     EmptyClusterName,
-    InvalidClusterName { value: String },
+    EmptyJoinMaterialValue { label: &'static str },
+    InvalidJoinMaterialValue { label: &'static str, value: String },
+    EmptySecret,
+    InvalidSecret,
+}
+
+fn line_value(label: &'static str, value: String) -> Result<String, JoinMaterialError> {
+    if value.is_empty() {
+        return if label == "cluster name" {
+            Err(JoinMaterialError::EmptyClusterName)
+        } else {
+            Err(JoinMaterialError::EmptyJoinMaterialValue { label })
+        };
+    }
+    if value.contains(['\n', '\r', '=']) {
+        return Err(JoinMaterialError::InvalidJoinMaterialValue { label, value });
+    }
+    Ok(value)
+}
+
+fn secret_file_content(value: String) -> Result<String, JoinMaterialError> {
+    if value.is_empty() {
+        return Err(JoinMaterialError::EmptySecret);
+    }
+    if value.contains('\0') {
+        return Err(JoinMaterialError::InvalidSecret);
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +304,7 @@ impl BootstrapScriptTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperJoinTarget {
-    pub material: RedactedJoinMaterial,
+    pub material: KeeperJoinMaterial,
     pub ployzd_artifact: PloyzdArtifactTarget,
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
@@ -203,7 +313,7 @@ pub struct KeeperJoinTarget {
 impl KeeperJoinTarget {
     #[must_use]
     pub fn new(
-        material: RedactedJoinMaterial,
+        material: KeeperJoinMaterial,
         ployzd_artifact: PloyzdArtifactTarget,
         roles: NonEmptyRoleSet,
         role_environment: PloyzdRoleEnvironmentTarget,

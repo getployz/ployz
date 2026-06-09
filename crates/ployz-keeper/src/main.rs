@@ -16,8 +16,8 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects, SystemKeeperCommandRunner};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, JoinToken, KeeperJoinTarget, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, first_node_install_plan,
+    FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, NonEmptyRoleSet,
+    PloyzdRoleEnvironmentTarget, first_node_install_plan,
 };
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError, connect_with_timeout};
 use ployz_nats::operation_api_client::OperationApiClient;
@@ -253,19 +253,20 @@ impl std::fmt::Display for KeeperNatsUrlError {
 }
 
 fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoin, FailureMessage> {
-    let material = RedactedJoinMaterial::new(
+    let material = KeeperJoinMaterial::from_join_payload(
         redeemed.node_id.clone(),
-        redeemed.join_bundle.cluster_name.as_str().to_owned(),
+        &redeemed.join_bundle,
+        &redeemed.secret_delivery,
     )
     .map_err(|error| failure_message(&format!("invalid join material: {error:?}")))?;
     let artifact = PloyzdArtifactTarget::new(
-        ArtifactVersion::try_new(redeemed.join_bundle.ployzd.version.as_str())
+        ArtifactVersion::try_new(redeemed.join_bundle.material.ployzd.version.as_str())
             .map_err(|error| failure_message(&format!("invalid ployzd version: {error}")))?,
-        ArtifactSource::try_new(redeemed.join_bundle.ployzd.source.as_str())
+        ArtifactSource::try_new(redeemed.join_bundle.material.ployzd.source.as_str())
             .map_err(|error| failure_message(&format!("invalid ployzd source: {error}")))?,
-        Sha256Digest::try_new(redeemed.join_bundle.ployzd.sha256.as_str())
+        Sha256Digest::try_new(redeemed.join_bundle.material.ployzd.sha256.as_str())
             .map_err(|error| failure_message(&format!("invalid ployzd digest: {error}")))?,
-        PathBuf::from(redeemed.join_bundle.ployzd.install_path.as_str()),
+        PathBuf::from(redeemed.join_bundle.material.ployzd.install_path.as_str()),
     )
     .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(
@@ -275,7 +276,7 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
     let runtime_nats_url =
-        NatsClientUrl::try_new(redeemed.join_bundle.runtime_nats_url.as_str())
+        NatsClientUrl::try_new(redeemed.join_bundle.material.runtime_nats_url.as_str())
             .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
     Ok(RedeemedKeeperJoin::new(
         redeemed.operation_id,
@@ -311,8 +312,10 @@ mod tests {
     use ployz_core::ids::{NodeId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-        MachineJoinBundle, MachineJoinClusterName, MachineJoinPloyzdArtifact,
-        MachineJoinRuntimeNatsUrl,
+        MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+        MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
+        MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+        MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::roles::FirstNodeGateway;
@@ -326,6 +329,7 @@ mod tests {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             gateway: FirstNodeGateway::Skip,
             join_bundle: machine_join_bundle(),
+            secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
             last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
                 .expect("valid sequence"),
@@ -344,19 +348,42 @@ mod tests {
 
     fn machine_join_bundle() -> MachineJoinBundle {
         MachineJoinBundle {
-            cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-            runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-                .expect("valid runtime nats url"),
-            ployzd: MachineJoinPloyzdArtifact {
-                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
-                sha256: InstallSha256Digest::try_new(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("valid digest"),
-                install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-                    .expect("valid install path"),
+            material: MachineJoinMaterial {
+                cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                    .expect("valid runtime nats url"),
+                trusted_nats: MachineJoinTrustedNats {
+                    server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
+                        .expect("valid nats server id"),
+                    config_sha256: InstallSha256Digest::try_new(
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    )
+                    .expect("valid nats config digest"),
+                },
+                core_iroh: MachineJoinCoreIrohEndpoint {
+                    public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
+                        .expect("valid core iroh public key"),
+                },
+                ployzd: MachineJoinPloyzdArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                        .expect("valid install path"),
+                },
             },
+        }
+    }
+
+    fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
+        MachineJoinSecretDelivery {
+            nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
+                .expect("valid nats credentials"),
+            core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
+                .expect("valid core iroh ticket"),
         }
     }
 }

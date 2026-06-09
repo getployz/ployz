@@ -28,6 +28,11 @@ pub fn machine_add_submission_key(idempotency_key: &OperationIdempotencyKey) -> 
 }
 
 #[must_use]
+pub fn machine_add_secret_delivery_key(idempotency_key: &OperationIdempotencyKey) -> String {
+    format!("machine_add_secret_deliveries.{}", idempotency_key.as_str())
+}
+
+#[must_use]
 pub fn backup_submission_key(idempotency_key: &OperationIdempotencyKey) -> String {
     format!("backup_submissions.{}", idempotency_key.as_str())
 }

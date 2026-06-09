@@ -15,7 +15,7 @@ ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-ins
 ployzctl backup create --operation <id> --idempotency-key <key>
 ployzctl backup restore --plan
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]
-ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --runtime-nats-url <url> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]
+ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --runtime-nats-url <url> --nats-credentials-file <path> --trusted-nats-server <id> --trusted-nats-config-sha256 <sha256> --core-iroh-public-key <key> --core-iroh-ticket-file <path> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]
 ployzctl ops watch <operation_id>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -136,6 +136,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     gateway: FirstNodeGateway::Skip,
                     join_bundle: machine_join_bundle(),
+                    secret_delivery: machine_join_secret_delivery(),
                     joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),
                     last_event_sequence: event_sequence(8),
                     result: MachineJoinRedeemResult::Joined,
@@ -410,6 +411,7 @@ fn machine_add_request() -> MachineAddRequest {
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         gateway: MachineAddGateway::Skip,
         join_bundle: machine_join_bundle(),
+        secret_delivery: machine_join_secret_delivery(),
     }
 }
 
@@ -421,26 +423,53 @@ fn machine_join_redeem_request() -> MachineJoinRedeemRequest {
 
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
-        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
-            .expect("valid cluster name"),
-        runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
-            "nats://127.0.0.1:7422",
-        )
-        .expect("valid runtime nats url"),
-        ployzd: MachineJoinPloyzdArtifact {
-            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-                .expect("valid version"),
-            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
-                .expect("valid source"),
-            sha256: ployz_core::install::InstallSha256Digest::try_new(
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        material: ployz_core::install::MachineJoinMaterial {
+            cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+                .expect("valid cluster name"),
+            runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
+                "nats://127.0.0.1:7422",
             )
-            .expect("valid digest"),
-            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
-                "/usr/local/bin/ployzd",
-            )
-            .expect("valid install path"),
+            .expect("valid runtime nats url"),
+            trusted_nats: ployz_core::install::MachineJoinTrustedNats {
+                server_id: ployz_core::install::MachineJoinTrustedNatsServerId::try_new("server_1")
+                    .expect("valid nats server id"),
+                config_sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )
+                .expect("valid nats config digest"),
+            },
+            core_iroh: ployz_core::install::MachineJoinCoreIrohEndpoint {
+                public_key: ployz_core::install::MachineJoinIrohPublicKey::try_new(
+                    "core-public-key",
+                )
+                .expect("valid core iroh public key"),
+            },
+            ployzd: MachineJoinPloyzdArtifact {
+                version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                    .expect("valid version"),
+                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                    .expect("valid source"),
+                sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                    "/usr/local/bin/ployzd",
+                )
+                .expect("valid install path"),
+            },
         },
+    }
+}
+
+fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
+    ployz_core::install::MachineJoinSecretDelivery {
+        nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
+            "user-jwt-and-seed",
+        )
+        .expect("valid nats credentials"),
+        core_iroh_ticket: ployz_core::install::MachineJoinIrohTicket::try_new("core-ticket")
+            .expect("valid core iroh ticket"),
     }
 }
 

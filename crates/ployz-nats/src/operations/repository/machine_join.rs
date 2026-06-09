@@ -1,5 +1,5 @@
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::MachineJoinBundle;
+use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState,
     MachineAddOperationStateName, MachineName, RawJoinToken, redeem_pending_join_token,
@@ -61,11 +61,13 @@ impl AsyncNatsOperationRepository {
 
         match state {
             MachineAddOperationState::Pending { join_token } => {
+                let secret_delivery = self.load_machine_add_secret_delivery(&submission).await?;
                 self.redeem_pending_machine_join(
                     RedeemPendingMachineJoin {
                         operation_id: id,
                         node_id,
                         join_bundle: submission.join_bundle,
+                        secret_delivery,
                         join_token,
                     },
                     token,
@@ -74,12 +76,14 @@ impl AsyncNatsOperationRepository {
                 .await
             }
             MachineAddOperationState::Joining { joined_at } => {
+                let secret_delivery = self.load_machine_add_secret_delivery(&submission).await?;
                 Ok(MachineJoinRedemption::AlreadyJoined(RedeemedMachineJoin {
                     operation_id: id,
                     node_id,
                     name,
                     gateway,
                     join_bundle: submission.join_bundle,
+                    secret_delivery,
                     joined_at,
                     last_event_sequence,
                 }))
@@ -105,6 +109,21 @@ impl AsyncNatsOperationRepository {
         }
     }
 
+    async fn load_machine_add_secret_delivery(
+        &self,
+        submission: &crate::operations::status_store::StoredMachineAddSubmission,
+    ) -> Result<MachineJoinSecretDelivery, RedeemMachineJoinTokenError> {
+        Ok(self
+            .status_store
+            .machine_add_secret_delivery(&submission.idempotency_key)
+            .await
+            .map_err(RedeemMachineJoinTokenError::StoreStatus)?
+            .ok_or_else(|| RedeemMachineJoinTokenError::MissingSecretDelivery {
+                operation_id: submission.operation_id.clone(),
+            })?
+            .secret_delivery)
+    }
+
     pub async fn record_machine_join_completed(
         &self,
         token: &RawJoinToken,
@@ -114,6 +133,10 @@ impl AsyncNatsOperationRepository {
             .record_machine_add_completed(&target.operation_id, &target.node_id)
             .await
             .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
+        self.status_store
+            .delete_machine_add_secret_delivery(&target.idempotency_key)
+            .await
+            .map_err(RecordMachineJoinReportError::StoreStatus)?;
         Ok(RecordedMachineJoinReport {
             operation_id: target.operation_id,
             node_id: target.node_id,
@@ -131,6 +154,10 @@ impl AsyncNatsOperationRepository {
             .record_machine_add_failed(&target.operation_id, &target.node_id, failure)
             .await
             .map_err(RecordMachineJoinReportError::RecordMachineAddEvent)?;
+        self.status_store
+            .delete_machine_add_secret_delivery(&target.idempotency_key)
+            .await
+            .map_err(RecordMachineJoinReportError::StoreStatus)?;
         Ok(RecordedMachineJoinReport {
             operation_id: target.operation_id,
             node_id: target.node_id,
@@ -162,6 +189,7 @@ impl AsyncNatsOperationRepository {
 
         Ok(MachineJoinReportTarget {
             operation_id: submission.operation_id,
+            idempotency_key: submission.idempotency_key,
             node_id: submission.node_id,
         })
     }
@@ -181,7 +209,11 @@ impl AsyncNatsOperationRepository {
                     .await
                     .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
                 let joined = self
-                    .redeemed_machine_join(&pending.operation_id, pending.join_bundle)
+                    .redeemed_machine_join(
+                        &pending.operation_id,
+                        pending.join_bundle,
+                        pending.secret_delivery,
+                    )
                     .await?
                     .ok_or_else(|| RedeemMachineJoinTokenError::MissingOperation {
                         operation_id: pending.operation_id.clone(),
@@ -208,6 +240,7 @@ impl AsyncNatsOperationRepository {
         &self,
         operation_id: &OperationId,
         join_bundle: MachineJoinBundle,
+        secret_delivery: MachineJoinSecretDelivery,
     ) -> Result<Option<RedeemedMachineJoin>, RedeemMachineJoinTokenError> {
         let Some(status) = self
             .operation_status(operation_id)
@@ -242,6 +275,7 @@ impl AsyncNatsOperationRepository {
             name,
             gateway,
             join_bundle,
+            secret_delivery,
             joined_at,
             last_event_sequence,
         }))
@@ -253,6 +287,7 @@ struct RedeemPendingMachineJoin {
     node_id: NodeId,
     join_token: IssuedJoinToken,
     join_bundle: MachineJoinBundle,
+    secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +303,7 @@ pub struct RedeemedMachineJoin {
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
     pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,
     pub last_event_sequence: EventSequence,
 }
@@ -281,6 +317,7 @@ pub struct RecordedMachineJoinReport {
 
 struct MachineJoinReportTarget {
     operation_id: OperationId,
+    idempotency_key: ployz_core::ops::OperationIdempotencyKey,
     node_id: NodeId,
 }
 
@@ -295,6 +332,9 @@ pub enum RedeemMachineJoinTokenError {
     StoreStatus(OperationStatusStoreError),
     RecordMachineAddEvent(RecordMachineAddEventError),
     MissingOperation {
+        operation_id: OperationId,
+    },
+    MissingSecretDelivery {
         operation_id: OperationId,
     },
     WrongOperationKind {

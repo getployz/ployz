@@ -2,7 +2,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ployz_core::ids::NodeId;
 use ployz_transport::iroh_endpoint::{IrohEndpoint, IrohPath};
-use ployz_transport::join_bundle::{JoinBundle, NatsCredentials};
 use ployz_transport::nats_tunnel::{
     CoreNatsTunnelConfig, EdgeNatsTunnelConfig, NATS_TUNNEL_ALPN, NatsTunnelConfig,
     NatsTunnelStatus,
@@ -70,26 +69,6 @@ fn tunnel_status_marks_only_connected_paths_usable() {
     assert!(relayed.is_usable());
     assert!(!reconnecting.is_usable());
     assert!(!down.is_usable());
-}
-
-#[test]
-fn join_bundle_redaction_hides_nats_credentials() {
-    let bundle = JoinBundle::new(
-        node_id("node_7"),
-        "prod",
-        NatsCredentials::new("-----BEGIN NATS USER JWT----- secret -----END NATS USER JWT-----"),
-        vec![IrohEndpoint::new(node_id("core_1"), "core-public-key")],
-    );
-    let redacted = bundle.redacted();
-
-    assert_eq!(redacted.nats_credentials, "<redacted>");
-    assert_eq!(redacted.core_endpoint_count, 1);
-    assert_eq!(
-        bundle.nats_credentials_secret(),
-        "-----BEGIN NATS USER JWT----- secret -----END NATS USER JWT-----"
-    );
-    assert!(!format!("{bundle:?}").contains("secret"));
-    assert!(!format!("{redacted:?}").contains("secret"));
 }
 
 fn node_id(value: &str) -> NodeId {

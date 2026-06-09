@@ -180,7 +180,7 @@ export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: 
 
 export type BackupCreateRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, };
 
-export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, join_bundle: MachineJoinBundle, };
+export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, };
 
 export type MachineAddGateway = "install" | "skip";
 
@@ -190,6 +190,22 @@ export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
 
+export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, core_iroh: MachineJoinCoreIrohEndpoint, ployzd: MachineJoinPloyzdArtifact, };
+
+export type MachineJoinSecretDelivery = { nats_credentials: MachineJoinNatsCredentials, core_iroh_ticket: MachineJoinIrohTicket, };
+
+export type MachineJoinNatsCredentials = string;
+
+export type MachineJoinTrustedNatsServerId = string;
+
+export type MachineJoinTrustedNats = { server_id: MachineJoinTrustedNatsServerId, config_sha256: InstallSha256Digest, };
+
+export type MachineJoinIrohPublicKey = string;
+
+export type MachineJoinIrohTicket = string;
+
+export type MachineJoinCoreIrohEndpoint = { public_key: MachineJoinIrohPublicKey, };
+
 export type InstallArtifactVersion = string;
 
 export type InstallArtifactSource = string;
@@ -198,13 +214,13 @@ export type InstallSha256Digest = string;
 
 export type AbsoluteInstallPath = string;
 
-export type MachineJoinBundle = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, ployzd: MachineJoinPloyzdArtifact, };
+export type MachineJoinBundle = { material: MachineJoinMaterial, };
 
 export type MachineJoinPloyzdArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
 
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 
-export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_bundle: MachineJoinBundle, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
 export type MachineJoinRedeemResult = "joined" | "already_joined";
 

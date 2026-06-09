@@ -32,6 +32,7 @@ import type {
   MachineAddResponse,
   MachineAddRequest,
   MachineJoinBundle,
+  MachineJoinSecretDelivery,
   MachineJoinRedeemed,
   MachineJoinRedeemResponse,
   MachineJoinRedeemRequest,
@@ -256,6 +257,7 @@ test("sdk maps raw machine add input to the wire request", () => {
     name: "edge_2",
     gateway: "skip",
     join_bundle: machineJoinBundle(),
+    secret_delivery: machineJoinSecretDelivery(),
   });
   assert.throws(
     () => machineAddRequest({ ...machineAddInput(), name: "edge.2" }),
@@ -458,6 +460,7 @@ function defaultFixture(): OperationFixture {
         name: machineName("edge_2"),
         gateway: "skip",
         join_bundle: machineJoinBundle(),
+        secret_delivery: machineJoinSecretDelivery(),
         joined_at: "60" as MachineJoinRedeemed["joined_at"],
         last_event_sequence: eventSequence(8),
         result: "joined",
@@ -506,19 +509,37 @@ function machineAddInput() {
     name: "edge_2",
     gateway: "skip" as const,
     joinBundle: machineJoinBundle(),
+    secretDelivery: machineJoinSecretDelivery(),
   };
 }
 
 function machineJoinBundle(): MachineJoinBundle {
   return {
-    cluster_name: "prod",
-    runtime_nats_url: "nats://127.0.0.1:7422",
-    ployzd: {
-      version: "0.1.0",
-      source: "/tmp/ployzd",
-      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      install_path: "/usr/local/bin/ployzd",
+    material: {
+      cluster_name: "prod",
+      runtime_nats_url: "nats://127.0.0.1:7422",
+      trusted_nats: {
+        server_id: "server_1",
+        config_sha256:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+      core_iroh: {
+        public_key: "core-public-key",
+      },
+      ployzd: {
+        version: "0.1.0",
+        source: "/tmp/ployzd",
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        install_path: "/usr/local/bin/ployzd",
+      },
     },
+  };
+}
+
+function machineJoinSecretDelivery(): MachineJoinSecretDelivery {
+  return {
+    nats_credentials: "user-jwt-and-seed",
+    core_iroh_ticket: "core-ticket",
   };
 }
 

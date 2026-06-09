@@ -258,6 +258,7 @@ fn cli_dispatches_machine_add_request() {
     );
     assert_eq!(command.gateway, MachineAddGateway::Install);
     assert_eq!(command.join_bundle, machine_join_bundle());
+    assert_eq!(command.secret_delivery, machine_join_secret_delivery());
 }
 
 #[test]
@@ -265,8 +266,8 @@ fn cli_parses_global_nats_url() {
     let invocation = parse_invocation(
         ["--nats", "nats://127.0.0.1:4222"]
             .into_iter()
-            .chain(machine_add_arg_refs())
-            .map(str::to_owned),
+            .map(str::to_owned)
+            .chain(machine_add_arg_refs()),
     )
     .expect("invocation parses");
 
@@ -280,11 +281,7 @@ fn cli_parses_global_nats_url() {
 #[test]
 fn cli_requires_machine_add_operation_id() {
     assert!(matches!(
-        parse_command(
-            machine_add_arg_refs()
-                .filter(|value| *value != "--operation" && *value != "op_machine")
-                .map(str::to_owned)
-        ),
+        parse_command(machine_add_args_without("--operation")),
         Err(PloyzctlCliError::MissingRequiredArgument { flag })
             if flag == "--operation"
     ));
@@ -293,11 +290,7 @@ fn cli_requires_machine_add_operation_id() {
 #[test]
 fn cli_requires_machine_add_idempotency_key() {
     assert!(matches!(
-        parse_command(
-            machine_add_arg_refs()
-                .filter(|value| *value != "--idempotency-key" && *value != "idem_machine")
-                .map(str::to_owned)
-        ),
+        parse_command(machine_add_args_without("--idempotency-key")),
         Err(PloyzctlCliError::MissingRequiredArgument { flag })
             if flag == "--idempotency-key"
     ));
@@ -326,7 +319,7 @@ fn binary_help_only_advertises_implemented_commands() {
     );
     assert!(stdout(&output).contains("ployzctl backup restore --plan"));
     assert!(stdout(&output).contains(
-        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --runtime-nats-url <url> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
+        "ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> --cluster <name> --runtime-nats-url <url> --nats-credentials-file <path> --trusted-nats-server <id> --trusted-nats-config-sha256 <sha256> --core-iroh-public-key <key> --core-iroh-ticket-file <path> --ployzd-version <version> --ployzd-source <path-or-url> --ployzd-sha256 <sha256> --ployzd-install-path <path> [--gateway]"
     ));
     assert!(stdout(&output).contains("ployzctl ops watch <operation_id>"));
     assert_eq!(stderr(&output), "");
@@ -742,63 +735,110 @@ fn deploy_request() -> DeployRequest {
 
 fn machine_add_args_with_gateway() -> impl Iterator<Item = String> {
     machine_add_arg_refs()
-        .chain(["--gateway"])
-        .map(str::to_owned)
+        .into_iter()
+        .chain(["--gateway".to_owned()])
 }
 
-fn machine_add_arg_refs() -> impl Iterator<Item = &'static str> {
-    [
-        "machine",
-        "add",
-        "--node",
-        "node_2",
-        "--name",
-        "edge_2",
-        "--operation",
-        "op_machine",
-        "--idempotency-key",
-        "idem_machine",
-        "--cluster",
-        "prod",
-        "--runtime-nats-url",
-        "nats://127.0.0.1:7422",
-        "--ployzd-version",
-        "0.1.0",
-        "--ployzd-source",
-        "/tmp/ployzd",
-        "--ployzd-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ployzd-install-path",
-        "/usr/local/bin/ployzd",
+fn machine_add_args_without(flag: &str) -> Vec<String> {
+    let mut args = machine_add_arg_refs();
+    let Some(index) = args.iter().position(|value| value == flag) else {
+        panic!("test machine add args include {flag}");
+    };
+    args.drain(index..=index + 1);
+    args
+}
+
+fn machine_add_arg_refs() -> Vec<String> {
+    let secrets = machine_add_secret_files();
+    vec![
+        "machine".to_owned(),
+        "add".to_owned(),
+        "--node".to_owned(),
+        "node_2".to_owned(),
+        "--name".to_owned(),
+        "edge_2".to_owned(),
+        "--operation".to_owned(),
+        "op_machine".to_owned(),
+        "--idempotency-key".to_owned(),
+        "idem_machine".to_owned(),
+        "--cluster".to_owned(),
+        "prod".to_owned(),
+        "--runtime-nats-url".to_owned(),
+        "nats://127.0.0.1:7422".to_owned(),
+        "--nats-credentials-file".to_owned(),
+        secrets.nats_credentials,
+        "--trusted-nats-server".to_owned(),
+        "server_1".to_owned(),
+        "--trusted-nats-config-sha256".to_owned(),
+        NATS_CONFIG_DIGEST.to_owned(),
+        "--core-iroh-public-key".to_owned(),
+        "core-public-key".to_owned(),
+        "--core-iroh-ticket-file".to_owned(),
+        secrets.core_iroh_ticket,
+        "--ployzd-version".to_owned(),
+        "0.1.0".to_owned(),
+        "--ployzd-source".to_owned(),
+        "/tmp/ployzd".to_owned(),
+        "--ployzd-sha256".to_owned(),
+        PLOYZ_NEWLINE_SHA256.to_owned(),
+        "--ployzd-install-path".to_owned(),
+        "/usr/local/bin/ployzd".to_owned(),
     ]
-    .into_iter()
 }
 
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
-        cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
-            .expect("valid cluster name"),
-        runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
-            "nats://127.0.0.1:7422",
-        )
-        .expect("valid runtime nats url"),
-        ployzd: MachineJoinPloyzdArtifact {
-            version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-                .expect("valid version"),
-            source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
-                .expect("valid source"),
-            sha256: ployz_core::install::InstallSha256Digest::try_new(PLOYZ_NEWLINE_SHA256)
-                .expect("valid digest"),
-            install_path: ployz_core::install::AbsoluteInstallPath::try_new(
-                "/usr/local/bin/ployzd",
+        material: ployz_core::install::MachineJoinMaterial {
+            cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
+                .expect("valid cluster name"),
+            runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
+                "nats://127.0.0.1:7422",
             )
-            .expect("valid install path"),
+            .expect("valid runtime nats url"),
+            trusted_nats: ployz_core::install::MachineJoinTrustedNats {
+                server_id: ployz_core::install::MachineJoinTrustedNatsServerId::try_new("server_1")
+                    .expect("valid nats server id"),
+                config_sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    NATS_CONFIG_DIGEST,
+                )
+                .expect("valid nats config digest"),
+            },
+            core_iroh: ployz_core::install::MachineJoinCoreIrohEndpoint {
+                public_key: ployz_core::install::MachineJoinIrohPublicKey::try_new(
+                    "core-public-key",
+                )
+                .expect("valid core iroh public key"),
+            },
+            ployzd: MachineJoinPloyzdArtifact {
+                version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
+                    .expect("valid version"),
+                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
+                    .expect("valid source"),
+                sha256: ployz_core::install::InstallSha256Digest::try_new(PLOYZ_NEWLINE_SHA256)
+                    .expect("valid digest"),
+                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                    "/usr/local/bin/ployzd",
+                )
+                .expect("valid install path"),
+            },
         },
+    }
+}
+
+fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
+    ployz_core::install::MachineJoinSecretDelivery {
+        nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
+            "user-jwt-and-seed",
+        )
+        .expect("valid nats credentials"),
+        core_iroh_ticket: ployz_core::install::MachineJoinIrohTicket::try_new("core-ticket")
+            .expect("valid core iroh ticket"),
     }
 }
 
 const PLOYZ_NEWLINE_SHA256: &str =
     "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e";
+const NATS_CONFIG_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
     init_with_keeper_install_arg_refs()
@@ -892,10 +932,37 @@ fn stderr(output: &Output) -> String {
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("{}-{}", name, std::process::id()));
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after unix epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("{}-{}-{unique}", name, std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("temp dir can be created");
     dir
+}
+
+struct MachineAddSecretFiles {
+    nats_credentials: String,
+    core_iroh_ticket: String,
+}
+
+fn machine_add_secret_files() -> MachineAddSecretFiles {
+    let dir = temp_dir("ployzctl-machine-add-secrets");
+    let nats_credentials = dir.join("nats.creds");
+    let core_iroh_ticket = dir.join("core-iroh.ticket");
+    fs::write(&nats_credentials, "user-jwt-and-seed").expect("nats credentials can be written");
+    fs::write(&core_iroh_ticket, "core-ticket").expect("core iroh ticket can be written");
+    MachineAddSecretFiles {
+        nats_credentials: nats_credentials
+            .to_str()
+            .expect("temp path is utf-8")
+            .to_owned(),
+        core_iroh_ticket: core_iroh_ticket
+            .to_str()
+            .expect("temp path is utf-8")
+            .to_owned(),
+    }
 }
 
 #[cfg(unix)]

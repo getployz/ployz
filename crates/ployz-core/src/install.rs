@@ -125,9 +125,41 @@ impl From<MachineBootstrapUrl> for String {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinBundle {
+    pub material: MachineJoinMaterial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinMaterial {
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
+    pub trusted_nats: MachineJoinTrustedNats,
+    pub core_iroh: MachineJoinCoreIrohEndpoint,
     pub ployzd: MachineJoinPloyzdArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinSecretDelivery {
+    pub nats_credentials: MachineJoinNatsCredentials,
+    pub core_iroh_ticket: MachineJoinIrohTicket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinTrustedNats {
+    pub server_id: MachineJoinTrustedNatsServerId,
+    pub config_sha256: InstallSha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinCoreIrohEndpoint {
+    pub public_key: MachineJoinIrohPublicKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +170,171 @@ pub struct MachineJoinPloyzdArtifact {
     pub source: InstallArtifactSource,
     pub sha256: InstallSha256Digest,
     pub install_path: AbsoluteInstallPath,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinNatsCredentials(String);
+
+impl MachineJoinNatsCredentials {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(InstallContractError::EmptyNatsCredentials);
+        }
+        if value.contains('\0') {
+            return Err(InstallContractError::InvalidNatsCredentials);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub const fn redacted(&self) -> &'static str {
+        "[redacted]"
+    }
+}
+
+impl TryFrom<String> for MachineJoinNatsCredentials {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinNatsCredentials> for String {
+    fn from(value: MachineJoinNatsCredentials) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Debug for MachineJoinNatsCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.redacted())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinTrustedNatsServerId(String);
+
+impl MachineJoinTrustedNatsServerId {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        validate_plain_join_token("trusted NATS server id", value, |value| {
+            InstallContractError::InvalidTrustedNatsServerId { value }
+        })
+        .map(Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineJoinTrustedNatsServerId {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinTrustedNatsServerId> for String {
+    fn from(value: MachineJoinTrustedNatsServerId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinIrohPublicKey(String);
+
+impl MachineJoinIrohPublicKey {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        validate_plain_join_token("core iroh public key", value, |value| {
+            InstallContractError::InvalidIrohPublicKey { value }
+        })
+        .map(Self)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for MachineJoinIrohPublicKey {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinIrohPublicKey> for String {
+    fn from(value: MachineJoinIrohPublicKey) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct MachineJoinIrohTicket(String);
+
+impl MachineJoinIrohTicket {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
+        let value = value.into();
+        validate_plain_join_token("core iroh ticket", value, |value| {
+            InstallContractError::InvalidIrohTicket { value }
+        })
+        .map(Self)
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub const fn redacted(&self) -> &'static str {
+        "[redacted]"
+    }
+}
+
+impl TryFrom<String> for MachineJoinIrohTicket {
+    type Error = InstallContractError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<MachineJoinIrohTicket> for String {
+    fn from(value: MachineJoinIrohTicket) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Debug for MachineJoinIrohTicket {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.redacted())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +585,12 @@ pub enum InstallContractError {
     InvalidBootstrapUrl { value: String },
     EmptyRuntimeNatsUrl,
     InvalidRuntimeNatsUrl { value: String },
+    EmptyNatsCredentials,
+    InvalidNatsCredentials,
+    EmptyJoinToken { label: &'static str },
+    InvalidTrustedNatsServerId { value: String },
+    InvalidIrohPublicKey { value: String },
+    InvalidIrohTicket { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -419,6 +622,23 @@ impl fmt::Display for InstallContractError {
                 formatter,
                 "runtime NATS URL {value:?} must be a nats:// URL without whitespace"
             ),
+            Self::EmptyNatsCredentials => formatter.write_str("NATS credentials are empty"),
+            Self::InvalidNatsCredentials => {
+                formatter.write_str("NATS credentials contain an unsupported NUL byte")
+            }
+            Self::EmptyJoinToken { label } => write!(formatter, "{label} is empty"),
+            Self::InvalidTrustedNatsServerId { value } => write!(
+                formatter,
+                "trusted NATS server id {value:?} must not contain whitespace"
+            ),
+            Self::InvalidIrohPublicKey { value } => write!(
+                formatter,
+                "core iroh public key {value:?} must not contain whitespace"
+            ),
+            Self::InvalidIrohTicket { value } => write!(
+                formatter,
+                "core iroh ticket {value:?} must not contain whitespace"
+            ),
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
             Self::RelativeArtifactSource { value } => {
@@ -444,6 +664,23 @@ impl fmt::Display for InstallContractError {
 }
 
 impl std::error::Error for InstallContractError {}
+
+fn validate_plain_join_token(
+    label: &'static str,
+    value: String,
+    invalid: impl FnOnce(String) -> InstallContractError,
+) -> Result<String, InstallContractError> {
+    if value.is_empty() {
+        return Err(InstallContractError::EmptyJoinToken { label });
+    }
+    if value
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(invalid(value));
+    }
+    Ok(value)
+}
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))

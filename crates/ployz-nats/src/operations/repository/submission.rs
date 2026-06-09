@@ -1,5 +1,5 @@
 use ployz_core::ids::{CertId, NodeId, OperationId, OperationOwnerId};
-use ployz_core::install::MachineJoinBundle;
+use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationEvent, OperationIdempotencyKey, OperationLeaseExpiresAt,
@@ -11,7 +11,8 @@ use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
     OperationStatusStoreError, StoredBackupSubmission, StoredCertSubmission,
-    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddSubmission,
+    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddSecretDelivery,
+    StoredMachineAddSubmission,
 };
 
 impl AsyncNatsOperationRepository {
@@ -226,31 +227,62 @@ impl AsyncNatsOperationRepository {
         owner: OperationLeaseClaim,
     ) -> Result<AcceptedMachineAddSubmission, SubmitMachineAddError> {
         validate_machine_add_join_material(&submission.raw_join_token, &submission.join_token)?;
-        let submitted = self
+        let idempotency_key = submission.idempotency_key;
+        let submitted_candidate = StoredMachineAddSubmission {
+            operation_id: submission.operation_id,
+            idempotency_key: idempotency_key.clone(),
+            start_sequence: None,
+            node_id: submission.node_id,
+            name: submission.name,
+            gateway: submission.gateway,
+            join_bundle: submission.join_bundle,
+            join_token: submission.join_token,
+            raw_join_token: submission.raw_join_token,
+        };
+
+        let secret_operation_id = if let Some(existing) = self
             .status_store
-            .put_machine_add_submission_if_absent(
-                &submission.idempotency_key,
-                &StoredMachineAddSubmission {
-                    operation_id: submission.operation_id,
-                    start_sequence: None,
-                    node_id: submission.node_id,
-                    name: submission.name,
-                    gateway: submission.gateway,
-                    join_bundle: submission.join_bundle,
-                    join_token: submission.join_token,
-                    raw_join_token: submission.raw_join_token,
+            .machine_add_submission(&idempotency_key)
+            .await
+            .map_err(SubmitMachineAddError::StoreStatus)?
+        {
+            ensure_machine_add_retry_matches(&existing, &submitted_candidate)?;
+            existing.operation_id
+        } else {
+            submitted_candidate.operation_id.clone()
+        };
+
+        self.status_store
+            .put_machine_add_secret_delivery_if_absent(
+                &idempotency_key,
+                &StoredMachineAddSecretDelivery {
+                    operation_id: secret_operation_id,
+                    secret_delivery: submission.secret_delivery,
                 },
             )
             .await
             .map_err(SubmitMachineAddError::StoreStatus)?;
+        let submitted = self
+            .status_store
+            .put_machine_add_submission_if_absent(&idempotency_key, &submitted_candidate)
+            .await
+            .map_err(SubmitMachineAddError::StoreStatus)?;
+        ensure_machine_add_retry_matches(&submitted, &submitted_candidate)?;
+        self.status_store
+            .machine_add_secret_delivery(&idempotency_key)
+            .await
+            .map_err(SubmitMachineAddError::StoreStatus)?
+            .filter(|secret| secret.operation_id == submitted.operation_id)
+            .ok_or_else(|| {
+                SubmitMachineAddError::StoreStatus(OperationStatusStoreError::CasConflict {
+                    message: "machine add secret delivery points at a different operation"
+                        .to_owned(),
+                })
+            })?;
         let fingerprint =
             validate_machine_add_join_material(&submitted.raw_join_token, &submitted.join_token)?;
-        self.index_machine_add_join_token(
-            &fingerprint,
-            &submitted.operation_id,
-            &submission.idempotency_key,
-        )
-        .await?;
+        self.index_machine_add_join_token(&fingerprint, &submitted.operation_id, &idempotency_key)
+            .await?;
         if let Some(start_sequence) = submitted.start_sequence {
             let lease = self
                 .status_store
@@ -283,7 +315,7 @@ impl AsyncNatsOperationRepository {
                 submitted.name.clone(),
                 submitted.gateway,
                 submitted.join_token.clone(),
-                &submission.idempotency_key,
+                &idempotency_key,
             ))
             .await
             .map_err(SubmitMachineAddError::AppendEvent)?;
@@ -332,7 +364,7 @@ impl AsyncNatsOperationRepository {
             .map_err(SubmitMachineAddError::StoreStatus)?;
         let submitted = self
             .status_store
-            .record_machine_add_submission_sequence(&submission.idempotency_key, stored.sequence)
+            .record_machine_add_submission_sequence(&idempotency_key, stored.sequence)
             .await
             .map_err(SubmitMachineAddError::StoreStatus)?;
         if submitted.operation_id != operation_id {
@@ -543,6 +575,29 @@ fn validate_machine_add_join_material(
     }
 }
 
+fn ensure_machine_add_retry_matches(
+    existing: &StoredMachineAddSubmission,
+    candidate: &StoredMachineAddSubmission,
+) -> Result<(), SubmitMachineAddError> {
+    if existing.idempotency_key == candidate.idempotency_key
+        && existing.node_id == candidate.node_id
+        && existing.name == candidate.name
+        && existing.gateway == candidate.gateway
+        && existing.join_bundle == candidate.join_bundle
+        && existing.join_token == candidate.join_token
+        && existing.raw_join_token == candidate.raw_join_token
+    {
+        return Ok(());
+    }
+
+    Err(SubmitMachineAddError::StoreStatus(
+        OperationStatusStoreError::CasConflict {
+            message: "machine add idempotency key is already assigned to different join material"
+                .to_owned(),
+        },
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployOperationSubmission {
     pub operation_id: OperationId,
@@ -564,6 +619,7 @@ pub struct MachineAddOperationSubmission {
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
     pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
     pub idempotency_key: OperationIdempotencyKey,

@@ -15,10 +15,13 @@ use crate::artifacts::{
     verify_artifact_file,
 };
 use crate::executor::KeeperStepEffects;
-use crate::join::{JOIN_MATERIAL_FILE, render_redacted_join_material};
+use crate::join::{
+    JOIN_CORE_IROH_TICKET_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
+    render_redacted_join_material,
+};
 use crate::steps::{
-    HostPrerequisite, KeeperStep, KeeperStepEffectError, KeeperStepFailureReason,
-    NatsServerConfigTarget, PloyzdRoleEnvironmentTarget, RedactedJoinMaterial,
+    HostPrerequisite, KeeperJoinMaterial, KeeperStep, KeeperStepEffectError,
+    KeeperStepFailureReason, NatsServerConfigTarget, PloyzdRoleEnvironmentTarget,
 };
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -198,7 +201,7 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
 
     fn store_join_material(
         &self,
-        material: &RedactedJoinMaterial,
+        material: &KeeperJoinMaterial,
     ) -> Result<(), KeeperStepEffectError> {
         ensure_directory(&self.config.state_dir).map_err(|error| {
             KeeperStepEffectError::new(
@@ -209,11 +212,44 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
                 )),
             )
         })?;
-        commit_join_material_file(
-            &self.config.state_dir,
-            &render_redacted_join_material(material),
-        )
+        commit_join_material_directory(&self.config.state_dir, material)
     }
+}
+
+fn commit_join_material_directory(
+    state_dir: &Path,
+    material: &KeeperJoinMaterial,
+) -> Result<(), KeeperStepEffectError> {
+    let staged =
+        StagedDirectory::create(state_dir, JOIN_MATERIAL_DIR, "ployz-join").map_err(|message| {
+            KeeperStepEffectError::new(KeeperStepFailureReason::JoinMaterialStoreFailed, message)
+        })?;
+    commit_join_material_files(staged.path(), material)?;
+    staged
+        .commit_to(&state_dir.join(JOIN_MATERIAL_DIR))
+        .map_err(|message| {
+            KeeperStepEffectError::new(KeeperStepFailureReason::JoinMaterialStoreFailed, message)
+        })
+}
+
+fn commit_join_material_files(
+    directory: &Path,
+    material: &KeeperJoinMaterial,
+) -> Result<(), KeeperStepEffectError> {
+    commit_join_material_file(
+        directory,
+        &render_redacted_join_material(&material.redacted()),
+    )?;
+    commit_join_material_secret_file(
+        directory,
+        JOIN_NATS_CREDENTIALS_FILE,
+        material.nats_credentials().as_bytes(),
+    )?;
+    commit_join_material_secret_file(
+        directory,
+        JOIN_CORE_IROH_TICKET_FILE,
+        material.core_iroh_ticket().as_bytes(),
+    )
 }
 
 pub trait KeeperCommandRunner {
@@ -541,14 +577,57 @@ fn commit_join_material_file(
     })
 }
 
+fn commit_join_material_secret_file(
+    directory: &Path,
+    file_name: &str,
+    contents: &[u8],
+) -> Result<(), KeeperStepEffectError> {
+    write_durable_secret_file(directory, file_name, "ployz-join-secret", contents).map_err(
+        |message| {
+            KeeperStepEffectError::new(KeeperStepFailureReason::JoinMaterialStoreFailed, message)
+        },
+    )
+}
+
 fn write_durable_file(
     directory: &Path,
     file_name: &str,
     staged_tag: &str,
     contents: &[u8],
 ) -> Result<(), FailureMessage> {
+    write_durable_file_with(
+        directory,
+        file_name,
+        staged_tag,
+        contents,
+        create_staged_file,
+    )
+}
+
+fn write_durable_secret_file(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+    contents: &[u8],
+) -> Result<(), FailureMessage> {
+    write_durable_file_with(
+        directory,
+        file_name,
+        staged_tag,
+        contents,
+        create_staged_secret_file,
+    )
+}
+
+fn write_durable_file_with(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+    contents: &[u8],
+    create: fn(&Path, &str, &str) -> Result<StagedFile, FailureMessage>,
+) -> Result<(), FailureMessage> {
     let path = directory.join(file_name);
-    let mut staged = create_staged_file(directory, file_name, staged_tag)?;
+    let mut staged = create(directory, file_name, staged_tag)?;
     staged.file.write_all(contents).map_err(|error| {
         failure_message(format!(
             "failed to write staged file {}: {error}",
@@ -607,18 +686,117 @@ impl Drop for StagedFile {
     }
 }
 
+struct StagedDirectory {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl StagedDirectory {
+    fn create(directory: &Path, name: &str, staged_tag: &str) -> Result<Self, FailureMessage> {
+        for attempt in 0..16 {
+            let staged_path = unique_staged_path(directory, name, staged_tag, attempt)?;
+            match create_private_directory(&staged_path) {
+                Ok(()) => {
+                    return Ok(Self {
+                        path: staged_path,
+                        committed: false,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(failure_message(format!(
+                        "failed to create staged directory {}: {error}",
+                        staged_path.display()
+                    )));
+                }
+            }
+        }
+
+        Err(failure_message(format!(
+            "failed to create a unique staged directory in {}",
+            directory.display()
+        )))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn commit_to(mut self, path: &Path) -> Result<(), FailureMessage> {
+        let backup = unique_staged_path(
+            path.parent().unwrap_or_else(|| Path::new(".")),
+            JOIN_MATERIAL_DIR,
+            "previous",
+            0,
+        )?;
+        let had_previous = path.exists();
+        if had_previous {
+            fs::rename(path, &backup).map_err(|error| {
+                failure_message(format!(
+                    "failed to move previous join material directory {} to {}: {error}",
+                    path.display(),
+                    backup.display()
+                ))
+            })?;
+        }
+
+        if let Err(error) = fs::rename(&self.path, path) {
+            if had_previous {
+                let _ = fs::rename(&backup, path);
+            }
+            return Err(failure_message(format!(
+                "failed to commit staged directory {} to {}: {error}",
+                self.path.display(),
+                path.display()
+            )));
+        }
+
+        self.committed = true;
+        if had_previous {
+            let _ = fs::remove_dir_all(&backup);
+        }
+        sync_directory(path.parent().unwrap_or_else(|| Path::new("."))).map_err(|error| {
+            failure_message(format!(
+                "directory {} was installed but parent sync failed: {error}",
+                path.display()
+            ))
+        })
+    }
+}
+
+impl Drop for StagedDirectory {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 fn create_staged_file(
     directory: &Path,
     file_name: &str,
     staged_tag: &str,
 ) -> Result<StagedFile, FailureMessage> {
+    create_staged_file_with(directory, file_name, staged_tag, open_staged_file)
+}
+
+fn create_staged_secret_file(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+) -> Result<StagedFile, FailureMessage> {
+    create_staged_file_with(directory, file_name, staged_tag, open_secret_staged_file)
+}
+
+fn create_staged_file_with(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+    open: fn(&Path) -> std::io::Result<File>,
+) -> Result<StagedFile, FailureMessage> {
     for attempt in 0..16 {
         let staged_path = unique_staged_file_path(directory, file_name, staged_tag, attempt)?;
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged_path)
-        {
+        match open(&staged_path) {
             Ok(file) => return Ok(StagedFile::new(staged_path, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -636,7 +814,36 @@ fn create_staged_file(
     )))
 }
 
+fn open_staged_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+#[cfg(unix)]
+fn open_secret_staged_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_secret_staged_file(path: &Path) -> std::io::Result<File> {
+    open_staged_file(path)
+}
+
 fn unique_staged_file_path(
+    directory: &Path,
+    file_name: &str,
+    staged_tag: &str,
+    attempt: u8,
+) -> Result<PathBuf, FailureMessage> {
+    unique_staged_path(directory, file_name, staged_tag, attempt)
+}
+
+fn unique_staged_path(
     directory: &Path,
     file_name: &str,
     staged_tag: &str,

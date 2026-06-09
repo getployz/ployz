@@ -20,7 +20,7 @@ use ployz_keeper::join_executor::{
 };
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
-    KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
+    KeeperJoinMaterial, KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
     KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
     RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, first_node_install_plan,
     keeper_join_local_install_plan,
@@ -129,8 +129,9 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         DaemonProcessRole::Gateway,
         DaemonProcessRole::Tunnel(TunnelSide::Edge),
     ];
+    let material = keeper_join_material();
     let plan = keeper_join_local_install_plan(KeeperJoinTarget::new(
-        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
+        material.clone(),
         ployzd_artifact(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
         role_environment(),
@@ -138,9 +139,10 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
     assert!(plan.writes_ployzd_role_units());
-    assert!(plan.steps().contains(&KeeperStep::StoreJoinMaterial(
-        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material")
-    )));
+    assert!(
+        plan.steps()
+            .contains(&KeeperStep::StoreJoinMaterial(material))
+    );
     assert!(
         plan.steps()
             .contains(&KeeperStep::WritePloyzdRoleEnvironment(role_environment()))
@@ -250,10 +252,36 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
 
 #[test]
 fn join_material_cluster_name_rejects_persisted_format_breakers() {
-    for value in ["prod\nnext", "prod\rnext", "prod=next"] {
+    for value in ["prod\nnext", "prod\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), value),
-            Err(JoinMaterialError::InvalidClusterName {
+            RedactedJoinMaterial::new(
+                node_id("node_7"),
+                value,
+                "server_1",
+                NATS_CONFIG_DIGEST,
+                "core-public-key"
+            ),
+            Err(JoinMaterialError::InvalidJoinMaterialValue {
+                label: "cluster name",
+                value: value.to_owned(),
+            })
+        );
+    }
+}
+
+#[test]
+fn join_material_rejects_persisted_line_breakers() {
+    for value in ["server_1\nnext", "server_1\rnext"] {
+        assert_eq!(
+            RedactedJoinMaterial::new(
+                node_id("node_7"),
+                "prod",
+                value,
+                NATS_CONFIG_DIGEST,
+                "core-public-key"
+            ),
+            Err(JoinMaterialError::InvalidJoinMaterialValue {
+                label: "trusted NATS server",
                 value: value.to_owned(),
             })
         );
@@ -359,7 +387,7 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
 
     assert_eq!(
         execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(failure.clone()))
+        KeeperPlanTerminal::Failed(Box::new(KeeperPlanFailure::Step(failure.clone())))
     );
     assert_eq!(
         effects.calls,
@@ -400,8 +428,8 @@ fn keeper_join_executor_redacts_join_token_from_progress() {
     let rendered = format!("{execution:?}");
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::RedeemJoinToken,
             reason: KeeperStepFailureReason::JoinTokenRedeemFailed,
             message,
@@ -420,11 +448,11 @@ fn keeper_join_executor_redacts_join_token_from_progress() {
 #[test]
 fn keeper_join_keeps_token_when_material_store_fails() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
-    let material =
-        RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material");
+    let material = keeper_join_material();
+    let redacted = material.redacted();
     let mut redeemer = RecordingJoinRedeemer::default();
     let mut effects = RecordingEffects {
-        fail_on: Some(KeeperStepLabel::StoreJoinMaterial(material.clone())),
+        fail_on: Some(KeeperStepLabel::StoreJoinMaterial(redacted.clone())),
         ..RecordingEffects::default()
     };
     let mut reporter = RecordingJoinReporter::default();
@@ -441,12 +469,12 @@ fn keeper_join_keeps_token_when_material_store_fails() {
     );
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::StoreJoinMaterial(failed_material),
             reason: KeeperStepFailureReason::JoinMaterialStoreFailed,
             ..
-        })) if failed_material == material
+        })) if *failed_material == redacted
     ));
     assert_eq!(token_consumer.consumed, 0);
     assert_eq!(
@@ -483,8 +511,8 @@ fn keeper_join_keeps_token_when_install_fails_after_redemption() {
     );
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(_)),
             reason: KeeperStepFailureReason::ArtifactInstallFailed,
             ..
@@ -525,8 +553,8 @@ fn keeper_join_does_not_report_completed_when_token_consume_fails() {
     );
 
     assert!(matches!(
-        execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Step(KeeperStepFailure {
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
             step: KeeperStepLabel::ConsumeJoinTokenFile,
             reason: KeeperStepFailureReason::JoinTokenConsumeFailed,
             ..
@@ -560,10 +588,10 @@ fn keeper_plan_executor_records_started_before_applying_step() {
 
     assert_eq!(
         execution.terminal,
-        KeeperPlanTerminal::Failed(KeeperPlanFailure::Record(KeeperRecordFailure {
+        KeeperPlanTerminal::Failed(Box::new(KeeperPlanFailure::Record(KeeperRecordFailure {
             event: failed_event,
             message: failure_message("simulated event recorder failure"),
-        }))
+        })))
     );
     assert_eq!(
         effects.calls,
@@ -702,7 +730,7 @@ impl KeeperJoinRedeemer for RecordingJoinRedeemer {
             operation_id("op_machine"),
             node_id("node_7"),
             KeeperJoinTarget::new(
-                RedactedJoinMaterial::new(node_id("node_7"), "prod").expect("valid join material"),
+                keeper_join_material(),
                 ployzd_artifact(),
                 NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
                     .expect("non-empty role set"),
@@ -710,6 +738,19 @@ impl KeeperJoinRedeemer for RecordingJoinRedeemer {
             ),
         ))
     }
+}
+
+fn keeper_join_material() -> KeeperJoinMaterial {
+    KeeperJoinMaterial::new(
+        node_id("node_7"),
+        "prod",
+        "user-jwt-and-seed",
+        "server_1",
+        NATS_CONFIG_DIGEST,
+        "core-public-key",
+        "core-ticket",
+    )
+    .expect("valid join material")
 }
 
 impl KeeperJoinReporter for RecordingJoinReporter {
@@ -889,6 +930,7 @@ fn assert_stderr_contains(output: &Output, expected: &str) {
 
 const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const NATS_CONFIG_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 fn shell_keeper_unit_template(script: &str) -> &str {
     let start = script

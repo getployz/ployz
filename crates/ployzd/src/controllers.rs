@@ -4,7 +4,7 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle};
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
     RawJoinToken,
@@ -48,6 +48,7 @@ pub struct MachineAddSubmitCommand {
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
     pub join_bundle: MachineJoinBundle,
+    pub secret_delivery: MachineJoinSecretDelivery,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
 }
@@ -164,6 +165,7 @@ impl OperationControllers {
                     name: command.name,
                     gateway: command.gateway,
                     join_bundle: command.join_bundle,
+                    secret_delivery: command.secret_delivery,
                     join_token: command.join_token,
                     raw_join_token: command.raw_join_token,
                     idempotency_key: command.idempotency_key,
