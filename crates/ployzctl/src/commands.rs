@@ -14,7 +14,7 @@ pub const USAGE: &str = "\
 ployzctl [--nats <url>] <command>
 
 ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--node-public-ip <ip>] [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--keeper-binary <path>] [--activate-first-node]]
-ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --core-iroh-public-key <key> [--core-iroh-direct-address <addr>] [--core-iroh-relay-url <url>] --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --secret-delivery-file <path>
+ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --core-iroh-public-key <key> [--core-iroh-direct-address <addr>] [--core-iroh-relay-url <url>] --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --ebpf-bytecode-version <version> --ebpf-bytecode-source <path> --ebpf-bytecode-sha256 <sha256> --ebpf-bytecode-install-path <path> --ebpf-ctl-version <version> --ebpf-ctl-source <path> --ebpf-ctl-sha256 <sha256> --ebpf-ctl-install-path <path> --secret-delivery-file <path>
 ployzctl backup create --operation <id> --idempotency-key <key>
 ployzctl backup restore --plan
 ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]

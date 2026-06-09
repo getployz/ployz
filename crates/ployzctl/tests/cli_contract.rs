@@ -468,6 +468,8 @@ fn binary_help_only_advertises_implemented_commands() {
         "ployzctl init --node <id> [--gateway] [(--emit-keeper-install | --run-keeper-install)"
     ));
     assert!(stdout(&output).contains("ployzctl init join-template --cluster <name>"));
+    assert!(stdout(&output).contains("--ebpf-bytecode-install-path <path>"));
+    assert!(stdout(&output).contains("--ebpf-ctl-install-path <path>"));
     assert!(stdout(&output).contains(
         "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
     ));
