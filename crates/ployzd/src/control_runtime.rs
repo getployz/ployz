@@ -1,7 +1,7 @@
 //! Runtime wiring for the control role.
 
 use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
-use crate::backup_runtime::{BackupTaskRegistry, BackupWorkerStartError, OwnedBackupLauncher};
+use crate::backup_runtime::{BackupOperationRuntime, BackupTaskRegistry};
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
@@ -94,21 +94,18 @@ pub async fn start_control_runtime_with_client(
     );
     let machine_query = MachineQueryRuntime::new(core_state, observations);
     let logs_tailer = NatsNodeLogsTailer::new(client.clone());
-    let backup_launcher = OwnedBackupLauncher::new(
+    let backup_runtime = BackupOperationRuntime::new(
         jetstream,
         controllers.clone(),
         backups,
         backup_tasks.clone(),
     );
-    backup_launcher
-        .start_worker()
-        .await
-        .map_err(ControlRuntimeError::StartBackupWorker)?;
     let operation_api = start_operation_api_service_with_handlers(
         client,
         OperationApiHandlers::execute_operations(
             controllers,
             deploy_runtime,
+            backup_runtime,
             machine_query,
             logs_tailer,
         ),
@@ -151,7 +148,6 @@ pub enum ControlRuntimeError {
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     OpenBackupObjects(BackupObjectStoreError),
     StartOperationApi(ApiServiceRuntimeError),
-    StartBackupWorker(BackupWorkerStartError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
 }
@@ -185,9 +181,6 @@ impl fmt::Display for ControlRuntimeError {
                     formatter,
                     "failed to start operation API service: {error:?}"
                 )
-            }
-            Self::StartBackupWorker(error) => {
-                write!(formatter, "failed to start backup worker: {error:?}")
             }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")

@@ -1,14 +1,13 @@
 //! Owned backup operation execution.
 
-use crate::controllers::OperationControllers;
+use crate::controllers::{AcceptedBackupOperation, OperationControllers};
 use crate::operation_lease::with_advisory_operation_lease;
-use async_nats::jetstream::consumer::{AckPolicy, PullConsumer, pull};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use ployz_core::backup::{
     BackupArtifact, BackupBundle, BackupManifest, ControlPlaneKvSnapshot, KvBucketSnapshot,
     KvEntrySnapshot,
 };
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::ops::{
     BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
     FailureMessage, OperationOwnerLease, OperationStatus,
@@ -17,18 +16,11 @@ use ployz_nats::kv::{KV_CORE_BUCKET, KV_LOCKS_BUCKET};
 use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::KV_OBS_BUCKET;
 use ployz_nats::operations::{
-    BackupCreateJob, KV_OPS_BUCKET, OperationStatusReadError, OperationStatusStoreError,
-    PLZ_JOBS_STREAM, RecordBackupEventError,
+    KV_OPS_BUCKET, OperationStatusReadError, OperationStatusStoreError, RecordBackupEventError,
 };
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::task::JoinHandle;
-
-const BACKUP_CREATE_WORKER_DURABLE: &str = "backup-create-workers";
-const BACKUP_CREATE_JOB_FILTER: &str = "plz.v1.job.backup.create.*";
-const BACKUP_CREATE_ACK_WAIT: Duration = Duration::from_secs(30);
-const BACKUP_WORKER_RESTART_DELAY: Duration = Duration::from_secs(1);
 
 const CONTROL_PLANE_KV_BUCKETS: [&str; 4] = [
     KV_CORE_BUCKET,
@@ -38,14 +30,14 @@ const CONTROL_PLANE_KV_BUCKETS: [&str; 4] = [
 ];
 
 #[derive(Clone)]
-pub struct OwnedBackupLauncher {
-    jetstream: async_nats::jetstream::Context,
+pub struct BackupOperationRuntime {
     controllers: OperationControllers,
     backups: AsyncNatsBackupObjectStore,
+    snapshot_source: ControlPlaneSnapshotSource,
     task_registry: BackupTaskRegistry,
 }
 
-impl OwnedBackupLauncher {
+impl BackupOperationRuntime {
     #[must_use]
     pub fn new(
         jetstream: async_nats::jetstream::Context,
@@ -54,145 +46,106 @@ impl OwnedBackupLauncher {
         task_registry: BackupTaskRegistry,
     ) -> Self {
         Self {
-            jetstream,
             controllers,
             backups,
+            snapshot_source: ControlPlaneSnapshotSource::new(jetstream),
             task_registry,
         }
     }
 
-    pub async fn start_worker(&self) -> Result<(), BackupWorkerStartError> {
-        let stream = self
-            .jetstream
-            .get_stream(PLZ_JOBS_STREAM)
-            .await
-            .map_err(|error| BackupWorkerStartError::OpenOperationStream {
-                message: error.to_string(),
-            })?;
-        let consumer = stream
-            .get_or_create_consumer(
-                BACKUP_CREATE_WORKER_DURABLE,
-                pull::Config {
-                    durable_name: Some(BACKUP_CREATE_WORKER_DURABLE.to_owned()),
-                    filter_subject: BACKUP_CREATE_JOB_FILTER.to_owned(),
-                    ack_policy: AckPolicy::Explicit,
-                    ack_wait: BACKUP_CREATE_ACK_WAIT,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|error| BackupWorkerStartError::OpenConsumer {
-                message: error.to_string(),
-            })?;
-        let worker = BackupWorker {
-            consumer,
-            controllers: self.controllers.clone(),
-            backups: self.backups.clone(),
-            snapshot_source: ControlPlaneSnapshotSource::new(self.jetstream.clone()),
-        };
+    pub fn start(&self, accepted: AcceptedBackupOperation) {
+        if !accepted.should_start_execution {
+            return;
+        }
 
+        let runtime = self.clone();
         self.task_registry.spawn(async move {
-            worker.run_forever().await;
+            let operation_id = accepted.operation_id.clone();
+            let failure_runtime = runtime.clone();
+            if let Err(error) = runtime.run(accepted).await {
+                failure_runtime
+                    .record_execution_failure(&operation_id, &error)
+                    .await;
+            }
         });
-
-        Ok(())
     }
-}
 
-struct BackupWorker {
-    consumer: PullConsumer,
-    controllers: OperationControllers,
-    backups: AsyncNatsBackupObjectStore,
-    snapshot_source: ControlPlaneSnapshotSource,
-}
+    pub async fn run(self, accepted: AcceptedBackupOperation) -> Result<(), BackupExecutionError> {
+        let lease = renew_backup_owner_lease(&self.controllers, &accepted).await?;
+        verify_backup_lease_owner(&lease, &accepted.operation_id, self.controllers.owner_id())?;
+        let lease_policy = self.controllers.lease_policy();
+        let lease_renewer = self.controllers.clone();
+        let operation_id = accepted.operation_id.clone();
 
-impl BackupWorker {
-    async fn run_forever(self) {
-        loop {
-            let Ok(mut messages) = self.consumer.messages().await else {
-                tokio::time::sleep(BACKUP_WORKER_RESTART_DELAY).await;
-                continue;
-            };
-
-            while let Some(delivery) = messages.next().await {
-                let message = match delivery {
-                    Ok(message) => message,
-                    Err(_error) => break,
-                };
-                match handle_backup_worker_message(
+        with_advisory_operation_lease(
+            operation_id.clone(),
+            lease_policy,
+            lease_renewer,
+            async move {
+                run_backup_create(
                     &self.controllers,
                     &self.backups,
                     &self.snapshot_source,
-                    &message,
+                    &operation_id,
                 )
                 .await
-                {
-                    Ok(()) => {
-                        let _ = message.ack().await;
-                    }
-                    Err(BackupWorkerMessageError::Poison { message: _message }) => {
-                        let _ = message.ack().await;
-                    }
-                    Err(BackupWorkerMessageError::Execute(_error)) => {}
-                }
-            }
+            },
+        )
+        .await
+    }
 
-            tokio::time::sleep(BACKUP_WORKER_RESTART_DELAY).await;
+    async fn record_execution_failure(
+        &self,
+        operation_id: &OperationId,
+        error: &BackupExecutionError,
+    ) {
+        if let Ok(Some(OperationStatus::Backup { state, .. })) =
+            self.controllers.operation_status(operation_id).await
+            && state.is_terminal()
+        {
+            return;
         }
+
+        let _ = self
+            .controllers
+            .record_backup_transition(
+                operation_id,
+                BackupTransition::Failed {
+                    failure: backup_execution_failure(error),
+                },
+            )
+            .await;
     }
 }
 
-async fn handle_backup_worker_message(
+async fn renew_backup_owner_lease(
     controllers: &OperationControllers,
-    backups: &AsyncNatsBackupObjectStore,
-    snapshot_source: &ControlPlaneSnapshotSource,
-    message: &async_nats::jetstream::Message,
-) -> Result<(), BackupWorkerMessageError> {
-    let job: BackupCreateJob =
-        serde_json::from_slice(&message.message.payload).map_err(|error| {
-            BackupWorkerMessageError::Poison {
-                message: error.to_string(),
-            }
-        })?;
-
-    run_owned_backup_create(
-        controllers.clone(),
-        backups.clone(),
-        snapshot_source.clone(),
-        job.operation_id,
-    )
-    .await
-    .map_err(BackupWorkerMessageError::Execute)
-}
-
-async fn run_owned_backup_create(
-    controllers: OperationControllers,
-    backups: AsyncNatsBackupObjectStore,
-    snapshot_source: ControlPlaneSnapshotSource,
-    operation_id: OperationId,
-) -> Result<(), BackupExecutionError> {
-    let lease = controllers
-        .claim_owner_lease(&operation_id)
+    accepted: &AcceptedBackupOperation,
+) -> Result<OperationOwnerLease, BackupExecutionError> {
+    verify_backup_lease_owner(
+        &accepted.lease,
+        &accepted.operation_id,
+        controllers.owner_id(),
+    )?;
+    let Some(lease) = controllers
+        .renew_owner_lease(&accepted.operation_id)
         .await
-        .map_err(BackupExecutionError::ClaimLease)?;
-    verify_backup_lease(&lease, &operation_id, &controllers)?;
-    let lease_policy = controllers.lease_policy();
-    let lease_renewer = controllers.clone();
-    let lease_operation_id = operation_id.clone();
+        .map_err(BackupExecutionError::RenewLease)?
+    else {
+        return Err(BackupExecutionError::NoCurrentLease {
+            operation_id: accepted.operation_id.clone(),
+            expected_owner: controllers.owner_id().clone(),
+        });
+    };
+    verify_backup_lease_owner(&lease, &accepted.operation_id, controllers.owner_id())?;
 
-    with_advisory_operation_lease(
-        lease_operation_id,
-        lease_policy,
-        lease_renewer,
-        async move { run_backup_create(&controllers, &backups, &snapshot_source, &operation_id).await },
-    )
-    .await
+    Ok(lease)
 }
 
-fn verify_backup_lease(
+fn verify_backup_lease_owner(
     lease: &OperationOwnerLease,
     operation_id: &OperationId,
-    controllers: &OperationControllers,
+    expected_owner: &OperationOwnerId,
 ) -> Result<(), BackupExecutionError> {
     if &lease.operation_id != operation_id {
         return Err(BackupExecutionError::LeaseOperationMismatch {
@@ -200,10 +153,11 @@ fn verify_backup_lease(
             lease: lease.clone(),
         });
     }
-    if lease.owner_id != *controllers.owner_id() {
+    if lease.owner_id != *expected_owner {
         return Err(BackupExecutionError::LeaseNotHeld {
             operation_id: operation_id.clone(),
             lease: lease.clone(),
+            expected_owner: expected_owner.clone(),
         });
     }
 
@@ -544,7 +498,11 @@ impl BackupTaskRegistry {
 
 #[derive(Debug)]
 pub enum BackupExecutionError {
-    ClaimLease(OperationStatusStoreError),
+    RenewLease(OperationStatusStoreError),
+    NoCurrentLease {
+        operation_id: OperationId,
+        expected_owner: OperationOwnerId,
+    },
     LeaseOperationMismatch {
         operation_id: OperationId,
         lease: OperationOwnerLease,
@@ -552,6 +510,7 @@ pub enum BackupExecutionError {
     LeaseNotHeld {
         operation_id: OperationId,
         lease: OperationOwnerLease,
+        expected_owner: OperationOwnerId,
     },
     ReadStatus(OperationStatusReadError),
     MissingStatus {
@@ -568,16 +527,96 @@ pub enum BackupExecutionError {
     RecordTransition,
 }
 
-#[derive(Debug)]
-pub enum BackupWorkerStartError {
-    OpenOperationStream { message: String },
-    OpenConsumer { message: String },
+fn backup_execution_failure(error: &BackupExecutionError) -> BackupOperationFailure {
+    let Ok(message) = FailureMessage::try_new(format!("backup execution failed: {error}")) else {
+        return BackupOperationFailure::SnapshotFailed {
+            message: FailureMessage::try_new("backup execution failed")
+                .expect("static failure message is valid"),
+        };
+    };
+
+    match error {
+        BackupExecutionError::EncodeSnapshot { .. }
+        | BackupExecutionError::WriteArtifact
+        | BackupExecutionError::RecordTransition => {
+            BackupOperationFailure::ManifestWriteFailed { message }
+        }
+        BackupExecutionError::RenewLease(_)
+        | BackupExecutionError::NoCurrentLease { .. }
+        | BackupExecutionError::LeaseOperationMismatch { .. }
+        | BackupExecutionError::LeaseNotHeld { .. }
+        | BackupExecutionError::ReadStatus(_)
+        | BackupExecutionError::MissingStatus { .. }
+        | BackupExecutionError::WrongOperationKind { .. }
+        | BackupExecutionError::SnapshotControlPlane => {
+            BackupOperationFailure::SnapshotFailed { message }
+        }
+    }
 }
 
-#[derive(Debug)]
-enum BackupWorkerMessageError {
-    Poison { message: String },
-    Execute(BackupExecutionError),
+impl fmt::Display for BackupExecutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RenewLease(error) => {
+                write!(formatter, "owner lease could not be renewed: {error:?}")
+            }
+            Self::NoCurrentLease {
+                operation_id,
+                expected_owner,
+            } => write!(
+                formatter,
+                "operation {} has no current owner lease for {}",
+                operation_id.as_str(),
+                expected_owner.as_str()
+            ),
+            Self::LeaseOperationMismatch {
+                operation_id,
+                lease,
+            } => write!(
+                formatter,
+                "lease operation {} did not match backup operation {}",
+                lease.operation_id.as_str(),
+                operation_id.as_str()
+            ),
+            Self::LeaseNotHeld {
+                operation_id,
+                lease,
+                expected_owner,
+            } => write!(
+                formatter,
+                "operation {} lease is held by {}, not {}",
+                operation_id.as_str(),
+                lease.owner_id.as_str(),
+                expected_owner.as_str()
+            ),
+            Self::ReadStatus(error) => {
+                write!(formatter, "backup status could not be read: {error:?}")
+            }
+            Self::MissingStatus { operation_id } => {
+                write!(
+                    formatter,
+                    "backup operation {} has no status",
+                    operation_id.as_str()
+                )
+            }
+            Self::WrongOperationKind { operation_id } => write!(
+                formatter,
+                "operation {} is not a backup operation",
+                operation_id.as_str()
+            ),
+            Self::SnapshotControlPlane => formatter.write_str("control-plane snapshot failed"),
+            Self::EncodeSnapshot { message } => {
+                write!(
+                    formatter,
+                    "control-plane snapshot could not be encoded: {message}"
+                )
+            }
+            Self::WriteArtifact => formatter.write_str("backup artifact could not be written"),
+            Self::RecordTransition => {
+                formatter.write_str("backup operation transition could not be recorded")
+            }
+        }
+    }
 }
 
 async fn record_backup_object_failure(

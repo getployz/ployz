@@ -12,27 +12,19 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::{
-    backup_create_job, op_backup_completed, op_backup_failed, op_backup_running,
-    op_backup_submitted, op_cancelled, op_cert_challenge_published, op_cert_completed,
-    op_cert_failed, op_cert_submitted, op_cert_validation_started, op_deploy_cleanup_finished,
-    op_deploy_completed, op_deploy_container_started, op_deploy_failed,
-    op_deploy_health_check_started, op_deploy_plan_created, op_deploy_planning_started,
-    op_deploy_running, op_deploy_submitted, op_deploy_wireguard_ebpf_prepared,
-    op_machine_add_completed, op_machine_add_failed, op_machine_add_joined,
-    op_machine_add_submitted, op_watch,
+    op_backup_completed, op_backup_failed, op_backup_running, op_backup_submitted, op_cancelled,
+    op_cert_challenge_published, op_cert_completed, op_cert_failed, op_cert_submitted,
+    op_cert_validation_started, op_deploy_cleanup_finished, op_deploy_completed,
+    op_deploy_container_started, op_deploy_failed, op_deploy_health_check_started,
+    op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
+    op_deploy_wireguard_ebpf_prepared, op_machine_add_completed, op_machine_add_failed,
+    op_machine_add_joined, op_machine_add_submitted, op_watch,
 };
-use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 use crate::streams::MessageId;
 
 use super::{NATS_OPERATION_TIMEOUT, PLZ_OPS_STREAM};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackupCreateJob {
-    pub operation_id: OperationId,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationEventAppend {
@@ -330,35 +322,6 @@ impl AsyncNatsOperationEventLog {
             })?,
             duplicate: ack.duplicate,
         })
-    }
-
-    pub async fn publish_backup_create_job(
-        &self,
-        operation_id: &OperationId,
-    ) -> Result<(), OperationEventLogError> {
-        let payload = serde_json::to_vec(&BackupCreateJob {
-            operation_id: operation_id.clone(),
-        })
-        .map_err(OperationEventLogError::EncodeEvent)?;
-        let publish = PublishMessage::build()
-            .payload(payload.into())
-            .message_id(format!("backup.create.job.{}", operation_id.as_str()));
-        let ack_future = with_event_timeout(
-            "backup create job publish request",
-            self.jetstream
-                .send_publish(backup_create_job(operation_id), publish),
-        )
-        .await?
-        .map_err(|error| OperationEventLogError::PublishRequest {
-            message: error.to_string(),
-        })?;
-        let _ack = with_event_timeout("backup create job publish ack", async { ack_future.await })
-            .await?
-            .map_err(|error| OperationEventLogError::PublishAck {
-                message: error.to_string(),
-            })?;
-
-        Ok(())
     }
 
     pub async fn event_at_sequence(

@@ -10,6 +10,7 @@ use ployz_core::ops::{
 };
 use ployz_nats::bootstrap::{BootstrapPlan, assure_nats_resources};
 use ployz_nats::connect::NatsClientUrl;
+use ployz_nats::objects::{PLZ_BACKUPS_BUCKET, control_plane_bundle_object_name};
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
@@ -97,7 +98,7 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
 }
 
 #[tokio::test]
-async fn control_runtime_recovers_accepted_backup_create_from_nats() {
+async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command() {
     let nats = TestNats::start().await;
     assure_control_resources(&nats).await;
     let seed = seed_controllers(&nats).await;
@@ -114,14 +115,21 @@ async fn control_runtime_recovers_accepted_backup_create_from_nats() {
             .expect("control runtime starts");
     let api = OperationApiClient::new(nats.client.clone());
 
-    let status = wait_for_terminal_backup_status(&api, operation_id("op_recovered_backup")).await;
-    let manifest = completed_backup_manifest(&status, "op_recovered_backup");
-    let [artifact] = manifest.artifacts.as_slice() else {
-        panic!("expected one backup artifact");
-    };
-    assert_backup_artifact_exists(&nats, artifact).await;
-    let bundle = read_backup_bundle(&nats, artifact).await;
-    assert_snapshot_contains_control_buckets(&bundle.control_plane);
+    let status = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: operation_id("op_recovered_backup"),
+        })
+        .await
+        .expect("backup status reads")
+        .status;
+    assert!(matches!(
+        status,
+        OperationStatus::Backup {
+            state: BackupOperationState::Accepted,
+            ..
+        }
+    ));
+    assert_backup_artifact_absent(&nats, "op_recovered_backup").await;
 
     runtime
         .shutdown()
@@ -277,6 +285,17 @@ async fn assert_backup_artifact_exists(
     assert_eq!(artifact.kind, BackupArtifactKind::ControlPlaneBundle);
     assert_eq!(info.size as u64, artifact.byte_count);
     assert_eq!(info.digest.as_deref(), Some(artifact.digest.as_str()));
+}
+
+async fn assert_backup_artifact_absent(nats: &TestNats, operation_id_value: &str) {
+    let bucket = nats
+        .jetstream
+        .get_object_store(PLZ_BACKUPS_BUCKET)
+        .await
+        .expect("backup object bucket exists");
+    let object_name = control_plane_bundle_object_name(&operation_id(operation_id_value));
+
+    assert!(bucket.info(&object_name).await.is_err());
 }
 
 async fn read_backup_bundle(

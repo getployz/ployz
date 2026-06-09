@@ -1,5 +1,6 @@
 //! User-facing operation service handlers.
 
+use crate::backup_runtime::BackupOperationRuntime;
 use crate::controllers::{
     BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
@@ -53,6 +54,7 @@ use std::sync::Arc;
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_execution: DeploySubmitExecution,
+    backup_execution: BackupCreateExecution,
     machine_query: MachineQueryExecution,
     service_query: ServiceQueryExecution,
     logs_query: LogsQueryExecution,
@@ -64,6 +66,7 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_execution: DeploySubmitExecution::AcceptOnly,
+            backup_execution: BackupCreateExecution::AcceptOnly,
             machine_query: MachineQueryExecution::Unavailable,
             service_query: ServiceQueryExecution::Unavailable,
             logs_query: LogsQueryExecution::Unavailable,
@@ -74,6 +77,7 @@ impl OperationApiHandlers {
     pub fn execute_operations(
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,
+        backup_runtime: BackupOperationRuntime,
         machine_query: MachineQueryRuntime,
         logs_tailer: NatsNodeLogsTailer,
     ) -> Self {
@@ -82,6 +86,7 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
+            backup_execution: BackupCreateExecution::Execute(Arc::new(backup_runtime)),
             machine_query: MachineQueryExecution::Execute(Arc::new(machine_query)),
             service_query: ServiceQueryExecution::Execute(Arc::new(service_query)),
             logs_query: LogsQueryExecution::Execute(Arc::new(logs_query)),
@@ -98,6 +103,30 @@ impl OperationApiHandlers {
 pub enum DeploySubmitExecution {
     AcceptOnly,
     Execute(Arc<DeployOperationRuntime>),
+}
+
+impl DeploySubmitExecution {
+    fn start_owned(&self, accepted: crate::controllers::AcceptedDeployOperation) {
+        match (self, accepted.should_start_execution) {
+            (Self::Execute(runtime), true) => runtime.start(accepted),
+            (Self::AcceptOnly, true | false) | (Self::Execute(_), false) => {}
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum BackupCreateExecution {
+    AcceptOnly,
+    Execute(Arc<BackupOperationRuntime>),
+}
+
+impl BackupCreateExecution {
+    fn start_owned(&self, accepted: crate::controllers::AcceptedBackupOperation) {
+        match (self, accepted.should_start_execution) {
+            (Self::Execute(runtime), true) => runtime.start(accepted),
+            (Self::AcceptOnly, true | false) | (Self::Execute(_), false) => {}
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -570,11 +599,7 @@ pub async fn deploy_submit(
         accepted.start_sequence,
         accepted.lease.clone(),
     );
-    match (&handlers.deploy_execution, accepted.should_start_execution) {
-        (DeploySubmitExecution::Execute(runtime), true) => runtime.start(accepted),
-        (DeploySubmitExecution::AcceptOnly, true | false)
-        | (DeploySubmitExecution::Execute(_), false) => {}
-    }
+    handlers.deploy_execution.start_owned(accepted);
 
     Ok(operation)
 }
@@ -658,12 +683,14 @@ pub async fn backup_create(
         .submit_backup(request.into())
         .await
         .map_err(|error| backup_create_error_from_submit_error(operation_id, error))?;
-
-    Ok(owned_operation(
-        accepted.operation_id,
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
         accepted.start_sequence,
-        accepted.lease,
-    ))
+        accepted.lease.clone(),
+    );
+    handlers.backup_execution.start_owned(accepted);
+
+    Ok(operation)
 }
 
 pub async fn machine_join_redeem(

@@ -7,7 +7,7 @@ mod repository;
 mod status_store;
 
 pub use events::{
-    AsyncNatsOperationEventLog, BackupCreateJob, OperationEventAppend, OperationEventLogError,
+    AsyncNatsOperationEventLog, OperationEventAppend, OperationEventLogError,
     OperationEventReplayReadError, StoredOperationEvent,
 };
 pub use keys::{

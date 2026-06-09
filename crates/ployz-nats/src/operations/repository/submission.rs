@@ -435,10 +435,6 @@ impl AsyncNatsOperationRepository {
                 )
                 .await
                 .map_err(SubmitBackupError::StoreStatus)?;
-            self.event_log
-                .publish_backup_create_job(&existing.operation_id)
-                .await
-                .map_err(SubmitBackupError::AppendEvent)?;
             return Ok(AcceptedBackupSubmission {
                 operation_id: existing.operation_id,
                 start_sequence: existing.start_sequence,
@@ -498,10 +494,6 @@ impl AsyncNatsOperationRepository {
         let should_start_execution = !stored.duplicate
             && submitted.operation_id == operation_id
             && submitted.start_sequence == stored.sequence;
-        self.event_log
-            .publish_backup_create_job(&submitted.operation_id)
-            .await
-            .map_err(SubmitBackupError::AppendEvent)?;
 
         Ok(AcceptedBackupSubmission {
             operation_id: submitted.operation_id,
