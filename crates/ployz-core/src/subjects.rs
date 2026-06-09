@@ -16,6 +16,7 @@ pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
 pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
 pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
 pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
+pub const API_INIT_FIRST_NODE_ACTIVATE: &str = "plz.v1.svc.api.init.first_node.activate";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
 pub const API_MACHINE_LIST: &str = "plz.v1.svc.api.machine.list";
 pub const API_MACHINE_INSPECT: &str = "plz.v1.svc.api.machine.inspect";
@@ -29,6 +30,7 @@ pub const API_BACKUP_CREATE: &str = "plz.v1.svc.api.backup.create";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
+    InitFirstNodeActivate,
     MachineAdd,
     MachineList,
     MachineInspect,
@@ -42,8 +44,9 @@ pub enum OperationApiEndpoint {
     BackupCreate,
 }
 
-pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 12] = [
+pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 13] = [
     OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::InitFirstNodeActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
@@ -69,6 +72,7 @@ impl OperationApiEndpoint {
     pub const fn name(self) -> &'static str {
         match self {
             Self::DeploySubmit => "deploy.submit",
+            Self::InitFirstNodeActivate => "init.first_node.activate",
             Self::MachineAdd => "machine.add",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
@@ -87,6 +91,7 @@ impl OperationApiEndpoint {
     pub const fn subject(self) -> &'static str {
         match self {
             Self::DeploySubmit => API_DEPLOY_SUBMIT,
+            Self::InitFirstNodeActivate => API_INIT_FIRST_NODE_ACTIVATE,
             Self::MachineAdd => API_MACHINE_ADD,
             Self::MachineList => API_MACHINE_LIST,
             Self::MachineInspect => API_MACHINE_INSPECT,
@@ -107,7 +112,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit | Self::MachineAdd | Self::BackupCreate => {
                 OperationApiEndpointExecution::AcceptsOperation
             }
-            Self::MachineJoinRedeem | Self::MachineJoinReport => {
+            Self::InitFirstNodeActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
                 OperationApiEndpointExecution::MutatesOperation
             }
             Self::MachineList

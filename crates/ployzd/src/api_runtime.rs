@@ -2,9 +2,9 @@
 
 use crate::controllers::OperationControllers;
 use crate::operation_api::{
-    OperationApiHandlers, backup_create, deploy_submit, logs_tail, machine_add, machine_inspect,
-    machine_join_redeem, machine_join_report, machine_list, ops_status, ops_watch, service_inspect,
-    service_list,
+    OperationApiHandlers, backup_create, deploy_submit, init_first_node_activate, logs_tail,
+    machine_add, machine_inspect, machine_join_redeem, machine_join_report, machine_list,
+    ops_status, ops_watch, service_inspect, service_list,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -15,9 +15,9 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, OperationApiContract,
-        OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        BackupCreateApi, DeploySubmitApi, InitFirstNodeActivateApi, LogsTailApi, MachineAddApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -73,6 +73,16 @@ async fn bind_operation_endpoint(
             runtime,
             handlers,
             |handlers, request| async move { machine_add(handlers.controllers(), request).await },
+        )
+        .await,
+        OperationApiEndpoint::InitFirstNodeActivate => bind_operation_contract::<
+            InitFirstNodeActivateApi,
+            _,
+            _,
+        >(
+            runtime,
+            handlers,
+            |handlers, request| async move { init_first_node_activate(&handlers, request).await },
         )
         .await,
         OperationApiEndpoint::MachineList => {

@@ -34,11 +34,13 @@ impl FirstNodeInitCommand {
     pub fn run_keeper_install(
         keeper_install: KeeperFirstNodeInstall,
         keeper_binary: String,
+        activate_first_node: FirstNodeActivation,
     ) -> Self {
         Self {
             mode: FirstNodeInitMode::RunKeeperInstall {
                 keeper_install,
                 keeper_binary,
+                activate_first_node,
             },
         }
     }
@@ -90,7 +92,31 @@ pub enum FirstNodeInitMode {
     RunKeeperInstall {
         keeper_install: KeeperFirstNodeInstall,
         keeper_binary: String,
+        activate_first_node: FirstNodeActivation,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstNodeActivation {
+    Activate,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstNodeActivationOutput {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub node_id: NodeId,
+}
+
+impl FirstNodeActivationOutput {
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "operation {}\nfirst-node {} active\n",
+            self.operation_id.as_str(),
+            self.node_id.as_str()
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +181,15 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
         }
         if args.take_flag("--run-keeper-install") {
             parsed.set_keeper_install_mode(ParsedKeeperInstallMode::Run)?;
+            continue;
+        }
+        if args.take_flag("--activate-first-node") {
+            if parsed.activate_first_node == FirstNodeActivation::Activate {
+                return Err(PloyzctlCliError::DuplicateArgument {
+                    flag: "--activate-first-node",
+                });
+            }
+            parsed.activate_first_node = FirstNodeActivation::Activate;
             continue;
         }
         if args.take_flag("--gateway") {
@@ -315,6 +350,7 @@ struct ParsedInitArgs {
     machine_bootstrap_url: Option<String>,
     machine_join_template_file: Option<String>,
     keeper_binary: Option<String>,
+    activate_first_node: FirstNodeActivation,
 }
 
 impl Default for ParsedInitArgs {
@@ -344,6 +380,7 @@ impl Default for ParsedInitArgs {
             machine_bootstrap_url: None,
             machine_join_template_file: None,
             keeper_binary: None,
+            activate_first_node: FirstNodeActivation::Skip,
         }
     }
 }
@@ -410,6 +447,7 @@ impl ParsedInitArgs {
             machine_bootstrap_url,
             machine_join_template_file,
             keeper_binary,
+            activate_first_node,
         } = self;
         let keeper_install = ParsedKeeperInstallArgs {
             node_public_ip,
@@ -438,7 +476,10 @@ impl ParsedInitArgs {
             .map_err(|error| invalid_value("--node", error))?;
 
         if keeper_install_mode == ParsedKeeperInstallMode::None {
-            if has_keeper_install_value || keeper_binary.is_some() {
+            if has_keeper_install_value
+                || keeper_binary.is_some()
+                || activate_first_node == FirstNodeActivation::Activate
+            {
                 return Err(PloyzctlCliError::MissingRequiredArgument {
                     flag: "--emit-keeper-install or --run-keeper-install",
                 });
@@ -458,9 +499,10 @@ impl ParsedInitArgs {
             return Ok(FirstNodeInitCommand::run_keeper_install(
                 keeper_install,
                 keeper_binary,
+                activate_first_node,
             ));
         }
-        if keeper_binary.is_some() {
+        if keeper_binary.is_some() || activate_first_node == FirstNodeActivation::Activate {
             return Err(PloyzctlCliError::MissingRequiredArgument {
                 flag: "--run-keeper-install",
             });

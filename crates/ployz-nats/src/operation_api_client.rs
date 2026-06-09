@@ -7,7 +7,8 @@ use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
+    DeploySubmitRequest, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
+    InitFirstNodeActivated, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
     MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
@@ -15,9 +16,9 @@ use ployz_sdk_types::{
     OpsWatchError, OpsWatchRequest, ServiceInspectError, ServiceInspectRequest, ServiceListError,
     ServiceListRequest, ServiceListResult, ServiceSnapshot,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, OperationApiContract,
-        OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        BackupCreateApi, DeploySubmitApi, InitFirstNodeActivateApi, LogsTailApi, MachineAddApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -60,6 +61,13 @@ impl OperationApiClient {
         request: &BackupCreateRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<BackupCreateError>> {
         self.request_api::<BackupCreateApi>(request).await
+    }
+
+    pub async fn init_first_node_activate(
+        &self,
+        request: &InitFirstNodeActivateRequest,
+    ) -> Result<InitFirstNodeActivated, OperationApiClientError<InitFirstNodeActivateError>> {
+        self.request_api::<InitFirstNodeActivateApi>(request).await
     }
 
     pub async fn ops_status(

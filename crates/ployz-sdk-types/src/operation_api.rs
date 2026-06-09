@@ -2,7 +2,8 @@
 
 use crate::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
+    DeploySubmitRequest, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
+    InitFirstNodeActivated, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
     MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
@@ -28,6 +29,7 @@ macro_rules! operation_api_contracts {
     ($macro:ident) => {
         $macro!(
             $crate::operation_api::DeploySubmitApi,
+            $crate::operation_api::InitFirstNodeActivateApi,
             $crate::operation_api::MachineAddApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
@@ -65,6 +67,18 @@ impl OperationApiContract for BackupCreateApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::BackupCreate;
     const RESPONSE_ALIAS: &'static str = "BackupCreateResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitFirstNodeActivateApi;
+
+impl OperationApiContract for InitFirstNodeActivateApi {
+    type Request = InitFirstNodeActivateRequest;
+    type Success = InitFirstNodeActivated;
+    type Error = InitFirstNodeActivateError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::InitFirstNodeActivate;
+    const RESPONSE_ALIAS: &'static str = "InitFirstNodeActivateResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

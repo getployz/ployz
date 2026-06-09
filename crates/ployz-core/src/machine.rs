@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{fmt, num::NonZeroU64};
 
 use crate::ids::{NodeId, OperationId, SubjectToken, SubjectTokenError};
-use crate::ops::FailureMessage;
+use crate::ops::{FailureMessage, OperationIdempotencyKey};
 use crate::roles::{FirstNodeGateway, JoinedNodeProcessSet, joined_node_process_set};
 use crate::state::ActiveMachineState;
 use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
@@ -230,6 +230,26 @@ pub struct MachineAddPlan {
     pub reservation: MachineReservation,
     pub operation: MachineAddOperationState,
     pub process_set: JoinedNodeProcessSet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstNodeActivationPlan {
+    pub operation_id: OperationId,
+    pub idempotency_key: OperationIdempotencyKey,
+    pub name: MachineName,
+}
+
+pub fn plan_first_node_activation(
+    node_id: &NodeId,
+) -> Result<FirstNodeActivationPlan, SubjectTokenError> {
+    Ok(FirstNodeActivationPlan {
+        operation_id: OperationId::try_new(format!("op_init_{}", node_id.as_str()))?,
+        idempotency_key: OperationIdempotencyKey::try_new(format!(
+            "idem_init_{}",
+            node_id.as_str()
+        ))?,
+        name: MachineName::try_new(node_id.as_str())?,
+    })
 }
 
 #[must_use]

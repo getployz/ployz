@@ -16,8 +16,9 @@ pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
 pub const NODE_SERVICE_NAME: &str = "plz-node";
 pub const NODE_SERVICE_DESCRIPTION: &str = "Ployz node-local runtime service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
-pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 12] = [
+pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 13] = [
     OperationApiEndpoint::DeploySubmit,
+    OperationApiEndpoint::InitFirstNodeActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,

@@ -64,6 +64,7 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(!script.contains("--nats-credentials"));
     assert!(!script.contains("--trusted-nats-config-sha256"));
     assert!(script.contains(" init --node core_1 --node-public-ip '$core_ip'"));
+    assert!(script.contains("--activate-first-node"));
     assert!(script.contains(" machine add --node edge_2"));
     assert!(script.contains("start-bootstrap-tunnel"));
     assert!(script.contains("PLOYZ_TUNNEL_LISTEN_ADDR='$edge_bootstrap_tunnel_listen_addr'"));

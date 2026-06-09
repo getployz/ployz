@@ -9,7 +9,9 @@ use crate::deploy_runtime::DeployOperationRuntime;
 use crate::node_rpc::{NatsNodeLogsTailer, NodeLogsTailRuntimeError};
 use crate::node_runtime_types::NodeLogsTailRequest as NodeRuntimeLogsTailRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId};
-use ployz_core::machine::{MachineName, RawJoinToken, active_machine_from_completed_add};
+use ployz_core::machine::{
+    MachineName, RawJoinToken, active_machine_from_completed_add, plan_first_node_activation,
+};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease, OperationStatus,
     OperationStatusSnapshot, ProjectionOperationState, StatusProjectionError,
@@ -34,7 +36,8 @@ use ployz_nats::operations::{
 use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, BackupCreateUnavailableSource,
     BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
-    DeploySubmitUnavailableSource, EventReplayFailure, LogsTailError, LogsTailRequest,
+    DeploySubmitUnavailableSource, EventReplayFailure, InitFirstNodeActivateError,
+    InitFirstNodeActivateRequest, InitFirstNodeActivated, LogsTailError, LogsTailRequest,
     LogsTailResult, LogsTailUnavailableSource, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineAddUnavailableSource, MachineInspectError, MachineInspectRequest,
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult,
@@ -652,6 +655,72 @@ pub async fn machine_add(
         bootstrap_url: material.bootstrap_url,
         join_token: raw_token,
     })
+}
+
+pub async fn init_first_node_activate(
+    handlers: &OperationApiHandlers,
+    request: InitFirstNodeActivateRequest,
+) -> Result<InitFirstNodeActivated, InitFirstNodeActivateError> {
+    let plan = plan_first_node_activation(&request.node_id)
+        .map_err(|_| InitFirstNodeActivateError::InvalidPlan)?;
+    if let Some(active) = first_node_active_machine(handlers, &request.node_id).await? {
+        return Ok(InitFirstNodeActivated {
+            operation_id: active.activated_by,
+            node_id: active.node_id,
+        });
+    }
+    let accepted = machine_add(
+        handlers.controllers(),
+        MachineAddRequest {
+            operation_id: plan.operation_id,
+            idempotency_key: plan.idempotency_key,
+            node_id: request.node_id,
+            name: plan.name,
+            gateway: request.gateway,
+        },
+    )
+    .await
+    .map_err(|failure| InitFirstNodeActivateError::MachineAdd { failure })?;
+    machine_join_redeem(
+        handlers.controllers(),
+        MachineJoinRedeemRequest {
+            join_token: accepted.join_token.clone(),
+        },
+    )
+    .await
+    .map_err(|failure| InitFirstNodeActivateError::JoinRedeem { failure })?;
+    let reported = machine_join_report(
+        handlers,
+        MachineJoinReportRequest {
+            join_token: accepted.join_token,
+            outcome: MachineJoinReportOutcome::Completed,
+        },
+    )
+    .await
+    .map_err(|failure| InitFirstNodeActivateError::JoinReport { failure })?;
+
+    Ok(InitFirstNodeActivated {
+        operation_id: reported.operation_id,
+        node_id: reported.node_id,
+    })
+}
+
+async fn first_node_active_machine(
+    handlers: &OperationApiHandlers,
+    node_id: &NodeId,
+) -> Result<Option<ActiveMachineState>, InitFirstNodeActivateError> {
+    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
+        return Err(InitFirstNodeActivateError::Unavailable {
+            source: MachineQueryUnavailableSource::CoreState,
+        });
+    };
+    runtime
+        .core_state
+        .active_machine(node_id)
+        .await
+        .map_err(|_| InitFirstNodeActivateError::Unavailable {
+            source: MachineQueryUnavailableSource::CoreState,
+        })
 }
 
 async fn machine_add_bootstrap_material(

@@ -9,21 +9,20 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{OperationApiClient, OperationApiClientError, OperationApiRequestFailure};
-use crate::commands::init::FirstNodeInitMode;
+use crate::commands::init::{
+    FirstNodeActivation, FirstNodeActivationOutput, FirstNodeGateway, FirstNodeInitMode,
+};
 use crate::commands::{PloyzctlCommand, USAGE};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
-    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest,
-    OperationIdempotencyKey, ReplayedOperationEvent,
+    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, ReplayedOperationEvent,
 };
-use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::connect::{
     NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
 };
 use ployz_sdk_types::{
-    BackupCreateError, DeploySubmitError, LogsTailError, MachineAddError, MachineInspectError,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinReportError,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListError, OpsStatusError,
+    BackupCreateError, DeploySubmitError, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
+    LogsTailError, MachineAddError, MachineInspectError, MachineListError, OpsStatusError,
     OpsStatusRequest, OpsWatchError, ServiceInspectError, ServiceListError,
 };
 use tokio::time::sleep as async_sleep;
@@ -127,15 +126,15 @@ pub async fn execute_command(
             FirstNodeInitMode::RunKeeperInstall {
                 keeper_install,
                 keeper_binary,
+                activate_first_node,
             } => {
                 let mut output = run_keeper_first_node_install(
                     keeper_binary,
                     keeper_install,
                     config.keeper_install_timeout(),
                 )?;
-                if let Some(activation) =
-                    activate_first_node_machine(keeper_install, config).await?
-                {
+                if *activate_first_node == FirstNodeActivation::Activate {
+                    let activation = activate_first_node_machine(keeper_install, config).await?;
                     output.stdout.push_str(&activation.render());
                 }
                 Ok(output)
@@ -313,23 +312,6 @@ fn next_event_sequence(sequence: EventSequence) -> Option<EventSequence> {
     EventSequence::try_new(next).ok()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FirstNodeActivationOutput {
-    operation_id: OperationId,
-    node_id: ployz_core::ids::NodeId,
-}
-
-impl FirstNodeActivationOutput {
-    #[must_use]
-    fn render(&self) -> String {
-        format!(
-            "operation {}\nfirst-node {} active\n",
-            self.operation_id.as_str(),
-            self.node_id.as_str()
-        )
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PloyzctlExecutionOutput {
     pub stdout: String,
@@ -349,15 +331,11 @@ impl PloyzctlExecutionOutput {
 async fn activate_first_node_machine(
     keeper_install: &ployz_core::install::KeeperFirstNodeInstall,
     config: &PloyzctlRuntimeConfig,
-) -> Result<Option<FirstNodeActivationOutput>, PloyzctlExecutionError> {
-    if config.nats_url.is_none() {
-        return Ok(None);
-    }
-
+) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
     let deadline = Instant::now() + config.nats_connect_timeout();
     loop {
         match activate_first_node_machine_once(keeper_install, config).await {
-            Ok(activation) => return Ok(Some(activation)),
+            Ok(activation) => return Ok(activation),
             Err(error)
                 if error.is_first_node_activation_retryable() && Instant::now() < deadline =>
             {
@@ -373,43 +351,25 @@ async fn activate_first_node_machine_once(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
     let api = operation_api_client(config).await?;
-    let operation_id = OperationId::try_new(format!("op_init_{}", keeper_install.node_id.as_str()))
-        .expect("node ids produce valid init operation ids");
-    let idempotency_key =
-        OperationIdempotencyKey::try_new(format!("idem_init_{}", keeper_install.node_id.as_str()))
-            .expect("node ids produce valid init idempotency keys");
-    let gateway = match keeper_install.gateway {
-        FirstNodeGateway::Install => ployz_sdk_types::MachineAddGateway::Install,
-        FirstNodeGateway::Skip => ployz_sdk_types::MachineAddGateway::Skip,
-    };
-    let accepted = api
-        .machine_add(&ployz_sdk_types::MachineAddRequest {
-            operation_id: operation_id.clone(),
-            idempotency_key,
+    let activated = api
+        .init_first_node_activate(&InitFirstNodeActivateRequest {
             node_id: keeper_install.node_id.clone(),
-            name: ployz_sdk_types::MachineName::try_new(keeper_install.node_id.as_str())
-                .expect("node ids are valid machine-name tokens"),
-            gateway,
+            gateway: machine_add_gateway(keeper_install.gateway),
         })
         .await
-        .map_err(|source| PloyzctlExecutionError::FirstNodeMachineAddApi { source })?;
-    api.machine_join_redeem(&MachineJoinRedeemRequest {
-        join_token: accepted.join_token.clone(),
-    })
-    .await
-    .map_err(|source| PloyzctlExecutionError::FirstNodeJoinRedeemApi { source })?;
-    let reported = api
-        .machine_join_report(&MachineJoinReportRequest {
-            join_token: accepted.join_token,
-            outcome: MachineJoinReportOutcome::Completed,
-        })
-        .await
-        .map_err(|source| PloyzctlExecutionError::FirstNodeJoinReportApi { source })?;
+        .map_err(|source| PloyzctlExecutionError::FirstNodeActivateApi { source })?;
 
     Ok(FirstNodeActivationOutput {
-        operation_id: reported.operation_id,
-        node_id: reported.node_id,
+        operation_id: activated.operation_id,
+        node_id: activated.node_id,
     })
+}
+
+const fn machine_add_gateway(gateway: FirstNodeGateway) -> ployz_sdk_types::MachineAddGateway {
+    match gateway {
+        FirstNodeGateway::Install => ployz_sdk_types::MachineAddGateway::Install,
+        FirstNodeGateway::Skip => ployz_sdk_types::MachineAddGateway::Skip,
+    }
 }
 
 fn run_keeper_first_node_install(
@@ -730,14 +690,8 @@ pub enum PloyzctlExecutionError {
     MachineAddApi {
         source: OperationApiClientError<MachineAddError>,
     },
-    FirstNodeMachineAddApi {
-        source: OperationApiClientError<MachineAddError>,
-    },
-    FirstNodeJoinRedeemApi {
-        source: OperationApiClientError<MachineJoinRedeemError>,
-    },
-    FirstNodeJoinReportApi {
-        source: OperationApiClientError<MachineJoinReportError>,
+    FirstNodeActivateApi {
+        source: OperationApiClientError<InitFirstNodeActivateError>,
     },
     MachineListApi {
         source: OperationApiClientError<MachineListError>,
@@ -772,9 +726,7 @@ pub enum PloyzctlExecutionError {
 impl PloyzctlExecutionError {
     fn is_first_node_activation_retryable(&self) -> bool {
         match self {
-            Self::FirstNodeMachineAddApi { source } => retryable_operation_api_error(source),
-            Self::FirstNodeJoinRedeemApi { source } => retryable_operation_api_error(source),
-            Self::FirstNodeJoinReportApi { source } => retryable_operation_api_error(source),
+            Self::FirstNodeActivateApi { source } => retryable_operation_api_error(source),
             Self::MissingNatsUrl
             | Self::InvalidNatsUrl(_)
             | Self::NatsConnect(_)
@@ -821,14 +773,8 @@ impl fmt::Display for PloyzctlExecutionError {
             Self::DeploySubmitApi { source } => write!(formatter, "{source}"),
             Self::BackupCreateApi { source } => write!(formatter, "{source}"),
             Self::MachineAddApi { source } => write!(formatter, "{source}"),
-            Self::FirstNodeMachineAddApi { source } => {
-                write!(formatter, "first node machine operation failed: {source}")
-            }
-            Self::FirstNodeJoinRedeemApi { source } => {
-                write!(formatter, "first node join redeem failed: {source}")
-            }
-            Self::FirstNodeJoinReportApi { source } => {
-                write!(formatter, "first node join report failed: {source}")
+            Self::FirstNodeActivateApi { source } => {
+                write!(formatter, "first node activation failed: {source}")
             }
             Self::MachineListApi { source } => write!(formatter, "{source}"),
             Self::MachineInspectApi { source } => write!(formatter, "{source}"),

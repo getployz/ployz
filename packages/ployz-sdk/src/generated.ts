@@ -96,7 +96,7 @@ export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missi
 
 export type FirstNodeGateway = "install" | "skip";
 
-export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed" } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
+export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed", outcome: DeployCompletionOutcome, } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
 export type DeployRunningStage = "preparing_wireguard_ebpf" | "starting_containers" | "waiting_for_health" | "route_cutover" | "active_service_commit" | "removing_superseded_containers";
 
@@ -108,7 +108,7 @@ export type BackupOperationState = { "state": "accepted" } | { "state": "running
 
 export type BackupRunningStage = { "stage": "snapshotting_control_plane" } | { "stage": "writing_manifest", artifact: BackupArtifact, };
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_wireguard_ebpf_prepared", operation_id: OperationId, report: WireGuardEbpfPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_wireguard_ebpf_prepared", operation_id: OperationId, report: WireGuardEbpfPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -120,7 +120,7 @@ export type RoutePort = SafeInteger<"RoutePort">;
 
 export type RouteTarget = { hostname: RouteHostname, port: RoutePort, };
 
-export type RetainedArtifact = { "type": "created_container", node_id: NodeId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", node_id: NodeId, container_id: ContainerId, log_hint: OperatorHint, };
+export type RetainedArtifact = { "type": "created_container", node_id: NodeId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", node_id: NodeId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, };
 
 export type HealthCheckFailure = { "reason": "probe_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
 
@@ -132,7 +132,7 @@ export type WireGuardEbpfNodeReady = { node_id: NodeId, wireguard: WireGuardRead
 
 export type WireGuardEbpfReady = { wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
 
-export type WireGuardReady = { evidence: Array<WireGuardReadyEvidence>, };
+export type WireGuardReady = { public_key: WireGuardPublicKey, evidence: Array<WireGuardReadyEvidence>, };
 
 export type WireGuardReadyEvidence = { "kind": "host_path", path: string, } | { "kind": "command", program: string, args: Array<string>, };
 
@@ -358,6 +358,8 @@ export type EventReplayFailure = "decode_event" | "read_event" | "timeout" | "in
 
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
+export type InitFirstNodeActivateResponse = OperationApiResponse<InitFirstNodeActivated, InitFirstNodeActivateError>;
+
 export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
 export type MachineListResponse = OperationApiResponse<MachineListResult, MachineListError>;
@@ -384,6 +386,7 @@ export type BackupCreateResponse = OperationApiResponse<AcceptedOperation, Backu
 
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
+  { name: "init.first_node.activate", subject: "plz.v1.svc.api.init.first_node.activate", execution: "mutates_operation", request: "InitFirstNodeActivateRequest", success: "InitFirstNodeActivated", error: "InitFirstNodeActivateError", response: "InitFirstNodeActivateResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "machine.list", subject: "plz.v1.svc.api.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
   { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },

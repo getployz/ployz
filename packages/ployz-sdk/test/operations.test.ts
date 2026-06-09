@@ -415,6 +415,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "DeploySubmitResponse",
     },
     {
+      name: "init.first_node.activate",
+      subject: "plz.v1.svc.api.init.first_node.activate",
+      execution: "mutates_operation",
+      request: "InitFirstNodeActivateRequest",
+      success: "InitFirstNodeActivated",
+      error: "InitFirstNodeActivateError",
+      response: "InitFirstNodeActivateResponse",
+    },
+    {
       name: "machine.add",
       subject: "plz.v1.svc.api.machine.add",
       execution: "accepts_operation",

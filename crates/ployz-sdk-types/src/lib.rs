@@ -104,6 +104,23 @@ pub struct MachineAddRequest {
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
+pub type InitFirstNodeActivateResponse =
+    OperationApiResponse<InitFirstNodeActivated, InitFirstNodeActivateError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct InitFirstNodeActivateRequest {
+    pub node_id: NodeId,
+    pub gateway: MachineAddGateway,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct InitFirstNodeActivated {
+    pub operation_id: OperationId,
+    pub node_id: NodeId,
+}
+
 pub type MachineListResponse = OperationApiResponse<MachineListResult, MachineListError>;
 
 pub type MachineInspectResponse = OperationApiResponse<MachineSnapshot, MachineInspectError>;
@@ -403,6 +420,24 @@ pub enum MachineJoinRedeemError {
     },
     Unavailable {
         source: MachineJoinRedeemUnavailableSource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InitFirstNodeActivateError {
+    InvalidPlan,
+    Unavailable {
+        source: MachineQueryUnavailableSource,
+    },
+    MachineAdd {
+        failure: MachineAddError,
+    },
+    JoinRedeem {
+        failure: MachineJoinRedeemError,
+    },
+    JoinReport {
+        failure: MachineJoinReportError,
     },
 }
 

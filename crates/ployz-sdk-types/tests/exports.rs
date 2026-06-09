@@ -5,17 +5,19 @@ use ployz_sdk_types::{
     BackupCreateResponse, CertBundleRef, CertId, CertOperationState, CertRunningStage,
     CertTextError, CertValidAt, CertValidityWindow, DeployOperationState, DeployRequest,
     DeployRunningStage, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    EventSequence, EventSequenceError, ImageReference, ImageReferenceError, InstallContractError,
-    LogsTailError, LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    MachineAddAccepted, MachineAddError, MachineAddGateway, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
-    MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
-    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError,
-    MachineListRequest, MachineListResult, MachineName, MachineSnapshot, NodeId, NonEmptyTextError,
+    EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
+    InitFirstNodeActivateError, InitFirstNodeActivateRequest, InitFirstNodeActivated,
+    InstallContractError, LogsTailError, LogsTailRequest, LogsTailResult,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
+    MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineInspectError,
+    MachineInspectRequest, MachineJoinBundle, MachineJoinCoreIrohEndpoint,
+    MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
+    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
+    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError, MachineListRequest,
+    MachineListResult, MachineName, MachineSnapshot, NodeId, NonEmptyTextError,
     OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
@@ -25,9 +27,9 @@ use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
     ServiceSnapshot, SubjectTokenError,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, OperationApiContract,
-        OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
+        BackupCreateApi, DeploySubmitApi, InitFirstNodeActivateApi, LogsTailApi, MachineAddApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -274,6 +276,12 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
 #[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
+    assert_contract::<
+        InitFirstNodeActivateApi,
+        InitFirstNodeActivateRequest,
+        InitFirstNodeActivated,
+        InitFirstNodeActivateError,
+    >();
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
@@ -315,6 +323,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "AcceptedOperation".to_owned(),
                 "DeploySubmitError".to_owned(),
                 "DeploySubmitResponse",
+            ),
+            (
+                "init.first_node.activate",
+                "plz.v1.svc.api.init.first_node.activate",
+                OperationApiEndpointExecution::MutatesOperation,
+                "InitFirstNodeActivateRequest".to_owned(),
+                "InitFirstNodeActivated".to_owned(),
+                "InitFirstNodeActivateError".to_owned(),
+                "InitFirstNodeActivateResponse",
             ),
             (
                 "machine.add",
