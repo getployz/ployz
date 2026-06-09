@@ -263,6 +263,27 @@ wait_for_smoke_service() {
   return 1
 }
 
+wait_for_deploy_operation() {
+  ip="$1"
+  operation_id="$2"
+  deadline=$(( $(date +%s) + 180 ))
+  log_file="${log_dir}/watch-deploy.log"
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if remote_sh "$ip" "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch '$operation_id'" >"$log_file" 2>&1; then
+      if grep -q "deploy.wireguard_ebpf_prepared" "$log_file" && grep -q "deploy.completed" "$log_file"; then
+        cat "$log_file"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+
+  echo "deploy operation ${operation_id} did not reach dataplane-ready completion; last output:" >&2
+  cat "$log_file" >&2 || true
+  return 1
+}
+
 on_exit() {
   status="$?"
   if [ -n "${known_hosts_file:-}" ]; then
@@ -407,8 +428,7 @@ JSON
     run_remote_logged deploy-smoke "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' deploy --detach --service svc_smoke --revision rev_smoke_1 --image '$smoke_image' --replicas 1 --operation op_deploy_smoke --idempotency-key idem_deploy_smoke --route-hostname smoke.local --route-port 8080 --endpoint-port 80"
 
-    run_remote_logged watch-deploy "$core_ip" \
-      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' ops watch op_deploy_smoke"
+    wait_for_deploy_operation "$core_ip" op_deploy_smoke
 
     echo "curling smoke service through core gateway" >&2
     wait_for_smoke_service core "$core_ip"

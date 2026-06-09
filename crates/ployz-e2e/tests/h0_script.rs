@@ -78,7 +78,10 @@ fn hetzner_h0_script_drives_the_product_path() {
         "PLOYZ_NATS_URL='$edge_runtime_nats_url' '$remote_ployzctl' machine inspect edge_2"
     ));
     assert!(script.contains(" deploy --detach"));
-    assert!(script.contains(" ops watch op_deploy_smoke"));
+    assert!(script.contains("wait_for_deploy_operation \"$core_ip\" op_deploy_smoke"));
+    assert!(script.contains("deploy.wireguard_ebpf_prepared"));
+    assert!(script.contains("deploy.completed"));
+    assert!(script.contains("dataplane-ready completion"));
     assert!(script.contains("wait_for_smoke_service core \"$core_ip\""));
     assert!(script.contains("wait_for_smoke_service edge \"$edge_ip\""));
     assert!(script.contains("curl-smoke-${name}.log"));
