@@ -1,11 +1,10 @@
 use super::resources::PlannedResource;
 use super::{
     BootstrapPlan, BootstrapResourceAction, BootstrapResourceKind, BootstrapResourceRef,
-    BootstrapResourceRefusal, ExistingResources,
+    BootstrapResourceRefusal, ExistingResources, ResourceReplicas,
 };
 use crate::kv::KvBucketSpec;
 use crate::objects::ObjectBucketSpec;
-use crate::replication::ReplicationFactor;
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 use async_nats::jetstream;
 use async_nats::jetstream::ErrorCode;
@@ -161,10 +160,14 @@ async fn load_existing_kv_bucket(
         return Ok(None);
     };
 
-    Ok(Some(KvBucketSpec::new(
+    Ok(Some(observed_kv_bucket(
         expected.name,
-        replication_from_usize(config.num_replicas)?,
+        observed_replicas(config.num_replicas)?,
     )))
+}
+
+fn observed_kv_bucket(name: &'static str, replicas: ResourceReplicas) -> KvBucketSpec {
+    KvBucketSpec::new(name).with_observed_replicas(replicas)
 }
 
 async fn load_existing_stream(
@@ -177,17 +180,30 @@ async fn load_existing_stream(
         return Ok(None);
     };
 
-    Ok(Some(
-        StreamSpec::new(
-            expected.name,
-            config.subjects,
-            retention_from_nats(config.retention)?,
-            storage_from_nats(config.storage)?,
-            replication_from_usize(config.num_replicas)?,
-            discard_from_nats(config.discard)?,
-        )
-        .with_message_schedules(config.allow_message_schedules),
-    ))
+    Ok(Some(observed_stream(
+        expected.name,
+        config.subjects,
+        retention_from_nats(config.retention)?,
+        storage_from_nats(config.storage)?,
+        observed_replicas(config.num_replicas)?,
+        discard_from_nats(config.discard)?,
+        config.allow_message_schedules,
+    )))
+}
+
+fn observed_stream(
+    name: &'static str,
+    subjects: Vec<String>,
+    retention: RetentionPolicy,
+    storage: StorageBackend,
+    replicas: ResourceReplicas,
+    discard: DiscardPolicy,
+    allow_message_schedules: bool,
+) -> StreamSpec {
+    let mut spec = StreamSpec::new(name, subjects, retention, storage, discard)
+        .with_message_schedules(allow_message_schedules);
+    spec = spec.with_observed_replicas(replicas);
+    spec
 }
 
 async fn load_existing_object_bucket(
@@ -200,10 +216,23 @@ async fn load_existing_object_bucket(
         return Ok(None);
     };
 
-    Ok(Some(ObjectBucketSpec::new(
+    Ok(Some(observed_object_bucket(
         expected.name,
-        replication_from_usize(config.num_replicas)?,
+        observed_replicas(config.num_replicas)?,
     )))
+}
+
+fn observed_object_bucket(name: &'static str, replicas: ResourceReplicas) -> ObjectBucketSpec {
+    ObjectBucketSpec::new(name).with_observed_replicas(replicas)
+}
+
+fn observed_replicas(value: usize) -> Result<ResourceReplicas, BootstrapAssuranceError> {
+    ResourceReplicas::observed(value).map_err(|invalid| {
+        BootstrapAssuranceError::UnsupportedObservedResourceShape {
+            field: "replicas",
+            value: invalid.value.to_string(),
+        }
+    })
 }
 
 async fn load_existing_stream_config(
@@ -272,7 +301,7 @@ async fn create_kv_bucket(
         jetstream.create_key_value(jetstream::kv::Config {
             bucket: bucket.name.to_owned(),
             storage: jetstream::stream::StorageType::File,
-            num_replicas: usize::from(bucket.replicas.as_u8()),
+            num_replicas: bucket.replicas().as_usize(),
             ..Default::default()
         }),
     )
@@ -295,7 +324,7 @@ async fn create_stream(
             subjects: stream.subjects.clone(),
             retention: nats_retention(stream.retention),
             storage: nats_storage(stream.storage),
-            num_replicas: usize::from(stream.replicas.as_u8()),
+            num_replicas: stream.replicas().as_usize(),
             discard: nats_discard(stream.discard),
             allow_message_schedules: stream.allow_message_schedules,
             ..Default::default()
@@ -318,7 +347,7 @@ async fn create_object_bucket(
         jetstream.create_object_store(jetstream::object_store::Config {
             bucket: bucket.name.to_owned(),
             storage: jetstream::stream::StorageType::File,
-            num_replicas: usize::from(bucket.replicas.as_u8()),
+            num_replicas: bucket.replicas().as_usize(),
             ..Default::default()
         }),
     )
@@ -517,17 +546,5 @@ fn discard_from_nats(
     match discard {
         jetstream::stream::DiscardPolicy::Old => Ok(DiscardPolicy::Old),
         jetstream::stream::DiscardPolicy::New => Ok(DiscardPolicy::New),
-    }
-}
-
-fn replication_from_usize(value: usize) -> Result<ReplicationFactor, BootstrapAssuranceError> {
-    match value {
-        1 => Ok(ReplicationFactor::One),
-        3 => Ok(ReplicationFactor::Three),
-        5 => Ok(ReplicationFactor::Five),
-        _ => Err(BootstrapAssuranceError::UnsupportedObservedResourceShape {
-            field: "replicas",
-            value: value.to_string(),
-        }),
     }
 }

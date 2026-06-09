@@ -1,7 +1,8 @@
 //! JetStream stream specs and operation event stream harnesses.
 
-use crate::replication::ReplicationFactor;
 use ployz_core::ops::{EventSequence, OperationEvent};
+
+use crate::bootstrap::ResourceReplicas;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamSpec {
@@ -9,7 +10,7 @@ pub struct StreamSpec {
     pub subjects: Vec<String>,
     pub retention: RetentionPolicy,
     pub storage: StorageBackend,
-    pub replicas: ReplicationFactor,
+    pub(crate) replicas: ResourceReplicas,
     pub discard: DiscardPolicy,
     pub allow_message_schedules: bool,
 }
@@ -21,7 +22,6 @@ impl StreamSpec {
         subjects: Vec<String>,
         retention: RetentionPolicy,
         storage: StorageBackend,
-        replicas: ReplicationFactor,
         discard: DiscardPolicy,
     ) -> Self {
         Self {
@@ -29,10 +29,21 @@ impl StreamSpec {
             subjects,
             retention,
             storage,
-            replicas,
+            replicas: ResourceReplicas::SINGLE_CORE,
             discard,
             allow_message_schedules: false,
         }
+    }
+
+    #[must_use]
+    pub const fn replicas(&self) -> ResourceReplicas {
+        self.replicas
+    }
+
+    #[must_use]
+    pub(crate) const fn with_observed_replicas(mut self, replicas: ResourceReplicas) -> Self {
+        self.replicas = replicas;
+        self
     }
 
     #[must_use]

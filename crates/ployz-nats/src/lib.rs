@@ -16,7 +16,6 @@ pub mod observations;
 pub mod operation_api_client;
 pub mod operations;
 pub mod permissions;
-pub mod replication;
 pub mod schedules;
 pub mod service_protocol;
 pub mod service_runtime;

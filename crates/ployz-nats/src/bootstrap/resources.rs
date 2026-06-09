@@ -1,6 +1,5 @@
 use crate::kv::KvBucketSpec;
 use crate::objects::ObjectBucketSpec;
-use crate::replication::ReplicationFactor;
 use crate::streams::StreamSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +166,7 @@ fn compare_kv_bucket(
     }
 
     if expected_replicas != observed_replicas {
-        return replica_drift(*expected_replicas, *observed_replicas);
+        return replica_drift(expected_replicas.as_usize(), observed_replicas.as_usize());
     }
 
     ResourceComparison::Unchanged
@@ -194,7 +193,7 @@ fn compare_object_bucket(
     }
 
     if expected_replicas != observed_replicas {
-        return replica_drift(*expected_replicas, *observed_replicas);
+        return replica_drift(expected_replicas.as_usize(), observed_replicas.as_usize());
     }
 
     ResourceComparison::Unchanged
@@ -268,18 +267,18 @@ fn compare_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> Resou
     }
 
     if expected_replicas != observed_replicas {
-        return replica_drift(*expected_replicas, *observed_replicas);
+        return replica_drift(expected_replicas.as_usize(), observed_replicas.as_usize());
     }
 
     ResourceComparison::Unchanged
 }
 
-fn replica_drift(expected: ReplicationFactor, observed: ReplicationFactor) -> ResourceComparison {
+fn replica_drift(expected: usize, observed: usize) -> ResourceComparison {
     ResourceComparison::ShapeDrift {
         reason: BootstrapResourceRefusal::ConfigurationDrift {
             field: "replicas",
-            expected: expected.as_u8().to_string(),
-            observed: observed.as_u8().to_string(),
+            expected: expected.to_string(),
+            observed: observed.to_string(),
         },
     }
 }

@@ -1,10 +1,11 @@
 //! JetStream KV helpers.
 
-use crate::replication::ReplicationFactor;
 use async_nats::jetstream;
 use futures_util::TryStreamExt;
 use std::future::Future;
 use std::time::Duration;
+
+use crate::bootstrap::ResourceReplicas;
 
 pub const KV_CORE_BUCKET: &str = "KV_CORE";
 pub const KV_LOCKS_BUCKET: &str = "KV_LOCKS";
@@ -12,13 +13,27 @@ pub const KV_LOCKS_BUCKET: &str = "KV_LOCKS";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KvBucketSpec {
     pub name: &'static str,
-    pub replicas: ReplicationFactor,
+    pub(crate) replicas: ResourceReplicas,
 }
 
 impl KvBucketSpec {
     #[must_use]
-    pub const fn new(name: &'static str, replicas: ReplicationFactor) -> Self {
-        Self { name, replicas }
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            replicas: ResourceReplicas::SINGLE_CORE,
+        }
+    }
+
+    #[must_use]
+    pub const fn replicas(&self) -> ResourceReplicas {
+        self.replicas
+    }
+
+    #[must_use]
+    pub(crate) const fn with_observed_replicas(mut self, replicas: ResourceReplicas) -> Self {
+        self.replicas = replicas;
+        self
     }
 }
 

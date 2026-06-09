@@ -7,7 +7,6 @@ mod resources;
 
 use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
 use crate::objects::ObjectBucketSpec;
-use crate::replication::ReplicationFactor;
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError, ScheduleCapability};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
@@ -33,6 +32,32 @@ pub const RECOMMENDED_NATS_SERVER_VERSION: NatsServerVersion = NatsServerVersion
     minor: 14,
     patch: 2,
 };
+
+pub const SINGLE_CORE_REPLICAS: usize = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceReplicas(usize);
+
+impl ResourceReplicas {
+    pub const SINGLE_CORE: Self = Self(SINGLE_CORE_REPLICAS);
+
+    #[must_use]
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+
+    pub fn observed(value: usize) -> Result<Self, InvalidResourceReplicas> {
+        match value {
+            1 | 3 | 5 => Ok(Self(value)),
+            _ => Err(InvalidResourceReplicas { value }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidResourceReplicas {
+    pub value: usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapPlan {
@@ -80,14 +105,13 @@ impl BootstrapPlan {
 
     fn manifest(server_version: NatsServerVersion) -> Self {
         let schedule_capability = ScheduleCapability::from_server_version(server_version);
-        let replicas = ReplicationFactor::One;
 
         Self {
             kv_buckets: vec![
-                KvBucketSpec::new(KV_CORE_BUCKET, replicas),
-                KvBucketSpec::new("KV_OPS", replicas),
-                KvBucketSpec::new("KV_OBS", replicas),
-                KvBucketSpec::new("KV_LOCKS", replicas),
+                KvBucketSpec::new(KV_CORE_BUCKET),
+                KvBucketSpec::new("KV_OPS"),
+                KvBucketSpec::new("KV_OBS"),
+                KvBucketSpec::new("KV_LOCKS"),
             ],
             streams: vec![
                 StreamSpec::new(
@@ -95,7 +119,6 @@ impl BootstrapPlan {
                     vec![OPS_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -103,7 +126,6 @@ impl BootstrapPlan {
                     vec![JOBS_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -111,7 +133,6 @@ impl BootstrapPlan {
                     vec![AUDIT_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -119,7 +140,6 @@ impl BootstrapPlan {
                     vec![OBS_TRANSITION_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    replicas,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
@@ -127,16 +147,15 @@ impl BootstrapPlan {
                     vec![SCHEDULE_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
-                    replicas,
                     DiscardPolicy::Old,
                 )
                 .with_message_schedules(schedule_capability.message_schedules_available()),
             ],
             object_buckets: vec![
-                ObjectBucketSpec::new("PLZ_BUNDLES", replicas),
-                ObjectBucketSpec::new("PLZ_DIAGNOSTICS", replicas),
-                ObjectBucketSpec::new("PLZ_CERTS", replicas),
-                ObjectBucketSpec::new("PLZ_BACKUPS", replicas),
+                ObjectBucketSpec::new("PLZ_BUNDLES"),
+                ObjectBucketSpec::new("PLZ_DIAGNOSTICS"),
+                ObjectBucketSpec::new("PLZ_CERTS"),
+                ObjectBucketSpec::new("PLZ_BACKUPS"),
             ],
             schedule_capability,
         }

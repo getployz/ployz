@@ -1,8 +1,7 @@
 use ployz_nats::bootstrap::{
     BootstrapPlan, BootstrapRefusal, BootstrapResourceAction, BootstrapResourceRefusal,
-    ExistingResources, NatsServerCapabilities, assure_nats_resources,
+    ExistingResources, NatsServerCapabilities, ResourceReplicas, assure_nats_resources,
 };
-use ployz_nats::replication::ReplicationFactor;
 use ployz_nats::schedules::NatsServerVersion;
 use ployz_nats::streams::{DiscardPolicy, RetentionPolicy};
 
@@ -70,17 +69,17 @@ fn single_core_bootstrap_uses_r1_resources() {
     assert!(
         plan.kv_buckets
             .iter()
-            .all(|bucket| bucket.replicas == ReplicationFactor::One)
+            .all(|bucket| bucket.replicas() == ResourceReplicas::SINGLE_CORE)
     );
     assert!(
         plan.streams
             .iter()
-            .all(|stream| stream.replicas == ReplicationFactor::One)
+            .all(|stream| stream.replicas() == ResourceReplicas::SINGLE_CORE)
     );
     assert!(
         plan.object_buckets
             .iter()
-            .all(|bucket| bucket.replicas == ReplicationFactor::One)
+            .all(|bucket| bucket.replicas() == ResourceReplicas::SINGLE_CORE)
     );
 }
 

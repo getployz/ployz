@@ -41,15 +41,15 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
     let manifest = completed_backup_manifest(&status, "op_backup");
     assert_eq!(
         manifest.format_version,
-        BackupManifest::single_core_control_plane().format_version
+        BackupManifest::current_control_plane_kv_only().format_version
     );
     assert_eq!(
         manifest.scope,
-        BackupManifest::single_core_control_plane().scope
+        BackupManifest::current_control_plane_kv_only().scope
     );
     assert_eq!(
         manifest.restore_contract,
-        BackupManifest::single_core_control_plane().restore_contract
+        BackupManifest::current_control_plane_kv_only().restore_contract
     );
     let [artifact] = manifest.artifacts.as_slice() else {
         panic!("expected one backup artifact");

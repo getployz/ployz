@@ -1,11 +1,12 @@
 //! JetStream Object Store helpers.
 
-use crate::replication::ReplicationFactor;
 use async_nats::jetstream;
 use ployz_core::backup::{BackupArtifact, BackupArtifactKind};
 use ployz_core::ids::OperationId;
 use std::future::Future;
 use std::time::Duration;
+
+use crate::bootstrap::ResourceReplicas;
 
 pub const PLZ_BACKUPS_BUCKET: &str = "PLZ_BACKUPS";
 const NATS_OBJECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -13,13 +14,27 @@ const NATS_OBJECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectBucketSpec {
     pub name: &'static str,
-    pub replicas: ReplicationFactor,
+    pub(crate) replicas: ResourceReplicas,
 }
 
 impl ObjectBucketSpec {
     #[must_use]
-    pub const fn new(name: &'static str, replicas: ReplicationFactor) -> Self {
-        Self { name, replicas }
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            replicas: ResourceReplicas::SINGLE_CORE,
+        }
+    }
+
+    #[must_use]
+    pub const fn replicas(&self) -> ResourceReplicas {
+        self.replicas
+    }
+
+    #[must_use]
+    pub(crate) const fn with_observed_replicas(mut self, replicas: ResourceReplicas) -> Self {
+        self.replicas = replicas;
+        self
     }
 }
 

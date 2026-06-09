@@ -376,7 +376,7 @@ async fn complete_from_artifact(
     operation_id: &OperationId,
     artifact: BackupArtifact,
 ) -> Result<(), BackupExecutionError> {
-    let manifest = BackupManifest::single_core_control_plane().with_artifact(artifact);
+    let manifest = BackupManifest::current_control_plane_kv_only().with_artifact(artifact);
 
     record_completed(controllers, operation_id, manifest).await
 }

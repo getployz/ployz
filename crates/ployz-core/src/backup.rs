@@ -52,9 +52,28 @@ impl BackupItem {
             Self::CoreStateKv
             | Self::OperationStateKv
             | Self::ObservationStateKv
-            | Self::LockStateKv => BackupPolicy::Included,
-            Self::BackupManifest
+            | Self::LockStateKv
+            | Self::BackupManifest
             | Self::NatsCredentials
+            | Self::NatsServerConfig
+            | Self::PloyzDomainConfig
+            | Self::OperationEventStreams => BackupPolicy::Included,
+            Self::DockerImages
+            | Self::ApplicationVolumes
+            | Self::ContainerRuntimeState
+            | Self::NodeLocalCache => BackupPolicy::Excluded,
+        }
+    }
+
+    #[must_use]
+    pub const fn current_bundle_policy(self) -> BackupPolicy {
+        match self {
+            Self::CoreStateKv
+            | Self::OperationStateKv
+            | Self::ObservationStateKv
+            | Self::LockStateKv
+            | Self::BackupManifest => BackupPolicy::Included,
+            Self::NatsCredentials
             | Self::NatsServerConfig
             | Self::PloyzDomainConfig
             | Self::OperationEventStreams
@@ -72,10 +91,24 @@ impl BackupItem {
             policy: self.policy(),
         }
     }
+
+    #[must_use]
+    pub const fn current_bundle_scope_entry(self) -> BackupScopeEntry {
+        BackupScopeEntry {
+            item: self,
+            policy: self.current_bundle_policy(),
+        }
+    }
 }
 
 pub fn control_plane_backup_scope() -> impl Iterator<Item = BackupScopeEntry> {
     BackupItem::ALL.into_iter().map(BackupItem::scope_entry)
+}
+
+pub fn current_control_plane_bundle_scope() -> impl Iterator<Item = BackupScopeEntry> {
+    BackupItem::ALL
+        .into_iter()
+        .map(BackupItem::current_bundle_scope_entry)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +158,16 @@ impl BackupManifest {
         Self {
             format_version: BackupManifestVersion::V1,
             scope: control_plane_backup_scope().collect(),
+            restore_contract: single_core_restore_contract().collect(),
+            artifacts: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn current_control_plane_kv_only() -> Self {
+        Self {
+            format_version: BackupManifestVersion::V1,
+            scope: current_control_plane_bundle_scope().collect(),
             restore_contract: single_core_restore_contract().collect(),
             artifacts: Vec::new(),
         }

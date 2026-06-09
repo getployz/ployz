@@ -1,5 +1,6 @@
 use ployz_core::backup::{
-    BackupItem, BackupPolicy, RestoreStep, control_plane_backup_scope, single_core_restore_contract,
+    BackupItem, BackupManifest, BackupPolicy, RestoreStep, control_plane_backup_scope,
+    current_control_plane_bundle_scope, single_core_restore_contract,
 };
 
 #[test]
@@ -11,6 +12,11 @@ fn canonical_backup_scope_includes_control_plane_state() {
             BackupItem::OperationStateKv,
             BackupItem::ObservationStateKv,
             BackupItem::LockStateKv,
+            BackupItem::BackupManifest,
+            BackupItem::NatsCredentials,
+            BackupItem::NatsServerConfig,
+            BackupItem::PloyzDomainConfig,
+            BackupItem::OperationEventStreams,
         ]
     );
 }
@@ -20,7 +26,29 @@ fn canonical_backup_scope_excludes_runtime_data() {
     assert_eq!(
         items_with_policy(BackupPolicy::Excluded),
         vec![
+            BackupItem::DockerImages,
+            BackupItem::ApplicationVolumes,
+            BackupItem::ContainerRuntimeState,
+            BackupItem::NodeLocalCache,
+        ]
+    );
+}
+
+#[test]
+fn current_backup_bundle_scope_is_honest_about_captured_artifacts() {
+    assert_eq!(
+        current_bundle_items_with_policy(BackupPolicy::Included),
+        vec![
+            BackupItem::CoreStateKv,
+            BackupItem::OperationStateKv,
+            BackupItem::ObservationStateKv,
+            BackupItem::LockStateKv,
             BackupItem::BackupManifest,
+        ]
+    );
+    assert_eq!(
+        current_bundle_items_with_policy(BackupPolicy::Excluded),
+        vec![
             BackupItem::NatsCredentials,
             BackupItem::NatsServerConfig,
             BackupItem::PloyzDomainConfig,
@@ -30,6 +58,10 @@ fn canonical_backup_scope_excludes_runtime_data() {
             BackupItem::ContainerRuntimeState,
             BackupItem::NodeLocalCache,
         ]
+    );
+    assert_eq!(
+        BackupManifest::current_control_plane_kv_only().scope,
+        current_control_plane_bundle_scope().collect::<Vec<_>>()
     );
 }
 
@@ -94,6 +126,13 @@ fn restore_contract_has_stable_wire_shape() {
 
 fn items_with_policy(policy: BackupPolicy) -> Vec<BackupItem> {
     control_plane_backup_scope()
+        .filter(|entry| entry.policy == policy)
+        .map(|entry| entry.item)
+        .collect()
+}
+
+fn current_bundle_items_with_policy(policy: BackupPolicy) -> Vec<BackupItem> {
+    current_control_plane_bundle_scope()
         .filter(|entry| entry.policy == policy)
         .map(|entry| entry.item)
         .collect()
