@@ -8,7 +8,8 @@ use ployz_core::install::{AbsoluteInstallPath, MachineBootstrapUrl};
 use ployz_core::roles::FirstNodeGateway;
 
 use crate::artifacts::{
-    ArtifactSource, ArtifactVersion, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
+    EbpfCtlArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use crate::cli::KeeperCliError;
 use crate::steps::FirstNodeInstallTarget;
@@ -55,6 +56,14 @@ struct FirstNodeInstallArgs {
     ployzd_source: Option<OsString>,
     ployzd_sha256: Option<OsString>,
     ployzd_install_path: Option<OsString>,
+    ebpf_bytecode_version: Option<OsString>,
+    ebpf_bytecode_source: Option<OsString>,
+    ebpf_bytecode_sha256: Option<OsString>,
+    ebpf_bytecode_install_path: Option<OsString>,
+    ebpf_ctl_version: Option<OsString>,
+    ebpf_ctl_source: Option<OsString>,
+    ebpf_ctl_sha256: Option<OsString>,
+    ebpf_ctl_install_path: Option<OsString>,
     nats_version: Option<OsString>,
     nats_source: Option<OsString>,
     nats_sha256: Option<OsString>,
@@ -73,6 +82,14 @@ impl FirstNodeInstallArgs {
             ployzd_source: None,
             ployzd_sha256: None,
             ployzd_install_path: None,
+            ebpf_bytecode_version: None,
+            ebpf_bytecode_source: None,
+            ebpf_bytecode_sha256: None,
+            ebpf_bytecode_install_path: None,
+            ebpf_ctl_version: None,
+            ebpf_ctl_source: None,
+            ebpf_ctl_sha256: None,
+            ebpf_ctl_install_path: None,
             nats_version: None,
             nats_source: None,
             nats_sha256: None,
@@ -111,6 +128,50 @@ impl FirstNodeInstallArgs {
                 "--ployzd-install-path",
             );
         }
+        if flag == "--ebpf-bytecode-version" {
+            return set_once(
+                &mut self.ebpf_bytecode_version,
+                value,
+                "--ebpf-bytecode-version",
+            );
+        }
+        if flag == "--ebpf-bytecode-source" {
+            return set_once(
+                &mut self.ebpf_bytecode_source,
+                value,
+                "--ebpf-bytecode-source",
+            );
+        }
+        if flag == "--ebpf-bytecode-sha256" {
+            return set_once(
+                &mut self.ebpf_bytecode_sha256,
+                value,
+                "--ebpf-bytecode-sha256",
+            );
+        }
+        if flag == "--ebpf-bytecode-install-path" {
+            return set_once(
+                &mut self.ebpf_bytecode_install_path,
+                value,
+                "--ebpf-bytecode-install-path",
+            );
+        }
+        if flag == "--ebpf-ctl-version" {
+            return set_once(&mut self.ebpf_ctl_version, value, "--ebpf-ctl-version");
+        }
+        if flag == "--ebpf-ctl-source" {
+            return set_once(&mut self.ebpf_ctl_source, value, "--ebpf-ctl-source");
+        }
+        if flag == "--ebpf-ctl-sha256" {
+            return set_once(&mut self.ebpf_ctl_sha256, value, "--ebpf-ctl-sha256");
+        }
+        if flag == "--ebpf-ctl-install-path" {
+            return set_once(
+                &mut self.ebpf_ctl_install_path,
+                value,
+                "--ebpf-ctl-install-path",
+            );
+        }
         if flag == "--nats-version" {
             return set_once(&mut self.nats_version, value, "--nats-version");
         }
@@ -147,43 +208,92 @@ impl FirstNodeInstallArgs {
     }
 
     fn into_target(self) -> Result<FirstNodeInstallTarget, KeeperCliError> {
-        let node = parse_node_id(required(self.node, "--node")?)?;
+        let Self {
+            node,
+            gateway,
+            ployzd_version,
+            ployzd_source,
+            ployzd_sha256,
+            ployzd_install_path,
+            ebpf_bytecode_version,
+            ebpf_bytecode_source,
+            ebpf_bytecode_sha256,
+            ebpf_bytecode_install_path,
+            ebpf_ctl_version,
+            ebpf_ctl_source,
+            ebpf_ctl_sha256,
+            ebpf_ctl_install_path,
+            nats_version,
+            nats_source,
+            nats_sha256,
+            nats_binary,
+            nats_config,
+            machine_bootstrap_url,
+            machine_join_template_file,
+        } = self;
+        let node = parse_node_id(required(node, "--node")?)?;
         let ployzd_artifact = PloyzdArtifactTarget::new(
             parse_version(
-                required(self.ployzd_version, "--ployzd-version")?,
+                required(ployzd_version, "--ployzd-version")?,
                 "--ployzd-version",
             )?,
-            parse_artifact_source(required(self.ployzd_source, "--ployzd-source")?)?,
+            parse_artifact_source(required(ployzd_source, "--ployzd-source")?)?,
             parse_digest(
-                required(self.ployzd_sha256, "--ployzd-sha256")?,
+                required(ployzd_sha256, "--ployzd-sha256")?,
                 "--ployzd-sha256",
             )?,
-            PathBuf::from(required(self.ployzd_install_path, "--ployzd-install-path")?),
+            PathBuf::from(required(ployzd_install_path, "--ployzd-install-path")?),
+        )?;
+        let ebpf_bytecode_artifact = EbpfBytecodeArtifactTarget::new(
+            parse_version(
+                required(ebpf_bytecode_version, "--ebpf-bytecode-version")?,
+                "--ebpf-bytecode-version",
+            )?,
+            parse_artifact_source(required(ebpf_bytecode_source, "--ebpf-bytecode-source")?)?,
+            parse_digest(
+                required(ebpf_bytecode_sha256, "--ebpf-bytecode-sha256")?,
+                "--ebpf-bytecode-sha256",
+            )?,
+            PathBuf::from(required(
+                ebpf_bytecode_install_path,
+                "--ebpf-bytecode-install-path",
+            )?),
+        )?;
+        let ebpf_ctl_artifact = EbpfCtlArtifactTarget::new(
+            parse_version(
+                required(ebpf_ctl_version, "--ebpf-ctl-version")?,
+                "--ebpf-ctl-version",
+            )?,
+            parse_artifact_source(required(ebpf_ctl_source, "--ebpf-ctl-source")?)?,
+            parse_digest(
+                required(ebpf_ctl_sha256, "--ebpf-ctl-sha256")?,
+                "--ebpf-ctl-sha256",
+            )?,
+            PathBuf::from(required(ebpf_ctl_install_path, "--ebpf-ctl-install-path")?),
         )?;
         let nats_server_artifact = NatsServerArtifactTarget::new(
-            parse_version(
-                required(self.nats_version, "--nats-version")?,
-                "--nats-version",
-            )?,
-            parse_artifact_source(required(self.nats_source, "--nats-source")?)?,
-            parse_digest(
-                required(self.nats_sha256, "--nats-sha256")?,
-                "--nats-sha256",
-            )?,
-            PathBuf::from(required(self.nats_binary, "--nats-binary")?),
+            parse_version(required(nats_version, "--nats-version")?, "--nats-version")?,
+            parse_artifact_source(required(nats_source, "--nats-source")?)?,
+            parse_digest(required(nats_sha256, "--nats-sha256")?, "--nats-sha256")?,
+            PathBuf::from(required(nats_binary, "--nats-binary")?),
         )?;
         let nats_server_unit = NatsServerUnitTarget::new(
             nats_server_artifact.install_path().to_path_buf(),
-            PathBuf::from(required(self.nats_config, "--nats-config")?),
+            PathBuf::from(required(nats_config, "--nats-config")?),
         )?;
 
-        let mut target =
-            FirstNodeInstallTarget::new(node, ployzd_artifact, nats_server_artifact, self.gateway)
-                .with_nats_server_unit(nats_server_unit);
-        if let Some(url) = self.machine_bootstrap_url {
+        let mut target = FirstNodeInstallTarget::new(
+            node,
+            ployzd_artifact,
+            DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+            nats_server_artifact,
+            gateway,
+        )
+        .with_nats_server_unit(nats_server_unit);
+        if let Some(url) = machine_bootstrap_url {
             target = target.with_machine_bootstrap_url(parse_machine_bootstrap_url(url)?);
         }
-        if let Some(path) = self.machine_join_template_file {
+        if let Some(path) = machine_join_template_file {
             target =
                 target.with_machine_join_template_file(parse_machine_join_template_file(path)?);
         }
@@ -254,6 +364,14 @@ fn is_value_flag(value: &OsString) -> bool {
         || value == "--ployzd-source"
         || value == "--ployzd-sha256"
         || value == "--ployzd-install-path"
+        || value == "--ebpf-bytecode-version"
+        || value == "--ebpf-bytecode-source"
+        || value == "--ebpf-bytecode-sha256"
+        || value == "--ebpf-bytecode-install-path"
+        || value == "--ebpf-ctl-version"
+        || value == "--ebpf-ctl-source"
+        || value == "--ebpf-ctl-sha256"
+        || value == "--ebpf-ctl-install-path"
         || value == "--nats-version"
         || value == "--nats-source"
         || value == "--nats-sha256"
@@ -284,6 +402,22 @@ mod tests {
             "2.12.0".into(),
             "--nats-sha256".into(),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            "--ebpf-bytecode-install-path".into(),
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+            "--ebpf-bytecode-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            "--ebpf-bytecode-source".into(),
+            "/tmp/ployz-ebpf-tc".into(),
+            "--ebpf-bytecode-version".into(),
+            "0.1.0".into(),
+            "--ebpf-ctl-install-path".into(),
+            "/usr/local/bin/ployz-ebpf-ctl".into(),
+            "--ebpf-ctl-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            "--ebpf-ctl-source".into(),
+            "/tmp/ployz-ebpf-ctl".into(),
+            "--ebpf-ctl-version".into(),
+            "0.1.0".into(),
             "--machine-join-template-file".into(),
             "/etc/ployz/machine-join-template.json".into(),
             "--ployzd-install-path".into(),
@@ -339,6 +473,22 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             "--ployzd-install-path".into(),
             "/usr/local/bin/ployzd".into(),
+            "--ebpf-bytecode-version".into(),
+            "0.1.0".into(),
+            "--ebpf-bytecode-source".into(),
+            "/tmp/ployz-ebpf-tc".into(),
+            "--ebpf-bytecode-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            "--ebpf-bytecode-install-path".into(),
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+            "--ebpf-ctl-version".into(),
+            "0.1.0".into(),
+            "--ebpf-ctl-source".into(),
+            "/tmp/ployz-ebpf-ctl".into(),
+            "--ebpf-ctl-sha256".into(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            "--ebpf-ctl-install-path".into(),
+            "/usr/local/bin/ployz-ebpf-ctl".into(),
             "--nats-version".into(),
             "2.12.0".into(),
             "--nats-source".into(),

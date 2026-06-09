@@ -1,9 +1,9 @@
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey,
-    MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
+    KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
+    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress,
+    MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
     MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
@@ -15,7 +15,7 @@ fn keeper_first_node_install_renders_shell_command() {
 
     assert_eq!(
         install.render_command(),
-        "ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway"
+        "ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --ebpf-bytecode-version '0.1.0' --ebpf-bytecode-source '/tmp/ployz-ebpf-tc' --ebpf-bytecode-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ebpf-bytecode-install-path '/usr/local/lib/ployz/ebpf/ployz-ebpf-tc' --ebpf-ctl-version '0.1.0' --ebpf-ctl-source '/tmp/ployz-ebpf-ctl' --ebpf-ctl-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ebpf-ctl-install-path '/usr/local/bin/ployz-ebpf-ctl' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway"
     );
 }
 
@@ -153,6 +153,18 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                     "source": "/tmp/ployzd",
                     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "install_path": "/usr/local/bin/ployzd"
+                },
+                "ebpf_bytecode": {
+                    "version": "0.1.0",
+                    "source": "/tmp/ployz-ebpf-tc",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+                },
+                "ebpf_ctl": {
+                    "version": "0.1.0",
+                    "source": "/tmp/ployz-ebpf-ctl",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
                 }
             }
         })
@@ -180,6 +192,26 @@ fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
         )
         .expect("valid digest"),
         ployzd_install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+            .expect("valid install path"),
+        ebpf_bytecode_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+        ebpf_bytecode_source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc")
+            .expect("valid source"),
+        ebpf_bytecode_sha256: InstallSha256Digest::try_new(
+            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+        )
+        .expect("valid digest"),
+        ebpf_bytecode_install_path: AbsoluteInstallPath::try_new(
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+        )
+        .expect("valid install path"),
+        ebpf_ctl_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+        ebpf_ctl_source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
+            .expect("valid source"),
+        ebpf_ctl_sha256: InstallSha256Digest::try_new(
+            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+        )
+        .expect("valid digest"),
+        ebpf_ctl_install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
             .expect("valid install path"),
         nats_version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
         nats_source: InstallArtifactSource::try_new("/tmp/nats-server").expect("valid nats source"),
@@ -223,6 +255,29 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid digest"),
                 install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                    .expect("valid install path"),
+            },
+            ebpf_bytecode: MachineJoinArtifact {
+                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc").expect("valid source"),
+                sha256: InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: AbsoluteInstallPath::try_new(
+                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+                )
+                .expect("valid install path"),
+            },
+            ebpf_ctl: MachineJoinArtifact {
+                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
+                    .expect("valid source"),
+                sha256: InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
                     .expect("valid install path"),
             },
         },

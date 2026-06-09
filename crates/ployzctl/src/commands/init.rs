@@ -187,6 +187,58 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
             )?;
             continue;
         }
+        if let Some(value) = args.take_value("--ebpf-bytecode-version")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_version,
+                value,
+                "--ebpf-bytecode-version",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-bytecode-source")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_source,
+                value,
+                "--ebpf-bytecode-source",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-bytecode-sha256")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_sha256,
+                value,
+                "--ebpf-bytecode-sha256",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-bytecode-install-path")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_install_path,
+                value,
+                "--ebpf-bytecode-install-path",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-version")? {
+            set_once(&mut parsed.ebpf_ctl_version, value, "--ebpf-ctl-version")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-source")? {
+            set_once(&mut parsed.ebpf_ctl_source, value, "--ebpf-ctl-source")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-sha256")? {
+            set_once(&mut parsed.ebpf_ctl_sha256, value, "--ebpf-ctl-sha256")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-install-path")? {
+            set_once(
+                &mut parsed.ebpf_ctl_install_path,
+                value,
+                "--ebpf-ctl-install-path",
+            )?;
+            continue;
+        }
         if let Some(value) = args.take_value("--nats-version")? {
             set_once(&mut parsed.nats_version, value, "--nats-version")?;
             continue;
@@ -241,6 +293,14 @@ struct ParsedInitArgs {
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
     ployzd_install_path: Option<String>,
+    ebpf_bytecode_version: Option<String>,
+    ebpf_bytecode_source: Option<String>,
+    ebpf_bytecode_sha256: Option<String>,
+    ebpf_bytecode_install_path: Option<String>,
+    ebpf_ctl_version: Option<String>,
+    ebpf_ctl_source: Option<String>,
+    ebpf_ctl_sha256: Option<String>,
+    ebpf_ctl_install_path: Option<String>,
     nats_version: Option<String>,
     nats_source: Option<String>,
     nats_sha256: Option<String>,
@@ -261,6 +321,14 @@ impl Default for ParsedInitArgs {
             ployzd_source: None,
             ployzd_sha256: None,
             ployzd_install_path: None,
+            ebpf_bytecode_version: None,
+            ebpf_bytecode_source: None,
+            ebpf_bytecode_sha256: None,
+            ebpf_bytecode_install_path: None,
+            ebpf_ctl_version: None,
+            ebpf_ctl_source: None,
+            ebpf_ctl_sha256: None,
+            ebpf_ctl_install_path: None,
             nats_version: None,
             nats_source: None,
             nats_sha256: None,
@@ -318,6 +386,14 @@ impl ParsedInitArgs {
             ployzd_source,
             ployzd_sha256,
             ployzd_install_path,
+            ebpf_bytecode_version,
+            ebpf_bytecode_source,
+            ebpf_bytecode_sha256,
+            ebpf_bytecode_install_path,
+            ebpf_ctl_version,
+            ebpf_ctl_source,
+            ebpf_ctl_sha256,
+            ebpf_ctl_install_path,
             nats_version,
             nats_source,
             nats_sha256,
@@ -332,6 +408,14 @@ impl ParsedInitArgs {
             ployzd_source,
             ployzd_sha256,
             ployzd_install_path,
+            ebpf_bytecode_version,
+            ebpf_bytecode_source,
+            ebpf_bytecode_sha256,
+            ebpf_bytecode_install_path,
+            ebpf_ctl_version,
+            ebpf_ctl_source,
+            ebpf_ctl_sha256,
+            ebpf_ctl_install_path,
             nats_version,
             nats_source,
             nats_sha256,
@@ -389,6 +473,14 @@ struct ParsedKeeperInstallArgs {
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
     ployzd_install_path: Option<String>,
+    ebpf_bytecode_version: Option<String>,
+    ebpf_bytecode_source: Option<String>,
+    ebpf_bytecode_sha256: Option<String>,
+    ebpf_bytecode_install_path: Option<String>,
+    ebpf_ctl_version: Option<String>,
+    ebpf_ctl_source: Option<String>,
+    ebpf_ctl_sha256: Option<String>,
+    ebpf_ctl_install_path: Option<String>,
     nats_version: Option<String>,
     nats_source: Option<String>,
     nats_sha256: Option<String>,
@@ -437,6 +529,46 @@ impl ParsedKeeperInstallArgs {
                 "--ployzd-install-path",
             )?)
             .map_err(|error| invalid_value("--ployzd-install-path", error))?,
+            ebpf_bytecode_version: InstallArtifactVersion::try_new(required(
+                self.ebpf_bytecode_version,
+                "--ebpf-bytecode-version",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-bytecode-version", error))?,
+            ebpf_bytecode_source: InstallArtifactSource::try_new(required(
+                self.ebpf_bytecode_source,
+                "--ebpf-bytecode-source",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-bytecode-source", error))?,
+            ebpf_bytecode_sha256: InstallSha256Digest::try_new(required(
+                self.ebpf_bytecode_sha256,
+                "--ebpf-bytecode-sha256",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-bytecode-sha256", error))?,
+            ebpf_bytecode_install_path: AbsoluteInstallPath::try_new(required(
+                self.ebpf_bytecode_install_path,
+                "--ebpf-bytecode-install-path",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-bytecode-install-path", error))?,
+            ebpf_ctl_version: InstallArtifactVersion::try_new(required(
+                self.ebpf_ctl_version,
+                "--ebpf-ctl-version",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-ctl-version", error))?,
+            ebpf_ctl_source: InstallArtifactSource::try_new(required(
+                self.ebpf_ctl_source,
+                "--ebpf-ctl-source",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-ctl-source", error))?,
+            ebpf_ctl_sha256: InstallSha256Digest::try_new(required(
+                self.ebpf_ctl_sha256,
+                "--ebpf-ctl-sha256",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-ctl-sha256", error))?,
+            ebpf_ctl_install_path: AbsoluteInstallPath::try_new(required(
+                self.ebpf_ctl_install_path,
+                "--ebpf-ctl-install-path",
+            )?)
+            .map_err(|error| invalid_value("--ebpf-ctl-install-path", error))?,
             nats_version: InstallArtifactVersion::try_new(required(
                 self.nats_version,
                 "--nats-version",
@@ -461,6 +593,14 @@ impl ParsedKeeperInstallArgs {
             || self.ployzd_source.is_some()
             || self.ployzd_sha256.is_some()
             || self.ployzd_install_path.is_some()
+            || self.ebpf_bytecode_version.is_some()
+            || self.ebpf_bytecode_source.is_some()
+            || self.ebpf_bytecode_sha256.is_some()
+            || self.ebpf_bytecode_install_path.is_some()
+            || self.ebpf_ctl_version.is_some()
+            || self.ebpf_ctl_source.is_some()
+            || self.ebpf_ctl_sha256.is_some()
+            || self.ebpf_ctl_install_path.is_some()
             || self.nats_version.is_some()
             || self.nats_source.is_some()
             || self.nats_sha256.is_some()

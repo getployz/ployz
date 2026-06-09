@@ -6,8 +6,9 @@ use ployz_core::install::{MachineJoinIrohDirectAddress, MachineJoinIrohRelayUrl}
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::FirstNodeGateway;
 use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, KeeperArtifactTarget, NatsServerArtifactTarget,
-    PloyzdArtifactTarget, Sha256Digest,
+    ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
+    EbpfCtlArtifactTarget, KeeperArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget,
+    Sha256Digest,
 };
 use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
@@ -85,6 +86,7 @@ fn local_effects_install_first_node_process_units() {
         FirstNodeInstallTarget::new(
             node_id("node_1"),
             ployzd_artifact,
+            dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             FirstNodeGateway::Skip,
         )
@@ -118,7 +120,11 @@ fn local_effects_install_first_node_process_units() {
     );
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
+        format!(
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
+            root.join("bin/ployz-ebpf-ctl").display()
+        )
     );
     assert!(systemd_dir.join("ployzd-tunnel-core.service").exists());
     assert!(systemd_dir.join("ployzd-node-node_1.service").exists());
@@ -138,6 +144,7 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     let target = FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         FirstNodeGateway::Skip,
     )
@@ -156,7 +163,11 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n"
+        format!(
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
+            root.join("bin/ployz-ebpf-ctl").display()
+        )
     );
 }
 
@@ -174,6 +185,7 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     let target = FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
+        dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         FirstNodeGateway::Skip,
     )
@@ -193,8 +205,10 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
-            template_path.display()
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={}\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\nPLOYZ_TUNNEL_NATS_ADDR=127.0.0.1:4222\n",
+            template_path.display(),
+            root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
+            root.join("bin/ployz-ebpf-ctl").display()
         )
     );
 }
@@ -379,6 +393,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
         FirstNodeInstallTarget::new(
             node_id("node_1"),
             ployzd_artifact,
+            dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             FirstNodeGateway::Skip,
         )
@@ -481,6 +496,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
         FirstNodeInstallTarget::new(
             node_id("node_1"),
             ployzd_artifact(&source, &install_path),
+            dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             FirstNodeGateway::Skip,
         )
@@ -520,6 +536,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         )
         .expect("valid join material"),
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
+        dataplane_artifacts(&root),
         NonEmptyRoleSet::try_new(vec![ployz_core::roles::DaemonProcessRole::Node(node_id(
             "node_2",
         ))])
@@ -588,7 +605,11 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     assert!(root.join("join/bin/ployzd").exists());
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd.env")).unwrap(),
-        "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_2\n"
+        format!(
+            "PLOYZ_NATS_URL=nats://127.0.0.1:4222\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE={}\nPLOYZ_EBPF_CTL={}\n",
+            root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
+            root.join("bin/ployz-ebpf-ctl").display()
+        )
     );
     assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
     assert_eq!(reporter.reports, vec![JoinReport::Completed]);
@@ -894,6 +915,34 @@ fn nats_server_artifact(source: &Path, install_path: &Path) -> NatsServerArtifac
         install_path.to_path_buf(),
     )
     .expect("valid nats-server artifact")
+}
+
+fn ebpf_bytecode_artifact(root: &Path) -> EbpfBytecodeArtifactTarget {
+    let source = root.join("ployz-ebpf-tc-source");
+    fs::write(&source, "ployz\n").expect("eBPF bytecode source can be written");
+    EbpfBytecodeArtifactTarget::new(
+        version("0.1.0"),
+        artifact_source(&source),
+        digest(PLOYZ_NEWLINE_SHA256),
+        root.join("lib/ployz/ebpf/ployz-ebpf-tc"),
+    )
+    .expect("valid eBPF bytecode artifact")
+}
+
+fn ebpf_ctl_artifact(root: &Path) -> EbpfCtlArtifactTarget {
+    let source = root.join("ployz-ebpf-ctl-source");
+    fs::write(&source, "ployz\n").expect("eBPF ctl source can be written");
+    EbpfCtlArtifactTarget::new(
+        version("0.1.0"),
+        artifact_source(&source),
+        digest(PLOYZ_NEWLINE_SHA256),
+        root.join("bin/ployz-ebpf-ctl"),
+    )
+    .expect("valid eBPF ctl artifact")
+}
+
+fn dataplane_artifacts(root: &Path) -> DataplaneArtifactTargets {
+    DataplaneArtifactTargets::new(ebpf_bytecode_artifact(root), ebpf_ctl_artifact(root))
 }
 
 fn artifact_source(path: &Path) -> ArtifactSource {

@@ -4,7 +4,7 @@ use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineBootstrapUrl, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+    MachineBootstrapUrl, MachineJoinArtifact, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
     MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
     MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
@@ -412,6 +412,30 @@ fn machine_join_template() -> MachineJoinTemplate {
                     )
                     .expect("valid digest"),
                     install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                        .expect("valid install path"),
+                },
+                ebpf_bytecode: MachineJoinArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc")
+                        .expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new(
+                        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+                    )
+                    .expect("valid install path"),
+                },
+                ebpf_ctl: MachineJoinArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
+                        .expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
                         .expect("valid install path"),
                 },
             },

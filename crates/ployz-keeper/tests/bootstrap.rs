@@ -11,6 +11,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
+    DataplaneArtifactTargets, EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget,
     KeeperArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::cli::load_startup;
@@ -137,11 +138,14 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     let plan = keeper_join_local_install_plan(KeeperJoinTarget::new(
         material.clone(),
         ployzd_artifact(),
+        dataplane_artifacts(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
         edge_role_environment(),
     ));
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
+    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfBytecode));
+    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfCtl));
     assert!(plan.writes_ployzd_role_units());
     assert!(
         plan.steps()
@@ -154,6 +158,8 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
             ))
     );
     let rendered_env = edge_role_environment().render();
+    assert!(rendered_env.contains("PLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n"));
+    assert!(rendered_env.contains("PLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"));
     assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS=203.0.113.10:4433\n"));
     assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_RELAY_URL=https://relay.example.test\n"));
 
@@ -182,11 +188,14 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id.clone(),
         ployzd_artifact(),
+        dataplane_artifacts(),
         nats_server_artifact(),
         FirstNodeGateway::Skip,
     ));
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
+    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfBytecode));
+    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfCtl));
     assert!(plan.installs_artifact_kind(ArtifactKind::NatsServer));
     assert!(plan.writes_nats_server_unit());
     assert!(plan.writes_ployzd_role_units());
@@ -235,6 +244,7 @@ fn first_node_install_can_include_gateway_role() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(),
+        dataplane_artifacts(),
         nats_server_artifact(),
         FirstNodeGateway::Install,
     ));
@@ -315,6 +325,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id("node_1"),
         ployzd_artifact(),
+        dataplane_artifacts(),
         nats_server_artifact(),
         FirstNodeGateway::Skip,
     ));
@@ -340,23 +351,31 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
         *second,
         KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(ployzd_artifact()))
     );
-    let [_, _, third, fourth, fifth, sixth, ..] = effects.calls.as_slice() else {
+    let [_, _, third, fourth, fifth, sixth, seventh, eighth, ..] = effects.calls.as_slice() else {
         panic!("first-node plan records nats setup calls");
     };
     assert_eq!(
         *third,
-        KeeperStepLabel::InstallArtifact(ArtifactTarget::NatsServer(nats_server_artifact()))
+        KeeperStepLabel::InstallArtifact(ArtifactTarget::EbpfBytecode(ebpf_bytecode_artifact()))
     );
     assert_eq!(
         *fourth,
-        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+        KeeperStepLabel::InstallArtifact(ArtifactTarget::EbpfCtl(ebpf_ctl_artifact()))
     );
     assert_eq!(
         *fifth,
-        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+        KeeperStepLabel::InstallArtifact(ArtifactTarget::NatsServer(nats_server_artifact()))
     );
     assert_eq!(
         *sixth,
+        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+    );
+    assert_eq!(
+        *seventh,
+        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+    );
+    assert_eq!(
+        *eighth,
         KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::NatsServer)
     );
     assert_eq!(
@@ -741,6 +760,7 @@ impl KeeperJoinRedeemer for RecordingJoinRedeemer {
             KeeperJoinTarget::new(
                 keeper_join_material(),
                 ployzd_artifact(),
+                dataplane_artifacts(),
                 NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Node(node_id("node_7"))])
                     .expect("non-empty role set"),
                 role_environment(),
@@ -842,6 +862,30 @@ fn nats_server_artifact() -> NatsServerArtifactTarget {
     .expect("valid nats-server artifact")
 }
 
+fn ebpf_bytecode_artifact() -> EbpfBytecodeArtifactTarget {
+    EbpfBytecodeArtifactTarget::new(
+        version("0.1.0"),
+        source("/tmp/ployz-ebpf-tc"),
+        digest(KEEPER_DIGEST),
+        PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
+    )
+    .expect("valid eBPF bytecode artifact")
+}
+
+fn ebpf_ctl_artifact() -> EbpfCtlArtifactTarget {
+    EbpfCtlArtifactTarget::new(
+        version("0.1.0"),
+        source("/tmp/ployz-ebpf-ctl"),
+        digest(KEEPER_DIGEST),
+        PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"),
+    )
+    .expect("valid eBPF ctl artifact")
+}
+
+fn dataplane_artifacts() -> DataplaneArtifactTargets {
+    DataplaneArtifactTargets::new(ebpf_bytecode_artifact(), ebpf_ctl_artifact())
+}
+
 fn role_environment() -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
@@ -849,6 +893,8 @@ fn role_environment() -> PloyzdRoleEnvironmentTarget {
         node_id("node_1"),
         NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid NATS URL"),
     )
+    .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
+    .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
     .with_core_tunnel_nats_addr(socket(4222))
 }
 
@@ -859,6 +905,8 @@ fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
         node_id("node_7"),
         NatsClientUrl::try_new("nats://127.0.0.1:7422").expect("valid NATS URL"),
     )
+    .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
+    .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
     .with_edge_tunnel(
         socket(7422),
         node_id("server_1"),

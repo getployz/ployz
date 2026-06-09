@@ -3,7 +3,7 @@ use std::fs;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
+    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
     MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
     MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -99,6 +99,58 @@ pub fn parse_machine_join_template_command(
             )?;
             continue;
         }
+        if let Some(value) = args.take_value("--ebpf-bytecode-version")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_version,
+                value,
+                "--ebpf-bytecode-version",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-bytecode-source")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_source,
+                value,
+                "--ebpf-bytecode-source",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-bytecode-sha256")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_sha256,
+                value,
+                "--ebpf-bytecode-sha256",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-bytecode-install-path")? {
+            set_once(
+                &mut parsed.ebpf_bytecode_install_path,
+                value,
+                "--ebpf-bytecode-install-path",
+            )?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-version")? {
+            set_once(&mut parsed.ebpf_ctl_version, value, "--ebpf-ctl-version")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-source")? {
+            set_once(&mut parsed.ebpf_ctl_source, value, "--ebpf-ctl-source")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-sha256")? {
+            set_once(&mut parsed.ebpf_ctl_sha256, value, "--ebpf-ctl-sha256")?;
+            continue;
+        }
+        if let Some(value) = args.take_value("--ebpf-ctl-install-path")? {
+            set_once(
+                &mut parsed.ebpf_ctl_install_path,
+                value,
+                "--ebpf-ctl-install-path",
+            )?;
+            continue;
+        }
         if let Some(value) = args.take_value("--secret-delivery-file")? {
             set_once(
                 &mut parsed.secret_delivery_file,
@@ -125,6 +177,14 @@ struct ParsedMachineJoinTemplateArgs {
     ployzd_source: Option<String>,
     ployzd_sha256: Option<String>,
     ployzd_install_path: Option<String>,
+    ebpf_bytecode_version: Option<String>,
+    ebpf_bytecode_source: Option<String>,
+    ebpf_bytecode_sha256: Option<String>,
+    ebpf_bytecode_install_path: Option<String>,
+    ebpf_ctl_version: Option<String>,
+    ebpf_ctl_source: Option<String>,
+    ebpf_ctl_sha256: Option<String>,
+    ebpf_ctl_install_path: Option<String>,
     secret_delivery_file: Option<String>,
 }
 
@@ -188,6 +248,50 @@ impl ParsedMachineJoinTemplateArgs {
                             "--ployzd-install-path",
                         )?)
                         .map_err(|error| invalid_value("--ployzd-install-path", error))?,
+                    },
+                    ebpf_bytecode: MachineJoinArtifact {
+                        version: InstallArtifactVersion::try_new(required(
+                            self.ebpf_bytecode_version,
+                            "--ebpf-bytecode-version",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-bytecode-version", error))?,
+                        source: InstallArtifactSource::try_new(required(
+                            self.ebpf_bytecode_source,
+                            "--ebpf-bytecode-source",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-bytecode-source", error))?,
+                        sha256: InstallSha256Digest::try_new(required(
+                            self.ebpf_bytecode_sha256,
+                            "--ebpf-bytecode-sha256",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-bytecode-sha256", error))?,
+                        install_path: AbsoluteInstallPath::try_new(required(
+                            self.ebpf_bytecode_install_path,
+                            "--ebpf-bytecode-install-path",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-bytecode-install-path", error))?,
+                    },
+                    ebpf_ctl: MachineJoinArtifact {
+                        version: InstallArtifactVersion::try_new(required(
+                            self.ebpf_ctl_version,
+                            "--ebpf-ctl-version",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-ctl-version", error))?,
+                        source: InstallArtifactSource::try_new(required(
+                            self.ebpf_ctl_source,
+                            "--ebpf-ctl-source",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-ctl-source", error))?,
+                        sha256: InstallSha256Digest::try_new(required(
+                            self.ebpf_ctl_sha256,
+                            "--ebpf-ctl-sha256",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-ctl-sha256", error))?,
+                        install_path: AbsoluteInstallPath::try_new(required(
+                            self.ebpf_ctl_install_path,
+                            "--ebpf-ctl-install-path",
+                        )?)
+                        .map_err(|error| invalid_value("--ebpf-ctl-install-path", error))?,
                     },
                 },
             },

@@ -23,10 +23,10 @@ pub struct HostWireGuardEbpfPreparer {
 
 impl HostWireGuardEbpfPreparer {
     #[must_use]
-    pub fn new(node_id: NodeId, ebpf_bytecode_path: PathBuf) -> Self {
+    pub fn new(node_id: NodeId, ebpf_bytecode_path: PathBuf, ebpf_ctl_path: PathBuf) -> Self {
         Self {
             node_id,
-            requirements: default_requirements(ebpf_bytecode_path),
+            requirements: default_requirements(ebpf_bytecode_path, ebpf_ctl_path),
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -220,7 +220,12 @@ impl HostDataplaneRequirement {
     }
 }
 
-fn default_requirements(ebpf_bytecode_path: PathBuf) -> Vec<HostDataplaneRequirement> {
+fn default_requirements(
+    ebpf_bytecode_path: PathBuf,
+    ebpf_ctl_path: PathBuf,
+) -> Vec<HostDataplaneRequirement> {
+    let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
+    let ebpf_bytecode_arg = ebpf_bytecode_path.display().to_string();
     vec![
         HostDataplaneRequirement::existing_path(WireGuardEbpfComponent::WireGuard, "/dev/net/tun"),
         HostDataplaneRequirement::command_succeeds(
@@ -236,6 +241,15 @@ fn default_requirements(ebpf_bytecode_path: PathBuf) -> Vec<HostDataplaneRequire
             WireGuardEbpfComponent::EbpfForwarding,
             "tc",
             ["-V"],
+        ),
+        HostDataplaneRequirement::existing_path(
+            WireGuardEbpfComponent::EbpfForwarding,
+            ebpf_ctl_path,
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::EbpfForwarding,
+            ebpf_ctl_program,
+            ["validate".to_owned(), ebpf_bytecode_arg],
         ),
         HostDataplaneRequirement::ployz_tc_bytecode(ebpf_bytecode_path),
     ]

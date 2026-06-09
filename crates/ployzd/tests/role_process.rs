@@ -11,7 +11,7 @@ use ployzd::app::{
 };
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
-    GatewayProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV,
+    GatewayProcessConfig, NodeProcessConfig, PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV,
     PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
     PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
@@ -60,6 +60,7 @@ fn node_process_owns_node_rpc_and_observations_only() {
         node_id.clone(),
         url.clone(),
         "/tmp/ployz-ebpf".into(),
+        "/tmp/ployz-ebpf-ctl".into(),
         None,
     ));
     let RoleProcessPlan::Node(plan) = plan_configured_process(&config) else {
@@ -198,6 +199,7 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
             |name| match name {
                 PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
                 PLOYZ_EBPF_BYTECODE_ENV => Some("/tmp/ployz-ebpf".to_owned()),
+                PLOYZ_EBPF_CTL_ENV => Some("/tmp/ployz-ebpf-ctl".to_owned()),
                 PLOYZ_NODE_PUBLIC_IP_ENV => Some("203.0.113.7".to_owned()),
                 _ => None,
             },
@@ -212,6 +214,10 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
     assert_eq!(
         config.ebpf_bytecode_path,
         std::path::PathBuf::from("/tmp/ployz-ebpf")
+    );
+    assert_eq!(
+        config.ebpf_ctl_path,
+        std::path::PathBuf::from("/tmp/ployz-ebpf-ctl")
     );
     assert_eq!(
         config.public_ip,
@@ -564,6 +570,18 @@ fn temp_join_template_file() -> String {
         "source": "/tmp/ployzd",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "install_path": "/usr/local/bin/ployzd"
+      },
+      "ebpf_bytecode": {
+        "version": "0.1.0",
+        "source": "/tmp/ployz-ebpf-tc",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+      },
+      "ebpf_ctl": {
+        "version": "0.1.0",
+        "source": "/tmp/ployz-ebpf-ctl",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
       }
     }
   },

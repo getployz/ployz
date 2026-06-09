@@ -23,6 +23,8 @@ pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPL
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
 pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
 pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
+pub const PLOYZ_EBPF_CTL_ENV: &str = "PLOYZ_EBPF_CTL";
+pub const DEFAULT_EBPF_CTL_PATH: &str = "/usr/local/bin/ployz-ebpf-ctl";
 pub const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
 pub const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
 pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
@@ -73,6 +75,7 @@ pub fn load_daemon_process_config(
                 node_id.clone(),
                 nats_url,
                 load_ebpf_bytecode_path(&env),
+                load_ebpf_ctl_path(&env),
                 load_node_public_ip(&env)?,
             )))
         }
@@ -103,6 +106,13 @@ fn load_ebpf_bytecode_path(env: &impl Fn(&str) -> Option<String>) -> std::path::
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_BYTECODE_PATH))
+}
+
+fn load_ebpf_ctl_path(env: &impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
+    env(PLOYZ_EBPF_CTL_ENV)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_CTL_PATH))
 }
 
 fn load_node_public_ip(
@@ -556,6 +566,7 @@ pub struct NodeProcessConfig {
     pub node_id: NodeId,
     pub nats_url: NatsClientUrl,
     pub ebpf_bytecode_path: std::path::PathBuf,
+    pub ebpf_ctl_path: std::path::PathBuf,
     pub public_ip: Option<IpAddr>,
 }
 
@@ -565,12 +576,14 @@ impl NodeProcessConfig {
         node_id: NodeId,
         nats_url: NatsClientUrl,
         ebpf_bytecode_path: std::path::PathBuf,
+        ebpf_ctl_path: std::path::PathBuf,
         public_ip: Option<IpAddr>,
     ) -> Self {
         Self {
             node_id,
             nats_url,
             ebpf_bytecode_path,
+            ebpf_ctl_path,
             public_ip,
         }
     }

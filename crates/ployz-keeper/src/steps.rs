@@ -15,8 +15,8 @@ use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_
 use ployz_nats::connect::NatsClientUrl;
 
 use crate::artifacts::{
-    ArtifactKind, ArtifactTarget, KeeperArtifactTarget, NatsServerArtifactTarget,
-    PloyzdArtifactTarget,
+    ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, KeeperArtifactTarget,
+    NatsServerArtifactTarget, PloyzdArtifactTarget,
 };
 use crate::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
@@ -353,6 +353,7 @@ impl BootstrapScriptTarget {
 pub struct KeeperJoinTarget {
     pub material: KeeperJoinMaterial,
     pub ployzd_artifact: PloyzdArtifactTarget,
+    pub dataplane_artifacts: DataplaneArtifactTargets,
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
 }
@@ -362,12 +363,22 @@ impl KeeperJoinTarget {
     pub fn new(
         material: KeeperJoinMaterial,
         ployzd_artifact: PloyzdArtifactTarget,
+        dataplane_artifacts: DataplaneArtifactTargets,
         roles: NonEmptyRoleSet,
         role_environment: PloyzdRoleEnvironmentTarget,
     ) -> Self {
+        let role_environment = role_environment
+            .with_ebpf_bytecode_path(
+                dataplane_artifacts
+                    .ebpf_bytecode
+                    .install_path()
+                    .to_path_buf(),
+            )
+            .with_ebpf_ctl_path(dataplane_artifacts.ebpf_ctl.install_path().to_path_buf());
         Self {
             material,
             ployzd_artifact,
+            dataplane_artifacts,
             roles,
             role_environment,
         }
@@ -378,6 +389,7 @@ impl KeeperJoinTarget {
 pub struct FirstNodeInstallTarget {
     pub node_id: NodeId,
     pub ployzd_artifact: PloyzdArtifactTarget,
+    pub dataplane_artifacts: DataplaneArtifactTargets,
     pub nats_server_artifact: NatsServerArtifactTarget,
     pub gateway: FirstNodeGateway,
     pub nats_server_unit: NatsServerUnitTarget,
@@ -389,6 +401,7 @@ impl FirstNodeInstallTarget {
     pub fn new(
         node_id: NodeId,
         ployzd_artifact: PloyzdArtifactTarget,
+        dataplane_artifacts: DataplaneArtifactTargets,
         nats_server_artifact: NatsServerArtifactTarget,
         gateway: FirstNodeGateway,
     ) -> Self {
@@ -403,10 +416,18 @@ impl FirstNodeInstallTarget {
             node_id.clone(),
             NatsClientUrl::loopback(DEFAULT_NATS_PORT),
         )
+        .with_ebpf_bytecode_path(
+            dataplane_artifacts
+                .ebpf_bytecode
+                .install_path()
+                .to_path_buf(),
+        )
+        .with_ebpf_ctl_path(dataplane_artifacts.ebpf_ctl.install_path().to_path_buf())
         .with_core_tunnel_nats_addr(default_nats_socket());
         Self {
             node_id,
             ployzd_artifact,
+            dataplane_artifacts,
             nats_server_artifact,
             gateway,
             nats_server_unit,
@@ -422,7 +443,20 @@ impl FirstNodeInstallTarget {
 
     #[must_use]
     pub fn with_role_environment(mut self, role_environment: PloyzdRoleEnvironmentTarget) -> Self {
-        self.role_environment = role_environment.with_core_tunnel_nats_addr(default_nats_socket());
+        self.role_environment = role_environment
+            .with_ebpf_bytecode_path(
+                self.dataplane_artifacts
+                    .ebpf_bytecode
+                    .install_path()
+                    .to_path_buf(),
+            )
+            .with_ebpf_ctl_path(
+                self.dataplane_artifacts
+                    .ebpf_ctl
+                    .install_path()
+                    .to_path_buf(),
+            )
+            .with_core_tunnel_nats_addr(default_nats_socket());
         self
     }
 
@@ -446,6 +480,8 @@ pub struct PloyzdRoleEnvironmentTarget {
     nats_url: NatsClientUrl,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
     machine_join_template_file: Option<AbsoluteInstallPath>,
+    ebpf_bytecode_path: Option<PathBuf>,
+    ebpf_ctl_path: Option<PathBuf>,
     tunnel: Option<PloyzdTunnelEnvironment>,
 }
 
@@ -458,6 +494,8 @@ impl PloyzdRoleEnvironmentTarget {
             nats_url,
             machine_bootstrap_url: None,
             machine_join_template_file: None,
+            ebpf_bytecode_path: None,
+            ebpf_ctl_path: None,
             tunnel: None,
         }
     }
@@ -481,6 +519,18 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_machine_join_template_file(mut self, path: AbsoluteInstallPath) -> Self {
         self.machine_join_template_file = Some(path);
+        self
+    }
+
+    #[must_use]
+    pub fn with_ebpf_bytecode_path(mut self, path: PathBuf) -> Self {
+        self.ebpf_bytecode_path = Some(path);
+        self
+    }
+
+    #[must_use]
+    pub fn with_ebpf_ctl_path(mut self, path: PathBuf) -> Self {
+        self.ebpf_ctl_path = Some(path);
         self
     }
 
@@ -541,6 +591,16 @@ impl PloyzdRoleEnvironmentTarget {
         if let Some(path) = &self.machine_join_template_file {
             output.push_str("PLOYZ_MACHINE_JOIN_TEMPLATE_FILE=");
             output.push_str(path.as_str());
+            output.push('\n');
+        }
+        if let Some(path) = &self.ebpf_bytecode_path {
+            output.push_str("PLOYZ_EBPF_BYTECODE=");
+            output.push_str(&path.display().to_string());
+            output.push('\n');
+        }
+        if let Some(path) = &self.ebpf_ctl_path {
+            output.push_str("PLOYZ_EBPF_CTL=");
+            output.push_str(&path.display().to_string());
             output.push('\n');
         }
         match &self.tunnel {
@@ -737,6 +797,12 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
     let mut steps = vec![KeeperStep::InstallArtifact(
         target.ployzd_artifact.clone().into(),
     )];
+    steps.push(KeeperStep::InstallArtifact(
+        target.dataplane_artifacts.ebpf_bytecode.clone().into(),
+    ));
+    steps.push(KeeperStep::InstallArtifact(
+        target.dataplane_artifacts.ebpf_ctl.clone().into(),
+    ));
     steps.push(KeeperStep::WritePloyzdRoleEnvironment(
         target.role_environment.clone(),
     ));
@@ -764,6 +830,8 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
+        KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone().into()),
+        KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone().into()),
         KeeperStep::InstallArtifact(target.nats_server_artifact.clone().into()),
         KeeperStep::WriteNatsServerConfig(nats_server_config),
         KeeperStep::WriteSupervisorUnit(SupervisorUnitSpec::NatsServer(target.nats_server_unit)),

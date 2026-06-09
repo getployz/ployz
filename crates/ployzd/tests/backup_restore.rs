@@ -161,14 +161,26 @@ fn machine_join_template() -> MachineJoinTemplate {
       "core_iroh": {
         "node_id": "core_1",
         "public_key": "core-public-key",
-      "direct_addresses": [],
-      "relay_url": null
+        "direct_addresses": [],
+        "relay_url": null
       },
       "ployzd": {
         "version": "0.1.0",
         "source": "/tmp/ployzd",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "install_path": "/usr/local/bin/ployzd"
+      },
+      "ebpf_bytecode": {
+        "version": "0.1.0",
+        "source": "/tmp/ployz-ebpf-tc",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+      },
+      "ebpf_ctl": {
+        "version": "0.1.0",
+        "source": "/tmp/ployz-ebpf-ctl",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
       }
     }
   },

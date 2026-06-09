@@ -5,7 +5,8 @@ use std::time::Duration;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::joined_node_process_set;
 use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest,
+    ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
+    EbpfCtlArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::cli::{KeeperCliError, KeeperCommand, load_command};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
@@ -260,7 +261,7 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
         &redeemed.secret_delivery,
     )
     .map_err(|error| failure_message(&format!("invalid join material: {error:?}")))?;
-    let artifact = PloyzdArtifactTarget::new(
+    let ployzd_artifact = PloyzdArtifactTarget::new(
         ArtifactVersion::try_new(redeemed.join_bundle.material.ployzd.version.as_str())
             .map_err(|error| failure_message(&format!("invalid ployzd version: {error}")))?,
         ArtifactSource::try_new(redeemed.join_bundle.material.ployzd.source.as_str())
@@ -270,6 +271,33 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
         PathBuf::from(redeemed.join_bundle.material.ployzd.install_path.as_str()),
     )
     .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
+    let ebpf_bytecode_artifact = EbpfBytecodeArtifactTarget::new(
+        ArtifactVersion::try_new(redeemed.join_bundle.material.ebpf_bytecode.version.as_str())
+            .map_err(|error| failure_message(&format!("invalid eBPF bytecode version: {error}")))?,
+        ArtifactSource::try_new(redeemed.join_bundle.material.ebpf_bytecode.source.as_str())
+            .map_err(|error| failure_message(&format!("invalid eBPF bytecode source: {error}")))?,
+        Sha256Digest::try_new(redeemed.join_bundle.material.ebpf_bytecode.sha256.as_str())
+            .map_err(|error| failure_message(&format!("invalid eBPF bytecode digest: {error}")))?,
+        PathBuf::from(
+            redeemed
+                .join_bundle
+                .material
+                .ebpf_bytecode
+                .install_path
+                .as_str(),
+        ),
+    )
+    .map_err(|error| failure_message(&format!("invalid eBPF bytecode install target: {error}")))?;
+    let ebpf_ctl_artifact = EbpfCtlArtifactTarget::new(
+        ArtifactVersion::try_new(redeemed.join_bundle.material.ebpf_ctl.version.as_str())
+            .map_err(|error| failure_message(&format!("invalid eBPF ctl version: {error}")))?,
+        ArtifactSource::try_new(redeemed.join_bundle.material.ebpf_ctl.source.as_str())
+            .map_err(|error| failure_message(&format!("invalid eBPF ctl source: {error}")))?,
+        Sha256Digest::try_new(redeemed.join_bundle.material.ebpf_ctl.sha256.as_str())
+            .map_err(|error| failure_message(&format!("invalid eBPF ctl digest: {error}")))?,
+        PathBuf::from(redeemed.join_bundle.material.ebpf_ctl.install_path.as_str()),
+    )
+    .map_err(|error| failure_message(&format!("invalid eBPF ctl install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(
         joined_node_process_set(&node_id, redeemed.gateway)
             .roles()
@@ -294,7 +322,8 @@ fn keeper_join_target(redeemed: MachineJoinRedeemed) -> Result<RedeemedKeeperJoi
         node_id.clone(),
         KeeperJoinTarget::new(
             material,
-            artifact,
+            ployzd_artifact,
+            DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
             roles,
             PloyzdRoleEnvironmentTarget::default_path(node_id, runtime_nats_client_url)
                 .with_edge_tunnel(
@@ -330,10 +359,11 @@ mod tests {
     use ployz_core::ids::{NodeId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-        MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
-        MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
-        MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-        MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+        MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName,
+        MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
+        MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
+        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+        MachineJoinTrustedNatsServerId,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::roles::FirstNodeGateway;
@@ -360,7 +390,7 @@ mod tests {
 
         assert_eq!(
             target.role_environment.render(),
-            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\nPLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
         );
     }
 
@@ -393,6 +423,30 @@ mod tests {
                     )
                     .expect("valid digest"),
                     install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
+                        .expect("valid install path"),
+                },
+                ebpf_bytecode: MachineJoinArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc")
+                        .expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new(
+                        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+                    )
+                    .expect("valid install path"),
+                },
+                ebpf_ctl: MachineJoinArtifact {
+                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+                    source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
+                        .expect("valid source"),
+                    sha256: InstallSha256Digest::try_new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid digest"),
+                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
                         .expect("valid install path"),
                 },
             },

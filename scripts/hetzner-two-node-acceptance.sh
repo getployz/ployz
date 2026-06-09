@@ -194,10 +194,10 @@ stage_host() {
   scp_base "$keeper_bin" "$(ssh_target "$ip"):$remote_keeper" >/dev/null
   scp_base "$nats_server_bin" "$(ssh_target "$ip"):$remote_nats_server" >/dev/null
   scp_base "$ployz_sh" "$(ssh_target "$ip"):$remote_ployz_sh" >/dev/null
-  scp_base "$ebpf_ctl_bin" "$(ssh_target "$ip"):$remote_ebpf_ctl" >/dev/null
-  scp_base "$ebpf_bytecode" "$(ssh_target "$ip"):$remote_ebpf_path" >/dev/null
-  remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh' '$remote_ebpf_ctl'"
-  remote_sh "$ip" "chmod 0644 '$remote_ebpf_path'"
+  scp_base "$ebpf_ctl_bin" "$(ssh_target "$ip"):$remote_ebpf_ctl_source" >/dev/null
+  scp_base "$ebpf_bytecode" "$(ssh_target "$ip"):$remote_ebpf_bytecode_source" >/dev/null
+  remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh' '$remote_ebpf_ctl_source'"
+  remote_sh "$ip" "chmod 0644 '$remote_ebpf_bytecode_source'"
 }
 
 run_remote_logged() {
@@ -293,11 +293,15 @@ case "$command" in
     remote_keeper="${remote_dir}/ployz-keeper"
     remote_nats_server="${remote_dir}/nats-server"
     remote_ployz_sh="${remote_dir}/ployz.sh"
+    remote_ebpf_ctl_source="${remote_dir}/ployz-ebpf-ctl"
+    remote_ebpf_bytecode_source="${remote_dir}/ployz-ebpf-tc"
     remote_join_template="/etc/ployz/machine-join-template.json"
     remote_secret_delivery="/etc/ployz/machine-join-secret-delivery.json"
     ployzd_sha256="$(sha256_file "$ployzd_bin")"
     keeper_sha256="$(sha256_file "$keeper_bin")"
     nats_sha256="$(sha256_file "$nats_server_bin")"
+    ebpf_ctl_sha256="$(sha256_file "$ebpf_ctl_bin")"
+    ebpf_bytecode_sha256="$(sha256_file "$ebpf_bytecode")"
 
     core_name="$(server_name core-1)"
     edge_name="$(server_name edge-2)"
@@ -321,10 +325,10 @@ case "$command" in
 JSON
 
     run_remote_logged render-join-template "$core_ip" \
-      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key acceptance-core --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key acceptance-core --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
 
     run_remote_logged init-core "$core_ip" \
-      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
+      "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init --node core_1 --gateway --run-keeper-install --keeper-binary '$remote_keeper' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
 
     machine_log="${log_dir}/machine-add.log"
     run_remote_logged machine-add "$core_ip" \

@@ -16,6 +16,14 @@ pub struct KeeperFirstNodeInstall {
     pub ployzd_source: InstallArtifactSource,
     pub ployzd_sha256: InstallSha256Digest,
     pub ployzd_install_path: AbsoluteInstallPath,
+    pub ebpf_bytecode_version: InstallArtifactVersion,
+    pub ebpf_bytecode_source: InstallArtifactSource,
+    pub ebpf_bytecode_sha256: InstallSha256Digest,
+    pub ebpf_bytecode_install_path: AbsoluteInstallPath,
+    pub ebpf_ctl_version: InstallArtifactVersion,
+    pub ebpf_ctl_source: InstallArtifactSource,
+    pub ebpf_ctl_sha256: InstallSha256Digest,
+    pub ebpf_ctl_install_path: AbsoluteInstallPath,
     pub nats_version: InstallArtifactVersion,
     pub nats_source: InstallArtifactSource,
     pub nats_sha256: InstallSha256Digest,
@@ -38,6 +46,22 @@ impl KeeperFirstNodeInstall {
             self.ployzd_sha256.as_str().to_owned(),
             "--ployzd-install-path".to_owned(),
             self.ployzd_install_path.as_str().to_owned(),
+            "--ebpf-bytecode-version".to_owned(),
+            self.ebpf_bytecode_version.as_str().to_owned(),
+            "--ebpf-bytecode-source".to_owned(),
+            self.ebpf_bytecode_source.as_str().to_owned(),
+            "--ebpf-bytecode-sha256".to_owned(),
+            self.ebpf_bytecode_sha256.as_str().to_owned(),
+            "--ebpf-bytecode-install-path".to_owned(),
+            self.ebpf_bytecode_install_path.as_str().to_owned(),
+            "--ebpf-ctl-version".to_owned(),
+            self.ebpf_ctl_version.as_str().to_owned(),
+            "--ebpf-ctl-source".to_owned(),
+            self.ebpf_ctl_source.as_str().to_owned(),
+            "--ebpf-ctl-sha256".to_owned(),
+            self.ebpf_ctl_sha256.as_str().to_owned(),
+            "--ebpf-ctl-install-path".to_owned(),
+            self.ebpf_ctl_install_path.as_str().to_owned(),
             "--nats-version".to_owned(),
             self.nats_version.as_str().to_owned(),
             "--nats-source".to_owned(),
@@ -145,6 +169,8 @@ pub struct MachineJoinMaterial {
     pub trusted_nats: MachineJoinTrustedNats,
     pub core_iroh: MachineJoinCoreIrohEndpoint,
     pub ployzd: MachineJoinPloyzdArtifact,
+    pub ebpf_bytecode: MachineJoinArtifact,
+    pub ebpf_ctl: MachineJoinArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +211,16 @@ pub struct MachineJoinCoreIrohEndpoint {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinPloyzdArtifact {
+    pub version: InstallArtifactVersion,
+    pub source: InstallArtifactSource,
+    pub sha256: InstallSha256Digest,
+    pub install_path: AbsoluteInstallPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinArtifact {
     pub version: InstallArtifactVersion,
     pub source: InstallArtifactSource,
     pub sha256: InstallSha256Digest,
