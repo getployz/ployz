@@ -1,23 +1,28 @@
 use ployz_core::backup::{
     BackupArtifactKind, BackupBundle, BackupManifest, ControlPlaneKvSnapshot,
 };
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
+use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
 use ployz_core::ops::{
     BackupOperationState, EventSequence, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationStatus,
 };
+use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use ployz_nats::bootstrap::{BootstrapPlan, assure_nats_resources};
 use ployz_nats::connect::NatsClientUrl;
-use ployz_nats::objects::{PLZ_BACKUPS_BUCKET, control_plane_bundle_object_name};
+use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_nats::objects::{
+    AsyncNatsBackupObjectStore, BackupObjectStoreError, PLZ_BACKUPS_BUCKET,
+    control_plane_bundle_object_name,
+};
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
+use ployzd::backup_runtime::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
 use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
 use ployzd::controllers::{BackupCreateCommand, MachineAddBootstrapConfig, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;
-use tokio::io::AsyncReadExt;
 
 #[tokio::test]
 async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
@@ -135,6 +140,100 @@ async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn backup_restore_recreates_single_core_control_plane_kv_state() {
+    let source = TestNats::start().await;
+    let runtime = ployzd::control_runtime::start_control_runtime_with_client(
+        source.client.clone(),
+        &config(),
+    )
+    .await
+    .expect("control runtime starts");
+    let source_core = AsyncNatsCoreStateStore::from_jetstream(&source.jetstream)
+        .await
+        .expect("source core state opens");
+    source_core
+        .commit_active_service(&ActiveServiceCommitRequest {
+            service_id: service_id("svc_api"),
+            expected_current: ExpectedActiveService::Absent,
+            target_revision: revision_id("rev_2"),
+        })
+        .await
+        .expect("active service stores before backup");
+    let api = OperationApiClient::new(source.client.clone());
+    api.backup_create(&BackupCreateRequest {
+        operation_id: operation_id("op_backup_restore"),
+        idempotency_key: idempotency_key("idem_backup_restore"),
+    })
+    .await
+    .expect("backup create is accepted");
+    let source_status =
+        wait_for_terminal_backup_status(&api, operation_id("op_backup_restore")).await;
+    let source_manifest = completed_backup_manifest(&source_status, "op_backup_restore");
+    let [artifact] = source_manifest.artifacts.as_slice() else {
+        panic!("expected one backup artifact");
+    };
+    assert_backup_artifact_digest_mismatch_rejected(&source, artifact).await;
+    let bundle = read_backup_bundle(&source, artifact).await;
+    runtime
+        .shutdown()
+        .await
+        .expect("source control runtime shuts down");
+
+    let target = TestNats::start().await;
+    assure_control_resources(&target).await;
+    let backups = AsyncNatsBackupObjectStore::from_jetstream(&target.jetstream)
+        .await
+        .expect("target backup store opens");
+    let restore = BackupRestoreRuntime::new(target.jetstream.clone(), backups);
+
+    let report = restore
+        .restore_bundle(&bundle)
+        .await
+        .expect("control-plane bundle restores");
+
+    assert_eq!(report.buckets.len(), 4);
+    assert!(matches!(
+        report.observations,
+        RestoreObservationState::RebuildableAfterNodeReconnect { .. }
+    ));
+    let target_core = AsyncNatsCoreStateStore::from_jetstream(&target.jetstream)
+        .await
+        .expect("target core state opens");
+    assert_eq!(
+        target_core
+            .active_service(&service_id("svc_api"))
+            .await
+            .expect("restored active service reads")
+            .expect("restored active service exists")
+            .active_revision,
+        revision_id("rev_2")
+    );
+    let target_controllers = seed_controllers(&target).await;
+    assert!(matches!(
+        target_controllers
+            .operation_status(&operation_id("op_backup_restore"))
+            .await
+            .expect("restored backup status reads")
+            .expect("restored backup status exists"),
+        OperationStatus::Backup {
+            state: BackupOperationState::Running {
+                stage: ployz_core::ops::BackupRunningStage::SnapshottingControlPlane,
+            },
+            ..
+        }
+    ));
+
+    let duplicate_restore = restore
+        .restore_bundle(&bundle)
+        .await
+        .expect_err("restore refuses a non-empty target");
+    assert!(matches!(
+        duplicate_restore,
+        BackupRestoreError::DestinationNotEmpty { .. }
+    ));
 }
 
 fn config() -> ControlProcessConfig {
@@ -298,22 +397,31 @@ async fn assert_backup_artifact_absent(nats: &TestNats, operation_id_value: &str
     assert!(bucket.info(&object_name).await.is_err());
 }
 
+async fn assert_backup_artifact_digest_mismatch_rejected(
+    nats: &TestNats,
+    artifact: &ployz_core::backup::BackupArtifact,
+) {
+    let backups = AsyncNatsBackupObjectStore::from_jetstream(&nats.jetstream)
+        .await
+        .expect("backup object store opens");
+    let mut mismatched = artifact.clone();
+    mismatched.digest = "SHA-256=not-the-recorded-digest".to_owned();
+
+    assert!(matches!(
+        backups.read_control_plane_bundle(&mismatched).await,
+        Err(BackupObjectStoreError::ArtifactMismatch { .. })
+    ));
+}
+
 async fn read_backup_bundle(
     nats: &TestNats,
     artifact: &ployz_core::backup::BackupArtifact,
 ) -> BackupBundle {
-    let bucket = nats
-        .jetstream
-        .get_object_store(&artifact.bucket)
+    let backups = AsyncNatsBackupObjectStore::from_jetstream(&nats.jetstream)
         .await
-        .expect("backup object bucket exists");
-    let mut object = bucket
-        .get(&artifact.object_name)
-        .await
-        .expect("backup artifact object is readable");
-    let mut payload = Vec::new();
-    object
-        .read_to_end(&mut payload)
+        .expect("backup object store opens");
+    let payload = backups
+        .read_control_plane_bundle(artifact)
         .await
         .expect("backup artifact body is readable");
 
@@ -345,6 +453,14 @@ fn operation_id(value: &str) -> OperationId {
 
 fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
+}
+
+fn service_id(value: &str) -> ServiceId {
+    ServiceId::try_new(value).expect("valid service id")
+}
+
+fn revision_id(value: &str) -> RevisionId {
+    RevisionId::try_new(value).expect("valid revision id")
 }
 
 fn idempotency_key(value: &str) -> OperationIdempotencyKey {

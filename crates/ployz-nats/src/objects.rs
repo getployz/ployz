@@ -5,6 +5,7 @@ use ployz_core::backup::{BackupArtifact, BackupArtifactKind};
 use ployz_core::ids::OperationId;
 use std::future::Future;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 use crate::bootstrap::ResourceReplicas;
 
@@ -84,6 +85,82 @@ impl AsyncNatsBackupObjectStore {
             info.digest.unwrap_or_else(|| "unknown".to_owned()),
         ))
     }
+
+    pub async fn read_control_plane_bundle(
+        &self,
+        artifact: &BackupArtifact,
+    ) -> Result<Vec<u8>, BackupObjectStoreError> {
+        if artifact.bucket != PLZ_BACKUPS_BUCKET
+            || artifact.kind != BackupArtifactKind::ControlPlaneBundle
+        {
+            return Err(BackupObjectStoreError::WrongArtifact {
+                bucket: artifact.bucket.clone(),
+                object_name: artifact.object_name.clone(),
+                kind: artifact.kind,
+            });
+        }
+
+        let mut object = with_object_timeout(
+            "backup object read",
+            self.bucket.get(artifact.object_name.as_str()),
+        )
+        .await?
+        .map_err(|error| BackupObjectStoreError::GetObject {
+            object_name: artifact.object_name.clone(),
+            message: error.to_string(),
+        })?;
+        verify_backup_artifact_info(artifact, object.info())?;
+
+        let mut payload = Vec::new();
+        with_object_timeout("backup object body read", object.read_to_end(&mut payload))
+            .await?
+            .map_err(|error| BackupObjectStoreError::GetObject {
+                object_name: artifact.object_name.clone(),
+                message: error.to_string(),
+            })?;
+        if payload.len() as u64 != artifact.byte_count {
+            return Err(BackupObjectStoreError::ArtifactMismatch {
+                object_name: artifact.object_name.clone(),
+                message: format!(
+                    "expected {} bytes, read {} bytes",
+                    artifact.byte_count,
+                    payload.len()
+                ),
+            });
+        }
+
+        Ok(payload)
+    }
+}
+
+fn verify_backup_artifact_info(
+    artifact: &BackupArtifact,
+    info: &jetstream::object_store::ObjectInfo,
+) -> Result<(), BackupObjectStoreError> {
+    if info.size as u64 != artifact.byte_count {
+        return Err(BackupObjectStoreError::ArtifactMismatch {
+            object_name: artifact.object_name.clone(),
+            message: format!(
+                "expected {} bytes, object store reports {} bytes",
+                artifact.byte_count, info.size
+            ),
+        });
+    }
+
+    let Some(digest) = &info.digest else {
+        return Err(BackupObjectStoreError::ArtifactMismatch {
+            object_name: artifact.object_name.clone(),
+            message: "object store did not report a digest".to_owned(),
+        });
+    };
+    if digest != &artifact.digest {
+        return Err(BackupObjectStoreError::ArtifactMismatch {
+            object_name: artifact.object_name.clone(),
+            message: format!("expected digest {}, got {}", artifact.digest, digest),
+        });
+    }
+
+    Ok(())
 }
 
 #[must_use]
@@ -101,6 +178,19 @@ pub enum BackupObjectStoreError {
         message: String,
     },
     PutObject {
+        object_name: String,
+        message: String,
+    },
+    GetObject {
+        object_name: String,
+        message: String,
+    },
+    WrongArtifact {
+        bucket: String,
+        object_name: String,
+        kind: BackupArtifactKind,
+    },
+    ArtifactMismatch {
         object_name: String,
         message: String,
     },
