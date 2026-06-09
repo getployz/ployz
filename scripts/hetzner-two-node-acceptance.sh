@@ -319,8 +319,8 @@ ebpf_ctl_bin="${PLOYZ_ACCEPTANCE_EBPF_CTL:-${acceptance_target_dir}/debug/ployz-
 ebpf_bytecode="${PLOYZ_ACCEPTANCE_EBPF_BYTECODE:-/tmp/ployz-rust-ebpf-target/bpfel-unknown-none/release/ployz-ebpf-tc}"
 smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
 ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
-edge_runtime_nats_url="nats://127.0.0.1:7422"
 edge_runtime_nats_addr="127.0.0.1:7422"
+edge_runtime_nats_url="nats://${edge_runtime_nats_addr}"
 remote_ebpf_path="/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
 remote_ebpf_ctl="/usr/local/bin/ployz-ebpf-ctl"
 

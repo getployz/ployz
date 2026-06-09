@@ -105,8 +105,8 @@ async fn operation_api_client_routes_machine_add_success() {
                     node_id: node_id("node_2"),
                     bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
                         .expect("valid bootstrap url"),
-                    bootstrap_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-                        .expect("valid bootstrap NATS URL"),
+                    runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
+                        .expect("valid runtime NATS URL"),
                     join_token: MachineJoinToken::try_new("join_token").expect("valid join token"),
                 },
             };

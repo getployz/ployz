@@ -43,7 +43,7 @@ pub struct MachineAddOutput {
     pub node_id: NodeId,
     pub accepted: AcceptedOperation,
     pub bootstrap_url: MachineBootstrapUrl,
-    pub bootstrap_nats_url: MachineJoinRuntimeNatsUrl,
+    pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub join_token: MachineJoinToken,
 }
 
@@ -54,7 +54,7 @@ impl MachineAddOutput {
             node_id: accepted.node_id,
             accepted: accepted.accepted,
             bootstrap_url: accepted.bootstrap_url,
-            bootstrap_nats_url: accepted.bootstrap_nats_url,
+            runtime_nats_url: accepted.runtime_nats_url,
             join_token: accepted.join_token,
         }
     }
@@ -69,7 +69,7 @@ impl MachineAddOutput {
             shell_quote(self.bootstrap_url.as_str()),
             format_args!(
                 "PLOYZ_NATS_URL={} sh",
-                shell_quote(self.bootstrap_nats_url.as_str())
+                shell_quote(self.runtime_nats_url.as_str())
             ),
             shell_quote(self.join_token.as_str())
         )
@@ -83,7 +83,7 @@ impl fmt::Debug for MachineAddOutput {
             .field("node_id", &self.node_id)
             .field("accepted", &self.accepted)
             .field("bootstrap_url", &self.bootstrap_url)
-            .field("bootstrap_nats_url", &self.bootstrap_nats_url)
+            .field("runtime_nats_url", &self.runtime_nats_url)
             .field("join_token", &self.join_token)
             .finish()
     }

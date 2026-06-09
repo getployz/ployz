@@ -110,7 +110,7 @@ test("machine add returns an operation handle with bootstrap material", async ()
   assert.equal(handle.operationId, "op_machine");
   assert.equal(handle.nodeId, "node_2");
   assert.equal(handle.bootstrapUrl, "https://get.ployz.sh");
-  assert.equal(handle.bootstrapNatsUrl, "nats://127.0.0.1:7422");
+  assert.equal(handle.runtimeNatsUrl, "nats://127.0.0.1:7422");
   assert.equal(handle.joinToken, "join_once_123");
   assert.deepEqual(transport.machineAddRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_machine" }]);
@@ -695,7 +695,7 @@ function defaultFixture(): OperationFixture {
         },
         node_id: nodeId("node_2"),
         bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
-        bootstrap_nats_url: "nats://127.0.0.1:7422",
+        runtime_nats_url: "nats://127.0.0.1:7422",
         join_token: machineJoinToken("join_once_123"),
       },
     },
