@@ -37,9 +37,9 @@ pub use ployz_core::ids::{
 };
 pub use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
-    InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey,
-    MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
+    InstallSha256Digest, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
+    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress,
+    MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
     MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
     MachineJoinTrustedNatsServerId,
@@ -69,7 +69,7 @@ pub use ployz_core::ops::{
 pub use ployz_core::roles::FirstNodeGateway;
 pub use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
-    GatewayStatusObservation, NodePublicIpObservation,
+    GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

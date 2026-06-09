@@ -5,12 +5,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  backupCreateRequest,
   certBundleRef,
   deploySubmitRequest,
   eventSequence,
+  machineInspectRequest,
   machineAddRequest,
   machineBootstrapUrl,
   machineJoinRedeemRequest,
+  machineListRequest,
   machineJoinToken,
   machineName,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
@@ -22,20 +25,30 @@ import {
   operationOwnerId,
   PloyzApiError,
   PloyzClient,
+  revisionId,
+  serviceInspectRequest,
   serviceId,
+  serviceListRequest,
 } from "../src/index.ts";
 import type {
   AcceptedOperation,
+  BackupCreateResponse,
+  BackupCreateRequest,
   DeploySubmitResponse,
   DeploySubmitRequest,
   MachineAddAccepted,
   MachineAddResponse,
   MachineAddRequest,
+  MachineInspectResponse,
+  MachineInspectRequest,
   MachineJoinBundle,
   MachineJoinSecretDelivery,
   MachineJoinRedeemed,
   MachineJoinRedeemResponse,
   MachineJoinRedeemRequest,
+  MachineListResponse,
+  MachineListRequest,
+  MachineSnapshot,
   OperationEventReplayPage,
   OperationStatusSnapshot,
   OperationSubject,
@@ -44,6 +57,11 @@ import type {
   OpsWatchResponse,
   OpsWatchRequest,
   PloyzOperationTransport,
+  ServiceInspectResponse,
+  ServiceInspectRequest,
+  ServiceListResponse,
+  ServiceListRequest,
+  ServiceSnapshot,
 } from "../src/index.ts";
 
 const fixturePath = join(
@@ -88,6 +106,48 @@ test("machine add returns an operation handle with bootstrap material", async ()
   assert.deepEqual(transport.machineAddRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_machine" }]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
+});
+
+test("backup create returns a normal operation handle", async () => {
+  const transport = new RecordingTransport(defaultFixture());
+  const client = new PloyzClient(transport);
+  const input = { operationId: "op_backup", idempotencyKey: "idem_backup" };
+  const request = backupCreateRequest(input);
+
+  const handle = await client.backupCreate(input);
+
+  assert.equal(handle.operationId, "op_backup");
+  assert.deepEqual(transport.backupCreateRequests, [request]);
+});
+
+test("machine queries return current state snapshots", async () => {
+  const fixture = defaultFixture();
+  const transport = new RecordingTransport(fixture);
+  const client = new PloyzClient(transport);
+
+  const machines = await client.machineList();
+  const machine = await client.machineInspect("node_2");
+
+  assert.deepEqual(transport.machineListRequests, [machineListRequest()]);
+  assert.deepEqual(transport.machineInspectRequests, [machineInspectRequest("node_2")]);
+  assert.deepEqual(machines, fixture.machine_snapshots);
+  assert.deepEqual(machine, fixture.machine_snapshots[0]);
+});
+
+test("service queries return current active service snapshots", async () => {
+  const fixture = defaultFixture();
+  const transport = new RecordingTransport(fixture);
+  const client = new PloyzClient(transport);
+
+  const services = await client.serviceList();
+  const service = await client.serviceInspect({ serviceId: "svc_api" });
+
+  assert.deepEqual(transport.serviceListRequests, [serviceListRequest()]);
+  assert.deepEqual(transport.serviceInspectRequests, [
+    serviceInspectRequest({ serviceId: "svc_api" }),
+  ]);
+  assert.deepEqual(services, fixture.service_snapshots);
+  assert.deepEqual(service, fixture.service_snapshots[0]);
 });
 
 test("machine join redeem returns joined machine facts", async () => {
@@ -267,6 +327,25 @@ test("sdk maps raw machine add input to the wire request", () => {
   );
 });
 
+test("sdk maps raw backup and current-state query inputs to wire requests", () => {
+  assert.deepEqual(backupCreateRequest({ operationId: "op_backup", idempotencyKey: "idem_backup" }), {
+    operation_id: "op_backup",
+    idempotency_key: "idem_backup",
+  });
+  assert.deepEqual(machineListRequest(), {});
+  assert.deepEqual(machineInspectRequest({ nodeId: "node_2" }), { node_id: "node_2" });
+  assert.deepEqual(machineInspectRequest("node_2"), { node_id: "node_2" });
+  assert.deepEqual(serviceListRequest(), {});
+  assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
+  assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
+  assert.throws(
+    () => backupCreateRequest({ operationId: "op.backup", idempotencyKey: "idem_backup" }),
+    /operation id/,
+  );
+  assert.throws(() => machineInspectRequest("node.2"), /node id/);
+  assert.throws(() => serviceInspectRequest("svc.api"), /service id/);
+});
+
 test("sdk maps raw machine join redeem input to the wire request", () => {
   assert.deepEqual(machineJoinRedeemRequest({ joinToken: "join_once_123" }), {
     join_token: "join_once_123",
@@ -407,26 +486,42 @@ test("sdk helpers enforce public primitive boundaries", () => {
 
 class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
+  readonly backupCreateRequests: BackupCreateRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
+  readonly machineListRequests: MachineListRequest[] = [];
+  readonly machineInspectRequests: MachineInspectRequest[] = [];
   readonly machineJoinRedeemRequests: MachineJoinRedeemRequest[] = [];
+  readonly serviceListRequests: ServiceListRequest[] = [];
+  readonly serviceInspectRequests: ServiceInspectRequest[] = [];
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
+  readonly backupAccepted: AcceptedOperation;
   readonly machineAddAccepted: MachineAddAccepted;
+  readonly machineSnapshots: MachineSnapshot[];
   readonly machineJoinRedeemed: MachineJoinRedeemed;
+  readonly serviceSnapshots: ServiceSnapshot[];
   readonly status: OperationStatusSnapshot;
   readonly replay: OperationEventReplayPage;
   readonly replayPages: OperationEventReplayPage[] = [];
   deployResponse?: DeploySubmitResponse;
+  backupCreateResponse?: BackupCreateResponse;
   machineAddResponse?: MachineAddResponse;
+  machineListResponse?: MachineListResponse;
+  machineInspectResponse?: MachineInspectResponse;
   machineJoinRedeemResponse?: MachineJoinRedeemResponse;
+  serviceListResponse?: ServiceListResponse;
+  serviceInspectResponse?: ServiceInspectResponse;
   statusResponse?: OpsStatusResponse;
   watchResponse?: OpsWatchResponse;
 
   constructor(fixture: OperationFixture) {
     this.accepted = fixture.accepted_operation;
+    this.backupAccepted = acceptedOperation("op_backup");
     this.machineAddAccepted = fixture.machine_add_response.value;
+    this.machineSnapshots = fixture.machine_snapshots;
     this.machineJoinRedeemed = fixture.machine_join_redeem_response.value;
+    this.serviceSnapshots = fixture.service_snapshots;
     this.status = fixture.operation_status_snapshot;
     this.replay = fixture.operation_event_replay_page;
   }
@@ -436,9 +531,30 @@ class RecordingTransport implements PloyzOperationTransport {
     return this.deployResponse ?? { status: "ok", value: this.accepted };
   }
 
+  async backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse> {
+    this.backupCreateRequests.push(request);
+    return this.backupCreateResponse ?? { status: "ok", value: this.backupAccepted };
+  }
+
   async machineAdd(request: MachineAddRequest): Promise<MachineAddResponse> {
     this.machineAddRequests.push(request);
     return this.machineAddResponse ?? { status: "ok", value: this.machineAddAccepted };
+  }
+
+  async machineList(request: MachineListRequest): Promise<MachineListResponse> {
+    this.machineListRequests.push(request);
+    return this.machineListResponse ?? {
+      status: "ok",
+      value: { machines: this.machineSnapshots },
+    };
+  }
+
+  async machineInspect(request: MachineInspectRequest): Promise<MachineInspectResponse> {
+    this.machineInspectRequests.push(request);
+    return this.machineInspectResponse ?? {
+      status: "ok",
+      value: this.machineSnapshots[0],
+    };
   }
 
   async machineJoinRedeem(
@@ -446,6 +562,22 @@ class RecordingTransport implements PloyzOperationTransport {
   ): Promise<MachineJoinRedeemResponse> {
     this.machineJoinRedeemRequests.push(request);
     return this.machineJoinRedeemResponse ?? { status: "ok", value: this.machineJoinRedeemed };
+  }
+
+  async serviceList(request: ServiceListRequest): Promise<ServiceListResponse> {
+    this.serviceListRequests.push(request);
+    return this.serviceListResponse ?? {
+      status: "ok",
+      value: { services: this.serviceSnapshots },
+    };
+  }
+
+  async serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse> {
+    this.serviceInspectRequests.push(request);
+    return this.serviceInspectResponse ?? {
+      status: "ok",
+      value: this.serviceSnapshots[0],
+    };
   }
 
   async opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse> {
@@ -466,7 +598,9 @@ class RecordingTransport implements PloyzOperationTransport {
 interface OperationFixture {
   accepted_operation: AcceptedOperation;
   machine_add_response: { status: "ok"; value: MachineAddAccepted };
+  machine_snapshots: MachineSnapshot[];
   machine_join_redeem_response: { status: "ok"; value: MachineJoinRedeemed };
+  service_snapshots: ServiceSnapshot[];
   operation_status_snapshot: OperationStatusSnapshot;
   operation_event_replay_page: OperationEventReplayPage;
 }
@@ -486,6 +620,18 @@ function defaultFixture(): OperationFixture {
         join_token: machineJoinToken("join_once_123"),
       },
     },
+    machine_snapshots: [
+      {
+        active: {
+          node_id: nodeId("node_2"),
+          name: machineName("edge_2"),
+          activated_by: operationId("op_machine"),
+        },
+        public_ip: null,
+        gateway: null,
+        observed_container_count: 0,
+      },
+    ],
     machine_join_redeem_response: {
       status: "ok",
       value: {
@@ -500,6 +646,14 @@ function defaultFixture(): OperationFixture {
         result: "joined",
       },
     },
+    service_snapshots: [
+      {
+        active: {
+          service_id: serviceId("svc_api"),
+          active_revision: revisionId("rev_2"),
+        },
+      },
+    ],
     operation_status_snapshot: {
       status: {
         kind: "deploy",
@@ -567,7 +721,21 @@ function machineJoinBundle(): MachineJoinBundle {
         sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         install_path: "/usr/local/bin/ployzd",
       },
+      ebpf_bytecode: machineJoinArtifact(
+        "/tmp/ployz-ebpf-tc",
+        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+      ),
+      ebpf_ctl: machineJoinArtifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
     },
+  };
+}
+
+function machineJoinArtifact(source: string, installPath: string) {
+  return {
+    version: "0.1.0",
+    source,
+    sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    install_path: installPath,
   };
 }
 

@@ -51,6 +51,9 @@ import {
 } from "./primitives.ts";
 import type {
   AcceptedOperation,
+  BackupCreateError,
+  BackupCreateRequest,
+  BackupCreateResponse,
   DeploySubmitError,
   DeploySubmitRequest,
   DeploySubmitResponse,
@@ -62,9 +65,17 @@ import type {
   MachineAddResponse,
   MachineJoinBundle,
   MachineJoinSecretDelivery,
+  MachineJoinRedeemError,
   MachineJoinRedeemRequest,
   MachineJoinRedeemResponse,
   MachineJoinRedeemed,
+  MachineInspectError,
+  MachineInspectRequest,
+  MachineInspectResponse,
+  MachineListError,
+  MachineListRequest,
+  MachineListResponse,
+  MachineSnapshot,
   OperationApiResponse,
   OperationEventReplayCursor,
   OperationEventReplayLimit,
@@ -77,12 +88,24 @@ import type {
   OpsWatchError,
   OpsWatchRequest,
   OpsWatchResponse,
+  ServiceInspectError,
+  ServiceInspectRequest,
+  ServiceInspectResponse,
+  ServiceListError,
+  ServiceListRequest,
+  ServiceListResponse,
+  ServiceSnapshot,
 } from "./generated.ts";
 
 export interface PloyzOperationTransport {
   deploySubmit(request: DeploySubmitRequest): Promise<DeploySubmitResponse>;
+  backupCreate(request: BackupCreateRequest): Promise<BackupCreateResponse>;
   machineAdd(request: MachineAddRequest): Promise<MachineAddResponse>;
+  machineList(request: MachineListRequest): Promise<MachineListResponse>;
+  machineInspect(request: MachineInspectRequest): Promise<MachineInspectResponse>;
   machineJoinRedeem(request: MachineJoinRedeemRequest): Promise<MachineJoinRedeemResponse>;
+  serviceList(request: ServiceListRequest): Promise<ServiceListResponse>;
+  serviceInspect(request: ServiceInspectRequest): Promise<ServiceInspectResponse>;
   opsStatus(request: OpsStatusRequest): Promise<OpsStatusResponse>;
   opsWatch(request: OpsWatchRequest): Promise<OpsWatchResponse>;
 }
@@ -127,6 +150,19 @@ export interface PloyzMachineJoinRedeemInput {
   joinToken: string;
 }
 
+export interface PloyzBackupCreateInput {
+  operationId: string;
+  idempotencyKey: string;
+}
+
+export interface PloyzMachineInspectInput {
+  nodeId: string;
+}
+
+export interface PloyzServiceInspectInput {
+  serviceId: string;
+}
+
 export class PloyzClient {
   readonly #transport: PloyzOperationTransport;
 
@@ -143,6 +179,14 @@ export class PloyzClient {
     return new OperationHandle(this.#transport, accepted);
   }
 
+  async backupCreate(input: PloyzBackupCreateInput): Promise<OperationHandle> {
+    const accepted = unwrapApiResponse(
+      "backup.create",
+      await this.#transport.backupCreate(backupCreateRequest(input)),
+    );
+    return new OperationHandle(this.#transport, accepted);
+  }
+
   async machineAdd(input: PloyzMachineAddInput): Promise<MachineAddHandle> {
     const accepted = unwrapApiResponse(
       "machine.add",
@@ -151,12 +195,47 @@ export class PloyzClient {
     return new MachineAddHandle(this.#transport, accepted);
   }
 
+  async machineList(): Promise<MachineSnapshot[]> {
+    return unwrapApiResponse(
+      "machine.list",
+      await this.#transport.machineList(machineListRequest()),
+    ).machines;
+  }
+
+  async machineInspect(input: string | PloyzMachineInspectInput): Promise<MachineSnapshot> {
+    return unwrapApiResponse(
+      "machine.inspect",
+      await this.#transport.machineInspect(machineInspectRequest(input)),
+    );
+  }
+
   async machineJoinRedeem(input: PloyzMachineJoinRedeemInput): Promise<MachineJoinRedeemed> {
     return unwrapApiResponse(
       "machine.join.redeem",
       await this.#transport.machineJoinRedeem(machineJoinRedeemRequest(input)),
     );
   }
+
+  async serviceList(): Promise<ServiceSnapshot[]> {
+    return unwrapApiResponse(
+      "service.list",
+      await this.#transport.serviceList(serviceListRequest()),
+    ).services;
+  }
+
+  async serviceInspect(input: string | PloyzServiceInspectInput): Promise<ServiceSnapshot> {
+    return unwrapApiResponse(
+      "service.inspect",
+      await this.#transport.serviceInspect(serviceInspectRequest(input)),
+    );
+  }
+}
+
+export function backupCreateRequest(input: PloyzBackupCreateInput): BackupCreateRequest {
+  return {
+    operation_id: operationId(input.operationId),
+    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
+  };
 }
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
@@ -193,11 +272,35 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
   };
 }
 
+export function machineListRequest(): MachineListRequest {
+  return {};
+}
+
+export function machineInspectRequest(
+  input: string | PloyzMachineInspectInput,
+): MachineInspectRequest {
+  return {
+    node_id: nodeId(typeof input === "string" ? input : input.nodeId),
+  };
+}
+
 export function machineJoinRedeemRequest(
   input: PloyzMachineJoinRedeemInput,
 ): MachineJoinRedeemRequest {
   return {
     join_token: machineJoinToken(input.joinToken),
+  };
+}
+
+export function serviceListRequest(): ServiceListRequest {
+  return {};
+}
+
+export function serviceInspectRequest(
+  input: string | PloyzServiceInspectInput,
+): ServiceInspectRequest {
+  return {
+    service_id: serviceId(typeof input === "string" ? input : input.serviceId),
   };
 }
 
@@ -289,7 +392,13 @@ function unwrapApiResponse<T, E>(
 }
 
 export type PloyzOperationError =
+  | PloyzApiError<BackupCreateError>
   | PloyzApiError<DeploySubmitError>
   | PloyzApiError<MachineAddError>
+  | PloyzApiError<MachineListError>
+  | PloyzApiError<MachineInspectError>
+  | PloyzApiError<MachineJoinRedeemError>
+  | PloyzApiError<ServiceListError>
+  | PloyzApiError<ServiceInspectError>
   | PloyzApiError<OpsStatusError>
   | PloyzApiError<OpsWatchError>;

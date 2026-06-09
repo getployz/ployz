@@ -202,6 +202,8 @@ export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_curre
 
 export type NodePublicIpObservation = { node_id: NodeId, public_ip: string, };
 
+export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
+
 export type GatewayStatusObservation = { node_id: NodeId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
 export type MachineSnapshot = { active: ActiveMachineState, public_ip: NodePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
@@ -279,6 +281,8 @@ export type AbsoluteInstallPath = string;
 export type MachineJoinBundle = { material: MachineJoinMaterial, };
 
 export type MachineJoinPloyzdArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
+
+export type MachineJoinArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
 
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 
