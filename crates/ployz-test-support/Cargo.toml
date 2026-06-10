@@ -10,9 +10,14 @@ publish = false
 workspace = true
 
 [dependencies]
+nkeys = "0.4"
 ployz-core.workspace = true
 ployz-nats.workspace = true
 ployzd = { path = "../ployzd" }
+rcgen = "0.14"
+serde_json.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["time"] }
 
 [lib]
 path = "src/lib.rs"
