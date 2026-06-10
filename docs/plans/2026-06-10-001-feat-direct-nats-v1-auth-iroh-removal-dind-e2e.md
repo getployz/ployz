@@ -918,12 +918,12 @@ commands, label-based cleanup) merged with the proven systemd recipe from
   deliberately **not** dropped until B4, where minting replaces it.
 - The working tree on `feat/step-1` is dirty across many of these files —
   rebase/sequence against in-flight work before starting A1.
-- async-nats 0.49 NKey feature flag must be verified (`nkeys` is not in
-  Cargo.lock with current features); if `with_nkey` is unavailable under the
-  pinned feature set, fall back to `.creds`-file auth
-  (`with_credentials_file`) — the join-bundle field is opaque either way.
-  `custom_inbox_prefix` is core API in 0.49 (verified in the vendored
-  source), no feature needed.
+- ~~async-nats 0.49 NKey feature flag must be verified~~ **Resolved:**
+  async-nats 0.49 ships an `nkeys` feature (`nkeys = ["dep:nkeys",
+  "dep:base64"]`) gating `ConnectOptions::with_nkey`; B2 adds `"nkeys"` to
+  the `async-nats` feature lists of the connecting crates.
+  `custom_inbox_prefix` is ungated core API in 0.49 (verified in the
+  registry source).
 - Permission-vs-reality denials in B5 are expected; budget the reconciliation
   pass, fix profiles narrowly (and never widen inbox allows beyond the
   principal's own prefix).

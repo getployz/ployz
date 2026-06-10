@@ -6,11 +6,9 @@ use std::net::SocketAddr;
 
 use crate::config::{
     ControlProcessConfig, DaemonProcessConfig, DnsProcessConfig, GatewayProcessConfig,
-    NodeProcessConfig, TunnelProcessConfig,
+    NodeProcessConfig,
 };
-use crate::iroh_tunnel::PreparedTunnelService;
 use crate::nats_process::NatsServerRuntime;
-use crate::role::TunnelSide;
 use crate::services::DaemonServiceCatalog;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +17,6 @@ pub enum RoleProcessPlan {
     Node(NodeProcessPlan),
     Gateway(GatewayProcessPlan),
     Dns(DnsProcessPlan),
-    Tunnel(TunnelProcessPlan),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,37 +82,6 @@ pub enum DnsWork {
     ServeLastKnownGoodAnswers,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TunnelProcessPlan {
-    pub service: PreparedTunnelService,
-}
-
-impl TunnelProcessPlan {
-    #[must_use]
-    pub const fn side(&self) -> TunnelSide {
-        self.service.side()
-    }
-
-    #[must_use]
-    pub const fn work(&self) -> &'static [TunnelWork] {
-        match self.side() {
-            TunnelSide::Edge => &[TunnelWork::ExposeLoopbackNats, TunnelWork::OpenIrohToCore],
-            TunnelSide::Core => &[
-                TunnelWork::AcceptIrohFromEdges,
-                TunnelWork::ForwardCoreNatsBytes,
-            ],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TunnelWork {
-    ExposeLoopbackNats,
-    OpenIrohToCore,
-    AcceptIrohFromEdges,
-    ForwardCoreNatsBytes,
-}
-
 #[must_use]
 pub fn plan_configured_process(config: &DaemonProcessConfig) -> RoleProcessPlan {
     match config {
@@ -123,7 +89,6 @@ pub fn plan_configured_process(config: &DaemonProcessConfig) -> RoleProcessPlan 
         DaemonProcessConfig::Node(config) => plan_node_process(config),
         DaemonProcessConfig::Gateway(config) => plan_gateway_process(config),
         DaemonProcessConfig::Dns(config) => plan_dns_process(config),
-        DaemonProcessConfig::Tunnel(config) => plan_tunnel_process(config),
     }
 }
 
@@ -169,11 +134,5 @@ fn plan_dns_process(config: &DnsProcessConfig) -> RoleProcessPlan {
             DnsWork::WatchNodeAddresses,
             DnsWork::ServeLastKnownGoodAnswers,
         ],
-    })
-}
-
-fn plan_tunnel_process(config: &TunnelProcessConfig) -> RoleProcessPlan {
-    RoleProcessPlan::Tunnel(TunnelProcessPlan {
-        service: config.service.clone(),
     })
 }

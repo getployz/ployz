@@ -21,6 +21,7 @@ rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 ployz-core = { path = "crates/ployz-core" }
 ployz-nats = { path = "crates/ployz-nats" }

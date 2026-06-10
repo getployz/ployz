@@ -8,7 +8,6 @@
 pub mod artifacts;
 pub mod cli;
 pub mod executor;
-mod first_node_install_cli;
 pub mod join;
 pub mod join_executor;
 pub mod local;

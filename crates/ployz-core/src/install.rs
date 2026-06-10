@@ -1,6 +1,5 @@
 use std::fmt;
 use std::net::IpAddr;
-use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::ids::NodeId;
@@ -33,83 +32,186 @@ pub struct KeeperFirstNodeInstall {
     pub nats_config: AbsoluteInstallPath,
 }
 
-impl KeeperFirstNodeInstall {
-    #[must_use]
-    pub fn command_args(&self) -> Vec<String> {
-        let mut args = vec![
-            "first-node-install".to_owned(),
-            "--node".to_owned(),
-            self.node_id.as_str().to_owned(),
-            "--ployzd-version".to_owned(),
-            self.ployzd_version.as_str().to_owned(),
-            "--ployzd-source".to_owned(),
-            self.ployzd_source.as_str().to_owned(),
-            "--ployzd-sha256".to_owned(),
-            self.ployzd_sha256.as_str().to_owned(),
-            "--ployzd-install-path".to_owned(),
-            self.ployzd_install_path.as_str().to_owned(),
-            "--ebpf-bytecode-version".to_owned(),
-            self.ebpf_bytecode_version.as_str().to_owned(),
-            "--ebpf-bytecode-source".to_owned(),
-            self.ebpf_bytecode_source.as_str().to_owned(),
-            "--ebpf-bytecode-sha256".to_owned(),
-            self.ebpf_bytecode_sha256.as_str().to_owned(),
-            "--ebpf-bytecode-install-path".to_owned(),
-            self.ebpf_bytecode_install_path.as_str().to_owned(),
-            "--ebpf-ctl-version".to_owned(),
-            self.ebpf_ctl_version.as_str().to_owned(),
-            "--ebpf-ctl-source".to_owned(),
-            self.ebpf_ctl_source.as_str().to_owned(),
-            "--ebpf-ctl-sha256".to_owned(),
-            self.ebpf_ctl_sha256.as_str().to_owned(),
-            "--ebpf-ctl-install-path".to_owned(),
-            self.ebpf_ctl_install_path.as_str().to_owned(),
-            "--nats-version".to_owned(),
-            self.nats_version.as_str().to_owned(),
-            "--nats-source".to_owned(),
-            self.nats_source.as_str().to_owned(),
-            "--nats-sha256".to_owned(),
-            self.nats_sha256.as_str().to_owned(),
-            "--nats-binary".to_owned(),
-            self.nats_binary.as_str().to_owned(),
-            "--nats-config".to_owned(),
-            self.nats_config.as_str().to_owned(),
-        ];
-        if self.gateway == FirstNodeGateway::Install {
-            args.push("--gateway".to_owned());
-        }
-        if let Some(node_public_ip) = self.node_public_ip {
-            args.extend(["--node-public-ip".to_owned(), node_public_ip.to_string()]);
-        }
-        if let Some(machine_bootstrap_url) = &self.machine_bootstrap_url {
-            args.extend([
-                "--machine-bootstrap-url".to_owned(),
-                machine_bootstrap_url.as_str().to_owned(),
-            ]);
-        }
-        if let Some(machine_join_template_file) = &self.machine_join_template_file {
-            args.extend([
-                "--machine-join-template-file".to_owned(),
-                machine_join_template_file.as_str().to_owned(),
-            ]);
-        }
-        args
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct FirstNodeInstallSpec {
+    pub node_id: NodeId,
+    pub gateway: FirstNodeGateway,
+    pub node_public_ip: Option<IpAddr>,
+    pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
+    pub machine_join_template_file: Option<AbsoluteInstallPath>,
+    pub artifacts: FirstNodeInstallArtifacts,
+}
 
-    #[must_use]
-    pub fn render_command(&self) -> String {
-        std::iter::once("ployz-keeper".to_owned())
-            .chain(self.command_args())
-            .enumerate()
-            .map(|(index, token)| {
-                if index == 0 || token == "first-node-install" || token.starts_with("--") {
-                    token
-                } else {
-                    shell_quote(&token)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct FirstNodeInstallArtifacts {
+    pub ployzd: InstallArtifactSpec,
+    pub ebpf_bytecode: InstallArtifactSpec,
+    pub ebpf_ctl: InstallArtifactSpec,
+    pub nats_server: NatsServerInstallSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineJoinArtifactBundleSpec {
+    pub ployzd: InstallArtifactSpec,
+    pub ebpf_bytecode: InstallArtifactSpec,
+    pub ebpf_ctl: InstallArtifactSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct InstallArtifactSpec {
+    pub version: InstallArtifactVersion,
+    pub source: InstallArtifactSource,
+    pub sha256: InstallSha256Digest,
+    pub install_path: AbsoluteInstallPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct NatsServerInstallSpec {
+    pub version: InstallArtifactVersion,
+    pub source: InstallArtifactSource,
+    pub sha256: InstallSha256Digest,
+    pub binary: AbsoluteInstallPath,
+    pub config: AbsoluteInstallPath,
+}
+
+impl From<FirstNodeInstallSpec> for KeeperFirstNodeInstall {
+    fn from(value: FirstNodeInstallSpec) -> Self {
+        let FirstNodeInstallSpec {
+            node_id,
+            gateway,
+            node_public_ip,
+            machine_bootstrap_url,
+            machine_join_template_file,
+            artifacts:
+                FirstNodeInstallArtifacts {
+                    ployzd,
+                    ebpf_bytecode,
+                    ebpf_ctl,
+                    nats_server,
+                },
+        } = value;
+        let InstallArtifactSpec {
+            version: ployzd_version,
+            source: ployzd_source,
+            sha256: ployzd_sha256,
+            install_path: ployzd_install_path,
+        } = ployzd;
+        let InstallArtifactSpec {
+            version: ebpf_bytecode_version,
+            source: ebpf_bytecode_source,
+            sha256: ebpf_bytecode_sha256,
+            install_path: ebpf_bytecode_install_path,
+        } = ebpf_bytecode;
+        let InstallArtifactSpec {
+            version: ebpf_ctl_version,
+            source: ebpf_ctl_source,
+            sha256: ebpf_ctl_sha256,
+            install_path: ebpf_ctl_install_path,
+        } = ebpf_ctl;
+        let NatsServerInstallSpec {
+            version: nats_version,
+            source: nats_source,
+            sha256: nats_sha256,
+            binary: nats_binary,
+            config: nats_config,
+        } = nats_server;
+        Self {
+            node_id,
+            gateway,
+            node_public_ip,
+            machine_bootstrap_url,
+            machine_join_template_file,
+            ployzd_version,
+            ployzd_source,
+            ployzd_sha256,
+            ployzd_install_path,
+            ebpf_bytecode_version,
+            ebpf_bytecode_source,
+            ebpf_bytecode_sha256,
+            ebpf_bytecode_install_path,
+            ebpf_ctl_version,
+            ebpf_ctl_source,
+            ebpf_ctl_sha256,
+            ebpf_ctl_install_path,
+            nats_version,
+            nats_source,
+            nats_sha256,
+            nats_binary,
+            nats_config,
+        }
+    }
+}
+
+impl From<KeeperFirstNodeInstall> for FirstNodeInstallSpec {
+    fn from(value: KeeperFirstNodeInstall) -> Self {
+        let KeeperFirstNodeInstall {
+            node_id,
+            gateway,
+            node_public_ip,
+            machine_bootstrap_url,
+            machine_join_template_file,
+            ployzd_version,
+            ployzd_source,
+            ployzd_sha256,
+            ployzd_install_path,
+            ebpf_bytecode_version,
+            ebpf_bytecode_source,
+            ebpf_bytecode_sha256,
+            ebpf_bytecode_install_path,
+            ebpf_ctl_version,
+            ebpf_ctl_source,
+            ebpf_ctl_sha256,
+            ebpf_ctl_install_path,
+            nats_version,
+            nats_source,
+            nats_sha256,
+            nats_binary,
+            nats_config,
+        } = value;
+        Self {
+            node_id,
+            gateway,
+            node_public_ip,
+            machine_bootstrap_url,
+            machine_join_template_file,
+            artifacts: FirstNodeInstallArtifacts {
+                ployzd: InstallArtifactSpec {
+                    version: ployzd_version,
+                    source: ployzd_source,
+                    sha256: ployzd_sha256,
+                    install_path: ployzd_install_path,
+                },
+                ebpf_bytecode: InstallArtifactSpec {
+                    version: ebpf_bytecode_version,
+                    source: ebpf_bytecode_source,
+                    sha256: ebpf_bytecode_sha256,
+                    install_path: ebpf_bytecode_install_path,
+                },
+                ebpf_ctl: InstallArtifactSpec {
+                    version: ebpf_ctl_version,
+                    source: ebpf_ctl_source,
+                    sha256: ebpf_ctl_sha256,
+                    install_path: ebpf_ctl_install_path,
+                },
+                nats_server: NatsServerInstallSpec {
+                    version: nats_version,
+                    source: nats_source,
+                    sha256: nats_sha256,
+                    binary: nats_binary,
+                    config: nats_config,
+                },
+            },
+        }
     }
 }
 
@@ -172,7 +274,6 @@ pub struct MachineJoinMaterial {
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub trusted_nats: MachineJoinTrustedNats,
-    pub core_iroh: MachineJoinCoreIrohEndpoint,
     pub ployzd: MachineJoinPloyzdArtifact,
     pub ebpf_bytecode: MachineJoinArtifact,
     pub ebpf_ctl: MachineJoinArtifact,
@@ -183,7 +284,6 @@ pub struct MachineJoinMaterial {
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinSecretDelivery {
     pub nats_credentials: MachineJoinNatsCredentials,
-    pub core_iroh_ticket: MachineJoinIrohTicket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,47 +294,12 @@ pub struct MachineJoinTemplate {
     pub secret_delivery: MachineJoinSecretDelivery,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineJoinEdgeTunnel {
-    pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
-    pub listen_addr: SocketAddr,
-    pub core_node: NodeId,
-    pub core_public_key: MachineJoinIrohPublicKey,
-    pub core_direct_addresses: Vec<MachineJoinIrohDirectAddress>,
-    pub core_relay_url: Option<MachineJoinIrohRelayUrl>,
-}
-
-impl MachineJoinEdgeTunnel {
-    #[must_use]
-    pub fn from_join_bundle(join_bundle: &MachineJoinBundle) -> Self {
-        let runtime_nats_url = join_bundle.material.runtime_nats_url.clone();
-        Self {
-            listen_addr: runtime_nats_url.socket_addr(),
-            runtime_nats_url,
-            core_node: join_bundle.material.core_iroh.node_id.clone(),
-            core_public_key: join_bundle.material.core_iroh.public_key.clone(),
-            core_direct_addresses: join_bundle.material.core_iroh.direct_addresses.clone(),
-            core_relay_url: join_bundle.material.core_iroh.relay_url.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinTrustedNats {
     pub server_id: MachineJoinTrustedNatsServerId,
     pub config_sha256: InstallSha256Digest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct MachineJoinCoreIrohEndpoint {
-    pub node_id: NodeId,
-    pub public_key: MachineJoinIrohPublicKey,
-    pub direct_addresses: Vec<MachineJoinIrohDirectAddress>,
-    pub relay_url: Option<MachineJoinIrohRelayUrl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,173 +410,6 @@ impl From<MachineJoinTrustedNatsServerId> for String {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
-pub struct MachineJoinIrohPublicKey(String);
-
-impl MachineJoinIrohPublicKey {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
-        let value = value.into();
-        validate_plain_join_token("core iroh public key", value, |value| {
-            InstallContractError::InvalidIrohPublicKey { value }
-        })
-        .map(Self)
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for MachineJoinIrohPublicKey {
-    type Error = InstallContractError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<MachineJoinIrohPublicKey> for String {
-    fn from(value: MachineJoinIrohPublicKey) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct MachineJoinIrohDirectAddress(String);
-
-impl MachineJoinIrohDirectAddress {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(InstallContractError::EmptyJoinToken {
-                label: "core iroh direct address",
-            });
-        }
-        value.parse::<SocketAddr>().map_err(|_| {
-            InstallContractError::InvalidIrohDirectAddress {
-                value: value.clone(),
-            }
-        })?;
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for MachineJoinIrohDirectAddress {
-    type Error = InstallContractError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<MachineJoinIrohDirectAddress> for String {
-    fn from(value: MachineJoinIrohDirectAddress) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct MachineJoinIrohRelayUrl(String);
-
-impl MachineJoinIrohRelayUrl {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(InstallContractError::EmptyJoinToken {
-                label: "core iroh relay URL",
-            });
-        }
-        if !value.starts_with("https://")
-            || value
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
-            return Err(InstallContractError::InvalidIrohRelayUrl { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for MachineJoinIrohRelayUrl {
-    type Error = InstallContractError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<MachineJoinIrohRelayUrl> for String {
-    fn from(value: MachineJoinIrohRelayUrl) -> Self {
-        value.0
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct MachineJoinIrohTicket(String);
-
-impl MachineJoinIrohTicket {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
-        let value = value.into();
-        validate_plain_join_token("core iroh ticket", value, |value| {
-            InstallContractError::InvalidIrohTicket { value }
-        })
-        .map(Self)
-    }
-
-    #[must_use]
-    pub fn secret(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub const fn redacted(&self) -> &'static str {
-        "[redacted]"
-    }
-}
-
-impl TryFrom<String> for MachineJoinIrohTicket {
-    type Error = InstallContractError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<MachineJoinIrohTicket> for String {
-    fn from(value: MachineJoinIrohTicket) -> Self {
-        value.0
-    }
-}
-
-impl fmt::Debug for MachineJoinIrohTicket {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.redacted())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
 pub struct MachineJoinRuntimeNatsUrl(String);
 
 impl MachineJoinRuntimeNatsUrl {
@@ -523,7 +421,7 @@ impl MachineJoinRuntimeNatsUrl {
         if value
             .chars()
             .any(|character| character.is_whitespace() || character.is_control())
-            || nats_url_socket_addr(&value).is_none()
+            || !nats_url_has_host_and_port(&value)
         {
             return Err(InstallContractError::InvalidRuntimeNatsUrl { value });
         }
@@ -534,15 +432,23 @@ impl MachineJoinRuntimeNatsUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    #[must_use]
-    pub fn socket_addr(&self) -> SocketAddr {
-        nats_url_socket_addr(&self.0).expect("runtime NATS URL is validated as a socket URL")
-    }
 }
 
-fn nats_url_socket_addr(value: &str) -> Option<SocketAddr> {
-    value.strip_prefix("nats://")?.parse().ok()
+fn nats_url_has_host_and_port(value: &str) -> bool {
+    let Some(authority) = value
+        .strip_prefix("nats://")
+        .or_else(|| value.strip_prefix("tls://"))
+    else {
+        return false;
+    };
+    let Some((host, port)) = authority.rsplit_once(':') else {
+        return false;
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 impl TryFrom<String> for MachineJoinRuntimeNatsUrl {
@@ -769,10 +675,6 @@ pub enum InstallContractError {
     InvalidNatsCredentials,
     EmptyJoinToken { label: &'static str },
     InvalidTrustedNatsServerId { value: String },
-    InvalidIrohPublicKey { value: String },
-    InvalidIrohDirectAddress { value: String },
-    InvalidIrohRelayUrl { value: String },
-    InvalidIrohTicket { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -802,7 +704,7 @@ impl fmt::Display for InstallContractError {
             Self::EmptyRuntimeNatsUrl => formatter.write_str("runtime NATS URL is empty"),
             Self::InvalidRuntimeNatsUrl { value } => write!(
                 formatter,
-                "runtime NATS URL {value:?} must be a nats:// URL without whitespace"
+                "runtime NATS URL {value:?} must be a nats:// or tls:// URL with host and port"
             ),
             Self::EmptyNatsCredentials => formatter.write_str("NATS credentials are empty"),
             Self::InvalidNatsCredentials => {
@@ -812,22 +714,6 @@ impl fmt::Display for InstallContractError {
             Self::InvalidTrustedNatsServerId { value } => write!(
                 formatter,
                 "trusted NATS server id {value:?} must not contain whitespace"
-            ),
-            Self::InvalidIrohPublicKey { value } => write!(
-                formatter,
-                "core iroh public key {value:?} must not contain whitespace"
-            ),
-            Self::InvalidIrohDirectAddress { value } => write!(
-                formatter,
-                "core iroh direct address {value:?} must be a socket address"
-            ),
-            Self::InvalidIrohRelayUrl { value } => write!(
-                formatter,
-                "core iroh relay URL {value:?} must be an HTTPS URL without whitespace"
-            ),
-            Self::InvalidIrohTicket { value } => write!(
-                formatter,
-                "core iroh ticket {value:?} must not contain whitespace"
             ),
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
@@ -870,8 +756,4 @@ fn validate_plain_join_token(
         return Err(invalid(value));
     }
     Ok(value)
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }

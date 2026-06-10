@@ -2,14 +2,10 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Command;
 
-use iroh::PublicKey;
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::API_OPS_STATUS;
 use ployz_nats::connect::NatsClientUrl;
-use ployz_transport::iroh_endpoint::IrohEndpoint;
-use ployzd::app::{
-    ControlWork, DnsWork, GatewayWork, RoleProcessPlan, TunnelWork, plan_configured_process,
-};
+use ployzd::app::{ControlWork, DnsWork, GatewayWork, RoleProcessPlan, plan_configured_process};
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, NodeDataplaneConfig, NodeProcessArtifacts, NodeProcessConfig,
@@ -17,15 +13,10 @@ use ployzd::config::{
     PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_NODES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
     PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
-    PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
-    PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
-    PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, PLOYZ_TUNNEL_NATS_ADDR_ENV,
-    PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV, PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV, TunnelProcessConfig,
-    load_daemon_process_config,
+    PLOYZ_NODE_PUBLIC_IP_ENV, load_daemon_process_config,
 };
-use ployzd::iroh_tunnel::PreparedTunnelService;
 use ployzd::nats_process::NatsServerRuntime;
-use ployzd::role::{DaemonProcessRole, TunnelSide, parse_role_args};
+use ployzd::role::{DaemonProcessRole, parse_role_args};
 
 #[test]
 fn control_process_owns_api_and_nats_assurance() {
@@ -168,69 +159,22 @@ fn gateway_and_dns_are_watchers_not_command_surfaces() {
 }
 
 #[test]
-fn tunnel_side_decides_byte_transport_work() {
-    let edge_service = PreparedTunnelService::edge(
-        "ployzd-tunnel-edge",
-        socket(7422),
-        IrohEndpoint::new(node_id("core_1"), "core-public-key"),
-    );
-    let core_service = PreparedTunnelService::core("ployzd-tunnel-core", socket(4222));
-    let edge_config = DaemonProcessConfig::Tunnel(TunnelProcessConfig::new(edge_service.clone()));
-    let core_config = DaemonProcessConfig::Tunnel(TunnelProcessConfig::new(core_service.clone()));
-
-    let RoleProcessPlan::Tunnel(edge) = plan_configured_process(&edge_config) else {
-        panic!("edge tunnel role should produce a tunnel process plan");
-    };
-    let RoleProcessPlan::Tunnel(core) = plan_configured_process(&core_config) else {
-        panic!("core tunnel role should produce a tunnel process plan");
-    };
-
-    assert_eq!(
-        edge_config.role(),
-        DaemonProcessRole::Tunnel(TunnelSide::Edge)
-    );
-    assert_eq!(
-        core_config.role(),
-        DaemonProcessRole::Tunnel(TunnelSide::Core)
-    );
-    assert_eq!(edge.service, edge_service);
-    assert_eq!(core.service, core_service);
-    assert_eq!(edge.side(), TunnelSide::Edge);
-    assert_eq!(core.side(), TunnelSide::Core);
-    assert_eq!(
-        edge.work(),
-        &[TunnelWork::ExposeLoopbackNats, TunnelWork::OpenIrohToCore]
-    );
-    assert_eq!(
-        core.work(),
-        &[
-            TunnelWork::AcceptIrohFromEdges,
-            TunnelWork::ForwardCoreNatsBytes
-        ]
-    );
-}
-
-#[test]
 fn role_parser_accepts_the_supervisor_process_commands() {
     assert_eq!(
-        parse_role_args(["control"].map(str::to_owned)),
-        Ok(DaemonProcessRole::Control)
+        parse_role_args(["control"].map(str::to_owned)).expect("control role parses"),
+        DaemonProcessRole::Control
     );
     assert_eq!(
-        parse_role_args(["node", "--id", "node_7"].map(str::to_owned)),
-        Ok(DaemonProcessRole::Node(node_id("node_7")))
+        parse_role_args(["node", "--id", "node_7"].map(str::to_owned)).expect("node role parses"),
+        DaemonProcessRole::Node(node_id("node_7"))
     );
     assert_eq!(
-        parse_role_args(["gateway"].map(str::to_owned)),
-        Ok(DaemonProcessRole::Gateway)
+        parse_role_args(["gateway"].map(str::to_owned)).expect("gateway role parses"),
+        DaemonProcessRole::Gateway
     );
     assert_eq!(
-        parse_role_args(["dns"].map(str::to_owned)),
-        Ok(DaemonProcessRole::Dns)
-    );
-    assert_eq!(
-        parse_role_args(["tunnel", "--side", "edge"].map(str::to_owned)),
-        Ok(DaemonProcessRole::Tunnel(TunnelSide::Edge))
+        parse_role_args(["dns"].map(str::to_owned)).expect("dns role parses"),
+        DaemonProcessRole::Dns
     );
 }
 
@@ -452,254 +396,6 @@ fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
 }
 
 #[test]
-fn tunnel_roles_require_explicit_transport_config() {
-    assert_eq!(
-        load_daemon_process_config(DaemonProcessRole::Tunnel(TunnelSide::Edge), |_| None),
-        Err(DaemonProcessConfigError::MissingTunnelConfig {
-            side: TunnelSide::Edge,
-            env: PLOYZ_TUNNEL_LISTEN_ADDR_ENV,
-        })
-    );
-    assert_eq!(
-        load_daemon_process_config(DaemonProcessRole::Tunnel(TunnelSide::Core), |_| None),
-        Err(DaemonProcessConfigError::MissingTunnelConfig {
-            side: TunnelSide::Core,
-            env: PLOYZ_TUNNEL_NATS_ADDR_ENV,
-        })
-    );
-}
-
-#[test]
-fn tunnel_roles_load_core_and_edge_config() {
-    let config =
-        load_daemon_process_config(
-            DaemonProcessRole::Tunnel(TunnelSide::Core),
-            |name| match name {
-                PLOYZ_TUNNEL_NATS_ADDR_ENV => Some("127.0.0.1:4222".to_owned()),
-                _ => None,
-            },
-        )
-        .expect("core tunnel config loads");
-    let DaemonProcessConfig::Tunnel(config) = config else {
-        panic!("core tunnel role should produce tunnel config");
-    };
-    assert_eq!(config.side(), TunnelSide::Core);
-    assert_eq!(config.service.service_name, "ployzd-tunnel-core");
-    assert_eq!(
-        config.service.local_client_endpoint().socket_addr(),
-        Some(socket(4222))
-    );
-    assert_eq!(
-        config.iroh_bind_addr,
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4433)
-    );
-    assert_eq!(
-        config.secret_key_file.as_deref(),
-        Some(std::path::Path::new("/var/lib/ployz/iroh/endpoint.key"))
-    );
-    assert_eq!(
-        config.public_key_file.as_deref(),
-        Some(std::path::Path::new("/var/lib/ployz/iroh/endpoint.public"))
-    );
-
-    let config =
-        load_daemon_process_config(
-            DaemonProcessRole::Tunnel(TunnelSide::Edge),
-            |name| match name {
-                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
-                PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV => Some("0.0.0.0:0".to_owned()),
-                PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV => Some("/tmp/edge.key".to_owned()),
-                PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV => Some("/tmp/edge.public".to_owned()),
-                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
-                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
-                PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV => {
-                    Some("203.0.113.10:4433,203.0.113.11:4433".to_owned())
-                }
-                PLOYZ_TUNNEL_CORE_RELAY_URL_ENV => Some("https://relay.example.test".to_owned()),
-                _ => None,
-            },
-        )
-        .expect("edge tunnel config loads");
-    let DaemonProcessConfig::Tunnel(config) = config else {
-        panic!("edge tunnel role should produce tunnel config");
-    };
-    assert_eq!(config.side(), TunnelSide::Edge);
-    assert_eq!(config.service.service_name, "ployzd-tunnel-edge");
-    assert_eq!(
-        config.service.local_client_endpoint().socket_addr(),
-        Some(socket(7422))
-    );
-    assert_eq!(
-        config.iroh_bind_addr,
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-    );
-    assert_eq!(
-        config.secret_key_file.as_deref(),
-        Some(std::path::Path::new("/tmp/edge.key"))
-    );
-    assert_eq!(
-        config.public_key_file.as_deref(),
-        Some(std::path::Path::new("/tmp/edge.public"))
-    );
-    assert_eq!(
-        config.service.tunnel,
-        ployz_transport::nats_tunnel::NatsTunnelConfig::Edge(
-            ployz_transport::nats_tunnel::EdgeNatsTunnelConfig::new(
-                socket(7422),
-                IrohEndpoint::new(node_id("core_1"), "core-public-key")
-                    .with_direct_address("203.0.113.10:4433".parse().expect("valid address"))
-                    .with_direct_address("203.0.113.11:4433".parse().expect("valid address"))
-                    .with_relay_url("https://relay.example.test")
-            )
-        )
-    );
-}
-
-#[test]
-fn edge_tunnel_rejects_non_loopback_listener() {
-    assert_eq!(
-        load_daemon_process_config(
-            DaemonProcessRole::Tunnel(TunnelSide::Edge),
-            |name| match name {
-                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("0.0.0.0:7422".to_owned()),
-                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
-                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
-                _ => None,
-            }
-        ),
-        Err(DaemonProcessConfigError::NonLoopbackTunnelListenAddr {
-            side: TunnelSide::Edge,
-            value: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7422),
-        })
-    );
-}
-
-#[test]
-fn edge_tunnel_rejects_invalid_core_dial_hints() {
-    assert!(matches!(
-        load_daemon_process_config(
-            DaemonProcessRole::Tunnel(TunnelSide::Edge),
-            |name| match name {
-                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
-                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
-                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
-                PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV => Some("not-a-socket".to_owned()),
-                _ => None,
-            }
-        ),
-        Err(DaemonProcessConfigError::InvalidTunnelDirectAddress { value, .. })
-            if value == "not-a-socket"
-    ));
-    assert_eq!(
-        load_daemon_process_config(
-            DaemonProcessRole::Tunnel(TunnelSide::Edge),
-            |name| match name {
-                PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
-                PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
-                PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some("core-public-key".to_owned()),
-                PLOYZ_TUNNEL_CORE_RELAY_URL_ENV => Some("http://relay.example.test".to_owned()),
-                _ => None,
-            }
-        ),
-        Err(DaemonProcessConfigError::InvalidTunnelRelayUrl {
-            value: "http://relay.example.test".to_owned(),
-        })
-    );
-}
-
-#[test]
-fn binary_tunnel_role_enters_runtime_when_configured() {
-    let identity_path = std::env::temp_dir().join(format!(
-        "ployzd-invalid-edge-identity-{}.key",
-        std::process::id()
-    ));
-    let public_path = std::env::temp_dir().join(format!(
-        "ployzd-invalid-edge-identity-{}.public",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&identity_path);
-    let _ = std::fs::remove_file(&public_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args(["tunnel", "--side", "edge"])
-        .env(PLOYZ_TUNNEL_LISTEN_ADDR_ENV, "127.0.0.1:7422")
-        .env(PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV, &identity_path)
-        .env(PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV, &public_path)
-        .env(PLOYZ_TUNNEL_CORE_NODE_ENV, "core_1")
-        .env(PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, "core-public-key")
-        .output()
-        .expect("ployzd binary runs");
-    let _ = std::fs::remove_file(&identity_path);
-    let _ = std::fs::remove_file(&public_path);
-
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("core iroh public key \"core-public-key\" is invalid"),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn binary_tunnel_identity_creates_reusable_identity_file() {
-    let identity_path = std::env::temp_dir().join(format!(
-        "ployzd-reusable-tunnel-identity-{}.key",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&identity_path);
-
-    let first = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args([
-            "tunnel",
-            "identity",
-            "--secret-key-file",
-            identity_path
-                .to_str()
-                .expect("temporary identity path is UTF-8"),
-        ])
-        .output()
-        .expect("ployzd binary runs");
-    let second = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .args([
-            "tunnel",
-            "identity",
-            "--secret-key-file",
-            identity_path
-                .to_str()
-                .expect("temporary identity path is UTF-8"),
-        ])
-        .output()
-        .expect("ployzd binary runs again");
-    let _ = std::fs::remove_file(&identity_path);
-
-    assert!(first.status.success());
-    assert!(second.status.success());
-    let public_key = parse_identity_public_key(&first.stdout);
-    PublicKey::from_z32(public_key).expect("identity output is an iroh z32 public key");
-    load_daemon_process_config(
-        DaemonProcessRole::Tunnel(TunnelSide::Edge),
-        |name| match name {
-            PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
-            PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
-            PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some(public_key.to_owned()),
-            _ => None,
-        },
-    )
-    .expect("identity output can configure an edge tunnel");
-    assert_eq!(first.stdout, second.stdout);
-    assert_eq!(first.stderr, b"");
-    assert_eq!(second.stderr, b"");
-}
-
-fn parse_identity_public_key(stdout: &[u8]) -> &str {
-    let text = std::str::from_utf8(stdout).expect("identity output is UTF-8");
-    let Some(public_key) = text.strip_prefix("public-key ") else {
-        panic!("identity output should start with public-key: {text}");
-    };
-    public_key.trim_end()
-}
-
-#[test]
 fn binary_node_role_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
         .args(["node", "--id", "node_7"])
@@ -730,12 +426,6 @@ fn temp_join_template_file() -> String {
         "server_id": "server_1",
         "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
-      "core_iroh": {
-        "node_id": "core_1",
-        "public_key": "core-public-key",
-        "direct_addresses": [],
-        "relay_url": null
-      },
       "ployzd": {
         "version": "0.1.0",
         "source": "/tmp/ployzd",
@@ -757,8 +447,7 @@ fn temp_join_template_file() -> String {
     }
   },
   "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed",
-    "core_iroh_ticket": "core-ticket"
+    "nats_credentials": "user-jwt-and-seed"
   }
 }
 "#,

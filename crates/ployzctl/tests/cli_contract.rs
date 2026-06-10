@@ -10,8 +10,7 @@ use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
 use ployz_core::ids::{ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
-    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinMaterial,
+    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinPloyzdArtifact, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 use ployz_core::ops::{
@@ -34,9 +33,7 @@ use ployzctl::commands::machine::{
 };
 use ployzctl::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployzctl::commands::service::{ServiceInspectOutput, ServiceListOutput};
-use ployzctl::commands::{
-    PloyzctlCliError, PloyzctlCommand, USAGE, parse_command, parse_invocation,
-};
+use ployzctl::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse_invocation};
 
 #[test]
 fn init_first_node_reports_supervised_product_roles() {
@@ -45,12 +42,11 @@ fn init_first_node_reports_supervised_product_roles() {
 
     assert_eq!(
         output,
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node\n"
     );
     assert_eq!(
         first_node_process_set(&node_id, FirstNodeGateway::Skip).roles(),
         &[
-            ployz_core::roles::DaemonProcessRole::Tunnel(ployz_core::roles::TunnelSide::Core),
             ployz_core::roles::DaemonProcessRole::Control,
             ployz_core::roles::DaemonProcessRole::Node(node_id),
         ]
@@ -89,114 +85,68 @@ fn cli_init_can_emit_keeper_first_node_install_command() {
 
     assert_eq!(command.node_id(), &node_id("node_1"));
     assert_eq!(command.gateway(), FirstNodeGateway::Install);
-    assert_eq!(
-        command.render(),
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\ninstall ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --ebpf-bytecode-version '0.1.0' --ebpf-bytecode-source '/tmp/ployz-ebpf-tc' --ebpf-bytecode-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ebpf-bytecode-install-path '/usr/local/lib/ployz/ebpf/ployz-ebpf-tc' --ebpf-ctl-version '0.1.0' --ebpf-ctl-source '/tmp/ployz-ebpf-ctl' --ebpf-ctl-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ebpf-ctl-install-path '/usr/local/bin/ployz-ebpf-ctl' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway --machine-join-template-file '/etc/ployz/machine-join-template.json'\n"
+    let rendered = command.render();
+    assert!(rendered.contains("install ployz-keeper first-node-install --spec -\n"));
+    assert!(rendered.contains(r#""node_id": "node_1""#));
+    assert!(rendered.contains(r#""gateway": "install""#));
+    assert!(
+        rendered
+            .contains(r#""machine_join_template_file": "/etc/ployz/machine-join-template.json""#)
     );
 }
 
 #[test]
 fn cli_init_can_pass_first_node_public_ip_to_keeper_install() {
-    let command = parse_command(
-        init_with_keeper_install_arg_refs()
-            .into_iter()
-            .chain(["--node-public-ip", "203.0.113.10"])
-            .map(str::to_owned),
-    )
-    .expect("init command parses");
+    let command =
+        parse_command(init_with_keeper_install_args_with_public_ip()).expect("init command parses");
 
     let PloyzctlCommand::Init(command) = command else {
         panic!("expected init command");
     };
 
-    assert!(command.render().contains("--node-public-ip '203.0.113.10'"));
+    assert!(
+        command
+            .render()
+            .contains(r#""node_public_ip": "203.0.113.10""#)
+    );
 }
 
 #[test]
 fn cli_init_requires_complete_keeper_install_inputs() {
-    assert!(matches!(
-        parse_command(
-            [
-                "init",
-                "--node",
-                "node_1",
-                "--emit-keeper-install",
-                "--ployzd-version",
-                "0.1.0"
-            ]
-            .map(str::to_owned)
-        ),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag })
-            if flag == "--ployzd-source"
-    ));
+    assert!(parse_command(["init", "--emit-keeper-install"].map(str::to_owned)).is_err());
 }
 
 #[test]
 fn cli_init_requires_explicit_keeper_install_mode() {
-    assert!(matches!(
+    let spec = write_first_node_install_spec(None);
+    assert!(
         parse_command(
             [
                 "init",
-                "--node",
-                "node_1",
-                "--ployzd-version",
-                "0.1.0"
+                "--install-spec",
+                spec.to_str().expect("spec path is utf-8"),
             ]
             .map(str::to_owned)
-        ),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag })
-            if flag == "--emit-keeper-install or --run-keeper-install"
-    ));
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn cli_init_validates_keeper_install_inputs_before_rendering() {
+    let spec = write_first_node_install_spec_with_source("relative/ployzd", None);
     assert!(matches!(
         parse_command(
             [
                 "init",
-                "--node",
-                "node_1",
                 "--emit-keeper-install",
-                "--ployzd-version",
-                "0.1.0",
-                "--ployzd-source",
-                "relative/ployzd",
-                "--ployzd-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ployzd-install-path",
-                "/usr/local/bin/ployzd",
-                "--ebpf-bytecode-version",
-                "0.1.0",
-                "--ebpf-bytecode-source",
-                "/tmp/ployz-ebpf-tc",
-                "--ebpf-bytecode-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ebpf-bytecode-install-path",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                "--ebpf-ctl-version",
-                "0.1.0",
-                "--ebpf-ctl-source",
-                "/tmp/ployz-ebpf-ctl",
-                "--ebpf-ctl-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ebpf-ctl-install-path",
-                "/usr/local/bin/ployz-ebpf-ctl",
-                "--nats-version",
-                "2.12.0",
-                "--nats-source",
-                "/tmp/nats-server",
-                "--nats-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--nats-binary",
-                "/usr/local/bin/nats-server",
-                "--nats-config",
-                "/etc/nats/nats-server.conf",
+                "--install-spec",
+                spec.to_str().expect("spec path is utf-8"),
             ]
             .map(str::to_owned)
         ),
         Err(PloyzctlCliError::InvalidValue { flag, .. })
-            if flag == "--ployzd-source"
+            if flag == "--install-spec"
     ));
 }
 
@@ -210,36 +160,29 @@ fn cli_dispatches_init_first_node() {
     };
     assert_eq!(
         command.render(),
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway\n"
     );
 }
 
 #[test]
 fn cli_rejects_init_without_node() {
-    assert!(matches!(
-        parse_command(["init"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--node"
-    ));
+    assert!(parse_command(["init"].map(str::to_owned)).is_err());
 }
 
 #[test]
 fn cli_rejects_option_like_init_node_values() {
-    assert!(matches!(
-        parse_command(["init", "--node", "--gateway"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingValue { flag }) if flag == "--node"
-    ));
-    assert!(matches!(
-        parse_command(["init", "--node", "--help"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingValue { flag }) if flag == "--node"
-    ));
+    assert!(parse_command(["init", "--node", "--gateway"].map(str::to_owned)).is_err());
+    assert!(parse_command(["init", "--node", "--help"].map(str::to_owned)).is_err());
 }
 
 #[test]
 fn cli_renders_help_for_no_args() {
-    assert_eq!(
-        parse_command(std::iter::empty::<String>()).expect("no args renders help"),
-        PloyzctlCommand::Help
-    );
+    let PloyzctlCommand::Help(help) =
+        parse_command(std::iter::empty::<String>()).expect("no args renders help")
+    else {
+        panic!("expected help command");
+    };
+    assert!(help.contains("Usage: ployzctl"));
 }
 
 #[test]
@@ -292,18 +235,12 @@ fn cli_dispatches_ops_status_request() {
 
 #[test]
 fn cli_requires_ops_status_operation_id() {
-    assert!(matches!(
-        parse_command(["ops", "status"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<operation_id>"
-    ));
+    assert!(parse_command(["ops", "status"].map(str::to_owned)).is_err());
 }
 
 #[test]
 fn cli_requires_ops_watch_operation_id() {
-    assert!(matches!(
-        parse_command(["ops", "watch"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<operation_id>"
-    ));
+    assert!(parse_command(["ops", "watch"].map(str::to_owned)).is_err());
 }
 
 #[test]
@@ -343,10 +280,7 @@ fn cli_dispatches_backup_restore_plan() {
 
 #[test]
 fn cli_requires_backup_restore_plan_flag() {
-    assert!(matches!(
-        parse_command(["backup", "restore"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "--plan"
-    ));
+    assert!(parse_command(["backup", "restore"].map(str::to_owned)).is_err());
 }
 
 #[test]
@@ -450,18 +384,12 @@ fn cli_dispatches_logs_tail_request() {
 
 #[test]
 fn cli_requires_service_inspect_service_id() {
-    assert!(matches!(
-        parse_command(["service", "inspect"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<service_id>"
-    ));
+    assert!(parse_command(["service", "inspect"].map(str::to_owned)).is_err());
 }
 
 #[test]
 fn cli_requires_machine_inspect_node_id() {
-    assert!(matches!(
-        parse_command(["machine", "inspect"].map(str::to_owned)),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag }) if flag == "<node_id>"
-    ));
+    assert!(parse_command(["machine", "inspect"].map(str::to_owned)).is_err());
 }
 
 #[test]
@@ -483,20 +411,12 @@ fn cli_parses_global_nats_url() {
 
 #[test]
 fn cli_requires_machine_add_operation_id() {
-    assert!(matches!(
-        parse_command(machine_add_args_without("--operation")),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag })
-            if flag == "--operation"
-    ));
+    assert!(parse_command(machine_add_args_without("--operation")).is_err());
 }
 
 #[test]
 fn cli_requires_machine_add_idempotency_key() {
-    assert!(matches!(
-        parse_command(machine_add_args_without("--idempotency-key")),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag })
-            if flag == "--idempotency-key"
-    ));
+    assert!(parse_command(machine_add_args_without("--idempotency-key")).is_err());
 }
 
 #[test]
@@ -509,15 +429,13 @@ fn binary_help_only_advertises_implemented_commands() {
         stdout(&output),
         stderr(&output)
     );
-    assert_eq!(stdout(&output), format!("{USAGE}\n"));
-    assert!(stdout(&output).contains("ployzctl [--nats <url>] <command>"));
+    assert!(stdout(&output).contains("Usage: ployzctl"));
     assert!(stdout(&output).contains("ployzctl init activate-first-node --node <id> [--gateway]"));
     assert!(stdout(&output).contains(
-        "ployzctl init --node <id> [--gateway] (--emit-keeper-install | --run-keeper-install)"
+        "ployzctl init (--emit-keeper-install | --run-keeper-install) --install-spec <path|->"
     ));
     assert!(stdout(&output).contains("ployzctl init join-template --cluster <name>"));
-    assert!(stdout(&output).contains("--ebpf-bytecode-install-path <path>"));
-    assert!(stdout(&output).contains("--ebpf-ctl-install-path <path>"));
+    assert!(stdout(&output).contains("--artifact-spec <path|->"));
     assert!(stdout(&output).contains(
         "ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key>"
     ));
@@ -547,7 +465,7 @@ fn binary_dispatches_init_first_node() {
     );
     assert_eq!(
         stdout(&output),
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway\n"
     );
     assert_eq!(stderr(&output), "");
 }
@@ -565,9 +483,9 @@ fn binary_init_can_print_keeper_first_node_install_command() {
         stdout(&output),
         stderr(&output)
     );
-    assert!(stdout(&output).contains("install ployz-keeper first-node-install"));
-    assert!(stdout(&output).contains("--node 'node_1'"));
-    assert!(stdout(&output).contains("--gateway"));
+    assert!(stdout(&output).contains("install ployz-keeper first-node-install --spec -"));
+    assert!(stdout(&output).contains(r#""node_id": "node_1""#));
+    assert!(stdout(&output).contains(r#""gateway": "install""#));
     assert_eq!(stderr(&output), "");
 }
 
@@ -576,11 +494,13 @@ fn binary_init_can_run_keeper_first_node_install_command() {
     let temp = temp_dir("ployzctl-fake-keeper");
     let keeper = temp.join("ployz-keeper");
     let captured_args = temp.join("keeper-args");
+    let captured_stdin = temp.join("keeper-stdin");
     fs::write(
         &keeper,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'keeper installed\\n'\n",
-            captured_args.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat > '{}'\nprintf 'keeper installed\\n'\n",
+            captured_args.display(),
+            captured_stdin.display()
         ),
     )
     .expect("fake keeper can be written");
@@ -603,8 +523,11 @@ fn binary_init_can_run_keeper_first_node_install_command() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         fs::read_to_string(captured_args).expect("fake keeper captured args"),
-        "first-node-install\n--node\nnode_1\n--ployzd-version\n0.1.0\n--ployzd-source\n/tmp/ployzd\n--ployzd-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ployzd-install-path\n/usr/local/bin/ployzd\n--ebpf-bytecode-version\n0.1.0\n--ebpf-bytecode-source\n/tmp/ployz-ebpf-tc\n--ebpf-bytecode-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ebpf-bytecode-install-path\n/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n--ebpf-ctl-version\n0.1.0\n--ebpf-ctl-source\n/tmp/ployz-ebpf-ctl\n--ebpf-ctl-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--ebpf-ctl-install-path\n/usr/local/bin/ployz-ebpf-ctl\n--nats-version\n2.12.0\n--nats-source\n/tmp/nats-server\n--nats-sha256\n0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e\n--nats-binary\n/usr/local/bin/nats-server\n--nats-config\n/etc/nats/nats-server.conf\n--gateway\n--machine-join-template-file\n/etc/ployz/machine-join-template.json\n"
+        "first-node-install\n--spec\n-\n"
     );
+    let stdin = fs::read_to_string(captured_stdin).expect("fake keeper captured stdin");
+    assert!(stdin.contains(r#""node_id":"node_1""#));
+    assert!(stdin.contains(r#""gateway":"install""#));
 }
 
 #[test]
@@ -638,100 +561,33 @@ fn binary_init_succeeds_when_keeper_output_is_truncated() {
 
 #[test]
 fn cli_init_rejects_emit_and_run_together() {
-    assert!(matches!(
+    let spec = write_first_node_install_spec(None);
+    assert!(
         parse_command(
             [
                 "init",
-                "--node",
-                "node_1",
                 "--emit-keeper-install",
                 "--run-keeper-install",
-                "--ployzd-version",
-                "0.1.0",
-                "--ployzd-source",
-                "/tmp/ployzd",
-                "--ployzd-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ployzd-install-path",
-                "/usr/local/bin/ployzd",
-                "--ebpf-bytecode-version",
-                "0.1.0",
-                "--ebpf-bytecode-source",
-                "/tmp/ployz-ebpf-tc",
-                "--ebpf-bytecode-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ebpf-bytecode-install-path",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                "--ebpf-ctl-version",
-                "0.1.0",
-                "--ebpf-ctl-source",
-                "/tmp/ployz-ebpf-ctl",
-                "--ebpf-ctl-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ebpf-ctl-install-path",
-                "/usr/local/bin/ployz-ebpf-ctl",
-                "--nats-version",
-                "2.12.0",
-                "--nats-source",
-                "/tmp/nats-server",
-                "--nats-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--nats-binary",
-                "/usr/local/bin/nats-server",
-                "--nats-config",
-                "/etc/nats/nats-server.conf",
+                "--install-spec",
+                spec.to_str().expect("spec path is utf-8"),
             ]
             .map(str::to_owned)
-        ),
-        Err(PloyzctlCliError::ConflictingArguments { first, second })
-            if first == "--emit-keeper-install" && second == "--run-keeper-install"
-    ));
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn cli_init_accepts_keeper_binary_before_run_flag() {
+    let spec = write_first_node_install_spec(None);
     let command = parse_command(
         [
             "init",
-            "--node",
-            "node_1",
             "--keeper-binary",
             "/tmp/ployz-keeper",
             "--run-keeper-install",
-            "--ployzd-version",
-            "0.1.0",
-            "--ployzd-source",
-            "/tmp/ployzd",
-            "--ployzd-sha256",
-            PLOYZ_NEWLINE_SHA256,
-            "--ployzd-install-path",
-            "/usr/local/bin/ployzd",
-            "--ebpf-bytecode-version",
-            "0.1.0",
-            "--ebpf-bytecode-source",
-            "/tmp/ployz-ebpf-tc",
-            "--ebpf-bytecode-sha256",
-            PLOYZ_NEWLINE_SHA256,
-            "--ebpf-bytecode-install-path",
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            "--ebpf-ctl-version",
-            "0.1.0",
-            "--ebpf-ctl-source",
-            "/tmp/ployz-ebpf-ctl",
-            "--ebpf-ctl-sha256",
-            PLOYZ_NEWLINE_SHA256,
-            "--ebpf-ctl-install-path",
-            "/usr/local/bin/ployz-ebpf-ctl",
-            "--nats-version",
-            "2.12.0",
-            "--nats-source",
-            "/tmp/nats-server",
-            "--nats-sha256",
-            PLOYZ_NEWLINE_SHA256,
-            "--nats-binary",
-            "/usr/local/bin/nats-server",
-            "--nats-config",
-            "/etc/nats/nats-server.conf",
+            "--install-spec",
+            spec.to_str().expect("spec path is utf-8"),
         ]
         .map(str::to_owned),
     )
@@ -745,63 +601,29 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
 
 #[test]
 fn cli_init_rejects_old_activation_flag() {
-    assert!(matches!(
-        parse_command(["init", "--node", "node_1", "--activate-first-node"].map(str::to_owned)),
-        Err(PloyzctlCliError::UnexpectedArgument { value }) if value == "--activate-first-node"
-    ));
+    assert!(
+        parse_command(["init", "--node", "node_1", "--activate-first-node"].map(str::to_owned))
+            .is_err()
+    );
 }
 
 #[test]
 fn cli_init_rejects_keeper_binary_with_emit_mode() {
-    assert!(matches!(
+    let spec = write_first_node_install_spec(None);
+    assert!(
         parse_command(
             [
                 "init",
-                "--node",
-                "node_1",
                 "--emit-keeper-install",
                 "--keeper-binary",
                 "/tmp/ployz-keeper",
-                "--ployzd-version",
-                "0.1.0",
-                "--ployzd-source",
-                "/tmp/ployzd",
-                "--ployzd-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ployzd-install-path",
-                "/usr/local/bin/ployzd",
-                "--ebpf-bytecode-version",
-                "0.1.0",
-                "--ebpf-bytecode-source",
-                "/tmp/ployz-ebpf-tc",
-                "--ebpf-bytecode-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ebpf-bytecode-install-path",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                "--ebpf-ctl-version",
-                "0.1.0",
-                "--ebpf-ctl-source",
-                "/tmp/ployz-ebpf-ctl",
-                "--ebpf-ctl-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--ebpf-ctl-install-path",
-                "/usr/local/bin/ployz-ebpf-ctl",
-                "--nats-version",
-                "2.12.0",
-                "--nats-source",
-                "/tmp/nats-server",
-                "--nats-sha256",
-                PLOYZ_NEWLINE_SHA256,
-                "--nats-binary",
-                "/usr/local/bin/nats-server",
-                "--nats-config",
-                "/etc/nats/nats-server.conf",
+                "--install-spec",
+                spec.to_str().expect("spec path is utf-8"),
             ]
             .map(str::to_owned)
-        ),
-        Err(PloyzctlCliError::MissingRequiredArgument { flag })
-            if flag == "--run-keeper-install"
-    ));
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -888,7 +710,7 @@ fn init_first_node_can_include_gateway_role() {
 
     assert_eq!(
         output,
-        "init first node node_1\nsupervise nats-server\nsupervise roles tunnel-core control node gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway\n"
     );
 }
 
@@ -1128,11 +950,6 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     assert!(output.contains("operation op_machine"));
     assert!(output.contains("node node_2"));
     assert!(output.contains("join-token join_once_123"));
-    assert!(output.contains("bootstrap-tunnel "));
-    assert!(output.contains("PLOYZ_TUNNEL_LISTEN_ADDR='127.0.0.1:7422'"));
-    assert!(output.contains("PLOYZ_TUNNEL_CORE_PUBLIC_KEY='core-public-key'"));
-    assert!(output.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='203.0.113.10:4433'"));
-    assert!(output.contains("ployzd tunnel --side edge"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:7422' sh -s -- "));
     assert!(output.contains("--join-token 'join_once_123'"));
@@ -1153,7 +970,6 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains("join-token join_once_123"));
-    assert!(output.contains("PLOYZ_TUNNEL_LISTEN_ADDR='127.0.0.1:7423'"));
     assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:7423' sh -s -- "));
     assert!(output.contains("--join-token 'join_once_123'"));
 }
@@ -1354,103 +1170,99 @@ const PLOYZ_NEWLINE_SHA256: &str =
     "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e";
 
 fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
-    init_with_keeper_install_arg_refs()
-        .into_iter()
-        .map(str::to_owned)
+    init_with_keeper_install_arg_refs().into_iter()
 }
 
-fn init_with_keeper_install_arg_refs() -> [&'static str; 41] {
-    [
-        "init",
-        "--node",
-        "node_1",
-        "--gateway",
-        "--emit-keeper-install",
-        "--ployzd-version",
-        "0.1.0",
-        "--ployzd-source",
-        "/tmp/ployzd",
-        "--ployzd-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ployzd-install-path",
-        "/usr/local/bin/ployzd",
-        "--ebpf-bytecode-version",
-        "0.1.0",
-        "--ebpf-bytecode-source",
-        "/tmp/ployz-ebpf-tc",
-        "--ebpf-bytecode-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ebpf-bytecode-install-path",
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        "--ebpf-ctl-version",
-        "0.1.0",
-        "--ebpf-ctl-source",
-        "/tmp/ployz-ebpf-ctl",
-        "--ebpf-ctl-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ebpf-ctl-install-path",
-        "/usr/local/bin/ployz-ebpf-ctl",
-        "--nats-version",
-        "2.12.0",
-        "--nats-source",
-        "/tmp/nats-server",
-        "--nats-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--nats-binary",
-        "/usr/local/bin/nats-server",
-        "--nats-config",
-        "/etc/nats/nats-server.conf",
-        "--machine-join-template-file",
-        "/etc/ployz/machine-join-template.json",
-    ]
-}
-
-fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<&str> {
+fn init_with_keeper_install_arg_refs() -> Vec<String> {
+    let spec = write_first_node_install_spec(None);
     vec![
-        "init",
-        "--node",
-        "node_1",
-        "--gateway",
-        "--run-keeper-install",
-        "--ployzd-version",
-        "0.1.0",
-        "--ployzd-source",
-        "/tmp/ployzd",
-        "--ployzd-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ployzd-install-path",
-        "/usr/local/bin/ployzd",
-        "--ebpf-bytecode-version",
-        "0.1.0",
-        "--ebpf-bytecode-source",
-        "/tmp/ployz-ebpf-tc",
-        "--ebpf-bytecode-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ebpf-bytecode-install-path",
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        "--ebpf-ctl-version",
-        "0.1.0",
-        "--ebpf-ctl-source",
-        "/tmp/ployz-ebpf-ctl",
-        "--ebpf-ctl-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ebpf-ctl-install-path",
-        "/usr/local/bin/ployz-ebpf-ctl",
-        "--nats-version",
-        "2.12.0",
-        "--nats-source",
-        "/tmp/nats-server",
-        "--nats-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--nats-binary",
-        "/usr/local/bin/nats-server",
-        "--nats-config",
-        "/etc/nats/nats-server.conf",
-        "--machine-join-template-file",
-        "/etc/ployz/machine-join-template.json",
-        "--keeper-binary",
-        keeper_binary,
+        "init".to_owned(),
+        "--emit-keeper-install".to_owned(),
+        "--install-spec".to_owned(),
+        spec.to_str().expect("spec path is utf-8").to_owned(),
     ]
+}
+
+fn init_with_keeper_install_args_with_public_ip() -> Vec<String> {
+    let spec = write_first_node_install_spec(Some("203.0.113.10"));
+    vec![
+        "init".to_owned(),
+        "--emit-keeper-install".to_owned(),
+        "--install-spec".to_owned(),
+        spec.to_str().expect("spec path is utf-8").to_owned(),
+    ]
+}
+
+fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<String> {
+    let spec = write_first_node_install_spec(None);
+    vec![
+        "init".to_owned(),
+        "--run-keeper-install".to_owned(),
+        "--install-spec".to_owned(),
+        spec.to_str().expect("spec path is utf-8").to_owned(),
+        "--keeper-binary".to_owned(),
+        keeper_binary.to_owned(),
+    ]
+}
+
+fn write_first_node_install_spec(node_public_ip: Option<&str>) -> std::path::PathBuf {
+    write_first_node_install_spec_with_source("/tmp/ployzd", node_public_ip)
+}
+
+fn write_first_node_install_spec_with_source(
+    ployzd_source: &str,
+    node_public_ip: Option<&str>,
+) -> std::path::PathBuf {
+    let temp = temp_dir("ployzctl-first-node-spec");
+    let path = temp.join("first-node-install.json");
+    fs::write(
+        &path,
+        first_node_install_spec_json(ployzd_source, node_public_ip),
+    )
+    .expect("first-node install spec can be written");
+    path
+}
+
+fn first_node_install_spec_json(ployzd_source: &str, node_public_ip: Option<&str>) -> String {
+    let node_public_ip = node_public_ip
+        .map(|value| format!(r#""{value}""#))
+        .unwrap_or_else(|| "null".to_owned());
+    format!(
+        r#"{{
+            "node_id": "node_1",
+            "gateway": "install",
+            "node_public_ip": {node_public_ip},
+            "machine_bootstrap_url": null,
+            "machine_join_template_file": "/etc/ployz/machine-join-template.json",
+            "artifacts": {{
+                "ployzd": {{
+                    "version": "0.1.0",
+                    "source": "{ployzd_source}",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/ployzd"
+                }},
+                "ebpf_bytecode": {{
+                    "version": "0.1.0",
+                    "source": "/tmp/ployz-ebpf-tc",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+                }},
+                "ebpf_ctl": {{
+                    "version": "0.1.0",
+                    "source": "/tmp/ployz-ebpf-ctl",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+                }},
+                "nats_server": {{
+                    "version": "2.12.0",
+                    "source": "/tmp/nats-server",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "binary": "/usr/local/bin/nats-server",
+                    "config": "/etc/nats/nats-server.conf"
+                }}
+            }}
+        }}"#
+    )
 }
 
 fn operation_id(value: &str) -> OperationId {
@@ -1477,16 +1289,6 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 config_sha256: digest(
                     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 ),
-            },
-            core_iroh: MachineJoinCoreIrohEndpoint {
-                node_id: node_id("core_1"),
-                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
-                    .expect("valid core public key"),
-                direct_addresses: vec![
-                    MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
-                        .expect("valid direct address"),
-                ],
-                relay_url: None,
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: version("0.1.0"),

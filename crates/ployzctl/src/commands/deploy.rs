@@ -1,9 +1,10 @@
+use clap::{ArgAction, Parser};
 use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
-use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+use crate::commands::{PloyzctlCliError, clap_error, cli_error, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedDeployCommand {
@@ -55,93 +56,63 @@ impl DetachedDeployOutput {
 }
 
 pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, PloyzctlCliError> {
-    let mut detached = false;
-    let mut operation_id = None;
-    let mut idempotency_key = None;
-    let mut service_id = None;
-    let mut revision_id = None;
-    let mut image = None;
-    let mut replicas = None;
-    let mut route_hostname = None;
-    let mut route_port = None;
-    let mut endpoint_port = None;
-    let mut args = ArgCursor::new(args);
-
-    while !args.is_empty() {
-        if args.take_flag("--detach") {
-            if detached {
-                return Err(PloyzctlCliError::DuplicateArgument { flag: "--detach" });
-            }
-            detached = true;
-            continue;
-        }
-        if let Some(value) = args.take_value("--operation")? {
-            let parsed =
-                OperationId::try_new(value).map_err(|error| invalid_value("--operation", error))?;
-            set_once(&mut operation_id, parsed, "--operation")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--idempotency-key")? {
-            let parsed = OperationIdempotencyKey::try_new(value)
-                .map_err(|error| invalid_value("--idempotency-key", error))?;
-            set_once(&mut idempotency_key, parsed, "--idempotency-key")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--service")? {
-            let parsed =
-                ServiceId::try_new(value).map_err(|error| invalid_value("--service", error))?;
-            set_once(&mut service_id, parsed, "--service")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--revision")? {
-            let parsed =
-                RevisionId::try_new(value).map_err(|error| invalid_value("--revision", error))?;
-            set_once(&mut revision_id, parsed, "--revision")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--image")? {
-            let parsed =
-                ImageReference::try_new(value).map_err(|error| invalid_value("--image", error))?;
-            set_once(&mut image, parsed, "--image")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--replicas")? {
-            let parsed = parse_replicas(value)?;
-            set_once(&mut replicas, parsed, "--replicas")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--route-hostname")? {
-            let parsed = RouteHostname::try_new(value)
-                .map_err(|error| invalid_value("--route-hostname", error))?;
-            set_once(&mut route_hostname, parsed, "--route-hostname")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--route-port")? {
-            let parsed = parse_route_port(value)?;
-            set_once(&mut route_port, parsed, "--route-port")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--endpoint-port")? {
-            let parsed = parse_port(value, "--endpoint-port")?;
-            set_once(&mut endpoint_port, parsed, "--endpoint-port")?;
-            continue;
-        }
-        return Err(args.unexpected());
-    }
-
-    if !detached {
-        return Err(PloyzctlCliError::MissingRequiredArgument { flag: "--detach" });
-    }
+    let parsed =
+        DeployCli::try_parse_from(std::iter::once("deploy".to_owned()).chain(args.iter().cloned()))
+            .map_err(clap_error)?;
 
     Ok(DetachedDeployCommand {
-        operation_id: required(operation_id, "--operation")?,
-        idempotency_key: required(idempotency_key, "--idempotency-key")?,
-        service_id: required(service_id, "--service")?,
-        revision_id: required(revision_id, "--revision")?,
-        image: required(image, "--image")?,
-        replicas: required(replicas, "--replicas")?,
-        route: parse_deploy_route(route_hostname, route_port, endpoint_port)?,
+        operation_id: OperationId::try_new(parsed.operation)
+            .map_err(|error| invalid_value("--operation", error))?,
+        idempotency_key: OperationIdempotencyKey::try_new(parsed.idempotency_key)
+            .map_err(|error| invalid_value("--idempotency-key", error))?,
+        service_id: ServiceId::try_new(parsed.service)
+            .map_err(|error| invalid_value("--service", error))?,
+        revision_id: RevisionId::try_new(parsed.revision)
+            .map_err(|error| invalid_value("--revision", error))?,
+        image: ImageReference::try_new(parsed.image)
+            .map_err(|error| invalid_value("--image", error))?,
+        replicas: parse_replicas(parsed.replicas)?,
+        route: parse_deploy_route(
+            parsed
+                .route_hostname
+                .map(RouteHostname::try_new)
+                .transpose()
+                .map_err(|error| invalid_value("--route-hostname", error))?,
+            parsed
+                .route_port
+                .map(|value| parse_port(value, "--route-port"))
+                .transpose()?,
+            parsed
+                .endpoint_port
+                .map(|value| parse_port(value, "--endpoint-port"))
+                .transpose()?,
+        )?,
     })
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "deploy")]
+struct DeployCli {
+    #[arg(long, action = ArgAction::SetTrue, required = true)]
+    detach: bool,
+    #[arg(long)]
+    operation: String,
+    #[arg(long)]
+    idempotency_key: String,
+    #[arg(long)]
+    service: String,
+    #[arg(long)]
+    revision: String,
+    #[arg(long)]
+    image: String,
+    #[arg(long)]
+    replicas: String,
+    #[arg(long, requires_all = ["route_port", "endpoint_port"])]
+    route_hostname: Option<String>,
+    #[arg(long, requires_all = ["route_hostname", "endpoint_port"])]
+    route_port: Option<String>,
+    #[arg(long, requires_all = ["route_hostname", "route_port"])]
+    endpoint_port: Option<String>,
 }
 
 fn parse_replicas(value: String) -> Result<ReplicaCount, PloyzctlCliError> {
@@ -152,10 +123,6 @@ fn parse_replicas(value: String) -> Result<ReplicaCount, PloyzctlCliError> {
             message: error.to_string(),
         })?;
     ReplicaCount::try_new(value).map_err(|error| invalid_value("--replicas", error))
-}
-
-fn parse_route_port(value: String) -> Result<RoutePort, PloyzctlCliError> {
-    parse_port(value, "--route-port")
 }
 
 fn parse_port(value: String, flag: &'static str) -> Result<RoutePort, PloyzctlCliError> {
@@ -179,21 +146,13 @@ fn parse_deploy_route(
             endpoint_port,
         })),
         (None, None, None) => Ok(None),
-        (Some(_), Some(_), None) => Err(PloyzctlCliError::MissingRequiredArgument {
-            flag: "--endpoint-port",
-        }),
-        (None, None, Some(_)) => Err(PloyzctlCliError::MissingRequiredArgument {
-            flag: "--route-hostname",
-        }),
-        (Some(_), None, Some(_)) | (Some(_), None, None) => {
-            Err(PloyzctlCliError::MissingRequiredArgument {
-                flag: "--route-port",
-            })
-        }
-        (None, Some(_), Some(_)) | (None, Some(_), None) => {
-            Err(PloyzctlCliError::MissingRequiredArgument {
-                flag: "--route-hostname",
-            })
-        }
+        (Some(_), Some(_), None)
+        | (None, None, Some(_))
+        | (Some(_), None, Some(_))
+        | (Some(_), None, None)
+        | (None, Some(_), Some(_))
+        | (None, Some(_), None) => Err(cli_error(
+            "--route-hostname, --route-port, and --endpoint-port must be provided together",
+        )),
     }
 }

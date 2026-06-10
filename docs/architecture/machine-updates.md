@@ -129,5 +129,5 @@ V1 does not include:
 - channels or `latest`,
 - cancellation,
 - automatic rollback,
-- tunnel updates,
+- transport changes,
 - changing the release source during update.

@@ -2,16 +2,23 @@
 
 use std::ffi::OsString;
 use std::fmt;
+use std::io::Read;
 use std::path::PathBuf;
 
-use ployz_core::ids::SubjectTokenError;
-use ployz_core::install::InstallContractError;
+use clap::{Parser, Subcommand};
+use ployz_core::install::{
+    AbsoluteInstallPath, FirstNodeInstallSpec, InstallArtifactSource, InstallArtifactVersion,
+    InstallSha256Digest, KeeperFirstNodeInstall,
+};
 
-use crate::artifacts::ArtifactTargetError;
-use crate::first_node_install_cli::parse_first_node_install_args;
+use crate::artifacts::{
+    ArtifactSource, ArtifactTargetError, ArtifactVersion, DataplaneArtifactTargets,
+    EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget, NatsServerArtifactTarget,
+    PloyzdArtifactTarget, Sha256Digest,
+};
 use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::steps::{FirstNodeInstallTarget, JoinToken};
-use crate::systemd::SupervisorUnitFileError;
+use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperCommand {
@@ -33,20 +40,18 @@ pub struct StartupJoinToken {
 pub fn load_command(
     args: impl IntoIterator<Item = OsString>,
 ) -> Result<KeeperCommand, KeeperCliError> {
-    let parsed = parse_keeper_args(args)?;
-    match parsed {
-        ParsedKeeperCommand::Start { join_token_file } => {
-            let join = match join_token_file {
-                Some(path) => Some(StartupJoinToken {
-                    token: read_join_token_file(&path)?,
-                    file: path,
-                }),
-                None => None,
-            };
-            Ok(KeeperCommand::Start(KeeperStartup { join }))
-        }
-        ParsedKeeperCommand::FirstNodeInstall(target) => {
-            Ok(KeeperCommand::FirstNodeInstall(target))
+    let parsed =
+        KeeperCli::try_parse_from(std::iter::once(OsString::from("ployz-keeper")).chain(args))
+            .map_err(KeeperCliError::Clap)?;
+    match parsed.command {
+        None => Ok(KeeperCommand::Start(load_startup_from_path(
+            parsed.join_token_file,
+        )?)),
+        Some(KeeperSubcommand::FirstNodeInstall { spec }) => {
+            let spec = read_first_node_install_spec(spec)?;
+            Ok(KeeperCommand::FirstNodeInstall(Box::new(
+                first_node_install_target(KeeperFirstNodeInstall::from(spec))?,
+            )))
         }
     }
 }
@@ -54,7 +59,16 @@ pub fn load_command(
 pub fn load_startup(
     args: impl IntoIterator<Item = OsString>,
 ) -> Result<KeeperStartup, KeeperCliError> {
-    let join_token_file = parse_startup_args(args)?;
+    let parsed = KeeperStartupCli::try_parse_from(
+        std::iter::once(OsString::from("ployz-keeper")).chain(args),
+    )
+    .map_err(KeeperCliError::Clap)?;
+    load_startup_from_path(parsed.join_token_file)
+}
+
+fn load_startup_from_path(
+    join_token_file: Option<PathBuf>,
+) -> Result<KeeperStartup, KeeperCliError> {
     let join = match join_token_file {
         Some(path) => Some(StartupJoinToken {
             token: read_join_token_file(&path)?,
@@ -66,86 +80,200 @@ pub fn load_startup(
     Ok(KeeperStartup { join })
 }
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "ployz-keeper",
+    disable_help_subcommand = true,
+    args_conflicts_with_subcommands = true
+)]
+struct KeeperCli {
+    #[arg(long)]
+    join_token_file: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<KeeperSubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum KeeperSubcommand {
+    FirstNodeInstall {
+        #[arg(long, value_name = "path|-")]
+        spec: SpecSource,
+    },
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "ployz-keeper", disable_help_subcommand = true)]
+struct KeeperStartupCli {
+    #[arg(long)]
+    join_token_file: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ParsedKeeperCommand {
-    Start { join_token_file: Option<PathBuf> },
-    FirstNodeInstall(Box<FirstNodeInstallTarget>),
+pub enum SpecSource {
+    Path(PathBuf),
+    Stdin,
 }
 
-fn parse_keeper_args(
-    args: impl IntoIterator<Item = OsString>,
-) -> Result<ParsedKeeperCommand, KeeperCliError> {
-    let args = args.into_iter().collect::<Vec<_>>();
-    match args.as_slice() {
-        [] => Ok(ParsedKeeperCommand::Start {
-            join_token_file: None,
-        }),
-        [flag, ..] if flag == "--join-token-file" => parse_startup_args(args)
-            .map(|join_token_file| ParsedKeeperCommand::Start { join_token_file }),
-        [flag] if flag == "--help" || flag == "-h" => Err(KeeperCliError::HelpRequested),
-        [command, rest @ ..] if command == "first-node-install" => {
-            parse_first_node_install_args(rest)
-                .map(Box::new)
-                .map(ParsedKeeperCommand::FirstNodeInstall)
+impl std::str::FromStr for SpecSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "-" {
+            return Ok(Self::Stdin);
         }
-        [unknown, ..] => Err(KeeperCliError::UnexpectedArgument {
-            value: unknown.to_string_lossy().into_owned(),
-        }),
+        if value.is_empty() {
+            return Err("spec path is empty".to_owned());
+        }
+        Ok(Self::Path(PathBuf::from(value)))
     }
 }
 
-fn parse_startup_args(
-    args: impl IntoIterator<Item = OsString>,
-) -> Result<Option<PathBuf>, KeeperCliError> {
-    let args = args.into_iter().collect::<Vec<_>>();
-    match args.as_slice() {
-        [] => Ok(None),
-        [flag, path] if flag == "--join-token-file" => Ok(Some(PathBuf::from(path))),
-        [flag, _path, extra, ..] if flag == "--join-token-file" => {
-            Err(KeeperCliError::UnexpectedArgument {
-                value: extra.to_string_lossy().into_owned(),
-            })
+fn read_first_node_install_spec(
+    source: SpecSource,
+) -> Result<FirstNodeInstallSpec, KeeperCliError> {
+    let mut bytes = String::new();
+    match &source {
+        SpecSource::Path(path) => {
+            bytes = std::fs::read_to_string(path).map_err(|error| KeeperCliError::ReadSpec {
+                source: source.clone(),
+                error,
+            })?;
         }
-        [flag] if flag == "--join-token-file" => Err(KeeperCliError::MissingJoinTokenFile),
-        [flag] if flag == "--help" || flag == "-h" => Err(KeeperCliError::HelpRequested),
-        [unknown, ..] => Err(KeeperCliError::UnexpectedArgument {
-            value: unknown.to_string_lossy().into_owned(),
-        }),
+        SpecSource::Stdin => {
+            std::io::stdin()
+                .read_to_string(&mut bytes)
+                .map_err(|error| KeeperCliError::ReadSpec {
+                    source: source.clone(),
+                    error,
+                })?;
+        }
     }
+    serde_json::from_str(&bytes).map_err(|error| KeeperCliError::ParseSpec { source, error })
+}
+
+fn first_node_install_target(
+    install: KeeperFirstNodeInstall,
+) -> Result<FirstNodeInstallTarget, KeeperCliError> {
+    let KeeperFirstNodeInstall {
+        node_id,
+        gateway,
+        node_public_ip,
+        machine_bootstrap_url,
+        machine_join_template_file,
+        ployzd_version,
+        ployzd_source,
+        ployzd_sha256,
+        ployzd_install_path,
+        ebpf_bytecode_version,
+        ebpf_bytecode_source,
+        ebpf_bytecode_sha256,
+        ebpf_bytecode_install_path,
+        ebpf_ctl_version,
+        ebpf_ctl_source,
+        ebpf_ctl_sha256,
+        ebpf_ctl_install_path,
+        nats_version,
+        nats_source,
+        nats_sha256,
+        nats_binary,
+        nats_config,
+    } = install;
+    let ployzd_artifact = PloyzdArtifactTarget::new(
+        artifact_version(&ployzd_version)?,
+        artifact_source(&ployzd_source)?,
+        sha256_digest(&ployzd_sha256)?,
+        install_path(&ployzd_install_path),
+    )?;
+    let ebpf_bytecode_artifact = EbpfBytecodeArtifactTarget::new(
+        artifact_version(&ebpf_bytecode_version)?,
+        artifact_source(&ebpf_bytecode_source)?,
+        sha256_digest(&ebpf_bytecode_sha256)?,
+        install_path(&ebpf_bytecode_install_path),
+    )?;
+    let ebpf_ctl_artifact = EbpfCtlArtifactTarget::new(
+        artifact_version(&ebpf_ctl_version)?,
+        artifact_source(&ebpf_ctl_source)?,
+        sha256_digest(&ebpf_ctl_sha256)?,
+        install_path(&ebpf_ctl_install_path),
+    )?;
+    let nats_server_artifact = NatsServerArtifactTarget::new(
+        artifact_version(&nats_version)?,
+        artifact_source(&nats_source)?,
+        sha256_digest(&nats_sha256)?,
+        install_path(&nats_binary),
+    )?;
+    let nats_server_unit = NatsServerUnitTarget::new(
+        nats_server_artifact.install_path().to_path_buf(),
+        install_path(&nats_config),
+    )?;
+
+    let mut target = FirstNodeInstallTarget::new(
+        node_id,
+        ployzd_artifact,
+        DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+        nats_server_artifact,
+        gateway,
+    )
+    .with_nats_server_unit(nats_server_unit);
+    if let Some(url) = machine_bootstrap_url {
+        target = target.with_machine_bootstrap_url(url);
+    }
+    if let Some(path) = machine_join_template_file {
+        target = target.with_machine_join_template_file(path);
+    }
+    if let Some(public_ip) = node_public_ip {
+        target = target.with_node_public_ip(public_ip);
+    }
+    Ok(target)
+}
+
+fn artifact_version(
+    value: &InstallArtifactVersion,
+) -> Result<ArtifactVersion, ArtifactTargetError> {
+    ArtifactVersion::try_new(value.as_str().to_owned())
+}
+
+fn artifact_source(value: &InstallArtifactSource) -> Result<ArtifactSource, ArtifactTargetError> {
+    ArtifactSource::try_new(value.as_str().to_owned())
+}
+
+fn sha256_digest(value: &InstallSha256Digest) -> Result<Sha256Digest, ArtifactTargetError> {
+    Sha256Digest::try_new(value.as_str().to_owned())
+}
+
+fn install_path(value: &AbsoluteInstallPath) -> PathBuf {
+    PathBuf::from(value.as_str())
 }
 
 #[derive(Debug)]
 pub enum KeeperCliError {
-    HelpRequested,
-    MissingJoinTokenFile,
-    MissingRequiredArgument { flag: &'static str },
-    MissingValue { flag: String },
-    DuplicateArgument { flag: &'static str },
-    InvalidUtf8Argument { flag: &'static str },
-    InvalidNodePublicIp { value: String },
-    UnexpectedArgument { value: String },
+    Clap(clap::Error),
+    ReadSpec {
+        source: SpecSource,
+        error: std::io::Error,
+    },
+    ParseSpec {
+        source: SpecSource,
+        error: serde_json::Error,
+    },
     JoinTokenFile(JoinTokenFileError),
-    NodeId(SubjectTokenError),
-    InstallContract(InstallContractError),
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
+}
+
+impl KeeperCliError {
+    #[must_use]
+    pub fn is_help_requested(&self) -> bool {
+        matches!(
+            self,
+            Self::Clap(error) if error.kind() == clap::error::ErrorKind::DisplayHelp
+        )
+    }
 }
 
 impl From<JoinTokenFileError> for KeeperCliError {
     fn from(value: JoinTokenFileError) -> Self {
         Self::JoinTokenFile(value)
-    }
-}
-
-impl From<SubjectTokenError> for KeeperCliError {
-    fn from(value: SubjectTokenError) -> Self {
-        Self::NodeId(value)
-    }
-}
-
-impl From<InstallContractError> for KeeperCliError {
-    fn from(value: InstallContractError) -> Self {
-        Self::InstallContract(value)
     }
 }
 
@@ -164,127 +292,79 @@ impl From<SupervisorUnitFileError> for KeeperCliError {
 impl fmt::Display for KeeperCliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HelpRequested => formatter.write_str(KEEPER_USAGE),
-            Self::MissingJoinTokenFile => {
-                formatter.write_str("--join-token-file requires a file path")
+            Self::Clap(error) => write!(formatter, "{error}"),
+            Self::ReadSpec { source, error } => {
+                write!(
+                    formatter,
+                    "failed to read first-node install spec from {source}: {error}"
+                )
             }
-            Self::MissingRequiredArgument { flag } => write!(formatter, "{flag} is required"),
-            Self::MissingValue { flag } => write!(formatter, "{flag} requires a value"),
-            Self::DuplicateArgument { flag } => write!(formatter, "{flag} was provided twice"),
-            Self::InvalidUtf8Argument { flag } => {
-                write!(formatter, "{flag} must be valid UTF-8")
-            }
-            Self::InvalidNodePublicIp { value } => {
-                write!(formatter, "--node-public-ip={value:?} is invalid")
-            }
-            Self::UnexpectedArgument { value } => {
-                write!(formatter, "unexpected keeper argument: {value}")
+            Self::ParseSpec { source, error } => {
+                write!(
+                    formatter,
+                    "failed to parse first-node install spec from {source}: {error}"
+                )
             }
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
-            Self::NodeId(error) => write!(formatter, "{error}"),
-            Self::InstallContract(error) => write!(formatter, "{error}"),
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
         }
     }
 }
 
-impl std::error::Error for KeeperCliError {}
+impl fmt::Display for SpecSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(path) => write!(formatter, "{}", path.display()),
+            Self::Stdin => formatter.write_str("stdin"),
+        }
+    }
+}
 
-pub const KEEPER_USAGE: &str = "usage: ployz-keeper [--join-token-file <path>]\n       ployz-keeper first-node-install --node <id> --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--node-public-ip <ip>] [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--gateway]";
+impl std::error::Error for KeeperCliError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        KeeperCliError, ParsedKeeperCommand, load_command, load_startup, parse_keeper_args,
-    };
+    use std::fs;
+
+    use super::{KeeperCliError, KeeperCommand, SpecSource, load_command, load_startup};
 
     #[test]
     fn parser_accepts_no_args() {
-        let command = parse_keeper_args([]).expect("no args are valid");
+        let command = load_command([]).expect("no args are valid");
 
         assert_eq!(
             command,
-            ParsedKeeperCommand::Start {
-                join_token_file: None
-            }
-        );
-    }
-
-    #[test]
-    fn parser_accepts_join_token_file() {
-        let command = parse_keeper_args(["--join-token-file".into(), "/tmp/join".into()])
-            .expect("join token file is valid");
-
-        assert_eq!(
-            command,
-            ParsedKeeperCommand::Start {
-                join_token_file: Some("/tmp/join".into())
-            }
+            KeeperCommand::Start(super::KeeperStartup { join: None })
         );
     }
 
     #[test]
     fn parser_rejects_missing_join_token_file() {
         assert!(matches!(
-            parse_keeper_args(["--join-token-file".into()]),
-            Err(KeeperCliError::MissingJoinTokenFile)
+            load_startup(["--join-token-file".into()]),
+            Err(KeeperCliError::Clap(error))
+                if error.kind() == clap::error::ErrorKind::InvalidValue
+                    || error.kind() == clap::error::ErrorKind::MissingRequiredArgument
         ));
     }
 
     #[test]
     fn parser_rejects_extra_args() {
         assert!(matches!(
-            parse_keeper_args(["--join-token-file".into(), "/tmp/join".into(), "extra".into()]),
-            Err(KeeperCliError::UnexpectedArgument { value }) if value == "extra"
+            load_startup(["--join-token-file".into(), "/tmp/join".into(), "extra".into()]),
+            Err(KeeperCliError::Clap(error))
+                if error.kind() == clap::error::ErrorKind::UnknownArgument
         ));
     }
 
     #[test]
-    fn parser_loads_first_node_install_command() {
-        let command = load_command([
-            "first-node-install".into(),
-            "--node".into(),
-            "node_1".into(),
-            "--ployzd-version".into(),
-            "0.1.0".into(),
-            "--ployzd-source".into(),
-            "/tmp/ployzd".into(),
-            "--ployzd-sha256".into(),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            "--ployzd-install-path".into(),
-            "/usr/local/bin/ployzd".into(),
-            "--ebpf-bytecode-version".into(),
-            "0.1.0".into(),
-            "--ebpf-bytecode-source".into(),
-            "/tmp/ployz-ebpf-tc".into(),
-            "--ebpf-bytecode-sha256".into(),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            "--ebpf-bytecode-install-path".into(),
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
-            "--ebpf-ctl-version".into(),
-            "0.1.0".into(),
-            "--ebpf-ctl-source".into(),
-            "/tmp/ployz-ebpf-ctl".into(),
-            "--ebpf-ctl-sha256".into(),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            "--ebpf-ctl-install-path".into(),
-            "/usr/local/bin/ployz-ebpf-ctl".into(),
-            "--nats-version".into(),
-            "2.12.0".into(),
-            "--nats-source".into(),
-            "/tmp/nats-server".into(),
-            "--nats-sha256".into(),
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            "--nats-binary".into(),
-            "/usr/local/bin/nats-server".into(),
-            "--nats-config".into(),
-            "/etc/nats/nats-server.conf".into(),
-            "--gateway".into(),
-        ])
-        .expect("first-node install command loads");
+    fn parser_loads_first_node_install_spec_command() {
+        let path = write_temp_spec();
+        let command = load_command(["first-node-install".into(), "--spec".into(), path.into()])
+            .expect("first-node install command loads");
 
-        let super::KeeperCommand::FirstNodeInstall(target) = command else {
+        let KeeperCommand::FirstNodeInstall(target) = command else {
             panic!("expected first-node install command");
         };
         assert_eq!(target.node_id.as_str(), "node_1");
@@ -292,10 +372,11 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_missing_first_node_install_required_flag() {
+    fn parser_rejects_missing_first_node_install_spec() {
         assert!(matches!(
             load_command(["first-node-install".into()]),
-            Err(KeeperCliError::MissingRequiredArgument { flag }) if flag == "--node"
+            Err(KeeperCliError::Clap(error))
+                if error.kind() == clap::error::ErrorKind::MissingRequiredArgument
         ));
     }
 
@@ -303,21 +384,59 @@ mod tests {
     fn startup_parser_rejects_first_node_install_without_subcommand_validation() {
         assert!(matches!(
             load_startup(["first-node-install".into()]),
-            Err(KeeperCliError::UnexpectedArgument { value }) if value == "first-node-install"
+            Err(KeeperCliError::Clap(error))
+                if error.kind() == clap::error::ErrorKind::UnknownArgument
         ));
     }
 
     #[test]
-    fn parser_rejects_duplicate_first_node_install_flags() {
-        assert!(matches!(
-            load_command([
-                "first-node-install".into(),
-                "--node".into(),
-                "node_1".into(),
-                "--node".into(),
-                "node_2".into(),
-            ]),
-            Err(KeeperCliError::DuplicateArgument { flag }) if flag == "--node"
-        ));
+    fn spec_source_accepts_stdin_marker() {
+        assert_eq!("-".parse::<SpecSource>(), Ok(SpecSource::Stdin));
     }
+
+    fn write_temp_spec() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "ployz-first-node-install-{}.json",
+            std::process::id()
+        ));
+        fs::write(&path, FIRST_NODE_INSTALL_SPEC).expect("write spec");
+        path
+    }
+
+    use std::path::PathBuf;
+
+    const FIRST_NODE_INSTALL_SPEC: &str = r#"{
+        "node_id": "node_1",
+        "gateway": "install",
+        "node_public_ip": null,
+        "machine_bootstrap_url": null,
+        "machine_join_template_file": null,
+        "artifacts": {
+            "ployzd": {
+                "version": "0.1.0",
+                "source": "/tmp/ployzd",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/bin/ployzd"
+            },
+            "ebpf_bytecode": {
+                "version": "0.1.0",
+                "source": "/tmp/ployz-ebpf-tc",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+            },
+            "ebpf_ctl": {
+                "version": "0.1.0",
+                "source": "/tmp/ployz-ebpf-ctl",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+            },
+            "nats_server": {
+                "version": "2.12.0",
+                "source": "/tmp/nats-server",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "binary": "/usr/local/bin/nats-server",
+                "config": "/etc/nats/nats-server.conf"
+            }
+        }
+    }"#;
 }

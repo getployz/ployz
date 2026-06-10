@@ -2,14 +2,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ployz_core::install::MachineJoinEdgeTunnel;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::joined_node_process_set;
 use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
     EbpfCtlArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
-use ployz_keeper::cli::{KeeperCliError, KeeperCommand, load_command};
+use ployz_keeper::cli::{KeeperCommand, load_command};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
@@ -66,8 +65,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Err(KeeperCliError::HelpRequested) => {
-            println!("{}", KeeperCliError::HelpRequested);
+        Err(error) if error.is_help_requested() => {
+            print!("{error}");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -346,18 +345,11 @@ fn keeper_join_target_with_public_ip(
             .to_vec(),
     )
     .map_err(|error| failure_message(&format!("invalid joined node role set: {error:?}")))?;
-    let edge_tunnel = MachineJoinEdgeTunnel::from_join_bundle(&redeemed.join_bundle);
-    let runtime_nats_client_url = NatsClientUrl::try_new(edge_tunnel.runtime_nats_url.as_str())
-        .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
+    let runtime_nats_client_url =
+        NatsClientUrl::try_new(redeemed.join_bundle.material.runtime_nats_url.as_str())
+            .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
     let mut role_environment =
-        PloyzdRoleEnvironmentTarget::default_path(node_id.clone(), runtime_nats_client_url)
-            .with_edge_tunnel(
-                edge_tunnel.listen_addr,
-                edge_tunnel.core_node,
-                edge_tunnel.core_public_key,
-                edge_tunnel.core_direct_addresses,
-                edge_tunnel.core_relay_url,
-            );
+        PloyzdRoleEnvironmentTarget::default_path(node_id.clone(), runtime_nats_client_url);
     if let Some(public_ip) = node_public_ip {
         role_environment = role_environment.with_node_public_ip(public_ip);
     }
@@ -397,11 +389,9 @@ mod tests {
     use ployz_core::ids::{NodeId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-        MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName,
-        MachineJoinCoreIrohEndpoint, MachineJoinIrohPublicKey, MachineJoinIrohTicket,
-        MachineJoinMaterial, MachineJoinNatsCredentials, MachineJoinPloyzdArtifact,
-        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
-        MachineJoinTrustedNatsServerId,
+        MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+        MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
+        MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::roles::FirstNodeGateway;
@@ -428,7 +418,7 @@ mod tests {
 
         assert_eq!(
             target.role_environment.render(),
-            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\nPLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\nPLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\nPLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\nPLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\nPLOYZ_TUNNEL_LISTEN_ADDR=127.0.0.1:7422\nPLOYZ_TUNNEL_CORE_NODE=core_1\nPLOYZ_TUNNEL_CORE_PUBLIC_KEY=core-public-key\n"
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\nPLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"
         );
     }
 
@@ -476,13 +466,6 @@ mod tests {
                     )
                     .expect("valid nats config digest"),
                 },
-                core_iroh: MachineJoinCoreIrohEndpoint {
-                    node_id: NodeId::try_new("core_1").expect("valid core node id"),
-                    public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
-                        .expect("valid core iroh public key"),
-                    direct_addresses: Vec::new(),
-                    relay_url: None,
-                },
                 ployzd: MachineJoinPloyzdArtifact {
                     version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
                     source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
@@ -525,8 +508,6 @@ mod tests {
         MachineJoinSecretDelivery {
             nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
                 .expect("valid nats credentials"),
-            core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
-                .expect("valid core iroh ticket"),
         }
     }
 }

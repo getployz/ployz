@@ -842,12 +842,6 @@ function machineJoinBundle(): MachineJoinBundle {
         config_sha256:
           "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       },
-      core_iroh: {
-        node_id: nodeId("core_1"),
-        public_key: "core-public-key",
-        direct_addresses: [],
-        relay_url: null,
-      },
       ployzd: {
         version: "0.1.0",
         source: "/tmp/ployzd",
@@ -875,7 +869,6 @@ function machineJoinArtifact(source: string, installPath: string) {
 function machineJoinSecretDelivery(): MachineJoinSecretDelivery {
   return {
     nats_credentials: "user-jwt-and-seed",
-    core_iroh_ticket: "core-ticket",
   };
 }
 

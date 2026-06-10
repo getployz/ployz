@@ -1,9 +1,10 @@
+use clap::{ArgAction, Parser};
 use ployz_core::backup::{RestoreStep, single_core_restore_contract};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{AcceptedOperation, BackupCreateRequest};
 
-use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupCreateCommand {
@@ -76,54 +77,44 @@ impl BackupRestorePlanOutput {
 pub fn parse_backup_create_command(
     args: &[String],
 ) -> Result<BackupCreateCommand, PloyzctlCliError> {
-    let mut operation_id = None;
-    let mut idempotency_key = None;
-    let mut args = ArgCursor::new(args);
-
-    while !args.is_empty() {
-        if let Some(value) = args.take_value("--operation")? {
-            let parsed =
-                OperationId::try_new(value).map_err(|error| invalid_value("--operation", error))?;
-            set_once(&mut operation_id, parsed, "--operation")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--idempotency-key")? {
-            let parsed = OperationIdempotencyKey::try_new(value)
-                .map_err(|error| invalid_value("--idempotency-key", error))?;
-            set_once(&mut idempotency_key, parsed, "--idempotency-key")?;
-            continue;
-        }
-        return Err(args.unexpected());
-    }
+    let parsed = BackupCreateCli::try_parse_from(
+        std::iter::once("backup create".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
 
     Ok(BackupCreateCommand {
-        operation_id: required(operation_id, "--operation")?,
-        idempotency_key: required(idempotency_key, "--idempotency-key")?,
+        operation_id: OperationId::try_new(parsed.operation)
+            .map_err(|error| invalid_value("--operation", error))?,
+        idempotency_key: OperationIdempotencyKey::try_new(parsed.idempotency_key)
+            .map_err(|error| invalid_value("--idempotency-key", error))?,
     })
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "backup create")]
+struct BackupCreateCli {
+    #[arg(long)]
+    operation: String,
+    #[arg(long)]
+    idempotency_key: String,
 }
 
 pub fn parse_backup_restore_command(
     args: &[String],
 ) -> Result<BackupRestorePlanCommand, PloyzctlCliError> {
-    let mut plan = false;
-    let mut args = ArgCursor::new(args);
-
-    while !args.is_empty() {
-        if args.take_flag("--plan") {
-            if plan {
-                return Err(PloyzctlCliError::DuplicateArgument { flag: "--plan" });
-            }
-            plan = true;
-            continue;
-        }
-        return Err(args.unexpected());
-    }
-
-    if !plan {
-        return Err(PloyzctlCliError::MissingRequiredArgument { flag: "--plan" });
-    }
+    BackupRestoreCli::try_parse_from(
+        std::iter::once("backup restore".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
 
     Ok(BackupRestorePlanCommand)
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "backup restore")]
+struct BackupRestoreCli {
+    #[arg(long, action = ArgAction::SetTrue, required = true)]
+    plan: bool,
 }
 
 const fn restore_step_name(step: RestoreStep) -> &'static str {

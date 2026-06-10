@@ -14,8 +14,12 @@ const FIRST_NODE_NATS_CONFIG_SHA256: &str =
 fn cli_init_can_render_machine_join_template_json() {
     let temp = temp_dir("ployzctl-join-template");
     let secret_delivery_file = write_secret_delivery_file(&temp);
-    let command = parse_command(init_join_template_args(&secret_delivery_file))
-        .expect("join template command parses");
+    let artifact_spec = write_artifact_spec_file(&temp);
+    let command = parse_command(init_join_template_args(
+        &secret_delivery_file,
+        &artifact_spec,
+    ))
+    .expect("join template command parses");
 
     let PloyzctlCommand::InitJoinTemplate(command) = command else {
         panic!("expected join template command");
@@ -30,9 +34,13 @@ fn cli_init_can_render_machine_join_template_json() {
 fn binary_init_can_print_machine_join_template_without_nats() {
     let temp = temp_dir("ployzctl-join-template-binary");
     let secret_delivery_file = write_secret_delivery_file(&temp);
+    let artifact_spec = write_artifact_spec_file(&temp);
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
-        .args(init_join_template_args(&secret_delivery_file))
+        .args(init_join_template_args(
+            &secret_delivery_file,
+            &artifact_spec,
+        ))
         .output()
         .expect("ployzctl binary runs");
 
@@ -76,36 +84,6 @@ fn assert_join_template(template: MachineJoinTemplate) {
         FIRST_NODE_NATS_CONFIG_SHA256
     );
     assert_eq!(
-        template.join_bundle.material.core_iroh.node_id.as_str(),
-        "core_1"
-    );
-    assert_eq!(
-        template.join_bundle.material.core_iroh.public_key.as_str(),
-        "acceptance-core"
-    );
-    assert_eq!(
-        template
-            .join_bundle
-            .material
-            .core_iroh
-            .direct_addresses
-            .iter()
-            .map(|address| address.as_str())
-            .collect::<Vec<_>>(),
-        vec!["203.0.113.10:4433"]
-    );
-    assert_eq!(
-        template
-            .join_bundle
-            .material
-            .core_iroh
-            .relay_url
-            .as_ref()
-            .expect("relay url is configured")
-            .as_str(),
-        "https://relay.example.test"
-    );
-    assert_eq!(
         template.join_bundle.material.ployzd.install_path.as_str(),
         "/usr/local/bin/ployzd"
     );
@@ -126,13 +104,9 @@ fn assert_join_template(template: MachineJoinTemplate) {
         template.secret_delivery.nats_credentials.secret(),
         "acceptance-node-creds"
     );
-    assert_eq!(
-        template.secret_delivery.core_iroh_ticket.secret(),
-        "acceptance-core-ticket"
-    );
 }
 
-fn init_join_template_args(secret_delivery_file: &Path) -> Vec<String> {
+fn init_join_template_args(secret_delivery_file: &Path, artifact_spec: &Path) -> Vec<String> {
     [
         "init",
         "join-template",
@@ -142,36 +116,10 @@ fn init_join_template_args(secret_delivery_file: &Path) -> Vec<String> {
         "nats://127.0.0.1:7422",
         "--trusted-first-node",
         "core_1",
-        "--core-iroh-public-key",
-        "acceptance-core",
-        "--core-iroh-direct-address",
-        "203.0.113.10:4433",
-        "--core-iroh-relay-url",
-        "https://relay.example.test",
-        "--ployzd-version",
-        "acceptance",
-        "--ployzd-source",
-        "/tmp/ployzd",
-        "--ployzd-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ployzd-install-path",
-        "/usr/local/bin/ployzd",
-        "--ebpf-bytecode-version",
-        "acceptance",
-        "--ebpf-bytecode-source",
-        "/tmp/ployz-ebpf-tc",
-        "--ebpf-bytecode-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ebpf-bytecode-install-path",
-        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        "--ebpf-ctl-version",
-        "acceptance",
-        "--ebpf-ctl-source",
-        "/tmp/ployz-ebpf-ctl",
-        "--ebpf-ctl-sha256",
-        PLOYZ_NEWLINE_SHA256,
-        "--ebpf-ctl-install-path",
-        "/usr/local/bin/ployz-ebpf-ctl",
+        "--artifact-spec",
+        artifact_spec
+            .to_str()
+            .expect("artifact spec fixture path is utf-8"),
         "--secret-delivery-file",
     ]
     .into_iter()
@@ -185,11 +133,39 @@ fn init_join_template_args(secret_delivery_file: &Path) -> Vec<String> {
 
 fn write_secret_delivery_file(dir: &Path) -> PathBuf {
     let path = dir.join("secret-delivery.json");
+    fs::write(&path, r#"{"nats_credentials":"acceptance-node-creds"}"#)
+        .expect("secret delivery fixture can be written");
+    path
+}
+
+fn write_artifact_spec_file(dir: &Path) -> PathBuf {
+    let path = dir.join("artifact-spec.json");
     fs::write(
         &path,
-        r#"{"nats_credentials":"acceptance-node-creds","core_iroh_ticket":"acceptance-core-ticket"}"#,
+        format!(
+            r#"{{
+                "ployzd": {{
+                    "version": "acceptance",
+                    "source": "/tmp/ployzd",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/ployzd"
+                }},
+                "ebpf_bytecode": {{
+                    "version": "acceptance",
+                    "source": "/tmp/ployz-ebpf-tc",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+                }},
+                "ebpf_ctl": {{
+                    "version": "acceptance",
+                    "source": "/tmp/ployz-ebpf-ctl",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+                }}
+            }}"#
+        ),
     )
-    .expect("secret delivery fixture can be written");
+    .expect("artifact spec fixture can be written");
     path
 }
 

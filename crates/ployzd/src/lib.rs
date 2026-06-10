@@ -4,8 +4,7 @@
 //!
 //! The daemon owns lifecycle, configuration, service registration,
 //! controllers, node-local services, and runtime adapters. Product policy stays
-//! in `ployz-core`; NATS mechanics stay in `ployz-nats`; iroh byte transport
-//! stays in `ployz-transport`.
+//! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
 
 pub mod api_runtime;
 pub mod app;
@@ -25,7 +24,6 @@ pub mod gateway_http;
 pub mod gateway_process_runtime;
 pub mod gateway_runtime;
 pub mod gateway_source;
-pub mod iroh_tunnel;
 pub mod nats_process;
 pub mod node_agent;
 pub mod node_process_runtime;

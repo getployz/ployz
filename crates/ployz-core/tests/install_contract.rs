@@ -1,70 +1,107 @@
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
-    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinEdgeTunnel,
-    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
-    MachineJoinIrohTicket, MachineJoinMaterial, MachineJoinNatsCredentials,
+    AbsoluteInstallPath, FirstNodeInstallSpec, InstallArtifactSource, InstallArtifactVersion,
+    InstallSha256Digest, KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinArtifact,
+    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinNatsCredentials,
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
     MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 use ployz_core::roles::FirstNodeGateway;
 
 #[test]
-fn keeper_first_node_install_renders_shell_command() {
-    let install = keeper_install(FirstNodeGateway::Install);
-
-    assert_eq!(
-        install.render_command(),
-        "ployz-keeper first-node-install --node 'node_1' --ployzd-version '0.1.0' --ployzd-source '/tmp/ployzd' --ployzd-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ployzd-install-path '/usr/local/bin/ployzd' --ebpf-bytecode-version '0.1.0' --ebpf-bytecode-source '/tmp/ployz-ebpf-tc' --ebpf-bytecode-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ebpf-bytecode-install-path '/usr/local/lib/ployz/ebpf/ployz-ebpf-tc' --ebpf-ctl-version '0.1.0' --ebpf-ctl-source '/tmp/ployz-ebpf-ctl' --ebpf-ctl-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --ebpf-ctl-install-path '/usr/local/bin/ployz-ebpf-ctl' --nats-version '2.12.0' --nats-source '/tmp/nats-server' --nats-sha256 '0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e' --nats-binary '/usr/local/bin/nats-server' --nats-config '/etc/nats/nats-server.conf' --gateway"
-    );
-}
-
-#[test]
-fn keeper_first_node_install_omits_gateway_when_skipped() {
-    let install = keeper_install(FirstNodeGateway::Skip);
-
-    assert!(!install.render_command().contains(" --gateway"));
-}
-
-#[test]
-fn keeper_first_node_install_can_carry_machine_bootstrap_url() {
-    let mut install = keeper_install(FirstNodeGateway::Skip);
+fn first_node_install_spec_wire_shape_is_grouped_json() {
+    let mut install = keeper_install(FirstNodeGateway::Install);
     install.machine_bootstrap_url = Some(
         MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
     );
-
-    assert!(
-        install
-            .render_command()
-            .contains("--machine-bootstrap-url 'https://example.test/ployz.sh'")
-    );
-}
-
-#[test]
-fn keeper_first_node_install_can_carry_machine_join_template_file() {
-    let mut install = keeper_install(FirstNodeGateway::Skip);
     install.machine_join_template_file = Some(
         AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
             .expect("valid template file path"),
     );
+    install.node_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
 
-    assert!(
-        install
-            .render_command()
-            .contains("--machine-join-template-file '/etc/ployz/machine-join-template.json'")
+    let value = serde_json::to_value(FirstNodeInstallSpec::from(install)).expect("spec serializes");
+
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "node_id": "node_1",
+            "gateway": "install",
+            "node_public_ip": "203.0.113.10",
+            "machine_bootstrap_url": "https://example.test/ployz.sh",
+            "machine_join_template_file": "/etc/ployz/machine-join-template.json",
+            "artifacts": {
+                "ployzd": {
+                    "version": "0.1.0",
+                    "source": "/tmp/ployzd",
+                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                    "install_path": "/usr/local/bin/ployzd"
+                },
+                "ebpf_bytecode": {
+                    "version": "0.1.0",
+                    "source": "/tmp/ployz-ebpf-tc",
+                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                    "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+                },
+                "ebpf_ctl": {
+                    "version": "0.1.0",
+                    "source": "/tmp/ployz-ebpf-ctl",
+                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                    "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+                },
+                "nats_server": {
+                    "version": "2.12.0",
+                    "source": "/tmp/nats-server",
+                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                    "binary": "/usr/local/bin/nats-server",
+                    "config": "/etc/nats/nats-server.conf"
+                }
+            }
+        })
     );
 }
 
 #[test]
-fn keeper_first_node_install_can_carry_node_public_ip() {
-    let mut install = keeper_install(FirstNodeGateway::Skip);
-    install.node_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
+fn first_node_install_spec_converts_to_install_contract() {
+    let spec = serde_json::from_value::<FirstNodeInstallSpec>(serde_json::json!({
+        "node_id": "node_1",
+        "gateway": "skip",
+        "node_public_ip": null,
+        "machine_bootstrap_url": null,
+        "machine_join_template_file": null,
+        "artifacts": {
+            "ployzd": {
+                "version": "0.1.0",
+                "source": "/tmp/ployzd",
+                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                "install_path": "/usr/local/bin/ployzd"
+            },
+            "ebpf_bytecode": {
+                "version": "0.1.0",
+                "source": "/tmp/ployz-ebpf-tc",
+                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+            },
+            "ebpf_ctl": {
+                "version": "0.1.0",
+                "source": "/tmp/ployz-ebpf-ctl",
+                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+            },
+            "nats_server": {
+                "version": "2.12.0",
+                "source": "/tmp/nats-server",
+                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                "binary": "/usr/local/bin/nats-server",
+                "config": "/etc/nats/nats-server.conf"
+            }
+        }
+    }))
+    .expect("spec parses");
 
-    assert!(
-        install
-            .render_command()
-            .contains("--node-public-ip '203.0.113.10'")
+    assert_eq!(
+        KeeperFirstNodeInstall::from(spec),
+        keeper_install(FirstNodeGateway::Skip)
     );
 }
 
@@ -79,26 +116,18 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinRuntimeNatsUrl::try_new("").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("http://127.0.0.1:7422").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422\n").is_err());
-    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://localhost:7422").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://localhost:7422").is_ok());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422").is_ok());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test:4222").is_ok());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").is_ok());
     assert!(MachineJoinNatsCredentials::try_new("").is_err());
     assert!(MachineJoinNatsCredentials::try_new("creds\0bad").is_err());
     assert!(MachineJoinNatsCredentials::try_new("user-jwt-and-seed").is_ok());
     assert!(MachineJoinTrustedNatsServerId::try_new("").is_err());
     assert!(MachineJoinTrustedNatsServerId::try_new("server one").is_err());
     assert!(MachineJoinTrustedNatsServerId::try_new("server_1").is_ok());
-    assert!(MachineJoinIrohPublicKey::try_new("").is_err());
-    assert!(MachineJoinIrohPublicKey::try_new("key one").is_err());
-    assert!(MachineJoinIrohPublicKey::try_new("core-public-key").is_ok());
-    assert!(MachineJoinIrohDirectAddress::try_new("").is_err());
-    assert!(MachineJoinIrohDirectAddress::try_new("not-a-socket").is_err());
-    assert!(MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433").is_ok());
-    assert!(MachineJoinIrohRelayUrl::try_new("").is_err());
-    assert!(MachineJoinIrohRelayUrl::try_new("http://relay.example.test").is_err());
-    assert!(MachineJoinIrohRelayUrl::try_new("https://relay.example.test").is_ok());
-    assert!(MachineJoinIrohTicket::try_new("").is_err());
-    assert!(MachineJoinIrohTicket::try_new("ticket one").is_err());
-    assert!(MachineJoinIrohTicket::try_new("iroh-ticket").is_ok());
     assert!(InstallArtifactVersion::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
@@ -114,43 +143,6 @@ fn keeper_install_contract_validates_artifact_inputs() {
 }
 
 #[test]
-fn machine_join_edge_tunnel_is_derived_from_join_bundle() {
-    let mut join_bundle = machine_join_bundle();
-    join_bundle.material.runtime_nats_url =
-        MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7423")
-            .expect("valid runtime nats url");
-    join_bundle.material.core_iroh.direct_addresses = vec![
-        MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433").expect("valid direct address"),
-        MachineJoinIrohDirectAddress::try_new("203.0.113.11:4433").expect("valid direct address"),
-    ];
-    join_bundle.material.core_iroh.relay_url = Some(
-        MachineJoinIrohRelayUrl::try_new("https://relay.example.test").expect("valid relay url"),
-    );
-
-    let tunnel = MachineJoinEdgeTunnel::from_join_bundle(&join_bundle);
-
-    assert_eq!(tunnel.runtime_nats_url.as_str(), "nats://127.0.0.1:7423");
-    assert_eq!(tunnel.listen_addr.to_string(), "127.0.0.1:7423");
-    assert_eq!(tunnel.core_node.as_str(), "core_1");
-    assert_eq!(tunnel.core_public_key.as_str(), "core-public-key");
-    assert_eq!(
-        tunnel
-            .core_direct_addresses
-            .iter()
-            .map(MachineJoinIrohDirectAddress::as_str)
-            .collect::<Vec<_>>(),
-        vec!["203.0.113.10:4433", "203.0.113.11:4433"]
-    );
-    assert_eq!(
-        tunnel
-            .core_relay_url
-            .as_ref()
-            .map(MachineJoinIrohRelayUrl::as_str),
-        Some("https://relay.example.test")
-    );
-}
-
-#[test]
 fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
     let value = serde_json::json!({
         "material": {
@@ -159,12 +151,6 @@ fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
             "trusted_nats": {
                 "server_id": "server_1",
                 "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            },
-            "core_iroh": {
-                "node_id": "core_1",
-                "public_key": "core-public-key",
-            "direct_addresses": [],
-            "relay_url": null
             },
             "ployzd": {
                 "version": "0.1.0",
@@ -191,12 +177,6 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 "trusted_nats": {
                     "server_id": "server_1",
                     "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                },
-                "core_iroh": {
-                    "node_id": "core_1",
-                    "public_key": "core-public-key",
-                "direct_addresses": [],
-                "relay_url": null
                 },
                 "ployzd": {
                     "version": "0.1.0",
@@ -226,7 +206,6 @@ fn machine_join_bundle_debug_redacts_secrets() {
     let rendered = format!("{:?}", machine_join_secret_delivery());
 
     assert!(!rendered.contains("user-jwt-and-seed"));
-    assert!(!rendered.contains("core-ticket"));
 }
 
 fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
@@ -291,13 +270,6 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid nats config digest"),
             },
-            core_iroh: MachineJoinCoreIrohEndpoint {
-                node_id: NodeId::try_new("core_1").expect("valid core node id"),
-                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
-                    .expect("valid core iroh public key"),
-                direct_addresses: Vec::new(),
-                relay_url: None,
-            },
             ployzd: MachineJoinPloyzdArtifact {
                 version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
                 source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
@@ -339,7 +311,5 @@ fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
         nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
             .expect("valid nats credentials"),
-        core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
-            .expect("valid core iroh ticket"),
     }
 }

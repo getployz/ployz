@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
-use ployz_core::roles::{DaemonProcessRole, TunnelSide};
+use ployz_core::roles::DaemonProcessRole;
 use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest,
 };
@@ -58,12 +58,8 @@ fn role_environment_file_requires_plain_systemd_token_path() {
 #[test]
 fn role_units_render_the_supervised_ployzd_commands() {
     let node = DaemonProcessRole::Node(node_id("node_7"));
-    let tunnel = DaemonProcessRole::Tunnel(TunnelSide::Edge);
 
     assert_eq!(role_unit_name(&node), "ployzd-node-node_7.service");
-    assert_eq!(node.command_args(), ["node", "--id", "node_7"]);
-    assert_eq!(role_unit_name(&tunnel), "ployzd-tunnel-edge.service");
-    assert_eq!(tunnel.command_args(), ["tunnel", "--side", "edge"]);
 
     let node_unit =
         PloyzdRoleUnit::new(node, &ployzd_artifact(), &role_env()).expect("node unit is valid");
@@ -71,14 +67,6 @@ fn role_units_render_the_supervised_ployzd_commands() {
     assert_eq!(
         node_unit.render(),
         "[Unit]\nDescription=Ployz node\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd node --id node_7\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
-    );
-
-    let tunnel_unit =
-        PloyzdRoleUnit::new(tunnel, &ployzd_artifact(), &role_env()).expect("tunnel unit is valid");
-    assert_eq!(tunnel_unit.unit_name(), "ployzd-tunnel-edge.service");
-    assert_eq!(
-        tunnel_unit.render(),
-        "[Unit]\nDescription=Ployz tunnel-edge\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd tunnel --side edge\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 

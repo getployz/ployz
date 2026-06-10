@@ -265,12 +265,6 @@ fn machine_join_template() -> MachineJoinTemplate {
         "server_id": "server_1",
         "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
-      "core_iroh": {
-        "node_id": "core_1",
-        "public_key": "core-public-key",
-        "direct_addresses": [],
-        "relay_url": null
-      },
       "ployzd": {
         "version": "0.1.0",
         "source": "/tmp/ployzd",
@@ -292,8 +286,7 @@ fn machine_join_template() -> MachineJoinTemplate {
     }
   },
   "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed",
-    "core_iroh_ticket": "core-ticket"
+    "nats_credentials": "user-jwt-and-seed"
   }
 }
 "#,

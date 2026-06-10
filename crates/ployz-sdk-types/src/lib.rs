@@ -39,11 +39,9 @@ pub use ployz_core::ids::{
 pub use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
-    MachineJoinClusterName, MachineJoinCoreIrohEndpoint, MachineJoinIrohDirectAddress,
-    MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl, MachineJoinIrohTicket, MachineJoinMaterial,
-    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
-    MachineJoinTrustedNatsServerId,
+    MachineJoinClusterName, MachineJoinMaterial, MachineJoinNatsCredentials,
+    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
+    MachineJoinTemplate, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,

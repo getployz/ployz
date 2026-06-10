@@ -850,7 +850,7 @@ fn backup_completion_before_manifest_write_is_rejected() {
 
 fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
     MachineReadinessEvidence {
-        nats_tunnel: MachineReadinessCheck::Confirmed,
+        nats_connection: MachineReadinessCheck::Confirmed,
         heartbeat: MachineReadinessCheck::Missing {
             reason: FailureMessage::try_new("heartbeat missing").expect("valid failure message"),
         },

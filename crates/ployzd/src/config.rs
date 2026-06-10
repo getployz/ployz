@@ -7,13 +7,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{fmt, fs};
 
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
-use ployz_transport::iroh_endpoint::IrohEndpoint;
 use std::time::Duration;
 
 use crate::controllers::MachineAddBootstrapConfig;
-use crate::iroh_tunnel::PreparedTunnelService;
 use crate::nats_process::NatsServerRuntime;
-use crate::role::{DaemonProcessRole, TunnelSide};
+use crate::role::DaemonProcessRole;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
@@ -32,18 +30,6 @@ pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "br-ployz";
 pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
 pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
 pub const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
-pub const PLOYZ_TUNNEL_NATS_ADDR_ENV: &str = "PLOYZ_TUNNEL_NATS_ADDR";
-pub const PLOYZ_TUNNEL_LISTEN_ADDR_ENV: &str = "PLOYZ_TUNNEL_LISTEN_ADDR";
-pub const PLOYZ_TUNNEL_CORE_NODE_ENV: &str = "PLOYZ_TUNNEL_CORE_NODE";
-pub const PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV: &str = "PLOYZ_TUNNEL_CORE_PUBLIC_KEY";
-pub const PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV: &str = "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS";
-pub const PLOYZ_TUNNEL_CORE_RELAY_URL_ENV: &str = "PLOYZ_TUNNEL_CORE_RELAY_URL";
-pub const PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV: &str = "PLOYZ_TUNNEL_IROH_BIND_ADDR";
-pub const PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_SECRET_KEY_FILE";
-pub const PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_PUBLIC_KEY_FILE";
-pub const DEFAULT_TUNNEL_SECRET_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.key";
-pub const DEFAULT_TUNNEL_PUBLIC_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.public";
-pub const DEFAULT_CORE_TUNNEL_IROH_PORT: u16 = 4433;
 pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +38,6 @@ pub enum DaemonProcessConfig {
     Node(NodeProcessConfig),
     Gateway(GatewayProcessConfig),
     Dns(DnsProcessConfig),
-    Tunnel(TunnelProcessConfig),
 }
 
 impl DaemonProcessConfig {
@@ -63,7 +48,6 @@ impl DaemonProcessConfig {
             Self::Node(config) => DaemonProcessRole::Node(config.node_id.clone()),
             Self::Gateway(_) => DaemonProcessRole::Gateway,
             Self::Dns(_) => DaemonProcessRole::Dns,
-            Self::Tunnel(config) => DaemonProcessRole::Tunnel(config.side()),
         }
     }
 }
@@ -117,9 +101,6 @@ pub fn load_daemon_process_config(
                 node_id, nats_url,
             )))
         }
-        DaemonProcessRole::Tunnel(side) => Ok(DaemonProcessConfig::Tunnel(load_tunnel_config(
-            *side, &env,
-        )?)),
     }
 }
 
@@ -271,172 +252,6 @@ fn load_gateway_listen_addr(
         .map_err(|source| DaemonProcessConfigError::InvalidGatewayListenAddr { value, source })
 }
 
-fn load_tunnel_config(
-    side: TunnelSide,
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<TunnelProcessConfig, DaemonProcessConfigError> {
-    let service = match side {
-        TunnelSide::Core => {
-            let nats_socket = load_tunnel_socket(side, PLOYZ_TUNNEL_NATS_ADDR_ENV, env)?;
-            PreparedTunnelService::core("ployzd-tunnel-core", nats_socket)
-        }
-        TunnelSide::Edge => {
-            let local_listen = load_tunnel_socket(side, PLOYZ_TUNNEL_LISTEN_ADDR_ENV, env)?;
-            if !local_listen.ip().is_loopback() {
-                return Err(DaemonProcessConfigError::NonLoopbackTunnelListenAddr {
-                    side,
-                    value: local_listen,
-                });
-            }
-            let core_node = load_tunnel_core_node(env)?;
-            let public_key =
-                load_required_tunnel_value(side, PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, env)?;
-            if !is_valid_tunnel_public_key(&public_key) {
-                return Err(DaemonProcessConfigError::InvalidTunnelValue {
-                    side,
-                    env: PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV,
-                    value: public_key,
-                });
-            }
-            let mut endpoint = IrohEndpoint::new(core_node, public_key);
-            for address in load_tunnel_core_direct_addresses(env)? {
-                endpoint = endpoint.with_direct_address(address);
-            }
-            if let Some(relay_url) = load_tunnel_core_relay_url(env)? {
-                endpoint = endpoint.with_relay_url(relay_url);
-            }
-            PreparedTunnelService::edge("ployzd-tunnel-edge", local_listen, endpoint)
-        }
-    };
-
-    Ok(TunnelProcessConfig::new(service)
-        .with_iroh_bind_addr(load_tunnel_iroh_bind_addr(side, env)?)
-        .with_identity_files(
-            load_tunnel_identity_file(env, PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV),
-            load_tunnel_identity_file(env, PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV),
-        ))
-}
-
-fn load_tunnel_core_direct_addresses(
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<Vec<SocketAddr>, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV).filter(|value| !value.is_empty())
-    else {
-        return Ok(Vec::new());
-    };
-
-    value
-        .split(',')
-        .map(|raw| {
-            raw.parse::<SocketAddr>().map_err(|source| {
-                DaemonProcessConfigError::InvalidTunnelDirectAddress {
-                    value: raw.to_owned(),
-                    source,
-                }
-            })
-        })
-        .collect()
-}
-
-fn load_tunnel_core_relay_url(
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<Option<String>, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_TUNNEL_CORE_RELAY_URL_ENV).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    if !value.starts_with("https://")
-        || value
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control())
-    {
-        return Err(DaemonProcessConfigError::InvalidTunnelRelayUrl { value });
-    }
-    Ok(Some(value))
-}
-
-fn load_tunnel_socket(
-    side: TunnelSide,
-    env_name: &'static str,
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<SocketAddr, DaemonProcessConfigError> {
-    let value = load_required_tunnel_value(side, env_name, env)?;
-    value
-        .parse()
-        .map_err(|source| DaemonProcessConfigError::InvalidTunnelSocket {
-            side,
-            env: env_name,
-            value,
-            source,
-        })
-}
-
-fn load_tunnel_iroh_bind_addr(
-    side: TunnelSide,
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<SocketAddr, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV).filter(|value| !value.is_empty()) else {
-        return Ok(default_tunnel_iroh_bind_addr(side));
-    };
-    value
-        .parse()
-        .map_err(|source| DaemonProcessConfigError::InvalidTunnelSocket {
-            side,
-            env: PLOYZ_TUNNEL_IROH_BIND_ADDR_ENV,
-            value,
-            source,
-        })
-}
-
-fn default_tunnel_iroh_bind_addr(side: TunnelSide) -> SocketAddr {
-    match side {
-        TunnelSide::Core => SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            DEFAULT_CORE_TUNNEL_IROH_PORT,
-        ),
-        TunnelSide::Edge => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-    }
-}
-
-fn load_tunnel_identity_file(
-    env: &impl Fn(&str) -> Option<String>,
-    name: &'static str,
-) -> Option<std::path::PathBuf> {
-    env(name)
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| match name {
-            PLOYZ_TUNNEL_SECRET_KEY_FILE_ENV => Some(DEFAULT_TUNNEL_SECRET_KEY_FILE.into()),
-            PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV => Some(DEFAULT_TUNNEL_PUBLIC_KEY_FILE.into()),
-            _ => None,
-        })
-}
-
-fn load_tunnel_core_node(
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<NodeId, DaemonProcessConfigError> {
-    let value = load_required_tunnel_value(TunnelSide::Edge, PLOYZ_TUNNEL_CORE_NODE_ENV, env)?;
-    NodeId::try_new(value.clone())
-        .map_err(|_| DaemonProcessConfigError::InvalidTunnelCoreNode { value })
-}
-
-fn load_required_tunnel_value(
-    side: TunnelSide,
-    env_name: &'static str,
-    env: &impl Fn(&str) -> Option<String>,
-) -> Result<String, DaemonProcessConfigError> {
-    let Some(value) = env(env_name).filter(|value| !value.is_empty()) else {
-        return Err(DaemonProcessConfigError::MissingTunnelConfig {
-            side,
-            env: env_name,
-        });
-    };
-    Ok(value)
-}
-
-fn is_valid_tunnel_public_key(value: &str) -> bool {
-    !value.chars().any(char::is_control) && !value.chars().any(char::is_whitespace)
-}
-
 fn default_machine_bootstrap_url() -> MachineBootstrapUrl {
     MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
         .expect("default machine bootstrap URL is valid")
@@ -485,35 +300,6 @@ pub enum DaemonProcessConfigError {
     InvalidGatewayListenAddr {
         value: String,
         source: std::net::AddrParseError,
-    },
-    MissingTunnelConfig {
-        side: TunnelSide,
-        env: &'static str,
-    },
-    InvalidTunnelSocket {
-        side: TunnelSide,
-        env: &'static str,
-        value: String,
-        source: std::net::AddrParseError,
-    },
-    NonLoopbackTunnelListenAddr {
-        side: TunnelSide,
-        value: SocketAddr,
-    },
-    InvalidTunnelCoreNode {
-        value: String,
-    },
-    InvalidTunnelDirectAddress {
-        value: String,
-        source: std::net::AddrParseError,
-    },
-    InvalidTunnelRelayUrl {
-        value: String,
-    },
-    InvalidTunnelValue {
-        side: TunnelSide,
-        env: &'static str,
-        value: String,
     },
 }
 
@@ -579,44 +365,6 @@ impl fmt::Display for DaemonProcessConfigError {
                 formatter,
                 "{}={value:?} is invalid",
                 PLOYZ_GATEWAY_LISTEN_ADDR_ENV
-            ),
-            Self::MissingTunnelConfig { side, env } => write!(
-                formatter,
-                "{env} is required for ployzd tunnel {}",
-                side.as_str()
-            ),
-            Self::InvalidTunnelSocket {
-                side, env, value, ..
-            } => write!(
-                formatter,
-                "{env}={value:?} is invalid for ployzd tunnel {}",
-                side.as_str()
-            ),
-            Self::NonLoopbackTunnelListenAddr { side, value } => write!(
-                formatter,
-                "{}={value} must be loopback for ployzd tunnel {}",
-                PLOYZ_TUNNEL_LISTEN_ADDR_ENV,
-                side.as_str()
-            ),
-            Self::InvalidTunnelCoreNode { value } => write!(
-                formatter,
-                "{}={value:?} is invalid",
-                PLOYZ_TUNNEL_CORE_NODE_ENV
-            ),
-            Self::InvalidTunnelDirectAddress { value, .. } => write!(
-                formatter,
-                "{}={value:?} is invalid",
-                PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV
-            ),
-            Self::InvalidTunnelRelayUrl { value } => write!(
-                formatter,
-                "{}={value:?} must be an HTTPS URL without whitespace",
-                PLOYZ_TUNNEL_CORE_RELAY_URL_ENV
-            ),
-            Self::InvalidTunnelValue { side, env, value } => write!(
-                formatter,
-                "{env}={value:?} is invalid for ployzd tunnel {}",
-                side.as_str()
             ),
         }
     }
@@ -772,48 +520,5 @@ impl DnsProcessConfig {
     #[must_use]
     pub fn new(node_id: NodeId, nats_url: NatsClientUrl) -> Self {
         Self { node_id, nats_url }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TunnelProcessConfig {
-    pub service: PreparedTunnelService,
-    pub iroh_bind_addr: SocketAddr,
-    pub secret_key_file: Option<std::path::PathBuf>,
-    pub public_key_file: Option<std::path::PathBuf>,
-}
-
-impl TunnelProcessConfig {
-    #[must_use]
-    pub fn new(service: PreparedTunnelService) -> Self {
-        let iroh_bind_addr = default_tunnel_iroh_bind_addr(service.side());
-        Self {
-            service,
-            iroh_bind_addr,
-            secret_key_file: None,
-            public_key_file: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_iroh_bind_addr(mut self, iroh_bind_addr: SocketAddr) -> Self {
-        self.iroh_bind_addr = iroh_bind_addr;
-        self
-    }
-
-    #[must_use]
-    pub fn with_identity_files(
-        mut self,
-        secret_key_file: Option<std::path::PathBuf>,
-        public_key_file: Option<std::path::PathBuf>,
-    ) -> Self {
-        self.secret_key_file = secret_key_file;
-        self.public_key_file = public_key_file;
-        self
-    }
-
-    #[must_use]
-    pub const fn side(&self) -> TunnelSide {
-        self.service.side()
     }
 }

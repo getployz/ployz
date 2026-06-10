@@ -1,12 +1,11 @@
+use clap::Parser;
 use ployz_core::ids::NodeId;
-use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    KeeperFirstNodeInstall, MachineBootstrapUrl,
-};
+use ployz_core::install::{FirstNodeInstallSpec, KeeperFirstNodeInstall};
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
-use std::net::IpAddr;
+use std::fs;
+use std::io::Read;
 
-use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+use crate::commands::{PloyzctlCliError, clap_error, cli_error, invalid_value};
 use ployz_sdk_types::{InitFirstNodeActivateRequest, MachineAddGateway};
 
 pub mod join_template;
@@ -177,8 +176,11 @@ impl FirstNodeInitOutput {
         );
 
         if let Some(keeper_install) = keeper_install {
-            output.push_str("install ");
-            output.push_str(&keeper_install.render_command());
+            output.push_str("install ployz-keeper first-node-install --spec -\n");
+            output.push_str(
+                &serde_json::to_string_pretty(&FirstNodeInstallSpec::from(keeper_install.clone()))
+                    .expect("first-node install spec serializes"),
+            );
             output.push('\n');
         }
 
@@ -187,357 +189,125 @@ impl FirstNodeInitOutput {
 }
 
 pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
-    let mut parsed = ParsedInitArgs::default();
-    let mut args = ArgCursor::new(args);
+    let parsed =
+        InitCli::try_parse_from(std::iter::once("init".to_owned()).chain(args.iter().cloned()))
+            .map_err(clap_error)?;
+    let keeper_install_mode = match (parsed.emit_keeper_install, parsed.run_keeper_install) {
+        (false, false) => ParsedKeeperInstallMode::None,
+        (true, false) => ParsedKeeperInstallMode::Emit,
+        (false, true) => ParsedKeeperInstallMode::Run,
+        (true, true) => {
+            return Err(cli_error(
+                "--emit-keeper-install and --run-keeper-install cannot be used together",
+            ));
+        }
+    };
 
-    while !args.is_empty() {
-        if args.take_flag("--emit-keeper-install") {
-            parsed.set_keeper_install_mode(ParsedKeeperInstallMode::Emit)?;
-            continue;
-        }
-        if args.take_flag("--run-keeper-install") {
-            parsed.set_keeper_install_mode(ParsedKeeperInstallMode::Run)?;
-            continue;
-        }
-        if args.take_flag("--gateway") {
-            if parsed.gateway == FirstNodeGateway::Install {
-                return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
+    match keeper_install_mode {
+        ParsedKeeperInstallMode::None => {
+            if parsed.install_spec.is_some() || parsed.keeper_binary.is_some() {
+                return Err(cli_error(
+                    "--install-spec and --keeper-binary require --emit-keeper-install or --run-keeper-install",
+                ));
             }
-            parsed.gateway = FirstNodeGateway::Install;
-            continue;
+            let node_id =
+                NodeId::try_new(parsed.node.ok_or_else(|| cli_error("--node is required"))?)
+                    .map_err(|error| invalid_value("--node", error))?;
+            Ok(FirstNodeInitCommand::summary(
+                node_id,
+                if parsed.gateway {
+                    FirstNodeGateway::Install
+                } else {
+                    FirstNodeGateway::Skip
+                },
+            ))
         }
-        if let Some(value) = args.take_value("--node")? {
-            set_once(&mut parsed.node_id, value, "--node")?;
-            continue;
+        ParsedKeeperInstallMode::Emit | ParsedKeeperInstallMode::Run => {
+            if parsed.node.is_some() {
+                return Err(cli_error(
+                    "--node cannot be used with --emit-keeper-install or --run-keeper-install",
+                ));
+            }
+            if parsed.gateway {
+                return Err(cli_error(
+                    "--gateway cannot be used with --emit-keeper-install or --run-keeper-install",
+                ));
+            }
+            let keeper_install = KeeperFirstNodeInstall::from(read_first_node_install_spec(
+                parsed
+                    .install_spec
+                    .ok_or_else(|| cli_error("--install-spec is required"))?,
+            )?);
+            match keeper_install_mode {
+                ParsedKeeperInstallMode::None => unreachable!("handled above"),
+                ParsedKeeperInstallMode::Emit => {
+                    if parsed.keeper_binary.is_some() {
+                        return Err(cli_error("--keeper-binary requires --run-keeper-install"));
+                    }
+                    Ok(FirstNodeInitCommand::keeper_install(keeper_install))
+                }
+                ParsedKeeperInstallMode::Run => {
+                    let keeper_binary = parsed
+                        .keeper_binary
+                        .unwrap_or_else(|| "ployz-keeper".to_owned());
+                    if keeper_binary.is_empty() {
+                        return Err(PloyzctlCliError::InvalidValue {
+                            flag: "--keeper-binary",
+                            message: "keeper binary is empty".to_owned(),
+                        });
+                    }
+                    Ok(FirstNodeInitCommand::run_keeper_install(
+                        keeper_install,
+                        keeper_binary,
+                    ))
+                }
+            }
         }
-        if let Some(value) = args.take_value("--node-public-ip")? {
-            set_once(&mut parsed.node_public_ip, value, "--node-public-ip")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-version")? {
-            set_once(&mut parsed.ployzd_version, value, "--ployzd-version")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-source")? {
-            set_once(&mut parsed.ployzd_source, value, "--ployzd-source")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-sha256")? {
-            set_once(&mut parsed.ployzd_sha256, value, "--ployzd-sha256")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ployzd-install-path")? {
-            set_once(
-                &mut parsed.ployzd_install_path,
-                value,
-                "--ployzd-install-path",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-bytecode-version")? {
-            set_once(
-                &mut parsed.ebpf_bytecode_version,
-                value,
-                "--ebpf-bytecode-version",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-bytecode-source")? {
-            set_once(
-                &mut parsed.ebpf_bytecode_source,
-                value,
-                "--ebpf-bytecode-source",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-bytecode-sha256")? {
-            set_once(
-                &mut parsed.ebpf_bytecode_sha256,
-                value,
-                "--ebpf-bytecode-sha256",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-bytecode-install-path")? {
-            set_once(
-                &mut parsed.ebpf_bytecode_install_path,
-                value,
-                "--ebpf-bytecode-install-path",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-ctl-version")? {
-            set_once(&mut parsed.ebpf_ctl_version, value, "--ebpf-ctl-version")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-ctl-source")? {
-            set_once(&mut parsed.ebpf_ctl_source, value, "--ebpf-ctl-source")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-ctl-sha256")? {
-            set_once(&mut parsed.ebpf_ctl_sha256, value, "--ebpf-ctl-sha256")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--ebpf-ctl-install-path")? {
-            set_once(
-                &mut parsed.ebpf_ctl_install_path,
-                value,
-                "--ebpf-ctl-install-path",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--nats-version")? {
-            set_once(&mut parsed.nats_version, value, "--nats-version")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--nats-source")? {
-            set_once(&mut parsed.nats_source, value, "--nats-source")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--nats-sha256")? {
-            set_once(&mut parsed.nats_sha256, value, "--nats-sha256")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--nats-binary")? {
-            set_once(&mut parsed.nats_binary, value, "--nats-binary")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--nats-config")? {
-            set_once(&mut parsed.nats_config, value, "--nats-config")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--machine-bootstrap-url")? {
-            set_once(
-                &mut parsed.machine_bootstrap_url,
-                value,
-                "--machine-bootstrap-url",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--machine-join-template-file")? {
-            set_once(
-                &mut parsed.machine_join_template_file,
-                value,
-                "--machine-join-template-file",
-            )?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--keeper-binary")? {
-            set_once(&mut parsed.keeper_binary, value, "--keeper-binary")?;
-            continue;
-        }
-        return Err(args.unexpected());
     }
+}
 
-    parsed.into_command()
+#[derive(Debug, Parser)]
+#[command(name = "init")]
+struct InitCli {
+    #[arg(long, conflicts_with_all = ["emit_keeper_install", "run_keeper_install"])]
+    node: Option<String>,
+    #[arg(long, conflicts_with_all = ["emit_keeper_install", "run_keeper_install"])]
+    gateway: bool,
+    #[arg(long, conflicts_with = "run_keeper_install")]
+    emit_keeper_install: bool,
+    #[arg(long)]
+    run_keeper_install: bool,
+    #[arg(long)]
+    install_spec: Option<String>,
+    #[arg(long, requires = "run_keeper_install")]
+    keeper_binary: Option<String>,
 }
 
 pub fn parse_first_node_activate_command(
     args: &[String],
 ) -> Result<FirstNodeActivateCommand, PloyzctlCliError> {
-    let mut node_id = None;
-    let mut gateway = FirstNodeGateway::Skip;
-    let mut args = ArgCursor::new(args);
-
-    while !args.is_empty() {
-        if args.take_flag("--gateway") {
-            if gateway == FirstNodeGateway::Install {
-                return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
-            }
-            gateway = FirstNodeGateway::Install;
-            continue;
-        }
-        if let Some(value) = args.take_value("--node")? {
-            set_once(&mut node_id, value, "--node")?;
-            continue;
-        }
-
-        return Err(args.unexpected());
-    }
-
-    let node_id = NodeId::try_new(required(node_id, "--node")?)
-        .map_err(|error| invalid_value("--node", error))?;
-    Ok(FirstNodeActivateCommand::new(node_id, gateway))
+    let parsed = FirstNodeActivateCli::try_parse_from(
+        std::iter::once("init activate-first-node".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
+    let node_id = NodeId::try_new(parsed.node).map_err(|error| invalid_value("--node", error))?;
+    Ok(FirstNodeActivateCommand::new(
+        node_id,
+        if parsed.gateway {
+            FirstNodeGateway::Install
+        } else {
+            FirstNodeGateway::Skip
+        },
+    ))
 }
 
-struct ParsedInitArgs {
-    keeper_install_mode: ParsedKeeperInstallMode,
-    node_id: Option<String>,
-    node_public_ip: Option<String>,
-    gateway: FirstNodeGateway,
-    ployzd_version: Option<String>,
-    ployzd_source: Option<String>,
-    ployzd_sha256: Option<String>,
-    ployzd_install_path: Option<String>,
-    ebpf_bytecode_version: Option<String>,
-    ebpf_bytecode_source: Option<String>,
-    ebpf_bytecode_sha256: Option<String>,
-    ebpf_bytecode_install_path: Option<String>,
-    ebpf_ctl_version: Option<String>,
-    ebpf_ctl_source: Option<String>,
-    ebpf_ctl_sha256: Option<String>,
-    ebpf_ctl_install_path: Option<String>,
-    nats_version: Option<String>,
-    nats_source: Option<String>,
-    nats_sha256: Option<String>,
-    nats_binary: Option<String>,
-    nats_config: Option<String>,
-    machine_bootstrap_url: Option<String>,
-    machine_join_template_file: Option<String>,
-    keeper_binary: Option<String>,
-}
-
-impl Default for ParsedInitArgs {
-    fn default() -> Self {
-        Self {
-            keeper_install_mode: ParsedKeeperInstallMode::None,
-            node_id: None,
-            node_public_ip: None,
-            gateway: FirstNodeGateway::Skip,
-            ployzd_version: None,
-            ployzd_source: None,
-            ployzd_sha256: None,
-            ployzd_install_path: None,
-            ebpf_bytecode_version: None,
-            ebpf_bytecode_source: None,
-            ebpf_bytecode_sha256: None,
-            ebpf_bytecode_install_path: None,
-            ebpf_ctl_version: None,
-            ebpf_ctl_source: None,
-            ebpf_ctl_sha256: None,
-            ebpf_ctl_install_path: None,
-            nats_version: None,
-            nats_source: None,
-            nats_sha256: None,
-            nats_binary: None,
-            nats_config: None,
-            machine_bootstrap_url: None,
-            machine_join_template_file: None,
-            keeper_binary: None,
-        }
-    }
-}
-
-impl ParsedInitArgs {
-    fn set_keeper_install_mode(
-        &mut self,
-        mode: ParsedKeeperInstallMode,
-    ) -> Result<(), PloyzctlCliError> {
-        match mode {
-            ParsedKeeperInstallMode::None => unreachable!("install mode is set from a flag"),
-            ParsedKeeperInstallMode::Emit => match &self.keeper_install_mode {
-                ParsedKeeperInstallMode::None => {
-                    self.keeper_install_mode = ParsedKeeperInstallMode::Emit;
-                    Ok(())
-                }
-                ParsedKeeperInstallMode::Emit => Err(PloyzctlCliError::DuplicateArgument {
-                    flag: "--emit-keeper-install",
-                }),
-                ParsedKeeperInstallMode::Run => Err(PloyzctlCliError::ConflictingArguments {
-                    first: "--run-keeper-install",
-                    second: "--emit-keeper-install",
-                }),
-            },
-            ParsedKeeperInstallMode::Run => match &self.keeper_install_mode {
-                ParsedKeeperInstallMode::None => {
-                    self.keeper_install_mode = ParsedKeeperInstallMode::Run;
-                    Ok(())
-                }
-                ParsedKeeperInstallMode::Emit => Err(PloyzctlCliError::ConflictingArguments {
-                    first: "--emit-keeper-install",
-                    second: "--run-keeper-install",
-                }),
-                ParsedKeeperInstallMode::Run => Err(PloyzctlCliError::DuplicateArgument {
-                    flag: "--run-keeper-install",
-                }),
-            },
-        }
-    }
-
-    fn into_command(self) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
-        let Self {
-            keeper_install_mode,
-            node_id,
-            node_public_ip,
-            gateway,
-            ployzd_version,
-            ployzd_source,
-            ployzd_sha256,
-            ployzd_install_path,
-            ebpf_bytecode_version,
-            ebpf_bytecode_source,
-            ebpf_bytecode_sha256,
-            ebpf_bytecode_install_path,
-            ebpf_ctl_version,
-            ebpf_ctl_source,
-            ebpf_ctl_sha256,
-            ebpf_ctl_install_path,
-            nats_version,
-            nats_source,
-            nats_sha256,
-            nats_binary,
-            nats_config,
-            machine_bootstrap_url,
-            machine_join_template_file,
-            keeper_binary,
-        } = self;
-        let keeper_install = ParsedKeeperInstallArgs {
-            node_public_ip,
-            ployzd_version,
-            ployzd_source,
-            ployzd_sha256,
-            ployzd_install_path,
-            ebpf_bytecode_version,
-            ebpf_bytecode_source,
-            ebpf_bytecode_sha256,
-            ebpf_bytecode_install_path,
-            ebpf_ctl_version,
-            ebpf_ctl_source,
-            ebpf_ctl_sha256,
-            ebpf_ctl_install_path,
-            nats_version,
-            nats_source,
-            nats_sha256,
-            nats_binary,
-            nats_config,
-            machine_bootstrap_url,
-            machine_join_template_file,
-        };
-        let has_keeper_install_value = keeper_install.has_any_value();
-        let node_id = NodeId::try_new(required(node_id, "--node")?)
-            .map_err(|error| invalid_value("--node", error))?;
-
-        if keeper_install_mode == ParsedKeeperInstallMode::None {
-            if has_keeper_install_value || keeper_binary.is_some() {
-                return Err(PloyzctlCliError::MissingRequiredArgument {
-                    flag: "--emit-keeper-install or --run-keeper-install",
-                });
-            }
-            return Ok(FirstNodeInitCommand::summary(node_id, gateway));
-        }
-
-        let keeper_install = keeper_install.into_keeper_install(node_id, gateway)?;
-        if keeper_install_mode == ParsedKeeperInstallMode::Run {
-            let keeper_binary = keeper_binary.unwrap_or_else(|| "ployz-keeper".to_owned());
-            if keeper_binary.is_empty() {
-                return Err(PloyzctlCliError::InvalidValue {
-                    flag: "--keeper-binary",
-                    message: "keeper binary is empty".to_owned(),
-                });
-            }
-            return Ok(FirstNodeInitCommand::run_keeper_install(
-                keeper_install,
-                keeper_binary,
-            ));
-        }
-        if keeper_binary.is_some() {
-            return Err(PloyzctlCliError::MissingRequiredArgument {
-                flag: "--run-keeper-install",
-            });
-        }
-
-        Ok(FirstNodeInitCommand::keeper_install(keeper_install))
-    }
+#[derive(Debug, Parser)]
+#[command(name = "init activate-first-node")]
+struct FirstNodeActivateCli {
+    #[arg(long)]
+    node: String,
+    #[arg(long)]
+    gateway: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -547,154 +317,23 @@ enum ParsedKeeperInstallMode {
     Run,
 }
 
-struct ParsedKeeperInstallArgs {
-    node_public_ip: Option<String>,
-    ployzd_version: Option<String>,
-    ployzd_source: Option<String>,
-    ployzd_sha256: Option<String>,
-    ployzd_install_path: Option<String>,
-    ebpf_bytecode_version: Option<String>,
-    ebpf_bytecode_source: Option<String>,
-    ebpf_bytecode_sha256: Option<String>,
-    ebpf_bytecode_install_path: Option<String>,
-    ebpf_ctl_version: Option<String>,
-    ebpf_ctl_source: Option<String>,
-    ebpf_ctl_sha256: Option<String>,
-    ebpf_ctl_install_path: Option<String>,
-    nats_version: Option<String>,
-    nats_source: Option<String>,
-    nats_sha256: Option<String>,
-    nats_binary: Option<String>,
-    nats_config: Option<String>,
-    machine_bootstrap_url: Option<String>,
-    machine_join_template_file: Option<String>,
-}
-
-impl ParsedKeeperInstallArgs {
-    fn into_keeper_install(
-        self,
-        node_id: NodeId,
-        gateway: FirstNodeGateway,
-    ) -> Result<KeeperFirstNodeInstall, PloyzctlCliError> {
-        Ok(KeeperFirstNodeInstall {
-            node_id,
-            gateway,
-            node_public_ip: self.node_public_ip.map(parse_node_public_ip).transpose()?,
-            machine_bootstrap_url: self
-                .machine_bootstrap_url
-                .map(MachineBootstrapUrl::try_new)
-                .transpose()
-                .map_err(|error| invalid_value("--machine-bootstrap-url", error))?,
-            machine_join_template_file: self
-                .machine_join_template_file
-                .map(AbsoluteInstallPath::try_new)
-                .transpose()
-                .map_err(|error| invalid_value("--machine-join-template-file", error))?,
-            ployzd_version: InstallArtifactVersion::try_new(required(
-                self.ployzd_version,
-                "--ployzd-version",
-            )?)
-            .map_err(|error| invalid_value("--ployzd-version", error))?,
-            ployzd_source: InstallArtifactSource::try_new(required(
-                self.ployzd_source,
-                "--ployzd-source",
-            )?)
-            .map_err(|error| invalid_value("--ployzd-source", error))?,
-            ployzd_sha256: InstallSha256Digest::try_new(required(
-                self.ployzd_sha256,
-                "--ployzd-sha256",
-            )?)
-            .map_err(|error| invalid_value("--ployzd-sha256", error))?,
-            ployzd_install_path: AbsoluteInstallPath::try_new(required(
-                self.ployzd_install_path,
-                "--ployzd-install-path",
-            )?)
-            .map_err(|error| invalid_value("--ployzd-install-path", error))?,
-            ebpf_bytecode_version: InstallArtifactVersion::try_new(required(
-                self.ebpf_bytecode_version,
-                "--ebpf-bytecode-version",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-bytecode-version", error))?,
-            ebpf_bytecode_source: InstallArtifactSource::try_new(required(
-                self.ebpf_bytecode_source,
-                "--ebpf-bytecode-source",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-bytecode-source", error))?,
-            ebpf_bytecode_sha256: InstallSha256Digest::try_new(required(
-                self.ebpf_bytecode_sha256,
-                "--ebpf-bytecode-sha256",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-bytecode-sha256", error))?,
-            ebpf_bytecode_install_path: AbsoluteInstallPath::try_new(required(
-                self.ebpf_bytecode_install_path,
-                "--ebpf-bytecode-install-path",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-bytecode-install-path", error))?,
-            ebpf_ctl_version: InstallArtifactVersion::try_new(required(
-                self.ebpf_ctl_version,
-                "--ebpf-ctl-version",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-ctl-version", error))?,
-            ebpf_ctl_source: InstallArtifactSource::try_new(required(
-                self.ebpf_ctl_source,
-                "--ebpf-ctl-source",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-ctl-source", error))?,
-            ebpf_ctl_sha256: InstallSha256Digest::try_new(required(
-                self.ebpf_ctl_sha256,
-                "--ebpf-ctl-sha256",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-ctl-sha256", error))?,
-            ebpf_ctl_install_path: AbsoluteInstallPath::try_new(required(
-                self.ebpf_ctl_install_path,
-                "--ebpf-ctl-install-path",
-            )?)
-            .map_err(|error| invalid_value("--ebpf-ctl-install-path", error))?,
-            nats_version: InstallArtifactVersion::try_new(required(
-                self.nats_version,
-                "--nats-version",
-            )?)
-            .map_err(|error| invalid_value("--nats-version", error))?,
-            nats_source: InstallArtifactSource::try_new(required(
-                self.nats_source,
-                "--nats-source",
-            )?)
-            .map_err(|error| invalid_value("--nats-source", error))?,
-            nats_sha256: InstallSha256Digest::try_new(required(self.nats_sha256, "--nats-sha256")?)
-                .map_err(|error| invalid_value("--nats-sha256", error))?,
-            nats_binary: AbsoluteInstallPath::try_new(required(self.nats_binary, "--nats-binary")?)
-                .map_err(|error| invalid_value("--nats-binary", error))?,
-            nats_config: AbsoluteInstallPath::try_new(required(self.nats_config, "--nats-config")?)
-                .map_err(|error| invalid_value("--nats-config", error))?,
-        })
+fn read_first_node_install_spec(path: String) -> Result<FirstNodeInstallSpec, PloyzctlCliError> {
+    let mut contents = String::new();
+    if path == "-" {
+        std::io::stdin()
+            .read_to_string(&mut contents)
+            .map_err(|error| PloyzctlCliError::InvalidValue {
+                flag: "--install-spec",
+                message: format!("cannot read stdin: {error}"),
+            })?;
+    } else {
+        contents = fs::read_to_string(&path).map_err(|error| PloyzctlCliError::InvalidValue {
+            flag: "--install-spec",
+            message: format!("cannot read {path}: {error}"),
+        })?;
     }
-
-    fn has_any_value(&self) -> bool {
-        self.ployzd_version.is_some()
-            || self.ployzd_source.is_some()
-            || self.ployzd_sha256.is_some()
-            || self.ployzd_install_path.is_some()
-            || self.ebpf_bytecode_version.is_some()
-            || self.ebpf_bytecode_source.is_some()
-            || self.ebpf_bytecode_sha256.is_some()
-            || self.ebpf_bytecode_install_path.is_some()
-            || self.ebpf_ctl_version.is_some()
-            || self.ebpf_ctl_source.is_some()
-            || self.ebpf_ctl_sha256.is_some()
-            || self.ebpf_ctl_install_path.is_some()
-            || self.nats_version.is_some()
-            || self.nats_source.is_some()
-            || self.nats_sha256.is_some()
-            || self.nats_binary.is_some()
-            || self.nats_config.is_some()
-            || self.machine_bootstrap_url.is_some()
-            || self.machine_join_template_file.is_some()
-            || self.node_public_ip.is_some()
-    }
-}
-
-fn parse_node_public_ip(value: String) -> Result<IpAddr, PloyzctlCliError> {
-    value
-        .parse()
-        .map_err(|error| invalid_value("--node-public-ip", error))
+    serde_json::from_str(&contents).map_err(|error| PloyzctlCliError::InvalidValue {
+        flag: "--install-spec",
+        message: format!("invalid first-node install spec json: {error}"),
+    })
 }

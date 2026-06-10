@@ -3,7 +3,6 @@
 use crate::config::DaemonProcessConfig;
 use crate::control_runtime::{ControlRuntimeError, run_control_until_shutdown};
 use crate::gateway_process_runtime::{GatewayProcessRuntimeError, run_gateway_until_shutdown};
-use crate::iroh_tunnel::{TunnelRuntimeError, run_tunnel_until_shutdown};
 use crate::node_process_runtime::{NodeProcessRuntimeError, run_node_until_shutdown};
 use crate::role::DaemonProcessRole;
 use std::fmt;
@@ -21,9 +20,6 @@ pub async fn run_daemon_process_until_shutdown(
         DaemonProcessConfig::Gateway(config) => run_gateway_until_shutdown(config)
             .await
             .map_err(DaemonRuntimeError::Gateway),
-        DaemonProcessConfig::Tunnel(config) => run_tunnel_until_shutdown(config)
-            .await
-            .map_err(DaemonRuntimeError::Tunnel),
         DaemonProcessConfig::Dns(_) => Err(DaemonRuntimeError::RoleRuntimePending {
             role: config.role(),
         }),
@@ -35,7 +31,6 @@ pub enum DaemonRuntimeError {
     Control(ControlRuntimeError),
     Node(NodeProcessRuntimeError),
     Gateway(GatewayProcessRuntimeError),
-    Tunnel(TunnelRuntimeError),
     RoleRuntimePending { role: DaemonProcessRole },
 }
 
@@ -45,7 +40,6 @@ impl fmt::Display for DaemonRuntimeError {
             Self::Control(error) => write!(formatter, "{error}"),
             Self::Node(error) => write!(formatter, "{error}"),
             Self::Gateway(error) => write!(formatter, "{error}"),
-            Self::Tunnel(error) => write!(formatter, "{error}"),
             Self::RoleRuntimePending { role } => write!(
                 formatter,
                 "ployzd {} runtime is not implemented yet",

@@ -439,7 +439,7 @@ pub fn activate_joined_machine(
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineReadinessEvidence {
-    pub nats_tunnel: MachineReadinessCheck,
+    pub nats_connection: MachineReadinessCheck,
     pub heartbeat: MachineReadinessCheck,
     pub node_inspect: MachineReadinessCheck,
 }
@@ -448,7 +448,7 @@ impl MachineReadinessEvidence {
     #[must_use]
     pub fn confirmed() -> Self {
         Self {
-            nats_tunnel: MachineReadinessCheck::Confirmed,
+            nats_connection: MachineReadinessCheck::Confirmed,
             heartbeat: MachineReadinessCheck::Confirmed,
             node_inspect: MachineReadinessCheck::Confirmed,
         }
@@ -456,7 +456,7 @@ impl MachineReadinessEvidence {
 
     #[must_use]
     pub const fn is_confirmed(&self) -> bool {
-        matches!(self.nats_tunnel, MachineReadinessCheck::Confirmed)
+        matches!(self.nats_connection, MachineReadinessCheck::Confirmed)
             && matches!(self.heartbeat, MachineReadinessCheck::Confirmed)
             && matches!(self.node_inspect, MachineReadinessCheck::Confirmed)
     }

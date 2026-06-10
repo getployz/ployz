@@ -1,9 +1,10 @@
+use clap::Parser;
 use ployz_core::ids::ServiceId;
 use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
 
-use crate::commands::{PloyzctlCliError, invalid_value};
+use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceListCommand;
@@ -16,12 +17,11 @@ impl ServiceListCommand {
 }
 
 pub fn parse_service_list_command(args: &[String]) -> Result<ServiceListCommand, PloyzctlCliError> {
-    match args {
-        [] => Ok(ServiceListCommand),
-        [unexpected, ..] => Err(PloyzctlCliError::UnexpectedArgument {
-            value: unexpected.clone(),
-        }),
-    }
+    EmptyCli::try_parse_from(
+        std::iter::once("service list".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
+    Ok(ServiceListCommand)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,23 +41,23 @@ impl ServiceInspectCommand {
 pub fn parse_service_inspect_command(
     args: &[String],
 ) -> Result<ServiceInspectCommand, PloyzctlCliError> {
-    let service_id = match args {
-        [] => {
-            return Err(PloyzctlCliError::MissingRequiredArgument {
-                flag: "<service_id>",
-            });
-        }
-        [service_id] => service_id,
-        [_, unexpected, ..] => {
-            return Err(PloyzctlCliError::UnexpectedArgument {
-                value: unexpected.clone(),
-            });
-        }
-    };
-    let service_id = ServiceId::try_new(service_id.clone())
+    let parsed = ServiceInspectCli::try_parse_from(
+        std::iter::once("service inspect".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
+    let service_id = ServiceId::try_new(parsed.service_id)
         .map_err(|error| invalid_value("<service_id>", error))?;
 
     Ok(ServiceInspectCommand { service_id })
+}
+
+#[derive(Debug, Parser)]
+struct EmptyCli {}
+
+#[derive(Debug, Parser)]
+#[command(name = "service inspect")]
+struct ServiceInspectCli {
+    service_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

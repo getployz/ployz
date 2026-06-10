@@ -719,6 +719,9 @@ mod tests {
             "/usr/local/bin/ployz-ebpf-ctl".into(),
             "docker0".to_owned(),
             "ployz-wg0".to_owned(),
+            "/etc/ployz/wireguard.key".into(),
+            51820,
+            None,
         );
 
         assert!(requirements.iter().any(|requirement| {
@@ -746,6 +749,9 @@ mod tests {
             "/usr/local/bin/ployz-ebpf-ctl".into(),
             "docker0".to_owned(),
             "ployz-wg0".to_owned(),
+            "/etc/ployz/wireguard.key".into(),
+            51820,
+            None,
         );
 
         assert!(requirements.iter().any(|requirement| {
@@ -768,7 +774,9 @@ mod tests {
                 } if program == "sh"
                     && args == &[
                         "-c",
-                        "test -s /etc/ployz/wireguard.key || (umask 077 && wg genkey > /etc/ployz/wireguard.key)"
+                        "test -s \"$1\" || (umask 077 && wg genkey > \"$1\")",
+                        "--",
+                        "/etc/ployz/wireguard.key"
                     ]
             )
         }));

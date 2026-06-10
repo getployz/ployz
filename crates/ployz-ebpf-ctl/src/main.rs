@@ -1,7 +1,9 @@
 #[cfg(any(target_os = "linux", test))]
 use std::net::Ipv4Addr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
 
 #[cfg(target_os = "linux")]
 const DEFAULT_PIN_PATH: &str = "/sys/fs/bpf/ployz";
@@ -16,84 +18,81 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let args = parse_global_args(args)?;
-    match args.command.as_slice() {
-        [command, bytecode] if command == "validate" => validate_bytecode(Path::new(bytecode)),
-        [command, bytecode, bridge, wg_ifname] if command == "attach" => attach(
-            Path::new(bytecode),
-            bridge,
+    let args = EbpfCtlCli::try_parse_from(std::iter::once("ployz-ebpf-ctl".to_owned()).chain(args))
+        .map_err(|error| error.to_string())?;
+    let pin_path = args.pin_path.as_deref();
+    match args.command {
+        EbpfCtlCommand::Validate { bytecode } => validate_bytecode(&bytecode),
+        EbpfCtlCommand::Attach {
+            bytecode,
+            bridge_ifname,
             wg_ifname,
-            args.pin_path.as_deref(),
-        ),
-        [command, bytecode, bridge, wg_ifname] if command == "ensure-attached" => ensure_attached(
-            Path::new(bytecode),
-            bridge,
+        } => attach(&bytecode, &bridge_ifname, &wg_ifname, pin_path),
+        EbpfCtlCommand::EnsureAttached {
+            bytecode,
+            bridge_ifname,
             wg_ifname,
-            args.pin_path.as_deref(),
-        ),
-        [command, bridge] if command == "detach" => detach(bridge, args.pin_path.as_deref()),
-        [command, action, subnet, ifindex] if command == "route" && action == "add" => {
-            let subnet = parse_ipv4_subnet(subnet)?;
-            let ifindex = ifindex
-                .parse::<u32>()
-                .map_err(|error| format!("invalid ifindex {ifindex:?}: {error}"))?;
-            route_add(subnet, ifindex, args.pin_path.as_deref())
-        }
-        [command, action, subnet, ifname] if command == "route" && action == "add-ifname" => {
-            route_add_ifname(parse_ipv4_subnet(subnet)?, ifname, args.pin_path.as_deref())
-        }
-        [command, action, subnet] if command == "route" && action == "del" => {
-            route_del(parse_ipv4_subnet(subnet)?, args.pin_path.as_deref())
-        }
-        [] => Err(usage()),
-        [unknown, ..] => Err(format!(
-            "unknown or invalid command: {unknown}\n{}",
-            usage()
-        )),
+        } => ensure_attached(&bytecode, &bridge_ifname, &wg_ifname, pin_path),
+        EbpfCtlCommand::Detach { bridge_ifname } => detach(&bridge_ifname, pin_path),
+        EbpfCtlCommand::Route { action } => match action {
+            RouteCommand::Add { subnet, ifindex } => route_add(subnet, ifindex, pin_path),
+            RouteCommand::AddIfname { subnet, ifname } => {
+                route_add_ifname(subnet, &ifname, pin_path)
+            }
+            RouteCommand::Del { subnet } => route_del(subnet, pin_path),
+        },
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedArgs {
+#[derive(Debug, Parser)]
+#[command(name = "ployz-ebpf-ctl", disable_help_subcommand = true)]
+struct EbpfCtlCli {
+    #[arg(long)]
     pin_path: Option<String>,
-    command: Vec<String>,
+    #[command(subcommand)]
+    command: EbpfCtlCommand,
 }
 
-fn parse_global_args(args: Vec<String>) -> Result<ParsedArgs, String> {
-    match args.as_slice() {
-        [flag, ..] if flag == "--pin-path" => {
-            let [_, pin_path, command @ ..] = args.as_slice() else {
-                return Err(format!("--pin-path requires a path\n{}", usage()));
-            };
-            if command.is_empty() {
-                return Err(format!("--pin-path requires a command\n{}", usage()));
-            }
-            Ok(ParsedArgs {
-                pin_path: Some(pin_path.clone()),
-                command: command.to_vec(),
-            })
-        }
-        [flag, ..] if flag.starts_with("--pin-path=") => {
-            let Some((_, pin_path)) = flag.split_once('=') else {
-                return Err(format!("invalid --pin-path\n{}", usage()));
-            };
-            if pin_path.is_empty() {
-                return Err(format!("--pin-path requires a path\n{}", usage()));
-            }
-            Ok(ParsedArgs {
-                pin_path: Some(pin_path.to_owned()),
-                command: args[1..].to_vec(),
-            })
-        }
-        _ => Ok(ParsedArgs {
-            pin_path: None,
-            command: args,
-        }),
-    }
+#[derive(Debug, Subcommand)]
+enum EbpfCtlCommand {
+    Validate {
+        bytecode: PathBuf,
+    },
+    Attach {
+        bytecode: PathBuf,
+        bridge_ifname: String,
+        wg_ifname: String,
+    },
+    EnsureAttached {
+        bytecode: PathBuf,
+        bridge_ifname: String,
+        wg_ifname: String,
+    },
+    Detach {
+        bridge_ifname: String,
+    },
+    Route {
+        #[command(subcommand)]
+        action: RouteCommand,
+    },
 }
 
-fn usage() -> String {
-    "usage: ployz-ebpf-ctl [--pin-path <bpffs-path>] validate <bytecode>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] ensure-attached <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] detach <bridge-ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] route add-ifname <ipv4-subnet> <ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] route del <ipv4-subnet>".to_owned()
+#[derive(Debug, Subcommand)]
+enum RouteCommand {
+    Add {
+        #[arg(value_parser = parse_ipv4_subnet)]
+        subnet: ipnet::Ipv4Net,
+        ifindex: u32,
+    },
+    AddIfname {
+        #[arg(value_parser = parse_ipv4_subnet)]
+        subnet: ipnet::Ipv4Net,
+        ifname: String,
+    },
+    Del {
+        #[arg(value_parser = parse_ipv4_subnet)]
+        subnet: ipnet::Ipv4Net,
+    },
 }
 
 fn validate_bytecode(path: &Path) -> Result<(), String> {
@@ -434,14 +433,13 @@ mod tests {
     fn invalid_commands_report_usage() {
         let error = run(Vec::new()).expect_err("empty args fail");
 
-        assert!(error.contains("ployz-ebpf-ctl [--pin-path <bpffs-path>] validate <bytecode>"));
-        assert!(error.contains("ensure-attached <bytecode>"));
-        assert!(error.contains("route add-ifname <ipv4-subnet> <ifname>"));
+        assert!(error.contains("Usage: ployz-ebpf-ctl"));
+        assert!(error.contains("<COMMAND>"));
     }
 
     #[test]
-    fn global_pin_path_is_parsed_before_command() {
-        let args = parse_global_args(vec![
+    fn global_pin_path_is_accepted_before_command() {
+        let error = run(vec![
             "--pin-path".to_owned(),
             "/sys/fs/bpf/ployz-core".to_owned(),
             "route".to_owned(),
@@ -449,18 +447,9 @@ mod tests {
             "10.42.2.0/24".to_owned(),
             "7".to_owned(),
         ])
-        .expect("pin path args parse");
+        .expect_err("route add requires Linux on this test platform");
 
-        assert_eq!(args.pin_path.as_deref(), Some("/sys/fs/bpf/ployz-core"));
-        assert_eq!(
-            args.command,
-            vec![
-                "route".to_owned(),
-                "add".to_owned(),
-                "10.42.2.0/24".to_owned(),
-                "7".to_owned()
-            ]
-        );
+        assert!(error.contains("route add requires Linux") || error.contains("No such file"));
     }
 
     #[test]

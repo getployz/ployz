@@ -1,10 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! Private transport adapters.
+//! Future transport adapters if private connectivity returns.
 //!
-//! This crate owns iroh endpoint identity and byte tunnels used to carry NATS
-//! client connections. It must not expose product commands; product commands
-//! go through NATS services.
-
-pub mod iroh_endpoint;
-pub mod nats_tunnel;
+//! v1 machine connectivity is a direct TLS-authenticated NATS connection
+//! (ADR-0013). This crate is intentionally empty: it reserves the seam for
+//! private overlay transports without exposing product commands. Product
+//! commands go through NATS services.

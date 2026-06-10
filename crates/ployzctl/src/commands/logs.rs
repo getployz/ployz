@@ -1,9 +1,10 @@
 //! Log evidence commands.
 
+use clap::Parser;
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_sdk_types::{LogsTailLines, LogsTailRequest, LogsTailResult};
 
-use crate::commands::{ArgCursor, PloyzctlCliError, flag_value, invalid_value, set_once};
+use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogsTailCommand {
@@ -41,38 +42,36 @@ impl LogsTailOutput {
 }
 
 pub fn parse_logs_tail_command(rest: &[String]) -> Result<LogsTailCommand, PloyzctlCliError> {
-    let [container_id, tail @ ..] = rest else {
-        return Err(PloyzctlCliError::MissingRequiredArgument {
-            flag: "<container_id>",
-        });
-    };
-    let container_id = ContainerId::try_new(flag_value("<container_id>", container_id)?)
-        .map_err(|error| invalid_value("<container_id>", error))?;
-    let mut cursor = ArgCursor::new(tail);
-    let mut node_id = None;
-    let mut tail_lines = None;
-
-    while !cursor.is_empty() {
-        if let Some(value) = cursor.take_value("--node")? {
-            let node = NodeId::try_new(value).map_err(|error| invalid_value("--node", error))?;
-            set_once(&mut node_id, node, "--node")?;
-            continue;
-        }
-        if let Some(value) = cursor.take_value("--tail")? {
-            let parsed = value
-                .parse::<u16>()
-                .map_err(|error| invalid_value("--tail", error))?;
-            let lines =
-                LogsTailLines::try_new(parsed).map_err(|error| invalid_value("--tail", error))?;
-            set_once(&mut tail_lines, lines, "--tail")?;
-            continue;
-        }
-        return Err(cursor.unexpected());
-    }
+    let parsed =
+        LogsTailCli::try_parse_from(std::iter::once("logs".to_owned()).chain(rest.iter().cloned()))
+            .map_err(clap_error)?;
 
     Ok(LogsTailCommand {
-        container_id,
-        node_id,
-        tail_lines,
+        container_id: ContainerId::try_new(parsed.container_id)
+            .map_err(|error| invalid_value("<container_id>", error))?,
+        node_id: parsed
+            .node
+            .map(NodeId::try_new)
+            .transpose()
+            .map_err(|error| invalid_value("--node", error))?,
+        tail_lines: parsed
+            .tail
+            .map(|value| {
+                let parsed = value
+                    .parse::<u16>()
+                    .map_err(|error| invalid_value("--tail", error))?;
+                LogsTailLines::try_new(parsed).map_err(|error| invalid_value("--tail", error))
+            })
+            .transpose()?,
     })
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "logs")]
+struct LogsTailCli {
+    container_id: String,
+    #[arg(long)]
+    node: Option<String>,
+    #[arg(long)]
+    tail: Option<String>,
 }

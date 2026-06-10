@@ -16,7 +16,7 @@ use crate::artifacts::{
 };
 use crate::executor::KeeperStepEffects;
 use crate::join::{
-    JOIN_CORE_IROH_TICKET_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
     render_redacted_join_material,
 };
 use crate::steps::{
@@ -245,11 +245,6 @@ fn commit_join_material_files(
         directory,
         JOIN_NATS_CREDENTIALS_FILE,
         material.nats_credentials().as_bytes(),
-    )?;
-    commit_join_material_secret_file(
-        directory,
-        JOIN_CORE_IROH_TICKET_FILE,
-        material.core_iroh_ticket().as_bytes(),
     )
 }
 

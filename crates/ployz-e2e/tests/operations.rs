@@ -54,7 +54,6 @@ mod support;
 
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
-use support::nats::start_edge_nats_tunnel;
 
 #[tokio::test]
 async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -833,15 +832,17 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
         )
         .await?
         .into_iter()
-        .filter_map(|event| match event {
-            OperationEvent::DeployWireGuardEbpfPrepared { report, .. } => Some(
+        .filter_map(|event| {
+            let OperationEvent::DeployWireGuardEbpfPrepared { report, .. } = event else {
+                return None;
+            };
+            Some(
                 report
                     .nodes
                     .into_iter()
                     .map(|node| node.node_id().clone())
                     .collect::<Vec<_>>(),
-            ),
-            _ => None,
+            )
         })
         .collect::<Vec<_>>(),
         vec![vec![node_id("core_1"), node_id("edge_2")]]
@@ -890,141 +891,6 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
         .shutdown()
         .await
         .expect("control runtime shuts down");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn e2e_edge_node_and_gateway_use_nats_over_iroh_tunnel()
--> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let core_client = async_nats::connect(nats.url()).await?;
-    let edge_nats = start_edge_nats_tunnel(node_id("core_1"), nats.socket_addr()).await?;
-    let edge_client = async_nats::connect(edge_nats.url()).await?;
-    let jetstream = jetstream::new(core_client.clone());
-    let route_port = free_loopback_port().await?;
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-    )
-    .with_deploy_nodes(vec![node_id("edge_2")])
-    .with_deploy_step_timeout(Duration::from_secs(2))
-    .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(core_client.clone(), &config)
-            .await?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .expect("open observation store");
-    observations
-        .replace_node_public_ip(&node_public_ip("core_1", 1))
-        .await
-        .expect("core public ip stores");
-    observations
-        .replace_node_public_ip(&node_public_ip("edge_2", 2))
-        .await
-        .expect("edge public ip stores");
-    let core_runner = ObservingContainerRunner::new(node_id("core_1"), observations.clone());
-    let edge_runner = ObservingContainerRunner::new(node_id("edge_2"), observations.clone());
-    let core_node_runtime = start_node_runtime_with_ports(
-        core_client.clone(),
-        node_id("core_1"),
-        core_runner.clone(),
-        ReadyWireGuardEbpf,
-        core_runner,
-    )
-    .await?;
-    let edge_node_runtime = start_node_runtime_with_ports(
-        edge_client.clone(),
-        node_id("edge_2"),
-        edge_runner.clone(),
-        ReadyWireGuardEbpf,
-        edge_runner,
-    )
-    .await?;
-    let core_gateway_runtime = start_gateway_process_runtime_with_client(
-        core_client.clone(),
-        Duration::from_millis(10),
-        format!("127.0.0.1:{route_port}").parse()?,
-        node_id("core_1"),
-    )
-    .await?;
-    let edge_gateway_runtime = start_gateway_process_runtime_with_client(
-        edge_client.clone(),
-        Duration::from_millis(10),
-        format!("[::1]:{route_port}").parse()?,
-        node_id("edge_2"),
-    )
-    .await?;
-    let upstream = TestUpstream::start_with_expected_requests(2).await;
-    let api = OperationApiClient::new(core_client.clone());
-    let request = DeploySubmitRequest {
-        operation_id: operation_id("op_e2e_iroh_edge_route"),
-        target: deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
-        idempotency_key: idempotency_key("idem_e2e_iroh_edge_route"),
-    };
-
-    api.deploy_submit(&request).await?;
-
-    let status =
-        wait_for_terminal_deploy_status(&api, operation_id("op_e2e_iroh_edge_route")).await;
-    assert!(
-        matches!(
-            status,
-            OperationStatus::Deploy {
-                state: DeployOperationState::Completed {
-                    outcome: DeployCompletionOutcome::Completed,
-                },
-                ..
-            }
-        ),
-        "expected iroh-routed edge deploy to complete, got {status:?}"
-    );
-    wait_for_gateway_route(&core_gateway_runtime).await;
-    wait_for_gateway_route(&edge_gateway_runtime).await;
-    assert_eq!(
-        observations
-            .node_snapshot(&node_id("edge_2"))
-            .await
-            .expect("edge observations read")
-            .expect("edge snapshot exists")
-            .containers()
-            .len(),
-        1
-    );
-    assert_eq!(
-        http_get_with_host(
-            core_gateway_runtime.listen_addr(),
-            &format!("smoke.local:{route_port}"),
-        )
-        .await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
-    );
-    assert_eq!(
-        http_get_with_host(
-            edge_gateway_runtime.listen_addr(),
-            &format!("smoke.local:{route_port}"),
-        )
-        .await?,
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nsmoke"
-    );
-    assert_eq!(upstream.requests().await.len(), 2);
-
-    edge_gateway_runtime.shutdown().await;
-    core_gateway_runtime.shutdown().await;
-    edge_node_runtime
-        .shutdown()
-        .await
-        .expect("edge node runtime shuts down");
-    core_node_runtime
-        .shutdown()
-        .await
-        .expect("core node runtime shuts down");
-    control_runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-    edge_nats.shutdown().await;
 
     Ok(())
 }
@@ -1274,12 +1140,6 @@ fn machine_join_template() -> MachineJoinTemplate {
         "server_id": "server_1",
         "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
-      "core_iroh": {
-        "node_id": "core_1",
-        "public_key": "core-public-key",
-      "direct_addresses": [],
-      "relay_url": null
-      },
       "ployzd": {
         "version": "0.1.0",
         "source": "/tmp/ployzd",
@@ -1301,8 +1161,7 @@ fn machine_join_template() -> MachineJoinTemplate {
     }
   },
   "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed",
-    "core_iroh_ticket": "core-ticket"
+    "nats_credentials": "user-jwt-and-seed"
   }
 }
 "#,

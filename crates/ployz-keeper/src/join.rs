@@ -8,7 +8,6 @@ use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
 pub const JOIN_NATS_CREDENTIALS_FILE: &str = "nats.creds";
-pub const JOIN_CORE_IROH_TICKET_FILE: &str = "core-iroh.ticket";
 pub const JOIN_MATERIAL_DIR: &str = "join-material.d";
 
 pub fn read_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
@@ -81,25 +80,13 @@ impl std::error::Error for JoinTokenFileError {}
 
 #[must_use]
 pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
-    let mut rendered = format!(
-        "node_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_server={}\ntrusted_nats_config_sha256={}\ncore_iroh_public_key={}\ncore_iroh_ticket={}\n",
+    format!(
+        "node_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_server={}\ntrusted_nats_config_sha256={}\n",
         material.node_id.as_str(),
         material.cluster_name,
         "[redacted]",
         material.trusted_nats_server,
         material.trusted_nats_config_sha256,
-        material.core_iroh_public_key,
-        "[redacted]"
-    );
-    if !material.core_iroh_direct_addresses.is_empty() {
-        rendered.push_str("core_iroh_direct_addresses=");
-        rendered.push_str(&material.core_iroh_direct_addresses.join(","));
-        rendered.push('\n');
-    }
-    if let Some(relay_url) = &material.core_iroh_relay_url {
-        rendered.push_str("core_iroh_relay_url=");
-        rendered.push_str(relay_url);
-        rendered.push('\n');
-    }
-    rendered.into_bytes()
+    )
+    .into_bytes()
 }

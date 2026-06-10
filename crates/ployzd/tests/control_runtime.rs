@@ -4,8 +4,7 @@ use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCoun
 use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineBootstrapUrl, MachineJoinArtifact, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
-    MachineJoinIrohPublicKey, MachineJoinIrohTicket, MachineJoinMaterial,
+    MachineBootstrapUrl, MachineJoinArtifact, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
     MachineJoinTrustedNatsServerId,
@@ -606,13 +605,6 @@ fn machine_join_template() -> MachineJoinTemplate {
                     )
                     .expect("valid nats config digest"),
                 },
-                core_iroh: MachineJoinCoreIrohEndpoint {
-                    node_id: NodeId::try_new("core_1").expect("valid core node id"),
-                    public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
-                        .expect("valid core iroh public key"),
-                    direct_addresses: Vec::new(),
-                    relay_url: None,
-                },
                 ployzd: MachineJoinPloyzdArtifact {
                     version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
                     source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
@@ -652,8 +644,6 @@ fn machine_join_template() -> MachineJoinTemplate {
         secret_delivery: MachineJoinSecretDelivery {
             nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
                 .expect("valid nats credentials"),
-            core_iroh_ticket: MachineJoinIrohTicket::try_new("core-ticket")
-                .expect("valid core iroh ticket"),
         },
     }
 }

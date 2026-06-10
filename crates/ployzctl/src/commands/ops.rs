@@ -1,3 +1,4 @@
+use clap::Parser;
 use ployz_core::ids::OperationId;
 use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
@@ -9,7 +10,7 @@ use ployz_core::ops::{
 use ployz_core::roles::FirstNodeGateway;
 use ployz_sdk_types::OpsStatusRequest;
 
-use crate::commands::PloyzctlCliError;
+use crate::commands::{PloyzctlCliError, clap_error};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsStatusCommand {
@@ -50,51 +51,44 @@ pub enum OpsWatchOutput {
 }
 
 pub fn parse_ops_status_command(args: &[String]) -> Result<OpsStatusCommand, PloyzctlCliError> {
-    let operation_id = parse_operation_id_arg(args)?;
+    let parsed = OpsStatusCli::try_parse_from(
+        std::iter::once("ops status".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
+    let operation_id = parse_operation_id(&parsed.operation_id)?;
 
     Ok(OpsStatusCommand { operation_id })
 }
 
 pub fn parse_ops_watch_command(args: &[String]) -> Result<OpsWatchCommand, PloyzctlCliError> {
-    let (operation_id, output) = match args {
-        [operation_id] => (operation_id, OpsWatchOutput::Text),
-        [flag, operation_id] if flag == "--json" => (operation_id, OpsWatchOutput::Json),
-        [operation_id, flag] if flag == "--json" => (operation_id, OpsWatchOutput::Json),
-        [] => {
-            return Err(PloyzctlCliError::MissingRequiredArgument {
-                flag: "<operation_id>",
-            });
-        }
-        [_, unexpected, ..] => {
-            return Err(PloyzctlCliError::UnexpectedArgument {
-                value: unexpected.clone(),
-            });
-        }
-    };
-    let operation_id = parse_operation_id(operation_id)?;
+    let parsed = OpsWatchCli::try_parse_from(
+        std::iter::once("ops watch".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
+    let operation_id = parse_operation_id(&parsed.operation_id)?;
 
     Ok(OpsWatchCommand {
         operation_id,
-        output,
+        output: if parsed.json {
+            OpsWatchOutput::Json
+        } else {
+            OpsWatchOutput::Text
+        },
     })
 }
 
-fn parse_operation_id_arg(args: &[String]) -> Result<OperationId, PloyzctlCliError> {
-    let operation_id = match args {
-        [] => {
-            return Err(PloyzctlCliError::MissingRequiredArgument {
-                flag: "<operation_id>",
-            });
-        }
-        [operation_id] => operation_id,
-        [_, unexpected, ..] => {
-            return Err(PloyzctlCliError::UnexpectedArgument {
-                value: unexpected.clone(),
-            });
-        }
-    };
+#[derive(Debug, Parser)]
+#[command(name = "ops status")]
+struct OpsStatusCli {
+    operation_id: String,
+}
 
-    parse_operation_id(operation_id)
+#[derive(Debug, Parser)]
+#[command(name = "ops watch")]
+struct OpsWatchCli {
+    operation_id: String,
+    #[arg(long)]
+    json: bool,
 }
 
 fn parse_operation_id(operation_id: &str) -> Result<OperationId, PloyzctlCliError> {

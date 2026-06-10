@@ -2,18 +2,19 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{OperationApiClient, OperationApiClientError, OperationApiRequestFailure};
+use crate::commands::PloyzctlCommand;
 use crate::commands::init::{
     FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeInitMode,
 };
-use crate::commands::{PloyzctlCommand, USAGE};
 use ployz_core::ids::OperationId;
+use ployz_core::install::FirstNodeInstallSpec;
 use ployz_core::ops::{
     EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, ReplayedOperationEvent,
 };
@@ -94,7 +95,7 @@ pub async fn execute_command(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     match command {
-        PloyzctlCommand::Help => Ok(PloyzctlExecutionOutput::stdout(format!("{USAGE}\n"))),
+        PloyzctlCommand::Help(help) => Ok(PloyzctlExecutionOutput::stdout(help)),
         PloyzctlCommand::Deploy(command) => {
             let api = operation_api_client(config).await?;
             let request = command.into_request();
@@ -365,7 +366,13 @@ fn run_keeper_first_node_install(
     keeper_install: &ployz_core::install::KeeperFirstNodeInstall,
     timeout: Duration,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let args = keeper_install.command_args();
+    let args = vec![
+        "first-node-install".to_owned(),
+        "--spec".to_owned(),
+        "-".to_owned(),
+    ];
+    let spec = serde_json::to_vec(&FirstNodeInstallSpec::from(keeper_install.clone()))
+        .expect("first-node install spec serializes");
     let mut capture =
         OutputCapture::new().map_err(|message| PloyzctlExecutionError::KeeperFirstNodeInstall {
             source: Box::new(LocalKeeperInstallError::CaptureSetup {
@@ -375,6 +382,7 @@ fn run_keeper_first_node_install(
         })?;
     let mut child = Command::new(keeper_binary)
         .args(&args)
+        .stdin(Stdio::piped())
         .stdout(capture.stdout_stdio().map_err(|message| {
             PloyzctlExecutionError::KeeperFirstNodeInstall {
                 source: Box::new(LocalKeeperInstallError::CaptureSetup {
@@ -398,6 +406,23 @@ fn run_keeper_first_node_install(
                 message: error.to_string(),
             }),
         })?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(PloyzctlExecutionError::KeeperFirstNodeInstall {
+            source: Box::new(LocalKeeperInstallError::Stdin {
+                command: render_command(keeper_binary, &args),
+                message: "keeper stdin was not piped".to_owned(),
+            }),
+        });
+    };
+    stdin
+        .write_all(&spec)
+        .map_err(|error| PloyzctlExecutionError::KeeperFirstNodeInstall {
+            source: Box::new(LocalKeeperInstallError::Stdin {
+                command: render_command(keeper_binary, &args),
+                message: error.to_string(),
+            }),
+        })?;
+    drop(stdin);
     let started_at = Instant::now();
 
     let status = loop {
@@ -797,6 +822,10 @@ pub enum LocalKeeperInstallError {
         command: String,
         message: String,
     },
+    Stdin {
+        command: String,
+        message: String,
+    },
     Wait {
         command: String,
         message: String,
@@ -828,6 +857,9 @@ impl fmt::Display for LocalKeeperInstallError {
             }
             Self::Spawn { command, message } => {
                 write!(formatter, "{command} failed to start: {message}")
+            }
+            Self::Stdin { command, message } => {
+                write!(formatter, "{command} failed while writing stdin: {message}")
             }
             Self::Wait { command, message } => {
                 write!(formatter, "{command} failed while waiting: {message}")

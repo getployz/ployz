@@ -1,7 +1,8 @@
 use std::fmt;
 
+use clap::Parser;
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{MachineJoinBundle, MachineJoinEdgeTunnel};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::state::GatewayServingStatus;
 use ployz_sdk_types::{
@@ -14,7 +15,7 @@ pub use ployz_sdk_types::{
     BootstrapCommandError, MachineBootstrapUrl, MachineJoinRuntimeNatsUrl, MachineJoinToken,
 };
 
-use crate::commands::{ArgCursor, PloyzctlCliError, invalid_value, required, set_once};
+use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
 use crate::shell::shell_quote;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,11 +64,10 @@ impl MachineAddOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nnode {}\njoin-token {}\nbootstrap-tunnel {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
+            "operation {}\nnode {}\njoin-token {}\ninstall curl -fsSL -- {} | {} -s -- --join-token {}\n",
             self.accepted.operation_id.as_str(),
             self.node_id.as_str(),
             self.join_token.as_str(),
-            self.render_bootstrap_tunnel_command(),
             shell_quote(self.bootstrap_url.as_str()),
             format_args!(
                 "PLOYZ_NATS_URL={} sh",
@@ -80,50 +80,6 @@ impl MachineAddOutput {
     #[must_use]
     fn runtime_nats_url(&self) -> &MachineJoinRuntimeNatsUrl {
         &self.join_bundle.material.runtime_nats_url
-    }
-
-    #[must_use]
-    fn render_bootstrap_tunnel_command(&self) -> String {
-        let tunnel = MachineJoinEdgeTunnel::from_join_bundle(&self.join_bundle);
-        let direct_addresses = tunnel
-            .core_direct_addresses
-            .iter()
-            .map(ployz_core::install::MachineJoinIrohDirectAddress::as_str)
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut env = vec![
-            format!(
-                "PLOYZ_NATS_URL={}",
-                shell_quote(tunnel.runtime_nats_url.as_str())
-            ),
-            format!("PLOYZ_NODE_ID={}", shell_quote(self.node_id.as_str())),
-            format!(
-                "PLOYZ_TUNNEL_LISTEN_ADDR={}",
-                shell_quote(&tunnel.listen_addr.to_string())
-            ),
-            format!(
-                "PLOYZ_TUNNEL_CORE_NODE={}",
-                shell_quote(tunnel.core_node.as_str())
-            ),
-            format!(
-                "PLOYZ_TUNNEL_CORE_PUBLIC_KEY={}",
-                shell_quote(tunnel.core_public_key.as_str())
-            ),
-        ];
-        if !direct_addresses.is_empty() {
-            env.push(format!(
-                "PLOYZ_TUNNEL_CORE_DIRECT_ADDRS={}",
-                shell_quote(&direct_addresses)
-            ));
-        }
-        if let Some(relay_url) = &tunnel.core_relay_url {
-            env.push(format!(
-                "PLOYZ_TUNNEL_CORE_RELAY_URL={}",
-                shell_quote(relay_url.as_str())
-            ));
-        }
-        env.push("ployzd tunnel --side edge".to_owned());
-        env.join(" ")
     }
 }
 
@@ -141,54 +97,39 @@ impl fmt::Debug for MachineAddOutput {
 }
 
 pub fn parse_machine_add_command(args: &[String]) -> Result<MachineAddCommand, PloyzctlCliError> {
-    let mut node_id = None;
-    let mut name = None;
-    let mut gateway = MachineAddGateway::Skip;
-    let mut operation_id = None;
-    let mut idempotency_key = None;
-    let mut args = ArgCursor::new(args);
-
-    while !args.is_empty() {
-        if args.take_flag("--gateway") {
-            if gateway == MachineAddGateway::Install {
-                return Err(PloyzctlCliError::DuplicateArgument { flag: "--gateway" });
-            }
-            gateway = MachineAddGateway::Install;
-            continue;
-        }
-        if let Some(value) = args.take_value("--node")? {
-            let parsed = NodeId::try_new(value).map_err(|error| invalid_value("--node", error))?;
-            set_once(&mut node_id, parsed, "--node")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--name")? {
-            let parsed =
-                MachineName::try_new(value).map_err(|error| invalid_value("--name", error))?;
-            set_once(&mut name, parsed, "--name")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--operation")? {
-            let parsed =
-                OperationId::try_new(value).map_err(|error| invalid_value("--operation", error))?;
-            set_once(&mut operation_id, parsed, "--operation")?;
-            continue;
-        }
-        if let Some(value) = args.take_value("--idempotency-key")? {
-            let parsed = OperationIdempotencyKey::try_new(value)
-                .map_err(|error| invalid_value("--idempotency-key", error))?;
-            set_once(&mut idempotency_key, parsed, "--idempotency-key")?;
-            continue;
-        }
-        return Err(args.unexpected());
-    }
+    let parsed = MachineAddCli::try_parse_from(
+        std::iter::once("machine add".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
 
     Ok(MachineAddCommand {
-        operation_id: required(operation_id, "--operation")?,
-        idempotency_key: required(idempotency_key, "--idempotency-key")?,
-        node_id: required(node_id, "--node")?,
-        name: required(name, "--name")?,
-        gateway,
+        operation_id: OperationId::try_new(parsed.operation)
+            .map_err(|error| invalid_value("--operation", error))?,
+        idempotency_key: OperationIdempotencyKey::try_new(parsed.idempotency_key)
+            .map_err(|error| invalid_value("--idempotency-key", error))?,
+        node_id: NodeId::try_new(parsed.node).map_err(|error| invalid_value("--node", error))?,
+        name: MachineName::try_new(parsed.name).map_err(|error| invalid_value("--name", error))?,
+        gateway: if parsed.gateway {
+            MachineAddGateway::Install
+        } else {
+            MachineAddGateway::Skip
+        },
     })
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "machine add")]
+struct MachineAddCli {
+    #[arg(long)]
+    node: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    operation: String,
+    #[arg(long)]
+    idempotency_key: String,
+    #[arg(long)]
+    gateway: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,12 +143,11 @@ impl MachineListCommand {
 }
 
 pub fn parse_machine_list_command(args: &[String]) -> Result<MachineListCommand, PloyzctlCliError> {
-    match args {
-        [] => Ok(MachineListCommand),
-        [unexpected, ..] => Err(PloyzctlCliError::UnexpectedArgument {
-            value: unexpected.clone(),
-        }),
-    }
+    EmptyCli::try_parse_from(
+        std::iter::once("machine list".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
+    Ok(MachineListCommand)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,22 +167,24 @@ impl MachineInspectCommand {
 pub fn parse_machine_inspect_command(
     args: &[String],
 ) -> Result<MachineInspectCommand, PloyzctlCliError> {
-    let node_id = match args {
-        [] => {
-            return Err(PloyzctlCliError::MissingRequiredArgument { flag: "<node_id>" });
-        }
-        [node_id] => node_id,
-        [_, unexpected, ..] => {
-            return Err(PloyzctlCliError::UnexpectedArgument {
-                value: unexpected.clone(),
-            });
-        }
-    };
+    let parsed = MachineInspectCli::try_parse_from(
+        std::iter::once("machine inspect".to_owned()).chain(args.iter().cloned()),
+    )
+    .map_err(clap_error)?;
     let node_id =
-        NodeId::try_new(node_id.clone()).map_err(|error| invalid_value("<node_id>", error))?;
+        NodeId::try_new(parsed.node_id).map_err(|error| invalid_value("<node_id>", error))?;
 
     Ok(MachineInspectCommand { node_id })
 }
+
+#[derive(Debug, Parser)]
+#[command(name = "machine inspect")]
+struct MachineInspectCli {
+    node_id: String,
+}
+
+#[derive(Debug, Parser)]
+struct EmptyCli {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineListOutput {

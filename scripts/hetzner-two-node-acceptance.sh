@@ -1,4 +1,6 @@
 #!/bin/sh
+# STALE: superseded by ADR-0013 (direct TLS NATS, no iroh tunnel). Do not run.
+# Hetzner acceptance is out of scope; the DinD e2e harness replaces it.
 set -eu
 
 command="${1:-}"
@@ -556,6 +558,8 @@ case "$command" in
     remote_bootstrap_tunnel_secret="${remote_dir}/bootstrap-tunnel.key"
     remote_bootstrap_tunnel_public="${remote_dir}/bootstrap-tunnel.public"
     remote_join_template="/etc/ployz/machine-join-template.json"
+    remote_artifact_spec="/etc/ployz/machine-join-artifacts.json"
+    remote_first_node_install_spec="/etc/ployz/first-node-install.json"
     remote_secret_delivery="/etc/ployz/machine-join-secret-delivery.json"
     remote_core_iroh_secret="/var/lib/ployz/iroh/endpoint.key"
     core_iroh_port="4433"
@@ -583,7 +587,65 @@ case "$command" in
     stage_host "$edge_ip"
     remote_sh "$core_ip" "install -d -m 0700 /etc/ployz"
     remote_sh "$core_ip" "umask 077; cat > '$remote_secret_delivery'" <<'JSON'
-{"nats_credentials":"acceptance-node-creds","core_iroh_ticket":"acceptance-core-ticket"}
+{"nats_credentials":"acceptance-node-creds"}
+JSON
+    remote_sh "$core_ip" "cat > '$remote_artifact_spec'" <<JSON
+{
+  "ployzd": {
+    "version": "acceptance",
+    "source": "$remote_ployzd",
+    "sha256": "$ployzd_sha256",
+    "install_path": "/usr/local/bin/ployzd"
+  },
+  "ebpf_bytecode": {
+    "version": "acceptance",
+    "source": "$remote_ebpf_bytecode_source",
+    "sha256": "$ebpf_bytecode_sha256",
+    "install_path": "$remote_ebpf_path"
+  },
+  "ebpf_ctl": {
+    "version": "acceptance",
+    "source": "$remote_ebpf_ctl_source",
+    "sha256": "$ebpf_ctl_sha256",
+    "install_path": "$remote_ebpf_ctl"
+  }
+}
+JSON
+    remote_sh "$core_ip" "cat > '$remote_first_node_install_spec'" <<JSON
+{
+  "node_id": "core_1",
+  "gateway": "install",
+  "node_public_ip": "$core_ip",
+  "machine_bootstrap_url": "https://get.ployz.dev/ployz.sh",
+  "machine_join_template_file": "$remote_join_template",
+  "artifacts": {
+    "ployzd": {
+      "version": "acceptance",
+      "source": "$remote_ployzd",
+      "sha256": "$ployzd_sha256",
+      "install_path": "/usr/local/bin/ployzd"
+    },
+    "ebpf_bytecode": {
+      "version": "acceptance",
+      "source": "$remote_ebpf_bytecode_source",
+      "sha256": "$ebpf_bytecode_sha256",
+      "install_path": "$remote_ebpf_path"
+    },
+    "ebpf_ctl": {
+      "version": "acceptance",
+      "source": "$remote_ebpf_ctl_source",
+      "sha256": "$ebpf_ctl_sha256",
+      "install_path": "$remote_ebpf_ctl"
+    },
+    "nats_server": {
+      "version": "acceptance",
+      "source": "$remote_nats_server",
+      "sha256": "$nats_sha256",
+      "binary": "/usr/local/bin/nats-server",
+      "config": "/etc/nats/nats-server.conf"
+    }
+  }
+}
 JSON
     core_iroh_identity_log="${log_dir}/core-iroh-identity.log"
     run_remote_logged core-iroh-identity "$core_ip" \
@@ -592,10 +654,10 @@ JSON
     [ -n "$core_iroh_public_key" ] || die "core iroh identity did not print a public key; output: ${core_iroh_identity_log}"
 
     run_remote_logged render-join-template "$core_ip" \
-      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --core-iroh-public-key '$core_iroh_public_key' --core-iroh-direct-address '${core_ip}:${core_iroh_port}' --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --artifact-spec '$remote_artifact_spec' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
 
     run_remote_logged install-core "$core_ip" \
-      "'$remote_keeper' first-node-install --node core_1 --node-public-ip '$core_ip' --gateway --ployzd-version acceptance --ployzd-source '$remote_ployzd' --ployzd-sha256 '$ployzd_sha256' --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version acceptance --ebpf-bytecode-source '$remote_ebpf_bytecode_source' --ebpf-bytecode-sha256 '$ebpf_bytecode_sha256' --ebpf-bytecode-install-path '$remote_ebpf_path' --ebpf-ctl-version acceptance --ebpf-ctl-source '$remote_ebpf_ctl_source' --ebpf-ctl-sha256 '$ebpf_ctl_sha256' --ebpf-ctl-install-path '$remote_ebpf_ctl' --nats-version acceptance --nats-source '$remote_nats_server' --nats-sha256 '$nats_sha256' --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://get.ployz.dev/ployz.sh --machine-join-template-file '$remote_join_template'"
+      "'$remote_keeper' first-node-install --spec '$remote_first_node_install_spec'"
 
     run_remote_logged activate-core "$core_ip" \
       "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' init activate-first-node --node core_1 --gateway"

@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+clap.workspace = true
 ipnet = "2"
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
 

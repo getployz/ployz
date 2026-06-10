@@ -1,4 +1,3 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -6,11 +5,8 @@ use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{
-    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinIrohRelayUrl,
-};
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
+use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
     DataplaneArtifactTargets, EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget,
@@ -232,7 +228,6 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     let roles = vec![
         DaemonProcessRole::Node(node_id("node_7")),
         DaemonProcessRole::Gateway,
-        DaemonProcessRole::Tunnel(TunnelSide::Edge),
     ];
     let material = keeper_join_material();
     let plan = keeper_join_local_install_plan(KeeperJoinTarget::new(
@@ -260,15 +255,6 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     let rendered_env = edge_role_environment().render();
     assert!(rendered_env.contains("PLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n"));
     assert!(rendered_env.contains("PLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"));
-    assert!(
-        rendered_env.contains("PLOYZ_TUNNEL_SECRET_KEY_FILE=/var/lib/ployz/iroh/endpoint.key\n")
-    );
-    assert!(
-        rendered_env.contains("PLOYZ_TUNNEL_PUBLIC_KEY_FILE=/var/lib/ployz/iroh/endpoint.public\n")
-    );
-    assert!(rendered_env.contains("PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0\n"));
-    assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS=203.0.113.10:4433\n"));
-    assert!(rendered_env.contains("PLOYZ_TUNNEL_CORE_RELAY_URL=https://relay.example.test\n"));
 
     for role in roles {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
@@ -321,11 +307,7 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
         SupervisorUnitTarget::NatsServer
     )));
 
-    for role in [
-        DaemonProcessRole::Tunnel(TunnelSide::Core),
-        DaemonProcessRole::Control,
-        DaemonProcessRole::Node(node_id),
-    ] {
+    for role in [DaemonProcessRole::Control, DaemonProcessRole::Node(node_id)] {
         let unit = SupervisorUnitTarget::PloyzdRole(role);
         assert!(plan_writes_unit(&plan, &unit));
         assert!(
@@ -380,13 +362,7 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
 fn join_material_cluster_name_rejects_persisted_format_breakers() {
     for value in ["prod\nnext", "prod\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(
-                node_id("node_7"),
-                value,
-                "server_1",
-                NATS_CONFIG_DIGEST,
-                "core-public-key"
-            ),
+            RedactedJoinMaterial::new(node_id("node_7"), value, "server_1", NATS_CONFIG_DIGEST,),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "cluster name",
                 value: value.to_owned(),
@@ -399,13 +375,7 @@ fn join_material_cluster_name_rejects_persisted_format_breakers() {
 fn join_material_rejects_persisted_line_breakers() {
     for value in ["server_1\nnext", "server_1\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(
-                node_id("node_7"),
-                "prod",
-                value,
-                NATS_CONFIG_DIGEST,
-                "core-public-key"
-            ),
+            RedactedJoinMaterial::new(node_id("node_7"), "prod", value, NATS_CONFIG_DIGEST,),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "trusted NATS server",
                 value: value.to_owned(),
@@ -883,8 +853,6 @@ fn keeper_join_material() -> KeeperJoinMaterial {
         "user-jwt-and-seed",
         "server_1",
         NATS_CONFIG_DIGEST,
-        "core-public-key",
-        "core-ticket",
     )
     .expect("valid join material")
 }
@@ -1002,7 +970,6 @@ fn role_environment() -> PloyzdRoleEnvironmentTarget {
     )
     .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
-    .with_core_tunnel_nats_addr(socket(4222))
 }
 
 fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
@@ -1014,23 +981,6 @@ fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
     )
     .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
-    .with_edge_tunnel(
-        socket(7422),
-        node_id("server_1"),
-        MachineJoinIrohPublicKey::try_new("core-public-key").expect("valid core public key"),
-        vec![
-            MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
-                .expect("valid direct address"),
-        ],
-        Some(
-            MachineJoinIrohRelayUrl::try_new("https://relay.example.test")
-                .expect("valid relay url"),
-        ),
-    )
-}
-
-fn socket(port: u16) -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }
 
 fn version(value: &str) -> ArtifactVersion {

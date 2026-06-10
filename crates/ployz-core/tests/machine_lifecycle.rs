@@ -7,7 +7,7 @@ use ployz_core::machine::{
     redeem_join_token,
 };
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, TunnelSide};
+use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 
 #[test]
 fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
@@ -22,10 +22,7 @@ fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
     );
     assert_eq!(
         plan.process_set.roles(),
-        &[
-            DaemonProcessRole::Tunnel(TunnelSide::Edge),
-            DaemonProcessRole::Node(node_id("node_2")),
-        ]
+        &[DaemonProcessRole::Node(node_id("node_2"))]
     );
 }
 
@@ -36,7 +33,6 @@ fn machine_add_plan_can_include_gateway_on_joining_node() {
     assert_eq!(
         plan.process_set.roles(),
         &[
-            DaemonProcessRole::Tunnel(TunnelSide::Edge),
             DaemonProcessRole::Node(node_id("node_2")),
             DaemonProcessRole::Gateway,
         ]
@@ -99,7 +95,7 @@ fn missing_readiness_check_fails_without_activating_machine() {
         panic!("join token should redeem");
     };
     let evidence = MachineReadinessEvidence {
-        nats_tunnel: MachineReadinessCheck::Confirmed,
+        nats_connection: MachineReadinessCheck::Confirmed,
         heartbeat: MachineReadinessCheck::Missing {
             reason: failure("heartbeat missing"),
         },

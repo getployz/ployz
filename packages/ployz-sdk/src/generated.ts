@@ -90,7 +90,7 @@ export type MachineAddOperationStateName = "pending" | "joining" | "completed" |
 
 export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, };
 
-export type MachineReadinessEvidence = { nats_tunnel: MachineReadinessCheck, heartbeat: MachineReadinessCheck, node_inspect: MachineReadinessCheck, };
+export type MachineReadinessEvidence = { nats_connection: MachineReadinessCheck, heartbeat: MachineReadinessCheck, node_inspect: MachineReadinessCheck, };
 
 export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
 
@@ -270,9 +270,9 @@ export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
 
-export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, core_iroh: MachineJoinCoreIrohEndpoint, ployzd: MachineJoinPloyzdArtifact, ebpf_bytecode: MachineJoinArtifact, ebpf_ctl: MachineJoinArtifact, };
+export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, ployzd: MachineJoinPloyzdArtifact, ebpf_bytecode: MachineJoinArtifact, ebpf_ctl: MachineJoinArtifact, };
 
-export type MachineJoinSecretDelivery = { nats_credentials: MachineJoinNatsCredentials, core_iroh_ticket: MachineJoinIrohTicket, };
+export type MachineJoinSecretDelivery = { nats_credentials: MachineJoinNatsCredentials, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, };
 
@@ -281,16 +281,6 @@ export type MachineJoinNatsCredentials = string;
 export type MachineJoinTrustedNatsServerId = string;
 
 export type MachineJoinTrustedNats = { server_id: MachineJoinTrustedNatsServerId, config_sha256: InstallSha256Digest, };
-
-export type MachineJoinIrohPublicKey = string;
-
-export type MachineJoinIrohDirectAddress = string;
-
-export type MachineJoinIrohRelayUrl = string;
-
-export type MachineJoinIrohTicket = string;
-
-export type MachineJoinCoreIrohEndpoint = { node_id: NodeId, public_key: MachineJoinIrohPublicKey, direct_addresses: Array<MachineJoinIrohDirectAddress>, relay_url: MachineJoinIrohRelayUrl | null, };
 
 export type InstallArtifactVersion = string;
 

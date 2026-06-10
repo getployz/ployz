@@ -588,15 +588,6 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid nats config digest"),
             },
-            core_iroh: ployz_core::install::MachineJoinCoreIrohEndpoint {
-                node_id: ployz_core::ids::NodeId::try_new("core_1").expect("valid core node id"),
-                public_key: ployz_core::install::MachineJoinIrohPublicKey::try_new(
-                    "core-public-key",
-                )
-                .expect("valid core iroh public key"),
-                direct_addresses: Vec::new(),
-                relay_url: None,
-            },
             ployzd: MachineJoinPloyzdArtifact {
                 version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
                     .expect("valid version"),
@@ -671,8 +662,6 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
             "user-jwt-and-seed",
         )
         .expect("valid nats credentials"),
-        core_iroh_ticket: ployz_core::install::MachineJoinIrohTicket::try_new("core-ticket")
-            .expect("valid core iroh ticket"),
     }
 }
 

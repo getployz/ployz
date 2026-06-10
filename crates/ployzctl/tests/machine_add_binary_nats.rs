@@ -3,8 +3,7 @@ use std::process::{Command, Output};
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinCoreIrohEndpoint,
-    MachineJoinIrohDirectAddress, MachineJoinIrohPublicKey, MachineJoinMaterial,
+    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
     MachineJoinTrustedNatsServerId,
 };
@@ -94,7 +93,7 @@ async fn binary_machine_add_calls_nats_service() {
     );
     assert_eq!(
         stdout(&output),
-        "operation op_machine\nnode node_2\njoin-token join_once_123\nbootstrap-tunnel PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NODE_ID='node_2' PLOYZ_TUNNEL_LISTEN_ADDR='127.0.0.1:7422' PLOYZ_TUNNEL_CORE_NODE='core_1' PLOYZ_TUNNEL_CORE_PUBLIC_KEY='core-public-key' PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='203.0.113.10:4433' ployzd tunnel --side edge\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='nats://127.0.0.1:7422' sh -s -- --join-token 'join_once_123'\n"
+        "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='nats://127.0.0.1:7422' sh -s -- --join-token 'join_once_123'\n"
     );
     assert_eq!(stderr(&output), "");
 }
@@ -159,16 +158,6 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 config_sha256: digest(
                     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 ),
-            },
-            core_iroh: MachineJoinCoreIrohEndpoint {
-                node_id: node_id("core_1"),
-                public_key: MachineJoinIrohPublicKey::try_new("core-public-key")
-                    .expect("valid core iroh public key"),
-                direct_addresses: vec![
-                    MachineJoinIrohDirectAddress::try_new("203.0.113.10:4433")
-                        .expect("valid direct address"),
-                ],
-                relay_url: None,
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: version("0.1.0"),

@@ -138,8 +138,6 @@ async fn operation_repository_machine_add_retry_rejects_secret_delivery_drift() 
             "different-user-jwt-and-seed",
         )
         .expect("valid nats credentials"),
-        core_iroh_ticket: ployz_core::install::MachineJoinIrohTicket::try_new("core-ticket")
-            .expect("valid iroh ticket"),
     };
 
     assert!(

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use clap::{Arg, Command, Parser};
+
 pub mod backup;
 pub mod deploy;
 pub mod init;
@@ -9,24 +11,6 @@ pub mod logs;
 pub mod machine;
 pub mod ops;
 pub mod service;
-
-pub const USAGE: &str = "\
-ployzctl [--nats <url>] <command>
-
-ployzctl init activate-first-node --node <id> [--gateway]
-ployzctl init --node <id> [--gateway] (--emit-keeper-install | --run-keeper-install) --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --nats-version <version> --nats-source <path> --nats-sha256 <sha256> --nats-binary <path> --nats-config <path> [--node-public-ip <ip>] [--machine-bootstrap-url <url>] [--machine-join-template-file <path>] [--keeper-binary <path>]
-ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --core-iroh-public-key <key> [--core-iroh-direct-address <addr>] [--core-iroh-relay-url <url>] --ployzd-version <version> --ployzd-source <path> --ployzd-sha256 <sha256> --ployzd-install-path <path> --ebpf-bytecode-version <version> --ebpf-bytecode-source <path> --ebpf-bytecode-sha256 <sha256> --ebpf-bytecode-install-path <path> --ebpf-ctl-version <version> --ebpf-ctl-source <path> --ebpf-ctl-sha256 <sha256> --ebpf-ctl-install-path <path> --secret-delivery-file <path>
-ployzctl backup create --operation <id> --idempotency-key <key>
-ployzctl backup restore --plan
-ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]
-ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
-ployzctl machine list
-ployzctl machine inspect <node_id>
-ployzctl service list
-ployzctl service inspect <service_id>
-ployzctl logs <container_id> [--node <node_id>] [--tail <n>]
-ployzctl ops status <operation_id>
-ployzctl ops watch [--json] <operation_id>";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzctlInvocation {
@@ -50,32 +34,37 @@ pub enum PloyzctlCommand {
     LogsTail(logs::LogsTailCommand),
     OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
-    Help,
+    Help(String),
 }
 
 pub fn parse_invocation(
     args: impl IntoIterator<Item = String>,
 ) -> Result<PloyzctlInvocation, PloyzctlCliError> {
-    let args = args.into_iter().collect::<Vec<_>>();
-    let mut nats_url = None;
-    let mut command_start = 0;
-
-    while let Some(flag) = args.get(command_start) {
-        if flag == "--nats" {
-            let Some(value) = args.get(command_start + 1) else {
-                return Err(PloyzctlCliError::MissingValue { flag: "--nats" });
-            };
-            set_once(&mut nats_url, flag_value("--nats", value)?, "--nats")?;
-            command_start += 2;
-            continue;
-        }
-        break;
-    }
+    let parsed =
+        match InvocationCli::try_parse_from(std::iter::once("ployzctl".to_owned()).chain(args)) {
+            Ok(parsed) => parsed,
+            Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {
+                return Ok(PloyzctlInvocation {
+                    nats_url: None,
+                    command: PloyzctlCommand::Help(error.to_string()),
+                });
+            }
+            Err(error) => return Err(clap_error(error)),
+        };
 
     Ok(PloyzctlInvocation {
-        nats_url,
-        command: parse_command(args.into_iter().skip(command_start))?,
+        nats_url: parsed.nats,
+        command: parse_command(parsed.command)?,
     })
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "ployzctl", disable_help_subcommand = true)]
+struct InvocationCli {
+    #[arg(long)]
+    nats: Option<String>,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
 }
 
 pub fn parse_command(
@@ -83,8 +72,8 @@ pub fn parse_command(
 ) -> Result<PloyzctlCommand, PloyzctlCliError> {
     let args = args.into_iter().collect::<Vec<_>>();
     match args.as_slice() {
-        [] => Ok(PloyzctlCommand::Help),
-        [flag] if flag == "--help" || flag == "-h" => Ok(PloyzctlCommand::Help),
+        [] => Ok(PloyzctlCommand::Help(help_text())),
+        [flag] if flag == "--help" || flag == "-h" => Ok(PloyzctlCommand::Help(help_text())),
         [command, rest @ ..] if command == "deploy" => {
             deploy::parse_deploy_command(rest).map(PloyzctlCommand::Deploy)
         }
@@ -131,33 +120,41 @@ pub fn parse_command(
         [command, subcommand, rest @ ..] if command == "ops" && subcommand == "watch" => {
             ops::parse_ops_watch_command(rest).map(PloyzctlCommand::OpsWatch)
         }
-        [unknown, ..] => Err(PloyzctlCliError::UnexpectedArgument {
-            value: unknown.clone(),
-        }),
+        [unknown, ..] => Err(cli_error(format!("unexpected argument: {unknown}"))),
     }
 }
 
-pub(crate) fn flag_value(flag: &'static str, value: &str) -> Result<String, PloyzctlCliError> {
-    if value.starts_with('-') {
-        return Err(PloyzctlCliError::MissingValue { flag });
-    }
-    Ok(value.to_owned())
-}
-
-pub(crate) fn set_once<T>(
-    slot: &mut Option<T>,
-    value: T,
-    flag: &'static str,
-) -> Result<(), PloyzctlCliError> {
-    if slot.is_some() {
-        return Err(PloyzctlCliError::DuplicateArgument { flag });
-    }
-    *slot = Some(value);
-    Ok(())
-}
-
-pub(crate) fn required<T>(value: Option<T>, flag: &'static str) -> Result<T, PloyzctlCliError> {
-    value.ok_or(PloyzctlCliError::MissingRequiredArgument { flag })
+#[must_use]
+pub fn help_text() -> String {
+    let mut command = Command::new("ployzctl")
+        .disable_help_subcommand(true)
+        .arg(Arg::new("nats").long("nats").value_name("url").global(true))
+        .subcommand(Command::new("init"))
+        .subcommand(Command::new("backup"))
+        .subcommand(Command::new("deploy"))
+        .subcommand(Command::new("machine"))
+        .subcommand(Command::new("service"))
+        .subcommand(Command::new("logs"))
+        .subcommand(Command::new("ops"))
+        .after_help(
+            "Commands:
+  ployzctl init activate-first-node --node <id> [--gateway]
+  ployzctl init --node <id> [--gateway]
+  ployzctl init (--emit-keeper-install | --run-keeper-install) --install-spec <path|-> [--keeper-binary <path>]
+  ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --artifact-spec <path|-> --secret-delivery-file <path>
+  ployzctl backup create --operation <id> --idempotency-key <key>
+  ployzctl backup restore --plan
+  ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]
+  ployzctl machine add --node <id> --name <name> --operation <id> --idempotency-key <key> [--gateway]
+  ployzctl machine list
+  ployzctl machine inspect <node_id>
+  ployzctl service list
+  ployzctl service inspect <service_id>
+  ployzctl logs <container_id> [--node <node_id>] [--tail <n>]
+  ployzctl ops status <operation_id>
+  ployzctl ops watch [--json] <operation_id>",
+        );
+    command.render_help().to_string()
 }
 
 pub(crate) fn invalid_value(flag: &'static str, error: impl fmt::Display) -> PloyzctlCliError {
@@ -167,91 +164,31 @@ pub(crate) fn invalid_value(flag: &'static str, error: impl fmt::Display) -> Plo
     }
 }
 
-pub(crate) struct ArgCursor<'a> {
-    rest: &'a [String],
+pub(crate) fn cli_error(message: impl Into<String>) -> PloyzctlCliError {
+    PloyzctlCliError::Clap {
+        message: message.into(),
+    }
 }
 
-impl<'a> ArgCursor<'a> {
-    pub(crate) const fn new(rest: &'a [String]) -> Self {
-        Self { rest }
-    }
-
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.rest.is_empty()
-    }
-
-    pub(crate) fn take_flag(&mut self, flag: &'static str) -> bool {
-        match self.rest {
-            [head, tail @ ..] if head == flag => {
-                self.rest = tail;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    pub(crate) fn take_value(
-        &mut self,
-        flag: &'static str,
-    ) -> Result<Option<String>, PloyzctlCliError> {
-        match self.rest {
-            [head] if head == flag => Err(PloyzctlCliError::MissingValue { flag }),
-            [head, value, tail @ ..] if head == flag => {
-                let value = flag_value(flag, value)?;
-                self.rest = tail;
-                Ok(Some(value))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    pub(crate) fn unexpected(&self) -> PloyzctlCliError {
-        let [value, ..] = self.rest else {
-            unreachable!("unexpected is only called for non-empty args");
-        };
-        PloyzctlCliError::UnexpectedArgument {
-            value: value.clone(),
-        }
+pub(crate) fn clap_error(error: clap::Error) -> PloyzctlCliError {
+    PloyzctlCliError::Clap {
+        message: error.to_string(),
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCliError {
-    MissingRequiredArgument {
-        flag: &'static str,
-    },
-    MissingValue {
-        flag: &'static str,
-    },
-    DuplicateArgument {
-        flag: &'static str,
-    },
-    ConflictingArguments {
-        first: &'static str,
-        second: &'static str,
-    },
-    InvalidValue {
-        flag: &'static str,
-        message: String,
-    },
-    UnexpectedArgument {
-        value: String,
-    },
+    InvalidValue { flag: &'static str, message: String },
+    Clap { message: String },
 }
 
 impl fmt::Display for PloyzctlCliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingRequiredArgument { flag } => write!(formatter, "{flag} is required"),
-            Self::MissingValue { flag } => write!(formatter, "{flag} requires a value"),
-            Self::DuplicateArgument { flag } => write!(formatter, "{flag} was provided twice"),
-            Self::ConflictingArguments { first, second } => {
-                write!(formatter, "{first} and {second} cannot be used together")
-            }
             Self::InvalidValue { flag, message } => {
                 write!(formatter, "{flag} has an invalid value: {message}")
             }
-            Self::UnexpectedArgument { value } => write!(formatter, "unexpected argument: {value}"),
+            Self::Clap { message } => formatter.write_str(message),
         }
     }
 }

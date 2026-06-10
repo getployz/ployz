@@ -224,12 +224,6 @@ write_join_template() {
         "server_id": "server_1",
         "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
-      "core_iroh": {
-        "node_id": "core_1",
-        "public_key": "core-public-key",
-        "direct_addresses": [],
-        "relay_url": null
-      },
       "ployzd": {
         "version": "local",
         "source": "${ployzd}",
@@ -251,8 +245,7 @@ write_join_template() {
     }
   },
   "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed",
-    "core_iroh_ticket": "core-ticket"
+    "nats_credentials": "user-jwt-and-seed"
   }
 }
 JSON
@@ -278,7 +271,43 @@ start_nats_and_control() {
   ebpf_ctl_sha="$(docker exec "${core_machine}" sha256sum "${ebpf_ctl}" | cut -d" " -f1)"
   nats_sha="$(docker exec "${core_machine}" sha256sum "${nats_server}" | cut -d" " -f1)"
   write_join_template "${core_nats_url}" "${ployzd_sha}" "${ebpf_bytecode_sha}" "${ebpf_ctl_sha}"
-  docker exec "${core_machine}" bash -lc "${ployzctl} init --run-keeper-install --node core_1 --gateway --keeper-binary ${keeper} --ployzd-version local --ployzd-source ${ployzd} --ployzd-sha256 ${ployzd_sha} --ployzd-install-path /usr/local/bin/ployzd --ebpf-bytecode-version local --ebpf-bytecode-source ${ebpf_bytecode} --ebpf-bytecode-sha256 ${ebpf_bytecode_sha} --ebpf-bytecode-install-path /usr/local/lib/ployz/ebpf/ployz-ebpf-tc --ebpf-ctl-version local --ebpf-ctl-source ${ebpf_ctl} --ebpf-ctl-sha256 ${ebpf_ctl_sha} --ebpf-ctl-install-path /usr/local/bin/ployz-ebpf-ctl --nats-version local --nats-source ${nats_server} --nats-sha256 ${nats_sha} --nats-binary /usr/local/bin/nats-server --nats-config /etc/nats/nats-server.conf --machine-bootstrap-url https://local.invalid/ployz.sh --machine-join-template-file /etc/ployz/machine-join-template.json --node-public-ip ${core_ip} >/tmp/ployz-init.log 2>&1"
+  docker exec -i "${core_machine}" bash -lc "cat > /tmp/ployz-first-node-install.json" <<JSON
+{
+  "node_id": "core_1",
+  "gateway": "install",
+  "node_public_ip": "${core_ip}",
+  "machine_bootstrap_url": "https://local.invalid/ployz.sh",
+  "machine_join_template_file": "/etc/ployz/machine-join-template.json",
+  "artifacts": {
+    "ployzd": {
+      "version": "local",
+      "source": "${ployzd}",
+      "sha256": "${ployzd_sha}",
+      "install_path": "/usr/local/bin/ployzd"
+    },
+    "ebpf_bytecode": {
+      "version": "local",
+      "source": "${ebpf_bytecode}",
+      "sha256": "${ebpf_bytecode_sha}",
+      "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+    },
+    "ebpf_ctl": {
+      "version": "local",
+      "source": "${ebpf_ctl}",
+      "sha256": "${ebpf_ctl_sha}",
+      "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+    },
+    "nats_server": {
+      "version": "local",
+      "source": "${nats_server}",
+      "sha256": "${nats_sha}",
+      "binary": "/usr/local/bin/nats-server",
+      "config": "/etc/nats/nats-server.conf"
+    }
+  }
+}
+JSON
+  docker exec "${core_machine}" bash -lc "${ployzctl} init --run-keeper-install --install-spec /tmp/ployz-first-node-install.json --keeper-binary ${keeper} >/tmp/ployz-init.log 2>&1"
   docker exec "${core_machine}" bash -lc "sed -i 's/^host: 127.0.0.1$/host: 0.0.0.0/' /etc/nats/nats-server.conf && systemctl restart nats-server ployzd-control ployzd-node-core_1 ployzd-gateway"
   for _ in $(seq 1 120); do
     if docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 machine list >/tmp/ployz-machine-list.log 2>&1"; then
@@ -305,8 +334,8 @@ join_edge_machine() {
   keeper_sha="$(docker exec "${edge_machine}" sha256sum "${keeper}" | cut -d" " -f1)"
   if ! docker exec "${edge_machine}" bash -lc "PLOYZ_KEEPER_URL=file://${keeper} PLOYZ_KEEPER_SHA256=${keeper_sha} PLOYZ_NATS_URL=nats://$(machine_ip "${core_machine}"):4222 PLOYZ_NODE_PUBLIC_IP=${edge_ip} sh /work/scripts/ployz.sh --join-token ${join_token} >/tmp/ployz-edge-join.log 2>&1"; then
     docker exec "${edge_machine}" cat /tmp/ployz-edge-join.log >&2 || true
-    docker exec "${edge_machine}" systemctl status ployzd-node-edge_2 ployzd-gateway ployzd-tunnel-edge --no-pager >&2 || true
-    docker exec "${edge_machine}" journalctl -u ployzd-node-edge_2 -u ployzd-gateway -u ployzd-tunnel-edge --no-pager -n 160 >&2 || true
+    docker exec "${edge_machine}" systemctl status ployzd-node-edge_2 ployzd-gateway --no-pager >&2 || true
+    docker exec "${edge_machine}" journalctl -u ployzd-node-edge_2 -u ployzd-gateway --no-pager -n 160 >&2 || true
     echo "edge bootstrap command failed" >&2
     return 1
   fi

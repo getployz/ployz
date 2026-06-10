@@ -27,6 +27,7 @@ use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::deploy_worker::DeployExecutionNodeScope;
+use ployzd::node_protocol::NodeEnsureEndpointNetworkRpcResponse;
 use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::operation_lease::OperationLeasePolicy;
 use ployzd::services::node_endpoint_subject;
@@ -234,6 +235,8 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
 #[tokio::test]
 async fn node_service_timeout_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
+    let _endpoint_network =
+        start_endpoint_network_subscription(nats.client.clone(), node_id("node_slow")).await;
     let _unresponsive_node =
         start_unresponsive_container_run_subscription(nats.client.clone(), node_id("node_slow"))
             .await;
@@ -279,26 +282,30 @@ async fn node_service_timeout_marks_deploy_failed_without_committing_active_stat
             .expect("active state reads")
             .is_none()
     );
-    assert!(matches!(
-        controllers
-            .operation_status(&operation_id("op_123"))
-            .await
-            .expect("operation status reads"),
-        Some(OperationStatus::Deploy {
-            state:
-                DeployOperationState::Failed {
-                    failure:
-                        DeployOperationFailure::RuntimeUnavailable {
-                            node_id: failed_node_id,
-                            message,
-                            retained_artifacts,
-                        },
-                },
-            ..
-        }) if failed_node_id == node_id("node_slow")
-            && message.as_str() == "node runtime request timed out"
-            && retained_artifacts.is_empty()
-    ));
+    let status = controllers
+        .operation_status(&operation_id("op_123"))
+        .await
+        .expect("operation status reads");
+    assert!(
+        matches!(
+            status,
+            Some(OperationStatus::Deploy {
+                state:
+                    DeployOperationState::Failed {
+                        failure:
+                            DeployOperationFailure::RuntimeUnavailable {
+                                node_id: ref failed_node_id,
+                                ref message,
+                                ref retained_artifacts,
+                            },
+                    },
+                ..
+            }) if failed_node_id == &node_id("node_slow")
+                && message.as_str() == "node runtime request timed out"
+                && retained_artifacts.is_empty()
+        ),
+        "unexpected operation status: {status:?}"
+    );
 }
 
 #[tokio::test]
@@ -538,9 +545,42 @@ async fn start_unresponsive_container_run_subscription(
         .subscribe(subject)
         .await
         .expect("subscribe unresponsive node service");
+    client
+        .flush()
+        .await
+        .expect("flush unresponsive node service subscription");
     tokio::spawn(async move {
         while subscriber.next().await.is_some() {
             tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    })
+}
+
+async fn start_endpoint_network_subscription(
+    client: async_nats::Client,
+    node_id: ployz_core::ids::NodeId,
+) -> tokio::task::JoinHandle<()> {
+    let subject = node_endpoint_subject(
+        &node_id,
+        NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
+    );
+    let mut subscriber = client
+        .subscribe(subject)
+        .await
+        .expect("subscribe endpoint network service");
+    client
+        .flush()
+        .await
+        .expect("flush endpoint network service subscription");
+    tokio::spawn(async move {
+        while let Some(message) = subscriber.next().await {
+            if let Some(reply) = message.reply {
+                let response = serde_json::to_vec(&NodeEnsureEndpointNetworkRpcResponse::Ok {
+                    node_id: node_id.clone(),
+                })
+                .expect("endpoint network response serializes");
+                let _ = client.publish(reply, response.into()).await;
+            }
         }
     })
 }

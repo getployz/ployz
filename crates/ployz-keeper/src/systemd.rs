@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::artifacts::PloyzdArtifactTarget;
-use ployz_core::roles::{DaemonProcessRole, TunnelSide};
+use ployz_core::roles::DaemonProcessRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorUnitTarget {
@@ -176,7 +176,7 @@ impl PloyzdRoleUnit {
         artifact: &PloyzdArtifactTarget,
         environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
-        let exec_start = render_exec_start(artifact.install_path(), role.command_args())?;
+        let exec_start = render_exec_start(artifact.install_path(), ployzd_role_args(&role))?;
         Ok(Self {
             role,
             exec_start,
@@ -202,6 +202,19 @@ impl PloyzdRoleUnit {
             self.environment_file.path().display(),
             self.exec_start,
         )
+    }
+}
+
+fn ployzd_role_args(role: &DaemonProcessRole) -> Vec<String> {
+    match role {
+        DaemonProcessRole::Control => vec!["control".to_owned()],
+        DaemonProcessRole::Node(node_id) => vec![
+            "node".to_owned(),
+            "--id".to_owned(),
+            node_id.as_str().to_owned(),
+        ],
+        DaemonProcessRole::Gateway => vec!["gateway".to_owned()],
+        DaemonProcessRole::Dns => vec!["dns".to_owned()],
     }
 }
 
@@ -341,7 +354,5 @@ pub fn role_unit_name(role: &DaemonProcessRole) -> String {
         DaemonProcessRole::Node(node_id) => format!("ployzd-node-{}.service", node_id.as_str()),
         DaemonProcessRole::Gateway => "ployzd-gateway.service".to_owned(),
         DaemonProcessRole::Dns => "ployzd-dns.service".to_owned(),
-        DaemonProcessRole::Tunnel(TunnelSide::Edge) => "ployzd-tunnel-edge.service".to_owned(),
-        DaemonProcessRole::Tunnel(TunnelSide::Core) => "ployzd-tunnel-core.service".to_owned(),
     }
 }
