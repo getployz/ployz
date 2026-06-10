@@ -8,15 +8,18 @@ use crate::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
-    NodeLogsTailDomainError, NodeLogsTailRpcRequest, NodeLogsTailRpcResponse,
-    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
+    NodeEnsureEndpointNetworkDomainError, NodeEnsureEndpointNetworkRpcRequest,
+    NodeEnsureEndpointNetworkRpcResponse, NodeLogsTailDomainError, NodeLogsTailRpcRequest,
+    NodeLogsTailRpcResponse, NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
     NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::{
-    NodeLogsTailRequest, NodeLogsTailResult, NodeRemoveContainerRequest, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeStopContainerRequest,
+    NodeEnsureEndpointNetworkRequest, NodeLogsTailRequest, NodeLogsTailResult,
+    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeStopContainerRequest,
 };
 use crate::services::node_endpoint_subject;
+use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
     WireGuardEbpfPrepareReport, WireGuardEbpfPrepareReportError, WireGuardEbpfPrepareRequest,
@@ -150,6 +153,45 @@ impl NatsNodeContainerRuntime {
 }
 
 impl NodeContainerRuntime for NatsNodeContainerRuntime {
+    async fn ensure_endpoint_network(
+        &mut self,
+        request: NodeEnsureEndpointNetworkRequest,
+    ) -> Result<(), NodeContainerRuntimeError> {
+        let node_id = request.node_id.clone();
+        let subject = node_endpoint_subject(
+            &node_id,
+            NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
+        );
+        let response = request_json::<_, NodeEnsureEndpointNetworkRpcResponse>(
+            &self.client,
+            subject,
+            &NodeEnsureEndpointNetworkRpcRequest::from(request),
+            self.request_timeout,
+        )
+        .await
+        .map_err(|error| node_request_error(&node_id, error))?;
+
+        match response {
+            NodeEnsureEndpointNetworkRpcResponse::Ok {
+                node_id: actual_node_id,
+            } => {
+                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
+                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
+                }
+                Ok(())
+            }
+            NodeEnsureEndpointNetworkRpcResponse::DomainError {
+                node_id: actual_node_id,
+                error,
+            } => {
+                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
+                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
+                }
+                Err(error.into_runtime_error(node_id))
+            }
+        }
+    }
+
     async fn run_container(
         &mut self,
         request: NodeRunContainerRequest,
@@ -348,6 +390,19 @@ impl NodeContainerRunDomainError {
     }
 }
 
+impl NodeEnsureEndpointNetworkDomainError {
+    fn into_runtime_error(self, node_id: NodeId) -> NodeContainerRuntimeError {
+        match self {
+            Self::EnsureFailed { message } => NodeContainerRuntimeError::Unavailable {
+                node_id,
+                reason: NodeRuntimeUnavailableReason::ServiceUnavailable {
+                    message: message.as_str().to_owned(),
+                },
+            },
+        }
+    }
+}
+
 impl NodeContainerRemoveDomainError {
     fn into_runtime_error(self, node_id: NodeId) -> NodeContainerRuntimeError {
         match self {
@@ -387,24 +442,28 @@ impl WireGuardEbpfPreparer for NatsNodeWireGuardEbpfPreparer {
         &mut self,
         request: WireGuardEbpfPrepareRequest,
     ) -> Result<WireGuardEbpfPrepareReport, WireGuardEbpfPrepareError> {
-        let peers = if request.peers.is_empty() && request.nodes.len() > 1 {
-            let rpc_request = read_public_key_request(&request);
-            let mut public_keys = Vec::new();
-            for node_id in &request.nodes {
-                public_keys
-                    .push(read_node_wireguard_public_key(self, node_id, &rpc_request).await?);
-            }
-            wireguard_peers_from_public_keys(&request, &public_keys)?
-        } else {
-            request.peers.clone()
-        };
+        let peers =
+            if request.peers.is_empty() && request.nodes.len() > 1 {
+                let rpc_request = read_public_key_request(&request);
+                let public_keys =
+                    try_join_all(request.nodes.iter().map(|node_id| {
+                        read_node_wireguard_public_key(self, node_id, &rpc_request)
+                    }))
+                    .await?;
+                wireguard_peers_from_public_keys(&request, &public_keys)?
+            } else {
+                request.peers.clone()
+            };
 
         let final_request = request.with_peers(peers);
         let rpc_request = NodeWireGuardEbpfPrepareRpcRequest::from(final_request.clone());
-        let mut nodes = Vec::new();
-        for node_id in &final_request.nodes {
-            nodes.push(prepare_node_wireguard_ebpf(self, node_id, &rpc_request).await?);
-        }
+        let nodes = try_join_all(
+            final_request
+                .nodes
+                .iter()
+                .map(|node_id| prepare_node_wireguard_ebpf(self, node_id, &rpc_request)),
+        )
+        .await?;
 
         WireGuardEbpfPrepareReport::for_request(&final_request, nodes)
             .map_err(wireguard_ebpf_report_error)

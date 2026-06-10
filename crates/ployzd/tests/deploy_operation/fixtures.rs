@@ -24,9 +24,9 @@ use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
     DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
     DeployOperationRecordError, DeployOperationRecorder, NodeContainerRuntime,
-    NodeContainerRuntimeError, NodeRemoveContainerRequest, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason, NodeStopContainerRequest,
-    WireGuardEbpfPreparer, prepare_deploy_execution_command,
+    NodeContainerRuntimeError, NodeEnsureEndpointNetworkRequest, NodeRemoveContainerRequest,
+    NodeRunContainerOutcome, NodeRunContainerRequest, NodeRuntimeUnavailableReason,
+    NodeStopContainerRequest, WireGuardEbpfPreparer, prepare_deploy_execution_command,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -146,11 +146,13 @@ impl DeployOperationRecorder for RecordingOperations {
 }
 
 pub(super) struct RecordingRuntime {
+    pub(super) endpoint_networks: Vec<NodeEnsureEndpointNetworkRequest>,
     pub(super) requests: Vec<NodeRunContainerRequest>,
     pub(super) stops: Vec<NodeStopContainerRequest>,
     pub(super) removals: Vec<NodeRemoveContainerRequest>,
     containers: Vec<ContainerId>,
     fail_after_first: bool,
+    fail_endpoint_network: bool,
     reuse_existing: bool,
     fail_start: bool,
     fail_remove: bool,
@@ -466,11 +468,13 @@ impl DeployContainerForAssert {
 impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
+            fail_endpoint_network: false,
             reuse_existing: false,
             fail_start: false,
             fail_remove: false,
@@ -480,11 +484,13 @@ impl RecordingRuntime {
 
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
+            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             fail_after_first: false,
+            fail_endpoint_network: false,
             reuse_existing: true,
             fail_start: false,
             fail_remove: false,
@@ -494,11 +500,13 @@ impl RecordingRuntime {
 
     pub(super) fn failing_after_first_container() -> Self {
         Self {
+            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: vec![container_id("ctr_1")],
             fail_after_first: true,
+            fail_endpoint_network: false,
             reuse_existing: false,
             fail_start: false,
             fail_remove: false,
@@ -508,11 +516,13 @@ impl RecordingRuntime {
 
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
+            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
             fail_after_first: false,
+            fail_endpoint_network: false,
             reuse_existing: false,
             fail_start: true,
             fail_remove: false,
@@ -529,9 +539,30 @@ impl RecordingRuntime {
         self.fail_stop = true;
         self
     }
+
+    pub(super) fn with_endpoint_network_failure(mut self) -> Self {
+        self.fail_endpoint_network = true;
+        self
+    }
 }
 
 impl NodeContainerRuntime for RecordingRuntime {
+    async fn ensure_endpoint_network(
+        &mut self,
+        request: NodeEnsureEndpointNetworkRequest,
+    ) -> Result<(), NodeContainerRuntimeError> {
+        self.endpoint_networks.push(request.clone());
+        if self.fail_endpoint_network {
+            return Err(NodeContainerRuntimeError::Unavailable {
+                node_id: request.node_id,
+                reason: NodeRuntimeUnavailableReason::RequestFailed {
+                    message: "synthetic endpoint network failure".to_owned(),
+                },
+            });
+        }
+        Ok(())
+    }
+
     async fn run_container(
         &mut self,
         request: NodeRunContainerRequest,

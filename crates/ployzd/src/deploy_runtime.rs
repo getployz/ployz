@@ -16,11 +16,13 @@ use ployz_core::ops::{
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{OperationStatusStoreError, RecordDeployTransitionError};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 pub async fn run_deploy_operation<D, N, H>(
     accepted: AcceptedDeployOperation,
@@ -367,6 +369,7 @@ impl DeployHealthChecker for ObservationHealthChecker {
         &mut self,
         containers: &[DeployContainer],
     ) -> Result<(), DeployHealthCheckError> {
+        let mut memory = HealthObservationMemory::default();
         loop {
             let mut all_running = true;
             for container in containers {
@@ -377,9 +380,20 @@ impl DeployHealthChecker for ObservationHealthChecker {
                 {
                     Ok(Some(observation)) => {
                         match observed_container_health(container, &observation) {
-                            ObservedContainerHealth::Healthy => {}
-                            ObservedContainerHealth::Pending => all_running = false,
+                            ObservedContainerHealth::Healthy => {
+                                memory.record_running(container);
+                            }
+                            ObservedContainerHealth::Pending => {
+                                if observation.state.is_running() {
+                                    memory.record_running(container);
+                                }
+                                all_running = false;
+                            }
                             ObservedContainerHealth::Failed(message) => {
+                                if memory.should_wait_for_fresh_start_observation(container) {
+                                    all_running = false;
+                                    continue;
+                                }
                                 return Err(unhealthy_container(container, message));
                             }
                         }
@@ -398,6 +412,37 @@ impl DeployHealthChecker for ObservationHealthChecker {
             tokio::time::sleep(self.poll_interval).await;
         }
     }
+}
+
+#[derive(Default)]
+struct HealthObservationMemory {
+    seen_running: BTreeSet<HealthContainerKey>,
+    initial_exit_seen_at: BTreeMap<HealthContainerKey, Instant>,
+}
+
+impl HealthObservationMemory {
+    fn record_running(&mut self, container: &DeployContainer) {
+        let key = health_container_key(container);
+        self.seen_running.insert(key.clone());
+        self.initial_exit_seen_at.remove(&key);
+    }
+
+    fn should_wait_for_fresh_start_observation(&mut self, container: &DeployContainer) -> bool {
+        let key = health_container_key(container);
+        if self.seen_running.contains(&key) {
+            return false;
+        }
+
+        let now = Instant::now();
+        let first_seen = self.initial_exit_seen_at.entry(key).or_insert(now);
+        now.duration_since(*first_seen) < DEPLOY_HEALTH_INITIAL_EXIT_GRACE
+    }
+}
+
+type HealthContainerKey = (ployz_core::ids::NodeId, ployz_core::ids::ContainerId);
+
+fn health_container_key(container: &DeployContainer) -> HealthContainerKey {
+    (container.node_id.clone(), container.container_id.clone())
 }
 
 fn observed_container_health(
@@ -527,6 +572,18 @@ mod tests {
             ),
             ObservedContainerHealth::Failed("container exited")
         );
+    }
+
+    #[test]
+    fn health_graces_initial_exited_observation_until_running_is_seen() {
+        let container = deploy_container("node_a", "ctr_1", Some(route_port(8080)));
+        let mut memory = HealthObservationMemory::default();
+
+        assert!(memory.should_wait_for_fresh_start_observation(&container));
+
+        memory.record_running(&container);
+
+        assert!(!memory.should_wait_for_fresh_start_observation(&container));
     }
 
     fn deploy_container(

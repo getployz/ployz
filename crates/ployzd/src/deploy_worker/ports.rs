@@ -11,8 +11,8 @@ use std::future::Future;
 
 use super::{
     ActiveServiceCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    NodeContainerRuntimeError, NodeRemoveContainerRequest, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeStopContainerRequest,
+    NodeContainerRuntimeError, NodeEnsureEndpointNetworkRequest, NodeRemoveContainerRequest,
+    NodeRunContainerOutcome, NodeRunContainerRequest, NodeStopContainerRequest,
 };
 
 pub trait DeployOperationRecorder {
@@ -30,6 +30,11 @@ pub trait DeployOperationRecorder {
 }
 
 pub trait NodeContainerRuntime {
+    fn ensure_endpoint_network(
+        &mut self,
+        request: NodeEnsureEndpointNetworkRequest,
+    ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
+
     fn run_container(
         &mut self,
         request: NodeRunContainerRequest,

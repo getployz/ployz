@@ -17,7 +17,8 @@ The proof bar is one disposable command:
 - destroy the machines.
 
 That is the whole job. If install, join, deploy, routing, operation status,
-NATS-over-iroh, or the eBPF/WireGuard data plane needs extra help, fix Ployz.
+direct TLS NATS connectivity, or the eBPF/WireGuard data plane needs extra
+help, fix Ployz.
 Do not make the Hetzner harness smarter.
 
 ## Harness Boundary
@@ -52,10 +53,11 @@ Required tools:
 The script uses the official Hetzner Cloud CLI:
 <https://github.com/hetznercloud/cli>
 
+Authentication can use either `HCLOUD_TOKEN` or an active `hcloud` context.
+
 Required environment:
 
 ```sh
-export HCLOUD_TOKEN=...
 export HETZNER_SSH_KEY=ployz-ci
 export PLOYZ_SSH_PRIVATE_KEY="$HOME/.ssh/ployz-ci"
 ```
@@ -70,15 +72,17 @@ Prepare local artifacts:
 scripts/prepare-h0-artifacts.sh
 ```
 
-The prep command builds the Ployz binaries into `/tmp/ployz-build-target`,
-resolves the eBPF bytecode, requires `nats-server`, and prints the exports the
-acceptance script will use.
+The prep command builds Linux amd64 release Ployz binaries into
+`/tmp/ployz-linux-amd64-target`, builds current source eBPF bytecode into
+`/tmp/ployz-rust-ebpf-source-target`, downloads a Linux amd64 `nats-server`
+artifact when `PLOYZ_ACCEPTANCE_NATS_SERVER` is not set, validates the eBPF
+bytecode, and prints the exports the acceptance script will use.
 
 Optional environment:
 
 ```sh
 export HETZNER_LOCATION=fsn1
-export HETZNER_SERVER_TYPE=cx22
+export HETZNER_SERVER_TYPE=cx23
 export HETZNER_IMAGE=ubuntu-24.04
 export PLOYZ_SSH_USER=root
 export PLOYZ_SSH_READY_TIMEOUT_SECONDS=300
@@ -115,7 +119,7 @@ PLOYZ_ACCEPTANCE_KEEP=1 scripts/hetzner-two-node-acceptance.sh up --run-id ci-42
 Cleanup is always label-based:
 
 ```sh
-HCLOUD_TOKEN=... scripts/hetzner-two-node-acceptance.sh cleanup --run-id ci-42
+scripts/hetzner-two-node-acceptance.sh cleanup --run-id ci-42
 ```
 
 If provisioning or SSH readiness fails, the script attempts cleanup
@@ -136,7 +140,7 @@ Ployz product commands and operation state prove the real host path:
 
 - first-node install,
 - second-node add/join,
-- NATS over iroh,
+- direct TLS NATS connectivity,
 - WireGuard/eBPF data plane,
 - deploy execution,
 - gateway routing.

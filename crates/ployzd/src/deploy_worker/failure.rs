@@ -182,6 +182,7 @@ pub enum DeployExecutionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
     RecordOperationEvent,
+    EnsureEndpointNetwork { node_id: NodeId },
     PrepareWireGuardEbpf { nodes: Vec<NodeId> },
     RunContainer { node_id: NodeId },
     WaitHealthy,
@@ -200,6 +201,7 @@ impl DeployExecutionStep {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::RecordOperationEvent => "record_operation_event",
+            Self::EnsureEndpointNetwork { .. } => "ensure_endpoint_network",
             Self::PrepareWireGuardEbpf { .. } => "prepare_wireguard_ebpf",
             Self::RunContainer { .. } => "run_container",
             Self::WaitHealthy => "wait_healthy",
@@ -215,6 +217,11 @@ impl DeployExecutionStep {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
+            Self::EnsureEndpointNetwork { node_id } => DeployOperationFailure::RuntimeUnavailable {
+                node_id: node_id.clone(),
+                message: timeout_failure_message("endpoint network ensure", timeout),
+                retained_artifacts,
+            },
             Self::RunContainer { node_id } => DeployOperationFailure::RuntimeUnavailable {
                 node_id: node_id.clone(),
                 message: timeout_failure_message("node runtime", timeout),

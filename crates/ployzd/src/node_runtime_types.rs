@@ -26,6 +26,13 @@ pub struct NodeContainerRunSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NodeEnsureEndpointNetworkRequest {
+    pub node_id: NodeId,
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeRunContainerRequest {
     pub node_id: NodeId,
     pub image: ImageReference,

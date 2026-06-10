@@ -41,11 +41,6 @@ pub async fn load_deploy_execution_facts_from_nats(
     observations: &AsyncNatsObservationStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let routed_dataplane_fallback = if request.route.is_some() {
-        node_scope.observed_node_ids.clone()
-    } else {
-        Vec::new()
-    };
     let active_service = core_state
         .active_service(&request.service_id)
         .await
@@ -66,7 +61,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         .flatten();
     let node_scope = load_active_machine_node_scope(core_state, node_scope).await?;
     let observed_nodes = load_node_snapshots(observations, &node_scope.observed_node_ids).await?;
-    let dataplane_nodes = routed_dataplane_nodes(request, routed_dataplane_fallback);
+    let dataplane_nodes = routed_dataplane_nodes(request, node_scope.observed_node_ids.clone());
     let peer_endpoint_node_ids = sorted_unique_nodes(
         node_scope
             .eligible_nodes

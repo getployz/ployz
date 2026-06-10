@@ -1,7 +1,7 @@
 # NATS Control Plane
 
-Ployz uses NATS as the control-plane backplane and iroh as the private
-transport underlay for NATS client connectivity.
+Ployz uses NATS as the control-plane backplane. Machines connect to the control
+plane through direct TLS-authenticated NATS in v1.
 
 ## Shape
 
@@ -13,24 +13,22 @@ CLI / SDK / Cloud
   -> Docker / gateway / DNS / local machine reality
 ```
 
-Edge nodes connect through a local tunnel:
+Machines connect directly to NATS:
 
 ```text
 async-nats
-  -> local loopback tunnel
-  -> iroh stream
-  -> core tunnel endpoint
+  -> TLS NATS
   -> nats-server
 ```
 
-The tunnel is byte transport only. Product commands are NATS services.
+Product commands are NATS services. NATS credentials and subject permissions are
+the authority boundary for every caller.
 
 ## Ownership
 
 - `ployz-core`: domain models and product policy.
 - `ployz-nats`: NATS resources and API wrappers.
-- `ployz-transport`: iroh endpoint identity, join bundles, and NATS byte
-  tunnels.
+- `ployz-transport`: future transport adapters if private connectivity returns.
 - `ployzd`: process wiring, service handlers, controllers, node services, and
   runtime adapters.
 - `ployzctl`: CLI client.
@@ -43,5 +41,5 @@ The tunnel is byte transport only. Product commands are NATS services.
 - Object Store holds larger control-plane artifacts.
 - Docker is execution reality.
 - Local node storage is cache/evidence.
-- iroh does not carry product commands.
+- Private overlay transport is deferred from v1.
 - NATS permissions are authoritative over every transport.

@@ -52,8 +52,10 @@ pub async fn start_node_process_runtime(
     let client = connect_with_timeout(&config.nats_url, NODE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(NodeProcessRuntimeError::ConnectNats)?;
-    let runner =
-        LazyLocalDockerManagedContainerRunner::new(config.dataplane_endpoint_subnet.clone());
+    let runner = LazyLocalDockerManagedContainerRunner::new(
+        config.dataplane_endpoint_subnet.clone(),
+        config.dataplane_bridge_ifname.clone(),
+    );
     let preparer = HostWireGuardEbpfPreparer::new(
         config.node_id.clone(),
         config.ebpf_bytecode_path.clone(),
@@ -465,6 +467,10 @@ mod tests {
                 })
         }
 
+        async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+            Ok(())
+        }
+
         async fn create_managed_container(
             &self,
             _command: CreateManagedContainer,
@@ -515,6 +521,12 @@ mod tests {
             &self,
         ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
             Err(NodeContainerRunnerError::ListExisting {
+                message: "docker unavailable".to_owned(),
+            })
+        }
+
+        async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+            Err(NodeContainerRunnerError::EnsureEndpointNetwork {
                 message: "docker unavailable".to_owned(),
             })
         }

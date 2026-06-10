@@ -11,7 +11,7 @@ use ployz_core::state::{
 };
 use std::time::Duration;
 
-const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {

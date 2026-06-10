@@ -15,8 +15,8 @@ use ployzd::deploy_worker::{
     ActiveRouteCommitter, ActiveServiceCommitter, DeployCleanupResult, DeployExecutionCommand,
     DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent,
-    NodeContainerRuntime, NodeContainerRuntimeError, WireGuardEbpfPreparer,
-    execute_deploy_operation,
+    NodeContainerRuntime, NodeContainerRuntimeError, NodeEnsureEndpointNetworkRequest,
+    WireGuardEbpfPreparer, execute_deploy_operation,
 };
 use ployzd::docker::labels::ManagedContainerIdentity;
 use ployzd::node_agent::runtime::managed_container_labels;
@@ -169,6 +169,19 @@ async fn deploy_worker_runs_containers_then_completes() {
         ]
     );
     assert_eq!(runtime.requests.len(), 2);
+    assert_eq!(
+        runtime.endpoint_networks,
+        vec![
+            NodeEnsureEndpointNetworkRequest {
+                node_id: node_id("node_a"),
+                operation_id: operation_id("op_123"),
+            },
+            NodeEnsureEndpointNetworkRequest {
+                node_id: node_id("node_b"),
+                operation_id: operation_id("op_123"),
+            },
+        ]
+    );
     let [wireguard_ebpf_request] = wireguard_ebpf.requests.as_slice() else {
         panic!("expected exactly one wireguard/ebpf prepare request");
     };
@@ -778,6 +791,64 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     assert!(runtime.requests.is_empty());
     assert!(health.checked.is_empty());
     assert!(active_state.requests.is_empty());
+}
+
+#[tokio::test]
+async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unavailable() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime =
+        RecordingRuntime::with_containers(["ctr_1", "ctr_2"]).with_endpoint_network_failure();
+    let mut health = RecordingHealth::healthy();
+    let mut route_state = RecordingRouteState::stored();
+    let mut active_state = RecordingActiveState::stored();
+    let command = deploy_command(2);
+
+    let error = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf: &mut wireguard_ebpf,
+            node_runtime: &mut runtime,
+            health_checker: &mut health,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .expect_err("deploy fails before wireguard/eBPF preparation");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            source,
+            ..
+        } if matches!(*source, DeployExecutionError::RunContainer(_))
+    ));
+    assert_eq!(runtime.endpoint_networks.len(), 1);
+    assert!(wireguard_ebpf.requests.is_empty());
+    assert!(runtime.requests.is_empty());
+    assert!(health.checked.is_empty());
+    assert!(active_state.requests.is_empty());
+    assert_eq!(
+        recorder.records,
+        vec![
+            RecordedOperation::Transition(DeployTransition::Planning),
+            RecordedOperation::PlanCreated { replica_count: 2 },
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::PreparingWireGuardEbpf,
+            }),
+            RecordedOperation::Transition(DeployTransition::Failed {
+                failure: DeployOperationFailure::RuntimeUnavailable {
+                    node_id: node_id("node_a"),
+                    message: failure_message(
+                        "node runtime request failed: synthetic endpoint network failure"
+                    ),
+                    retained_artifacts: Vec::new(),
+                }
+            }),
+        ]
+    );
 }
 
 #[tokio::test]

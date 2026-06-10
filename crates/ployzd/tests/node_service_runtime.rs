@@ -10,9 +10,9 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::request_json;
 use ployzd::deploy_worker::{
-    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerOutcome,
-    NodeRunContainerRequest, NodeRuntimeUnavailableReason, NodeStopContainerRequest,
-    WireGuardEbpfPreparer,
+    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
+    NodeEnsureEndpointNetworkRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeRuntimeUnavailableReason, NodeStopContainerRequest, WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
 use ployzd::node_agent::runtime::{
@@ -32,6 +32,32 @@ use ployzd::node_service_runtime::{
 use ployzd::services::node_endpoint_subject;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[tokio::test]
+async fn node_runtime_service_ensures_endpoint_network() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_node_runtime_service(
+        nats.client.clone(),
+        node_id("node_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("node runtime service starts");
+    let mut client = NatsNodeContainerRuntime::new(nats.client);
+
+    client
+        .ensure_endpoint_network(NodeEnsureEndpointNetworkRequest {
+            node_id: node_id("node_a"),
+            operation_id: operation_id("op_123"),
+        })
+        .await
+        .expect("endpoint network ensure succeeds");
+
+    assert_eq!(state.endpoint_networks(), 1);
+}
 
 #[tokio::test]
 async fn node_runtime_service_creates_missing_container() {
@@ -558,6 +584,13 @@ struct RecordingRunnerState {
 }
 
 impl RecordingRunnerState {
+    fn endpoint_networks(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .endpoint_networks
+    }
+
     fn creates(&self) -> Vec<CreateManagedContainer> {
         self.inner
             .lock()
@@ -593,6 +626,7 @@ impl RecordingRunnerState {
 
 #[derive(Default)]
 struct RecordingRunnerInner {
+    endpoint_networks: usize,
     creates: Vec<CreateManagedContainer>,
     starts: Vec<ContainerId>,
     stops: Vec<ContainerId>,
@@ -670,6 +704,15 @@ impl NodeContainerRunner for RecordingRunner {
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
         Ok(self.existing.clone())
+    }
+
+    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .endpoint_networks += 1;
+        Ok(())
     }
 
     async fn create_managed_container(

@@ -130,6 +130,7 @@ pub fn node_runtime_service(node_id: &NodeId) -> NatsServiceSpec {
         node_id,
         vec![
             node_endpoint_spec(node_id, NodeServiceEndpoint::Inspect),
+            node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerEnsureEndpointNetwork),
             node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerRun),
             node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerStop),
             node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerRemove),
@@ -160,6 +161,9 @@ pub fn node_endpoint_spec(
 pub const fn node_endpoint_name(endpoint: NodeServiceEndpoint) -> &'static str {
     match endpoint {
         NodeServiceEndpoint::Inspect => "node.inspect",
+        NodeServiceEndpoint::ContainerEnsureEndpointNetwork => {
+            "node.container.ensure_endpoint_network"
+        }
         NodeServiceEndpoint::ContainerRun => "node.container.run",
         NodeServiceEndpoint::ContainerStop => "node.container.stop",
         NodeServiceEndpoint::ContainerRemove => "node.container.remove",

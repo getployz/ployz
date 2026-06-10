@@ -1,7 +1,7 @@
 ---
 title: "refactor: Reset Ployz Around A NATS Control Plane"
 type: refactor
-status: active
+status: partially-superseded
 date: 2026-06-04
 origin:
   - VISION.md
@@ -11,6 +11,13 @@ origin:
 ---
 
 # refactor: Reset Ployz Around A NATS Control Plane
+
+Status: partially superseded by
+[`ADR-0013`](../adr/0013-v1-uses-direct-tls-nats.md) and
+[`Machine Updates`](../architecture/machine-updates.md). The original plan kept
+iroh as the default private NATS transport and deferred substrate updates; v1
+now uses direct TLS NATS and treats keeper/substrate updates as explicit
+machine operations.
 
 ## Summary
 
@@ -1044,51 +1051,180 @@ current artifact.
 
 ### Current Implementation Status
 
-The repository has already moved past the original greenfield skeleton. Based
-on the current workspace shape, these units are complete or substantially
-started:
+Status values are intentionally coarse:
 
-- Pre-U0/U0: the active workspace has been reduced to the new Rust shape and
-  the old Polis/Corrosion path is no longer represented as active crates.
-- U1: `ployz-nats` has NATS connection, bootstrap, KV, streams, Object Store,
-  schedules, and resource-planning tests.
-- U1a: `ployz-transport` and `ployzd` have iroh/NATS tunnel models and tests,
-  but the tunnel is now a `ployzd tunnel` role rather than a standalone binary.
-- U2: `ployz-core` has typed ids, subject constructors, operation wire models,
-  deploy planning, and wire-contract tests.
-- U3: NATS service catalog/runtime behavior exists in `ployz-nats` and
-  `ployzd`. `ployz-nats` owns shared NATS Service API protocol helpers;
-  `ployzctl` owns the caller-facing typed operation client.
-- U4/U4a: operation status, event replay, durable event append/idempotency, and
-  real NATS operation adapters are substantially represented, but any durable
-  consumer workflow path should be removed or deferred.
-- U5: permission profile rendering exists and is covered by tests.
-- U6: node-agent idempotency, Docker observation/label models, and the local
-  Docker execution path are started.
-- U7: the deploy proof exists against fake execution and has real-Docker
-  adapters, active-state commit behavior, route cutover, retained failed
-  artifact behavior, and eBPF/WireGuard preparation evidence.
-- U7a: keeper, `ployz.sh`, artifact verification, first-node install planning,
-  join-token redemption, join material storage, and supervised role unit
-  rendering exist. The current product gap is proving that fresh-host init and
-  joined-host install run those pieces without helper orchestration.
-- U8: the gateway process exists as a direct NATS watcher with simple HTTP
-  proxy behavior and last-known-good projection behavior. Keep it dumb until
-  H0 proves the product path.
-- U9/U9a: CLI/SDK ergonomics and the operation API registry exist; recent work
-  made first-node activation an explicit API operation instead of CLI-side
-  orchestration.
-- U10a/U10b: backup scope, backup objects, and restore-shaped coverage exist
-  enough to stay behind the H0 product proof unless a fresh test run exposes a
-  real regression.
+- **done** means the planned unit has concrete code plus matching repo tests or
+  a successful proof for the scope of that unit.
+- **partially done** means meaningful code exists, but an acceptance proof,
+  integration path, or explicit gap still remains.
+- **in progress** means this is the active frontier or the implementation is
+  incomplete enough that it should not be treated as a stable foundation.
 
-Remaining work should avoid redoing those pieces unless current tests reveal a
-real gap. U11 has converted deploy execution to direct owned operation
-functions under advisory leases. The major remaining gaps are proving
-fresh-host keeper/init, proving real joined-node install through NATS over
-iroh, making the real Docker/eBPF/WireGuard/gateway path pass H0, then filling
-the stress-test gaps around process loss, tunnel loss, and ambiguous node
-runtime failures.
+Audit as of 2026-06-10:
+
+- **Pre-U0. Thermonuclear Repository Cull** — **done**.
+  Evidence: the active workspace is the new crate layout and no active
+  `crates/polis` or Corrosion implementation remains in `crates/`. Gap: none
+  for the cull itself.
+
+- **U0. Repository Reset And Decision Fence** — **done**.
+  Evidence: `VISION.md`, this plan, and `docs/architecture/nats-control-plane.md`
+  describe the NATS-first reset; the workspace has `ployz-core`,
+  `ployz-nats`, `ployz-transport`, `ployzd`, `ployzctl`, `ployz-keeper`,
+  and `ployz-sdk-types`. Gap: old architecture docs may still exist as records,
+  but they are not active implementation paths.
+
+- **U1. NATS Process And Bootstrap Spine** — **done**.
+  Evidence: `crates/ployz-nats/src/bootstrap.rs`, `kv.rs`, `streams.rs`,
+  `objects.rs`, `schedules.rs`, and `connect.rs`; tests in
+  `crates/ployz-nats/tests/bootstrap.rs`, `connect.rs`, and `schedules.rs`.
+  Gap: no current blocking gap for the bootstrap spine.
+
+- **U1a. iroh NATS Tunnel Transport** — **done**.
+  Evidence: `crates/ployz-transport/src/nats_tunnel.rs`,
+  `crates/ployzd/src/iroh_tunnel.rs`, `crates/ployzd/tests/iroh_nats_tunnel.rs`,
+  and the live H0 runs that reached edge join/runtime node RPC over the tunnel.
+  Gap: relay-mode reporting and tunnel-loss stress tests remain later stress
+  work, not a blocker for this unit.
+
+- **U2. Typed Subjects, IDs, And Wire Models** — **done**.
+  Evidence: `crates/ployz-core/src/ids.rs`, `subjects.rs`, `ops.rs`,
+  `deploy.rs`, `machine.rs`, and `wire.rs`; tests in
+  `crates/ployz-core/tests/subjects.rs`, `wire_contract.rs`,
+  `deploy_planner.rs`, `machine_lifecycle.rs`, and `operation_projection.rs`.
+  Gap: no current blocking gap for the typed model layer.
+
+- **U3. NATS Service API Command Surface** — **done**.
+  Evidence: `crates/ployz-nats/src/services.rs`,
+  `service_runtime.rs`, `service_protocol.rs`,
+  `crates/ployzd/src/services.rs`, `api_runtime.rs`, and typed client coverage
+  in `crates/ployzctl/tests/api_client_nats.rs`. Gap: no current blocking gap
+  for the service surface.
+
+- **U4. Operation Contract, Status Projection, And Advisory Ownership** —
+  **done**.
+  Evidence: operation status/projection types in `crates/ployz-core/src/ops.rs`
+  and `ops/projection.rs`; projection tests in
+  `crates/ployz-core/tests/operation_projection.rs`; ownership status and
+  operation output rendering in `ployzctl`. Gap: no current blocking gap for
+  the contract/status layer.
+
+- **U4a. Real NATS Operation Adapters And Leases** — **done**.
+  Evidence: `crates/ployz-nats/src/operations/events.rs`,
+  `repository.rs`, `status_store.rs`, and real-NATS tests under
+  `crates/ployz-nats/tests/operations_nats/`; owner lease claim/renewal tests
+  in `operations_nats/status.rs` and `submission.rs`. Gap: durable workflow
+  takeover remains deliberately deferred.
+
+- **U11. Owned Operation Hard Simplification** — **done**.
+  Evidence: `crates/ployzd/src/operation_lease.rs`,
+  `deploy_runtime.rs`, `backup_runtime.rs`, and direct owned execution from
+  `operation_api.rs`; tests in `crates/ployzd/tests/deploy_runtime_nats.rs`
+  and `deploy_operation.rs`. Gap: process-loss recovery is still stress-test
+  work; v1 intentionally does not do automatic takeover.
+
+- **U5. Permission Profiles And Credentials** — **done**.
+  Evidence: `crates/ployz-nats/src/permissions.rs` and
+  `crates/ployz-nats/tests/permissions.rs` cover API, node, and observation
+  permission shapes. Gap: credentials issuance is sufficient for current
+  bootstrap, but full operator/account lifecycle hardening can stay behind H0.
+
+- **U6. Node Agent, Docker Observer, And Local Cache** — **partially done**.
+  Evidence: `crates/ployzd/src/node_agent/observer.rs`,
+  `node_service_runtime.rs`, `node_rpc.rs`, `docker/runner.rs`,
+  `docker/labels.rs`, and tests in `crates/ployzd/tests/docker_observer.rs`,
+  `node_agent.rs`, `node_service_runtime.rs`, and `node_rpc.rs`. Gaps: local
+  SQLite/cache is not a visible completed layer; Docker/eBPF dataplane reality
+  still needs the U7b local proof; node-runtime failure diagnostics need to
+  avoid ambiguous request timeouts.
+
+- **U7. First Deploy Operation** — **partially done**.
+  Evidence: deploy planning/execution in `crates/ployzd/src/deploy_worker.rs`,
+  `deploy_runtime.rs`, `deploy_worker/*`, real-NATS deploy tests in
+  `deploy_runtime_nats.rs`, and e2e fake/runtime tests in
+  `crates/ployz-e2e/tests/operations.rs`. Gaps: the deploy path emits
+  WireGuard/eBPF evidence models, but the real node-local dataplane path is not
+  proven; live H0 currently fails during `preparing_wireguard_ebpf`.
+
+- **U7a. Keeper And `ployz.sh` Bootstrap Foundation** — **partially done**.
+  Evidence: `crates/ployz-keeper/*`, `scripts/ployz.sh`,
+  first-node install and join-token paths in `ployzctl`/`ployzd`, and tests in
+  `crates/ployz-keeper/tests/*`, `crates/ployzctl/tests/cli_contract.rs`, and
+  `crates/ployz-e2e/tests/h0_script.rs`. Gaps: fresh-host bootstrap/join has
+  been exercised in H0, but the full proof is still blocked by dataplane prep;
+  bootstrap should be considered foundation-complete, not product-acceptance
+  complete.
+
+- **U8. Minimal Gateway Projection Skeleton** — **done**.
+  Evidence: `crates/ployzd/src/gateway.rs`, `gateway_runtime.rs`,
+  `gateway_source.rs`, `gateway_http.rs`, and tests in
+  `gateway_projection.rs`, `gateway_runtime.rs`, `gateway_source_nats.rs`,
+  `gateway_http.rs`, plus e2e gateway behavior in
+  `crates/ployz-e2e/tests/operations.rs`. Gap: H0 still needs to prove gateway
+  traffic through the real dataplane on fresh hosts.
+
+- **U9. CLI And TypeScript SDK Contract** — **partially done**.
+  Evidence: `crates/ployzctl/src/commands/*`, typed Rust operation client in
+  `crates/ployzctl/src/api_client.rs`, schema exports in
+  `crates/ployz-sdk-types`, and extensive CLI tests in
+  `crates/ployzctl/tests/*`. Gaps: the planned `packages/ployz-sdk` TypeScript
+  package is not present in the current repo file list, so TypeScript SDK
+  ergonomics are represented by exported schema/contracts rather than a shipped
+  package.
+
+- **U9a. Operation API Contract Registry** — **done**.
+  Evidence: `crates/ployz-sdk-types/src/operation_api.rs`,
+  generated/export tests in `crates/ployz-sdk-types/tests/exports.rs`,
+  `crates/ployzd/src/api_runtime.rs`, `services.rs`, and
+  `crates/ployzctl/tests/api_client_nats.rs`. Gap: no current blocking gap for
+  the Rust-side registry; TypeScript package consumption belongs to U9 followup.
+
+- **U7b. Local Docker WireGuard/eBPF Dataplane Proof** — **in progress**.
+  Evidence: production dataplane code exists in
+  `crates/ployzd/src/dataplane_runtime.rs`,
+  `dataplane_runtime/host_routes.rs`, `docker/network.rs`,
+  `docker/runner.rs`, `node_service_runtime.rs`, and `node_rpc.rs`; privileged
+  local checks now cover direct Docker/WireGuard/eBPF preparation and
+  node-scoped NATS service plumbing. Gap: the local proof still must become a
+  product-install proof that boots two disposable local machines through
+  `ployz.sh` and `ployz-keeper`, uses `ployzctl init` on the first machine,
+  `ployzctl machine add` plus the printed bootstrap command on the second
+  machine, then deploys and curls a workload through both gateways. The local
+  harness may provide disposable machine containers and local artifact hosting,
+  but must not manually start `ployzd` roles, inject active machines, or mark
+  joins complete outside the keeper/product path.
+
+- **H0. Disposable Product Smoke Proof** — **in progress**.
+  Evidence: `scripts/hetzner-two-node-acceptance.sh`,
+  `scripts/prepare-h0-artifacts.sh`,
+  `docs/operations/two-node-acceptance.md`, and
+  `crates/ployz-e2e/tests/h0_script.rs`; live H0 has proven host creation,
+  artifact staging, first-node install, machine add, edge join, runtime tunnel,
+  and edge node RPC. Gaps: smoke deploy currently fails during
+  `preparing_wireguard_ebpf` with an edge node runtime timeout; H0 should wait
+  for U7b rather than remain the dataplane debug loop. The Hetzner script has
+  the same product-path constraint as U7b: Hetzner only supplies fresh Linux
+  machines and SSH; Ployz must install itself with the normal `ployz.sh`,
+  `ployz-keeper`, `ployzctl init`, `ployzctl machine add`, deploy, watch, and
+  curl flow.
+
+- **U10a. Backup Foundation** — **done**.
+  Evidence: `crates/ployz-core/src/backup.rs`,
+  `crates/ployz-core/tests/backup_scope.rs`, Object Store support in
+  `crates/ployz-nats/src/objects.rs`, and bootstrap/object bucket coverage.
+  Gap: no current blocking gap for backup scope/foundation.
+
+- **U10b. Backup Commands** — **partially done**.
+  Evidence: `crates/ployzd/src/backup_runtime.rs`,
+  `crates/ployzctl/src/commands/backup.rs`, backup create API binding in
+  `operation_api.rs`, and tests in `crates/ployzd/tests/backup_restore.rs`.
+  Gaps: `backup restore` is currently represented as restore runtime and
+  restore-plan output, not a fully wired operator restore command; keep behind
+  H0 unless a real regression appears.
+
+The main finish-line gaps are now explicit: finish U7b locally, then rerun H0
+as acceptance; after that, stress test process loss, tunnel loss, and ambiguous
+node runtime failures.
 
 ### Execution And Review Loop
 
@@ -1655,25 +1791,100 @@ Pipeline finish:
     loss.
 - **Verification:** `cargo test -p ployzd backup_restore`
 
+### U7b. Local Docker WireGuard/eBPF Dataplane Proof
+
+- **Goal:** Prove the install and dataplane product path locally before H0 uses
+  fresh cloud hosts as an outside-world smoke test. Local machines should be as
+  close as practical to fresh Linux installs: `ployz.sh` installs keeper,
+  keeper installs artifacts and role units, `ployzctl init` initializes the
+  first node, `ployzctl machine add` joins the second node, then a real deploy
+  proves WireGuard/eBPF dataplane preparation and gateway reachability.
+- **Requirements:** R8, R11, R22-R26, R30, R42-R43
+- **Dependencies:** U6, U7, U7a, U11
+- **Files:**
+  - `crates/ployzd/src/dataplane_runtime.rs`
+  - `crates/ployzd/src/dataplane_runtime/host_routes.rs`
+  - `crates/ployzd/src/docker/runner.rs`
+  - `crates/ployzd/src/node_service_runtime.rs`
+  - `crates/ployzd/src/node_rpc.rs`
+  - `crates/ployzd/tests/wireguard_dataplane.rs`
+  - `crates/ployzd/tests/node_service_runtime.rs`
+  - `scripts/local-dataplane-proof.sh`
+- **Approach:** Build a local disposable-machine harness around privileged
+  Docker containers or another local VM/container substrate that can run
+  Docker, WireGuard, eBPF, and service supervision. The harness owns only
+  machine lifecycle, local artifact hosting, and local network plumbing. It
+  must run the same product commands that H0 runs:
+
+  ```text
+  ployzctl init --run-keeper-install --node core_1 --gateway ...
+  ployzctl machine add --node edge_2 --name edge-2 --gateway ...
+  curl -fsSL https://local-artifacts/ployz.sh | PLOYZ_NATS_URL=... sh -s -- --join-token ...
+  ployzctl deploy --detach ...
+  ployzctl ops watch ...
+  curl smoke service through both gateways
+  ```
+
+  Use targeted privileged Rust tests as fast diagnostics for endpoint-network
+  setup, WireGuard setup, eBPF attach, and route programming, but do not count
+  U7b complete until the local install/product path succeeds. Local-only
+  overrides should be limited to disposable-machine creation, artifact URLs and
+  checksums, locally routable NATS/bootstrap URLs, and test image sources.
+  Avoid manual `ployzd control/node/gateway` startup, direct active-machine
+  writes, synthetic join reports, or custom deploy-node injection in the proof.
+- **Test scenarios:**
+  - The local proof creates two disposable machine instances with Docker,
+    WireGuard, eBPF, and service supervision available.
+  - `scripts/ployz.sh` downloads and verifies `ployz-keeper` from the local
+    artifact host on both machines.
+  - `ployzctl init --run-keeper-install` uses keeper to install the first node,
+    NATS, and assigned `ployzd` role units.
+  - `ployzctl machine add` prints a real bootstrap command for the second
+    machine; running that command redeems the join token through keeper and
+    starts assigned role units.
+  - Endpoint Docker network creation succeeds and records bridge/subnet
+    evidence.
+  - Existing endpoint network is treated as idempotent success.
+  - WireGuard public key read returns a typed key without requiring a full
+    deploy.
+  - WireGuard peer programming records `wg set ... peer ...` command evidence.
+  - eBPF bytecode validation, attach, and route programming record command
+    evidence using the real `ployz-ebpf-ctl`.
+  - Missing privileges, missing bridge, bad bytecode, and failed `tc` attach
+    produce typed domain failures, not node RPC timeouts.
+  - The node-scoped NATS service path returns the same success/failure shape as
+    the direct local dataplane harness.
+  - A local smoke deploy through the installed cluster emits
+    `deploy_wireguard_ebpf_prepared`, reaches both gateways, and records
+    operation status/events through `ployzctl`.
+- **Verification:** `scripts/local-dataplane-proof.sh` plus
+  `cargo test -p ployzd wireguard_dataplane`.
+
 ### H0. Disposable Product Smoke Proof
 
 - **Goal:** Prove that install and the actual product path work on disposable
   Linux hosts with one disposable command. Hetzner is only the source of fresh
   machines.
 - **Requirements:** R39-R43
-- **Dependencies:** U1-U9a, U11
+- **Dependencies:** U1-U9a, U11, U7b
 - **Files:**
   - `scripts/hetzner-two-node-acceptance.sh`
 - **Approach:** Add one shell script using `hcloud` and plain SSH. It rents two
-  fresh Linux boxes, stages the selected artifacts, runs the normal Ployz
-  install/product commands, curls the smoke service, and deletes the boxes.
-  That is the whole Hetzner scope.
+  fresh Linux boxes, stages or hosts the selected artifacts, runs the same
+  normal Ployz install/product commands proven by U7b, curls the smoke service,
+  and deletes the boxes. That is the whole Hetzner scope. H0 only runs after
+  U7b is green locally. H0 is not the place to discover Docker bridge,
+  WireGuard, eBPF attach, route-programming behavior, or install semantics. Its
+  job is to prove that the already-working local product path also survives
+  fresh Linux hosts, systemd supervision, artifact install, cloud networking,
+  and real gateway traffic.
 
   This is the complete H0 flow:
 
   ```text
-  ployzctl init --node core-1 ...
+  ployzctl init --run-keeper-install --node core-1 ...
   ployzctl machine add --name edge-2 ...
+  ssh edge-2 '<printed ployz.sh bootstrap command>'
   ployzctl deploy ...
   ployzctl ops watch ...
   curl smoke service
@@ -1817,25 +2028,26 @@ Do not build these in v1:
 
 ## Execution Order
 
-1. Pre-U0 thermonuclear repository cull.
-2. U0 repository reset and doc fence.
-3. U1 NATS bootstrap.
-4. U1a iroh NATS tunnel transport.
-5. U2 typed model and subjects.
-6. U3 service surface.
-7. U4 operation spine.
-8. U4a real NATS operation adapters.
-9. U11 owned operation hard simplification.
-10. U5 permission profiles.
-11. U6 node agent and Docker observation.
-12. U7 first deploy.
-13. U7a keeper and `ployz.sh` bootstrap foundation.
-14. U8 minimal gateway projection skeleton.
-15. U9 CLI/SDK ergonomics.
-16. U9a operation API contract registry.
-17. H0 disposable product smoke proof.
-18. U10a backup foundation.
-19. U10b backup commands.
+1. **done** — Pre-U0 thermonuclear repository cull.
+2. **done** — U0 repository reset and doc fence.
+3. **done** — U1 NATS bootstrap.
+4. **done** — U1a iroh NATS tunnel transport.
+5. **done** — U2 typed model and subjects.
+6. **done** — U3 service surface.
+7. **done** — U4 operation spine.
+8. **done** — U4a real NATS operation adapters.
+9. **done** — U11 owned operation hard simplification.
+10. **done** — U5 permission profiles.
+11. **partially done** — U6 node agent and Docker observation.
+12. **partially done** — U7 first deploy.
+13. **partially done** — U7a keeper and `ployz.sh` bootstrap foundation.
+14. **done** — U8 minimal gateway projection skeleton.
+15. **partially done** — U9 CLI/SDK ergonomics.
+16. **done** — U9a operation API contract registry.
+17. **in progress** — U7b local Docker WireGuard/eBPF dataplane proof.
+18. **in progress** — H0 disposable product smoke proof.
+19. **done** — U10a backup foundation.
+20. **partially done** — U10b backup commands.
 
 The first proof should be Pre-U0 through U4 with a fake direct execution path
 over the operation contract harness. The second proof should be U0-U4a over
@@ -1843,9 +2055,12 @@ real local NATS with operation owner leases. The third proof should add U11 and
 prove no durable workflow worker is required for deploy/substrate ownership.
 The fourth proof should be U0-U4a through the iroh NATS tunnel. The fifth proof
 should be U0-U7 with fake Docker. The sixth proof should be U0-U7a with the
-real install path on one machine. H0 then proves the same product path on two
-fresh disposable machines. Hetzner creates and deletes hosts; Ployz installs
-the cluster, joins the second node, records operation evidence, uses the old
+real install path on one machine. The seventh proof should be U7b: local
+privileged Docker or network-namespace execution of the same
+WireGuard/eBPF/route-programming path that deploy records as dataplane
+evidence. H0 then proves the same product path on two fresh disposable
+machines. Hetzner creates and deletes hosts; Ployz installs the cluster, joins
+the second node, records operation evidence, uses the already-proven
 eBPF/WireGuard data plane through the normal product path once, and serves the
 smoke service through ingress. Artifact download may be shortcut; the product
 path and eBPF/WireGuard data plane should not be. If the harness starts making

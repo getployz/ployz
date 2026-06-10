@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
-const PIN_PATH: &str = "/sys/fs/bpf/ployz";
+const DEFAULT_PIN_PATH: &str = "/sys/fs/bpf/ployz";
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -16,27 +16,34 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    match args.as_slice() {
+    let args = parse_global_args(args)?;
+    match args.command.as_slice() {
         [command, bytecode] if command == "validate" => validate_bytecode(Path::new(bytecode)),
-        [command, bytecode, bridge, wg_ifname] if command == "attach" => {
-            attach(Path::new(bytecode), bridge, wg_ifname)
-        }
-        [command, bytecode, bridge, wg_ifname] if command == "ensure-attached" => {
-            ensure_attached(Path::new(bytecode), bridge, wg_ifname)
-        }
-        [command, bridge] if command == "detach" => detach(bridge),
+        [command, bytecode, bridge, wg_ifname] if command == "attach" => attach(
+            Path::new(bytecode),
+            bridge,
+            wg_ifname,
+            args.pin_path.as_deref(),
+        ),
+        [command, bytecode, bridge, wg_ifname] if command == "ensure-attached" => ensure_attached(
+            Path::new(bytecode),
+            bridge,
+            wg_ifname,
+            args.pin_path.as_deref(),
+        ),
+        [command, bridge] if command == "detach" => detach(bridge, args.pin_path.as_deref()),
         [command, action, subnet, ifindex] if command == "route" && action == "add" => {
             let subnet = parse_ipv4_subnet(subnet)?;
             let ifindex = ifindex
                 .parse::<u32>()
                 .map_err(|error| format!("invalid ifindex {ifindex:?}: {error}"))?;
-            route_add(subnet, ifindex)
+            route_add(subnet, ifindex, args.pin_path.as_deref())
         }
         [command, action, subnet, ifname] if command == "route" && action == "add-ifname" => {
-            route_add_ifname(parse_ipv4_subnet(subnet)?, ifname)
+            route_add_ifname(parse_ipv4_subnet(subnet)?, ifname, args.pin_path.as_deref())
         }
         [command, action, subnet] if command == "route" && action == "del" => {
-            route_del(parse_ipv4_subnet(subnet)?)
+            route_del(parse_ipv4_subnet(subnet)?, args.pin_path.as_deref())
         }
         [] => Err(usage()),
         [unknown, ..] => Err(format!(
@@ -46,8 +53,47 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedArgs {
+    pin_path: Option<String>,
+    command: Vec<String>,
+}
+
+fn parse_global_args(args: Vec<String>) -> Result<ParsedArgs, String> {
+    match args.as_slice() {
+        [flag, ..] if flag == "--pin-path" => {
+            let [_, pin_path, command @ ..] = args.as_slice() else {
+                return Err(format!("--pin-path requires a path\n{}", usage()));
+            };
+            if command.is_empty() {
+                return Err(format!("--pin-path requires a command\n{}", usage()));
+            }
+            Ok(ParsedArgs {
+                pin_path: Some(pin_path.clone()),
+                command: command.to_vec(),
+            })
+        }
+        [flag, ..] if flag.starts_with("--pin-path=") => {
+            let Some((_, pin_path)) = flag.split_once('=') else {
+                return Err(format!("invalid --pin-path\n{}", usage()));
+            };
+            if pin_path.is_empty() {
+                return Err(format!("--pin-path requires a path\n{}", usage()));
+            }
+            Ok(ParsedArgs {
+                pin_path: Some(pin_path.to_owned()),
+                command: args[1..].to_vec(),
+            })
+        }
+        _ => Ok(ParsedArgs {
+            pin_path: None,
+            command: args,
+        }),
+    }
+}
+
 fn usage() -> String {
-    "usage: ployz-ebpf-ctl validate <bytecode>\n       ployz-ebpf-ctl attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl ensure-attached <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl detach <bridge-ifname>\n       ployz-ebpf-ctl route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl route add-ifname <ipv4-subnet> <ifname>\n       ployz-ebpf-ctl route del <ipv4-subnet>".to_owned()
+    "usage: ployz-ebpf-ctl [--pin-path <bpffs-path>] validate <bytecode>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] attach <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] ensure-attached <bytecode> <bridge-ifname> <wg-ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] detach <bridge-ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] route add <ipv4-subnet> <ifindex>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] route add-ifname <ipv4-subnet> <ifname>\n       ployz-ebpf-ctl [--pin-path <bpffs-path>] route del <ipv4-subnet>".to_owned()
 }
 
 fn validate_bytecode(path: &Path) -> Result<(), String> {
@@ -65,62 +111,104 @@ fn parse_ipv4_subnet(value: &str) -> Result<ipnet::Ipv4Net, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn attach(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> {
-    linux::attach(bytecode, bridge, wg_ifname)
+fn attach(
+    bytecode: &Path,
+    bridge: &str,
+    wg_ifname: &str,
+    pin_path: Option<&str>,
+) -> Result<(), String> {
+    linux::attach(
+        bytecode,
+        bridge,
+        wg_ifname,
+        pin_path.unwrap_or(DEFAULT_PIN_PATH),
+    )
 }
 
 #[cfg(not(target_os = "linux"))]
-fn attach(_bytecode: &Path, _bridge: &str, _wg_ifname: &str) -> Result<(), String> {
+fn attach(
+    _bytecode: &Path,
+    _bridge: &str,
+    _wg_ifname: &str,
+    _pin_path: Option<&str>,
+) -> Result<(), String> {
     Err("attach requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_attached(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> {
-    linux::ensure_attached(bytecode, bridge, wg_ifname)
+fn ensure_attached(
+    bytecode: &Path,
+    bridge: &str,
+    wg_ifname: &str,
+    pin_path: Option<&str>,
+) -> Result<(), String> {
+    linux::ensure_attached(
+        bytecode,
+        bridge,
+        wg_ifname,
+        pin_path.unwrap_or(DEFAULT_PIN_PATH),
+    )
 }
 
 #[cfg(not(target_os = "linux"))]
-fn ensure_attached(_bytecode: &Path, _bridge: &str, _wg_ifname: &str) -> Result<(), String> {
+fn ensure_attached(
+    _bytecode: &Path,
+    _bridge: &str,
+    _wg_ifname: &str,
+    _pin_path: Option<&str>,
+) -> Result<(), String> {
     Err("ensure-attached requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
-fn detach(bridge: &str) -> Result<(), String> {
-    linux::detach(bridge)
+fn detach(bridge: &str, pin_path: Option<&str>) -> Result<(), String> {
+    linux::detach(bridge, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn detach(_bridge: &str) -> Result<(), String> {
+fn detach(_bridge: &str, _pin_path: Option<&str>) -> Result<(), String> {
     Err("detach requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
-fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32) -> Result<(), String> {
-    linux::route_add(subnet, ifindex)
+fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: Option<&str>) -> Result<(), String> {
+    linux::route_add(subnet, ifindex, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn route_add(_subnet: ipnet::Ipv4Net, _ifindex: u32) -> Result<(), String> {
+fn route_add(
+    _subnet: ipnet::Ipv4Net,
+    _ifindex: u32,
+    _pin_path: Option<&str>,
+) -> Result<(), String> {
     Err("route add requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
-fn route_add_ifname(subnet: ipnet::Ipv4Net, ifname: &str) -> Result<(), String> {
-    linux::route_add_ifname(subnet, ifname)
+fn route_add_ifname(
+    subnet: ipnet::Ipv4Net,
+    ifname: &str,
+    pin_path: Option<&str>,
+) -> Result<(), String> {
+    linux::route_add_ifname(subnet, ifname, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn route_add_ifname(_subnet: ipnet::Ipv4Net, _ifname: &str) -> Result<(), String> {
+fn route_add_ifname(
+    _subnet: ipnet::Ipv4Net,
+    _ifname: &str,
+    _pin_path: Option<&str>,
+) -> Result<(), String> {
     Err("route add-ifname requires Linux".to_owned())
 }
 
 #[cfg(target_os = "linux")]
-fn route_del(subnet: ipnet::Ipv4Net) -> Result<(), String> {
-    linux::route_del(subnet)
+fn route_del(subnet: ipnet::Ipv4Net, pin_path: Option<&str>) -> Result<(), String> {
+    linux::route_del(subnet, pin_path.unwrap_or(DEFAULT_PIN_PATH))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn route_del(_subnet: ipnet::Ipv4Net) -> Result<(), String> {
+fn route_del(_subnet: ipnet::Ipv4Net, _pin_path: Option<&str>) -> Result<(), String> {
     Err("route del requires Linux".to_owned())
 }
 
@@ -135,7 +223,7 @@ fn subnet_to_key(subnet: ipnet::Ipv4Net) -> ployz_ebpf_common::RouteKey {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{PIN_PATH, subnet_to_key, validate_bytecode};
+    use super::{subnet_to_key, validate_bytecode};
     use aya::Ebpf;
     use aya::programs::tc::{NlOptions, TcAttachOptions};
     use aya::programs::{SchedClassifier, TcAttachType};
@@ -153,7 +241,12 @@ mod linux {
     unsafe impl aya::Pod for PodRouteKey {}
     unsafe impl aya::Pod for PodRouteEntry {}
 
-    pub fn attach(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> {
+    pub fn attach(
+        bytecode: &Path,
+        bridge: &str,
+        wg_ifname: &str,
+        pin_path: &str,
+    ) -> Result<(), String> {
         validate_bytecode(bytecode)?;
         let wg_ifindex = resolve_ifindex(wg_ifname)?;
         let bytes = std::fs::read(bytecode)
@@ -203,63 +296,68 @@ mod linux {
             .set(0, wg_ifindex, 0)
             .map_err(|error| format!("set WG_IFINDEX: {error}"))?;
 
-        std::fs::create_dir_all(PIN_PATH).map_err(|error| format!("create {PIN_PATH}: {error}"))?;
+        std::fs::create_dir_all(pin_path).map_err(|error| format!("create {pin_path}: {error}"))?;
         bpf.map_mut("ROUTES")
             .ok_or("ROUTES map not found")?
-            .pin(format!("{PIN_PATH}/routes"))
+            .pin(format!("{pin_path}/routes"))
             .map_err(|error| format!("pin ROUTES map: {error}"))?;
         bpf.program_mut("ployz_egress")
             .ok_or("ployz_egress program not found after attach")?
-            .pin(format!("{PIN_PATH}/egress"))
+            .pin(format!("{pin_path}/egress"))
             .map_err(|error| format!("pin ployz_egress: {error}"))?;
         bpf.program_mut("ployz_ingress")
             .ok_or("ployz_ingress program not found after attach")?
-            .pin(format!("{PIN_PATH}/ingress"))
+            .pin(format!("{pin_path}/ingress"))
             .map_err(|error| format!("pin ployz_ingress: {error}"))?;
 
         Ok(())
     }
 
-    pub fn ensure_attached(bytecode: &Path, bridge: &str, wg_ifname: &str) -> Result<(), String> {
+    pub fn ensure_attached(
+        bytecode: &Path,
+        bridge: &str,
+        wg_ifname: &str,
+        pin_path: &str,
+    ) -> Result<(), String> {
         validate_bytecode(bytecode)?;
-        if ployz_tc_pins_exist() {
+        if ployz_tc_pins_exist(pin_path) {
             return Ok(());
         }
-        remove_ployz_tc_pins()?;
-        attach(bytecode, bridge, wg_ifname)
+        remove_ployz_tc_pins(pin_path)?;
+        attach(bytecode, bridge, wg_ifname, pin_path)
     }
 
-    pub fn detach(bridge: &str) -> Result<(), String> {
+    pub fn detach(bridge: &str, pin_path: &str) -> Result<(), String> {
         aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Egress, "ployz_egress")
             .map_err(|error| format!("detach ployz_egress from {bridge}: {error}"))?;
         aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Ingress, "ployz_ingress")
             .map_err(|error| format!("detach ployz_ingress from {bridge}: {error}"))?;
-        remove_pin_file(format!("{PIN_PATH}/routes"))?;
-        remove_pin_file(format!("{PIN_PATH}/egress"))?;
-        remove_pin_file(format!("{PIN_PATH}/ingress"))?;
-        remove_pin_dir(PIN_PATH)?;
+        remove_pin_file(format!("{pin_path}/routes"))?;
+        remove_pin_file(format!("{pin_path}/egress"))?;
+        remove_pin_file(format!("{pin_path}/ingress"))?;
+        remove_pin_dir(pin_path)?;
         Ok(())
     }
 
-    fn ployz_tc_pins_exist() -> bool {
+    fn ployz_tc_pins_exist(pin_path: &str) -> bool {
         [
-            format!("{PIN_PATH}/routes"),
-            format!("{PIN_PATH}/egress"),
-            format!("{PIN_PATH}/ingress"),
+            format!("{pin_path}/routes"),
+            format!("{pin_path}/egress"),
+            format!("{pin_path}/ingress"),
         ]
         .iter()
         .all(|path| Path::new(path).exists())
     }
 
-    fn remove_ployz_tc_pins() -> Result<(), String> {
-        remove_pin_file(format!("{PIN_PATH}/routes"))?;
-        remove_pin_file(format!("{PIN_PATH}/egress"))?;
-        remove_pin_file(format!("{PIN_PATH}/ingress"))?;
-        remove_pin_dir(PIN_PATH)
+    fn remove_ployz_tc_pins(pin_path: &str) -> Result<(), String> {
+        remove_pin_file(format!("{pin_path}/routes"))?;
+        remove_pin_file(format!("{pin_path}/egress"))?;
+        remove_pin_file(format!("{pin_path}/ingress"))?;
+        remove_pin_dir(pin_path)
     }
 
-    pub fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32) -> Result<(), String> {
-        let mut map = open_routes_map()?;
+    pub fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: &str) -> Result<(), String> {
+        let mut map = open_routes_map(pin_path)?;
         map.insert(
             PodRouteKey(subnet_to_key(subnet)),
             PodRouteEntry(RouteEntry { ifindex }),
@@ -268,19 +366,24 @@ mod linux {
         .map_err(|error| format!("insert route {subnet}: {error}"))
     }
 
-    pub fn route_add_ifname(subnet: ipnet::Ipv4Net, ifname: &str) -> Result<(), String> {
-        route_add(subnet, resolve_ifindex(ifname)?)
+    pub fn route_add_ifname(
+        subnet: ipnet::Ipv4Net,
+        ifname: &str,
+        pin_path: &str,
+    ) -> Result<(), String> {
+        route_add(subnet, resolve_ifindex(ifname)?, pin_path)
     }
 
-    pub fn route_del(subnet: ipnet::Ipv4Net) -> Result<(), String> {
-        let mut map = open_routes_map()?;
+    pub fn route_del(subnet: ipnet::Ipv4Net, pin_path: &str) -> Result<(), String> {
+        let mut map = open_routes_map(pin_path)?;
         let _ = map.remove(&PodRouteKey(subnet_to_key(subnet)));
         Ok(())
     }
 
-    fn open_routes_map()
-    -> Result<aya::maps::HashMap<aya::maps::MapData, PodRouteKey, PodRouteEntry>, String> {
-        let map_data = aya::maps::MapData::from_pin(format!("{PIN_PATH}/routes"))
+    fn open_routes_map(
+        pin_path: &str,
+    ) -> Result<aya::maps::HashMap<aya::maps::MapData, PodRouteKey, PodRouteEntry>, String> {
+        let map_data = aya::maps::MapData::from_pin(format!("{pin_path}/routes"))
             .map_err(|error| format!("open pinned ROUTES map: {error}"))?;
         aya::maps::HashMap::try_from(aya::maps::Map::HashMap(map_data))
             .map_err(|error| format!("open ROUTES map: {error}"))
@@ -331,9 +434,33 @@ mod tests {
     fn invalid_commands_report_usage() {
         let error = run(Vec::new()).expect_err("empty args fail");
 
-        assert!(error.contains("ployz-ebpf-ctl validate <bytecode>"));
-        assert!(error.contains("ployz-ebpf-ctl ensure-attached <bytecode>"));
-        assert!(error.contains("ployz-ebpf-ctl route add-ifname <ipv4-subnet> <ifname>"));
+        assert!(error.contains("ployz-ebpf-ctl [--pin-path <bpffs-path>] validate <bytecode>"));
+        assert!(error.contains("ensure-attached <bytecode>"));
+        assert!(error.contains("route add-ifname <ipv4-subnet> <ifname>"));
+    }
+
+    #[test]
+    fn global_pin_path_is_parsed_before_command() {
+        let args = parse_global_args(vec![
+            "--pin-path".to_owned(),
+            "/sys/fs/bpf/ployz-core".to_owned(),
+            "route".to_owned(),
+            "add".to_owned(),
+            "10.42.2.0/24".to_owned(),
+            "7".to_owned(),
+        ])
+        .expect("pin path args parse");
+
+        assert_eq!(args.pin_path.as_deref(), Some("/sys/fs/bpf/ployz-core"));
+        assert_eq!(
+            args.command,
+            vec![
+                "route".to_owned(),
+                "add".to_owned(),
+                "10.42.2.0/24".to_owned(),
+                "7".to_owned()
+            ]
+        );
     }
 
     #[test]

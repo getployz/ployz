@@ -276,7 +276,7 @@ async fn bind_iroh_endpoint(
 }
 
 pub fn assure_tunnel_identity_file(path: &Path) -> Result<String, TunnelRuntimeError> {
-    Ok(load_or_create_tunnel_secret_key(path)?.public().to_string())
+    Ok(load_or_create_tunnel_secret_key(path)?.public().to_z32())
 }
 
 fn tunnel_secret_key(path: Option<&Path>) -> Result<SecretKey, TunnelRuntimeError> {

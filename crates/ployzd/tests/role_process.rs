@@ -2,6 +2,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Command;
 
+use iroh::PublicKey;
 use ployz_core::ids::NodeId;
 use ployz_core::subjects::API_OPS_STATUS;
 use ployz_nats::connect::NatsClientUrl;
@@ -13,8 +14,8 @@ use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
     GatewayProcessConfig, NodeDataplaneConfig, NodeProcessArtifacts, NodeProcessConfig,
     PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
-    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV,
-    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DEPLOY_NODES_ENV, PLOYZ_EBPF_BYTECODE_ENV,
+    PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_URL_ENV, PLOYZ_NODE_ID_ENV,
     PLOYZ_NODE_PUBLIC_IP_ENV, PLOYZ_TUNNEL_CORE_DIRECT_ADDRS_ENV, PLOYZ_TUNNEL_CORE_NODE_ENV,
     PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV, PLOYZ_TUNNEL_CORE_RELAY_URL_ENV,
@@ -56,6 +57,41 @@ fn control_process_owns_api_and_nats_assurance() {
 }
 
 #[test]
+fn control_role_loads_configured_deploy_nodes() {
+    let config = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+        PLOYZ_DEPLOY_NODES_ENV => Some("core_1,edge_2".to_owned()),
+        _ => None,
+    })
+    .expect("control role config loads");
+
+    let DaemonProcessConfig::Control(config) = config else {
+        panic!("control role should produce control config");
+    };
+    assert_eq!(
+        config.deploy_nodes,
+        vec![node_id("core_1"), node_id("edge_2")]
+    );
+}
+
+#[test]
+fn control_role_rejects_invalid_deploy_node() {
+    let error = load_daemon_process_config(DaemonProcessRole::Control, |name| match name {
+        PLOYZ_NODE_ID_ENV => Some("core_1".to_owned()),
+        PLOYZ_NATS_URL_ENV => Some("nats://127.0.0.1:7422".to_owned()),
+        PLOYZ_DEPLOY_NODES_ENV => Some("core_1,not a node".to_owned()),
+        _ => None,
+    })
+    .expect_err("invalid deploy node is rejected");
+
+    assert!(matches!(
+        error,
+        DaemonProcessConfigError::InvalidDeployNode { value } if value == "not a node"
+    ));
+}
+
+#[test]
 fn node_process_owns_node_rpc_and_observations_only() {
     let node_id = node_id("node_7");
     let url = NatsClientUrl::loopback(7422);
@@ -64,7 +100,7 @@ fn node_process_owns_node_rpc_and_observations_only() {
         url.clone(),
         NodeProcessArtifacts::new("/tmp/ployz-ebpf".into(), "/tmp/ployz-ebpf-ctl".into()),
         NodeDataplaneConfig::new(
-            "docker0".to_owned(),
+            "br-ployz".to_owned(),
             "ployz-wg0".to_owned(),
             "10.42.7.0/24".to_owned(),
         ),
@@ -638,10 +674,29 @@ fn binary_tunnel_identity_creates_reusable_identity_file() {
 
     assert!(first.status.success());
     assert!(second.status.success());
-    assert!(String::from_utf8_lossy(&first.stdout).starts_with("public-key "));
+    let public_key = parse_identity_public_key(&first.stdout);
+    PublicKey::from_z32(public_key).expect("identity output is an iroh z32 public key");
+    load_daemon_process_config(
+        DaemonProcessRole::Tunnel(TunnelSide::Edge),
+        |name| match name {
+            PLOYZ_TUNNEL_LISTEN_ADDR_ENV => Some("127.0.0.1:7422".to_owned()),
+            PLOYZ_TUNNEL_CORE_NODE_ENV => Some("core_1".to_owned()),
+            PLOYZ_TUNNEL_CORE_PUBLIC_KEY_ENV => Some(public_key.to_owned()),
+            _ => None,
+        },
+    )
+    .expect("identity output can configure an edge tunnel");
     assert_eq!(first.stdout, second.stdout);
     assert_eq!(first.stderr, b"");
     assert_eq!(second.stderr, b"");
+}
+
+fn parse_identity_public_key(stdout: &[u8]) -> &str {
+    let text = std::str::from_utf8(stdout).expect("identity output is UTF-8");
+    let Some(public_key) = text.strip_prefix("public-key ") else {
+        panic!("identity output should start with public-key: {text}");
+    };
+    public_key.trim_end()
 }
 
 #[test]

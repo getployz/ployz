@@ -354,6 +354,7 @@ pub fn node_observation_scope(node_id: &NodeId) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeServiceEndpoint {
     Inspect,
+    ContainerEnsureEndpointNetwork,
     ContainerRun,
     ContainerStop,
     ContainerRemove,
@@ -366,6 +367,7 @@ impl NodeServiceEndpoint {
     pub const fn as_subject(self) -> &'static str {
         match self {
             Self::Inspect => "inspect",
+            Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerRun => "container.run",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",

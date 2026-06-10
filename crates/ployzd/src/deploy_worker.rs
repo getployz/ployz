@@ -39,8 +39,9 @@ pub use preparation::{
 
 use crate::docker::labels::ManagedContainerIdentity;
 pub use crate::node_runtime_types::{
-    ContainerEndpointRequest, NodeContainerRunSpec, NodeRemoveContainerRequest,
-    NodeRunContainerOutcome, NodeRunContainerRequest, NodeStopContainerRequest,
+    ContainerEndpointRequest, NodeContainerRunSpec, NodeEnsureEndpointNetworkRequest,
+    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
+    NodeStopContainerRequest,
 };
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
@@ -109,6 +110,9 @@ where
     )
     .await
     .map_err(|source| failure(command, source, &started_containers))?;
+    ensure_endpoint_networks(command, &plan, &mut *ports.node_runtime)
+        .await
+        .map_err(|source| failure(command, source, &started_containers))?;
     let dataplane = prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
         .await
         .map_err(|source| failure(command, source, &started_containers))?;
@@ -545,6 +549,37 @@ where
         wireguard_ebpf.prepare_wireguard_ebpf(request),
     )
     .await
+}
+
+async fn ensure_endpoint_networks<N>(
+    command: &DeployExecutionCommand,
+    plan: &DeployPlan,
+    node_runtime: &mut N,
+) -> Result<(), DeployExecutionError>
+where
+    N: NodeContainerRuntime,
+{
+    let request = command.wireguard_ebpf_prepare_request(plan);
+    for node_id in request.nodes {
+        let network_request = NodeEnsureEndpointNetworkRequest {
+            node_id: node_id.clone(),
+            operation_id: command.operation_id.clone(),
+        };
+        with_step_timeout(
+            command,
+            DeployExecutionStep::EnsureEndpointNetwork {
+                node_id: node_id.clone(),
+            },
+            async {
+                node_runtime
+                    .ensure_endpoint_network(network_request)
+                    .await
+                    .map_err(DeployExecutionError::RunContainer)
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn record_wireguard_ebpf_prepared<R>(

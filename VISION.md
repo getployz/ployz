@@ -69,19 +69,18 @@ The control plane uses NATS primitives directly:
 - Message schedules for delayed or recurring work where available.
 - Subject permissions for authority.
 
-Edge nodes reach the control plane through an iroh-backed NATS tunnel by
-default. iroh is transport. NATS is the command and state surface.
+Machines reach the control plane through direct TLS-authenticated NATS by
+default. NATS is the command and state surface.
 
 ```text
-edge node async-nats
-  -> local loopback tunnel
-  -> iroh stream
-  -> core tunnel endpoint
+machine async-nats
+  -> TLS NATS
   -> nats-server
 ```
 
-That tunnel is byte transport only. Product behavior is expressed in NATS
-subjects, messages, KV records, streams, and service handlers.
+Product behavior is expressed in NATS subjects, messages, KV records, streams,
+and service handlers. Private overlay transport may be revisited later, but it
+is not part of the v1 control-plane connection.
 
 ## State Model
 

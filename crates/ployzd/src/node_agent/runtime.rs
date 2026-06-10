@@ -48,6 +48,9 @@ pub enum NodeContainerRunnerError {
     ListExisting {
         message: String,
     },
+    EnsureEndpointNetwork {
+        message: String,
+    },
     Create {
         message: String,
     },
@@ -86,6 +89,10 @@ pub trait NodeContainerRunner {
     fn existing_managed_containers(
         &self,
     ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError>> + Send;
+
+    fn ensure_endpoint_network(
+        &self,
+    ) -> impl Future<Output = Result<(), NodeContainerRunnerError>> + Send;
 
     fn create_managed_container(
         &self,

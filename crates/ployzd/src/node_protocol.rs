@@ -2,9 +2,9 @@
 
 use crate::docker::labels::ManagedContainerLabels;
 use crate::node_runtime_types::{
-    ContainerEndpointRequest, NodeContainerRunSpec, NodeLogsTailRequest, NodeLogsTailResult,
-    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
-    NodeStopContainerRequest,
+    ContainerEndpointRequest, NodeContainerRunSpec, NodeEnsureEndpointNetworkRequest,
+    NodeLogsTailRequest, NodeLogsTailResult, NodeRemoveContainerRequest, NodeRunContainerOutcome,
+    NodeRunContainerRequest, NodeStopContainerRequest,
 };
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady,
@@ -15,6 +15,38 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::ops::{FailureMessage, OperatorHint};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeEnsureEndpointNetworkRpcRequest {
+    pub operation_id: OperationId,
+}
+
+impl From<NodeEnsureEndpointNetworkRequest> for NodeEnsureEndpointNetworkRpcRequest {
+    fn from(value: NodeEnsureEndpointNetworkRequest) -> Self {
+        Self {
+            operation_id: value.operation_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeEnsureEndpointNetworkRpcResponse {
+    Ok {
+        node_id: NodeId,
+    },
+    DomainError {
+        node_id: NodeId,
+        error: NodeEnsureEndpointNetworkDomainError,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeEnsureEndpointNetworkDomainError {
+    EnsureFailed { message: FailureMessage },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

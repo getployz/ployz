@@ -48,6 +48,39 @@ fn hetzner_h0_requires_ebpf_bytecode_before_hcloud() {
 }
 
 #[test]
+fn hetzner_h0_checks_local_artifacts_before_hcloud_auth() {
+    let temp = temp_path("ployz-h0-ssh-key");
+    let nats = temp_path("ployz-h0-nats-server");
+    let ebpf_ctl = temp_path("ployz-h0-ebpf-ctl");
+    let missing_ebpf = temp_path("ployz-h0-missing-ebpf-no-auth");
+    std::fs::write(&temp, "key").expect("ssh key can be written");
+    std::fs::write(&nats, "nats").expect("nats artifact can be written");
+    std::fs::write(&ebpf_ctl, "ctl").expect("ebpf ctl artifact can be written");
+    let _ = std::fs::remove_file(&missing_ebpf);
+    let output = Command::new("sh")
+        .arg(script_path())
+        .arg("up")
+        .arg("--run-id")
+        .arg("valid-run")
+        .env_remove("HCLOUD_TOKEN")
+        .env("HETZNER_SSH_KEY", "key")
+        .env("PLOYZ_SSH_PRIVATE_KEY", &temp)
+        .env("PLOYZ_ACCEPTANCE_NATS_SERVER", &nats)
+        .env("PLOYZ_ACCEPTANCE_EBPF_CTL", &ebpf_ctl)
+        .env("PLOYZ_ACCEPTANCE_EBPF_BYTECODE", &missing_ebpf)
+        .output()
+        .expect("script runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(stderr(&output).contains("Ployz eBPF bytecode does not exist"));
+    assert!(!stderr(&output).contains("HCLOUD_TOKEN"));
+    let _ = std::fs::remove_file(temp);
+    let _ = std::fs::remove_file(nats);
+    let _ = std::fs::remove_file(ebpf_ctl);
+}
+
+#[test]
 fn hetzner_h0_script_drives_the_product_path() {
     let script = std::fs::read_to_string(script_path()).expect("script is readable");
 
@@ -82,6 +115,8 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains("machine add did not print the joined node runtime NATS URL"));
     assert!(script.contains("${bootstrap_tunnel_command%ployzd tunnel --side edge}"));
     assert!(script.contains("nohup env $bootstrap_tunnel_command"));
+    assert!(script.contains("wait_for_remote_tcp \"$edge_ip\" 127.0.0.1 7422 bootstrap-tunnel"));
+    assert!(script.contains("bootstrap tunnel log:"));
     assert!(!script.contains("nohup sh -c"));
     assert!(script.contains("PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret'"));
     assert!(script.contains("PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public'"));
@@ -90,6 +125,14 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(!script.contains("PLOYZ_TUNNEL_CORE_DIRECT_ADDRS='${core_ip}:${core_iroh_port}'"));
     assert!(script.contains(" sh '$remote_ployz_sh' --join-token"));
     assert!(script.contains("PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh'"));
+    assert!(script.contains("wait_for_remote_tcp \"$edge_ip\" 127.0.0.1 7422 runtime-tunnel"));
+    assert!(script.contains("runtime tunnel status:"));
+    assert!(script.contains("restart-edge-node-runtime"));
+    assert!(script.contains("systemctl restart ployzd-node-edge_2.service"));
+    assert!(script.contains("wait_for_edge_node_runtime"));
+    assert!(script.contains("logs missing_node_runtime_probe --node edge_2 --tail 1"));
+    assert!(script.contains("NoSuchContainer"));
+    assert!(script.contains("edge node runtime did not answer node-scoped RPC"));
     assert!(script.contains("wait_for_machine_add_operation \"$core_ip\" op_machine_add"));
     assert!(script.contains("machine.add.completed"));
     assert!(script.contains("machine.add.failed"));
@@ -109,9 +152,11 @@ fn hetzner_h0_script_drives_the_product_path() {
     assert!(script.contains(".wireguard.public_key != null"));
     assert!(script.contains(".program == \"wg\""));
     assert!(script.contains(".kind == \"ployz_tc_bytecode\""));
-    assert!(script.contains(".args[0] == \"ensure-attached\""));
-    assert!(script.contains(".args[0] == \"route\""));
-    assert!(script.contains(".args[1] == \"add-ifname\""));
+    assert!(script.contains(".program == $ctl and .args[0] == \"ensure-attached\""));
+    assert!(
+        script
+            .contains(".program == $ctl and .args[0] == \"route\" and .args[1] == \"add-ifname\"")
+    );
     assert!(script.contains("deploy_failed"));
     assert!(script.contains("dataplane-ready completion"));
     assert!(script.contains("wait_for_smoke_service core \"$core_ip\""));
@@ -122,8 +167,10 @@ fn hetzner_h0_script_drives_the_product_path() {
     ));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_BYTECODE"));
     assert!(script.contains("PLOYZ_ACCEPTANCE_EBPF_CTL"));
-    assert!(script.contains("PLOYZ_ACCEPTANCE_TARGET_DIR=/tmp/ployz-build-target"));
-    assert!(script.contains("CARGO_TARGET_DIR:-/tmp/ployz-build-target"));
+    assert!(script.contains("PLOYZ_ACCEPTANCE_TARGET_DIR:-/tmp/ployz-linux-amd64-target"));
+    assert!(script.contains("two-node proof failed; keeping servers for run"));
+    assert!(script.contains("/release/ployzctl"));
+    assert!(script.contains("/h0-tools/nats-server-linux-amd64"));
     assert!(!script.contains("/tmp/ployz-rust-target"));
     assert!(script.contains("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"));
     assert!(script.contains("/usr/local/bin/ployz-ebpf-ctl"));
@@ -140,13 +187,26 @@ fn hetzner_h0_script_drives_the_product_path() {
 fn h0_artifact_prep_builds_and_prints_acceptance_exports() {
     let script = std::fs::read_to_string(prepare_script_path()).expect("script is readable");
 
-    assert!(script.contains("TARGET_DIR=\"${PLOYZ_ACCEPTANCE_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/ployz-build-target}}\""));
+    assert!(
+        script.contains(
+            "TARGET_DIR=\"${PLOYZ_ACCEPTANCE_TARGET_DIR:-/tmp/ployz-linux-amd64-target}\""
+        )
+    );
+    assert!(script.contains(
+        "EBPF_TARGET_DIR=\"${PLOYZ_EBPF_TARGET_DIR:-/tmp/ployz-rust-ebpf-source-target}\""
+    ));
+    assert!(script.contains("docker run --rm --platform linux/amd64"));
+    assert!(script.contains("rust:1.91-bookworm"));
+    assert!(script.contains("--release"));
     assert!(script.contains("-p ployzctl"));
     assert!(script.contains("-p ployzd"));
     assert!(script.contains("-p ployz-keeper"));
     assert!(script.contains("-p ployz-ebpf-ctl"));
-    assert!(script.contains("scripts/install-ebpf-bytecode.sh"));
-    assert!(script.contains("set PLOYZ_ACCEPTANCE_NATS_SERVER or install nats-server on PATH"));
+    assert!(script.contains("scripts/build-ebpf-bytecode.sh"));
+    assert!(!script.contains("scripts/install-ebpf-bytecode.sh"));
+    assert!(script.contains("nats-server-v${NATS_SERVER_VERSION}-linux-amd64.tar.gz"));
+    assert!(script.contains("cargo run -q -p ployz-ebpf-ctl -- validate"));
+    assert!(script.contains("need_linux_amd64_artifact"));
     assert!(script.contains("export PLOYZ_ACCEPTANCE_PLOYZCTL="));
     assert!(script.contains("export PLOYZ_ACCEPTANCE_PLOYZD="));
     assert!(script.contains("export PLOYZ_ACCEPTANCE_KEEPER="));

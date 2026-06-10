@@ -34,29 +34,26 @@ Use NATS as the control-plane backplane:
 - Message schedules for delayed/recurring work when supported.
 - Subject permissions for authority.
 
-Use iroh as the default private transport for NATS connectivity:
+Use direct TLS-authenticated NATS for machine control-plane connectivity:
 
 ```text
 async-nats
-  -> local loopback tunnel
-  -> iroh stream
-  -> core tunnel endpoint
+  -> TLS NATS
   -> nats-server
 ```
 
-iroh is byte transport. Product commands must go through NATS.
+Private overlay transport may be revisited later. Product commands go through
+NATS.
 
 ## Control Plane And Data Plane
 
 - `ployzd` is control plane: bootstrap, health, services, controllers, node RPC.
 - `ployzd` is not the data plane.
-- `nats-server`, NATS tunnels, gateway, DNS, and workloads are independently
-  supervised.
-- Core `ployzd` down must not mean NATS/gateway/DNS/tunnel down.
+- `nats-server`, gateway, DNS, and workloads are independently supervised.
+- Core `ployzd` down must not mean NATS/gateway/DNS down.
 - Edge `ployzd` down stops that node's RPC/observations, not its running
   workloads.
 - Gateway and DNS watch NATS directly and keep last-known-good state.
-- Tunnel loss is health/connectivity state, not stored cluster truth.
 - If `ployzd` starts data-plane/substrate processes, it is a supervisor and
   needs explicit readiness, restart, shutdown, health, and recovery tests.
 
@@ -68,8 +65,7 @@ Expected crate shape:
   security role models.
 - `ployz-nats`: NATS connection, bootstrap, KV, streams, Object Store,
   services, schedules, permissions.
-- `ployz-transport`: iroh endpoint identity, NATS tunnel transport, join
-  bundles.
+- `ployz-transport`: future transport adapters if private connectivity returns.
 - `ployzd`: process wiring, service handlers, controllers, node agent, Docker,
   gateway, DNS, certs.
 - `ployzctl`: CLI client.
@@ -87,7 +83,7 @@ Transport adapters must not import product orchestration convenience types.
 - Queue groups distribute workers.
 - KV locks are only for resource fencing.
 - Subject permissions are the authority boundary.
-- NATS credentials still matter over iroh.
+- NATS credentials and subject permissions are the authority boundary.
 - No external control-plane I/O may wait forever.
 - Every long-running task needs shutdown, timeout, retry/backoff, and visible
   health.

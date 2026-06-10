@@ -9,8 +9,9 @@ use crate::node_protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
     NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
     NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
-    NodeLogsTailDomainError, NodeLogsTailRpcRequest, NodeLogsTailRpcResponse,
-    NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
+    NodeEnsureEndpointNetworkDomainError, NodeEnsureEndpointNetworkRpcRequest,
+    NodeEnsureEndpointNetworkRpcResponse, NodeLogsTailDomainError, NodeLogsTailRpcRequest,
+    NodeLogsTailRpcResponse, NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
     NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
 };
 use crate::node_runtime_types::{NodeLogsTailResult, NodeRunContainerOutcome};
@@ -39,6 +40,10 @@ where
     L: Clone + NodeLogReader + Send + Sync + 'static,
 {
     let spec = node_runtime_service_base(&node_id);
+    let ensure_endpoint_network_endpoint = node_endpoint_spec(
+        &node_id,
+        NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
+    );
     let container_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRun);
     let container_stop_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerStop);
     let container_remove_endpoint =
@@ -47,6 +52,19 @@ where
         node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
     let logs_tail_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::LogsTail);
     let mut runtime = start_nats_service(client, &spec)
+        .await
+        .map_err(NodeServiceRuntimeError::Nats)?;
+
+    runtime
+        .bind_endpoint(&ensure_endpoint_network_endpoint, {
+            let node_id = node_id.clone();
+            let runner = runner.clone();
+            move |request| {
+                let node_id = node_id.clone();
+                let runner = runner.clone();
+                async move { handle_ensure_endpoint_network(node_id, runner, request).await }
+            }
+        })
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
 
@@ -110,6 +128,32 @@ where
         .map_err(NodeServiceRuntimeError::Nats)?;
 
     Ok(runtime)
+}
+
+async fn handle_ensure_endpoint_network<R>(
+    node_id: NodeId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: NodeContainerRunner,
+{
+    if let Err(response) = decode_json_request::<NodeEnsureEndpointNetworkRpcRequest>(&request) {
+        return response;
+    }
+
+    match runner.ensure_endpoint_network().await {
+        Ok(()) => node_success(NodeEnsureEndpointNetworkRpcResponse::Ok { node_id }),
+        Err(NodeContainerRunnerError::EnsureEndpointNetwork { message }) => {
+            node_domain_error(NodeEnsureEndpointNetworkRpcResponse::DomainError {
+                node_id,
+                error: NodeEnsureEndpointNetworkDomainError::EnsureFailed {
+                    message: failure_message(format!("endpoint network ensure failed: {message}")),
+                },
+            })
+        }
+        Err(error) => runner_error(error),
+    }
 }
 
 async fn handle_container_run<R>(
@@ -392,6 +436,11 @@ fn runner_error(error: NodeContainerRunnerError) -> NatsServiceResponse {
         NodeContainerRunnerError::ListExisting { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container list failed: {message}")),
         ),
+        NodeContainerRunnerError::EnsureEndpointNetwork { message } => {
+            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
+                "endpoint network ensure failed: {message}"
+            )))
+        }
         NodeContainerRunnerError::Create { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container create failed: {message}")),
         ),
@@ -424,6 +473,7 @@ fn created_container_start_error(
             })
         }
         error @ (NodeContainerRunnerError::ListExisting { .. }
+        | NodeContainerRunnerError::EnsureEndpointNetwork { .. }
         | NodeContainerRunnerError::Create { .. }
         | NodeContainerRunnerError::Stop { .. }
         | NodeContainerRunnerError::Remove { .. }) => runner_error(error),
@@ -447,6 +497,7 @@ fn existing_container_start_error(
             })
         }
         error @ (NodeContainerRunnerError::ListExisting { .. }
+        | NodeContainerRunnerError::EnsureEndpointNetwork { .. }
         | NodeContainerRunnerError::Create { .. }
         | NodeContainerRunnerError::Stop { .. }
         | NodeContainerRunnerError::Remove { .. }) => runner_error(error),

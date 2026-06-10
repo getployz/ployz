@@ -6,12 +6,13 @@ command="${1:-}"
 usage() {
   cat >&2 <<'USAGE'
 usage:
-  HCLOUD_TOKEN=... HETZNER_SSH_KEY=... PLOYZ_SSH_PRIVATE_KEY=... scripts/hetzner-two-node-acceptance.sh up --run-id <id>
-  HCLOUD_TOKEN=... scripts/hetzner-two-node-acceptance.sh cleanup --run-id <id>
+  HETZNER_SSH_KEY=... PLOYZ_SSH_PRIVATE_KEY=... scripts/hetzner-two-node-acceptance.sh up --run-id <id>
+  scripts/hetzner-two-node-acceptance.sh cleanup --run-id <id>
 
 optional env:
+  HCLOUD_TOKEN=...
   HETZNER_LOCATION=fsn1
-  HETZNER_SERVER_TYPE=cx22
+  HETZNER_SERVER_TYPE=cx23
   HETZNER_IMAGE=ubuntu-24.04
   PLOYZ_SSH_USER=root
   PLOYZ_SSH_READY_TIMEOUT_SECONDS=300
@@ -40,6 +41,18 @@ need_file() {
   path="$1"
   label="$2"
   [ -f "$path" ] || die "${label} does not exist: ${path}"
+}
+
+need_hcloud_auth() {
+  if [ -n "${HCLOUD_TOKEN:-}" ]; then
+    return 0
+  fi
+
+  if hcloud datacenter list -o noheader >/dev/null 2>&1; then
+    return 0
+  fi
+
+  die "set HCLOUD_TOKEN or configure an active hcloud context"
 }
 
 sha256_file() {
@@ -88,7 +101,7 @@ server_name() {
 }
 
 cleanup_command() {
-  printf 'HCLOUD_TOKEN=... scripts/hetzner-two-node-acceptance.sh cleanup --run-id %s\n' "$run_id"
+  printf 'scripts/hetzner-two-node-acceptance.sh cleanup --run-id %s\n' "$run_id"
 }
 
 server_ip() {
@@ -124,6 +137,51 @@ cleanup_servers() {
     echo "cleanup: deleting ${name}" >&2
     hcloud server delete "$name" >/dev/null
   done
+}
+
+capture_remote_diagnostics() {
+  [ -n "${log_dir:-}" ] || return 0
+  [ -n "${known_hosts_file:-}" ] || return 0
+
+  if [ -n "${core_ip:-}" ]; then
+    capture_host_diagnostics core "$core_ip"
+  fi
+  if [ -n "${edge_ip:-}" ]; then
+    capture_host_diagnostics edge "$edge_ip"
+  fi
+}
+
+capture_host_diagnostics() {
+  label="$1"
+  ip="$2"
+  output="${log_dir}/diagnostics-${label}.log"
+
+  remote_sh "$ip" '
+    echo "## systemd"
+    systemctl --no-pager --failed || true
+    echo
+    echo "## ployz units"
+    systemctl --no-pager status 'ployzd*' 'nats-server.service' 'docker.service' || true
+    echo
+    echo "## ployz journals"
+    journalctl --no-pager -n 240 -u nats-server.service -u ployzd-control.service -u ployzd-node-core_1.service -u ployzd-node-edge_2.service -u ployzd-tunnel-core.service -u ployzd-tunnel-edge.service -u ployzd-gateway.service || true
+    echo
+    echo "## docker"
+    docker ps -a || true
+    docker network ls || true
+    docker network inspect ployz || true
+    echo
+    echo "## network"
+    ip link || true
+    ip addr || true
+    ip route || true
+    wg show || true
+    tc qdisc show || true
+    echo
+    echo "## bpf"
+    mount | grep bpf || true
+    ls -la /sys/fs/bpf || true
+  ' >"$output" 2>&1 || true
 }
 
 wait_for_ssh() {
@@ -162,14 +220,29 @@ ssh_base() {
     "$@"
 }
 
-scp_base() {
-  scp \
-    -i "$PLOYZ_SSH_PRIVATE_KEY" \
-    -o BatchMode=yes \
-    -o ConnectTimeout=10 \
-    -o StrictHostKeyChecking=accept-new \
-    -o UserKnownHostsFile="$known_hosts_file" \
-    "$@"
+copy_to_remote() {
+  [ "$#" -eq 2 ] || die "copy_to_remote expects <source> <user@host:path>"
+  source_path="$1"
+  target="$2"
+
+  case "$target" in
+    *:*)
+      target_host="${target%%:*}"
+      target_path="${target#*:}"
+      ;;
+    *)
+      die "remote copy target must be user@host:path: ${target}"
+      ;;
+  esac
+
+  case "$target_path" in
+    *\'*)
+      die "remote copy target must not contain single quotes: ${target_path}"
+      ;;
+  esac
+
+  tmp_target="${target_path}.tmp.$$"
+  ssh_base "$target_host" "cat > '$tmp_target' && mv '$tmp_target' '$target_path'" <"$source_path"
 }
 
 remote_sh() {
@@ -190,13 +263,13 @@ stage_host() {
   ip="$1"
   remote_sh "$ip" "install -d -m 0755 '$remote_dir'"
   remote_sh "$ip" "install -d -m 0755 /usr/local/lib/ployz/ebpf"
-  scp_base "$ployzctl_bin" "$(ssh_target "$ip"):$remote_ployzctl" >/dev/null
-  scp_base "$ployzd_bin" "$(ssh_target "$ip"):$remote_ployzd" >/dev/null
-  scp_base "$keeper_bin" "$(ssh_target "$ip"):$remote_keeper" >/dev/null
-  scp_base "$nats_server_bin" "$(ssh_target "$ip"):$remote_nats_server" >/dev/null
-  scp_base "$ployz_sh" "$(ssh_target "$ip"):$remote_ployz_sh" >/dev/null
-  scp_base "$ebpf_ctl_bin" "$(ssh_target "$ip"):$remote_ebpf_ctl_source" >/dev/null
-  scp_base "$ebpf_bytecode" "$(ssh_target "$ip"):$remote_ebpf_bytecode_source" >/dev/null
+  copy_to_remote "$ployzctl_bin" "$(ssh_target "$ip"):$remote_ployzctl" >/dev/null
+  copy_to_remote "$ployzd_bin" "$(ssh_target "$ip"):$remote_ployzd" >/dev/null
+  copy_to_remote "$keeper_bin" "$(ssh_target "$ip"):$remote_keeper" >/dev/null
+  copy_to_remote "$nats_server_bin" "$(ssh_target "$ip"):$remote_nats_server" >/dev/null
+  copy_to_remote "$ployz_sh" "$(ssh_target "$ip"):$remote_ployz_sh" >/dev/null
+  copy_to_remote "$ebpf_ctl_bin" "$(ssh_target "$ip"):$remote_ebpf_ctl_source" >/dev/null
+  copy_to_remote "$ebpf_bytecode" "$(ssh_target "$ip"):$remote_ebpf_bytecode_source" >/dev/null
   remote_sh "$ip" "chmod 0755 '$remote_ployzctl' '$remote_ployzd' '$remote_keeper' '$remote_nats_server' '$remote_ployz_sh' '$remote_ebpf_ctl_source'"
   remote_sh "$ip" "chmod 0644 '$remote_ebpf_bytecode_source'"
 }
@@ -263,6 +336,46 @@ wait_for_smoke_service() {
   done
 
   echo "smoke service did not respond through ${name} gateway ${ip}; last output:" >&2
+  cat "$log_file" >&2 || true
+  return 1
+}
+
+wait_for_remote_tcp() {
+  ip="$1"
+  host="$2"
+  port="$3"
+  label="$4"
+  deadline=$(( $(date +%s) + 60 ))
+  log_file="${log_dir}/wait-${label}.log"
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if remote_sh "$ip" "timeout 1 bash -c '</dev/tcp/${host}/${port}'" >"$log_file" 2>&1; then
+      cat "$log_file"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "${label} did not accept TCP connections at ${host}:${port}; last output:" >&2
+  cat "$log_file" >&2 || true
+  return 1
+}
+
+wait_for_edge_node_runtime() {
+  ip="$1"
+  deadline=$(( $(date +%s) + 60 ))
+  log_file="${log_dir}/wait-edge-node-runtime.log"
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    remote_sh "$ip" "PLOYZ_NATS_URL=nats://127.0.0.1:4222 '$remote_ployzctl' logs missing_node_runtime_probe --node edge_2 --tail 1" >"$log_file" 2>&1 || true
+    if grep -q "NoSuchContainer" "$log_file"; then
+      cat "$log_file"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "edge node runtime did not answer node-scoped RPC; last output:" >&2
   cat "$log_file" >&2 || true
   return 1
 }
@@ -359,15 +472,22 @@ wait_for_machine_add_operation() {
 
 on_exit() {
   status="$?"
-  if [ -n "${known_hosts_file:-}" ]; then
-    rm -f "$known_hosts_file"
-  fi
   if [ "$status" -ne 0 ] && [ "${command:-}" = "up" ]; then
+    echo "capturing remote diagnostics for failed run ${run_id}" >&2
+    capture_remote_diagnostics
+    if [ "${PLOYZ_ACCEPTANCE_KEEP:-0}" = "1" ]; then
+      echo "two-node proof failed; keeping servers for run ${run_id}" >&2
+      echo "cleanup command: $(cleanup_command)" >&2
+      exit "$status"
+    fi
     echo "two-node proof failed; attempting cleanup for run ${run_id}" >&2
     if ! cleanup_servers; then
       echo "automatic cleanup failed; run:" >&2
       cleanup_command >&2
     fi
+  fi
+  if [ -n "${known_hosts_file:-}" ]; then
+    rm -f "$known_hosts_file"
   fi
   exit "$status"
 }
@@ -379,17 +499,17 @@ on_exit() {
 shift
 
 location="${HETZNER_LOCATION:-fsn1}"
-server_type="${HETZNER_SERVER_TYPE:-cx22}"
+server_type="${HETZNER_SERVER_TYPE:-cx23}"
 image="${HETZNER_IMAGE:-ubuntu-24.04}"
 ssh_user="${PLOYZ_SSH_USER:-root}"
 ssh_ready_timeout_seconds="${PLOYZ_SSH_READY_TIMEOUT_SECONDS:-300}"
-acceptance_target_dir="${PLOYZ_ACCEPTANCE_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/ployz-build-target}}"
-ployzctl_bin="${PLOYZ_ACCEPTANCE_PLOYZCTL:-${acceptance_target_dir}/debug/ployzctl}"
-ployzd_bin="${PLOYZ_ACCEPTANCE_PLOYZD:-${acceptance_target_dir}/debug/ployzd}"
-keeper_bin="${PLOYZ_ACCEPTANCE_KEEPER:-${acceptance_target_dir}/debug/ployz-keeper}"
-nats_server_bin="${PLOYZ_ACCEPTANCE_NATS_SERVER:-}"
-ebpf_ctl_bin="${PLOYZ_ACCEPTANCE_EBPF_CTL:-${acceptance_target_dir}/debug/ployz-ebpf-ctl}"
-ebpf_bytecode="${PLOYZ_ACCEPTANCE_EBPF_BYTECODE:-/tmp/ployz-rust-ebpf-target/bpfel-unknown-none/release/ployz-ebpf-tc}"
+acceptance_target_dir="${PLOYZ_ACCEPTANCE_TARGET_DIR:-/tmp/ployz-linux-amd64-target}"
+ployzctl_bin="${PLOYZ_ACCEPTANCE_PLOYZCTL:-${acceptance_target_dir}/release/ployzctl}"
+ployzd_bin="${PLOYZ_ACCEPTANCE_PLOYZD:-${acceptance_target_dir}/release/ployzd}"
+keeper_bin="${PLOYZ_ACCEPTANCE_KEEPER:-${acceptance_target_dir}/release/ployz-keeper}"
+nats_server_bin="${PLOYZ_ACCEPTANCE_NATS_SERVER:-${acceptance_target_dir}/h0-tools/nats-server-linux-amd64}"
+ebpf_ctl_bin="${PLOYZ_ACCEPTANCE_EBPF_CTL:-${acceptance_target_dir}/release/ployz-ebpf-ctl}"
+ebpf_bytecode="${PLOYZ_ACCEPTANCE_EBPF_BYTECODE:-/tmp/ployz-rust-ebpf-source-target/bpfel-unknown-none/release/ployz-ebpf-tc}"
 smoke_image="${PLOYZ_ACCEPTANCE_SMOKE_IMAGE:-nginx:alpine}"
 ployz_sh="${PLOYZ_ACCEPTANCE_PLOYZ_SH:-scripts/ployz.sh}"
 edge_runtime_nats_addr="127.0.0.1:7422"
@@ -400,7 +520,6 @@ remote_ebpf_ctl="/usr/local/bin/ployz-ebpf-ctl"
 case "$command" in
   up)
     parse_run_id "$@"
-    [ -n "${HCLOUD_TOKEN:-}" ] || die "set HCLOUD_TOKEN"
     [ -n "${HETZNER_SSH_KEY:-}" ] || die "set HETZNER_SSH_KEY"
     [ -n "${PLOYZ_SSH_PRIVATE_KEY:-}" ] || die "set PLOYZ_SSH_PRIVATE_KEY"
     [ -f "$PLOYZ_SSH_PRIVATE_KEY" ] || die "PLOYZ_SSH_PRIVATE_KEY does not exist: ${PLOYZ_SSH_PRIVATE_KEY}"
@@ -415,9 +534,9 @@ case "$command" in
     need_command hcloud
     need_command jq
     need_command ssh
-    need_command scp
     need_command awk
     need_command curl
+    need_hcloud_auth
 
     known_hosts_file="$(mktemp)"
     log_dir="${TMPDIR:-/tmp}/ployz-acceptance-${run_id}-logs"
@@ -493,11 +612,25 @@ JSON
     bootstrap_tunnel_command="${bootstrap_tunnel_command%ployzd tunnel --side edge}'$remote_ployzd' tunnel --side edge"
     run_remote_logged start-bootstrap-tunnel "$edge_ip" \
       "PLOYZ_TUNNEL_SECRET_KEY_FILE='$remote_bootstrap_tunnel_secret' PLOYZ_TUNNEL_PUBLIC_KEY_FILE='$remote_bootstrap_tunnel_public' PLOYZ_TUNNEL_IROH_BIND_ADDR=0.0.0.0:0 nohup env $bootstrap_tunnel_command > '$remote_bootstrap_tunnel_log' 2>&1 & echo \$! > '$remote_bootstrap_tunnel_pid'"
+    if ! wait_for_remote_tcp "$edge_ip" 127.0.0.1 7422 bootstrap-tunnel; then
+      echo "bootstrap tunnel log:" >&2
+      remote_sh "$edge_ip" "cat '$remote_bootstrap_tunnel_log'" >&2 || true
+      exit 1
+    fi
 
     run_remote_logged join-edge "$edge_ip" \
       "PLOYZ_KEEPER_URL='file://${remote_keeper}' PLOYZ_KEEPER_SHA256='$keeper_sha256' PLOYZ_NATS_URL='$edge_runtime_nats_url' PLOYZ_NODE_PUBLIC_IP='$edge_ip' sh '$remote_ployz_sh' --join-token '$join_token'"
 
     remote_sh "$edge_ip" "if [ -f '$remote_bootstrap_tunnel_pid' ]; then kill \"\$(cat '$remote_bootstrap_tunnel_pid')\" >/dev/null 2>&1 || true; fi"
+    if ! wait_for_remote_tcp "$edge_ip" 127.0.0.1 7422 runtime-tunnel; then
+      echo "runtime tunnel status:" >&2
+      remote_sh "$edge_ip" "systemctl status ployzd-tunnel-edge.service --no-pager" >&2 || true
+      remote_sh "$edge_ip" "journalctl -u ployzd-tunnel-edge.service --no-pager -n 80" >&2 || true
+      exit 1
+    fi
+    run_remote_logged restart-edge-node-runtime "$edge_ip" \
+      "systemctl restart ployzd-node-edge_2.service"
+    wait_for_edge_node_runtime "$core_ip"
 
     wait_for_machine_add_operation "$core_ip" op_machine_add
 
@@ -526,7 +659,7 @@ JSON
   cleanup)
     parse_run_id "$@"
     need_command hcloud
-    [ -n "${HCLOUD_TOKEN:-}" ] || die "set HCLOUD_TOKEN"
+    need_hcloud_auth
     cleanup_servers
     ;;
   *)

@@ -44,6 +44,14 @@ _Avoid_: Host identity, route name, route target
 A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations.
 _Avoid_: Route binding, gateway config, active route
 
+**Dataplane Projection**:
+A NATS-watch-driven, machine-local application of current machine and dataplane state into WireGuard, eBPF, routes, or related network configuration. Dataplane projection may continuously reconcile local network configuration because it is a projection of cluster state, not authority to mutate cluster truth.
+_Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, live RPC coordination
+
+**Dataplane-Capable Machine**:
+A machine whose local dataplane projection is healthy enough for normal service workload placement and serving. In v1, normal service placement requires dataplane capability; cleanup and repair may proceed without it when machine RPC is reachable.
+_Avoid_: Local-only service placement, cleanup reachability, generic health
+
 **Serving Unpublish**:
 Removing a service from a namespace's serveable surfaces before cleanup, including gateway route eligibility and DNS publication. Role-process convergence is observed as warning evidence; Docker cleanup decides whether the service is actually removed.
 _Avoid_: Route removal, DNS removal, service deletion
@@ -128,6 +136,14 @@ _Avoid_: Cache
 The observed condition of a namespace at planning time, including service containers, health, machine availability, volumes, gateway observations, and certificate readiness. Runtime state is an input to deploy planning; it is not desired state or operation history.
 _Avoid_: Live state, JetStream truth
 
+**Operation Runtime Snapshot**:
+The bounded runtime view collected for one explicit mutating operation. It uses live machine RPC for current machine-local facts; NATS observations may provide cached evidence or context, but they must not create placement, reuse, or cleanup candidates for that operation. Operation runtime snapshots are not durable cluster truth.
+_Avoid_: Background reconciliation, stored desired state, unbounded live scan, stale-observation cleanup
+
+**Passive Runtime Projection**:
+A read-side or data-plane view built from durable control-plane state and fresh NATS observations, without live machine RPC. Gateways, DNS, Cloud subscriptions, and CLI watch surfaces use passive runtime projections to stay current without owning mutations.
+_Avoid_: Mutating operation snapshot, live RPC requirement, hidden reconciliation
+
 **Service Container**:
 A Docker container that belongs to a service in a namespace. Service containers are runtime evidence for planning and inspection, but they are not the canonical service definition.
 _Avoid_: Replica as container identity
@@ -167,6 +183,14 @@ _Avoid_: Gateway gate, role quorum, membership wait, reconciliation wait
 **Namespace Lock**:
 A short-lived exclusive claim required before creating a deploy operation for a namespace. It prevents concurrent deploy mutation for the namespace and expires if the deploy worker dies.
 _Avoid_: Operation owner lease, deploy queue
+
+**Atomic Resource Claim**:
+A durable claim for one resource identity created through the control-plane store's atomic create or compare-and-set behavior. Use an atomic resource claim when the contested resource has a natural key, so Ployz can avoid a broader lock.
+_Avoid_: Global lock, scan-and-hope allocation, advisory claim
+
+**Machine Substrate Lock**:
+A short-lived exclusive claim required before creating a machine-local substrate mutation operation. It prevents concurrent keeper update, substrate update, bootstrap finalization, and role assignment changes for one machine.
+_Avoid_: Machine lock, updater lock, host lock
 
 **Resource Busy**:
 An API rejection meaning a command cannot start because a required exclusive resource is currently locked. A resource busy rejection does not create an operation record.
@@ -216,12 +240,160 @@ _Avoid_: Route, endpoint
 An operator-visible host that can run Ployz-managed processes and service containers. Machine is the product and control-plane identity for that host; do not introduce a separate domain entity for node.
 _Avoid_: Node, host
 
+**Machine Identity**:
+The stable, non-reused identity of an accepted machine. Machine identity owns credentials, endpoint subnet assignment, observations, and operation history.
+_Avoid_: NodeId as product identity, machine name as identity, name-keyed observations
+
+**Machine Name**:
+A current-machine-unique operator-facing label for a machine. Machine names help humans search and recognize current machines, but they are not authority for subjects, credentials, endpoint subnets, observations, or operation identity. Removed machine history does not reserve names.
+_Avoid_: Hostname, machine identity, permanent name reservation
+
+**Machine Reservation**:
+A pre-activation claim created while a machine add is waiting for join. A reservation may hold a name and join material, but it does not own a machine endpoint subnet.
+_Avoid_: Active machine, subnet allocation, accepted machine identity
+
+**Machine Endpoint Subnet**:
+A cluster-assigned CIDR reserved for service container endpoints on one current machine. It is assigned when the machine identity is accepted into the cluster, remains stable while that machine is current, is released when the machine is removed, may be reused immediately after release, and must not be independently chosen by the machine.
+_Avoid_: Node-derived subnet, local subnet choice, Docker network subnet as authority, first-boot local allocation, subnet cooldown
+
+**Pending Machine Endpoint Claim**:
+An operation-owned claim for a machine endpoint subnet that has been reserved but not yet attached to an accepted machine identity. A pending claim is durable transition evidence; it is resumed by the same operation or resolved by explicit cleanup or repair, not by automatic TTL.
+_Avoid_: Expiring subnet lease, hidden cleanup, unowned reservation
+
+**Accepted Machine Identity**:
+A machine identity committed by the control plane with credentials and an assigned endpoint subnet. Once accepted, later node startup or role failures are machine health evidence; the machine's resources are changed through explicit lifecycle operations rather than failed bootstrap cleanup.
+_Avoid_: Reservation, pending join, bootstrap attempt
+
+**Machine Join Redemption**:
+The control-plane action that validates one machine reservation's join token and accepts the machine identity. Join redemption is the boundary where machine credentials and endpoint subnet assignment become usable; later bootstrap reporting records outcome evidence for an already accepted machine. Retrying redemption for the same accepted identity is idempotent, but redemption must not resurrect a removed machine identity.
+_Avoid_: Bootstrap completion, credential pre-issue, local activation
+
+**Machine Join Report**:
+Bootstrap outcome evidence reported after machine join redemption. A join report can complete or fail the machine-add operation, but it does not accept the machine identity or assign cluster resources.
+_Avoid_: Activation boundary, identity creation, subnet assignment
+
+**Machine Add Readiness Warning**:
+Warning evidence on a machine-add operation when bounded post-bootstrap observation finds degraded readiness such as dataplane projection, gateway, DNS, public IP, or first observations not yet healthy. A readiness warning does not undo the accepted machine identity; later workload eligibility is decided by the machine usability view.
+_Avoid_: Bootstrap failure, identity rollback, deploy eligibility
+
+**Machine Lifecycle**:
+The durable operator-intent state of a current accepted machine identity. The minimal current lifecycle set is active and draining. Machine lifecycle controls authority and placement policy, while runtime readiness, removal kind, bootstrap failures, and unresolved cleanup come from observations and operation evidence.
+_Avoid_: Runtime health, bootstrap result, every failure mode as lifecycle
+
+**Machine Endpoint Subnet Mismatch**:
+A condition where a machine's local endpoint network uses a CIDR different from the cluster-assigned Machine Endpoint Subnet, or has a local endpoint network before the cluster has assigned one. Ployz must report this as a failure that needs explicit repair; it must not adopt the local subnet automatically. A mismatched machine may report diagnostic observations, but it is not eligible for placement, passive serving, or normal deploy cleanup.
+_Avoid_: Auto-adopt local Docker subnet, silent subnet repair, automatic network recreation
+
+**Machine Endpoint Repair**:
+An explicit operation that resolves a machine endpoint subnet mismatch. Endpoint repair is separate from node startup so Ployz does not silently delete or recreate local networks that may contain runtime evidence.
+_Avoid_: Startup repair, implicit network cleanup, automatic adoption
+
+**Machine Endpoint Allocation Corruption**:
+A diagnostic condition where durable machine records assign the same machine endpoint subnet to more than one machine identity, or otherwise violate endpoint subnet ownership rules. Ployz should report this through diagnostics or reindex rather than making normal startup scan the whole cluster for impossible allocation states.
+_Avoid_: Startup-wide subnet audit, automatic repair
+
+**Force Removed Machine**:
+A machine identity removed without requiring the machine to participate. Force removal revokes control-plane authority, removes the machine from live dataplane membership, releases current machine state and endpoint subnet, and records any unresolved cleanup as operation evidence; workload recovery remains a separate explicit operation.
+_Avoid_: Separate lifecycle state, machine tombstone, automatic reschedule, implicit recovery
+
+**Graceful Machine Removal**:
+An explicit workload-aware operation that removes a machine from service through planned unplacement, serving exclusion, and local cleanup while the machine can still participate. It is the normal removal path when the machine is reachable and deletes the current machine state after successful removal evidence is recorded.
+_Avoid_: Force remove, silent drain, background reschedule
+
+**Machine Removal Evidence**:
+Operation evidence recorded when a machine is removed, including the machine identity, machine name, endpoint subnet, removal kind, affected workloads, cleanup result, credential revocation, and subnet release. Removed machine inspection comes from operation history, not current machine state.
+_Avoid_: Removed machine KV tombstone, hidden audit state
+
+**Draining Machine**:
+A machine that has been explicitly excluded from new workload placement while existing workloads are moved or removed through separate operations. Draining does not by itself remove existing containers from serving; deploy or recovery operations move serving away deliberately. Draining is durable machine lifecycle state and remains in effect until it is cancelled or the machine is removed.
+_Avoid_: Temporary scheduler hint, daemon-local maintenance flag, serving disable
+
+**Drain Cancellation**:
+An explicit operation that returns a draining machine to normal placement eligibility. Drain cancellation does not reverse deploys, recreate removed containers, or move workloads back to the machine.
+_Avoid_: Rollback, undelete, workload restore
+
+**Machine Cleanup Reachability**:
+The ability to send node-local cleanup commands to a machine for runtime material already on that machine. A draining machine may remain cleanup-reachable while it is fresh and authorized, even though it is not eligible for new workload placement.
+_Avoid_: Placement eligibility, serving eligibility, liveness as authority
+
+**Unresolved Machine Cleanup**:
+Runtime material that may still exist on a machine because graceful cleanup has not completed or the machine stopped participating before cleanup could be verified. A machine with unresolved cleanup requires force removal rather than graceful removal.
+_Avoid_: Successful removal, assumed cleanup, silent orphan adoption
+
+**Affected Workload Acknowledgement**:
+An explicit confirmation required before force removing a machine when fresh observations show Ployz-managed service containers on that machine. The acknowledgement records that the operator chose force removal instead of graceful machine removal.
+_Avoid_: Implicit drain, automatic recovery confirmation
+
+**Machine Control-Plane Authority**:
+The ability of a machine identity to authenticate to the control plane, publish its own observations, respond to its own machine-scoped RPC subjects, and receive assigned work. Machine control-plane authority should become usable only with an accepted machine identity, and revocation belongs to the NATS/auth authority store rather than removed-machine state. Stale observations may remain as evidence but cannot be refreshed by a removed machine.
+_Avoid_: Machine liveness, observation freshness, substrate presence, tombstone-based auth
+
+**Machine Bootstrap**:
+The first installation and join of Ployz substrate on a machine. It makes a machine capable of running its assigned Ployz role processes and reporting bootstrap progress.
+_Avoid_: Install, provisioning, node bootstrap
+
+**Substrate Update**:
+An explicit operation that changes already-installed non-keeper Ployz substrate on one machine to one requested Ployz version. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, not workload service containers or keeper.
+_Avoid_: Update, upgrade, rollout, in-place update
+
+**Keeper Update**:
+An explicit operation that changes keeper on one machine to one requested Ployz version. It is separate from substrate update because keeper is the local executor for substrate steps.
+_Avoid_: Self-update, keeper rollout, updater update
+
+**Substrate Component**:
+A Ployz-managed machine component that keeper can install or update. Recognized substrate components include ployzd, NATS server, gateway, DNS, and eBPF.
+_Avoid_: Package, role, binary
+
+**Activation Strategy**:
+The component-specific way keeper moves a staged substrate component version into use. Activation strategies include bounded restart, graceful gateway upgrade, graceful DNS upgrade, NATS server lame-duck restart, keeper self-update handoff, and eBPF link replacement.
+_Avoid_: Restart policy, rollout mode, deploy strategy
+
+**Substrate Step**:
+An idempotent machine-local check and apply action for machine bootstrap or substrate update. A substrate step reports whether local substrate is already in sync before it mutates the machine.
+_Avoid_: Script step, task, command
+
+**Substrate Preflight**:
+The non-activating checks keeper runs for all relevant substrate components before a substrate update changes the machine. A failed substrate preflight stops the update before any staged version is activated.
+_Avoid_: Dry run, validation step, readiness check
+
+**Keeper Handoff**:
+The keeper update stage where an old keeper stages a requested keeper version, restarts keeper, and the new keeper resumes the same operation from durable local state.
+_Avoid_: Self-restart, keeper rollout, bootstrap restart
+
+**Release Source**:
+A machine-local configuration that lets keeper resolve an explicitly requested Ployz substrate version into artifact metadata. It is not authority to choose the latest version.
+_Avoid_: Update channel, latest feed, package repository
+
+**Assigned Substrate State**:
+Durable machine-local state that tells keeper which substrate components and roles belong on that machine. It guides local substrate steps but is not cluster truth.
+_Avoid_: Desired state, role cache, local cluster state
+
+**Control-Plane Connection**:
+The machine's NATS connection to the Ployz control plane. In v1 this is a direct TLS-authenticated NATS connection rather than an overlay tunnel.
+_Avoid_: Tunnel, peer connection, transport session
+
 **Machine Observation**:
 Runtime state reported by a machine about its host and local runtime. It can describe service containers, Docker health, resources, public IP, and local process health, but it does not own gateway or DNS status.
 _Avoid_: Node observation
 
+**Fresh Machine Observation**:
+A recent machine observation that can contribute to current runtime views. Stale machine observations may remain as evidence, but they are not current cluster state and must not make an offline or force removed machine appear serveable.
+_Avoid_: Stored container truth, TTL as correctness
+
+**Machine Observation Hygiene**:
+Best-effort cleanup or expiry of stale observations for removed or inactive machines. Observation hygiene is not a correctness boundary; projections and operations must ignore observations that do not belong to current usable machines.
+_Avoid_: Observation deletion as removal success, stale observation as authority
+
+**Machine Usability View**:
+A computed read model that explains how a machine may currently be used, including workload placement, cleanup reachability, and serving eligibility. It combines machine lifecycle, required capability, and either an operation runtime snapshot or passive runtime projection into typed eligibility outcomes with reasons, so deploy, gateway, and machine APIs do not each reimplement the rules.
+_Avoid_: Scattered eligibility checks, lifecycle as readiness, raw observation filtering everywhere, eligibility booleans
+
+**Machine Usability Reason**:
+A typed explanation for why a machine is not currently usable for placement, cleanup, or serving. Initial reasons include draining, removed or not current, no operation runtime snapshot, stale observation, dataplane degraded, endpoint subnet mismatch, and placement constraint mismatch.
+_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision
+
 **Fresh Role Observation**:
-A recent observation from a role process such as a machine agent, gateway, DNS process, or tunnel process. Fresh role observations make a process visible for warning-only coordination and diagnostics, but they are not durable membership or operation quorum.
+A recent observation from a role process such as a machine agent, gateway, or DNS process. Fresh role observations make a process visible for warning-only coordination and diagnostics, but they are not durable membership or operation quorum.
 _Avoid_: Membership, quorum, durable heartbeat
 
 **Gateway Observation**:

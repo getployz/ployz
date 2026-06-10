@@ -55,6 +55,10 @@ impl NodeContainerRunner for ObservingContainerRunner {
             .collect())
     }
 
+    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+        Ok(())
+    }
+
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,

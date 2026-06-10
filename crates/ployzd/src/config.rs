@@ -19,6 +19,7 @@ pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
 pub const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
+pub const PLOYZ_DEPLOY_NODES_ENV: &str = "PLOYZ_DEPLOY_NODES";
 pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
 pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
 pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://get.ployz.dev/ployz.sh";
@@ -27,7 +28,7 @@ pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-eb
 pub const PLOYZ_EBPF_CTL_ENV: &str = "PLOYZ_EBPF_CTL";
 pub const DEFAULT_EBPF_CTL_PATH: &str = "/usr/local/bin/ployz-ebpf-ctl";
 pub const PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_BRIDGE_IFNAME";
-pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "docker0";
+pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "br-ployz";
 pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
 pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
 pub const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
@@ -43,7 +44,7 @@ pub const PLOYZ_TUNNEL_PUBLIC_KEY_FILE_ENV: &str = "PLOYZ_TUNNEL_PUBLIC_KEY_FILE
 pub const DEFAULT_TUNNEL_SECRET_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.key";
 pub const DEFAULT_TUNNEL_PUBLIC_KEY_FILE: &str = "/var/lib/ployz/iroh/endpoint.public";
 pub const DEFAULT_CORE_TUNNEL_IROH_PORT: u16 = 4433;
-pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfig {
@@ -75,8 +76,12 @@ pub fn load_daemon_process_config(
         DaemonProcessRole::Control => {
             let node_id = load_process_node_id(&role, &env)?;
             let nats_url = load_nats_url(&role, &env)?;
-            let control = ControlProcessConfig::new(NatsServerRuntime::External(nats_url), node_id)
-                .with_machine_bootstrap(load_machine_bootstrap(&env)?);
+            let mut control =
+                ControlProcessConfig::new(NatsServerRuntime::External(nats_url), node_id);
+            if let Some(deploy_nodes) = load_deploy_nodes(&env)? {
+                control = control.with_deploy_nodes(deploy_nodes);
+            }
+            control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             Ok(DaemonProcessConfig::Control(control))
         }
         DaemonProcessRole::Node(node_id) => {
@@ -191,6 +196,27 @@ fn load_process_node_id(
         role: role.clone(),
         value,
     })
+}
+
+fn load_deploy_nodes(
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<Vec<NodeId>>, DaemonProcessConfigError> {
+    let Some(value) = env(PLOYZ_DEPLOY_NODES_ENV).filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|node| !node.is_empty())
+        .map(|node| {
+            NodeId::try_new(node.to_owned()).map_err(|_source| {
+                DaemonProcessConfigError::InvalidDeployNode {
+                    value: node.to_owned(),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 fn load_machine_bootstrap_url(
@@ -429,6 +455,9 @@ pub enum DaemonProcessConfigError {
         role: DaemonProcessRole,
         value: String,
     },
+    InvalidDeployNode {
+        value: String,
+    },
     InvalidNodePublicIp {
         value: String,
         source: std::net::AddrParseError,
@@ -503,6 +532,13 @@ impl fmt::Display for DaemonProcessConfigError {
                 PLOYZ_NODE_ID_ENV,
                 role.process_name()
             ),
+            Self::InvalidDeployNode { value } => {
+                write!(
+                    formatter,
+                    "{} contains invalid node id {value:?}",
+                    PLOYZ_DEPLOY_NODES_ENV
+                )
+            }
             Self::InvalidNodePublicIp { value, .. } => write!(
                 formatter,
                 "{}={value:?} is invalid",
@@ -525,17 +561,17 @@ impl fmt::Display for DaemonProcessConfigError {
                 "{}={value:?} is invalid",
                 PLOYZ_MACHINE_BOOTSTRAP_URL_ENV
             ),
-            Self::ReadMachineJoinTemplate { path, .. } => {
+            Self::ReadMachineJoinTemplate { path, source } => {
                 write!(
                     formatter,
-                    "{} points to unreadable file {path:?}",
+                    "{} points to unreadable file {path:?}: {source}",
                     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV
                 )
             }
-            Self::InvalidMachineJoinTemplate { path, .. } => {
+            Self::InvalidMachineJoinTemplate { path, source } => {
                 write!(
                     formatter,
-                    "{} file {path:?} is invalid",
+                    "{} file {path:?} is invalid: {source}",
                     PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV
                 )
             }

@@ -1,9 +1,9 @@
 //! Host WireGuard/eBPF readiness for node-local dataplane preparation.
 
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardEbpfReady, WireGuardPeer,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DEFAULT_WIREGUARD_LISTEN_PORT, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    WireGuardEbpfComponent, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError,
+    WireGuardEbpfReady, WireGuardPeer, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::NodeId;
 use ployz_core::ops::FailureMessage;
@@ -12,6 +12,11 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::node_service_runtime::NodeWireGuardEbpfPreparer;
+
+#[path = "dataplane_runtime/host_routes.rs"]
+mod host_routes;
+
+use host_routes::HostDataplaneRouteProgramming;
 
 const HOST_DATAPLANE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_WIREGUARD_KEY_DIR: &str = "/etc/ployz";
@@ -36,23 +41,76 @@ impl HostWireGuardEbpfPreparer {
         bridge_ifname: String,
         wg_ifname: String,
     ) -> Self {
+        Self::new_with_private_key_path(
+            node_id,
+            ebpf_bytecode_path,
+            ebpf_ctl_path,
+            bridge_ifname,
+            wg_ifname,
+            PathBuf::from(DEFAULT_WIREGUARD_PRIVATE_KEY),
+            DEFAULT_WIREGUARD_LISTEN_PORT,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_private_key_path(
+        node_id: NodeId,
+        ebpf_bytecode_path: PathBuf,
+        ebpf_ctl_path: PathBuf,
+        bridge_ifname: String,
+        wg_ifname: String,
+        private_key_path: PathBuf,
+        listen_port: u16,
+    ) -> Self {
+        Self::new_with_host_overrides(
+            node_id,
+            ebpf_bytecode_path,
+            ebpf_ctl_path,
+            bridge_ifname,
+            wg_ifname,
+            private_key_path,
+            listen_port,
+            None,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_host_overrides(
+        node_id: NodeId,
+        ebpf_bytecode_path: PathBuf,
+        ebpf_ctl_path: PathBuf,
+        bridge_ifname: String,
+        wg_ifname: String,
+        private_key_path: PathBuf,
+        listen_port: u16,
+        ebpf_pin_path: Option<PathBuf>,
+    ) -> Self {
         let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
         Self {
             node_id,
             requirements: default_requirements(
                 ebpf_bytecode_path,
                 ebpf_ctl_path,
-                bridge_ifname,
+                bridge_ifname.clone(),
                 wg_ifname.clone(),
+                private_key_path.clone(),
+                listen_port,
+                ebpf_pin_path.clone(),
             ),
             route_programming: Some(HostDataplaneRouteProgramming {
                 ebpf_ctl_program,
+                bridge_ifname,
                 wg_ifname: wg_ifname.clone(),
+                ebpf_pin_path,
             }),
             peer_programming: Some(HostDataplanePeerProgramming {
                 wg_ifname: wg_ifname.clone(),
             }),
-            public_key: HostWireGuardPublicKey::Command { wg_ifname },
+            public_key: HostWireGuardPublicKey::Command {
+                wg_ifname,
+                private_key_path,
+                listen_port,
+            },
             command_timeout: HOST_DATAPLANE_COMMAND_TIMEOUT,
         }
     }
@@ -107,7 +165,7 @@ impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
             }
         }
         if let Some(route_programming) = &self.route_programming {
-            for requirement in route_programming.requirements_for(&self.node_id, endpoint_routes) {
+            for requirement in route_programming.requirements_for(&self.node_id, endpoint_routes)? {
                 match requirement
                     .check(&self.node_id, self.command_timeout)
                     .await?
@@ -166,7 +224,11 @@ impl NodeWireGuardEbpfPreparer for HostWireGuardEbpfPreparer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HostWireGuardPublicKey {
     Static(WireGuardPublicKey),
-    Command { wg_ifname: String },
+    Command {
+        wg_ifname: String,
+        private_key_path: PathBuf,
+        listen_port: u16,
+    },
 }
 
 impl HostWireGuardPublicKey {
@@ -177,41 +239,21 @@ impl HostWireGuardPublicKey {
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
         match self {
             Self::Static(public_key) => Ok(public_key.clone()),
-            Self::Command { wg_ifname } => {
+            Self::Command {
+                wg_ifname,
+                private_key_path,
+                listen_port,
+            } => {
+                for requirement in wireguard_public_key_requirements(
+                    wg_ifname.clone(),
+                    private_key_path.clone(),
+                    *listen_port,
+                ) {
+                    let _ = requirement.check(node_id, command_timeout).await?;
+                }
                 read_wireguard_public_key(node_id, wg_ifname, command_timeout).await
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HostDataplaneRouteProgramming {
-    ebpf_ctl_program: String,
-    wg_ifname: String,
-}
-
-impl HostDataplaneRouteProgramming {
-    fn requirements_for(
-        &self,
-        node_id: &NodeId,
-        endpoint_routes: &[WireGuardEbpfEndpointRoute],
-    ) -> Vec<HostDataplaneRequirement> {
-        endpoint_routes
-            .iter()
-            .filter(|route| route.node_id != *node_id)
-            .map(|route| {
-                HostDataplaneRequirement::command_succeeds(
-                    WireGuardEbpfComponent::EbpfForwarding,
-                    self.ebpf_ctl_program.clone(),
-                    [
-                        "route".to_owned(),
-                        "add-ifname".to_owned(),
-                        route.endpoint_subnet.clone(),
-                        self.wg_ifname.clone(),
-                    ],
-                )
-            })
-            .collect()
     }
 }
 
@@ -385,61 +427,24 @@ fn default_requirements(
     ebpf_ctl_path: PathBuf,
     bridge_ifname: String,
     wg_ifname: String,
+    private_key_path: PathBuf,
+    listen_port: u16,
+    ebpf_pin_path: Option<PathBuf>,
 ) -> Vec<HostDataplaneRequirement> {
     let ebpf_ctl_program = ebpf_ctl_path.display().to_string();
     let ebpf_bytecode_arg = ebpf_bytecode_path.display().to_string();
-    vec![
-        HostDataplaneRequirement::existing_path(WireGuardEbpfComponent::WireGuard, "/dev/net/tun"),
-        HostDataplaneRequirement::command_succeeds(
-            WireGuardEbpfComponent::WireGuard,
-            "wg",
-            ["--version"],
-        ),
-        HostDataplaneRequirement::command_succeeds(
-            WireGuardEbpfComponent::WireGuard,
-            "install",
-            ["-d", "-m", "0700", DEFAULT_WIREGUARD_KEY_DIR],
-        ),
-        HostDataplaneRequirement::command_succeeds(
-            WireGuardEbpfComponent::WireGuard,
-            "sh",
-            [
-                "-c",
-                "test -s /etc/ployz/wireguard.key || (umask 077 && wg genkey > /etc/ployz/wireguard.key)",
-            ],
-        ),
-        HostDataplaneRequirement::command_succeeds(
-            WireGuardEbpfComponent::WireGuard,
-            "sh",
-            [
-                "-c".to_owned(),
-                "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard"
-                    .to_owned(),
-                "--".to_owned(),
-                wg_ifname.clone(),
-            ],
-        ),
-        HostDataplaneRequirement::command_succeeds(
-            WireGuardEbpfComponent::WireGuard,
-            "wg",
-            [
-                "set".to_owned(),
-                wg_ifname.clone(),
-                "private-key".to_owned(),
-                DEFAULT_WIREGUARD_PRIVATE_KEY.to_owned(),
-            ],
-        ),
-        HostDataplaneRequirement::command_succeeds(
-            WireGuardEbpfComponent::WireGuard,
-            "ip",
-            [
-                "link".to_owned(),
-                "set".to_owned(),
-                "up".to_owned(),
-                "dev".to_owned(),
-                wg_ifname.clone(),
-            ],
-        ),
+    let ensure_attached_args = ebpf_ctl_args(
+        &ebpf_pin_path,
+        [
+            "ensure-attached".to_owned(),
+            ebpf_bytecode_arg.clone(),
+            bridge_ifname.clone(),
+            wg_ifname.clone(),
+        ],
+    );
+    let mut requirements =
+        wireguard_public_key_requirements(wg_ifname.clone(), private_key_path, listen_port);
+    requirements.extend([
         HostDataplaneRequirement::existing_path(
             WireGuardEbpfComponent::EbpfForwarding,
             "/sys/fs/bpf",
@@ -462,11 +467,102 @@ fn default_requirements(
         HostDataplaneRequirement::command_succeeds(
             WireGuardEbpfComponent::EbpfForwarding,
             ebpf_ctl_program,
+            ensure_attached_args,
+        ),
+    ]);
+    requirements
+}
+
+fn ebpf_ctl_args(
+    ebpf_pin_path: &Option<PathBuf>,
+    args: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut command_args = Vec::new();
+    if let Some(pin_path) = ebpf_pin_path {
+        command_args.push("--pin-path".to_owned());
+        command_args.push(pin_path.display().to_string());
+    }
+    command_args.extend(args);
+    command_args
+}
+
+fn wireguard_public_key_requirements(
+    wg_ifname: String,
+    private_key_path: PathBuf,
+    listen_port: u16,
+) -> Vec<HostDataplaneRequirement> {
+    let private_key_dir = private_key_path
+        .parent()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| DEFAULT_WIREGUARD_KEY_DIR.to_owned());
+    let private_key_arg = private_key_path.display().to_string();
+    vec![
+        HostDataplaneRequirement::existing_path(WireGuardEbpfComponent::WireGuard, "/dev/net/tun"),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "wg",
+            ["--version"],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "install",
             [
-                "ensure-attached".to_owned(),
-                ebpf_bytecode_arg,
-                bridge_ifname,
-                wg_ifname,
+                "-d".to_owned(),
+                "-m".to_owned(),
+                "0700".to_owned(),
+                private_key_dir,
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "sh",
+            [
+                "-c".to_owned(),
+                "test -s \"$1\" || (umask 077 && wg genkey > \"$1\")".to_owned(),
+                "--".to_owned(),
+                private_key_arg.clone(),
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "sh",
+            [
+                "-c".to_owned(),
+                "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard"
+                    .to_owned(),
+                "--".to_owned(),
+                wg_ifname.clone(),
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "wg",
+            [
+                "set".to_owned(),
+                wg_ifname.clone(),
+                "private-key".to_owned(),
+                private_key_arg,
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "wg",
+            [
+                "set".to_owned(),
+                wg_ifname.clone(),
+                "listen-port".to_owned(),
+                listen_port.to_string(),
+            ],
+        ),
+        HostDataplaneRequirement::command_succeeds(
+            WireGuardEbpfComponent::WireGuard,
+            "ip",
+            [
+                "link".to_owned(),
+                "set".to_owned(),
+                "up".to_owned(),
+                "dev".to_owned(),
+                wg_ifname.clone(),
             ],
         ),
     ]
@@ -710,36 +806,20 @@ mod tests {
                     component: WireGuardEbpfComponent::WireGuard,
                     program,
                     args,
+                } if program == "wg"
+                    && args == &["set", "ployz-wg0", "listen-port", "51820"]
+            )
+        }));
+        assert!(requirements.iter().any(|requirement| {
+            matches!(
+                requirement,
+                HostDataplaneRequirement::CommandSucceeds {
+                    component: WireGuardEbpfComponent::WireGuard,
+                    program,
+                    args,
                 } if program == "ip" && args == &["link", "set", "up", "dev", "ployz-wg0"]
             )
         }));
-    }
-
-    #[test]
-    fn route_programming_adds_only_peer_endpoint_subnets() {
-        let route_programming = HostDataplaneRouteProgramming {
-            ebpf_ctl_program: "/usr/local/bin/ployz-ebpf-ctl".to_owned(),
-            wg_ifname: "ployz-wg0".to_owned(),
-        };
-        let requirements = route_programming.requirements_for(
-            &node_id("node_a"),
-            &[
-                WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_a")),
-                WireGuardEbpfEndpointRoute {
-                    node_id: node_id("node_b"),
-                    endpoint_subnet: "10.42.2.0/24".to_owned(),
-                },
-            ],
-        );
-
-        assert_eq!(
-            requirements,
-            vec![HostDataplaneRequirement::command_succeeds(
-                WireGuardEbpfComponent::EbpfForwarding,
-                "/usr/local/bin/ployz-ebpf-ctl",
-                ["route", "add-ifname", "10.42.2.0/24", "ployz-wg0"]
-            )]
-        );
     }
 
     #[test]
