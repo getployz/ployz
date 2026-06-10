@@ -1137,8 +1137,8 @@ fn machine_join_template() -> MachineJoinTemplate {
       "cluster_name": "prod",
       "runtime_nats_url": "nats://127.0.0.1:7422",
       "trusted_nats": {
-        "server_id": "server_1",
-        "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        "server_name": "server_1",
+        "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
       },
       "ployzd": {
         "version": "0.1.0",

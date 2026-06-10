@@ -141,7 +141,7 @@ pub fn help_text() -> String {
   ployzctl init activate-first-node --node <id> [--gateway]
   ployzctl init --node <id> [--gateway]
   ployzctl init (--emit-keeper-install | --run-keeper-install) --install-spec <path|-> [--keeper-binary <path>]
-  ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --artifact-spec <path|-> --secret-delivery-file <path>
+  ployzctl init join-template --cluster <name> --runtime-nats-url <url> --trusted-first-node <node_id> --trusted-nats-ca-file <path> --artifact-spec <path|-> --secret-delivery-file <path>
   ployzctl backup create --operation <id> --idempotency-key <key>
   ployzctl backup restore --plan
   ployzctl deploy --detach --service <id> --revision <id> --image <ref> --replicas <n> --operation <id> --idempotency-key <key> [--route-hostname <host> --route-port <port> --endpoint-port <port>]

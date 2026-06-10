@@ -43,7 +43,7 @@ impl PreparedNatsServerService {
             binary_path,
             config_path,
             rendered_config: config.render(),
-            client_endpoint: NatsClientEndpoint::tcp(config.host(), config.port()),
+            client_endpoint: NatsClientEndpoint::tcp(config.client_host(), config.port()),
         })
     }
 

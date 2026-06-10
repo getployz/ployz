@@ -8,10 +8,11 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
 };
-use ployz_core::nats_config::NatsServerConfig;
+use ployz_core::nats_config::{NatsListener, NatsServerConfig, NatsServerTlsFiles};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 use ployz_nats::connect::NatsClientUrl;
+use sha2::{Digest, Sha256};
 
 use crate::artifacts::{
     ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, KeeperArtifactTarget,
@@ -168,8 +169,8 @@ impl KeeperJoinMaterial {
             node_id,
             join_bundle.material.cluster_name.as_str(),
             secret_delivery.nats_credentials.secret(),
-            join_bundle.material.trusted_nats.server_id.as_str(),
-            join_bundle.material.trusted_nats.config_sha256.as_str(),
+            join_bundle.material.trusted_nats.server_name.as_str(),
+            ca_pem_sha256(join_bundle.material.trusted_nats.ca_pem.as_str()),
         )
     }
 
@@ -178,13 +179,13 @@ impl KeeperJoinMaterial {
         cluster_name: impl Into<String>,
         nats_credentials: impl Into<String>,
         trusted_nats_server: impl Into<String>,
-        trusted_nats_config_sha256: impl Into<String>,
+        trusted_nats_ca_sha256: impl Into<String>,
     ) -> Result<Self, JoinMaterialError> {
         let redacted = RedactedJoinMaterial::new(
             node_id,
             cluster_name,
             trusted_nats_server,
-            trusted_nats_config_sha256,
+            trusted_nats_ca_sha256,
         )?;
         let nats_credentials = secret_file_content(nats_credentials.into())?;
         Ok(Self {
@@ -214,12 +215,19 @@ impl fmt::Debug for KeeperJoinMaterial {
     }
 }
 
+/// Human-diffable digest of the trusted cluster CA certificate.
+#[must_use]
+pub fn ca_pem_sha256(ca_pem: &str) -> String {
+    let digest = Sha256::digest(ca_pem.as_bytes());
+    format!("{digest:x}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactedJoinMaterial {
     pub node_id: NodeId,
     pub cluster_name: String,
     pub trusted_nats_server: String,
-    pub trusted_nats_config_sha256: String,
+    pub trusted_nats_ca_sha256: String,
 }
 
 impl RedactedJoinMaterial {
@@ -227,20 +235,18 @@ impl RedactedJoinMaterial {
         node_id: NodeId,
         cluster_name: impl Into<String>,
         trusted_nats_server: impl Into<String>,
-        trusted_nats_config_sha256: impl Into<String>,
+        trusted_nats_ca_sha256: impl Into<String>,
     ) -> Result<Self, JoinMaterialError> {
         let cluster_name = line_value("cluster name", cluster_name.into())?;
         let trusted_nats_server = line_value("trusted NATS server", trusted_nats_server.into())?;
-        let trusted_nats_config_sha256 = line_value(
-            "trusted NATS config digest",
-            trusted_nats_config_sha256.into(),
-        )?;
+        let trusted_nats_ca_sha256 =
+            line_value("trusted NATS CA digest", trusted_nats_ca_sha256.into())?;
 
         Ok(Self {
             node_id,
             cluster_name,
             trusted_nats_server,
-            trusted_nats_config_sha256,
+            trusted_nats_ca_sha256,
         })
     }
 }
@@ -567,6 +573,12 @@ impl NatsServerConfigTarget {
             rendered_config: NatsServerConfig::single_node(
                 node_id,
                 PathBuf::from("/var/lib/ployz/nats"),
+                NatsListener::Loopback,
+                NatsServerTlsFiles {
+                    cert_file: PathBuf::from("/var/lib/ployz/nats/server.crt"),
+                    key_file: PathBuf::from("/var/lib/ployz/nats/server.key"),
+                },
+                PathBuf::from("authorized-users.conf"),
             )
             .expect("first-node nats config is valid")
             .render(),

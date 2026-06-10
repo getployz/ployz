@@ -391,9 +391,10 @@ mod tests {
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
         MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
         MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-        MachineJoinSecretDelivery, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+        MachineJoinSecretDelivery, MachineJoinTrustedNats,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
+    use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
     use ployz_core::roles::FirstNodeGateway;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
 
@@ -459,12 +460,12 @@ mod tests {
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                     .expect("valid runtime nats url"),
                 trusted_nats: MachineJoinTrustedNats {
-                    server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
-                        .expect("valid nats server id"),
-                    config_sha256: InstallSha256Digest::try_new(
-                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    server_name: NatsServerName::try_new("server_1")
+                        .expect("valid nats server name"),
+                    ca_pem: NatsCaCertificatePem::try_new(
+                        "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                     )
-                    .expect("valid nats config digest"),
+                    .expect("valid ca pem"),
                 },
                 ployzd: MachineJoinPloyzdArtifact {
                     version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),

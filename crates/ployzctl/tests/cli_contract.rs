@@ -11,8 +11,9 @@ use ployz_core::ids::{ContainerId, NodeId, OperationId, OperationOwnerId, Revisi
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinPloyzdArtifact, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+    MachineJoinPloyzdArtifact, MachineJoinTrustedNats,
 };
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
@@ -1284,11 +1285,11 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
                 .expect("valid runtime NATS URL"),
             trusted_nats: MachineJoinTrustedNats {
-                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
-                    .expect("valid NATS server id"),
-                config_sha256: digest(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                ),
+                server_name: NatsServerName::try_new("server_1").expect("valid NATS server name"),
+                ca_pem: NatsCaCertificatePem::try_new(
+                    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
+                )
+                .expect("valid CA pem"),
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: version("0.1.0"),

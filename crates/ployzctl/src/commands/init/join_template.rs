@@ -8,7 +8,7 @@ use ployz_core::install::{
     MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate,
 };
-use ployz_core::nats_config::trusted_nats_for_first_node;
+use ployz_core::nats_config::{NatsCaCertificatePem, trusted_nats_for_first_node};
 
 use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
 
@@ -46,6 +46,7 @@ pub fn parse_machine_join_template_command(
 
     let trusted_first_node = NodeId::try_new(parsed.trusted_first_node)
         .map_err(|error| invalid_value("--trusted-first-node", error))?;
+    let trusted_nats_ca = read_trusted_nats_ca(parsed.trusted_nats_ca_file)?;
     let artifacts = read_artifact_spec(parsed.artifact_spec)?;
 
     Ok(MachineJoinTemplateCommand {
@@ -55,7 +56,7 @@ pub fn parse_machine_join_template_command(
                     .map_err(|error| invalid_value("--cluster", error))?,
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(parsed.runtime_nats_url)
                     .map_err(|error| invalid_value("--runtime-nats-url", error))?,
-                trusted_nats: trusted_nats_for_first_node(trusted_first_node),
+                trusted_nats: trusted_nats_for_first_node(&trusted_first_node, trusted_nats_ca),
                 ployzd: MachineJoinPloyzdArtifact {
                     version: artifacts.ployzd.version,
                     source: artifacts.ployzd.source,
@@ -90,9 +91,22 @@ struct MachineJoinTemplateCli {
     #[arg(long)]
     trusted_first_node: String,
     #[arg(long)]
+    trusted_nats_ca_file: String,
+    #[arg(long)]
     artifact_spec: String,
     #[arg(long)]
     secret_delivery_file: String,
+}
+
+fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCliError> {
+    let contents = fs::read_to_string(&path).map_err(|error| PloyzctlCliError::InvalidValue {
+        flag: "--trusted-nats-ca-file",
+        message: format!("cannot read {path}: {error}"),
+    })?;
+    NatsCaCertificatePem::try_new(contents).map_err(|error| PloyzctlCliError::InvalidValue {
+        flag: "--trusted-nats-ca-file",
+        message: error.to_string(),
+    })
 }
 
 fn read_secret_delivery(path: String) -> Result<MachineJoinSecretDelivery, PloyzctlCliError> {

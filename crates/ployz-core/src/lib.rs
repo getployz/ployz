@@ -17,6 +17,7 @@ pub mod machine;
 pub mod nats_config;
 pub mod node;
 pub mod ops;
+pub mod permissions;
 pub mod roles;
 pub mod security;
 pub mod state;

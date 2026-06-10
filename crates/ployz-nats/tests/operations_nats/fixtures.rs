@@ -143,12 +143,12 @@ pub(super) fn machine_join_bundle() -> MachineJoinBundle {
             )
             .expect("valid runtime nats url"),
             trusted_nats: ployz_core::install::MachineJoinTrustedNats {
-                server_id: ployz_core::install::MachineJoinTrustedNatsServerId::try_new("server_1")
-                    .expect("valid nats server id"),
-                config_sha256: ployz_core::install::InstallSha256Digest::try_new(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                server_name: ployz_core::nats_config::NatsServerName::try_new("server_1")
+                    .expect("valid nats server name"),
+                ca_pem: ployz_core::nats_config::NatsCaCertificatePem::try_new(
+                    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                 )
-                .expect("valid nats config digest"),
+                .expect("valid ca pem"),
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")

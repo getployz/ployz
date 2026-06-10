@@ -7,17 +7,19 @@ use ployzctl::commands::{PloyzctlCommand, parse_command};
 
 const PLOYZ_NEWLINE_SHA256: &str =
     "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e";
-const FIRST_NODE_NATS_CONFIG_SHA256: &str =
-    "5be25a6dfbc6a4b45598f1d128dd2230e5109575018b8826e36d2883102f6ec2";
+const TRUSTED_NATS_CA_PEM: &str =
+    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
 #[test]
 fn cli_init_can_render_machine_join_template_json() {
     let temp = temp_dir("ployzctl-join-template");
     let secret_delivery_file = write_secret_delivery_file(&temp);
     let artifact_spec = write_artifact_spec_file(&temp);
+    let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
     let command = parse_command(init_join_template_args(
         &secret_delivery_file,
         &artifact_spec,
+        &trusted_nats_ca_file,
     ))
     .expect("join template command parses");
 
@@ -35,11 +37,13 @@ fn binary_init_can_print_machine_join_template_without_nats() {
     let temp = temp_dir("ployzctl-join-template-binary");
     let secret_delivery_file = write_secret_delivery_file(&temp);
     let artifact_spec = write_artifact_spec_file(&temp);
+    let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
         .args(init_join_template_args(
             &secret_delivery_file,
             &artifact_spec,
+            &trusted_nats_ca_file,
         ))
         .output()
         .expect("ployzctl binary runs");
@@ -70,18 +74,13 @@ fn assert_join_template(template: MachineJoinTemplate) {
             .join_bundle
             .material
             .trusted_nats
-            .server_id
+            .server_name
             .as_str(),
         "core_1"
     );
     assert_eq!(
-        template
-            .join_bundle
-            .material
-            .trusted_nats
-            .config_sha256
-            .as_str(),
-        FIRST_NODE_NATS_CONFIG_SHA256
+        template.join_bundle.material.trusted_nats.ca_pem.as_str(),
+        TRUSTED_NATS_CA_PEM
     );
     assert_eq!(
         template.join_bundle.material.ployzd.install_path.as_str(),
@@ -106,7 +105,11 @@ fn assert_join_template(template: MachineJoinTemplate) {
     );
 }
 
-fn init_join_template_args(secret_delivery_file: &Path, artifact_spec: &Path) -> Vec<String> {
+fn init_join_template_args(
+    secret_delivery_file: &Path,
+    artifact_spec: &Path,
+    trusted_nats_ca_file: &Path,
+) -> Vec<String> {
     [
         "init",
         "join-template",
@@ -116,6 +119,10 @@ fn init_join_template_args(secret_delivery_file: &Path, artifact_spec: &Path) ->
         "nats://127.0.0.1:7422",
         "--trusted-first-node",
         "core_1",
+        "--trusted-nats-ca-file",
+        trusted_nats_ca_file
+            .to_str()
+            .expect("trusted CA fixture path is utf-8"),
         "--artifact-spec",
         artifact_spec
             .to_str()
@@ -129,6 +136,12 @@ fn init_join_template_args(secret_delivery_file: &Path, artifact_spec: &Path) ->
         .expect("secret delivery fixture path is utf-8")
         .to_owned()])
     .collect()
+}
+
+fn write_trusted_nats_ca_file(dir: &Path) -> PathBuf {
+    let path = dir.join("trusted-nats-ca.pem");
+    fs::write(&path, TRUSTED_NATS_CA_PEM).expect("trusted CA fixture can be written");
+    path
 }
 
 fn write_secret_delivery_file(dir: &Path) -> PathBuf {

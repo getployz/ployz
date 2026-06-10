@@ -14,7 +14,7 @@ use ployzd::node_agent::runtime::NodeContainerRunner;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::NodeWireGuardEbpfPreparer;
 use ployzd::node_service_runtime::start_node_runtime_service;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -248,7 +248,7 @@ fn assert_wireguard_peer_evidence(evidence: &[WireGuardReadyEvidence]) {
     }));
 }
 
-fn assert_ebpf_attached_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_ctl: &PathBuf) {
+fn assert_ebpf_attached_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_ctl: &Path) {
     assert!(evidence.iter().any(|evidence| {
         matches!(
             evidence,
@@ -259,7 +259,7 @@ fn assert_ebpf_attached_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_
     }));
 }
 
-fn assert_edge_route_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_ctl: &PathBuf) {
+fn assert_edge_route_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_ctl: &Path) {
     assert!(evidence.iter().any(|evidence| {
         matches!(
             evidence,

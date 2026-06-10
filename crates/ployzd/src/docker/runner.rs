@@ -75,8 +75,8 @@ impl DockerManagedContainerRunner {
     ) -> Result<Self, DockerManagedContainerRunnerConnectError> {
         let docker = Docker::connect_with_socket(socket_path.as_ref(), 120, API_DEFAULT_VERSION)
             .map_err(|source| DockerManagedContainerRunnerConnectError {
-            message: source.to_string(),
-        })?;
+                message: source.to_string(),
+            })?;
         Ok(Self {
             docker,
             endpoint_network_subnet: endpoint_network_subnet.into(),

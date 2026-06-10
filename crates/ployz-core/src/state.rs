@@ -8,6 +8,11 @@ use crate::machine::MachineName;
 use crate::ops::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
 
+pub const KV_CORE_BUCKET: &str = "KV_CORE";
+pub const KV_OPS_BUCKET: &str = "KV_OPS";
+pub const KV_LOCKS_BUCKET: &str = "KV_LOCKS";
+pub const KV_OBS_BUCKET: &str = "KV_OBS";
+
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 pub const ACTIVE_ROUTE_STATE_PREFIX: &str = "routes";

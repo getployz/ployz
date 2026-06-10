@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 
-pub const KV_OBS_BUCKET: &str = "KV_OBS";
+pub use ployz_core::state::KV_OBS_BUCKET;
 const NATS_OBSERVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Clone)]

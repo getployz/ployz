@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use crate::ids::NodeId;
+use crate::nats_config::{NatsCaCertificatePem, NatsServerName, is_valid_host_syntax};
 use crate::roles::FirstNodeGateway;
 use serde::{Deserialize, Serialize};
 
@@ -298,8 +299,8 @@ pub struct MachineJoinTemplate {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinTrustedNats {
-    pub server_id: MachineJoinTrustedNatsServerId,
-    pub config_sha256: InstallSha256Digest,
+    pub server_name: NatsServerName,
+    pub ca_pem: NatsCaCertificatePem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -375,41 +376,6 @@ impl fmt::Debug for MachineJoinNatsCredentials {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
-pub struct MachineJoinTrustedNatsServerId(String);
-
-impl MachineJoinTrustedNatsServerId {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
-        let value = value.into();
-        validate_plain_join_token("trusted NATS server id", value, |value| {
-            InstallContractError::InvalidTrustedNatsServerId { value }
-        })
-        .map(Self)
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for MachineJoinTrustedNatsServerId {
-    type Error = InstallContractError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<MachineJoinTrustedNatsServerId> for String {
-    fn from(value: MachineJoinTrustedNatsServerId) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
 pub struct MachineJoinRuntimeNatsUrl(String);
 
 impl MachineJoinRuntimeNatsUrl {
@@ -444,11 +410,7 @@ fn nats_url_has_host_and_port(value: &str) -> bool {
     let Some((host, port)) = authority.rsplit_once(':') else {
         return false;
     };
-    let host = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+    is_valid_host_syntax(host) && port.parse::<u16>().is_ok_and(|port| port > 0)
 }
 
 impl TryFrom<String> for MachineJoinRuntimeNatsUrl {
@@ -673,8 +635,6 @@ pub enum InstallContractError {
     InvalidRuntimeNatsUrl { value: String },
     EmptyNatsCredentials,
     InvalidNatsCredentials,
-    EmptyJoinToken { label: &'static str },
-    InvalidTrustedNatsServerId { value: String },
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -710,11 +670,6 @@ impl fmt::Display for InstallContractError {
             Self::InvalidNatsCredentials => {
                 formatter.write_str("NATS credentials contain an unsupported NUL byte")
             }
-            Self::EmptyJoinToken { label } => write!(formatter, "{label} is empty"),
-            Self::InvalidTrustedNatsServerId { value } => write!(
-                formatter,
-                "trusted NATS server id {value:?} must not contain whitespace"
-            ),
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
             Self::RelativeArtifactSource { value } => {
@@ -740,20 +695,3 @@ impl fmt::Display for InstallContractError {
 }
 
 impl std::error::Error for InstallContractError {}
-
-fn validate_plain_join_token(
-    label: &'static str,
-    value: String,
-    invalid: impl FnOnce(String) -> InstallContractError,
-) -> Result<String, InstallContractError> {
-    if value.is_empty() {
-        return Err(InstallContractError::EmptyJoinToken { label });
-    }
-    if value
-        .chars()
-        .any(|character| character.is_whitespace() || character.is_control())
-    {
-        return Err(invalid(value));
-    }
-    Ok(value)
-}

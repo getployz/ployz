@@ -278,9 +278,11 @@ export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, secret_deliv
 
 export type MachineJoinNatsCredentials = string;
 
-export type MachineJoinTrustedNatsServerId = string;
+export type NatsServerName = string;
 
-export type MachineJoinTrustedNats = { server_id: MachineJoinTrustedNatsServerId, config_sha256: InstallSha256Digest, };
+export type NatsCaCertificatePem = string;
+
+export type MachineJoinTrustedNats = { server_name: NatsServerName, ca_pem: NatsCaCertificatePem, };
 
 export type InstallArtifactVersion = string;
 

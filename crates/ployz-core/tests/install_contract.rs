@@ -4,8 +4,9 @@ use ployz_core::install::{
     InstallSha256Digest, KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinArtifact,
     MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinNatsCredentials,
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
-    MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+    MachineJoinTrustedNats,
 };
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
 use ployz_core::roles::FirstNodeGateway;
 
 #[test]
@@ -118,16 +119,31 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422\n").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://core_1:7422").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://-bad.example.test:7422").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://[::1:7422").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:0").is_err());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:99999").is_err());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://localhost:7422").is_ok());
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422").is_ok());
+    assert!(MachineJoinRuntimeNatsUrl::try_new("nats://[::1]:7422").is_ok());
     assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test:4222").is_ok());
     assert!(MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").is_ok());
     assert!(MachineJoinNatsCredentials::try_new("").is_err());
     assert!(MachineJoinNatsCredentials::try_new("creds\0bad").is_err());
     assert!(MachineJoinNatsCredentials::try_new("user-jwt-and-seed").is_ok());
-    assert!(MachineJoinTrustedNatsServerId::try_new("").is_err());
-    assert!(MachineJoinTrustedNatsServerId::try_new("server one").is_err());
-    assert!(MachineJoinTrustedNatsServerId::try_new("server_1").is_ok());
+    assert!(NatsServerName::try_new("").is_err());
+    assert!(NatsServerName::try_new("server one").is_err());
+    assert!(NatsServerName::try_new("server_1").is_ok());
+    assert!(NatsCaCertificatePem::try_new("").is_err());
+    assert!(NatsCaCertificatePem::try_new("not-a-pem").is_err());
+    assert!(NatsCaCertificatePem::try_new("-----BEGIN CERTIFICATE-----\nTUlJQg==").is_err());
+    assert!(
+        NatsCaCertificatePem::try_new(
+            "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
+        )
+        .is_ok()
+    );
     assert!(InstallArtifactVersion::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("").is_err());
     assert!(InstallArtifactSource::try_new("relative/ployzd").is_err());
@@ -149,8 +165,8 @@ fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
             "cluster_name": "prod",
             "runtime_nats_url": "nats://127.0.0.1:7422",
             "trusted_nats": {
-                "server_id": "server_1",
-                "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "server_name": "server_1",
+                "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
             },
             "ployzd": {
                 "version": "0.1.0",
@@ -175,8 +191,8 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 "cluster_name": "prod",
                 "runtime_nats_url": "nats://127.0.0.1:7422",
                 "trusted_nats": {
-                    "server_id": "server_1",
-                    "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    "server_name": "server_1",
+                    "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
                 },
                 "ployzd": {
                     "version": "0.1.0",
@@ -263,12 +279,11 @@ fn machine_join_bundle() -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: MachineJoinTrustedNats {
-                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
-                    .expect("valid nats server id"),
-                config_sha256: InstallSha256Digest::try_new(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                server_name: NatsServerName::try_new("server_1").expect("valid nats server name"),
+                ca_pem: NatsCaCertificatePem::try_new(
+                    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                 )
-                .expect("valid nats config digest"),
+                .expect("valid ca pem"),
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),

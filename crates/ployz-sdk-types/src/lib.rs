@@ -41,13 +41,14 @@ pub use ployz_core::install::{
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
     MachineJoinClusterName, MachineJoinMaterial, MachineJoinNatsCredentials,
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
-    MachineJoinTemplate, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId,
+    MachineJoinTemplate, MachineJoinTrustedNats,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
     MachineReadinessCheck, MachineReadinessEvidence,
 };
+pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
 pub use ployz_core::node::ManagedContainerKind;
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,

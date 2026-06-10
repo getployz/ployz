@@ -30,9 +30,9 @@ use crate::{
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
     MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineJoinTrustedNatsServerId, MachineListError,
-    MachineListRequest, MachineListResult, MachineName, MachineQueryUnavailableSource,
-    MachineReadinessCheck, MachineReadinessEvidence, MachineSnapshot, ManagedContainerKind, NodeId,
+    MachineJoinToken, MachineJoinTrustedNats, MachineListError, MachineListRequest,
+    MachineListResult, MachineName, MachineQueryUnavailableSource, MachineReadinessCheck,
+    MachineReadinessEvidence, MachineSnapshot, ManagedContainerKind, NodeId,
     NodePublicIpObservation, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest, OperationId,
     OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
@@ -46,6 +46,7 @@ use crate::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady,
     WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
 use ployz_core::subjects::OperationApiEndpointExecution;
 use ts_rs::{Config, TS};
 
@@ -209,7 +210,8 @@ macro_rules! exported_types {
             MachineJoinSecretDelivery,
             MachineJoinTemplate,
             MachineJoinNatsCredentials,
-            MachineJoinTrustedNatsServerId,
+            NatsServerName,
+            NatsCaCertificatePem,
             MachineJoinTrustedNats,
             InstallArtifactVersion,
             InstallArtifactSource,

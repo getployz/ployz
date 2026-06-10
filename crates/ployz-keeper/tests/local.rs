@@ -93,7 +93,7 @@ fn local_effects_install_first_node_process_units() {
     assert_eq!(fs::read_to_string(&nats_install_path).unwrap(), "ployz\n");
     assert_eq!(
         fs::read_to_string(root.join("etc/nats-server.conf")).unwrap(),
-        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n"
+        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\ntls {\n  cert_file: \"/var/lib/ployz/nats/server.crt\"\n  key_file: \"/var/lib/ployz/nats/server.key\"\n}\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\ninclude \"authorized-users.conf\"\n"
     );
     assert!(
         fs::read_to_string(systemd_dir.join("nats-server.service"))
@@ -398,7 +398,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
     assert!(fs::read_to_string(&install_path).is_ok());
     assert_eq!(
         fs::read_to_string(root.join("etc/nats-server.conf")).unwrap(),
-        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\n"
+        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\ntls {\n  cert_file: \"/var/lib/ployz/nats/server.crt\"\n  key_file: \"/var/lib/ployz/nats/server.key\"\n}\njetstream {\n  store_dir: \"/var/lib/ployz/nats\"\n}\ninclude \"authorized-users.conf\"\n"
     );
     assert!(systemd_dir.join("nats-server.service").exists());
     let config_write_position = recorder
@@ -519,7 +519,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
                 .join(JOIN_MATERIAL_FILE)
         )
         .expect("join material is stored"),
-        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_ca_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
     );
     assert_eq!(
         fs::read_to_string(
@@ -596,7 +596,7 @@ fn local_effects_store_redacted_join_material() {
                 .join(JOIN_MATERIAL_FILE)
         )
         .expect("join material is stored"),
-        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_config_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+        "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_ca_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
     );
     assert_eq!(
         fs::read_to_string(

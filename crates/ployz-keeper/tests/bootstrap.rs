@@ -362,7 +362,7 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
 fn join_material_cluster_name_rejects_persisted_format_breakers() {
     for value in ["prod\nnext", "prod\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), value, "server_1", NATS_CONFIG_DIGEST,),
+            RedactedJoinMaterial::new(node_id("node_7"), value, "server_1", NATS_CA_DIGEST,),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "cluster name",
                 value: value.to_owned(),
@@ -375,7 +375,7 @@ fn join_material_cluster_name_rejects_persisted_format_breakers() {
 fn join_material_rejects_persisted_line_breakers() {
     for value in ["server_1\nnext", "server_1\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), "prod", value, NATS_CONFIG_DIGEST,),
+            RedactedJoinMaterial::new(node_id("node_7"), "prod", value, NATS_CA_DIGEST,),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "trusted NATS server",
                 value: value.to_owned(),
@@ -852,7 +852,7 @@ fn keeper_join_material() -> KeeperJoinMaterial {
         "prod",
         "user-jwt-and-seed",
         "server_1",
-        NATS_CONFIG_DIGEST,
+        NATS_CA_DIGEST,
     )
     .expect("valid join material")
 }
@@ -1112,4 +1112,4 @@ fn assert_stderr_contains(output: &Output, expected: &str) {
 
 const KEEPER_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const NATS_CONFIG_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const NATS_CA_DIGEST: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";

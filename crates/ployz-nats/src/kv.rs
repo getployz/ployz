@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use crate::bootstrap::ResourceReplicas;
 
-pub const KV_CORE_BUCKET: &str = "KV_CORE";
-pub const KV_LOCKS_BUCKET: &str = "KV_LOCKS";
+pub use ployz_core::state::{KV_CORE_BUCKET, KV_LOCKS_BUCKET};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KvBucketSpec {

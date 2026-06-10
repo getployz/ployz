@@ -7,5 +7,6 @@ pub enum NatsPrincipal {
     Node { node_id: NodeId },
     Controller,
     User,
+    Join,
     System,
 }

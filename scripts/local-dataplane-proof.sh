@@ -221,8 +221,8 @@ write_join_template() {
       "cluster_name": "local-dind",
       "runtime_nats_url": "${runtime_nats_url}",
       "trusted_nats": {
-        "server_id": "server_1",
-        "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        "server_name": "server_1",
+        "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
       },
       "ployzd": {
         "version": "local",

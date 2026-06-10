@@ -5,8 +5,8 @@ use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
-    MachineJoinTrustedNatsServerId,
 };
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
 };
@@ -153,11 +153,11 @@ fn machine_join_bundle() -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: MachineJoinTrustedNats {
-                server_id: MachineJoinTrustedNatsServerId::try_new("server_1")
-                    .expect("valid nats server id"),
-                config_sha256: digest(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                ),
+                server_name: NatsServerName::try_new("server_1").expect("valid nats server name"),
+                ca_pem: NatsCaCertificatePem::try_new(
+                    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
+                )
+                .expect("valid ca pem"),
             },
             ployzd: MachineJoinPloyzdArtifact {
                 version: version("0.1.0"),
