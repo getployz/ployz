@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+pub mod control;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-
-pub use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 pub struct TestHttpUpstream {
     addr: std::net::SocketAddr,

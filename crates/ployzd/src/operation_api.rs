@@ -57,12 +57,12 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
-    deploy_execution: DeploySubmitExecution,
-    backup_execution: BackupCreateExecution,
-    machine_mint: MachineMintExecution,
-    machine_query: MachineQueryExecution,
-    service_query: ServiceQueryExecution,
-    logs_query: LogsQueryExecution,
+    deploy_runtime: Arc<DeployOperationRuntime>,
+    backup_runtime: Arc<BackupOperationRuntime>,
+    machine_mint: Arc<MachineCredentialMintRuntime>,
+    machine_query: Arc<MachineQueryRuntime>,
+    service_query: Arc<ServiceQueryRuntime>,
+    logs_query: Arc<LogsQueryRuntime>,
 }
 
 impl OperationApiHandlers {
@@ -79,12 +79,12 @@ impl OperationApiHandlers {
         let logs_query = LogsQueryRuntime::new(machine_query.observations.clone(), logs_tailer);
         Self {
             controllers,
-            deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
-            backup_execution: BackupCreateExecution::Execute(Arc::new(backup_runtime)),
-            machine_mint: MachineMintExecution::Execute(Arc::new(machine_mint)),
-            machine_query: MachineQueryExecution::Execute(Arc::new(machine_query)),
-            service_query: ServiceQueryExecution::Execute(Arc::new(service_query)),
-            logs_query: LogsQueryExecution::Execute(Arc::new(logs_query)),
+            deploy_runtime: Arc::new(deploy_runtime),
+            backup_runtime: Arc::new(backup_runtime),
+            machine_mint: Arc::new(machine_mint),
+            machine_query: Arc::new(machine_query),
+            service_query: Arc::new(service_query),
+            logs_query: Arc::new(logs_query),
         }
     }
 
@@ -92,71 +92,6 @@ impl OperationApiHandlers {
     pub const fn controllers(&self) -> &OperationControllers {
         &self.controllers
     }
-}
-
-#[derive(Clone)]
-pub enum DeploySubmitExecution {
-    AcceptOnly,
-    Execute(Arc<DeployOperationRuntime>),
-}
-
-impl DeploySubmitExecution {
-    fn start_owned(&self, accepted: crate::controllers::AcceptedDeployOperation) {
-        match (self, accepted.should_start_execution) {
-            (Self::Execute(runtime), true) => runtime.start(accepted),
-            (Self::AcceptOnly, true | false) | (Self::Execute(_), false) => {}
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum BackupCreateExecution {
-    AcceptOnly,
-    Execute(Arc<BackupOperationRuntime>),
-}
-
-impl BackupCreateExecution {
-    fn start_owned(&self, accepted: crate::controllers::AcceptedBackupOperation) {
-        match (self, accepted.should_start_execution) {
-            (Self::Execute(runtime), true) => runtime.start(accepted),
-            (Self::AcceptOnly, true | false) | (Self::Execute(_), false) => {}
-        }
-    }
-}
-
-/// Whether accepted machine-adds get their per-machine credential minted
-/// as owned background work.
-#[derive(Clone)]
-pub enum MachineMintExecution {
-    AcceptOnly,
-    Execute(Arc<MachineCredentialMintRuntime>),
-}
-
-impl MachineMintExecution {
-    fn start_owned(&self, request: MintRequest) {
-        match self {
-            Self::Execute(runtime) => runtime.start(request),
-            Self::AcceptOnly => {}
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum MachineQueryExecution {
-    Unavailable,
-    Execute(Arc<MachineQueryRuntime>),
-}
-
-#[derive(Clone)]
-pub enum ServiceQueryExecution {
-    Unavailable,
-    Execute(Arc<ServiceQueryRuntime>),
-}
-
-#[derive(Clone)]
-pub enum LogsQueryExecution {
-    Unavailable,
-    Execute(Arc<LogsQueryRuntime>),
 }
 
 #[derive(Clone)]
@@ -448,61 +383,35 @@ pub async fn machine_list(
     handlers: &OperationApiHandlers,
     _request: MachineListRequest,
 ) -> Result<MachineListResult, MachineListError> {
-    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
-        return Err(MachineListError::Unavailable {
-            source: MachineQueryUnavailableSource::CoreState,
-        });
-    };
-    runtime.list().await
+    handlers.machine_query.list().await
 }
 
 pub async fn machine_inspect(
     handlers: &OperationApiHandlers,
     request: MachineInspectRequest,
 ) -> Result<MachineSnapshot, MachineInspectError> {
-    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
-        return Err(MachineInspectError::Unavailable {
-            source: MachineQueryUnavailableSource::CoreState,
-        });
-    };
-    runtime.inspect(&request.node_id).await
+    handlers.machine_query.inspect(&request.node_id).await
 }
 
 pub async fn service_list(
     handlers: &OperationApiHandlers,
     _request: ServiceListRequest,
 ) -> Result<ServiceListResult, ServiceListError> {
-    let ServiceQueryExecution::Execute(runtime) = &handlers.service_query else {
-        return Err(ServiceListError::Unavailable {
-            source: ServiceQueryUnavailableSource::CoreState,
-        });
-    };
-    runtime.list().await
+    handlers.service_query.list().await
 }
 
 pub async fn service_inspect(
     handlers: &OperationApiHandlers,
     request: ServiceInspectRequest,
 ) -> Result<ServiceSnapshot, ServiceInspectError> {
-    let ServiceQueryExecution::Execute(runtime) = &handlers.service_query else {
-        return Err(ServiceInspectError::Unavailable {
-            source: ServiceQueryUnavailableSource::CoreState,
-        });
-    };
-    runtime.inspect(&request.service_id).await
+    handlers.service_query.inspect(&request.service_id).await
 }
 
 pub async fn logs_tail(
     handlers: &OperationApiHandlers,
     request: LogsTailRequest,
 ) -> Result<LogsTailResult, LogsTailError> {
-    let LogsQueryExecution::Execute(runtime) = &handlers.logs_query else {
-        return Err(LogsTailError::Unavailable {
-            source: LogsTailUnavailableSource::NodeRpc,
-            node_id: None,
-        });
-    };
-    runtime.tail(request).await
+    handlers.logs_query.tail(request).await
 }
 
 fn logs_tail_node_error(error: NodeLogsTailRuntimeError) -> LogsTailError {
@@ -611,7 +520,7 @@ pub async fn deploy_submit(
         accepted.start_sequence,
         accepted.lease.clone(),
     );
-    handlers.deploy_execution.start_owned(accepted);
+    handlers.deploy_runtime.start(accepted);
 
     Ok(operation)
 }
@@ -658,7 +567,7 @@ pub async fn machine_add(
             },
         }
     })?;
-    handlers.machine_mint.start_owned(MintRequest {
+    handlers.machine_mint.start(MintRequest {
         operation_id: accepted.operation_id.clone(),
         node_id: accepted.node_id.clone(),
         idempotency_key,
@@ -709,15 +618,13 @@ pub async fn init_first_node_activate(
     let redeemed = redeem_when_material_ready(handlers, &accepted.join_token).await?;
     // The named writer of node.seed is ployzd control, which runs on this
     // machine: a local 0600 file write, no RPC hop.
-    if let MachineMintExecution::Execute(mint) = &handlers.machine_mint {
-        write_node_seed_file(
-            mint.node_seed_file(),
-            &redeemed.secret_delivery.nats_credentials,
-        )
-        .map_err(|error| InitFirstNodeActivateError::NodeSeedWrite {
-            message: node_seed_write_failure_message(&error),
-        })?;
-    }
+    write_node_seed_file(
+        handlers.machine_mint.node_seed_file(),
+        &redeemed.secret_delivery.nats_credentials,
+    )
+    .map_err(|error| InitFirstNodeActivateError::NodeSeedWrite {
+        message: node_seed_write_failure_message(&error),
+    })?;
     let reported = machine_join_report(
         handlers,
         MachineJoinReportRequest {
@@ -778,12 +685,8 @@ async fn first_node_active_machine(
     handlers: &OperationApiHandlers,
     node_id: &NodeId,
 ) -> Result<Option<ActiveMachineState>, InitFirstNodeActivateError> {
-    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
-        return Err(InitFirstNodeActivateError::Unavailable {
-            source: MachineQueryUnavailableSource::CoreState,
-        });
-    };
-    runtime
+    handlers
+        .machine_query
         .core_state
         .active_machine(node_id)
         .await
@@ -825,7 +728,7 @@ pub async fn backup_create(
         accepted.start_sequence,
         accepted.lease.clone(),
     );
-    handlers.backup_execution.start_owned(accepted);
+    handlers.backup_runtime.start(accepted);
 
     Ok(operation)
 }
@@ -990,11 +893,6 @@ async fn activate_reported_machine(
     node_id: &NodeId,
     name: &MachineName,
 ) -> Result<(), MachineJoinReportError> {
-    let MachineQueryExecution::Execute(runtime) = &handlers.machine_query else {
-        return Err(MachineJoinReportError::Unavailable {
-            source: MachineJoinReportUnavailableSource::OperationCorrupt,
-        });
-    };
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         node_id.clone(),
@@ -1004,7 +902,8 @@ async fn activate_reported_machine(
     .map_err(|_| MachineJoinReportError::Unavailable {
         source: MachineJoinReportUnavailableSource::OperationCorrupt,
     })?;
-    runtime
+    handlers
+        .machine_query
         .activate_machine(&active_machine)
         .await
         .map_err(|_| MachineJoinReportError::Unavailable {

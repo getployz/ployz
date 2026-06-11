@@ -6,6 +6,7 @@ use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
@@ -26,9 +27,9 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
     let runtime = start_node_runtime_with_ports(
         nats.node_client.clone(),
         node_id("node_a"),
-        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
-        support::ReadyWireGuardEbpf,
-        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ReadyWireGuardEbpf,
+        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
     )
     .await
     .expect("node runtime starts");
@@ -62,9 +63,9 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
     let runtime = start_node_runtime_with_ports(
         nats.node_client.clone(),
         node_id("node_a"),
-        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
-        support::ReadyWireGuardEbpf,
-        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ReadyWireGuardEbpf,
+        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
     )
     .await
     .expect("node runtime starts");
@@ -104,9 +105,9 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
     let runtime = start_node_runtime_with_ports(
         nats.node_client.clone(),
         node_id("node_a"),
-        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
-        support::ReadyWireGuardEbpf,
-        support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
+        ReadyWireGuardEbpf,
+        ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
     )
     .await
     .expect("node runtime starts");
