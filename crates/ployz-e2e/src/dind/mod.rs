@@ -21,7 +21,9 @@ mod machine;
 
 pub use cluster::{DindCluster, DindClusterSpec, DindRunId, sweep_managed_resources};
 pub use evidence::{capture_machine_evidence, evidence_dir};
-pub use exec::{ExecOutcome, exec_in_container};
+pub use exec::{
+    ExecOutcome, exec_in_container, read_file_from_container, shell_quote, write_file_in_container,
+};
 pub use machine::{
     DindMachine, DindMachineRole, MACHINE_GATEWAY_PORT, MACHINE_NATS_PORT, MachineSpec,
     PublishedPorts,

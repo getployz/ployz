@@ -18,7 +18,23 @@ fn nats_server_unit_renders_supervised_configured_process() {
     assert_eq!(unit.unit_name(), "nats-server.service");
     assert_eq!(
         unit.render(),
-        "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/nats-server --config /etc/ployz/nats-server.conf\nExecReload=/bin/kill -HUP $MAINPID\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/nats-server --config /etc/ployz/nats-server.conf\nExecReload=/bin/sh -c \"kill -s HUP $MAINPID\"\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+    );
+}
+
+/// Regression (DinD e2e): `/bin/kill` is procps territory and is absent on
+/// minimal Debian machines, which made every machine-add reload fail
+/// terminally. The reload must rely only on `sh`'s builtin `kill`.
+#[test]
+fn nats_server_unit_reload_does_not_depend_on_an_external_kill_binary() {
+    let unit = NatsServerUnit::new("/usr/local/bin/nats-server", "/etc/ployz/nats-server.conf")
+        .expect("nats unit is valid");
+
+    let rendered = unit.render();
+    assert!(!rendered.contains("/bin/kill"), "{rendered}");
+    assert!(
+        rendered.contains("ExecReload=/bin/sh -c \"kill -s HUP $MAINPID\""),
+        "{rendered}"
     );
 }
 

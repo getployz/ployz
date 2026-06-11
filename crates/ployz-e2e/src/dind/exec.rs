@@ -8,6 +8,12 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures_util::StreamExt;
 use std::time::Duration;
 
+/// Smallest shell-safe quoting for values interpolated into `sh -c` lines.
+#[must_use]
+pub fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// Bound on a single exec; the harness must never wait forever on a machine.
 const EXEC_BUDGET: Duration = Duration::from_secs(120);
 
@@ -25,6 +31,55 @@ impl ExecOutcome {
     pub fn success(&self) -> bool {
         self.exit_code == 0
     }
+}
+
+/// Writes `contents` to `path` inside the container (parent directories
+/// created, file mode applied). Content travels base64-packed through one
+/// `sh -c` exec so no stdin plumbing is needed.
+pub async fn write_file_in_container(
+    docker: &Docker,
+    container_id: &str,
+    path: &str,
+    contents: &str,
+    mode: &str,
+) -> Result<(), DindError> {
+    let encoded = base64_encode(contents.as_bytes());
+    let quoted_path = shell_quote(path);
+    let script = format!(
+        "set -eu; dir=$(dirname {quoted_path}); mkdir -p \"$dir\"; \
+         printf '%s' '{encoded}' | base64 -d > {quoted_path}; chmod {mode} {quoted_path}"
+    );
+    let outcome = exec_in_container(docker, container_id, &["sh", "-c", &script]).await?;
+    if outcome.success() {
+        Ok(())
+    } else {
+        Err(DindError::DockerApi {
+            context: format!("write file {path} in container"),
+            message: format!("exit {}: {}", outcome.exit_code, outcome.stderr.trim()),
+        })
+    }
+}
+
+/// Reads a file out of the container; the file must exist and be readable.
+pub async fn read_file_from_container(
+    docker: &Docker,
+    container_id: &str,
+    path: &str,
+) -> Result<String, DindError> {
+    let outcome = exec_in_container(docker, container_id, &["cat", path]).await?;
+    if outcome.success() {
+        Ok(outcome.stdout)
+    } else {
+        Err(DindError::DockerApi {
+            context: format!("read file {path} from container"),
+            message: format!("exit {}: {}", outcome.exit_code, outcome.stderr.trim()),
+        })
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// Runs `command` inside `container_id`, attached, and collects its output.

@@ -104,6 +104,21 @@ impl PloyzctlRuntimeConfig {
         self.ops_watch_timeout.unwrap_or(DEFAULT_OPS_WATCH_TIMEOUT)
     }
 
+    /// Retry budget for `init activate-first-node`.
+    ///
+    /// Activation waits server-side for the first machine-add mint, whose
+    /// `nats-server` authorization reload drops the server's in-flight
+    /// response permissions — the reply to the very request that triggered
+    /// the mint can be lost, timing out client-side while the activation
+    /// completed. The retried request returns the already-active machine,
+    /// so the budget is the operation-wait budget and must exceed a single
+    /// API request timeout (regression: it was the connect timeout, which
+    /// expired before the first retry could run).
+    #[must_use]
+    pub fn first_node_activate_retry_budget(&self) -> Duration {
+        self.ops_watch_timeout()
+    }
+
     #[must_use]
     pub fn ops_watch_poll_interval(&self) -> Duration {
         self.ops_watch_poll_interval
@@ -358,7 +373,7 @@ async fn activate_first_node_machine(
     command: &FirstNodeActivateCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
-    let deadline = Instant::now() + config.nats_connect_timeout();
+    let deadline = Instant::now() + config.first_node_activate_retry_budget();
     loop {
         match activate_first_node_machine_once(command, config).await {
             Ok(activation) => return Ok(activation),
@@ -1035,4 +1050,29 @@ fn write_output_summary(
         write!(formatter, "; {summary}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the activate-first-node retry budget was the NATS
+    /// connect timeout, which a single timed-out request (its reply dropped
+    /// by the mint's authorization reload) consumed entirely — the
+    /// documented retry never ran. The budget is the operation-wait budget
+    /// and must leave room for a retry after a full request timeout.
+    #[test]
+    fn first_node_activation_can_retry_after_a_dropped_reply() {
+        let config = PloyzctlRuntimeConfig::default();
+        assert_eq!(
+            config.first_node_activate_retry_budget(),
+            config.ops_watch_timeout()
+        );
+        assert!(
+            config.first_node_activate_retry_budget()
+                > ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT
+                    + config.ops_watch_poll_interval(),
+            "budget must allow at least one retry after a timed-out request"
+        );
+    }
 }

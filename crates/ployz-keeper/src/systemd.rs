@@ -154,10 +154,14 @@ impl NatsServerUnit {
         self.target().unit_name()
     }
 
+    /// The reload goes through `sh`'s builtin `kill`: `/bin/kill` is owned
+    /// by procps, which minimal Debian installs do not ship, and a missing
+    /// reload binary turns every machine-add mint into a terminal
+    /// `NatsReloadFailed`. systemd substitutes `$MAINPID` before `sh` runs.
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nExecReload=/bin/kill -HUP $MAINPID\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nExecReload=/bin/sh -c \"kill -s HUP $MAINPID\"\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.exec_start,
         )
     }
