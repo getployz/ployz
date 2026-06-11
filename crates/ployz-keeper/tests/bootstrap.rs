@@ -5,6 +5,8 @@ use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
@@ -21,16 +23,20 @@ use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
     execute_keeper_join,
 };
+use ployz_keeper::nats_identity::{
+    ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
+};
 use ployz_keeper::steps::{
     BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
     KeeperJoinMaterial, KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
-    KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
-    RedactedJoinMaterial, RoleSetError, bootstrap_script_plan, first_node_install_plan,
-    keeper_join_local_install_plan,
+    KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentStep,
+    PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, RoleNatsCredentials, RoleSetError,
+    bootstrap_script_plan, first_node_install_plan, keeper_join_local_install_plan,
 };
 use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
+use std::sync::OnceLock;
 
 #[test]
 fn bootstrap_script_installs_keeper_only() {
@@ -246,17 +252,26 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         plan.steps()
             .contains(&KeeperStep::StoreJoinMaterial(material))
     );
-    assert!(
-        plan.steps()
-            .contains(&KeeperStep::WritePloyzdRoleEnvironment(
-                edge_role_environment()
-            ))
-    );
-    let rendered_env = edge_role_environment().render();
+    let rendered_env =
+        edge_role_environment().render_for_role(&DaemonProcessRole::Node(node_id("node_7")));
     assert!(rendered_env.contains("PLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n"));
     assert!(rendered_env.contains("PLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"));
+    assert!(
+        rendered_env
+            .contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/join-material.d/nats.creds\n")
+    );
+    assert!(rendered_env.contains("PLOYZ_NATS_CA_FILE=/var/lib/ployz/join-material.d/ca.pem\n"));
 
     for role in roles {
+        assert!(
+            plan.steps()
+                .contains(&KeeperStep::WritePloyzdRoleEnvironment(
+                    PloyzdRoleEnvironmentStep {
+                        role: role.clone(),
+                        target: edge_role_environment(),
+                    }
+                ))
+        );
         let unit = SupervisorUnitTarget::PloyzdRole(role);
         assert!(plan_writes_unit(&plan, &unit));
         assert!(
@@ -278,13 +293,16 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
 #[test]
 fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     let node_id = node_id("node_1");
-    let plan = first_node_install_plan(FirstNodeInstallTarget::new(
+    let target = FirstNodeInstallTarget::new(
         node_id.clone(),
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
         FirstNodeGateway::Skip,
-    ));
+        test_identity().clone(),
+    );
+    let role_environment = target.role_environment.clone();
+    let plan = first_node_install_plan(target);
 
     assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
     assert!(plan.installs_artifact_kind(ArtifactKind::EbpfBytecode));
@@ -298,16 +316,36 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
                 node_id.clone()
             )))
     );
-    assert!(plan_writes_unit(&plan, &SupervisorUnitTarget::NatsServer));
     assert!(
         plan.steps()
-            .contains(&KeeperStep::WritePloyzdRoleEnvironment(role_environment()))
+            .iter()
+            .any(|step| matches!(step, KeeperStep::WriteNatsTlsMaterial(_)))
     );
+    assert!(
+        plan.steps()
+            .iter()
+            .any(|step| matches!(step, KeeperStep::WriteNatsAuthorizedUsers(_)))
+    );
+    assert!(
+        plan.steps()
+            .iter()
+            .any(|step| matches!(step, KeeperStep::WriteNatsClientCredentials(_)))
+    );
+    assert!(plan_writes_unit(&plan, &SupervisorUnitTarget::NatsServer));
     assert!(plan.steps().contains(&KeeperStep::StartSupervisorUnit(
         SupervisorUnitTarget::NatsServer
     )));
 
     for role in [DaemonProcessRole::Control, DaemonProcessRole::Node(node_id)] {
+        assert!(
+            plan.steps()
+                .contains(&KeeperStep::WritePloyzdRoleEnvironment(
+                    PloyzdRoleEnvironmentStep {
+                        role: role.clone(),
+                        target: role_environment.clone(),
+                    }
+                ))
+        );
         let unit = SupervisorUnitTarget::PloyzdRole(role);
         assert!(plan_writes_unit(&plan, &unit));
         assert!(
@@ -329,6 +367,87 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
 }
 
 #[test]
+fn first_node_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
+    let target = FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(),
+        dataplane_artifacts(),
+        nats_server_artifact(),
+        FirstNodeGateway::Install,
+        test_identity().clone(),
+    );
+
+    let control_env = target
+        .role_environment
+        .render_for_role(&DaemonProcessRole::Control);
+    assert!(control_env.starts_with("PLOYZ_NATS_URL=tls://127.0.0.1:4222\n"));
+    assert!(control_env.contains("PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem\n"));
+    assert!(
+        control_env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/controller.seed\n")
+    );
+
+    // Node and gateway point at the fixed node.seed path, which does not
+    // exist at install time — there is no controller-seed fallback.
+    for role in [
+        DaemonProcessRole::Node(node_id("node_1")),
+        DaemonProcessRole::Gateway,
+    ] {
+        let env = target.role_environment.render_for_role(&role);
+        assert!(env.starts_with("PLOYZ_NATS_URL=tls://127.0.0.1:4222\n"));
+        assert!(env.contains("PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem\n"));
+        assert!(env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/node.seed\n"));
+        assert!(!env.contains("controller.seed"));
+    }
+
+    assert_eq!(
+        target
+            .role_environment
+            .file_for_role(&DaemonProcessRole::Control)
+            .path(),
+        std::path::Path::new("/etc/ployz/ployzd-control.env")
+    );
+}
+
+#[test]
+fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
+    let target = FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(),
+        dataplane_artifacts(),
+        nats_server_artifact(),
+        FirstNodeGateway::Skip,
+        test_identity().clone(),
+    )
+    .with_node_public_ip("203.0.113.10".parse().expect("valid IP"));
+    let plan = first_node_install_plan(target);
+
+    let rendered = plan
+        .steps()
+        .iter()
+        .find_map(|step| match step {
+            KeeperStep::WriteNatsServerConfig(config) => Some(config.render_config()),
+            KeeperStep::VerifyHost(_)
+            | KeeperStep::InstallArtifact(_)
+            | KeeperStep::WritePloyzdRoleEnvironment(_)
+            | KeeperStep::WriteNatsTlsMaterial(_)
+            | KeeperStep::WriteNatsAuthorizedUsers(_)
+            | KeeperStep::WriteNatsClientCredentials(_)
+            | KeeperStep::WriteSupervisorUnit(_)
+            | KeeperStep::StartSupervisorUnit(_)
+            | KeeperStep::RestartSupervisorUnit(_)
+            | KeeperStep::StoreJoinMaterial(_) => None,
+        })
+        .expect("first-node plan writes the nats config");
+
+    // TLS + authorization land in the same rendered config that opens the
+    // listener — a plaintext external listener is unrepresentable.
+    assert!(rendered.contains("host: 0.0.0.0\n"));
+    assert!(rendered.contains("client_advertise: 203.0.113.10:4222\n"));
+    assert!(rendered.contains("tls {\n"));
+    assert!(rendered.contains("include \"authorized-users.conf\"\n"));
+}
+
+#[test]
 fn first_node_install_can_include_gateway_role() {
     let plan = first_node_install_plan(FirstNodeInstallTarget::new(
         node_id("node_1"),
@@ -336,6 +455,7 @@ fn first_node_install_can_include_gateway_role() {
         dataplane_artifacts(),
         nats_server_artifact(),
         FirstNodeGateway::Install,
+        test_identity().clone(),
     ));
 
     assert!(plan_writes_unit(
@@ -405,6 +525,7 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
         dataplane_artifacts(),
         nats_server_artifact(),
         FirstNodeGateway::Skip,
+        test_identity().clone(),
     ));
     let mut effects = RecordingEffects::default();
     let mut recorder = RecordingRecorder::default();
@@ -428,7 +549,21 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
         *second,
         KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(ployzd_artifact()))
     );
-    let [_, _, third, fourth, fifth, sixth, seventh, eighth, ..] = effects.calls.as_slice() else {
+    let [
+        _,
+        _,
+        third,
+        fourth,
+        fifth,
+        sixth,
+        seventh,
+        eighth,
+        ninth,
+        tenth,
+        eleventh,
+        ..,
+    ] = effects.calls.as_slice()
+    else {
         panic!("first-node plan records nats setup calls");
     };
     assert_eq!(
@@ -445,14 +580,32 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     );
     assert_eq!(
         *sixth,
-        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+        KeeperStepLabel::WriteNatsTlsMaterial {
+            state_dir: PathBuf::from("/var/lib/ployz/nats"),
+        }
     );
     assert_eq!(
         *seventh,
-        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+        KeeperStepLabel::WriteNatsAuthorizedUsers {
+            path: PathBuf::from("/etc/nats/authorized-users.conf"),
+        }
     );
     assert_eq!(
         *eighth,
+        KeeperStepLabel::WriteNatsClientCredentials {
+            state_dir: PathBuf::from("/var/lib/ployz/nats"),
+        }
+    );
+    assert_eq!(
+        *ninth,
+        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
+    );
+    assert_eq!(
+        *tenth,
+        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
+    );
+    assert_eq!(
+        *eleventh,
         KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::NatsServer)
     );
     assert_eq!(
@@ -852,9 +1005,26 @@ fn keeper_join_material() -> KeeperJoinMaterial {
         "prod",
         "user-jwt-and-seed",
         "server_1",
-        NATS_CA_DIGEST,
+        test_ca_pem(),
     )
     .expect("valid join material")
+}
+
+fn test_ca_pem() -> NatsCaCertificatePem {
+    NatsCaCertificatePem::try_new(
+        "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
+    )
+    .expect("valid test CA pem")
+}
+
+fn test_identity() -> &'static ClusterNatsIdentity {
+    static IDENTITY: OnceLock<ClusterNatsIdentity> = OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        generate_cluster_nats_identity(
+            &ServerCertificateSans::try_new(None, None).expect("valid SAN inputs"),
+        )
+        .expect("test identity generates")
+    })
 }
 
 impl KeeperJoinReporter for RecordingJoinReporter {
@@ -967,6 +1137,7 @@ fn role_environment() -> PloyzdRoleEnvironmentTarget {
             .expect("valid role environment path"),
         node_id("node_1"),
         NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid NATS URL"),
+        RoleNatsCredentials::joined(std::path::Path::new("/var/lib/ployz/join-material.d")),
     )
     .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
@@ -978,6 +1149,7 @@ fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
             .expect("valid role environment path"),
         node_id("node_7"),
         NatsClientUrl::try_new("nats://127.0.0.1:7422").expect("valid NATS URL"),
+        RoleNatsCredentials::joined(std::path::Path::new("/var/lib/ployz/join-material.d")),
     )
     .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
@@ -1012,6 +1184,8 @@ fn first_node_nats_target(node_id: NodeId) -> ployz_keeper::steps::NatsServerCon
     ployz_keeper::steps::NatsServerConfigTarget::for_first_node(
         node_id,
         &ployz_keeper::systemd::NatsServerUnitTarget::default_paths(),
+        &NatsMachineMaterialPaths::in_default_state_dir(),
+        NatsListener::Loopback,
     )
 }
 

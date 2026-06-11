@@ -16,12 +16,13 @@ use crate::artifacts::{
 };
 use crate::executor::KeeperStepEffects;
 use crate::join::{
-    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE,
     render_redacted_join_material,
 };
 use crate::steps::{
     HostPrerequisite, KeeperJoinMaterial, KeeperStep, KeeperStepEffectError,
-    KeeperStepFailureReason, NatsServerConfigTarget, PloyzdRoleEnvironmentTarget,
+    KeeperStepFailureReason, NatsAuthorizedUsersTarget, NatsClientCredentialsTarget,
+    NatsServerConfigTarget, NatsTlsMaterialTarget, PloyzdRoleEnvironmentStep,
 };
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -55,8 +56,17 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
             KeeperStep::InstallArtifact(target) => self.install_artifact_source(target),
-            KeeperStep::WritePloyzdRoleEnvironment(target) => self
-                .write_ployzd_role_environment(target)
+            KeeperStep::WritePloyzdRoleEnvironment(step) => {
+                self.write_ployzd_role_environment(step).map_err(Into::into)
+            }
+            KeeperStep::WriteNatsTlsMaterial(target) => {
+                self.write_nats_tls_material(target).map_err(Into::into)
+            }
+            KeeperStep::WriteNatsAuthorizedUsers(target) => {
+                self.write_nats_authorized_users(target).map_err(Into::into)
+            }
+            KeeperStep::WriteNatsClientCredentials(target) => self
+                .write_nats_client_credentials(target)
                 .map_err(Into::into),
             KeeperStep::WriteNatsServerConfig(target) => {
                 self.write_nats_server_config(target).map_err(Into::into)
@@ -125,19 +135,98 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
 
     fn write_ployzd_role_environment(
         &self,
-        target: &PloyzdRoleEnvironmentTarget,
+        step: &PloyzdRoleEnvironmentStep,
     ) -> Result<(), FailureMessage> {
-        fs::create_dir_all(target.directory()).map_err(|error| {
+        let file = step.file();
+        let directory = file
+            .path()
+            .parent()
+            .expect("validated ployzd role env path has a directory")
+            .to_path_buf();
+        let file_name = file
+            .path()
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .expect("validated ployzd role env path has a UTF-8 file name");
+        fs::create_dir_all(&directory).map_err(|error| {
             failure_message(format!(
                 "failed to create ployzd environment directory {}: {error}",
-                target.directory().display()
+                directory.display()
             ))
         })?;
         write_durable_file(
-            target.directory(),
-            target.file_name(),
+            &directory,
+            file_name,
             "ployz-role-env",
+            step.render().as_bytes(),
+        )
+    }
+
+    fn write_nats_tls_material(
+        &self,
+        target: &NatsTlsMaterialTarget,
+    ) -> Result<(), FailureMessage> {
+        create_nats_state_dir(target.state_dir())?;
+        write_durable_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().ca_file()),
+            "ployz-nats-ca",
+            target.ca_pem().as_str().as_bytes(),
+        )?;
+        write_durable_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().server_cert_file()),
+            "ployz-nats-cert",
+            target.server_cert_pem().as_bytes(),
+        )?;
+        write_durable_secret_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().server_key_file()),
+            "ployz-nats-key",
+            target.server_key_pem().secret().as_bytes(),
+        )
+    }
+
+    fn write_nats_authorized_users(
+        &self,
+        target: &NatsAuthorizedUsersTarget,
+    ) -> Result<(), FailureMessage> {
+        fs::create_dir_all(target.config_dir()).map_err(|error| {
+            failure_message(format!(
+                "failed to create nats-server config directory {}: {error}",
+                target.config_dir().display()
+            ))
+        })?;
+        write_durable_file(
+            target.config_dir(),
+            target.file_name(),
+            "ployz-nats-users",
             target.render().as_bytes(),
+        )
+    }
+
+    fn write_nats_client_credentials(
+        &self,
+        target: &NatsClientCredentialsTarget,
+    ) -> Result<(), FailureMessage> {
+        create_nats_state_dir(target.state_dir())?;
+        write_durable_secret_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().controller_seed_file()),
+            "ployz-nats-seed",
+            target.controller_seed().secret().as_bytes(),
+        )?;
+        write_durable_secret_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().operator_seed_file()),
+            "ployz-nats-seed",
+            target.operator_seed().secret().as_bytes(),
+        )?;
+        write_durable_secret_file(
+            target.state_dir(),
+            &nats_file_name(&target.material().join_seed_file()),
+            "ployz-nats-seed",
+            target.join_seed().secret().as_bytes(),
         )
     }
 
@@ -241,6 +330,15 @@ fn commit_join_material_files(
         directory,
         &render_redacted_join_material(&material.redacted()),
     )?;
+    write_durable_file(
+        directory,
+        JOIN_TRUSTED_CA_FILE,
+        "ployz-join-ca",
+        material.trusted_ca_pem().as_str().as_bytes(),
+    )
+    .map_err(|message| {
+        KeeperStepEffectError::new(KeeperStepFailureReason::JoinMaterialStoreFailed, message)
+    })?;
     commit_join_material_secret_file(
         directory,
         JOIN_NATS_CREDENTIALS_FILE,
@@ -548,6 +646,30 @@ fn ensure_directory(path: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     create_private_directory(path)
+}
+
+fn create_nats_state_dir(state_dir: &Path) -> Result<(), FailureMessage> {
+    if let Some(parent) = state_dir.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            failure_message(format!(
+                "failed to create NATS state parent directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    ensure_directory(state_dir).map_err(|error| {
+        failure_message(format!(
+            "failed to create NATS state directory {}: {error}",
+            state_dir.display()
+        ))
+    })
+}
+
+fn nats_file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .expect("NATS material paths have UTF-8 file names")
+        .to_owned()
 }
 
 fn write_unit_file(

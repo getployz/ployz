@@ -157,7 +157,7 @@ impl NatsServerUnit {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart={}\nExecReload=/bin/kill -HUP $MAINPID\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.exec_start,
         )
     }
@@ -176,7 +176,7 @@ impl PloyzdRoleUnit {
         artifact: &PloyzdArtifactTarget,
         environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
-        let exec_start = render_exec_start(artifact.install_path(), ployzd_role_args(&role))?;
+        let exec_start = render_exec_start(artifact.install_path(), role.argv())?;
         Ok(Self {
             role,
             exec_start,
@@ -202,19 +202,6 @@ impl PloyzdRoleUnit {
             self.environment_file.path().display(),
             self.exec_start,
         )
-    }
-}
-
-fn ployzd_role_args(role: &DaemonProcessRole) -> Vec<String> {
-    match role {
-        DaemonProcessRole::Control => vec!["control".to_owned()],
-        DaemonProcessRole::Node(node_id) => vec![
-            "node".to_owned(),
-            "--id".to_owned(),
-            node_id.as_str().to_owned(),
-        ],
-        DaemonProcessRole::Gateway => vec!["gateway".to_owned()],
-        DaemonProcessRole::Dns => vec!["dns".to_owned()],
     }
 }
 

@@ -178,6 +178,24 @@ fn role_parser_accepts_the_supervisor_process_commands() {
     );
 }
 
+/// `ployz-core` owns the role argv contract (`DaemonProcessRole::argv`),
+/// which keeper renders into supervisor units; this round-trip pins the
+/// parser to that single owner for every role variant.
+#[test]
+fn role_argv_rendering_round_trips_through_the_parser() {
+    for role in [
+        DaemonProcessRole::Control,
+        DaemonProcessRole::Node(node_id("node_7")),
+        DaemonProcessRole::Gateway,
+        DaemonProcessRole::Dns,
+    ] {
+        assert_eq!(
+            parse_role_args(role.argv()).expect("rendered role argv parses"),
+            role
+        );
+    }
+}
+
 #[test]
 fn nats_client_roles_load_the_keeper_written_nats_url() {
     let config =

@@ -18,7 +18,7 @@ fn nats_server_unit_renders_supervised_configured_process() {
     assert_eq!(unit.unit_name(), "nats-server.service");
     assert_eq!(
         unit.render(),
-        "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/nats-server --config /etc/ployz/nats-server.conf\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz NATS Server\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nExecStart=/usr/local/bin/nats-server --config /etc/ployz/nats-server.conf\nExecReload=/bin/kill -HUP $MAINPID\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 

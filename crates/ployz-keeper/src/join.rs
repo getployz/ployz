@@ -8,6 +8,7 @@ use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
 pub const JOIN_NATS_CREDENTIALS_FILE: &str = "nats.creds";
+pub const JOIN_TRUSTED_CA_FILE: &str = "ca.pem";
 pub const JOIN_MATERIAL_DIR: &str = "join-material.d";
 
 pub fn read_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {

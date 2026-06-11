@@ -10,6 +10,7 @@ use ployz_keeper::artifacts::{
 };
 use ployz_keeper::cli::{KeeperCommand, load_command};
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
+use ployz_keeper::join::JOIN_MATERIAL_DIR;
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
     execute_keeper_join,
@@ -18,7 +19,7 @@ use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects, SystemKeeperCom
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
     FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, first_node_install_plan,
+    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_node_install_plan,
 };
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError, connect_with_timeout};
 use ployz_nats::operation_api_client::OperationApiClient;
@@ -30,6 +31,7 @@ use ployz_sdk_types::{
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
 
 fn main() -> ExitCode {
     match load_command(std::env::args_os().skip(1)) {
@@ -51,11 +53,20 @@ fn main() -> ExitCode {
             }
         }
         Ok(KeeperCommand::FirstNodeInstall(target)) => {
+            let nats_material = target.nats_material.clone();
             let stdout = std::io::stdout();
             let mut recorder = KeeperTextRecorder::new(stdout.lock());
             let execution = run_first_node_install(*target, &mut recorder);
             match execution.terminal {
-                KeeperPlanTerminal::Completed => ExitCode::SUCCESS,
+                KeeperPlanTerminal::Completed => {
+                    drop(recorder);
+                    println!(
+                        "operator seed {}",
+                        nats_material.operator_seed_file().display()
+                    );
+                    println!("cluster ca {}", nats_material.ca_file().display());
+                    ExitCode::SUCCESS
+                }
                 KeeperPlanTerminal::Failed(failure) => {
                     eprintln!(
                         "ployz-keeper first-node-install failed: {}",
@@ -87,7 +98,7 @@ fn run_join(
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
-            state_dir: "/var/lib/ployz".into(),
+            state_dir: KEEPER_STATE_DIR.into(),
         },
         SystemKeeperCommandRunner::default(),
     );
@@ -109,7 +120,7 @@ fn run_first_node_install(
     let mut effects = KeeperLocalEffects::new(
         KeeperLocalConfig {
             systemd_dir: "/etc/systemd/system".into(),
-            state_dir: "/var/lib/ployz".into(),
+            state_dir: KEEPER_STATE_DIR.into(),
         },
         SystemKeeperCommandRunner::default(),
     );
@@ -348,8 +359,12 @@ fn keeper_join_target_with_public_ip(
     let runtime_nats_client_url =
         NatsClientUrl::try_new(redeemed.join_bundle.material.runtime_nats_url.as_str())
             .map_err(|error| failure_message(&format!("invalid runtime nats url: {error:?}")))?;
-    let mut role_environment =
-        PloyzdRoleEnvironmentTarget::default_path(node_id.clone(), runtime_nats_client_url);
+    let join_material_dir = PathBuf::from(KEEPER_STATE_DIR).join(JOIN_MATERIAL_DIR);
+    let mut role_environment = PloyzdRoleEnvironmentTarget::default_path(
+        node_id.clone(),
+        runtime_nats_client_url,
+        RoleNatsCredentials::joined(&join_material_dir),
+    );
     if let Some(public_ip) = node_public_ip {
         role_environment = role_environment.with_node_public_ip(public_ip);
     }
@@ -418,8 +433,12 @@ mod tests {
             .target;
 
         assert_eq!(
-            target.role_environment.render(),
-            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\nPLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"
+            target
+                .role_environment
+                .render_for_role(&ployz_core::roles::DaemonProcessRole::Node(
+                    NodeId::try_new("node_2").expect("valid node id")
+                )),
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NATS_CA_FILE=/var/lib/ployz/join-material.d/ca.pem\nPLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/join-material.d/nats.creds\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\nPLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"
         );
     }
 
@@ -448,7 +467,7 @@ mod tests {
         assert!(
             target
                 .role_environment
-                .render()
+                .render_for_role(&ployz_core::roles::DaemonProcessRole::Gateway)
                 .contains("PLOYZ_NODE_PUBLIC_IP=203.0.113.20\n")
         );
     }

@@ -17,6 +17,9 @@ use crate::artifacts::{
     PloyzdArtifactTarget, Sha256Digest,
 };
 use crate::join::{JoinTokenFileError, read_join_token_file};
+use crate::nats_identity::{
+    NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
+};
 use crate::steps::{FirstNodeInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 
@@ -151,6 +154,12 @@ fn read_first_node_install_spec(
     serde_json::from_str(&bytes).map_err(|error| KeeperCliError::ParseSpec { source, error })
 }
 
+/// The machine hostname covered by the server certificate SANs. A host
+/// without a UTF-8 hostname simply gets no hostname SAN.
+fn machine_hostname() -> Option<String> {
+    gethostname::gethostname().into_string().ok()
+}
+
 fn first_node_install_target(
     install: KeeperFirstNodeInstall,
 ) -> Result<FirstNodeInstallTarget, KeeperCliError> {
@@ -206,6 +215,8 @@ fn first_node_install_target(
         nats_server_artifact.install_path().to_path_buf(),
         install_path(&nats_config),
     )?;
+    let certificate_sans = ServerCertificateSans::try_new(node_public_ip, machine_hostname())?;
+    let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
 
     let mut target = FirstNodeInstallTarget::new(
         node_id,
@@ -213,6 +224,7 @@ fn first_node_install_target(
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
         nats_server_artifact,
         gateway,
+        nats_identity,
     )
     .with_nats_server_unit(nats_server_unit);
     if let Some(url) = machine_bootstrap_url {
@@ -259,6 +271,7 @@ pub enum KeeperCliError {
     JoinTokenFile(JoinTokenFileError),
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
+    NatsIdentity(NatsIdentityError),
 }
 
 impl KeeperCliError {
@@ -289,6 +302,12 @@ impl From<SupervisorUnitFileError> for KeeperCliError {
     }
 }
 
+impl From<NatsIdentityError> for KeeperCliError {
+    fn from(value: NatsIdentityError) -> Self {
+        Self::NatsIdentity(value)
+    }
+}
+
 impl fmt::Display for KeeperCliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -308,6 +327,7 @@ impl fmt::Display for KeeperCliError {
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
+            Self::NatsIdentity(error) => write!(formatter, "{error}"),
         }
     }
 }

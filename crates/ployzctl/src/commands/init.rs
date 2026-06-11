@@ -1,6 +1,6 @@
 use clap::Parser;
 use ployz_core::ids::NodeId;
-use ployz_core::install::{FirstNodeInstallSpec, KeeperFirstNodeInstall};
+use ployz_core::install::{FirstNodeInstallSpec, KeeperFirstNodeInstall, NatsMachineMaterialPaths};
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 use std::fs;
 use std::io::Read;
@@ -177,6 +177,7 @@ impl FirstNodeInitOutput {
 
         if let Some(keeper_install) = keeper_install {
             output.push_str("install ployz-keeper first-node-install --spec -\n");
+            output.push_str(&render_first_node_credential_paths());
             output.push_str(
                 &serde_json::to_string_pretty(&FirstNodeInstallSpec::from(keeper_install.clone()))
                     .expect("first-node install spec serializes"),
@@ -186,6 +187,18 @@ impl FirstNodeInitOutput {
 
         output
     }
+}
+
+/// Where the keeper install leaves the operator credential and cluster CA
+/// that `ployzctl` connects with.
+#[must_use]
+pub fn render_first_node_credential_paths() -> String {
+    let paths = NatsMachineMaterialPaths::in_default_state_dir();
+    format!(
+        "operator seed {}\ncluster ca {}\n",
+        paths.operator_seed_file().display(),
+        paths.ca_file().display()
+    )
 }
 
 pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, PloyzctlCliError> {

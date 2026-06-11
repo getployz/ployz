@@ -22,6 +22,26 @@ impl DaemonProcessRole {
             Self::Dns => "dns",
         }
     }
+
+    /// The `ployzd` process arguments that select this role.
+    ///
+    /// This is the single owner of the role argv contract: supervisor unit
+    /// rendering (`ployz-keeper`) emits exactly this shape and `ployzd`'s
+    /// role parser must accept it. The round-trip test lives in
+    /// `crates/ployzd/tests/role_process.rs`.
+    #[must_use]
+    pub fn argv(&self) -> Vec<String> {
+        match self {
+            Self::Control => vec!["control".to_owned()],
+            Self::Node(node_id) => vec![
+                "node".to_owned(),
+                "--id".to_owned(),
+                node_id.as_str().to_owned(),
+            ],
+            Self::Gateway => vec!["gateway".to_owned()],
+            Self::Dns => vec!["dns".to_owned()],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

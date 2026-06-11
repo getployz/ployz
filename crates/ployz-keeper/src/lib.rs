@@ -11,6 +11,7 @@ pub mod executor;
 pub mod join;
 pub mod join_executor;
 pub mod local;
+pub mod nats_identity;
 pub mod report;
 pub mod steps;
 pub mod systemd;

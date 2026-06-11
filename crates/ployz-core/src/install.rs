@@ -1,10 +1,10 @@
 use std::fmt;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::ids::NodeId;
 use crate::nats_config::{NatsCaCertificatePem, NatsServerName, is_valid_host_syntax};
-use crate::roles::FirstNodeGateway;
+use crate::roles::{DaemonProcessRole, FirstNodeGateway};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +301,86 @@ pub struct MachineJoinTemplate {
 pub struct MachineJoinTrustedNats {
     pub server_name: NatsServerName,
     pub ca_pem: NatsCaCertificatePem,
+}
+
+/// Well-known on-machine NATS material paths.
+///
+/// This is the single owner of the Phase B file-ownership table: keeper
+/// writes the TLS material and the controller/operator/join seeds at
+/// install; `ployzd` control writes `node.seed` at activate-first-node.
+/// `node.seed` deliberately does not exist at install time — node and
+/// gateway roles await it with bounded retries instead of falling back to
+/// controller authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsMachineMaterialPaths {
+    state_dir: PathBuf,
+}
+
+impl NatsMachineMaterialPaths {
+    #[must_use]
+    pub const fn new(state_dir: PathBuf) -> Self {
+        Self { state_dir }
+    }
+
+    /// The product path: `/var/lib/ployz/nats`.
+    #[must_use]
+    pub fn in_default_state_dir() -> Self {
+        Self::new(PathBuf::from("/var/lib/ployz/nats"))
+    }
+
+    #[must_use]
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
+    #[must_use]
+    pub fn ca_file(&self) -> PathBuf {
+        self.state_dir.join("ca.pem")
+    }
+
+    #[must_use]
+    pub fn server_cert_file(&self) -> PathBuf {
+        self.state_dir.join("server.crt")
+    }
+
+    #[must_use]
+    pub fn server_key_file(&self) -> PathBuf {
+        self.state_dir.join("server.key")
+    }
+
+    #[must_use]
+    pub fn controller_seed_file(&self) -> PathBuf {
+        self.state_dir.join("controller.seed")
+    }
+
+    #[must_use]
+    pub fn operator_seed_file(&self) -> PathBuf {
+        self.state_dir.join("operator.seed")
+    }
+
+    #[must_use]
+    pub fn join_seed_file(&self) -> PathBuf {
+        self.state_dir.join("join.seed")
+    }
+
+    /// Written by `ployzd` control at activate-first-node, never by keeper.
+    #[must_use]
+    pub fn node_seed_file(&self) -> PathBuf {
+        self.state_dir.join("node.seed")
+    }
+
+    /// The seed file each daemon role authenticates with. Control holds
+    /// Controller authority; node, gateway, and DNS share the machine's
+    /// Node credential (there is no Gateway principal in v1).
+    #[must_use]
+    pub fn role_seed_file(&self, role: &DaemonProcessRole) -> PathBuf {
+        match role {
+            DaemonProcessRole::Control => self.controller_seed_file(),
+            DaemonProcessRole::Node(_) | DaemonProcessRole::Gateway | DaemonProcessRole::Dns => {
+                self.node_seed_file()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

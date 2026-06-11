@@ -56,8 +56,17 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::WriteNatsServerConfig(target) => {
             format!("write-nats-config {}", target.display_path().display())
         }
-        KeeperStepLabel::WritePloyzdRoleEnvironment(target) => {
-            format!("write-role-env {}", target.file().path().display())
+        KeeperStepLabel::WriteNatsTlsMaterial { state_dir } => {
+            format!("write-nats-tls-material {}", state_dir.display())
+        }
+        KeeperStepLabel::WriteNatsAuthorizedUsers { path } => {
+            format!("write-nats-authorized-users {}", path.display())
+        }
+        KeeperStepLabel::WriteNatsClientCredentials { state_dir } => {
+            format!("write-nats-client-credentials {}", state_dir.display())
+        }
+        KeeperStepLabel::WritePloyzdRoleEnvironment(step) => {
+            format!("write-role-env {}", step.file().path().display())
         }
         KeeperStepLabel::WriteSupervisorUnit(target) => {
             format!("write-unit {}", target.unit_name())
@@ -95,6 +104,13 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         KeeperStepFailureReason::ArtifactVerificationFailed => "artifact-verification-failed",
         KeeperStepFailureReason::ArtifactInstallFailed => "artifact-install-failed",
         KeeperStepFailureReason::NatsConfigWriteFailed => "nats-config-write-failed",
+        KeeperStepFailureReason::NatsTlsMaterialWriteFailed => "nats-tls-material-write-failed",
+        KeeperStepFailureReason::NatsAuthorizedUsersWriteFailed => {
+            "nats-authorized-users-write-failed"
+        }
+        KeeperStepFailureReason::NatsClientCredentialsWriteFailed => {
+            "nats-client-credentials-write-failed"
+        }
         KeeperStepFailureReason::RoleEnvironmentWriteFailed => "role-environment-write-failed",
         KeeperStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
         KeeperStepFailureReason::SupervisorStartFailed => "supervisor-start-failed",
