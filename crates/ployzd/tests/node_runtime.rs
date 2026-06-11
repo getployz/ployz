@@ -7,12 +7,12 @@ use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{node_id, operation_id, revision_id, service_id, step_id};
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node_runtime_types::{
-    NodeContainerRunSpec, NodeRemoveContainerRequest, NodeRunContainerOutcome,
-    NodeRunContainerRequest,
+use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use ployzd::node::protocol::{
+    NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerRunSpec,
+    NodeRunContainerOutcome,
 };
-use ployzd::node_service_runtime::start_node_runtime_service;
+use ployzd::node::service::start_node_runtime_service;
 
 mod support;
 
@@ -33,7 +33,7 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
     let mut container_runtime = NatsNodeContainerRuntime::new(nats.client.clone());
 
     let first = container_runtime
-        .run_container(run_request("run_1"))
+        .run_container(&node_id("node_a"), run_request("run_1"))
         .await
         .expect("container run succeeds");
     let first_container_id = first.container_id().clone();
@@ -41,7 +41,7 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
     assert_observed_running(&nats.observations, &first_container_id).await;
 
     let second = container_runtime
-        .run_container(run_request("run_1"))
+        .run_container(&node_id("node_a"), run_request("run_1"))
         .await
         .expect("duplicate operation step reuses container");
     assert_eq!(
@@ -69,19 +69,21 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
     let mut container_runtime = NatsNodeContainerRuntime::new(nats.client.clone());
 
     let created = container_runtime
-        .run_container(run_request("run_1"))
+        .run_container(&node_id("node_a"), run_request("run_1"))
         .await
         .expect("container run succeeds");
     let container_id = created.container_id().clone();
     assert_observed_running(&nats.observations, &container_id).await;
 
     container_runtime
-        .remove_container(NodeRemoveContainerRequest {
-            node_id: node_id("node_a"),
-            operation_id: operation_id("op_123"),
-            container_id: container_id.clone(),
-            expected_identity: managed_labels("run_1").identity(),
-        })
+        .remove_container(
+            &node_id("node_a"),
+            NodeContainerRemoveRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id.clone(),
+                expected_identity: managed_labels("run_1").identity(),
+            },
+        )
         .await
         .expect("container remove succeeds");
 
@@ -178,9 +180,8 @@ async fn assert_observed_running(
     );
 }
 
-fn run_request(step: &str) -> NodeRunContainerRequest {
-    NodeRunContainerRequest {
-        node_id: node_id("node_a"),
+fn run_request(step: &str) -> NodeContainerRunRpcRequest {
+    NodeContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:rev-2"),
         endpoint: None,
         container: NodeContainerRunSpec {

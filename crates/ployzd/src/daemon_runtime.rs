@@ -3,7 +3,7 @@
 use crate::config::DaemonProcessConfig;
 use crate::control_runtime::{ControlRuntimeError, run_control_until_shutdown};
 use crate::gateway_process_runtime::{GatewayProcessRuntimeError, run_gateway_until_shutdown};
-use crate::node_process_runtime::{NodeProcessRuntimeError, run_node_until_shutdown};
+use crate::node::process::{NodeProcessRuntimeError, run_node_until_shutdown};
 use crate::role::DaemonProcessRole;
 use std::fmt;
 

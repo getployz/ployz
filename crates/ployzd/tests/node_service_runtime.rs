@@ -12,23 +12,24 @@ use ployz_test_support::ids::{
     container_id, failure_message, node_id, operation_id, revision_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{
-    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
-    NodeEnsureEndpointNetworkRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
-    NodeRuntimeUnavailableReason, NodeStopContainerRequest, WireGuardEbpfPreparer,
+    NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
+    WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use ployzd::node_agent::runtime::{
+use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use ployzd::node::protocol::{
+    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
+    NodeContainerRpcOk, NodeContainerRunRpcRequest, NodeContainerRunSpec,
+    NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
+    NodeEnsureEndpointNetworkRpcRequest, NodeLogsTailRpcOk, NodeLogsTailRpcRequest,
+    NodeLogsTailRpcResponse, NodeRunContainerOutcome, NodeWireGuardEbpfPreparePhase,
+    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+};
+use ployzd::node::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
-use ployzd::node_protocol::{
-    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
-    NodeLogsTailRpcRequest, NodeLogsTailRpcResponse, NodeWireGuardEbpfPreparePhase,
-    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
-};
-use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node_service_runtime::{
+use ployzd::node::service::{
     NodeWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_node_runtime_service,
 };
 use std::sync::{Arc, Mutex};
@@ -54,10 +55,12 @@ async fn node_runtime_service_ensures_endpoint_network() {
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     client
-        .ensure_endpoint_network(NodeEnsureEndpointNetworkRequest {
-            node_id: node_id("node_a"),
-            operation_id: operation_id("op_123"),
-        })
+        .ensure_endpoint_network(
+            &node_id("node_a"),
+            NodeEnsureEndpointNetworkRpcRequest {
+                operation_id: operation_id("op_123"),
+            },
+        )
         .await
         .expect("endpoint network ensure succeeds");
 
@@ -84,7 +87,7 @@ async fn node_runtime_service_creates_missing_container() {
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect("container run succeeds");
 
@@ -125,7 +128,7 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect("container run succeeds");
 
@@ -162,7 +165,7 @@ async fn node_runtime_service_starts_existing_stopped_operation_step_container()
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect("container run succeeds");
 
@@ -196,7 +199,7 @@ async fn node_runtime_service_reports_start_failure_with_container_evidence() {
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("container start failure is returned");
 
@@ -231,7 +234,7 @@ async fn node_runtime_service_reports_existing_start_failure_without_created_evi
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("existing container start failure is returned");
 
@@ -271,7 +274,7 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("container run reports conflict");
 
@@ -306,7 +309,7 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("container create fails");
 
@@ -354,10 +357,10 @@ async fn node_runtime_service_removes_container() {
 
     assert_eq!(
         response,
-        NodeContainerRemoveRpcResponse::Ok {
+        NodeContainerRemoveRpcResponse::Ok(NodeContainerRpcOk {
             node_id: node_id("node_a"),
             container_id: container_id("ctr_old"),
-        }
+        })
     );
     assert_eq!(state.removes(), vec![container_id("ctr_old")]);
 }
@@ -382,12 +385,14 @@ async fn node_runtime_service_stops_container() {
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     client
-        .stop_container(NodeStopContainerRequest {
-            node_id: node_id("node_a"),
-            operation_id: operation_id("op_123"),
-            container_id: container_id("ctr_failed"),
-            expected_identity: managed_labels().identity(),
-        })
+        .stop_container(
+            &node_id("node_a"),
+            NodeContainerStopRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_failed"),
+                expected_identity: managed_labels().identity(),
+            },
+        )
         .await
         .expect("container stop succeeds");
 
@@ -514,14 +519,14 @@ async fn node_runtime_service_tails_container_logs() {
 
     assert_eq!(
         response,
-        NodeLogsTailRpcResponse::Ok {
-            value: ployzd::node_runtime_types::NodeLogsTailResult {
+        NodeLogsTailRpcResponse::Ok(NodeLogsTailRpcOk {
+            value: ployzd::node::protocol::NodeLogsTailResult {
                 node_id: node_id("node_a"),
                 container_id: container_id("ctr_failed"),
                 text: "panic: missing DATABASE_URL\n".to_owned(),
                 truncated: false,
             },
-        }
+        })
     );
 }
 
@@ -595,7 +600,7 @@ async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
         response,
         NodeWireGuardEbpfPrepareRpcResponse::DomainError {
             node_id,
-            error: ployzd::node_protocol::NodeWireGuardEbpfPrepareDomainError::Unavailable {
+            error: ployzd::node::protocol::NodeWireGuardEbpfPrepareDomainError::Unavailable {
                 component: WireGuardEbpfComponent::WireGuard,
                 ..
             },
@@ -1054,9 +1059,8 @@ async fn test_nats() -> TestNats {
     }
 }
 
-fn run_request(node_id: &str) -> NodeRunContainerRequest {
-    NodeRunContainerRequest {
-        node_id: self::node_id(node_id),
+fn run_request() -> NodeContainerRunRpcRequest {
+    NodeContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
         endpoint: None,
         container: managed_container_spec(),

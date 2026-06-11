@@ -2,7 +2,7 @@ use super::network::{ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
 use crate::docker::labels::{
     MANAGED_LABEL, ManagedContainerIdentity, ManagedContainerLabelError, ManagedContainerLabels,
 };
-use crate::node_agent::runtime::{
+use crate::node::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
@@ -721,7 +721,7 @@ mod tests {
         };
         let body = create_body(CreateManagedContainer {
             image: image("ghcr.io/acme/api:rev-2"),
-            endpoint: Some(crate::node_runtime_types::ContainerEndpointRequest {
+            endpoint: Some(crate::node::protocol::ContainerEndpointRequest {
                 port: route_port(8080),
             }),
             labels,

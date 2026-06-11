@@ -24,8 +24,10 @@ use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
 use ployzd::deploy_worker::DeployExecutionNodeScope;
-use ployzd::node_protocol::NodeEnsureEndpointNetworkRpcResponse;
-use ployzd::node_rpc::NatsNodeContainerRuntime;
+use ployzd::node::client::NatsNodeContainerRuntime;
+use ployzd::node::protocol::{
+    NodeEnsureEndpointNetworkRpcOk, NodeEnsureEndpointNetworkRpcResponse,
+};
 use ployzd::operation_lease::OperationLeasePolicy;
 use std::time::Duration;
 
@@ -69,10 +71,10 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(runtime.requests.len(), 1);
-    let [run_request] = runtime.requests.as_slice() else {
+    let [(run_node_id, run_request)] = runtime.requests.as_slice() else {
         panic!("expected one container run request");
     };
-    assert_eq!(run_request.node_id, node_id("node_a"));
+    assert_eq!(*run_node_id, node_id("node_a"));
     assert_eq!(run_request.container.operation_id, operation_id("op_123"));
     assert_eq!(
         core_state
@@ -552,9 +554,11 @@ async fn start_endpoint_network_subscription(
     tokio::spawn(async move {
         while let Some(message) = subscriber.next().await {
             if let Some(reply) = message.reply {
-                let response = serde_json::to_vec(&NodeEnsureEndpointNetworkRpcResponse::Ok {
-                    node_id: node_id.clone(),
-                })
+                let response = serde_json::to_vec(&NodeEnsureEndpointNetworkRpcResponse::Ok(
+                    NodeEnsureEndpointNetworkRpcOk {
+                        node_id: node_id.clone(),
+                    },
+                ))
                 .expect("endpoint network response serializes");
                 let _ = client.publish(reply, response.into()).await;
             }

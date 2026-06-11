@@ -5,7 +5,7 @@ use ployz_core::ids::ContainerId;
 use ployz_core::node::ContainerEndpoint;
 
 use crate::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use crate::node_runtime_types::{ContainerEndpointRequest, NodeContainerRunSpec};
+use crate::node::protocol::{ContainerEndpointRequest, NodeContainerRunSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {

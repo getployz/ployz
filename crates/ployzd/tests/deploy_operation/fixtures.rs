@@ -27,9 +27,12 @@ use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
     DeployExecutionCommand, DeployExecutionFacts, DeployHealthCheckError, DeployHealthChecker,
     DeployOperationRecordError, DeployOperationRecorder, NodeContainerRuntime,
-    NodeContainerRuntimeError, NodeEnsureEndpointNetworkRequest, NodeRemoveContainerRequest,
-    NodeRunContainerOutcome, NodeRunContainerRequest, NodeRuntimeUnavailableReason,
-    NodeStopContainerRequest, WireGuardEbpfPreparer, prepare_deploy_execution_command,
+    NodeContainerRuntimeError, NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    prepare_deploy_execution_command,
+};
+use ployzd::node::protocol::{
+    NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerStopRpcRequest,
+    NodeEnsureEndpointNetworkRpcRequest, NodeRunContainerOutcome,
 };
 use ployzd::operation_lease::OperationLeaseRenewer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -149,10 +152,10 @@ impl DeployOperationRecorder for RecordingOperations {
 }
 
 pub(super) struct RecordingRuntime {
-    pub(super) endpoint_networks: Vec<NodeEnsureEndpointNetworkRequest>,
-    pub(super) requests: Vec<NodeRunContainerRequest>,
-    pub(super) stops: Vec<NodeStopContainerRequest>,
-    pub(super) removals: Vec<NodeRemoveContainerRequest>,
+    pub(super) endpoint_networks: Vec<(NodeId, NodeEnsureEndpointNetworkRpcRequest)>,
+    pub(super) requests: Vec<(NodeId, NodeContainerRunRpcRequest)>,
+    pub(super) stops: Vec<(NodeId, NodeContainerStopRpcRequest)>,
+    pub(super) removals: Vec<(NodeId, NodeContainerRemoveRpcRequest)>,
     containers: Vec<ContainerId>,
     fail_after_first: bool,
     fail_endpoint_network: bool,
@@ -552,12 +555,13 @@ impl RecordingRuntime {
 impl NodeContainerRuntime for RecordingRuntime {
     async fn ensure_endpoint_network(
         &mut self,
-        request: NodeEnsureEndpointNetworkRequest,
+        node_id: &NodeId,
+        request: NodeEnsureEndpointNetworkRpcRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        self.endpoint_networks.push(request.clone());
+        self.endpoint_networks.push((node_id.clone(), request));
         if self.fail_endpoint_network {
             return Err(NodeContainerRuntimeError::Unavailable {
-                node_id: request.node_id,
+                node_id: node_id.clone(),
                 reason: NodeRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic endpoint network failure".to_owned(),
                 },
@@ -568,12 +572,13 @@ impl NodeContainerRuntime for RecordingRuntime {
 
     async fn run_container(
         &mut self,
-        request: NodeRunContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerRunRpcRequest,
     ) -> Result<NodeRunContainerOutcome, NodeContainerRuntimeError> {
-        self.requests.push(request.clone());
+        self.requests.push((node_id.clone(), request));
         if self.fail_after_first && self.requests.len() > 1 {
             return Err(NodeContainerRuntimeError::Unavailable {
-                node_id: request.node_id,
+                node_id: node_id.clone(),
                 reason: NodeRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic runtime failure".to_owned(),
                 },
@@ -582,7 +587,7 @@ impl NodeContainerRuntime for RecordingRuntime {
 
         let Some(container_id) = self.containers.pop() else {
             return Err(NodeContainerRuntimeError::Unavailable {
-                node_id: request.node_id,
+                node_id: node_id.clone(),
                 reason: NodeRuntimeUnavailableReason::RequestFailed {
                     message: "synthetic missing container id".to_owned(),
                 },
@@ -591,7 +596,7 @@ impl NodeContainerRuntime for RecordingRuntime {
 
         if self.fail_start {
             return Err(NodeContainerRuntimeError::CreatedContainerStartFailed {
-                node_id: request.node_id,
+                node_id: node_id.clone(),
                 container_id,
                 message: runtime_failure_message("container start failed: exec format error"),
                 inspect_hint: inspect_hint("ctr_created"),
@@ -607,17 +612,19 @@ impl NodeContainerRuntime for RecordingRuntime {
 
     async fn remove_container(
         &mut self,
-        request: NodeRemoveContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerRemoveRpcRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        self.removals.push(request.clone());
+        let container_id = request.container_id.clone();
+        self.removals.push((node_id.clone(), request));
         if self.fail_remove {
             return Err(NodeContainerRuntimeError::RemoveContainerFailed {
-                node_id: request.node_id,
-                container_id: request.container_id.clone(),
+                node_id: node_id.clone(),
+                container_id: container_id.clone(),
                 message: runtime_failure_message("container remove failed: busy"),
                 inspect_hint: OperatorHint::try_new(format!(
                     "ployz container inspect {}",
-                    request.container_id.as_str()
+                    container_id.as_str()
                 ))
                 .expect("valid inspect hint"),
             });
@@ -628,17 +635,19 @@ impl NodeContainerRuntime for RecordingRuntime {
 
     async fn stop_container(
         &mut self,
-        request: NodeStopContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerStopRpcRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        self.stops.push(request.clone());
+        let container_id = request.container_id.clone();
+        self.stops.push((node_id.clone(), request));
         if self.fail_stop {
             return Err(NodeContainerRuntimeError::StopContainerFailed {
-                node_id: request.node_id,
-                container_id: request.container_id.clone(),
+                node_id: node_id.clone(),
+                container_id: container_id.clone(),
                 message: runtime_failure_message("container stop failed: permission denied"),
                 inspect_hint: OperatorHint::try_new(format!(
                     "ployz container inspect {}",
-                    request.container_id.as_str()
+                    container_id.as_str()
                 ))
                 .expect("valid inspect hint"),
             });

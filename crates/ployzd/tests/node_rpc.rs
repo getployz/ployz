@@ -13,18 +13,18 @@ use ployz_test_support::ids::{
     container_id, failure_message, node_id, operation_id, revision_id, service_id, step_id,
 };
 use ployzd::deploy_worker::{
-    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
-    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
-    NodeRuntimeUnavailableReason, WireGuardEbpfPreparer,
+    NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
+    WireGuardEbpfPreparer,
 };
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::node_protocol::{
+use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use ployzd::node::protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
-    NodeWireGuardEbpfPreparePhase, NodeWireGuardEbpfPrepareRpcRequest,
+    NodeContainerRpcOk, NodeContainerRunDomainError, NodeContainerRunRpcOk,
+    NodeContainerRunRpcRequest, NodeContainerRunRpcResponse, NodeContainerRunSpec,
+    NodeRunContainerOutcome, NodeWireGuardEbpfPreparePhase, NodeWireGuardEbpfPrepareRpcRequest,
     NodeWireGuardEbpfPrepareRpcResponse,
 };
-use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::services::node_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -51,7 +51,7 @@ async fn nats_node_runtime_calls_container_run_service() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = runtime
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect("node container run succeeds");
 
@@ -80,7 +80,7 @@ async fn nats_node_runtime_maps_missing_responder_to_request_failure() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let error = runtime
-        .run_container(run_request("node_missing"))
+        .run_container(&node_id("node_missing"), run_request())
         .await
         .expect_err("missing node responder fails");
 
@@ -106,7 +106,7 @@ async fn nats_node_runtime_maps_service_error_headers() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let error = runtime
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("service error header fails");
 
@@ -132,7 +132,7 @@ async fn nats_node_runtime_reports_invalid_response_payload() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let error = runtime
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("invalid response payload fails");
 
@@ -167,7 +167,7 @@ async fn nats_node_runtime_preserves_domain_runtime_error() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let error = runtime
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("domain runtime error fails");
 
@@ -190,18 +190,20 @@ async fn nats_node_runtime_rejects_response_for_different_node() {
     let nats = test_nats().await;
     let _service =
         start_container_run_raw_service(nats.node_a.clone(), node_id("node_a"), |_request| {
-            NatsServiceResponse::ok(encode_run_response(NodeContainerRunRpcResponse::Ok {
-                node_id: node_id("node_b"),
-                outcome: NodeRunContainerOutcome::Created {
-                    container_id: container_id("ctr_wrong"),
+            NatsServiceResponse::ok(encode_run_response(NodeContainerRunRpcResponse::Ok(
+                NodeContainerRunRpcOk {
+                    node_id: node_id("node_b"),
+                    outcome: NodeRunContainerOutcome::Created {
+                        container_id: container_id("ctr_wrong"),
+                    },
                 },
-            }))
+            )))
         })
         .await;
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let error = runtime
-        .run_container(run_request("node_a"))
+        .run_container(&node_id("node_a"), run_request())
         .await
         .expect_err("wrong-node domain error fails");
 
@@ -236,7 +238,7 @@ async fn nats_node_runtime_calls_container_remove_service() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     runtime
-        .remove_container(remove_request("node_a", "ctr_old"))
+        .remove_container(&node_id("node_a"), remove_request("ctr_old"))
         .await
         .expect("node container remove succeeds");
 
@@ -271,7 +273,7 @@ async fn nats_node_runtime_preserves_remove_domain_error() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client);
 
     let error = runtime
-        .remove_container(remove_request("node_a", "ctr_old"))
+        .remove_container(&node_id("node_a"), remove_request("ctr_old"))
         .await
         .expect_err("remove domain error is preserved");
 
@@ -604,12 +606,9 @@ enum NodeRunContainerResult {
 impl NodeRunContainerResult {
     fn into_nats_response(self, node_id: NodeId) -> NatsServiceResponse {
         match self {
-            Self::Ok { outcome } => {
-                NatsServiceResponse::ok(encode_run_response(NodeContainerRunRpcResponse::Ok {
-                    node_id,
-                    outcome,
-                }))
-            }
+            Self::Ok { outcome } => NatsServiceResponse::ok(encode_run_response(
+                NodeContainerRunRpcResponse::Ok(NodeContainerRunRpcOk { node_id, outcome }),
+            )),
             Self::DomainError { error } => NatsServiceResponse::domain_error(encode_run_response(
                 NodeContainerRunRpcResponse::DomainError { node_id, error },
             )),
@@ -630,10 +629,10 @@ impl NodeRemoveContainerResult {
     fn into_nats_response(self, node_id: NodeId) -> NatsServiceResponse {
         match self {
             Self::Ok { container_id } => NatsServiceResponse::ok(encode_remove_response(
-                NodeContainerRemoveRpcResponse::Ok {
+                NodeContainerRemoveRpcResponse::Ok(NodeContainerRpcOk {
                     node_id,
                     container_id,
-                },
+                }),
             )),
             Self::DomainError { error } => {
                 NatsServiceResponse::domain_error(encode_remove_response(
@@ -696,9 +695,8 @@ fn ready_node_for_id(node_id: NodeId) -> WireGuardEbpfNodeReady {
     }
 }
 
-fn remove_request(node_id: &str, container_id: &str) -> NodeRemoveContainerRequest {
-    NodeRemoveContainerRequest {
-        node_id: self::node_id(node_id),
+fn remove_request(container_id: &str) -> NodeContainerRemoveRpcRequest {
+    NodeContainerRemoveRpcRequest {
         operation_id: operation_id("op_123"),
         container_id: self::container_id(container_id),
         expected_identity: managed_labels().identity(),
@@ -786,9 +784,8 @@ async fn test_nats() -> TestNats {
     }
 }
 
-fn run_request(node_id: &str) -> NodeRunContainerRequest {
-    NodeRunContainerRequest {
-        node_id: self::node_id(node_id),
+fn run_request() -> NodeContainerRunRpcRequest {
+    NodeContainerRunRpcRequest {
         image: image("registry.example/api:rev_2"),
         endpoint: None,
         container: managed_container_spec(),

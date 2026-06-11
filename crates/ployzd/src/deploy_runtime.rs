@@ -7,7 +7,7 @@ use crate::deploy_worker::{
     DeployHealthChecker, NodeContainerRuntime, WireGuardEbpfPreparer, execute_deploy_operation,
     load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
-use crate::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use crate::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use crate::operation_lease::with_advisory_operation_lease;
 use ployz_core::ids::OperationOwnerId;
 use ployz_core::ops::{

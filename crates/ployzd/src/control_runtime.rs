@@ -11,7 +11,7 @@ use crate::nats_authorization::{
     NatsAuthorizationRuntime, NatsAuthorizationStartError, NatsReloadRunner,
     SystemctlNatsReloadRunner,
 };
-use crate::node_rpc::NatsNodeLogsTailer;
+use crate::node::client::NatsNodeLogsTailer;
 use crate::operation_api::OperationApiHandlers;
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};

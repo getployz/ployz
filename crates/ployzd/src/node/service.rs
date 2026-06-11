@@ -1,31 +1,35 @@
 //! NATS Service API runtime wiring for node-local commands.
 
-use crate::node_agent::runtime::{
-    CreateManagedContainer, NodeContainerRunConflict, NodeContainerRunDecision,
-    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
-    decide_container_run, managed_container_labels,
-};
-use crate::node_protocol::{
+use crate::node::protocol::{
     NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
-    NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
-    NodeEnsureEndpointNetworkDomainError, NodeEnsureEndpointNetworkRpcRequest,
-    NodeEnsureEndpointNetworkRpcResponse, NodeLogsTailDomainError, NodeLogsTailRpcRequest,
-    NodeLogsTailRpcResponse, NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
-    NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
+    NodeContainerRpcOk, NodeContainerRunDomainError, NodeContainerRunRpcOk,
+    NodeContainerRunRpcRequest, NodeContainerRunRpcResponse, NodeContainerStopDomainError,
+    NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
+    NodeEnsureEndpointNetworkDomainError, NodeEnsureEndpointNetworkRpcOk,
+    NodeEnsureEndpointNetworkRpcRequest, NodeEnsureEndpointNetworkRpcResponse,
+    NodeLogsTailDomainError, NodeLogsTailResult, NodeLogsTailRpcOk, NodeLogsTailRpcRequest,
+    NodeLogsTailRpcResponse, NodeRunContainerOutcome, NodeWireGuardEbpfPrepareDomainError,
+    NodeWireGuardEbpfPreparePhase, NodeWireGuardEbpfPrepareRpcRequest,
+    NodeWireGuardEbpfPrepareRpcResponse,
 };
-use crate::node_runtime_types::{NodeLogsTailResult, NodeRunContainerOutcome};
+use crate::node::runner::{
+    CreateManagedContainer, NodeContainerRunDecision, NodeContainerRunner,
+    NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail, decide_container_run,
+    managed_container_labels,
+};
 use crate::services::{node_endpoint_spec, node_runtime_service_base};
 use ployz_core::dataplane::{
     WireGuardEbpfEndpointRoute, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
     WireGuardEbpfReady, WireGuardPeer, WireGuardPublicKey,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
+use ployz_core::ids::{ContainerId, NodeId};
+use ployz_core::ops::{FailureMessage, OperatorHint};
 use ployz_core::subjects::NodeServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,
 };
+use std::future::Future;
 
 pub async fn start_node_runtime_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
@@ -40,94 +44,84 @@ where
     L: Clone + NodeLogReader + Send + Sync + 'static,
 {
     let spec = node_runtime_service_base(&node_id);
-    let ensure_endpoint_network_endpoint = node_endpoint_spec(
-        &node_id,
-        NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
-    );
-    let container_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRun);
-    let container_stop_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerStop);
-    let container_remove_endpoint =
-        node_endpoint_spec(&node_id, NodeServiceEndpoint::ContainerRemove);
-    let wireguard_ebpf_endpoint =
-        node_endpoint_spec(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
-    let logs_tail_endpoint = node_endpoint_spec(&node_id, NodeServiceEndpoint::LogsTail);
     let mut runtime = start_nats_service(client, &spec)
         .await
         .map_err(NodeServiceRuntimeError::Nats)?;
 
-    runtime
-        .bind_endpoint(&ensure_endpoint_network_endpoint, {
-            let node_id = node_id.clone();
-            let runner = runner.clone();
-            move |request| {
-                let node_id = node_id.clone();
-                let runner = runner.clone();
-                async move { handle_ensure_endpoint_network(node_id, runner, request).await }
-            }
-        })
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
-
-    runtime
-        .bind_endpoint(&container_endpoint, {
-            let node_id = node_id.clone();
-            let runner = runner.clone();
-            move |request| {
-                let node_id = node_id.clone();
-                let runner = runner.clone();
-                async move { handle_container_run(node_id, runner, request).await }
-            }
-        })
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
-
-    runtime
-        .bind_endpoint(&container_stop_endpoint, {
-            let node_id = node_id.clone();
-            let runner = runner.clone();
-            move |request| {
-                let node_id = node_id.clone();
-                let runner = runner.clone();
-                async move { handle_container_stop(node_id, runner, request).await }
-            }
-        })
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
-
-    runtime
-        .bind_endpoint(&container_remove_endpoint, {
-            let node_id = node_id.clone();
-            let runner = runner.clone();
-            move |request| {
-                let node_id = node_id.clone();
-                let runner = runner.clone();
-                async move { handle_container_remove(node_id, runner, request).await }
-            }
-        })
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
-
-    let wireguard_node_id = node_id.clone();
-    runtime
-        .bind_endpoint(&wireguard_ebpf_endpoint, move |request| {
-            let node_id = wireguard_node_id.clone();
-            let preparer = preparer.clone();
-            async move { handle_wireguard_ebpf_prepare(node_id, preparer, request).await }
-        })
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
-
-    runtime
-        .bind_endpoint(&logs_tail_endpoint, move |request| {
-            let node_id = node_id.clone();
-            let runner = runner.clone();
-            let log_reader = log_reader.clone();
-            async move { handle_logs_tail(node_id, runner, log_reader, request).await }
-        })
-        .await
-        .map_err(NodeServiceRuntimeError::Nats)?;
+    bind_node_endpoint(
+        &mut runtime,
+        &node_id,
+        NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
+        runner.clone(),
+        handle_ensure_endpoint_network,
+    )
+    .await?;
+    bind_node_endpoint(
+        &mut runtime,
+        &node_id,
+        NodeServiceEndpoint::ContainerRun,
+        runner.clone(),
+        handle_container_run,
+    )
+    .await?;
+    bind_node_endpoint(
+        &mut runtime,
+        &node_id,
+        NodeServiceEndpoint::ContainerStop,
+        runner.clone(),
+        handle_container_stop,
+    )
+    .await?;
+    bind_node_endpoint(
+        &mut runtime,
+        &node_id,
+        NodeServiceEndpoint::ContainerRemove,
+        runner.clone(),
+        handle_container_remove,
+    )
+    .await?;
+    bind_node_endpoint(
+        &mut runtime,
+        &node_id,
+        NodeServiceEndpoint::WireGuardEbpfPrepare,
+        preparer,
+        handle_wireguard_ebpf_prepare,
+    )
+    .await?;
+    bind_node_endpoint(
+        &mut runtime,
+        &node_id,
+        NodeServiceEndpoint::LogsTail,
+        (runner, log_reader),
+        handle_logs_tail,
+    )
+    .await?;
 
     Ok(runtime)
+}
+
+/// Bind one node-scoped endpoint, handing every request the node id and a
+/// clone of the handler's state.
+async fn bind_node_endpoint<S, H, Fut>(
+    runtime: &mut RunningNatsService,
+    node_id: &NodeId,
+    endpoint: NodeServiceEndpoint,
+    state: S,
+    handler: H,
+) -> Result<(), NodeServiceRuntimeError>
+where
+    S: Clone + Send + Sync + 'static,
+    H: Fn(NodeId, S, NatsServiceRequest) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = NatsServiceResponse> + Send + 'static,
+{
+    let spec = node_endpoint_spec(node_id, endpoint);
+    let node_id = node_id.clone();
+    runtime
+        .bind_endpoint(&spec, move |request| {
+            handler(node_id.clone(), state.clone(), request)
+        })
+        .await
+        .map_err(NodeServiceRuntimeError::Nats)
 }
 
 async fn handle_ensure_endpoint_network<R>(
@@ -143,7 +137,9 @@ where
     }
 
     match runner.ensure_endpoint_network().await {
-        Ok(()) => node_success(NodeEnsureEndpointNetworkRpcResponse::Ok { node_id }),
+        Ok(()) => node_success(NodeEnsureEndpointNetworkRpcResponse::Ok(
+            NodeEnsureEndpointNetworkRpcOk { node_id },
+        )),
         Err(NodeContainerRunnerError::EnsureEndpointNetwork { message }) => {
             node_domain_error(NodeEnsureEndpointNetworkRpcResponse::DomainError {
                 node_id,
@@ -185,19 +181,48 @@ where
                 .await
             {
                 Ok(container_id) => match runner.start_managed_container(&container_id).await {
-                    Ok(()) => node_success(container_created_response(node_id, container_id)),
-                    Err(error) => created_container_start_error(node_id, container_id, error),
+                    Ok(()) => node_success(container_run_ok(
+                        node_id,
+                        NodeRunContainerOutcome::Created { container_id },
+                    )),
+                    Err(error) => container_start_error(
+                        node_id,
+                        container_id,
+                        error,
+                        |container_id, message, inspect_hint| {
+                            NodeContainerRunDomainError::CreatedContainerStartFailed {
+                                container_id,
+                                message,
+                                inspect_hint,
+                            }
+                        },
+                    ),
                 },
                 Err(error) => runner_error(error),
             }
         }
-        NodeContainerRunDecision::ReuseRunning { container_id } => {
-            node_success(container_reused_running_response(node_id, container_id))
-        }
+        NodeContainerRunDecision::ReuseRunning { container_id } => node_success(container_run_ok(
+            node_id,
+            NodeRunContainerOutcome::ReusedRunning { container_id },
+        )),
         NodeContainerRunDecision::StartExisting { container_id } => {
             match runner.start_managed_container(&container_id).await {
-                Ok(()) => node_success(container_started_existing_response(node_id, container_id)),
-                Err(error) => existing_container_start_error(node_id, container_id, error),
+                Ok(()) => node_success(container_run_ok(
+                    node_id,
+                    NodeRunContainerOutcome::StartedExisting { container_id },
+                )),
+                Err(error) => container_start_error(
+                    node_id,
+                    container_id,
+                    error,
+                    |container_id, message, inspect_hint| {
+                        NodeContainerRunDomainError::ExistingContainerStartFailed {
+                            container_id,
+                            message,
+                            inspect_hint,
+                        }
+                    },
+                ),
             }
         }
         NodeContainerRunDecision::NotStartable {
@@ -214,18 +239,27 @@ where
             },
         }),
         NodeContainerRunDecision::Conflict(conflict) => {
-            node_domain_error(container_conflict_response(node_id, conflict))
+            node_domain_error(NodeContainerRunRpcResponse::DomainError {
+                node_id,
+                error: NodeContainerRunDomainError::OperationStepConflict {
+                    container_id: conflict.container_id,
+                    expected: conflict.expected,
+                    actual: conflict.actual,
+                },
+            })
         }
         NodeContainerRunDecision::Ambiguous {
             operation_id,
             step_id,
             container_ids,
-        } => node_domain_error(container_ambiguous_response(
+        } => node_domain_error(NodeContainerRunRpcResponse::DomainError {
             node_id,
-            operation_id,
-            step_id,
-            container_ids,
-        )),
+            error: NodeContainerRunDomainError::OperationStepAmbiguous {
+                operation_id,
+                step_id,
+                container_ids,
+            },
+        }),
     }
 }
 
@@ -246,10 +280,10 @@ where
         .remove_managed_container(&request.container_id, &request.expected_identity)
         .await
     {
-        Ok(()) => node_success(NodeContainerRemoveRpcResponse::Ok {
+        Ok(()) => node_success(NodeContainerRemoveRpcResponse::Ok(NodeContainerRpcOk {
             node_id,
             container_id: request.container_id,
-        }),
+        })),
         Err(NodeContainerRunnerError::Remove {
             container_id,
             message,
@@ -282,10 +316,10 @@ where
         .stop_managed_container(&request.container_id, &request.expected_identity)
         .await
     {
-        Ok(()) => node_success(NodeContainerStopRpcResponse::Ok {
+        Ok(()) => node_success(NodeContainerStopRpcResponse::Ok(NodeContainerRpcOk {
             node_id,
             container_id: request.container_id,
-        }),
+        })),
         Err(NodeContainerRunnerError::Stop {
             container_id,
             message,
@@ -303,14 +337,14 @@ where
 
 async fn handle_logs_tail<R, L>(
     node_id: NodeId,
-    runner: R,
-    log_reader: L,
+    ports: (R, L),
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
     R: NodeContainerRunner,
     L: NodeLogReader,
 {
+    let (runner, log_reader) = ports;
     let request = match decode_json_request::<NodeLogsTailRpcRequest>(&request) {
         Ok(request) => request,
         Err(response) => return response,
@@ -336,14 +370,16 @@ where
         .tail_container_logs(&request.container_id, request.tail_lines)
         .await
     {
-        Ok(NodeLogTail { text, truncated }) => node_success(NodeLogsTailRpcResponse::Ok {
-            value: NodeLogsTailResult {
-                node_id,
-                container_id: request.container_id,
-                text,
-                truncated,
-            },
-        }),
+        Ok(NodeLogTail { text, truncated }) => {
+            node_success(NodeLogsTailRpcResponse::Ok(NodeLogsTailRpcOk {
+                value: NodeLogsTailResult {
+                    node_id,
+                    container_id: request.container_id,
+                    text,
+                    truncated,
+                },
+            }))
+        }
         Err(NodeLogReaderError::NotFound { container_id }) => {
             node_domain_error(NodeLogsTailRpcResponse::DomainError {
                 node_id,
@@ -363,64 +399,11 @@ where
     }
 }
 
-fn container_created_response(
+fn container_run_ok(
     node_id: NodeId,
-    container_id: ContainerId,
+    outcome: NodeRunContainerOutcome,
 ) -> NodeContainerRunRpcResponse {
-    NodeContainerRunRpcResponse::Ok {
-        node_id,
-        outcome: NodeRunContainerOutcome::Created { container_id },
-    }
-}
-
-fn container_reused_running_response(
-    node_id: NodeId,
-    container_id: ContainerId,
-) -> NodeContainerRunRpcResponse {
-    NodeContainerRunRpcResponse::Ok {
-        node_id,
-        outcome: NodeRunContainerOutcome::ReusedRunning { container_id },
-    }
-}
-
-fn container_started_existing_response(
-    node_id: NodeId,
-    container_id: ContainerId,
-) -> NodeContainerRunRpcResponse {
-    NodeContainerRunRpcResponse::Ok {
-        node_id,
-        outcome: NodeRunContainerOutcome::StartedExisting { container_id },
-    }
-}
-
-fn container_conflict_response(
-    node_id: NodeId,
-    conflict: NodeContainerRunConflict,
-) -> NodeContainerRunRpcResponse {
-    NodeContainerRunRpcResponse::DomainError {
-        node_id,
-        error: NodeContainerRunDomainError::OperationStepConflict {
-            container_id: conflict.container_id,
-            expected: conflict.expected,
-            actual: conflict.actual,
-        },
-    }
-}
-
-fn container_ambiguous_response(
-    node_id: NodeId,
-    operation_id: OperationId,
-    step_id: StepId,
-    container_ids: Vec<ContainerId>,
-) -> NodeContainerRunRpcResponse {
-    NodeContainerRunRpcResponse::DomainError {
-        node_id,
-        error: NodeContainerRunDomainError::OperationStepAmbiguous {
-            operation_id,
-            step_id,
-            container_ids,
-        },
-    }
+    NodeContainerRunRpcResponse::Ok(NodeContainerRunRpcOk { node_id, outcome })
 }
 
 fn node_success(response: impl serde::Serialize) -> NatsServiceResponse {
@@ -456,20 +439,23 @@ fn runner_error(error: NodeContainerRunnerError) -> NatsServiceResponse {
     }
 }
 
-fn created_container_start_error(
+/// Map a start failure to the endpoint's domain error, parameterized by which
+/// start-failed variant (created vs existing) the caller is reporting.
+fn container_start_error(
     node_id: NodeId,
     container_id: ContainerId,
     error: NodeContainerRunnerError,
+    start_failed: impl FnOnce(ContainerId, FailureMessage, OperatorHint) -> NodeContainerRunDomainError,
 ) -> NatsServiceResponse {
     match error {
         NodeContainerRunnerError::Start { message, .. } => {
             node_domain_error(NodeContainerRunRpcResponse::DomainError {
                 node_id,
-                error: NodeContainerRunDomainError::CreatedContainerStartFailed {
-                    container_id: container_id.clone(),
-                    message: failure_message(format!("container start failed: {message}")),
-                    inspect_hint: inspect_hint(&container_id),
-                },
+                error: start_failed(
+                    container_id.clone(),
+                    failure_message(format!("container start failed: {message}")),
+                    inspect_hint(&container_id),
+                ),
             })
         }
         error @ (NodeContainerRunnerError::ListExisting { .. }
@@ -480,52 +466,25 @@ fn created_container_start_error(
     }
 }
 
-fn existing_container_start_error(
-    node_id: NodeId,
-    container_id: ContainerId,
-    error: NodeContainerRunnerError,
-) -> NatsServiceResponse {
-    match error {
-        NodeContainerRunnerError::Start { message, .. } => {
-            node_domain_error(NodeContainerRunRpcResponse::DomainError {
-                node_id,
-                error: NodeContainerRunDomainError::ExistingContainerStartFailed {
-                    container_id: container_id.clone(),
-                    message: failure_message(format!("container start failed: {message}")),
-                    inspect_hint: inspect_hint(&container_id),
-                },
-            })
-        }
-        error @ (NodeContainerRunnerError::ListExisting { .. }
-        | NodeContainerRunnerError::EnsureEndpointNetwork { .. }
-        | NodeContainerRunnerError::Create { .. }
-        | NodeContainerRunnerError::Stop { .. }
-        | NodeContainerRunnerError::Remove { .. }) => runner_error(error),
-    }
+fn failure_message(value: impl Into<String>) -> FailureMessage {
+    FailureMessage::try_new(value).expect("generated failure message is non-empty")
 }
 
-fn failure_message(value: impl Into<String>) -> ployz_core::ops::FailureMessage {
-    ployz_core::ops::FailureMessage::try_new(value).expect("generated failure message is non-empty")
-}
-
-fn inspect_hint(container_id: &ContainerId) -> ployz_core::ops::OperatorHint {
-    ployz_core::ops::OperatorHint::try_new(format!(
-        "ployz container inspect {}",
-        container_id.as_str()
-    ))
-    .expect("generated inspect hint is non-empty")
+fn inspect_hint(container_id: &ContainerId) -> OperatorHint {
+    OperatorHint::try_new(format!("ployz container inspect {}", container_id.as_str()))
+        .expect("generated inspect hint is non-empty")
 }
 
 pub trait NodeWireGuardEbpfPreparer {
     fn read_wireguard_public_key(
         &self,
-    ) -> impl std::future::Future<Output = Result<WireGuardPublicKey, WireGuardEbpfPrepareError>> + Send;
+    ) -> impl Future<Output = Result<WireGuardPublicKey, WireGuardEbpfPrepareError>> + Send;
 
     fn prepare_wireguard_ebpf(
         &self,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
-    ) -> impl std::future::Future<Output = Result<WireGuardEbpfReady, WireGuardEbpfPrepareError>> + Send;
+    ) -> impl Future<Output = Result<WireGuardEbpfReady, WireGuardEbpfPrepareError>> + Send;
 }
 
 async fn handle_wireguard_ebpf_prepare<P>(

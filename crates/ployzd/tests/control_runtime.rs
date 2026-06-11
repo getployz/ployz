@@ -28,7 +28,7 @@ use ployz_sdk_types::{
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::node_service_runtime::start_node_runtime_service;
+use ployzd::node::service::start_node_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};

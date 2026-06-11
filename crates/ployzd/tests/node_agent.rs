@@ -1,7 +1,7 @@
 use ployz_core::node::ManagedContainerKind;
 use ployz_test_support::ids::{container_id, operation_id, revision_id, service_id, step_id};
 use ployzd::docker::labels::ManagedContainerLabels;
-use ployzd::node_agent::runtime::{
+use ployzd::node::runner::{
     ExistingManagedContainer, ExistingManagedContainerState, NodeContainerRunConflict,
     NodeContainerRunDecision, decide_container_run,
 };

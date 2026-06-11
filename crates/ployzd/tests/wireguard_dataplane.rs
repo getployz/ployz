@@ -6,14 +6,13 @@ use ployz_core::dataplane::{
 use ployz_test_support::ids::{node_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::dataplane_runtime::HostWireGuardEbpfPreparer;
-use ployzd::deploy_worker::{
-    NodeContainerRuntime, NodeEnsureEndpointNetworkRequest, WireGuardEbpfPreparer,
-};
+use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::runner::DockerManagedContainerRunner;
-use ployzd::node_agent::runtime::NodeContainerRunner;
-use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node_service_runtime::NodeWireGuardEbpfPreparer;
-use ployzd::node_service_runtime::start_node_runtime_service;
+use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use ployzd::node::protocol::NodeEnsureEndpointNetworkRpcRequest;
+use ployzd::node::runner::NodeContainerRunner;
+use ployzd::node::service::NodeWireGuardEbpfPreparer;
+use ployzd::node::service::start_node_runtime_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -124,10 +123,12 @@ async fn local_privileged_node_service_prepares_real_docker_dataplane() {
     let mut runtime = NatsNodeContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_secs(30));
     runtime
-        .ensure_endpoint_network(NodeEnsureEndpointNetworkRequest {
-            node_id: node_id.clone(),
-            operation_id: operation_id("op_123"),
-        })
+        .ensure_endpoint_network(
+            &node_id,
+            NodeEnsureEndpointNetworkRpcRequest {
+                operation_id: operation_id("op_123"),
+            },
+        )
         .await
         .expect("endpoint network is created through node service");
     command_ok(

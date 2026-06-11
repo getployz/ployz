@@ -36,12 +36,12 @@ use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::deploy_worker::{
-    NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerRequest,
-    NodeRuntimeUnavailableReason,
+    NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
 };
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::node_rpc::NatsNodeContainerRuntime;
-use ployzd::node_service_runtime::start_node_runtime_service;
+use ployzd::node::client::NatsNodeContainerRuntime;
+use ployzd::node::protocol::{NodeContainerRunRpcRequest, NodeContainerRunSpec};
+use ployzd::node::service::start_node_runtime_service;
 
 mod support;
 
@@ -541,7 +541,7 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
         .with_request_timeout(Duration::from_millis(200));
     assert_eq!(
         node_rpc
-            .run_container(node_rpc_probe_request("node_a"))
+            .run_container(&node_id("node_a"), node_rpc_probe_request())
             .await
             .expect_err("node service is unavailable after node runtime shutdown"),
         NodeContainerRuntimeError::Unavailable {
@@ -965,9 +965,8 @@ fn deploy_target_with_route(
     }
 }
 
-fn node_rpc_probe_request(node_id: &str) -> NodeRunContainerRequest {
-    NodeRunContainerRequest {
-        node_id: self::node_id(node_id),
+fn node_rpc_probe_request() -> NodeContainerRunRpcRequest {
+    NodeContainerRunRpcRequest {
         image: image("ghcr.io/acme/api:probe"),
         endpoint: None,
         container: NodeContainerRunSpec {

@@ -2,8 +2,8 @@
 //! logs, and operation-status reads. Nothing here writes cluster truth.
 
 use crate::controllers::OperationControllers;
-use crate::node_rpc::{NatsNodeLogsTailer, NodeLogsTailRuntimeError};
-use crate::node_runtime_types::NodeLogsTailRequest as NodeRuntimeLogsTailRequest;
+use crate::node::client::{NatsNodeLogsTailer, NodeLogsTailRuntimeError};
+use crate::node::protocol::NodeLogsTailRpcRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId};
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
@@ -69,11 +69,13 @@ impl LogsQueryRuntime {
         };
 
         self.tailer
-            .tail_logs(NodeRuntimeLogsTailRequest {
-                node_id,
-                container_id: request.container_id,
-                tail_lines: request.tail_lines.map(|lines| lines.get()),
-            })
+            .tail_logs(
+                &node_id,
+                NodeLogsTailRpcRequest {
+                    container_id: request.container_id,
+                    tail_lines: request.tail_lines.map(|lines| lines.get()),
+                },
+            )
             .await
             .map(|value| LogsTailResult {
                 node_id: value.node_id,

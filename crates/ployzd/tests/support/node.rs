@@ -9,12 +9,12 @@ use ployz_core::node::{
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use ployzd::node_agent::runtime::{
+use ployzd::node::protocol::ContainerEndpointRequest;
+use ployzd::node::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
-use ployzd::node_runtime_types::ContainerEndpointRequest;
-use ployzd::node_service_runtime::NodeWireGuardEbpfPreparer;
+use ployzd::node::service::NodeWireGuardEbpfPreparer;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]

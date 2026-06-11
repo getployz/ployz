@@ -18,7 +18,7 @@ use crate::backup_runtime::BackupOperationRuntime;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::nats_authorization::MachineCredentialMintRuntime;
-use crate::node_rpc::NatsNodeLogsTailer;
+use crate::node::client::NatsNodeLogsTailer;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use std::sync::Arc;

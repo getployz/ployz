@@ -4,19 +4,15 @@ use crate::deploy_worker::{
     NodeContainerRuntime, NodeContainerRuntimeError, NodeRuntimeUnavailableReason,
     WireGuardEbpfPreparer,
 };
-use crate::node_protocol::{
-    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRemoveRpcResponse,
-    NodeContainerRunDomainError, NodeContainerRunRpcRequest, NodeContainerRunRpcResponse,
-    NodeContainerStopDomainError, NodeContainerStopRpcRequest, NodeContainerStopRpcResponse,
-    NodeEnsureEndpointNetworkDomainError, NodeEnsureEndpointNetworkRpcRequest,
-    NodeEnsureEndpointNetworkRpcResponse, NodeLogsTailDomainError, NodeLogsTailRpcRequest,
-    NodeLogsTailRpcResponse, NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
+use crate::node::protocol::{
+    NodeContainerRemoveDomainError, NodeContainerRemoveRpcRequest, NodeContainerRpcOk,
+    NodeContainerRunDomainError, NodeContainerRunRpcOk, NodeContainerRunRpcRequest,
+    NodeContainerStopDomainError, NodeContainerStopRpcRequest,
+    NodeEnsureEndpointNetworkDomainError, NodeEnsureEndpointNetworkRpcOk,
+    NodeEnsureEndpointNetworkRpcRequest, NodeLogsTailDomainError, NodeLogsTailResult,
+    NodeLogsTailRpcOk, NodeLogsTailRpcRequest, NodeRpcResponder, NodeRpcResponse,
+    NodeRunContainerOutcome, NodeWireGuardEbpfPrepareDomainError, NodeWireGuardEbpfPreparePhase,
     NodeWireGuardEbpfPrepareRpcRequest, NodeWireGuardEbpfPrepareRpcResponse,
-};
-use crate::node_runtime_types::{
-    NodeEnsureEndpointNetworkRequest, NodeLogsTailRequest, NodeLogsTailResult,
-    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
-    NodeStopContainerRequest,
 };
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
@@ -30,6 +26,8 @@ use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 
 pub const DEFAULT_NODE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -69,6 +67,49 @@ pub enum NodeLogsTailRuntimeError {
     },
 }
 
+/// Outcome of one node RPC round trip: either the node answered with a typed
+/// domain error, or the call never produced a usable answer.
+enum NodeCallError<E> {
+    Unavailable(NodeRuntimeUnavailableReason),
+    Domain(E),
+}
+
+/// One node RPC round trip: encode the request, map transport failures, and
+/// reject answers from the wrong node — exactly once for every endpoint.
+async fn call_node<T, E>(
+    client: &async_nats::Client,
+    request_timeout: Duration,
+    node_id: &NodeId,
+    endpoint: NodeServiceEndpoint,
+    request: &impl Serialize,
+) -> Result<T, NodeCallError<E>>
+where
+    T: DeserializeOwned + NodeRpcResponder,
+    E: DeserializeOwned,
+{
+    let subject = node_service(node_id, endpoint);
+    let response =
+        request_json::<_, NodeRpcResponse<T, E>>(client, subject, request, request_timeout)
+            .await
+            .map_err(|error| NodeCallError::Unavailable(unavailable_reason(error)))?;
+
+    match response {
+        NodeRpcResponse::Ok(value) => {
+            match wrong_response_node(node_id, value.responder_node_id().clone()) {
+                Some(reason) => Err(NodeCallError::Unavailable(reason)),
+                None => Ok(value),
+            }
+        }
+        NodeRpcResponse::DomainError {
+            node_id: actual_node_id,
+            error,
+        } => match wrong_response_node(node_id, actual_node_id) {
+            Some(reason) => Err(NodeCallError::Unavailable(reason)),
+            None => Err(NodeCallError::Domain(error)),
+        },
+    }
+}
+
 impl NatsNodeLogsTailer {
     #[must_use]
     pub fn new(client: async_nats::Client) -> Self {
@@ -86,36 +127,25 @@ impl NatsNodeLogsTailer {
 
     pub async fn tail_logs(
         &self,
-        request: NodeLogsTailRequest,
+        node_id: &NodeId,
+        request: NodeLogsTailRpcRequest,
     ) -> Result<NodeLogsTailResult, NodeLogsTailRuntimeError> {
-        let node_id = request.node_id.clone();
-        let subject = node_service(&node_id, NodeServiceEndpoint::LogsTail);
-        let response = request_json::<_, NodeLogsTailRpcResponse>(
+        call_node::<NodeLogsTailRpcOk, NodeLogsTailDomainError>(
             &self.client,
-            subject,
-            &NodeLogsTailRpcRequest::from(request),
             self.request_timeout,
+            node_id,
+            NodeServiceEndpoint::LogsTail,
+            &request,
         )
         .await
-        .map_err(|error| logs_request_error(&node_id, error))?;
-
-        match response {
-            NodeLogsTailRpcResponse::Ok { value } => {
-                if let Some(reason) = wrong_response_node(&node_id, value.node_id.clone()) {
-                    return Err(NodeLogsTailRuntimeError::Unavailable { node_id, reason });
-                }
-                Ok(value)
-            }
-            NodeLogsTailRpcResponse::DomainError {
-                node_id: actual_node_id,
-                error,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeLogsTailRuntimeError::Unavailable { node_id, reason });
-                }
-                Err(error.into_runtime_error(node_id))
-            }
-        }
+        .map(|ok| ok.value)
+        .map_err(|error| match error {
+            NodeCallError::Unavailable(reason) => NodeLogsTailRuntimeError::Unavailable {
+                node_id: node_id.clone(),
+                reason,
+            },
+            NodeCallError::Domain(error) => error.into_runtime_error(node_id.clone()),
+        })
     }
 }
 
@@ -154,152 +184,92 @@ impl NatsNodeContainerRuntime {
 impl NodeContainerRuntime for NatsNodeContainerRuntime {
     async fn ensure_endpoint_network(
         &mut self,
-        request: NodeEnsureEndpointNetworkRequest,
+        node_id: &NodeId,
+        request: NodeEnsureEndpointNetworkRpcRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        let node_id = request.node_id.clone();
-        let subject = node_service(
-            &node_id,
-            NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
-        );
-        let response = request_json::<_, NodeEnsureEndpointNetworkRpcResponse>(
+        call_node::<NodeEnsureEndpointNetworkRpcOk, NodeEnsureEndpointNetworkDomainError>(
             &self.client,
-            subject,
-            &NodeEnsureEndpointNetworkRpcRequest::from(request),
             self.request_timeout,
+            node_id,
+            NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
+            &request,
         )
         .await
-        .map_err(|error| node_request_error(&node_id, error))?;
-
-        match response {
-            NodeEnsureEndpointNetworkRpcResponse::Ok {
-                node_id: actual_node_id,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Ok(())
-            }
-            NodeEnsureEndpointNetworkRpcResponse::DomainError {
-                node_id: actual_node_id,
-                error,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Err(error.into_runtime_error(node_id))
-            }
-        }
+        .map(|_| ())
+        .map_err(|error| match error {
+            NodeCallError::Unavailable(reason) => container_runtime_unavailable(node_id, reason),
+            NodeCallError::Domain(error) => error.into_runtime_error(node_id.clone()),
+        })
     }
 
     async fn run_container(
         &mut self,
-        request: NodeRunContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerRunRpcRequest,
     ) -> Result<NodeRunContainerOutcome, NodeContainerRuntimeError> {
-        let node_id = request.node_id.clone();
-        let subject = node_service(&node_id, NodeServiceEndpoint::ContainerRun);
-        let response = request_json::<_, NodeContainerRunRpcResponse>(
+        call_node::<NodeContainerRunRpcOk, NodeContainerRunDomainError>(
             &self.client,
-            subject,
-            &NodeContainerRunRpcRequest::from(request),
             self.request_timeout,
+            node_id,
+            NodeServiceEndpoint::ContainerRun,
+            &request,
         )
         .await
-        .map_err(|error| node_request_error(&node_id, error))?;
-
-        match response {
-            NodeContainerRunRpcResponse::Ok {
-                node_id: actual_node_id,
-                outcome,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Ok(outcome)
-            }
-            NodeContainerRunRpcResponse::DomainError {
-                node_id: actual_node_id,
-                error,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Err(error.into_runtime_error(node_id))
-            }
-        }
+        .map(|ok| ok.outcome)
+        .map_err(|error| match error {
+            NodeCallError::Unavailable(reason) => container_runtime_unavailable(node_id, reason),
+            NodeCallError::Domain(error) => error.into_runtime_error(node_id.clone()),
+        })
     }
 
     async fn remove_container(
         &mut self,
-        request: NodeRemoveContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerRemoveRpcRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        let node_id = request.node_id.clone();
-        let subject = node_service(&node_id, NodeServiceEndpoint::ContainerRemove);
-        let response = request_json::<_, NodeContainerRemoveRpcResponse>(
+        call_node::<NodeContainerRpcOk, NodeContainerRemoveDomainError>(
             &self.client,
-            subject,
-            &NodeContainerRemoveRpcRequest::from(request),
             self.request_timeout,
+            node_id,
+            NodeServiceEndpoint::ContainerRemove,
+            &request,
         )
         .await
-        .map_err(|error| node_request_error(&node_id, error))?;
-
-        match response {
-            NodeContainerRemoveRpcResponse::Ok {
-                node_id: actual_node_id,
-                ..
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Ok(())
-            }
-            NodeContainerRemoveRpcResponse::DomainError {
-                node_id: actual_node_id,
-                error,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Err(error.into_runtime_error(node_id))
-            }
-        }
+        .map(|_| ())
+        .map_err(|error| match error {
+            NodeCallError::Unavailable(reason) => container_runtime_unavailable(node_id, reason),
+            NodeCallError::Domain(error) => error.into_runtime_error(node_id.clone()),
+        })
     }
 
     async fn stop_container(
         &mut self,
-        request: NodeStopContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerStopRpcRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
-        let node_id = request.node_id.clone();
-        let subject = node_service(&node_id, NodeServiceEndpoint::ContainerStop);
-        let response = request_json::<_, NodeContainerStopRpcResponse>(
+        call_node::<NodeContainerRpcOk, NodeContainerStopDomainError>(
             &self.client,
-            subject,
-            &NodeContainerStopRpcRequest::from(request),
             self.request_timeout,
+            node_id,
+            NodeServiceEndpoint::ContainerStop,
+            &request,
         )
         .await
-        .map_err(|error| node_request_error(&node_id, error))?;
+        .map(|_| ())
+        .map_err(|error| match error {
+            NodeCallError::Unavailable(reason) => container_runtime_unavailable(node_id, reason),
+            NodeCallError::Domain(error) => error.into_runtime_error(node_id.clone()),
+        })
+    }
+}
 
-        match response {
-            NodeContainerStopRpcResponse::Ok {
-                node_id: actual_node_id,
-                ..
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Ok(())
-            }
-            NodeContainerStopRpcResponse::DomainError {
-                node_id: actual_node_id,
-                error,
-            } => {
-                if let Some(reason) = wrong_response_node(&node_id, actual_node_id) {
-                    return Err(NodeContainerRuntimeError::Unavailable { node_id, reason });
-                }
-                Err(error.into_runtime_error(node_id))
-            }
-        }
+fn container_runtime_unavailable(
+    node_id: &NodeId,
+    reason: NodeRuntimeUnavailableReason,
+) -> NodeContainerRuntimeError {
+    NodeContainerRuntimeError::Unavailable {
+        node_id: node_id.clone(),
+        reason,
     }
 }
 
@@ -618,59 +588,21 @@ fn wrong_response_node(
     Some(NodeRuntimeUnavailableReason::WrongResponder { actual_node_id })
 }
 
-fn node_request_error(
-    node_id: &NodeId,
-    error: NatsJsonServiceRequestError,
-) -> NodeContainerRuntimeError {
-    NodeContainerRuntimeError::Unavailable {
-        node_id: node_id.clone(),
-        reason: match error {
-            NatsJsonServiceRequestError::EncodeRequest { message } => {
-                NodeRuntimeUnavailableReason::EncodeRequest { message }
+fn unavailable_reason(error: NatsJsonServiceRequestError) -> NodeRuntimeUnavailableReason {
+    match error {
+        NatsJsonServiceRequestError::EncodeRequest { message } => {
+            NodeRuntimeUnavailableReason::EncodeRequest { message }
+        }
+        NatsJsonServiceRequestError::Request { failure } => node_request_failure_reason(failure),
+        NatsJsonServiceRequestError::Service { failure } => node_service_failure_reason(failure),
+        NatsJsonServiceRequestError::ServiceProtocol { error } => {
+            NodeRuntimeUnavailableReason::MalformedServiceError {
+                message: error.to_string(),
             }
-            NatsJsonServiceRequestError::Request { failure } => {
-                node_request_failure_reason(failure)
-            }
-            NatsJsonServiceRequestError::Service { failure } => {
-                node_service_failure_reason(failure)
-            }
-            NatsJsonServiceRequestError::ServiceProtocol { error } => {
-                NodeRuntimeUnavailableReason::MalformedServiceError {
-                    message: error.to_string(),
-                }
-            }
-            NatsJsonServiceRequestError::DecodeResponse { message } => {
-                NodeRuntimeUnavailableReason::DecodeResponse { message }
-            }
-        },
-    }
-}
-
-fn logs_request_error(
-    node_id: &NodeId,
-    error: NatsJsonServiceRequestError,
-) -> NodeLogsTailRuntimeError {
-    NodeLogsTailRuntimeError::Unavailable {
-        node_id: node_id.clone(),
-        reason: match error {
-            NatsJsonServiceRequestError::EncodeRequest { message } => {
-                NodeRuntimeUnavailableReason::EncodeRequest { message }
-            }
-            NatsJsonServiceRequestError::Request { failure } => {
-                node_request_failure_reason(failure)
-            }
-            NatsJsonServiceRequestError::Service { failure } => {
-                node_service_failure_reason(failure)
-            }
-            NatsJsonServiceRequestError::ServiceProtocol { error } => {
-                NodeRuntimeUnavailableReason::MalformedServiceError {
-                    message: error.to_string(),
-                }
-            }
-            NatsJsonServiceRequestError::DecodeResponse { message } => {
-                NodeRuntimeUnavailableReason::DecodeResponse { message }
-            }
-        },
+        }
+        NatsJsonServiceRequestError::DecodeResponse { message } => {
+            NodeRuntimeUnavailableReason::DecodeResponse { message }
+        }
     }
 }
 
@@ -712,23 +644,7 @@ fn wireguard_ebpf_request_error(
     node_id: &NodeId,
     error: NatsJsonServiceRequestError,
 ) -> WireGuardEbpfPrepareError {
-    let reason = match error {
-        NatsJsonServiceRequestError::EncodeRequest { message } => {
-            NodeRuntimeUnavailableReason::EncodeRequest { message }
-        }
-        NatsJsonServiceRequestError::Request { failure } => node_request_failure_reason(failure),
-        NatsJsonServiceRequestError::Service { failure } => node_service_failure_reason(failure),
-        NatsJsonServiceRequestError::ServiceProtocol { error } => {
-            NodeRuntimeUnavailableReason::MalformedServiceError {
-                message: error.to_string(),
-            }
-        }
-        NatsJsonServiceRequestError::DecodeResponse { message } => {
-            NodeRuntimeUnavailableReason::DecodeResponse { message }
-        }
-    };
-
-    wireguard_ebpf_unavailable(node_id, reason.failure_message())
+    wireguard_ebpf_unavailable(node_id, unavailable_reason(error).failure_message())
 }
 
 fn wireguard_ebpf_unavailable(

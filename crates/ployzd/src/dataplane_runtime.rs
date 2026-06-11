@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 
-use crate::node_service_runtime::NodeWireGuardEbpfPreparer;
+use crate::node::service::NodeWireGuardEbpfPreparer;
 
 #[path = "dataplane_runtime/host_routes.rs"]
 mod host_routes;

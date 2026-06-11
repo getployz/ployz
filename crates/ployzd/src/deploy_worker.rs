@@ -38,10 +38,9 @@ pub use preparation::{
 };
 
 use crate::docker::labels::ManagedContainerIdentity;
-pub use crate::node_runtime_types::{
-    ContainerEndpointRequest, NodeContainerRunSpec, NodeEnsureEndpointNetworkRequest,
-    NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
-    NodeStopContainerRequest,
+use crate::node::protocol::{
+    ContainerEndpointRequest, NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest,
+    NodeContainerRunSpec, NodeContainerStopRpcRequest, NodeEnsureEndpointNetworkRpcRequest,
 };
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
@@ -262,12 +261,14 @@ where
 
     let mut cleanup = Vec::new();
     for target in &plan.cleanup_containers {
-        let result = node_runtime.remove_container(NodeRemoveContainerRequest {
-            node_id: target.node_id.clone(),
-            operation_id: command.operation_id.clone(),
-            container_id: target.container_id.clone(),
-            expected_identity: cleanup_expected_identity(target),
-        });
+        let result = node_runtime.remove_container(
+            &target.node_id,
+            NodeContainerRemoveRpcRequest {
+                operation_id: command.operation_id.clone(),
+                container_id: target.container_id.clone(),
+                expected_identity: cleanup_expected_identity(target),
+            },
+        );
         let result = tokio::time::timeout(command.step_timeout(), result).await;
         match result {
             Ok(Ok(())) => cleanup.push(DeployCleanupResult::Removed(target.clone())),
@@ -299,12 +300,14 @@ where
 {
     let mut stop_failures = Vec::new();
     for container in containers {
-        let stop = node_runtime.stop_container(NodeStopContainerRequest {
-            node_id: container.node_id.clone(),
-            operation_id: command.operation_id.clone(),
-            container_id: container.container_id.clone(),
-            expected_identity: retained_container_identity(command, container),
-        });
+        let stop = node_runtime.stop_container(
+            &container.node_id,
+            NodeContainerStopRpcRequest {
+                operation_id: command.operation_id.clone(),
+                container_id: container.container_id.clone(),
+                expected_identity: retained_container_identity(command, container),
+            },
+        );
         match tokio::time::timeout(command.step_timeout(), stop).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
@@ -560,8 +563,7 @@ where
 {
     let request = command.wireguard_ebpf_prepare_request(plan);
     for node_id in request.nodes {
-        let network_request = NodeEnsureEndpointNetworkRequest {
-            node_id: node_id.clone(),
+        let network_request = NodeEnsureEndpointNetworkRpcRequest {
             operation_id: command.operation_id.clone(),
         };
         with_step_timeout(
@@ -571,7 +573,7 @@ where
             },
             async {
                 node_runtime
-                    .ensure_endpoint_network(network_request)
+                    .ensure_endpoint_network(&node_id, network_request)
                     .await
                     .map_err(DeployExecutionError::RunContainer)
             },
@@ -741,8 +743,7 @@ where
         .map(|route| ContainerEndpointRequest {
             port: route.endpoint_port,
         });
-    let request = NodeRunContainerRequest {
-        node_id: node_id.clone(),
+    let request = NodeContainerRunRpcRequest {
         image: command.request.image.clone(),
         endpoint,
         container: NodeContainerRunSpec {
@@ -755,7 +756,7 @@ where
     };
 
     node_runtime
-        .run_container(request)
+        .run_container(node_id, request)
         .await
         .map(|outcome| DeployContainer {
             node_id: node_id.clone(),

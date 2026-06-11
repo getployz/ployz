@@ -15,11 +15,12 @@ use ployzd::deploy_worker::{
     ActiveRouteCommitter, ActiveServiceCommitter, DeployCleanupResult, DeployExecutionCommand,
     DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent,
-    NodeContainerRuntime, NodeContainerRuntimeError, NodeEnsureEndpointNetworkRequest,
-    WireGuardEbpfPreparer, execute_deploy_operation,
+    NodeContainerRuntime, NodeContainerRuntimeError, WireGuardEbpfPreparer,
+    execute_deploy_operation,
 };
 use ployzd::docker::labels::ManagedContainerIdentity;
-use ployzd::node_agent::runtime::managed_container_labels;
+use ployzd::node::protocol::NodeEnsureEndpointNetworkRpcRequest;
+use ployzd::node::runner::managed_container_labels;
 use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
 
@@ -168,14 +169,18 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(
         runtime.endpoint_networks,
         vec![
-            NodeEnsureEndpointNetworkRequest {
-                node_id: node_id("node_a"),
-                operation_id: operation_id("op_123"),
-            },
-            NodeEnsureEndpointNetworkRequest {
-                node_id: node_id("node_b"),
-                operation_id: operation_id("op_123"),
-            },
+            (
+                node_id("node_a"),
+                NodeEnsureEndpointNetworkRpcRequest {
+                    operation_id: operation_id("op_123"),
+                },
+            ),
+            (
+                node_id("node_b"),
+                NodeEnsureEndpointNetworkRpcRequest {
+                    operation_id: operation_id("op_123"),
+                },
+            ),
         ]
     );
     let [wireguard_ebpf_request] = wireguard_ebpf.requests.as_slice() else {
@@ -209,13 +214,17 @@ async fn deploy_worker_runs_containers_then_completes() {
             DeployContainerForAssert::new("node_b", "ctr_2"),
         ]]
     );
-    let [first_request, second_request] = runtime.requests.as_slice() else {
+    let [
+        (first_node_id, first_request),
+        (second_node_id, second_request),
+    ] = runtime.requests.as_slice()
+    else {
         panic!("expected exactly two runtime requests");
     };
-    assert_eq!(first_request.node_id, node_id("node_a"));
+    assert_eq!(*first_node_id, node_id("node_a"));
     assert_eq!(first_request.container.operation_id, operation_id("op_123"));
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
-    assert_eq!(second_request.node_id, node_id("node_b"));
+    assert_eq!(*second_node_id, node_id("node_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
 }
 
@@ -252,10 +261,10 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
         vec![container_id("ctr_existing"), container_id("ctr_new")]
     );
     assert_eq!(runtime.requests.len(), 1);
-    let [request] = runtime.requests.as_slice() else {
+    let [(request_node_id, _)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
     };
-    assert_eq!(request.node_id, node_id("node_a"));
+    assert_eq!(*request_node_id, node_id("node_a"));
     assert_eq!(
         health.checked,
         vec![vec![
@@ -317,14 +326,16 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
 
     assert_eq!(
         runtime.removals,
-        vec![ployzd::deploy_worker::NodeRemoveContainerRequest {
-            node_id: node_id("node_b"),
-            operation_id: operation_id("op_123"),
-            container_id: container_id("ctr_old"),
-            expected_identity: cleanup_expected_identity(&cleanup_container(
-                "node_b", "ctr_old", "rev_old",
-            )),
-        }]
+        vec![(
+            node_id("node_b"),
+            ployzd::node::protocol::NodeContainerRemoveRpcRequest {
+                operation_id: operation_id("op_123"),
+                container_id: container_id("ctr_old"),
+                expected_identity: cleanup_expected_identity(&cleanup_container(
+                    "node_b", "ctr_old", "rev_old",
+                )),
+            },
+        )]
     );
     let cleanup_target = cleanup_container("node_b", "ctr_old", "rev_old");
     assert_eq!(
@@ -682,18 +693,20 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             .requests
             .iter()
             .zip([container_id("ctr_created")])
-            .map(
-                |(request, container_id)| ployzd::deploy_worker::NodeStopContainerRequest {
-                    node_id: request.node_id.clone(),
-                    operation_id: operation_id("op_123"),
-                    container_id,
-                    expected_identity: managed_container_labels(
-                        &request.container,
-                        request.endpoint.as_ref()
-                    )
-                    .identity(),
-                }
-            )
+            .map(|((request_node_id, request), container_id)| {
+                (
+                    request_node_id.clone(),
+                    ployzd::node::protocol::NodeContainerStopRpcRequest {
+                        operation_id: operation_id("op_123"),
+                        container_id,
+                        expected_identity: managed_container_labels(
+                            &request.container,
+                            request.endpoint.as_ref(),
+                        )
+                        .identity(),
+                    },
+                )
+            })
             .collect::<Vec<_>>()
     );
 }
@@ -1012,7 +1025,7 @@ async fn routed_deploy_commits_route_before_completion() {
         }]
     );
     assert_eq!(active_state.requests.len(), 1);
-    let [runtime_request] = runtime.requests.as_slice() else {
+    let [(_, runtime_request)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
     };
     assert_eq!(

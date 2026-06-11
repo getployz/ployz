@@ -1,7 +1,7 @@
 use ployz_core::dataplane::{
     WireGuardEbpfPrepareError, WireGuardEbpfPrepareReport, WireGuardEbpfPrepareRequest,
 };
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::ops::{DeployEvidence, DeployTransition};
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveServiceCommit, ActiveServiceCommitRequest,
@@ -9,10 +9,14 @@ use ployz_core::state::{
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use std::future::Future;
 
+use crate::node::protocol::{
+    NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerStopRpcRequest,
+    NodeEnsureEndpointNetworkRpcRequest, NodeRunContainerOutcome,
+};
+
 use super::{
     ActiveServiceCommitError, DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
-    NodeContainerRuntimeError, NodeEnsureEndpointNetworkRequest, NodeRemoveContainerRequest,
-    NodeRunContainerOutcome, NodeRunContainerRequest, NodeStopContainerRequest,
+    NodeContainerRuntimeError,
 };
 
 pub trait DeployOperationRecorder {
@@ -32,22 +36,26 @@ pub trait DeployOperationRecorder {
 pub trait NodeContainerRuntime {
     fn ensure_endpoint_network(
         &mut self,
-        request: NodeEnsureEndpointNetworkRequest,
+        node_id: &NodeId,
+        request: NodeEnsureEndpointNetworkRpcRequest,
     ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
 
     fn run_container(
         &mut self,
-        request: NodeRunContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerRunRpcRequest,
     ) -> impl Future<Output = Result<NodeRunContainerOutcome, NodeContainerRuntimeError>> + Send;
 
     fn remove_container(
         &mut self,
-        request: NodeRemoveContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerRemoveRpcRequest,
     ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
 
     fn stop_container(
         &mut self,
-        request: NodeStopContainerRequest,
+        node_id: &NodeId,
+        request: NodeContainerStopRpcRequest,
     ) -> impl Future<Output = Result<(), NodeContainerRuntimeError>> + Send;
 }
 

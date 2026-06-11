@@ -3,11 +3,11 @@
 use crate::config::NodeProcessConfig;
 use crate::dataplane_runtime::HostWireGuardEbpfPreparer;
 use crate::docker::runner::LazyLocalDockerManagedContainerRunner;
-use crate::node_agent::runtime::{
+use crate::node::runner::{
     ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError, NodeLogReader,
 };
+use crate::node::service::{NodeServiceRuntimeError, start_node_runtime_service};
 use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::node_service_runtime::{NodeServiceRuntimeError, start_node_runtime_service};
 use ployz_core::ids::NodeId;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
@@ -93,7 +93,7 @@ pub async fn start_node_process_runtime_with_ports<R, P, L>(
 ) -> Result<RunningNodeProcessRuntime, NodeProcessRuntimeError>
 where
     R: Clone + NodeContainerRunner + Send + Sync + 'static,
-    P: Clone + crate::node_service_runtime::NodeWireGuardEbpfPreparer + Send + Sync + 'static,
+    P: Clone + crate::node::service::NodeWireGuardEbpfPreparer + Send + Sync + 'static,
     L: Clone + NodeLogReader + Send + Sync + 'static,
 {
     let node_service = start_node_runtime_service(
@@ -406,7 +406,7 @@ impl std::error::Error for NodeProcessRuntimeError {}
 mod tests {
     use super::*;
     use crate::docker::labels::ManagedContainerIdentity;
-    use crate::node_agent::runtime::{
+    use crate::node::runner::{
         CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner,
         NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
     };
@@ -687,7 +687,7 @@ mod tests {
     #[derive(Clone)]
     struct ReadyWireGuardEbpf;
 
-    impl crate::node_service_runtime::NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+    impl crate::node::service::NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
         async fn read_wireguard_public_key(
             &self,
         ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {
