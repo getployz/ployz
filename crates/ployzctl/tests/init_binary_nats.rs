@@ -1,9 +1,6 @@
 use std::process::{Command, Output};
-use std::time::Duration;
 
-use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -13,16 +10,15 @@ use ployz_sdk_types::{
     MachineAddGateway, OperationApiResponse,
     operation_api::{InitFirstNodeActivateApi, OperationApiContract},
 };
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::ids::{node_id, operation_id};
+use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binary_init_can_activate_first_machine_without_running_keeper() {
-    let server = SecuredTestNats::start().await.expect("secured test nats");
-    let client = connect_authenticated(&server.controller_config(), Duration::from_secs(5))
-        .await
-        .expect("connect to test nats");
-    let env = CliNatsEnv::new(&server);
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
     let spec = test_api_service(InitFirstNodeActivateApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
@@ -51,8 +47,8 @@ async fn binary_init_can_activate_first_machine_without_running_keeper() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
-        .arg(server.client_url().as_str())
-        .env(PLOYZ_NATS_CA_FILE_ENV, server.ca_path())
+        .arg(server.server.client_url().as_str())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .args([
             "init",
@@ -121,14 +117,6 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
         OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
         OperationApiEndpointExecution::Query => EndpointExecution::Query,
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }
 
 fn stdout(output: &Output) -> String {

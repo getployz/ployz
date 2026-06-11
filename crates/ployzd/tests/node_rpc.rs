@@ -5,11 +5,13 @@ use ployz_core::dataplane::{
     WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::ManagedContainerKind;
-use ployz_core::ops::FailureMessage;
 use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
+use ployz_test_support::ids::{
+    container_id, failure_message, node_id, operation_id, revision_id, service_id, step_id,
+};
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
     NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
@@ -26,8 +28,6 @@ use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::services::node_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
-
-const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::test]
 async fn nats_node_runtime_calls_container_run_service() {
@@ -754,17 +754,13 @@ fn endpoint_routes(nodes: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEn
         .collect()
 }
 
-fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
-}
-
 fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
     ployz_core::ops::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
         .expect("valid inspect hint")
 }
 
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
     /// Node principals: the node-service stub side.
@@ -773,34 +769,14 @@ struct TestNats {
 }
 
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[
+    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[
         node_id("node_a"),
         node_id("node_b"),
     ])
-    .await
-    .expect("secured test nats starts");
-    let client = ployz_nats::connect::connect_authenticated(
-        &nats.controller_config(),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("controller connects");
-    let node_a = ployz_nats::connect::connect_authenticated(
-        &nats
-            .node_config(&node_id("node_a"))
-            .expect("fixture minted node_a credentials"),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("node_a connects");
-    let node_b = ployz_nats::connect::connect_authenticated(
-        &nats
-            .node_config(&node_id("node_b"))
-            .expect("fixture minted node_b credentials"),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("node_b connects");
+    .await;
+    let client = nats.controller.clone();
+    let node_a = nats.node_client(&node_id("node_a")).await;
+    let node_b = nats.node_client(&node_id("node_b")).await;
 
     TestNats {
         _nats: nats,
@@ -838,30 +814,6 @@ fn managed_labels() -> ManagedContainerLabels {
         kind: ManagedContainerKind::Service,
         endpoint_port: None,
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }
 
 fn image(value: &str) -> ImageReference {

@@ -1,3 +1,4 @@
+use ployz_test_support::fs::make_executable;
 use std::fs;
 use std::process::{Command, Output};
 
@@ -7,15 +8,16 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, NodeId, OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
     OperationOwnerLease, OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
     ReplayedOperationEvent,
 };
 use ployz_core::state::ActiveServiceState;
 use ployz_sdk_types::{LogsTailLines, MachineAddGateway, ServiceSnapshot};
+use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
 use ployzctl::commands::machine::MachineName;
 use ployzctl::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
@@ -1062,18 +1064,6 @@ fn first_node_install_spec_json(ployzd_source: &str, node_public_ip: Option<&str
     )
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
-}
-
 fn run_ployzctl(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .args(args)
@@ -1099,17 +1089,3 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     fs::create_dir_all(&dir).expect("temp dir can be created");
     dir
 }
-
-#[cfg(unix)]
-fn make_executable(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)
-        .expect("fake keeper metadata can be read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).expect("fake keeper can be executable");
-}
-
-#[cfg(not(unix))]
-fn make_executable(_path: &std::path::Path) {}

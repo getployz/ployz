@@ -1,13 +1,9 @@
 use std::process::{Command, Output};
-use std::time::Duration;
 
 use ployz_core::deploy::{ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::ops::{
-    EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
-};
+use ployz_core::ids::{OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ops::{OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -16,16 +12,15 @@ use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse,
     operation_api::{DeploySubmitApi, OperationApiContract},
 };
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::ids::{event_sequence, operation_id};
+use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binary_deploy_detach_calls_nats_service() {
-    let server = SecuredTestNats::start().await.expect("secured test nats");
-    let client = connect_authenticated(&server.controller_config(), Duration::from_secs(5))
-        .await
-        .expect("connect to test nats");
-    let env = CliNatsEnv::new(&server);
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
     let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
@@ -70,8 +65,8 @@ async fn binary_deploy_detach_calls_nats_service() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
-        .arg(server.client_url().as_str())
-        .env(PLOYZ_NATS_CA_FILE_ENV, server.ca_path())
+        .arg(server.server.client_url().as_str())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .args(detached_deploy_args())
         .output()
@@ -145,14 +140,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
             OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
         ),
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn detached_deploy_args() -> [&'static str; 14] {

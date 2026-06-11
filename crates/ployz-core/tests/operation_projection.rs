@@ -1,16 +1,18 @@
 use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
-use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure,
-    MachineAddOperationState, MachineName, MachineReadinessCheck, MachineReadinessEvidence,
+    MachineAddOperationState, MachineReadinessCheck, MachineReadinessEvidence,
 };
 use ployz_core::ops::{
     BackupOperationState, BackupRunningStage, DeployCompletionOutcome, DeployOperationState,
-    DeployProjection, DeployRunningStage, DeployTransition, EventSequence, FailureMessage,
-    OperationEvent, OperationEventProjection, OperationStatus, ProjectionOperationState,
-    StatusProjectionError, project_deploy_transition, project_operation_event,
+    DeployProjection, DeployRunningStage, DeployTransition, FailureMessage, OperationEvent,
+    OperationEventProjection, OperationStatus, ProjectionOperationState, StatusProjectionError,
+    project_deploy_transition, project_operation_event,
 };
 use ployz_core::roles::FirstNodeGateway;
+use ployz_test_support::ids::{
+    container_id, event_sequence, machine_name, node_id, operation_id, service_id,
+};
 
 #[test]
 fn deploy_transition_updates_status_sequence() {
@@ -868,24 +870,8 @@ fn backup_artifact() -> ployz_core::backup::BackupArtifact {
     )
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
 fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn machine_name(value: &str) -> MachineName {
-    MachineName::try_new(value).expect("valid machine name")
 }
 
 fn issued_join_token() -> IssuedJoinToken {
@@ -904,14 +890,6 @@ fn machine_add_pending_status() -> OperationStatus {
         issued_join_token(),
         event_sequence(7),
     )
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn container_started_event() -> OperationEvent {

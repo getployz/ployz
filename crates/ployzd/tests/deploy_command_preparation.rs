@@ -1,10 +1,11 @@
 use ployz_core::deploy::{DeployCleanupContainer, DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::StepId;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
 use ployz_core::state::{ActiveServiceState, ExpectedActiveService};
+use ployz_test_support::ids::{container_id, node_id, operation_id, revision_id, service_id};
 use ployzd::deploy_worker::{DeployExecutionFacts, prepare_deploy_execution_command};
 use std::time::Duration;
 
@@ -126,26 +127,6 @@ fn deploy_request() -> DeployRequest {
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         route: None,
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
 }
 
 fn existing_service_replica(

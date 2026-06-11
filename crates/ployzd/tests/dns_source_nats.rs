@@ -1,13 +1,13 @@
 use async_nats::jetstream;
-use ployz_core::ids::{NodeId, RevisionId, ServiceId};
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveRouteState, ExpectedActiveRoute, GatewayServingStatus,
     GatewayStatusObservation, NodePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
+use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::ids::{node_id, revision_id, route_hostname, route_port, service_id};
 use ployzd::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState,
     project_dns,
@@ -199,7 +199,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 }
 
 struct TestNats {
-    nats: ployz_test_support::nats::SecuredTestNats,
+    nats: ployz_test_support::nats::TestNats,
     /// Controller principal: route-state writes and bucket administration.
     jetstream: jetstream::Context,
     /// The DNS machine's Node principal: the read side (DNS runs as the
@@ -211,59 +211,26 @@ impl TestNats {
     /// The observation store connected as the given node — each node may
     /// only write its own observation keys.
     async fn node_observations(&self, node_id_value: &str) -> AsyncNatsObservationStore {
-        let node_client = ployz_nats::connect::connect_authenticated(
-            &self
-                .nats
-                .node_config(&node_id(node_id_value))
-                .expect("fixture minted the node credentials"),
-            TEST_NATS_CONNECT_TIMEOUT,
-        )
-        .await
-        .expect("observing node connects");
+        let node_client = self.nats.node_client(&node_id(node_id_value)).await;
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client))
             .await
             .expect("open node observation store")
     }
 }
 
-const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 async fn test_nats() -> TestNats {
     let dns_node = node_id("dns_node");
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[
+    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[
         dns_node.clone(),
         node_id("gateway_1"),
         node_id("gateway_2"),
         node_id("gateway_3"),
         node_id("edge_4"),
     ])
-    .await
-    .expect("secured test nats starts");
-    let client = ployz_nats::connect::connect_authenticated(
-        &nats.controller_config(),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("controller connects");
-    let node_client = ployz_nats::connect::connect_authenticated(
-        &nats
-            .node_config(&dns_node)
-            .expect("fixture minted dns_node credentials"),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("dns node connects");
-    let jetstream = jetstream::new(client);
-    let node_jetstream = jetstream::new(node_client);
-    for bucket in [KV_CORE_BUCKET, KV_OBS_BUCKET] {
-        jetstream
-            .create_key_value(jetstream::kv::Config {
-                bucket: bucket.to_owned(),
-                ..Default::default()
-            })
-            .await
-            .expect("create key value bucket");
-    }
+    .await;
+    nats.bootstrap_resources().await;
+    let node_jetstream = jetstream::new(nats.node_client(&dns_node).await);
+    let jetstream = nats.jetstream.clone();
 
     TestNats {
         nats,
@@ -315,24 +282,4 @@ fn dns_record<const N: usize>(hostname: &str, answers: [DnsAnswer; N]) -> DnsRec
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
-}
-
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
 }

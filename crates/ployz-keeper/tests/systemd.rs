@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
-use ployz_core::ids::NodeId;
 use ployz_core::roles::DaemonProcessRole;
-use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest,
-};
+use ployz_keeper::artifacts::PloyzdArtifactTarget;
 use ployz_keeper::systemd::{
     NatsServerUnit, NatsServerUnitTarget, PloyzdRoleEnvironmentFile, PloyzdRoleUnit,
     SupervisorUnitFileError, role_unit_name,
+};
+use ployz_test_support::ids::node_id;
+use ployz_test_support::keeper::{
+    artifact_source as source, artifact_version as version, ployzd_artifact,
+    sha256_digest as digest,
 };
 
 #[test]
@@ -145,32 +147,6 @@ fn role_units_quote_paths_that_need_systemd_escaping() {
 fn role_env() -> PloyzdRoleEnvironmentFile {
     PloyzdRoleEnvironmentFile::new(PathBuf::from("/etc/ployz/ployzd.env"))
         .expect("valid role environment path")
-}
-
-fn ployzd_artifact() -> PloyzdArtifactTarget {
-    PloyzdArtifactTarget::new(
-        version("0.1.0"),
-        source("https://example.invalid/ployzd"),
-        digest(PLOYZD_DIGEST),
-        PathBuf::from("/usr/local/bin/ployzd"),
-    )
-    .expect("valid ployzd artifact")
-}
-
-fn version(value: &str) -> ArtifactVersion {
-    ArtifactVersion::try_new(value).expect("valid artifact version")
-}
-
-fn source(value: &str) -> ArtifactSource {
-    ArtifactSource::try_new(value).expect("valid artifact source")
-}
-
-fn digest(value: &str) -> Sha256Digest {
-    Sha256Digest::try_new(value).expect("valid artifact digest")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }
 
 const PLOYZD_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

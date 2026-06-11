@@ -1,4 +1,3 @@
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NATS_SERVICE_ERROR_CODE_HEADER, NATS_SERVICE_ERROR_HEADER,
     NatsJsonServiceRequestError, NatsServiceError, NatsServiceErrorCode,
@@ -8,33 +7,23 @@ use ployz_nats::service_runtime::{
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
-use ployz_test_support::nats::SecuredTestNats;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// A secured server with the production service split: the Controller hosts
 /// API endpoints and the User requests them.
 struct TestNats {
-    _server: SecuredTestNats,
+    _server: ployz_test_support::nats::TestNats,
     service_client: async_nats::Client,
     request_client: async_nats::Client,
 }
 
 async fn test_nats() -> TestNats {
-    let server = SecuredTestNats::start()
-        .await
-        .expect("secured test nats starts");
-    let service_client =
-        connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-            .await
-            .expect("controller connects");
-    let request_client = connect_authenticated(&server.user_config(), TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("user connects");
+    let server = ployz_test_support::nats::TestNats::start().await;
+    let service_client = server.controller.clone();
+    let request_client = server.user.clone();
 
     TestNats {
         _server: server,

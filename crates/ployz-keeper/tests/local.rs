@@ -1,14 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::NodeId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
-    EbpfCtlArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    ArtifactSource, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget,
+    NatsServerArtifactTarget, PloyzdArtifactTarget,
 };
 use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
@@ -35,6 +35,8 @@ use ployz_keeper::systemd::{
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
+use ployz_test_support::ids::{failure_message, node_id, operation_id};
+use ployz_test_support::keeper::{artifact_version as version, sha256_digest as digest};
 use std::sync::OnceLock;
 
 #[test]
@@ -964,26 +966,6 @@ fn artifact_source(path: &Path) -> ArtifactSource {
     ArtifactSource::try_new(path.to_str().expect("temp path is utf-8")).expect("valid source")
 }
 
-fn version(value: &str) -> ArtifactVersion {
-    ArtifactVersion::try_new(value).expect("valid version")
-}
-
-fn digest(value: &str) -> Sha256Digest {
-    Sha256Digest::try_new(value).expect("valid digest")
-}
-
-fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
 fn temp_dir(prefix: &str) -> PathBuf {
     let unique = format!(
         "{}-{}",
@@ -998,20 +980,9 @@ fn temp_dir(prefix: &str) -> PathBuf {
     path
 }
 
-#[cfg(unix)]
 fn assert_secret_file_mode(path: PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = fs::metadata(path)
-        .expect("secret file metadata is readable")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600);
+    ployz_test_support::fs::assert_file_mode(&path, 0o600);
 }
-
-#[cfg(not(unix))]
-fn assert_secret_file_mode(_path: PathBuf) {}
 
 const PLOYZ_NEWLINE_SHA256: &str =
     "2dcc3bb1142455239d3b3391d9569a8ce0fbdfb906cd0434329e5dd736592138";

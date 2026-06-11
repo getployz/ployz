@@ -18,8 +18,8 @@ use ployz_nats::connect::{NatsConnectConfig, authenticated_connect_options};
 use ployz_sdk_types::{MachineInspectRequest, MachineSnapshot, OpsStatusRequest};
 use ployzd::docker::labels::MANAGED_LABEL;
 
-use super::super::ids::{event_replay_limit, event_sequence, node_id};
 use super::formation::CoreContext;
+use ployz_test_support::ids::{event_replay_limit, event_sequence, node_id};
 
 /// Per-request budget for HTTP probes against a published gateway port.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);

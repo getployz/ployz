@@ -10,10 +10,11 @@ publish = false
 workspace = true
 
 [dependencies]
+async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "service"] }
 ployz-core.workspace = true
+ployz-keeper = { path = "../ployz-keeper" }
 ployz-nats.workspace = true
-ployzd = { path = "../ployzd" }
-rcgen = "0.14"
+ployz-sdk-types.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["time"] }

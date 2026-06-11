@@ -4,15 +4,14 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::{env, fs};
 
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::NodeId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
-    ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
-    DataplaneArtifactTargets, EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget,
-    NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    ArtifactKind, ArtifactTarget, ArtifactTargetError, DataplaneArtifactTargets,
+    EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::cli::{KeeperCommand, load_command};
 use ployz_keeper::executor::{
@@ -36,6 +35,11 @@ use ployz_keeper::steps::{
 use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
+use ployz_test_support::ids::{failure_message, node_id, operation_id};
+use ployz_test_support::keeper::{
+    artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,
+    sha256_digest as digest,
+};
 use std::sync::OnceLock;
 
 #[test]
@@ -1064,26 +1068,6 @@ impl Default for RecordingEffects {
     }
 }
 
-fn ployzd_artifact() -> PloyzdArtifactTarget {
-    PloyzdArtifactTarget::new(
-        version("0.1.0"),
-        source("https://example.invalid/ployzd"),
-        digest(PLOYZD_DIGEST),
-        PathBuf::from("/usr/local/bin/ployzd"),
-    )
-    .expect("valid ployzd artifact")
-}
-
-fn nats_server_artifact() -> NatsServerArtifactTarget {
-    NatsServerArtifactTarget::new(
-        version("2.12.0"),
-        source("https://example.invalid/nats-server"),
-        digest(PLOYZD_DIGEST),
-        PathBuf::from("/usr/local/bin/nats-server"),
-    )
-    .expect("valid nats-server artifact")
-}
-
 fn ebpf_bytecode_artifact() -> EbpfBytecodeArtifactTarget {
     EbpfBytecodeArtifactTarget::new(
         version("0.1.0"),
@@ -1130,22 +1114,6 @@ fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
     )
     .with_ebpf_bytecode_path(PathBuf::from("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"))
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
-}
-
-fn version(value: &str) -> ArtifactVersion {
-    ArtifactVersion::try_new(value).expect("valid artifact version")
-}
-
-fn source(value: &str) -> ArtifactSource {
-    ArtifactSource::try_new(value).expect("valid artifact source")
-}
-
-fn digest(value: &str) -> Sha256Digest {
-    Sha256Digest::try_new(value).expect("valid artifact digest")
-}
-
-fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
 }
 
 fn first_node_plan() -> ployz_keeper::steps::KeeperStepPlan {
@@ -1195,14 +1163,6 @@ fn first_node_nats_target(node_id: NodeId) -> ployz_keeper::steps::NatsServerCon
         &NatsMachineMaterialPaths::in_default_state_dir(),
         NatsListener::Loopback,
     )
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
 }
 
 fn unique_temp_path(prefix: &str) -> PathBuf {

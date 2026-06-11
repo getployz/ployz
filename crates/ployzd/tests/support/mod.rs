@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod control;
+pub mod node;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

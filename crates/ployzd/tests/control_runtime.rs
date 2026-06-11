@@ -8,11 +8,9 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
-use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, EventSequence, OperationIdempotencyKey,
-    OperationStatus, RouteHostname, RoutePort, RouteTarget,
+    DeployCompletionOutcome, DeployOperationState, OperationStatus, RouteTarget,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
@@ -22,26 +20,28 @@ use ployz_core::state::{
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineAddGateway, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, OpsStatusRequest,
-    ServiceInspectRequest, ServiceListRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, ServiceInspectRequest,
+    ServiceListRequest,
 };
-use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
 use ployzd::node_service_runtime::start_node_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
+use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 mod support;
 
-use support::control::{
-    FIXTURE_CONNECT_TIMEOUT, TestNats, machine_join_template, redeem_when_ready,
+use ployz_test_support::ids::{
+    event_sequence, idempotency_key, node_id, operation_id, revision_id, route_hostname,
+    route_port, service_id,
 };
+use support::control::{TestNats, machine_join_template, redeem_when_ready};
 
 #[tokio::test]
 async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
@@ -61,19 +61,23 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 
     assert_eq!(accepted.operation_id, operation_id("op_control_runtime"));
     assert_eq!(accepted.start_sequence, event_sequence(1));
-    nats.jetstream
+    nats.connected
+        .jetstream
         .get_key_value("KV_CORE")
         .await
         .expect("control runtime created KV_CORE");
-    nats.jetstream
+    nats.connected
+        .jetstream
         .get_key_value("KV_OPS")
         .await
         .expect("control runtime created KV_OPS");
-    nats.jetstream
+    nats.connected
+        .jetstream
         .get_stream("PLZ_OPS")
         .await
         .expect("control runtime created PLZ_OPS");
-    nats.jetstream
+    nats.connected
+        .jetstream
         .get_object_store("PLZ_BUNDLES")
         .await
         .expect("control runtime created PLZ_BUNDLES");
@@ -89,7 +93,7 @@ async fn control_runtime_does_not_mutate_machine_state_on_startup() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
 
@@ -164,13 +168,13 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     )
     .expect("minted material is a valid seed");
     let minted_client = connect_authenticated(
-        &nats.nats.config_with_seed(
+        &nats.server().config_with_seed(
             NatsPrincipal::Node {
                 node_id: node_id("node_2"),
             },
             minted_seed,
         ),
-        FIXTURE_CONNECT_TIMEOUT,
+        ployz_test_support::nats::TEST_NATS_CONNECT_TIMEOUT,
     )
     .await
     .expect("minted node credential connects");
@@ -237,7 +241,7 @@ async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
     core_state
@@ -279,7 +283,7 @@ async fn control_runtime_serves_active_service_queries() {
 async fn control_runtime_refuses_machine_add_without_join_template() {
     let nats = TestNats::start().await;
     let result = ployzd::control_runtime::start_control_runtime_with_client_and_reload(
-        nats.client.clone(),
+        nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
     )
@@ -294,7 +298,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 #[tokio::test]
 async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect_err("control has not bootstrapped observations yet");
     assert!(matches!(
@@ -312,7 +316,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
         .await
         .expect("open observations");
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
     core_state
@@ -341,7 +345,8 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .expect("operation API accepts deploy");
 
     assert_eq!(accepted.operation_id, operation_id("op_run"));
-    let status = wait_for_terminal_deploy_status(&api, operation_id("op_run")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_run"), Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -354,7 +359,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         ),
         "expected deploy to complete, got {status:?}"
     );
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
     assert_eq!(
@@ -406,7 +411,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
         .await
         .expect("open observations");
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.connected.jetstream)
         .await
         .expect("open core state");
     core_state
@@ -455,7 +460,8 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .expect("operation API accepts routed deploy");
 
     assert_eq!(accepted.operation_id, operation_id("op_routed"));
-    let status = wait_for_terminal_deploy_status(&api, operation_id("op_routed")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_routed"), Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -524,7 +530,8 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
 #[tokio::test]
 async fn control_runtime_refuses_bootstrap_resource_drift() {
     let nats = TestNats::start().await;
-    nats.jetstream
+    nats.connected
+        .jetstream
         .create_stream(jetstream::stream::Config {
             name: "PLZ_OPS".to_owned(),
             subjects: vec!["wrong.>".to_owned()],
@@ -536,7 +543,7 @@ async fn control_runtime_refuses_bootstrap_resource_drift() {
 
     let config = nats.control_config();
     let error = match ployzd::control_runtime::start_control_runtime_with_client_and_reload(
-        nats.client.clone(),
+        nats.connected.controller.clone(),
         &config,
         nats.reload_runner(),
     )
@@ -557,36 +564,12 @@ async fn control_runtime_refuses_bootstrap_resource_drift() {
     ));
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
 fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image reference")
 }
 
 fn replicas(value: u16) -> ReplicaCount {
     ReplicaCount::try_new(value).expect("valid replica count")
-}
-
-fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn active_machine(value: &str) -> ActiveMachineState {
@@ -619,36 +602,4 @@ fn deploy_target_with_route(
         }),
         ..deploy_target(service_id)
     }
-}
-
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
-async fn wait_for_terminal_deploy_status(
-    api: &OperationApiClient,
-    operation_id: OperationId,
-) -> OperationStatus {
-    for _ in 0..80 {
-        let status = api
-            .ops_status(&OpsStatusRequest {
-                operation_id: operation_id.clone(),
-            })
-            .await
-            .expect("status is readable")
-            .status;
-        let OperationStatus::Deploy { state, .. } = &status else {
-            panic!("expected deploy status");
-        };
-        if state.is_terminal() {
-            return status;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    panic!("deploy did not reach terminal status");
 }

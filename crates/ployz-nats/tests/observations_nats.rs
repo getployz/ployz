@@ -1,17 +1,14 @@
 use async_nats::jetstream;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
 };
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation};
-use ployz_nats::connect::connect_authenticated;
-use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, service_id, step_id,
+};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
-
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn container_observation_store_writes_latest_container_to_kv_obs() {
@@ -266,7 +263,7 @@ async fn missing_container_observation_returns_none() {
 }
 
 struct TestNats {
-    _server: SecuredTestNats,
+    _server: ployz_test_support::nats::TestNats,
     /// `node_7`'s Node principal: each node may only write its own
     /// observation keys, so cross-node fixtures need [`TestNats::node_8`].
     jetstream: jetstream::Context,
@@ -283,41 +280,24 @@ impl TestNats {
     }
 }
 
-/// A secured server where the bucket is bootstrapped by the Controller and
-/// the observation stores connect as Nodes — the principal that writes
+/// A secured server where the buckets are bootstrapped by the Controller
+/// and the observation stores connect as Nodes — the principal that writes
 /// observations in production.
 async fn test_nats() -> TestNats {
-    let server = SecuredTestNats::start_with_nodes(&[node_id("node_7"), node_id("node_8")])
-        .await
-        .expect("secured test nats starts");
-    let controller = connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("controller connects");
-    jetstream::new(controller)
-        .create_key_value(jetstream::kv::Config {
-            bucket: KV_OBS_BUCKET.to_owned(),
-            ..Default::default()
-        })
-        .await
-        .expect("create KV_OBS bucket");
-    let jetstream = node_jetstream(&server, "node_7").await;
-    let node_8_jetstream = node_jetstream(&server, "node_8").await;
+    let server = ployz_test_support::nats::TestNats::start_with_nodes(&[
+        node_id("node_7"),
+        node_id("node_8"),
+    ])
+    .await;
+    server.bootstrap_resources().await;
+    let jetstream = jetstream::new(server.node_client(&node_id("node_7")).await);
+    let node_8_jetstream = jetstream::new(server.node_client(&node_id("node_8")).await);
 
     TestNats {
         _server: server,
         jetstream,
         node_8_jetstream,
     }
-}
-
-async fn node_jetstream(server: &SecuredTestNats, node_id_value: &str) -> jetstream::Context {
-    let node_config = server
-        .node_config(&node_id(node_id_value))
-        .expect("fixture mints the node user");
-    let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("node connects");
-    jetstream::new(node_client)
 }
 
 fn managed_observation(
@@ -376,28 +356,4 @@ fn gateway_status(
         serving,
         route_count,
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }

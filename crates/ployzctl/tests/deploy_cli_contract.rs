@@ -1,12 +1,13 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRoute, ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ids::{OperationOwnerId, RevisionId, ServiceId};
 use ployz_core::ops::{
-    EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
-    RouteHostname, RoutePort, RouteTarget,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, RouteHostname,
+    RoutePort, RouteTarget,
 };
 use ployz_sdk_types::AcceptedOperation;
+use ployz_test_support::ids::{event_sequence, operation_id};
 use ployzctl::commands::deploy::{DetachedDeployCommand, DetachedDeployOutput};
 use ployzctl::commands::{PloyzctlCommand, parse_command};
 
@@ -187,14 +188,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
             OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
         ),
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn stdout(output: &Output) -> String {

@@ -1,9 +1,11 @@
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
 };
 use ployz_core::state::NodeContainerObservationKey;
+use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, service_id, step_id,
+};
 use ployzd::docker::labels::{
     CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError, ManagedContainerLabels,
     OPERATION_ID_LABEL, REVISION_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
@@ -118,28 +120,4 @@ fn managed_labels() -> ManagedContainerLabels {
         kind: ManagedContainerKind::Service,
         endpoint_port: None,
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }

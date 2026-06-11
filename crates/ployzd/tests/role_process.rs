@@ -3,11 +3,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ployz_core::ids::NodeId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::API_OPS_STATUS;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
+use ployz_test_support::ids::node_id;
 use ployzd::app::{ControlWork, DnsWork, GatewayWork, RoleProcessPlan, plan_configured_process};
 use ployzd::config::{
     ControlProcessConfig, DaemonProcessConfig, DaemonProcessConfigError, DnsProcessConfig,
@@ -611,10 +611,6 @@ fn temp_join_template_file() -> String {
     )
     .expect("join template can be written");
     path.to_str().expect("temp path is utf-8").to_owned()
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }
 
 fn socket(port: u16) -> SocketAddr {

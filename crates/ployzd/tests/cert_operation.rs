@@ -3,12 +3,12 @@ use ployz_core::cert::{
     AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertStateKey, CertValidAt,
     CertValidityWindow,
 };
-use ployz_core::ids::{CertId, OperationId};
 use ployz_core::ops::{
-    CertOperationFailure, CertOperationState, CertRunningStage, EventSequence, FailureMessage,
-    OperationEvent, OperationEventProjection, OperationStatus, OperationSubjectRef, RouteHostname,
+    CertOperationFailure, CertOperationState, CertRunningStage, FailureMessage, OperationEvent,
+    OperationEventProjection, OperationStatus, OperationSubjectRef, RouteHostname,
     StatusProjectionError, project_operation_event,
 };
+use ployz_test_support::ids::{cert_id, event_sequence, operation_id};
 use ployzd::controllers::cert::{
     AcmeChallengeWrite, AcmeFinishResult, ActiveCertWrite, CertChallengeCommand, CertChallengePlan,
     CertFinishCommand, CertFinishPlan, CertRenewalPlanError, plan_cert_challenge, plan_cert_finish,
@@ -304,18 +304,6 @@ fn validity() -> CertValidityWindow {
 
 fn valid_at(value: u64) -> CertValidAt {
     CertValidAt::try_new(value).expect("valid cert timestamp")
-}
-
-fn cert_id(value: &str) -> CertId {
-    CertId::try_new(value).expect("valid cert id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn hostname(value: &str) -> RouteHostname {

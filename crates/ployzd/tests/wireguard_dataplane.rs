@@ -3,7 +3,7 @@ use ployz_core::dataplane::{
     WireGuardEbpfPrepareError, WireGuardEbpfPrepareRequest, WireGuardPeer, WireGuardPublicKey,
     WireGuardReadyEvidence,
 };
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_test_support::ids::{node_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::dataplane_runtime::HostWireGuardEbpfPreparer;
 use ployzd::deploy_worker::{
@@ -321,42 +321,18 @@ fn command_ignore(program: &str, args: &[&str]) {
         .status();
 }
 
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
     /// Node principal: the node-runtime service side.
     node_client: async_nats::Client,
 }
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("core_1")])
-        .await
-        .expect("secured test nats starts");
-    let client = ployz_nats::connect::connect_authenticated(
-        &nats.controller_config(),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("controller connects");
-    let node_client = ployz_nats::connect::connect_authenticated(
-        &nats
-            .node_config(&node_id("core_1"))
-            .expect("fixture minted core_1 credentials"),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("core_1 node connects");
+    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("core_1")]).await;
+    let client = nats.controller.clone();
+    let node_client = nats.node_client(&node_id("core_1")).await;
 
     TestNats {
         _nats: nats,

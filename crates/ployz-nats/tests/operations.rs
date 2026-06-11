@@ -2,14 +2,15 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlan, DeployPlanStep, DeployRequest, ImageReference,
     ReplicaCount, ReplicaSlot,
 };
-use ployz_core::ids::{CertId, OperationId, RevisionId, ServiceId};
+use ployz_core::ids::OperationId;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::node::ManagedContainerKind;
-use ployz_core::ops::{
-    DeployEvidence, DeployRunningStage, DeployTransition, OperationEvent, OperationIdempotencyKey,
-};
+use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, OperationEvent};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
+use ployz_test_support::ids::{
+    cert_id, container_id, idempotency_key, node_id, operation_id, revision_id, service_id, step_id,
+};
 
 #[test]
 fn operation_status_key_uses_token_safe_operation_id() {
@@ -182,32 +183,8 @@ fn machine_add_joined_append_uses_stable_message_id() {
     );
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn cert_id(value: &str) -> CertId {
-    CertId::try_new(value).expect("valid cert id")
-}
-
 fn joined_at(value: u64) -> JoinTokenRedeemedAt {
     JoinTokenRedeemedAt::try_new(value).expect("valid join time")
-}
-
-fn node_id(value: &str) -> ployz_core::ids::NodeId {
-    ployz_core::ids::NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ployz_core::ids::ContainerId {
-    ployz_core::ids::ContainerId::try_new(value).expect("valid container id")
-}
-
-fn step_id(value: &str) -> ployz_core::ids::StepId {
-    ployz_core::ids::StepId::try_new(value).expect("valid step id")
 }
 
 fn cleanup_container(node: &str, container: &str) -> DeployCleanupContainer {
@@ -237,14 +214,6 @@ fn deploy_plan() -> DeployPlan {
 
 fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
 }
 
 fn image(value: &str) -> ImageReference {

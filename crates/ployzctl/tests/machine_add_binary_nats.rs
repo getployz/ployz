@@ -1,19 +1,15 @@
 use std::process::{Command, Output};
-use std::time::Duration;
 
 use base64::Engine as _;
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
+use ployz_core::ids::OperationOwnerId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::{
-    EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
-};
+use ployz_core::ops::{OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -23,18 +19,18 @@ use ployz_sdk_types::{
     MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
     operation_api::{MachineAddApi, OperationApiContract},
 };
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::nats::{SecuredTestNats, TestNats};
+use ployz_test_support::shell::shell_quote;
 use ployzctl::runtime::{
     PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
 };
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binary_machine_add_calls_nats_service() {
-    let server = SecuredTestNats::start().await.expect("secured test nats");
-    let client = connect_authenticated(&server.controller_config(), Duration::from_secs(5))
-        .await
-        .expect("connect to test nats");
-    let env = CliNatsEnv::new(&server);
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
     let spec = test_api_service(MachineAddApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
@@ -77,8 +73,8 @@ async fn binary_machine_add_calls_nats_service() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
-        .arg(server.client_url().as_str())
-        .env(PLOYZ_NATS_CA_FILE_ENV, server.ca_path())
+        .arg(server.server.client_url().as_str())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .env(PLOYZ_JOIN_NKEY_SEED_FILE_ENV, env.join_seed_path())
         .args([
@@ -107,7 +103,7 @@ async fn binary_machine_add_calls_nats_service() {
         format!(
             "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh -s -- --join-token 'join_once_123'\n",
             shell_quote(&test_ca_b64()),
-            shell_quote(server.join_seed().secret())
+            shell_quote(server.server.join_seed().secret())
         )
     );
     assert_eq!(stderr(&output), "");
@@ -140,10 +136,6 @@ impl CliNatsEnv {
     fn join_seed_path(&self) -> &std::path::Path {
         &self.join_seed_file
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn test_ca_b64() -> String {
@@ -185,18 +177,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
             OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
         ),
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn machine_join_bundle() -> MachineJoinBundle {

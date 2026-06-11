@@ -6,20 +6,21 @@
 //! fixture's real `nats-server`, including the ADR-0015 single-writer
 //! fence and the ADR-0001 authority-file durability rules.
 
-use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
-use ployz_core::ops::{OperationIdempotencyKey, OperationStatus};
+use ployz_core::ops::OperationStatus;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, OpsStatusRequest,
+    MachineJoinRedeemRequest,
 };
 use std::time::Duration;
 
 mod support;
 
+use ployz_test_support::ids::{idempotency_key, node_id, operation_id};
+use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
 /// The machine-add handler returns its operation id + join material before
@@ -28,7 +29,7 @@ use support::control::{RecordingReload, TestNats, redeem_when_ready};
 #[tokio::test]
 async fn machine_add_accepts_before_reload_then_mints_material() {
     let nats = TestNats::start().await;
-    let reload = RecordingReload::gated_signal(nats.nats.server_pid());
+    let reload = RecordingReload::gated_signal(nats.server().server_pid());
     let config = nats.control_config();
     let runtime = nats
         .start_control_with_reload(&config, reload.clone())
@@ -121,7 +122,7 @@ async fn concurrent_machine_adds_both_render_their_keys() {
     let left_redeemed = redeem_when_ready(&api, &left.join_token).await;
     let right_redeemed = redeem_when_ready(&api, &right.join_token).await;
 
-    let rendered = std::fs::read_to_string(nats.nats.authorized_users_path())
+    let rendered = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("authorized-users file is readable");
     let users = parse_authorized_users(&rendered).expect("rendered authority file parses");
     let left_key = public_key_of(left_redeemed.secret_delivery.nats_credentials.secret());
@@ -152,7 +153,7 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     let ghost = nkeys::KeyPair::new_user();
     let ghost_public =
         NatsUserPublicKey::try_new(ghost.public_key()).expect("generated public key is valid");
-    let existing = std::fs::read_to_string(nats.nats.authorized_users_path())
+    let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     let mut users = parse_authorized_users(&existing).expect("fixture authority file parses");
     users.push(ployz_core::nats_config::NatsAuthorizedUser {
@@ -162,7 +163,7 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
         nkey_public: ghost_public.clone(),
     });
     std::fs::write(
-        nats.nats.authorized_users_path(),
+        nats.server().authorized_users_path(),
         render_authorized_users(&users),
     )
     .expect("authority file with unknown user writes");
@@ -175,7 +176,7 @@ async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
     let accepted = machine_add(&api, "op_adopt", "idem_adopt", "node_new").await;
     redeem_when_ready(&api, &accepted.join_token).await;
 
-    let rendered = std::fs::read_to_string(nats.nats.authorized_users_path())
+    let rendered = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("authorized-users file is readable");
     let users = parse_authorized_users(&rendered).expect("rendered authority file parses");
     assert_eq!(
@@ -207,7 +208,12 @@ async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
     let api = nats.api();
 
     machine_add(&api, "op_reload_fail", "idem_reload_fail", "node_rf").await;
-    let status = wait_for_terminal_machine_add_status(&api, operation_id("op_reload_fail")).await;
+    let status = wait_for_terminal_status(
+        &api,
+        &operation_id("op_reload_fail"),
+        Duration::from_secs(10),
+    )
+    .await;
 
     let OperationStatus::MachineAdd {
         state: MachineAddOperationState::Failed { failure },
@@ -240,7 +246,7 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
     let nats = TestNats::start().await;
     // Gate the reload so the mint cannot reach material-ready while the
     // first control process is alive.
-    let reload = RecordingReload::gated_signal(nats.nats.server_pid());
+    let reload = RecordingReload::gated_signal(nats.server().server_pid());
     let config = nats.control_config();
     let runtime = nats
         .start_control_with_reload(&config, reload.clone())
@@ -297,7 +303,7 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
 #[tokio::test]
 async fn machine_join_redeem_waits_for_material_ready() {
     let nats = TestNats::start().await;
-    let reload = RecordingReload::gated_signal(nats.nats.server_pid());
+    let reload = RecordingReload::gated_signal(nats.server().server_pid());
     let config = nats.control_config();
     let runtime = nats
         .start_control_with_reload(&config, reload.clone())
@@ -366,40 +372,4 @@ fn rendered_principal_key(
                 }
         })
         .map(|user| user.nkey_public.clone())
-}
-
-async fn wait_for_terminal_machine_add_status(
-    api: &OperationApiClient,
-    operation_id: OperationId,
-) -> OperationStatus {
-    for _ in 0..200 {
-        let status = api
-            .ops_status(&OpsStatusRequest {
-                operation_id: operation_id.clone(),
-            })
-            .await
-            .expect("status is readable")
-            .status;
-        let OperationStatus::MachineAdd { state, .. } = &status else {
-            panic!("expected machine add status");
-        };
-        if state.is_terminal() {
-            return status;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    panic!("machine add did not reach terminal status");
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
 }

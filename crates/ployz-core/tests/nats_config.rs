@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use ployz_core::ids::NodeId;
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsListener, NatsServerCertificatePem,
     NatsServerConfig, NatsServerConfigError, NatsServerTlsFiles, NatsUserPublicKey, NatsUserSeed,
     render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
+use ployz_test_support::ids::node_id;
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
@@ -198,8 +198,4 @@ fn tls_files() -> NatsServerTlsFiles {
 fn user_public_key(fill: char) -> NatsUserPublicKey {
     NatsUserPublicKey::try_new(format!("U{}", fill.to_string().repeat(55)))
         .expect("valid user public key")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }

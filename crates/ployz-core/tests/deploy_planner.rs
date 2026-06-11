@@ -4,7 +4,7 @@ use ployz_core::deploy::{
     ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, plan_service_deploy,
     prepare_deploy,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::NodeId;
 use ployz_core::node::{
     ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
@@ -12,6 +12,9 @@ use ployz_core::node::{
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{
     ActiveRouteState, ActiveServiceState, ExpectedActiveRoute, ExpectedActiveService,
+};
+use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, service_id, step_id,
 };
 
 #[test]
@@ -360,30 +363,6 @@ fn run_step(node: &str, slot: u16) -> DeployPlanStep {
         node_id: node_id(node),
         slot: ReplicaSlot::try_new(slot).expect("valid replica slot"),
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {

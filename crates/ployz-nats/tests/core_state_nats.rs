@@ -1,20 +1,17 @@
 use async_nats::jetstream;
-use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
-use ployz_core::machine::MachineName;
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ids::{RevisionId, ServiceId};
+use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     ActiveMachineState, ActiveMachineStateKey, ActiveRouteCommit, ActiveRouteCommitRequest,
     ActiveRouteState, ActiveRouteStateKey, ActiveServiceCommit, ActiveServiceCommitRequest,
     ActiveServiceState, ActiveServiceStateKey, ExpectedActiveRoute, ExpectedActiveRouteRevision,
     ExpectedActiveService,
 };
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_test_support::nats::SecuredTestNats;
-use std::time::Duration;
-
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+use ployz_test_support::ids::{
+    machine_name, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+};
 
 #[tokio::test]
 async fn active_service_state_round_trips_through_kv_core() {
@@ -722,27 +719,16 @@ fn active_machine_state_key_matches_kv_core_path() {
 }
 
 struct TestNats {
-    _server: SecuredTestNats,
+    _server: ployz_test_support::nats::TestNats,
     jetstream: jetstream::Context,
 }
 
 /// A secured server with the store connected as the Controller — the
 /// principal that commits active state in production.
 async fn test_nats() -> TestNats {
-    let server = SecuredTestNats::start()
-        .await
-        .expect("secured test nats starts");
-    let client = connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("controller connects");
-    let jetstream = jetstream::new(client);
-    jetstream
-        .create_key_value(jetstream::kv::Config {
-            bucket: KV_CORE_BUCKET.to_owned(),
-            ..Default::default()
-        })
-        .await
-        .expect("create KV_CORE bucket");
+    let server = ployz_test_support::nats::TestNats::start().await;
+    server.bootstrap_resources().await;
+    let jetstream = server.jetstream.clone();
 
     TestNats {
         _server: server,
@@ -750,36 +736,8 @@ async fn test_nats() -> TestNats {
     }
 }
 
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn machine_name(value: &str) -> MachineName {
-    MachineName::try_new(value).expect("valid machine name")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
-}
-
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
 }
 
 fn active_route_state(target: &RouteTarget, service: &str, revision: &str) -> ActiveRouteState {

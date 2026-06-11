@@ -1,9 +1,12 @@
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::RouteTarget;
+use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    step_id,
+};
 use ployzd::gateway::{
     GatewayNodeObservation, GatewayObservationFreshness, GatewayProjectedRoute, GatewayProjection,
     GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
@@ -440,43 +443,11 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
 fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
     ContainerEndpoint {
         ip: ip.parse().expect("valid endpoint ip"),
         port: route_port(port),
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }
 
 fn source_unavailable() -> GatewayProjectionError {

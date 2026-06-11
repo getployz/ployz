@@ -1,15 +1,16 @@
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
+use ployz_core::ids::{NodeId, OperationOwnerId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLease};
+use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
 };
 use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
+use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzctl::commands::machine::{
     MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinRuntimeNatsUrl,
     MachineJoinToken, MachineListOutput, MachineName,
@@ -196,18 +197,6 @@ fn machine_snapshot(node_id: &str, gateway: Option<GatewayServingStatus>) -> Mac
         }),
         observed_container_count: 3,
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 const TEST_JOIN_SEED: &str = "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

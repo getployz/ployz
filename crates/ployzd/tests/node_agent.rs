@@ -1,5 +1,5 @@
-use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::ManagedContainerKind;
+use ployz_test_support::ids::{container_id, operation_id, revision_id, service_id, step_id};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_agent::runtime::{
     ExistingManagedContainer, ExistingManagedContainerState, NodeContainerRunConflict,
@@ -149,24 +149,4 @@ fn run_labels(operation_id: &str, step_id: &str) -> ManagedContainerLabels {
         kind: ManagedContainerKind::Service,
         endpoint_port: None,
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
 }

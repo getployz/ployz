@@ -1,12 +1,10 @@
 use async_nats::jetstream;
 use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::ContainerId;
 use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::nats::SecuredTestNats;
-use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use ployz_test_support::ids::{node_id, operation_id, revision_id, service_id, step_id};
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
@@ -15,11 +13,10 @@ use ployzd::node_runtime_types::{
     NodeRunContainerRequest,
 };
 use ployzd::node_service_runtime::start_node_runtime_service;
-use std::time::Duration;
-
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod support;
+
+use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 #[tokio::test]
 async fn node_runtime_serves_container_run_and_observes_created_container() {
@@ -132,7 +129,7 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
 }
 
 struct TestNats {
-    _nats: SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
     /// Node principal: the node-runtime service side and its observations.
@@ -142,20 +139,10 @@ struct TestNats {
 
 impl TestNats {
     async fn start_bootstrapped() -> Self {
-        let nats = SecuredTestNats::start_with_nodes(&[node_id("node_a")])
-            .await
-            .expect("secured test nats starts");
-        let client = connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-            .await
-            .expect("controller connects");
-        let jetstream = jetstream::new(client.clone());
-        bootstrap_nats_resources(&client, &jetstream).await;
-        let node_config = nats
-            .node_config(&node_id("node_a"))
-            .expect("fixture minted node_a credentials");
-        let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
-            .await
-            .expect("node connects");
+        let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_a")]).await;
+        nats.bootstrap_resources().await;
+        let client = nats.controller.clone();
+        let node_client = nats.node_client(&node_id("node_a")).await;
         let node_jetstream = jetstream::new(node_client.clone());
         let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
             .await
@@ -168,14 +155,6 @@ impl TestNats {
             observations,
         }
     }
-}
-
-async fn bootstrap_nats_resources(client: &async_nats::Client, jetstream: &jetstream::Context) {
-    let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client(client)
-        .expect("bootstrap plan builds");
-    ployz_nats::bootstrap::assure_nats_resources(jetstream, &plan)
-        .await
-        .expect("nats resources are bootstrapped");
 }
 
 async fn assert_observed_running(
@@ -223,26 +202,6 @@ fn managed_labels(step: &str) -> ManagedContainerLabels {
         kind: ManagedContainerKind::Service,
         endpoint_port: None,
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }
 
 fn image(value: &str) -> ImageReference {

@@ -11,8 +11,8 @@ use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
     plan_service_deploy,
 };
-use ployz_core::ids::{ContainerId, OperationId, OperationOwnerId, StepId};
-use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
+use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::node::{
     ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
@@ -20,7 +20,7 @@ use ployz_core::node::{
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
-    OperationLeaseExpiresAt, OperationStatus, RouteTarget,
+    OperationStatus, RouteTarget,
 };
 use ployz_core::state::{
     ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
@@ -33,7 +33,6 @@ use ployz_nats::operations::{
     DeployOperationSubmission, OperationLeaseClaim,
 };
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
-use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::deploy_worker::{
@@ -46,11 +45,15 @@ use ployzd::node_service_runtime::start_node_runtime_service;
 
 mod support;
 
-use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
-use support::ids::{
+use ployz_test_support::ops::wait_for_terminal_status;
+use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
+
+use ployz_test_support::ids::{container_id, lease_time, step_id};
+use ployz_test_support::ids::{
     event_replay_limit, event_sequence, idempotency_key, node_id, operation_id, revision_id,
     route_hostname, route_port, service_id,
 };
+use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
 
 #[tokio::test]
@@ -63,7 +66,7 @@ async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sy
 
 async fn e2e_repository_submit_and_transition_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_with_nodes(&[]).await?;
+    let nats = TestNats::start_with_nodes(&[]).await;
     let client = nats.controller_client();
     let jetstream = jetstream::new(client.clone());
     bootstrap_nats_resources(&client, &jetstream).await?;
@@ -132,7 +135,7 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
 
 async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_with_nodes(&[]).await?;
+    let nats = TestNats::start_with_nodes(&[]).await;
     let client = nats.controller_client();
     let config = nats
         .control_config(node_id("core_1"))
@@ -200,7 +203,7 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
 #[tokio::test]
 async fn e2e_control_and_node_complete_deploy_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
     let client = nats.controller_client();
     let jetstream = jetstream::new(client.clone());
     let config = nats
@@ -210,7 +213,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let node_client = nats.node_client(&node_id("node_a")).await;
     let observations =
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
             .await
@@ -234,7 +237,8 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     let accepted = api.deploy_submit(&request).await?;
 
     assert_eq!(accepted.operation_id, operation_id("op_e2e_run"));
-    let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_run")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_e2e_run"), Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -362,7 +366,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
 #[tokio::test]
 async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn Error + Send + Sync>>
 {
-    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
     let client = nats.controller_client();
     let config = nats
         .control_config(node_id("core_1"))
@@ -371,7 +375,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let node_client = nats.node_client(&node_id("node_a")).await;
     let observations =
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
             .await
@@ -411,7 +415,8 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
 
     let accepted = api.deploy_submit(&request).await?;
 
-    let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_route")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_e2e_route"), Duration::from_secs(4)).await;
     assert!(
         matches!(
             status,
@@ -452,7 +457,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
 #[tokio::test]
 async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
     let client = nats.controller_client();
     let config = nats
         .control_config(node_id("core_1"))
@@ -461,7 +466,7 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let node_client = nats.node_client(&node_id("node_a")).await;
     let observations =
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
             .await
@@ -503,8 +508,12 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
 
     api.deploy_submit(&request).await?;
 
-    let status =
-        wait_for_terminal_deploy_status(&api, operation_id("op_e2e_node_runtime_down_route")).await;
+    let status = wait_for_terminal_status(
+        &api,
+        &operation_id("op_e2e_node_runtime_down_route"),
+        Duration::from_secs(4),
+    )
+    .await;
     assert!(
         matches!(
             status,
@@ -557,7 +566,7 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
 #[tokio::test]
 async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
     let client = nats.controller_client();
     let jetstream = jetstream::new(client.clone());
     let config = nats
@@ -567,7 +576,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let node_client = nats.node_client(&node_id("node_a")).await;
     let observations =
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
             .await
@@ -610,8 +619,12 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
 
     api.deploy_submit(&request).await?;
 
-    let status =
-        wait_for_terminal_deploy_status(&api, operation_id("op_e2e_control_down_route")).await;
+    let status = wait_for_terminal_status(
+        &api,
+        &operation_id("op_e2e_control_down_route"),
+        Duration::from_secs(4),
+    )
+    .await;
     assert!(
         matches!(
             status,
@@ -714,7 +727,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
 #[tokio::test]
 async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_with_nodes(&[node_id("core_1"), node_id("edge_2")]).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("core_1"), node_id("edge_2")]).await;
     let client = nats.controller_client();
     let route_port = free_loopback_port().await?;
     let config = nats
@@ -724,8 +737,8 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
         .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let core_node_client = nats.node_client(&node_id("core_1")).await?;
-    let edge_node_client = nats.node_client(&node_id("edge_2")).await?;
+    let core_node_client = nats.node_client(&node_id("core_1")).await;
+    let edge_node_client = nats.node_client(&node_id("edge_2")).await;
     let observations =
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(core_node_client.clone()))
             .await
@@ -784,7 +797,12 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
 
     let accepted = api.deploy_submit(&request).await?;
 
-    let status = wait_for_terminal_deploy_status(&api, operation_id("op_e2e_two_node_route")).await;
+    let status = wait_for_terminal_status(
+        &api,
+        &operation_id("op_e2e_two_node_route"),
+        Duration::from_secs(4),
+    )
+    .await;
     assert!(
         matches!(
             status,
@@ -880,30 +898,6 @@ async fn operation_replay_page(
         })
         .await
         .expect("operation event replay succeeds")
-}
-
-async fn wait_for_terminal_deploy_status(
-    api: &OperationApiClient,
-    operation_id: OperationId,
-) -> OperationStatus {
-    for _ in 0..80 {
-        let status = api
-            .ops_status(&OpsStatusRequest {
-                operation_id: operation_id.clone(),
-            })
-            .await
-            .expect("status is readable")
-            .status;
-        let OperationStatus::Deploy { state, .. } = &status else {
-            panic!("expected deploy status");
-        };
-        if state.is_terminal() {
-            return status;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    panic!("deploy did not reach terminal status");
 }
 
 async fn operation_events(
@@ -1030,14 +1024,6 @@ fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
     }
 }
 
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
-}
-
 fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
     ContainerEndpoint {
         ip: ip.parse().expect("valid endpoint ip"),
@@ -1059,45 +1045,5 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
             .expect("valid bootstrap url"),
     )
-    .with_join_template(machine_join_template())
-}
-
-fn machine_join_template() -> MachineJoinTemplate {
-    serde_json::from_str(
-        r#"{
-  "join_bundle": {
-    "material": {
-      "cluster_name": "prod",
-      "runtime_nats_url": "nats://127.0.0.1:7422",
-      "trusted_nats": {
-        "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-      },
-      "ployzd": {
-        "version": "0.1.0",
-        "source": "/tmp/ployzd",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/bin/ployzd"
-      },
-      "ebpf_bytecode": {
-        "version": "0.1.0",
-        "source": "/tmp/ployz-ebpf-tc",
-        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-      },
-      "ebpf_ctl": {
-        "version": "0.1.0",
-        "source": "/tmp/ployz-ebpf-ctl",
-        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-      }
-    }
-  }
-}
-"#,
-    )
-    .expect("test join template is valid")
-}
-
-fn lease_time(value: u64) -> OperationLeaseExpiresAt {
-    OperationLeaseExpiresAt::try_new(value).expect("valid lease time")
+    .with_join_template(ployz_test_support::fixtures::machine_join_template())
 }

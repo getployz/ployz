@@ -726,7 +726,7 @@ mod tests {
     }
 
     struct TestNats {
-        _nats: ployz_test_support::nats::SecuredTestNats,
+        _nats: ployz_test_support::nats::TestNats,
         /// Node principal: the node process side under test.
         client: async_nats::Client,
         observations: AsyncNatsObservationStore,
@@ -735,27 +735,9 @@ mod tests {
     impl TestNats {
         async fn start_bootstrapped() -> Self {
             let nats =
-                ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_a")])
-                    .await
-                    .expect("secured test nats starts");
-            let controller =
-                connect_authenticated(&nats.controller_config(), NODE_NATS_CONNECT_TIMEOUT)
-                    .await
-                    .expect("controller connects");
-            let jetstream = async_nats::jetstream::new(controller.clone());
-            let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client(&controller)
-                .expect("bootstrap plan builds");
-            ployz_nats::bootstrap::assure_nats_resources(&jetstream, &plan)
-                .await
-                .expect("nats resources are bootstrapped");
-            let client = connect_authenticated(
-                &nats
-                    .node_config(&node_id("node_a"))
-                    .expect("fixture minted node_a credentials"),
-                NODE_NATS_CONNECT_TIMEOUT,
-            )
-            .await
-            .expect("node_a connects");
+                ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_a")]).await;
+            nats.bootstrap_resources().await;
+            let client = nats.node_client(&node_id("node_a")).await;
             let node_jetstream = async_nats::jetstream::new(client.clone());
             let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
                 .await

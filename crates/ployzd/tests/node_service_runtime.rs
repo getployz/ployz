@@ -4,11 +4,13 @@ use ployz_core::dataplane::{
     WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::ImageReference;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::ContainerId;
 use ployz_core::node::ManagedContainerKind;
-use ployz_core::ops::FailureMessage;
 use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::service_runtime::request_json;
+use ployz_test_support::ids::{
+    container_id, failure_message, node_id, operation_id, revision_id, service_id, step_id,
+};
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
     NodeEnsureEndpointNetworkRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
@@ -1030,33 +1032,17 @@ impl NodeLogReader for RecordingLogReader {
 }
 
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
     /// Node principal: the node-runtime service side.
     node_a: async_nats::Client,
 }
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_a")])
-        .await
-        .expect("secured test nats starts");
-    let client = ployz_nats::connect::connect_authenticated(
-        &nats.controller_config(),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("controller connects");
-    let node_a = ployz_nats::connect::connect_authenticated(
-        &nats
-            .node_config(&node_id("node_a"))
-            .expect("fixture minted node_a credentials"),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("node_a connects");
+    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_a")]).await;
+    let client = nats.controller.clone();
+    let node_a = nats.node_client(&node_id("node_a")).await;
 
     TestNats {
         _nats: nats,
@@ -1091,10 +1077,6 @@ fn endpoint_routes(nodes: &[&str]) -> Vec<ployz_core::dataplane::WireGuardEbpfEn
             ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id(node))
         })
         .collect()
-}
-
-fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
 }
 
 fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
@@ -1144,30 +1126,6 @@ fn managed_labels() -> ManagedContainerLabels {
         kind: ManagedContainerKind::Service,
         endpoint_port: None,
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }
 
 fn image(value: &str) -> ImageReference {

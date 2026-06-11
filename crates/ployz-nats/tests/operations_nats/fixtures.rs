@@ -1,79 +1,31 @@
-use async_nats::jetstream;
-use async_nats::jetstream::stream::StorageType;
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
 };
-use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployRequest, ImageReference, ReplicaCount, ReplicaSlot,
-};
-use ployz_core::ids::{CertId, OperationId, OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, MachineName, RawJoinToken};
-use ployz_core::ops::{
-    CancellationReason, DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage,
-    OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt, RouteHostname,
-};
+use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
+use ployz_core::machine::IssuedJoinToken;
+use ployz_core::ops::{DeployOperationFailure, DeployRunningStage};
 use ployz_core::roles::FirstNodeGateway;
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
-    MachineAddOperationSubmission, OperationLeaseClaim, PLZ_JOBS_STREAM, PLZ_OPS_STREAM,
+    BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission,
+    MachineAddOperationSubmission, OperationLeaseClaim,
 };
-use ployz_sdk_types::MachineJoinBundle;
-use ployz_test_support::nats::SecuredTestNats;
-use std::time::Duration;
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-pub(super) struct TestNats {
-    _nats: SecuredTestNats,
-    pub(super) jetstream: jetstream::Context,
-}
+pub(super) use async_nats::jetstream;
+pub(super) use ployz_test_support::fixtures::{deploy_target, machine_join_bundle};
+pub(super) use ployz_test_support::ids::{
+    cancellation_reason, cert_id, container_id, event_replay_limit, event_sequence,
+    failure_message, idempotency_key, join_token_expires_at as expires_at,
+    join_token_redeemed_at as joined_at, lease_time, machine_name, node_id, operation_id, owner_id,
+    raw_join_token, revision_id, service_id,
+};
+pub(super) use ployz_test_support::nats::TestNats;
 
 pub(super) async fn test_nats() -> TestNats {
-    let nats = SecuredTestNats::start()
-        .await
-        .expect("secured test nats starts");
-    let client = connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("controller connects");
-    let jetstream = jetstream::new(client);
-    bootstrap_operation_resources(&jetstream).await;
-
-    TestNats {
-        _nats: nats,
-        jetstream,
-    }
-}
-
-pub(super) async fn bootstrap_operation_resources(jetstream: &jetstream::Context) {
-    jetstream
-        .create_stream(jetstream::stream::Config {
-            name: PLZ_OPS_STREAM.to_owned(),
-            subjects: vec!["plz.v1.op.>".to_owned()],
-            storage: StorageType::Memory,
-            ..Default::default()
-        })
-        .await
-        .expect("create PLZ_OPS stream");
-    jetstream
-        .create_stream(jetstream::stream::Config {
-            name: PLZ_JOBS_STREAM.to_owned(),
-            subjects: vec!["plz.v1.job.>".to_owned()],
-            storage: StorageType::Memory,
-            ..Default::default()
-        })
-        .await
-        .expect("create PLZ_JOBS stream");
-    jetstream
-        .create_key_value(jetstream::kv::Config {
-            bucket: KV_OPS_BUCKET.to_owned(),
-            storage: StorageType::Memory,
-            ..Default::default()
-        })
-        .await
-        .expect("create KV_OPS bucket");
+    let nats = TestNats::start().await;
+    nats.bootstrap_resources().await;
+    nats
 }
 
 pub(super) async fn operation_repository(
@@ -130,55 +82,12 @@ pub(super) fn machine_add_submission(
     MachineAddOperationSubmission {
         operation_id: self::operation_id(operation_id),
         node_id: self::node_id(node_id),
-        name: MachineName::try_new(machine_name).expect("valid machine name"),
+        name: self::machine_name(machine_name),
         gateway: FirstNodeGateway::Skip,
         join_bundle: machine_join_bundle(),
         raw_join_token: raw_join_token("join_token"),
         join_token: issued_join_token_for_raw("join_token"),
         idempotency_key: self::idempotency_key(idempotency_key),
-    }
-}
-
-pub(super) fn machine_join_bundle() -> MachineJoinBundle {
-    MachineJoinBundle {
-        material: ployz_core::install::MachineJoinMaterial {
-            cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
-                .expect("valid cluster name"),
-            runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
-                "nats://127.0.0.1:7422",
-            )
-            .expect("valid runtime nats url"),
-            trusted_nats: ployz_core::install::MachineJoinTrustedNats {
-                ca_pem: ployz_core::nats_config::NatsCaCertificatePem::try_new(
-                    "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
-                )
-                .expect("valid ca pem"),
-            },
-            ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-            ebpf_bytecode: machine_join_artifact(
-                "/tmp/ployz-ebpf-tc",
-                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-            ),
-            ebpf_ctl: machine_join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-        },
-    }
-}
-
-fn machine_join_artifact(
-    source: &str,
-    install_path: &str,
-) -> ployz_core::install::InstallArtifactSpec {
-    ployz_core::install::InstallArtifactSpec {
-        version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-            .expect("valid artifact version"),
-        source: ployz_core::install::InstallArtifactSource::try_new(source)
-            .expect("valid artifact source"),
-        sha256: ployz_core::install::InstallSha256Digest::try_new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("valid artifact digest"),
-        install_path: ployz_core::install::AbsoluteInstallPath::try_new(install_path)
-            .expect("valid artifact install path"),
     }
 }
 
@@ -228,13 +137,9 @@ pub(super) fn issued_join_token_for_raw_with_expiry(
     )
 }
 
-pub(super) fn raw_join_token(value: &str) -> RawJoinToken {
-    RawJoinToken::try_new(value).expect("valid raw join token")
-}
-
 pub(super) fn lease_claim(owner_id: &str, now: u64, expires_at: u64) -> OperationLeaseClaim {
     OperationLeaseClaim::try_new(
-        OperationOwnerId::try_new(owner_id).expect("valid operation owner id"),
+        self::owner_id(owner_id),
         lease_time(now),
         lease_time(expires_at),
     )
@@ -252,7 +157,7 @@ pub(super) fn deploy_plan() -> DeployPlan {
 pub(super) fn deploy_plan_on(node: &str) -> DeployPlan {
     DeployPlan {
         service_id: service_id("svc_api"),
-        target_revision: ployz_core::ids::RevisionId::try_new("rev_2").expect("valid revision id"),
+        target_revision: revision_id("rev_2"),
         steps: vec![DeployPlanStep::RunContainer {
             node_id: node_id(node),
             slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
@@ -269,91 +174,13 @@ pub(super) fn planning_failure(message: &str) -> DeployOperationFailure {
     }
 }
 
-pub(super) fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-pub(super) fn owner_id(value: &str) -> OperationOwnerId {
-    OperationOwnerId::try_new(value).expect("valid operation owner id")
-}
-
-pub(super) fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-pub(super) fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-pub(super) fn cert_id(value: &str) -> CertId {
-    CertId::try_new(value).expect("valid cert id")
-}
-
-pub(super) fn deploy_target(service_id: &str) -> DeployRequest {
-    DeployRequest {
-        service_id: self::service_id(service_id),
-        target_revision: revision_id("rev_2"),
-        image: image("ghcr.io/acme/api:rev-2"),
-        replicas: replicas(1),
-        route: None,
-    }
-}
-
-fn image(value: &str) -> ImageReference {
-    ImageReference::try_new(value).expect("valid image")
-}
-
-fn replicas(value: u16) -> ReplicaCount {
-    ReplicaCount::try_new(value).expect("valid replica count")
-}
-
-pub(super) fn node_id(value: &str) -> ployz_core::ids::NodeId {
-    ployz_core::ids::NodeId::try_new(value).expect("valid node id")
-}
-
-pub(super) fn container_id(value: &str) -> ployz_core::ids::ContainerId {
-    ployz_core::ids::ContainerId::try_new(value).expect("valid container id")
-}
-
-pub(super) fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
-}
-
-pub(super) fn joined_at(value: u64) -> ployz_core::machine::JoinTokenRedeemedAt {
-    ployz_core::machine::JoinTokenRedeemedAt::try_new(value).expect("valid join time")
-}
-
-pub(super) fn expires_at(value: u64) -> JoinTokenExpiresAt {
-    JoinTokenExpiresAt::try_new(value).expect("valid join token expiry")
-}
-
-pub(super) fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
-    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
-}
-
-pub(super) fn lease_time(value: u64) -> OperationLeaseExpiresAt {
-    OperationLeaseExpiresAt::try_new(value).expect("valid lease time")
-}
-
-pub(super) fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
-}
-
-pub(super) fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
-}
-
-pub(super) fn cancellation_reason(value: &str) -> CancellationReason {
-    CancellationReason::try_new(value).expect("valid cancellation reason")
-}
-
 pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
 }
 
 pub(super) fn cert_challenge(hostname: &str) -> AcmeHttp01Challenge {
     AcmeHttp01Challenge::try_new(
-        RouteHostname::try_new(hostname).expect("valid hostname"),
+        ployz_test_support::ids::route_hostname(hostname),
         AcmeChallengeToken::try_new("token_123").expect("valid challenge token"),
         AcmeChallengeValue::try_new("token_123.thumbprint_456").expect("valid challenge value"),
         AcmeChallengeTtlSeconds::try_new(60).expect("valid challenge ttl"),
@@ -364,7 +191,7 @@ pub(super) fn cert_challenge(hostname: &str) -> AcmeHttp01Challenge {
 pub(super) fn active_cert(cert_id: &str, hostname: &str) -> ActiveCertState {
     ActiveCertState {
         cert_id: self::cert_id(cert_id),
-        hostname: RouteHostname::try_new(hostname).expect("valid hostname"),
+        hostname: ployz_test_support::ids::route_hostname(hostname),
         bundle_ref: CertBundleRef::try_new(format!("obj://PLZ_CERTS/{cert_id}/rev_1"))
             .expect("valid bundle ref"),
         validity: CertValidityWindow::try_new(valid_at(1_700_000_000), valid_at(1_707_776_000))

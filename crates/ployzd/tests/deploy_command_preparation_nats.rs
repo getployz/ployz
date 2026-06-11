@@ -3,30 +3,29 @@ use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, WireGuardPeerEndpoint
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::{OperationId, StepId};
 use ployz_core::machine::MachineName;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
     ExpectedActiveService, NodePublicIpObservation,
 };
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, route_port, service_id,
+};
 use ployzd::deploy_worker::{
     ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
     load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
-
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
@@ -407,7 +406,7 @@ async fn prepare_command_from_nats(
 }
 
 struct TestNats {
-    nats: SecuredTestNats,
+    connected: ployz_test_support::nats::TestNats,
     jetstream: jetstream::Context,
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
@@ -421,13 +420,7 @@ impl TestNats {
     /// The observation store connected as the given node — each node may
     /// only write its own observation keys.
     async fn node_observations(&self, node_id_value: &str) -> AsyncNatsObservationStore {
-        let node_config = self
-            .nats
-            .node_config(&node_id(node_id_value))
-            .expect("fixture minted the node credentials");
-        let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
-            .await
-            .expect("observing node connects");
+        let node_client = self.connected.node_client(&node_id(node_id_value)).await;
         AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client))
             .await
             .expect("open node observation store")
@@ -441,33 +434,10 @@ async fn test_nats() -> TestNats {
         node_id("edge_2"),
         node_id("core_1"),
     ];
-    let nats = SecuredTestNats::start_with_nodes(&node_ids)
-        .await
-        .expect("secured test nats starts");
-    let client = connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("controller connects");
-    let jetstream = jetstream::new(client);
-    jetstream
-        .create_key_value(jetstream::kv::Config {
-            bucket: KV_CORE_BUCKET.to_owned(),
-            ..Default::default()
-        })
-        .await
-        .expect("create KV_CORE bucket");
-    jetstream
-        .create_key_value(jetstream::kv::Config {
-            bucket: KV_OBS_BUCKET.to_owned(),
-            ..Default::default()
-        })
-        .await
-        .expect("create KV_OBS bucket");
-    let node_config = nats
-        .node_config(&node_id("node_a"))
-        .expect("fixture minted node_a credentials");
-    let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("node connects");
+    let connected = ployz_test_support::nats::TestNats::start_with_nodes(&node_ids).await;
+    connected.bootstrap_resources().await;
+    let jetstream = connected.jetstream.clone();
+    let node_client = connected.node_client(&node_id("node_a")).await;
     let node_jetstream = jetstream::new(node_client);
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
@@ -477,7 +447,7 @@ async fn test_nats() -> TestNats {
         .expect("open observation store");
 
     TestNats {
-        nats,
+        connected,
         jetstream,
         core_state,
         observations,
@@ -558,30 +528,6 @@ fn wireguard_peer_endpoint(node_id: &str, last_octet: u8) -> WireGuardPeerEndpoi
             DEFAULT_WIREGUARD_LISTEN_PORT,
         ),
     )
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
 }
 
 fn cleanup_container(

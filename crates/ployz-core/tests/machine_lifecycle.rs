@@ -1,13 +1,13 @@
-use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MachineActivationOutcome, MachineAddCommand, MachineAddFailure, MachineAddOperationState,
-    MachineAddOperationStateName, MachineJoinOutcome, MachineName, MachineReadinessCheck,
+    MachineAddOperationStateName, MachineJoinOutcome, MachineReadinessCheck,
     MachineReadinessEvidence, MachineTransitionRejected, activate_joined_machine, plan_machine_add,
     redeem_join_token,
 };
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
+use ployz_test_support::ids::{machine_name, node_id, operation_id};
 
 #[test]
 fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
@@ -159,18 +159,6 @@ fn expires_at(value: u64) -> JoinTokenExpiresAt {
 
 fn redeemed_at(value: u64) -> JoinTokenRedeemedAt {
     JoinTokenRedeemedAt::try_new(value).expect("valid time")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn machine_name(value: &str) -> MachineName {
-    MachineName::try_new(value).expect("valid machine name")
 }
 
 fn failure(value: &str) -> FailureMessage {

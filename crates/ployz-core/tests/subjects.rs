@@ -9,6 +9,7 @@ use ployz_core::subjects::{
     op_deploy_wireguard_ebpf_prepared, op_machine_add_completed, op_machine_add_failed,
     op_machine_add_joined, op_machine_add_submitted, op_watch,
 };
+use ployz_test_support::ids::{container_id, node_id};
 
 #[test]
 fn operation_subjects_use_validated_operation_ids() {
@@ -155,12 +156,4 @@ fn ids_use_positive_ascii_token_grammar() {
             value: "op/123".to_owned()
         })
     );
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ployz_core::ids::ContainerId {
-    ployz_core::ids::ContainerId::try_new(value).expect("valid container id")
 }

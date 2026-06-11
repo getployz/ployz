@@ -7,7 +7,7 @@ use ployz_core::dataplane::{
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::{ContainerId, NodeId, OperationId, StepId};
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
@@ -19,6 +19,9 @@ use ployz_core::ops::{
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceCommit,
     ActiveServiceCommitRequest, CoreStateRevision, ExpectedActiveRoute, ExpectedActiveService,
+};
+pub(crate) use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, service_id,
 };
 use ployzd::deploy_worker::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitError, ActiveServiceCommitter,
@@ -785,26 +788,6 @@ fn observed_service_container(
 
 pub(super) fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
-}
-
-pub(super) fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-pub(super) fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-pub(super) fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-pub(super) fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-pub(super) fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
 }
 
 pub(super) fn image(value: &str) -> ImageReference {

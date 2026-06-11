@@ -1,15 +1,12 @@
 use ployz_core::backup::{
     BackupArtifactKind, BackupBundle, BackupManifest, ControlPlaneKvSnapshot,
 };
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
+use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
-    BackupOperationState, EventSequence, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationStatus,
+    BackupOperationState, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayRequest, OperationStatus,
 };
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
-use ployz_nats::bootstrap::{BootstrapPlan, assure_nats_resources};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::objects::{
@@ -19,10 +16,16 @@ use ployz_nats::objects::{
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
+use ployz_test_support::ids::{
+    event_sequence, idempotency_key, node_id, operation_id, owner_id as operation_owner_id,
+    revision_id, service_id,
+};
+use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::backup_runtime::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
 use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
 use ployzd::controllers::{BackupCreateCommand, MachineAddBootstrapConfig, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;
+use std::time::Duration;
 
 #[tokio::test]
 async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
@@ -43,7 +46,8 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
 
     assert_eq!(accepted.operation_id, operation_id("op_backup"));
     assert_eq!(accepted.start_sequence, event_sequence(1));
-    let status = wait_for_terminal_backup_status(&api, operation_id("op_backup")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_backup"), Duration::from_secs(4)).await;
     let manifest = completed_backup_manifest(&status, "op_backup");
     assert_eq!(
         manifest.format_version,
@@ -169,8 +173,12 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     })
     .await
     .expect("backup create is accepted");
-    let source_status =
-        wait_for_terminal_backup_status(&api, operation_id("op_backup_restore")).await;
+    let source_status = wait_for_terminal_status(
+        &api,
+        &operation_id("op_backup_restore"),
+        Duration::from_secs(4),
+    )
+    .await;
     let source_manifest = completed_backup_manifest(&source_status, "op_backup_restore");
     let [artifact] = source_manifest.artifacts.as_slice() else {
         panic!("expected one backup artifact");
@@ -262,47 +270,11 @@ fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
         MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
             .expect("default bootstrap URL is valid"),
     )
-    .with_join_template(machine_join_template())
-}
-
-fn machine_join_template() -> MachineJoinTemplate {
-    serde_json::from_str(
-        r#"{
-  "join_bundle": {
-    "material": {
-      "cluster_name": "prod",
-      "runtime_nats_url": "nats://127.0.0.1:7422",
-      "trusted_nats": {
-        "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
-      },
-      "ployzd": {
-        "version": "0.1.0",
-        "source": "/tmp/ployzd",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/bin/ployzd"
-      },
-      "ebpf_bytecode": {
-        "version": "0.1.0",
-        "source": "/tmp/ployz-ebpf-tc",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-      },
-      "ebpf_ctl": {
-        "version": "0.1.0",
-        "source": "/tmp/ployz-ebpf-ctl",
-        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-      }
-    }
-  }
-}
-"#,
-    )
-    .expect("test join template is valid")
+    .with_join_template(ployz_test_support::fixtures::machine_join_template())
 }
 
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the control-runtime side.
     client: async_nats::Client,
     /// User principal: the operator driving API commands.
@@ -310,26 +282,12 @@ struct TestNats {
     jetstream: async_nats::jetstream::Context,
 }
 
-const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 impl TestNats {
     async fn start() -> Self {
-        let nats = ployz_test_support::nats::SecuredTestNats::start()
-            .await
-            .expect("secured test nats starts");
-        let client = ployz_nats::connect::connect_authenticated(
-            &nats.controller_config(),
-            TEST_NATS_CONNECT_TIMEOUT,
-        )
-        .await
-        .expect("controller connects");
-        let user_client = ployz_nats::connect::connect_authenticated(
-            &nats.user_config(),
-            TEST_NATS_CONNECT_TIMEOUT,
-        )
-        .await
-        .expect("operator connects");
-        let jetstream = async_nats::jetstream::new(client.clone());
+        let nats = ployz_test_support::nats::TestNats::start().await;
+        let client = nats.controller.clone();
+        let user_client = nats.user.clone();
+        let jetstream = nats.jetstream.clone();
 
         Self {
             _nats: nats,
@@ -341,11 +299,7 @@ impl TestNats {
 }
 
 async fn assure_control_resources(nats: &TestNats) {
-    let plan =
-        BootstrapPlan::for_single_server_client(&nats.client).expect("bootstrap plan builds");
-    assure_nats_resources(&nats.jetstream, &plan)
-        .await
-        .expect("bootstrap resources are assured");
+    nats._nats.bootstrap_resources().await;
 }
 
 async fn seed_controllers(nats: &TestNats) -> OperationControllers {
@@ -458,63 +412,4 @@ fn assert_snapshot_contains_control_buckets(snapshot: &ControlPlaneKvSnapshot) {
             .iter()
             .any(|bucket| bucket.name == "KV_OPS" && !bucket.entries.is_empty())
     );
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
-}
-
-fn operation_owner_id(value: &str) -> OperationOwnerId {
-    OperationOwnerId::try_new(value).expect("valid operation owner id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
-}
-
-async fn wait_for_terminal_backup_status(
-    api: &OperationApiClient,
-    operation_id: OperationId,
-) -> OperationStatus {
-    for _ in 0..80 {
-        let status = api
-            .ops_status(&OpsStatusRequest {
-                operation_id: operation_id.clone(),
-            })
-            .await
-            .expect("status is readable")
-            .status;
-        let OperationStatus::Backup { state, .. } = &status else {
-            panic!("expected backup status");
-        };
-        if state.is_terminal() {
-            return status;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-
-    let status = api
-        .ops_status(&OpsStatusRequest {
-            operation_id: operation_id.clone(),
-        })
-        .await
-        .expect("status is readable")
-        .status;
-    panic!("backup did not reach terminal status: {status:?}");
 }

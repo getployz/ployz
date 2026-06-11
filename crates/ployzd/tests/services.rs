@@ -1,5 +1,5 @@
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
-use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLease};
+use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::subjects::{
     API_BACKUP_CREATE, API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_MACHINE_INSPECT,
     API_MACHINE_JOIN_REPORT, API_MACHINE_LIST, API_OPS_STATUS, API_OPS_WATCH, API_SERVICE_INSPECT,
@@ -7,6 +7,7 @@ use ployz_core::subjects::{
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
+use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzd::operation_api::{ops_status_missing, owned_operation};
 use ployzd::services::DaemonServiceCatalog;
 
@@ -193,18 +194,6 @@ fn mutating_service_acceptance_is_owned_not_inline_work() {
     assert_eq!(accepted.owner_lease, lease);
     assert_eq!(accepted.watch_subject, "plz.v1.op.op_123.>".to_owned());
     assert_eq!(accepted.start_sequence, event_sequence(11));
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {

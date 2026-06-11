@@ -1,4 +1,4 @@
-use ployz_core::ops::RouteHostname;
+use ployz_test_support::ids::route_hostname;
 use ployzd::dns::{
     DnsAnswer, DnsProjection, DnsProjectionError, DnsProjectionInput, DnsProjectionState,
     DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState, apply_dns_update, project_dns,
@@ -150,10 +150,6 @@ fn dns_answers_reject_empty_and_whitespace_values() {
             .render(),
         "2001:db8::10"
     );
-}
-
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
 }
 
 fn record<const N: usize>(hostname: &str, answers: [&str; N]) -> DnsRecordSet {

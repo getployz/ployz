@@ -4,14 +4,16 @@ use ployz_core::dataplane::{
     WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, ServiceId};
 use ployz_core::ops::{
-    CancellationReason, DeployOperationFailure, DeployOperationState, DeployRunningStage,
-    EventSequence, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperatorHint,
-    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
-    RouteTarget,
+    DeployOperationFailure, DeployOperationState, DeployRunningStage, EventSequence,
+    HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationStatus, OperatorHint, ReplayedOperationEvent,
+    RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+};
+use ployz_test_support::ids::{
+    cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
+    node_id, operation_id, route_hostname, route_port, service_id,
 };
 
 #[test]
@@ -472,44 +474,12 @@ fn cancellation_reasons_are_non_empty() {
     assert!(serde_json::from_str::<OperationEvent>(empty_reason).is_err());
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
 fn active_service_running() -> DeployRunningStage {
     DeployRunningStage::ActiveServiceCommit
 }
 
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
 fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
     WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
-}
-
-fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
-    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
-}
-
-fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("valid failure message")
-}
-
-fn cancellation_reason(value: &str) -> CancellationReason {
-    CancellationReason::try_new(value).expect("valid cancellation reason")
 }
 
 fn operator_hint(value: &str) -> OperatorHint {
@@ -518,12 +488,4 @@ fn operator_hint(value: &str) -> OperatorHint {
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
-}
-
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
 }

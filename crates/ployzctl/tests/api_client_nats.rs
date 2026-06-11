@@ -1,9 +1,9 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{NodeId, OperationId, OperationOwnerId, RevisionId};
+use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId};
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
-    EventSequence, OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
+    OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationLeaseExpiresAt, OperationOwnerLease,
 };
 use ployz_core::roles::FirstNodeGateway;
@@ -12,7 +12,6 @@ use ployz_core::state::{
     NodePublicIpObservation,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
 };
@@ -33,20 +32,18 @@ use ployz_sdk_types::{
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzctl::api_client::{
     OperationApiClient, OperationApiClientError, OperationApiRequestFailure,
 };
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 static SECURED_API_FIXTURE_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
 struct SecuredApiFixture {
     _lock: OwnedMutexGuard<()>,
-    _nats: SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     service_client: async_nats::Client,
     user_client: async_nats::Client,
 }
@@ -57,16 +54,9 @@ async fn secured_api_fixture() -> SecuredApiFixture {
         .clone()
         .lock_owned()
         .await;
-    let nats = SecuredTestNats::start()
-        .await
-        .expect("secured test nats starts");
-    let service_client =
-        connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
-            .await
-            .expect("controller connects");
-    let user_client = connect_authenticated(&nats.user_config(), TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("user connects");
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let service_client = nats.controller.clone();
+    let user_client = nats.user.clone();
     SecuredApiFixture {
         _lock: lock,
         _nats: nats,
@@ -695,24 +685,12 @@ fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
     }
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
 fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
     OperationOwnerLease::new(
         OperationId::try_new(operation_id).expect("valid operation id"),
         OperationOwnerId::try_new(owner_id).expect("valid owner id"),
         OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
     )
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn ops_watch_request() -> OperationEventReplayRequest {

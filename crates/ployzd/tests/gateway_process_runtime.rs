@@ -1,14 +1,16 @@
 use async_nats::jetstream;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{
     ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     NodeContainerObservationSnapshot,
 };
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::RouteTarget;
 use ployz_core::state::{ActiveRouteCommitRequest, ExpectedActiveRoute, GatewayServingStatus};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
+use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::ids::{
+    container_id, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    step_id,
+};
 use ployzd::gateway::GatewayUpstream;
 use ployzd::gateway_process_runtime::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayStatusPublishFailure,
@@ -309,7 +311,7 @@ fn gateway_serves_route(
 }
 
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    connected: ployz_test_support::nats::TestNats,
     /// Controller principal: bucket administration and route-state writes.
     client: async_nats::Client,
     /// Node principal: the gateway process side (gateway runs as the
@@ -317,31 +319,15 @@ struct TestNats {
     node_client: async_nats::Client,
 }
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
 impl TestNats {
     async fn start_without_buckets() -> Self {
-        let nats =
-            ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_7")])
-                .await
-                .expect("secured test nats starts");
-        let client = ployz_nats::connect::connect_authenticated(
-            &nats.controller_config(),
-            TEST_NATS_CONNECT_TIMEOUT,
-        )
-        .await
-        .expect("controller connects");
-        let node_client = ployz_nats::connect::connect_authenticated(
-            &nats
-                .node_config(&node_id("node_7"))
-                .expect("fixture minted node_7 credentials"),
-            TEST_NATS_CONNECT_TIMEOUT,
-        )
-        .await
-        .expect("node_7 connects");
+        let connected =
+            ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_7")]).await;
+        let client = connected.controller.clone();
+        let node_client = connected.node_client(&node_id("node_7")).await;
 
         Self {
-            _nats: nats,
+            connected,
             client,
             node_client,
         }
@@ -352,16 +338,7 @@ impl TestNats {
     }
 
     async fn create_gateway_buckets(&self) {
-        let jetstream = jetstream::new(self.client.clone());
-        for bucket in [KV_CORE_BUCKET, KV_OBS_BUCKET] {
-            jetstream
-                .create_key_value(jetstream::kv::Config {
-                    bucket: bucket.to_owned(),
-                    ..Default::default()
-                })
-                .await
-                .expect("create key value bucket");
-        }
+        self.connected.bootstrap_resources().await;
     }
 }
 
@@ -413,14 +390,6 @@ fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
 fn socket_addr(value: &str) -> std::net::SocketAddr {
     value.parse().expect("valid socket address")
 }
@@ -430,30 +399,6 @@ fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
         ip: ip.parse().expect("valid endpoint ip"),
         port: route_port(port),
     }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn step_id(value: &str) -> StepId {
-    StepId::try_new(value).expect("valid step id")
 }
 
 struct TestUpstream {

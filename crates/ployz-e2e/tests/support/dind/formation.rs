@@ -22,13 +22,14 @@ use ployz_nats::connect::{
 };
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
-    MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineListRequest, MachineName,
+    MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineListRequest,
 };
 
-use super::super::ids::{idempotency_key, node_id, operation_id};
 use super::assert::operation_status;
 use super::join::{parse_install_line, run_edge_join};
 use super::{CONNECT_TIMEOUT, NATS_MATERIAL_DIR, with_evidence};
+use ployz_test_support::ids::machine_name;
+use ployz_test_support::ids::{idempotency_key, node_id, operation_id};
 
 /// One formed core: provisioned machines, keeper-installed secured NATS +
 /// ployzd units on the core, the cluster material copied to the host, and an
@@ -470,10 +471,6 @@ fn parse_operation_line(output: &str) -> Option<OperationId> {
         line.strip_prefix("operation ")
             .and_then(|id| OperationId::try_new(id.trim()).ok())
     })
-}
-
-fn machine_name(value: &str) -> MachineName {
-    MachineName::try_new(value).expect("valid machine name")
 }
 
 /// Tears the cluster down unless `PLOYZ_DIND_KEEP=1`.

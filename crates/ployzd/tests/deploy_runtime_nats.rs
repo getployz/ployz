@@ -3,7 +3,6 @@
 mod fixtures;
 
 use async_nats::jetstream;
-use async_nats::jetstream::stream::StorageType;
 use fixtures::*;
 use futures_util::StreamExt;
 use ployz_core::deploy::{DeployRequest, ReplicaCount};
@@ -14,11 +13,9 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
-use ployz_nats::operations::{
-    AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore, KV_OPS_BUCKET, PLZ_OPS_STREAM,
-};
+use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
+use ployz_test_support::ids::owner_id as operation_owner_id;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use ployzd::controllers::{
     DeploySubmitCommand, IdempotencyKey, MachineAddBootstrapConfig, OperationControllers,
@@ -489,7 +486,7 @@ async fn expired_accepted_lease_does_not_run_runtime_side_effects() {
 }
 
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Node principal for the stubbed slow node service.
@@ -497,56 +494,18 @@ struct TestNats {
     jetstream: jetstream::Context,
 }
 
-const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_slow")])
-        .await
-        .expect("secured test nats starts");
-    let client = ployz_nats::connect::connect_authenticated(
-        &nats.controller_config(),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("controller connects");
-    let node_slow = ployz_nats::connect::connect_authenticated(
-        &nats
-            .node_config(&node_id("node_slow"))
-            .expect("fixture minted node_slow credentials"),
-        TEST_NATS_CONNECT_TIMEOUT,
-    )
-    .await
-    .expect("node_slow connects");
-    let jetstream = jetstream::new(client.clone());
-    bootstrap_nats(&jetstream).await;
+    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_slow")]).await;
+    nats.bootstrap_resources().await;
+    let client = nats.controller.clone();
+    let node_slow = nats.node_client(&node_id("node_slow")).await;
+    let jetstream = nats.jetstream.clone();
 
     TestNats {
         _nats: nats,
         client,
         node_slow,
         jetstream,
-    }
-}
-
-async fn bootstrap_nats(jetstream: &jetstream::Context) {
-    jetstream
-        .create_stream(jetstream::stream::Config {
-            name: PLZ_OPS_STREAM.to_owned(),
-            subjects: vec!["plz.v1.op.>".to_owned()],
-            storage: StorageType::Memory,
-            ..Default::default()
-        })
-        .await
-        .expect("create PLZ_OPS stream");
-    for bucket in [KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET] {
-        jetstream
-            .create_key_value(jetstream::kv::Config {
-                bucket: bucket.to_owned(),
-                storage: StorageType::Memory,
-                ..Default::default()
-            })
-            .await
-            .expect("create KV bucket");
     }
 }
 
@@ -647,8 +606,4 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         route: None,
     }
-}
-
-fn operation_owner_id(value: &str) -> ployz_core::ids::OperationOwnerId {
-    ployz_core::ids::OperationOwnerId::try_new(value).expect("valid operation owner id")
 }

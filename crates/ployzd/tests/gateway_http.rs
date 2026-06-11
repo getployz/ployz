@@ -1,6 +1,6 @@
-use ployz_core::ids::{ContainerId, NodeId};
 use ployz_core::node::ContainerEndpoint;
-use ployz_core::ops::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
+use ployz_core::ops::{RouteHostnameError, RouteTarget};
+use ployz_test_support::ids::{container_id, node_id, route_hostname, route_port};
 use ployzd::gateway::{GatewayProjectedRoute, GatewayProjection, GatewayUpstream};
 use ployzd::gateway_http::{
     GatewayHttpProxyError, GatewayHttpRouteError, HttpRouteTargetError,
@@ -333,20 +333,4 @@ fn upstream_to_endpoint(ip: &str, port: u16) -> GatewayUpstream {
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
     RouteTarget::new(route_hostname(hostname), route_port(port))
-}
-
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
-fn container_id(value: &str) -> ContainerId {
-    ContainerId::try_new(value).expect("valid container id")
 }

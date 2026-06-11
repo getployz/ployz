@@ -43,6 +43,9 @@ use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
     MachineSnapshot,
 };
+use ployz_test_support::ids::{
+    idempotency_key, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+};
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
     CONTAINER_TYPE_LABEL, OPERATION_ID_LABEL, REVISION_LABEL, SERVICE_ID_LABEL,
@@ -62,9 +65,6 @@ use support::dind::formation::{
 };
 use support::dind::join::{parse_install_line, run_edge_join};
 use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, with_evidence};
-use support::ids::{
-    idempotency_key, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
-};
 
 /// The workload image `scripts/build-dind-machine-image.sh` bakes into the
 /// machine image; the inner Docker daemons load it at boot.

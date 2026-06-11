@@ -13,15 +13,22 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use async_nats::jetstream;
 use ployz_core::ids::NodeId;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
     NatsUserSeed, render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
+use ployz_keeper::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
+use ployz_nats::bootstrap::{BootstrapPlan, assure_nats_resources};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
+use ployz_nats::operation_api_client::OperationApiClient;
+
+/// The connect timeout every suite uses against the fixture server.
+pub const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 const READINESS_ATTEMPTS: u32 = 50;
 const READINESS_DELAY: Duration = Duration::from_millis(100);
@@ -57,11 +64,17 @@ impl SecuredTestNats {
     /// per supplied node id.
     pub async fn start_with_nodes(node_ids: &[NodeId]) -> Result<Self, FixtureError> {
         let dir = tempfile::TempDir::new()?;
-        let tls = write_tls_material(dir.path())?;
 
-        let controller = MintedNatsUser::generate()?;
-        let user = MintedNatsUser::generate()?;
-        let join = MintedNatsUser::generate()?;
+        // The cluster CA, server certificate, and base NKey users come from
+        // the production keeper identity minting — no parallel test-only
+        // TLS recipe.
+        let sans = ServerCertificateSans::try_new(None, Some("localhost".to_owned()))?;
+        let identity = generate_cluster_nats_identity(&sans)?;
+        let tls = write_tls_material(dir.path(), &identity)?;
+
+        let controller = identity.controller;
+        let user = identity.operator;
+        let join = identity.join;
         let system = MintedNatsUser::generate()?;
         let mut node_users = Vec::with_capacity(node_ids.len());
         for node_id in node_ids {
@@ -249,6 +262,73 @@ impl SecuredTestNats {
     }
 }
 
+/// The one connected fixture the suites share: a [`SecuredTestNats`] server
+/// plus authenticated Controller/User clients and a JetStream context.
+pub struct TestNats {
+    pub server: SecuredTestNats,
+    pub controller: async_nats::Client,
+    pub user: async_nats::Client,
+    pub jetstream: jetstream::Context,
+}
+
+impl TestNats {
+    pub async fn start() -> Self {
+        Self::start_with_nodes(&[]).await
+    }
+
+    /// Starts a secured server with one minted Node user per supplied id
+    /// and connects the Controller and User clients.
+    pub async fn start_with_nodes(node_ids: &[NodeId]) -> Self {
+        let server = SecuredTestNats::start_with_nodes(node_ids)
+            .await
+            .expect("secured test nats starts");
+        let controller =
+            connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+                .await
+                .expect("controller connects");
+        let user = connect_authenticated(&server.user_config(), TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("operator connects");
+        let jetstream = jetstream::new(controller.clone());
+
+        Self {
+            server,
+            controller,
+            user,
+            jetstream,
+        }
+    }
+
+    /// Assures the production single-core resource manifest (KV buckets,
+    /// streams, object buckets) on the fixture server — no parallel
+    /// test-only resource recipes.
+    pub async fn bootstrap_resources(&self) {
+        let plan = BootstrapPlan::for_single_server_client(&self.controller)
+            .expect("bootstrap plan builds");
+        assure_nats_resources(&self.jetstream, &plan)
+            .await
+            .expect("nats resources bootstrap");
+    }
+
+    /// The operator-facing operation API client (User principal).
+    #[must_use]
+    pub fn api(&self) -> OperationApiClient {
+        OperationApiClient::new(self.user.clone())
+    }
+
+    /// A client authenticated as the machine's Node user. Node runtimes,
+    /// gateway processes, and observation writers connect with this.
+    pub async fn node_client(&self, node_id: &NodeId) -> async_nats::Client {
+        let config = self
+            .server
+            .node_config(node_id)
+            .expect("fixture knows the node user");
+        connect_authenticated(&config, TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("node connects")
+    }
+}
+
 fn authorized_user(principal: NatsPrincipal, minted: &MintedNatsUser) -> NatsAuthorizedUser {
     NatsAuthorizedUser {
         principal,
@@ -327,30 +407,18 @@ struct WrittenTlsMaterial {
     key_path: PathBuf,
 }
 
-/// Mints a throwaway cluster CA plus a server certificate for loopback and
-/// writes them (and the server key) into the fixture directory.
-fn write_tls_material(dir: &Path) -> Result<WrittenTlsMaterial, FixtureError> {
-    let ca_key = rcgen::KeyPair::generate()?;
-    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new())?;
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, "ployz-secured-test-ca");
-    let ca_certificate = ca_params.self_signed(&ca_key)?;
-    let ca_pem = ca_certificate.pem();
-
-    let server_key = rcgen::KeyPair::generate()?;
-    let server_params =
-        rcgen::CertificateParams::new(vec!["localhost".to_owned(), "127.0.0.1".to_owned()])?;
-    let issuer = rcgen::Issuer::new(ca_params, ca_key);
-    let server_certificate = server_params.signed_by(&server_key, &issuer)?;
-
+/// Writes the keeper-minted cluster CA, server certificate, and server key
+/// into the fixture directory.
+fn write_tls_material(
+    dir: &Path,
+    identity: &ployz_keeper::nats_identity::ClusterNatsIdentity,
+) -> Result<WrittenTlsMaterial, FixtureError> {
     let ca_path = dir.join("ca.pem");
     let cert_path = dir.join("server.crt");
     let key_path = dir.join("server.key");
-    fs::write(&ca_path, ca_pem)?;
-    fs::write(&cert_path, server_certificate.pem())?;
-    fs::write(&key_path, server_key.serialize_pem())?;
+    fs::write(&ca_path, identity.ca.as_str())?;
+    fs::write(&cert_path, identity.server_cert.cert_pem.as_str())?;
+    fs::write(&key_path, identity.server_cert.key_pem.secret())?;
     Ok(WrittenTlsMaterial {
         ca_path,
         cert_path,

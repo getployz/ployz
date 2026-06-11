@@ -1,20 +1,15 @@
-//! Shared control-runtime fixture: a secured (TLS + NKey-authorized)
-//! `nats-server` plus the control process wired against it, and the
-//! reload-runner test double used to drive machine-add minting.
+//! Control-process wiring over the shared connected NATS fixture: the
+//! control runtime pointed at the fixture server, and the reload-runner
+//! test double used to drive machine-add minting.
 
-use async_nats::jetstream;
 use ployz_core::ids::NodeId;
-use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallSha256Digest, MachineBootstrapUrl, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
-};
-use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_nats::connect::connect_authenticated;
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinToken,
 };
+use ployz_test_support::fixtures::machine_join_material;
+use ployz_test_support::ids::node_id;
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::controllers::MachineAddBootstrapConfig;
@@ -26,13 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const FIXTURE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
 pub struct TestNats {
-    pub nats: SecuredTestNats,
-    pub client: async_nats::Client,
-    pub user_client: async_nats::Client,
-    pub jetstream: jetstream::Context,
+    pub connected: ployz_test_support::nats::TestNats,
     pub work_dir: tempfile::TempDir,
 }
 
@@ -42,43 +32,29 @@ impl TestNats {
     }
 
     pub async fn start_with_nodes(node_ids: &[NodeId]) -> Self {
-        let nats = SecuredTestNats::start_with_nodes(node_ids)
-            .await
-            .expect("secured test nats starts");
-        let client = connect_authenticated(&nats.controller_config(), FIXTURE_CONNECT_TIMEOUT)
-            .await
-            .expect("controller connects");
-        let user_client = connect_authenticated(&nats.user_config(), FIXTURE_CONNECT_TIMEOUT)
-            .await
-            .expect("operator connects");
-        let jetstream = jetstream::new(client.clone());
+        let connected = ployz_test_support::nats::TestNats::start_with_nodes(node_ids).await;
         let work_dir = tempfile::TempDir::new().expect("test work dir creates");
 
         Self {
-            nats,
-            client,
-            user_client,
-            jetstream,
+            connected,
             work_dir,
         }
     }
 
+    pub fn server(&self) -> &SecuredTestNats {
+        &self.connected.server
+    }
+
     pub fn api(&self) -> OperationApiClient {
-        OperationApiClient::new(self.user_client.clone())
+        self.connected.api()
     }
 
     pub async fn node_client(&self, node_id: &NodeId) -> async_nats::Client {
-        let config = self
-            .nats
-            .node_config(node_id)
-            .expect("fixture knows the node user");
-        connect_authenticated(&config, FIXTURE_CONNECT_TIMEOUT)
-            .await
-            .expect("node connects")
+        self.connected.node_client(node_id).await
     }
 
     pub fn reload_runner(&self) -> RecordingReload {
-        RecordingReload::signal(self.nats.server_pid())
+        RecordingReload::signal(self.server().server_pid())
     }
 
     pub fn control_config(&self) -> ControlProcessConfig {
@@ -94,12 +70,12 @@ impl TestNats {
 
     pub fn control_config_without_join_template(&self) -> ControlProcessConfig {
         ControlProcessConfig::new(
-            NatsServerRuntime::External(self.nats.client_url().clone()),
+            NatsServerRuntime::External(self.server().client_url().clone()),
             node_id("core_1"),
-            self.nats.controller_config(),
+            self.server().controller_config(),
         )
         .with_nats_authorization(ControlNatsAuthorizationConfig {
-            authorized_users_file: self.nats.authorized_users_path().to_path_buf(),
+            authorized_users_file: self.server().authorized_users_path().to_path_buf(),
             node_seed_file: self.work_dir.path().join("node.seed"),
         })
     }
@@ -118,7 +94,7 @@ impl TestNats {
         reload: RecordingReload,
     ) -> ployzd::control_runtime::RunningControlRuntime {
         ployzd::control_runtime::start_control_runtime_with_client_and_reload(
-            self.client.clone(),
+            self.connected.controller.clone(),
             config,
             reload,
         )
@@ -230,42 +206,13 @@ pub async fn redeem_when_ready(
     panic!("machine-add material did not become ready");
 }
 
+/// The canonical join material rendered against this fixture's live server
+/// URL and CA.
 pub fn machine_join_template(nats: &TestNats) -> MachineJoinTemplate {
-    let ca_pem = std::fs::read_to_string(nats.nats.ca_path()).expect("fixture CA is readable");
+    let ca_pem = std::fs::read_to_string(nats.server().ca_path()).expect("fixture CA is readable");
     MachineJoinTemplate {
-        join_bundle: ployz_core::install::MachineJoinBundle {
-            material: MachineJoinMaterial {
-                cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
-                    nats.nats.client_url().as_str(),
-                )
-                .expect("valid runtime nats url"),
-                trusted_nats: MachineJoinTrustedNats {
-                    ca_pem: NatsCaCertificatePem::try_new(ca_pem).expect("valid ca pem"),
-                },
-                ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
-                ebpf_bytecode: join_artifact(
-                    "/tmp/ployz-ebpf-tc",
-                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                ),
-                ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
-            },
+        join_bundle: MachineJoinBundle {
+            material: machine_join_material(nats.server().client_url().as_str(), &ca_pem),
         },
     }
-}
-
-fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
-    InstallArtifactSpec {
-        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-        source: InstallArtifactSource::try_new(source).expect("valid source"),
-        sha256: InstallSha256Digest::try_new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
-        .expect("valid digest"),
-        install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
-    }
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }

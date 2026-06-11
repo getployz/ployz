@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use ployz_core::ids::NodeId;
 use ployz_core::nats_config::{NatsListener, NatsServerTlsFiles};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
+use ployz_test_support::ids::node_id;
 use ployzd::nats_process::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
 
 #[test]
@@ -101,8 +101,4 @@ fn single_node_config(store_dir: PathBuf) -> NatsServerConfig {
         PathBuf::from("authorized-users.conf"),
     )
     .expect("valid config")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }

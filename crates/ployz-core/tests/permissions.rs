@@ -1,4 +1,3 @@
-use ployz_core::ids::NodeId;
 use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
     active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
@@ -12,6 +11,7 @@ use ployz_core::subjects::{
     JOBS_STREAM_SUBJECT, NODE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, node_observation_scope,
     node_service_scope,
 };
+use ployz_test_support::ids::node_id;
 
 #[test]
 fn node_credential_renders_own_scopes_and_route_state_reads() {
@@ -202,8 +202,4 @@ fn inbox_prefixes_are_distinct_per_principal() {
         }),
         "_INBOX_node_node_7"
     );
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
 }

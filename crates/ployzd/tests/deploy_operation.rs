@@ -5,12 +5,12 @@ use fixtures::*;
 use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
-    FailureMessage,
 };
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveServiceCommitRequest, ExpectedActiveRoute,
     ExpectedActiveService,
 };
+use ployz_test_support::ids::failure_message;
 use ployzd::deploy_worker::{
     ActiveRouteCommitter, ActiveServiceCommitter, DeployCleanupResult, DeployExecutionCommand,
     DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
@@ -22,10 +22,6 @@ use ployzd::docker::labels::ManagedContainerIdentity;
 use ployzd::node_agent::runtime::managed_container_labels;
 use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
-
-fn failure_message(value: &str) -> FailureMessage {
-    FailureMessage::try_new(value).expect("test failure message is non-empty")
-}
 
 fn assert_deploy_event_order(
     records: &[RecordedOperation],

@@ -1,17 +1,15 @@
 use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use ployz_core::deploy::{ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, RevisionId, ServiceId};
+use ployz_core::ids::RevisionId;
 use ployz_core::ops::{
-    DeployOperationState, DeployRunningStage, EventSequence, OperationEvent,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationOwnershipStatus,
-    OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    DeployOperationState, DeployRunningStage, OperationEvent, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationOwnershipStatus, OperationStatus,
+    OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
-use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -20,16 +18,15 @@ use ployz_sdk_types::{
     OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
-use ployz_test_support::nats::SecuredTestNats;
+use ployz_test_support::ids::{event_sequence, operation_id, service_id};
+use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binary_ops_watch_polls_until_operation_is_terminal() {
-    let server = SecuredTestNats::start().await.expect("secured test nats");
-    let client = connect_authenticated(&server.controller_config(), Duration::from_secs(5))
-        .await
-        .expect("connect to test nats");
-    let env = CliNatsEnv::new(&server);
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
     let spec = test_api_service(&[OpsWatchApi::ENDPOINT, OpsStatusApi::ENDPOINT]);
     let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
@@ -110,8 +107,8 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
-        .arg(server.client_url().as_str())
-        .env(PLOYZ_NATS_CA_FILE_ENV, server.ca_path())
+        .arg(server.server.client_url().as_str())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .args(["ops", "watch", "op_deploy"])
         .output()
@@ -201,18 +198,6 @@ fn deploy_request() -> ployz_core::deploy::DeployRequest {
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         route: None,
     }
-}
-
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn stdout(output: &Output) -> String {
