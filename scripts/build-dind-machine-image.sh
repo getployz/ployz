@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Builds the Docker-in-Docker machine image for the ployz e2e harness
+# (docs/plans/2026-06-10-001-feat-direct-nats-v1-auth-iroh-removal-dind-e2e.md, C1).
+#
+# 1. Builds linux release binaries for the HOST docker architecture inside
+#    rust:1.91-bookworm with cached target/registry dirs (the proven
+#    local-dataplane-proof.sh / prepare-h0-artifacts.sh recipe). The binaries
+#    are NOT baked into the image — the harness volume-mounts them at test
+#    time so the image is rebuilt rarely.
+# 2. Saves the workload image tarball for the host arch into the build
+#    context so inner Docker daemons never pull from a registry.
+# 3. Builds the machine image: systemd PID 1 + inner dockerd + nats-server.
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
+BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
+NATS_SERVER_VERSION="${PLOYZ_DIND_NATS_SERVER_VERSION:-2.14.2}"
+WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
+TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
+CARGO_REGISTRY_DIR="${PLOYZ_DIND_CARGO_REGISTRY_DIR:-/tmp/ployz-dind-cargo-registry}"
+CARGO_GIT_DIR="${PLOYZ_DIND_CARGO_GIT_DIR:-/tmp/ployz-dind-cargo-git}"
+CONTEXT_DIR="${ROOT_DIR}/docker/dind-machine"
+
+command -v docker >/dev/null 2>&1 || {
+  echo "docker is required to build the DinD machine image" >&2
+  exit 1
+}
+
+# Always the HOST docker server architecture — never hardcode amd64.
+docker_platform() {
+  if [ -n "${PLOYZ_DIND_PLATFORM:-}" ]; then
+    printf '%s\n' "${PLOYZ_DIND_PLATFORM}"
+    return 0
+  fi
+
+  case "$(docker info --format '{{.Architecture}}')" in
+    aarch64 | arm64)
+      printf 'linux/arm64\n'
+      ;;
+    x86_64 | amd64)
+      printf 'linux/amd64\n'
+      ;;
+    *)
+      docker info --format 'linux/{{.Architecture}}'
+      ;;
+  esac
+}
+
+build_linux_artifacts() {
+  if [ "${PLOYZ_DIND_SKIP_BUILD:-0}" = "1" ]; then
+    return 0
+  fi
+
+  mkdir -p "${TARGET_DIR}" "${CARGO_REGISTRY_DIR}" "${CARGO_GIT_DIR}"
+  docker run --rm \
+    --platform "$(docker_platform)" \
+    --volume "${ROOT_DIR}:/work" \
+    --volume "${TARGET_DIR}:/target" \
+    --volume "${CARGO_REGISTRY_DIR}:/usr/local/cargo/registry" \
+    --volume "${CARGO_GIT_DIR}:/usr/local/cargo/git" \
+    --workdir /work \
+    "${BUILD_IMAGE}" \
+    cargo build --release --target-dir /target \
+      -p ployzctl \
+      -p ployzd \
+      -p ployz-keeper \
+      -p ployz-ebpf-ctl
+}
+
+bake_workload_tarball() {
+  docker pull --platform "$(docker_platform)" "${WORKLOAD_IMAGE}"
+  rm -f "${CONTEXT_DIR}/nginx.tar"
+  docker save -o "${CONTEXT_DIR}/nginx.tar" "${WORKLOAD_IMAGE}"
+}
+
+build_machine_image() {
+  docker build \
+    --platform "$(docker_platform)" \
+    --label dev.ployz.dind.managed=true \
+    --build-arg "NATS_SERVER_VERSION=${NATS_SERVER_VERSION}" \
+    --tag "${MACHINE_IMAGE}" \
+    "${CONTEXT_DIR}"
+}
+
+build_linux_artifacts
+bake_workload_tarball
+build_machine_image
+
+cat <<EOF
+DinD machine image built: ${MACHINE_IMAGE}
+Host-arch linux artifacts (volume-mount these at test time):
+  ployzd:        ${TARGET_DIR}/release/ployzd
+  ployzctl:      ${TARGET_DIR}/release/ployzctl
+  ployz-keeper:  ${TARGET_DIR}/release/ployz-keeper
+  ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
+EOF
