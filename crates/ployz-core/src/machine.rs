@@ -323,12 +323,30 @@ impl MachineAddOperationState {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineAddFailure {
     InvalidJoinToken,
-    JoinTokenExpired { expired_at: JoinTokenExpiresAt },
-    BootstrapFailed { message: FailureMessage },
-    ReadinessFailed { evidence: MachineReadinessEvidence },
-    AuthorizationRenderFailed { message: FailureMessage },
-    NatsReloadFailed { message: FailureMessage },
-    MintedCredentialUnusable { message: FailureMessage },
+    JoinTokenExpired {
+        expired_at: JoinTokenExpiresAt,
+    },
+    BootstrapFailed {
+        message: FailureMessage,
+    },
+    ReadinessFailed {
+        evidence: MachineReadinessEvidence,
+    },
+    AuthorizationRenderFailed {
+        message: FailureMessage,
+    },
+    NatsReloadFailed {
+        message: FailureMessage,
+    },
+    MintedCredentialUnusable {
+        message: FailureMessage,
+    },
+    /// Credential provisioning progressed but its operation evidence could
+    /// not be recorded; the mint fails terminally instead of stranding the
+    /// operation non-terminal.
+    CredentialEvidenceWriteFailed {
+        message: FailureMessage,
+    },
 }
 
 /// One step of the per-machine credential minting work that runs after a

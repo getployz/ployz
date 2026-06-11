@@ -231,6 +231,67 @@ async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
         .expect("control runtime shuts down");
 }
 
+/// A control crash between machine-add acceptance and material-ready must
+/// not strand the operation: the next control start runs one bounded
+/// reconciliation pass that resumes the mint, and the per-key mint claim
+/// makes the resumed run converge on the partially minted material.
+#[tokio::test]
+async fn control_restart_resumes_stranded_mint_to_material_ready() {
+    let nats = TestNats::start().await;
+    // Gate the reload so the mint cannot reach material-ready while the
+    // first control process is alive.
+    let reload = RecordingReload::gated_signal(nats.nats.server_pid());
+    let config = nats.control_config();
+    let runtime = nats
+        .start_control_with_reload(&config, reload.clone())
+        .await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_stranded", "idem_stranded", "node_st").await;
+    let not_ready = api
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: accepted.join_token.clone(),
+        })
+        .await
+        .expect_err("redeem before material-ready is refused");
+    assert!(
+        matches!(
+            not_ready,
+            OperationApiClientError::Domain {
+                error: MachineJoinRedeemError::MaterialNotReady { .. },
+                ..
+            }
+        ),
+        "mint had not reached material-ready before the crash: {not_ready:?}"
+    );
+
+    // The control process "crashes": the mint worker dies with it, leaving
+    // the accepted operation without material.
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+    reload.release();
+
+    // A fresh control start reconciles: the stranded mint resumes and
+    // reaches material-ready without a new machine-add request.
+    let runtime = nats.start_control(&config).await;
+    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    assert!(
+        redeemed
+            .secret_delivery
+            .nats_credentials
+            .secret()
+            .starts_with("SU"),
+        "resumed mint produced an NKey user seed"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
 /// Redeem before the mint worker reaches material-ready is the typed
 /// not-ready response, and the keeper-style bounded retry succeeds later.
 #[tokio::test]

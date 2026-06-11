@@ -387,7 +387,8 @@ fn machine_add_failure_allowed(
             | crate::machine::MachineAddFailure::JoinTokenExpired { .. }
             | crate::machine::MachineAddFailure::AuthorizationRenderFailed { .. }
             | crate::machine::MachineAddFailure::NatsReloadFailed { .. }
-            | crate::machine::MachineAddFailure::MintedCredentialUnusable { .. },
+            | crate::machine::MachineAddFailure::MintedCredentialUnusable { .. }
+            | crate::machine::MachineAddFailure::CredentialEvidenceWriteFailed { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },
@@ -405,7 +406,8 @@ fn machine_add_failure_allowed(
             | crate::machine::MachineAddFailure::JoinTokenExpired { .. }
             | crate::machine::MachineAddFailure::AuthorizationRenderFailed { .. }
             | crate::machine::MachineAddFailure::NatsReloadFailed { .. }
-            | crate::machine::MachineAddFailure::MintedCredentialUnusable { .. },
+            | crate::machine::MachineAddFailure::MintedCredentialUnusable { .. }
+            | crate::machine::MachineAddFailure::CredentialEvidenceWriteFailed { .. },
         )
         | (
             MachineAddOperationState::Completed

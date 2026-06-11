@@ -1,22 +1,28 @@
 use async_nats::jetstream;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
+use ployz_core::install::{
+    MachineJoinBundle, MachineJoinNatsCredentials, MachineJoinSecretDelivery,
+};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
+use ployz_core::nats_config::NatsUserPublicKey;
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
     OperationOwnershipStatus, OperationStatus,
 };
 use ployz_core::roles::FirstNodeGateway;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use super::keys::{
-    backup_submission_key, cert_submission_key, deploy_submission_key, machine_add_join_token_key,
+    MACHINE_ADD_SUBMISSION_KEY_PREFIX, backup_submission_key, cert_submission_key,
+    deploy_submission_key, machine_add_join_token_key, machine_add_mint_claim_key,
     machine_add_secret_delivery_key, machine_add_submission_key, operation_owner_lease_key,
     operation_status_key,
 };
 use super::projection::{status_id, status_sequence};
 use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
+use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
 
 #[derive(Debug, Clone)]
 pub struct AsyncNatsOperationStatusStore {
@@ -52,6 +58,17 @@ pub struct StoredMachineAddSubmission {
 pub struct StoredMachineAddSecretDelivery {
     pub operation_id: ployz_core::ids::OperationId,
     pub secret_delivery: MachineJoinSecretDelivery,
+}
+
+/// The write-once mint claim for one machine-add idempotency key
+/// (ADR-0015 atomic resource claim). The first mint run stores its freshly
+/// generated material here before any render; concurrent or resumed runs
+/// adopt the claimed material and converge on the same secret delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredMachineAddMintClaim {
+    pub operation_id: ployz_core::ids::OperationId,
+    pub nkey_public: NatsUserPublicKey,
+    pub nkey_seed: MachineJoinNatsCredentials,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +367,99 @@ impl AsyncNatsOperationStatusStore {
             Ok(_) => Ok(submission.clone()),
             Err(error) => {
                 if let Some(existing) = self.machine_add_submission(idempotency_key).await? {
+                    Ok(existing)
+                } else {
+                    Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    /// Every stored machine-add submission. Used by control-start mint
+    /// reconciliation to find accepted machine-adds whose mint worker died
+    /// with a previous control process.
+    pub async fn machine_add_submissions(
+        &self,
+    ) -> Result<Vec<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        let entries = bounded_bucket_key_scan_entries_with_prefix(
+            &self.bucket,
+            MACHINE_ADD_SUBMISSION_KEY_PREFIX,
+            NATS_OPERATION_TIMEOUT,
+        )
+        .await
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.message,
+        })?;
+
+        let mut current: BTreeMap<String, jetstream::kv::Entry> = BTreeMap::new();
+        for entry in entries {
+            match entry.operation {
+                jetstream::kv::Operation::Put => {
+                    current.insert(entry.key.clone(), entry);
+                }
+                jetstream::kv::Operation::Delete | jetstream::kv::Operation::Purge => {
+                    current.remove(&entry.key);
+                }
+            }
+        }
+
+        let mut submissions = Vec::with_capacity(current.len());
+        for entry in current.into_values() {
+            submissions.push(
+                serde_json::from_slice::<StoredMachineAddSubmission>(&entry.value)
+                    .map_err(OperationStatusStoreError::DecodeSubmission)?,
+            );
+        }
+        Ok(submissions)
+    }
+
+    pub async fn machine_add_mint_claim(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
+        let Some(payload) = with_status_timeout(
+            "machine add mint claim get",
+            self.bucket.get(machine_add_mint_claim_key(idempotency_key)),
+        )
+        .await?
+        .map_err(|error| OperationStatusStoreError::GetStatus {
+            message: error.to_string(),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(OperationStatusStoreError::DecodeSubmission)
+    }
+
+    /// Create-only claim of minted credential material for one idempotency
+    /// key. The first writer wins; later writers receive the winning claim
+    /// and must continue with it instead of their own candidate.
+    pub async fn put_machine_add_mint_claim_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        claim: &StoredMachineAddMintClaim,
+    ) -> Result<StoredMachineAddMintClaim, OperationStatusStoreError> {
+        if let Some(existing) = self.machine_add_mint_claim(idempotency_key).await? {
+            return Ok(existing);
+        }
+
+        let key = machine_add_mint_claim_key(idempotency_key);
+        let payload =
+            serde_json::to_vec(claim).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_status_timeout(
+            "machine add mint claim create",
+            self.bucket.create(&key, payload.into()),
+        )
+        .await?
+        {
+            Ok(_) => Ok(claim.clone()),
+            Err(error) => {
+                if let Some(existing) = self.machine_add_mint_claim(idempotency_key).await? {
                     Ok(existing)
                 } else {
                     Err(OperationStatusStoreError::CasConflict {

@@ -7,8 +7,9 @@ use crate::controllers::OperationControllers;
 use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
 use crate::deploy_worker::DeployExecutionNodeScope;
 use crate::nats_authorization::{
-    MachineCredentialMintRuntime, MintTaskRegistry, MintVerifyEndpoint, NatsAuthorizationRuntime,
-    NatsAuthorizationStartError, NatsReloadRunner, SystemctlNatsReloadRunner,
+    MachineCredentialMintRuntime, MintResumeError, MintTaskRegistry, MintVerifyEndpoint,
+    NatsAuthorizationRuntime, NatsAuthorizationStartError, NatsReloadRunner,
+    SystemctlNatsReloadRunner,
 };
 use crate::node_rpc::NatsNodeLogsTailer;
 use crate::operation_api::{MachineQueryRuntime, OperationApiHandlers};
@@ -126,6 +127,14 @@ pub async fn start_control_runtime_with_client_and_reload(
         config.nats_authorization.node_seed_file.clone(),
         mint_tasks.clone(),
     );
+    // Startup reconciliation (one bounded pass, owned by control start): a
+    // control crash between machine-add acceptance and material-ready
+    // leaves the mint without a worker. Resume those mints now, before the
+    // operation API takes new requests.
+    machine_mint
+        .resume_unfinished_mints()
+        .await
+        .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
     let machine_query = MachineQueryRuntime::new(core_state, observations);
     let logs_tailer = NatsNodeLogsTailer::new(client.clone());
     let backup_runtime = BackupOperationRuntime::new(
@@ -185,6 +194,7 @@ pub enum ControlRuntimeError {
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     OpenBackupObjects(BackupObjectStoreError),
     StartNatsAuthorization(NatsAuthorizationStartError),
+    ResumeMachineAddMints(MintResumeError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
@@ -216,6 +226,12 @@ impl fmt::Display for ControlRuntimeError {
             }
             Self::StartNatsAuthorization(error) => {
                 write!(formatter, "failed to start NATS authorization: {error}")
+            }
+            Self::ResumeMachineAddMints(error) => {
+                write!(
+                    formatter,
+                    "failed to reconcile unfinished machine-add mints: {error}"
+                )
             }
             Self::StartOperationApi(error) => {
                 write!(

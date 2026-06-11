@@ -5,8 +5,8 @@
 //! `KV_CORE` is durable authority; `/etc/nats/authorized-users.conf` is its
 //! recovery evidence and survives JetStream loss. On control start, before
 //! any render, the existing file is read and unknown entries are adopted into
-//! KV as observations. Renders never shrink the principal set except as a step
-//! of an explicit machine-remove operation.
+//! KV as observations. Renders never shrink the principal set; shrink
+//! authority returns with the machine-remove operation when it exists.
 //!
 //! Fencing (ADR-0015): all read-set -> render -> reload -> verify work
 //! serializes through one single-writer task owning the file. Concurrent
@@ -18,14 +18,16 @@ mod reload;
 mod tasks;
 mod writer;
 
-pub use mint::{MachineCredentialMintRuntime, MintOutcome, MintRequest, MintVerifyEndpoint};
+pub use mint::{
+    MachineCredentialMintRuntime, MintOutcome, MintRequest, MintResumeError, MintVerifyEndpoint,
+};
 pub use node_seed::{NodeSeedWriteError, write_node_seed_file};
 pub use reload::{
-    NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
-    SystemctlNatsReloadRunner,
+    NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
+    SignalNatsReloadRunner, SystemctlNatsReloadRunner,
 };
 pub use tasks::MintTaskRegistry;
 pub use writer::{
-    NatsAuthorizationError, NatsAuthorizationHandle, NatsAuthorizationRuntime,
-    NatsAuthorizationStartError, RenderMode, RenderedAuthorization,
+    AuthorizedUsersFileError, NatsAuthorizationHandle, NatsAuthorizationRuntime,
+    NatsAuthorizationStartError, RenderFailure, RenderPrepareFailure, RenderedAuthorization,
 };

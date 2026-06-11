@@ -316,6 +316,29 @@ impl OperationControllers {
         })
     }
 
+    /// Every stored machine-add submission. Used by control-start mint
+    /// reconciliation to find accepted machine-adds whose mint worker died
+    /// with a previous control process.
+    pub async fn machine_add_submissions(
+        &self,
+    ) -> Result<Vec<ployz_nats::operations::StoredMachineAddSubmission>, OperationStatusStoreError>
+    {
+        self.repository.machine_add_submissions().await
+    }
+
+    /// Atomic per-key claim of minted credential material (ADR-0015 atomic
+    /// resource claim): the first mint run wins; concurrent or resumed runs
+    /// receive the winning claim and must continue with it.
+    pub async fn claim_machine_add_mint_material(
+        &self,
+        idempotency_key: &IdempotencyKey,
+        claim: &ployz_nats::operations::StoredMachineAddMintClaim,
+    ) -> Result<ployz_nats::operations::StoredMachineAddMintClaim, OperationStatusStoreError> {
+        self.repository
+            .put_machine_add_mint_claim_if_absent(idempotency_key, claim)
+            .await
+    }
+
     /// The minted per-machine secret record, if the mint worker has
     /// finished. Used both for idempotent replay (never mint twice) and
     /// by redeem gating (material-ready).

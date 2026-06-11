@@ -13,7 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::reload::{
-    NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, RELOAD_COMMAND_TIMEOUT,
+    NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
+    RELOAD_COMMAND_TIMEOUT,
 };
 
 const RENDER_QUEUE_DEPTH: usize = 16;
@@ -21,72 +22,106 @@ const VERIFY_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const VERIFY_ATTEMPTS: u32 = 10;
 const VERIFY_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-/// Whether a render may drop principals present in the current file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderMode {
-    /// A render that would shrink the principal set relative to the on-disk
-    /// file is refused.
-    PreserveUsers,
-    /// Only an explicit machine-remove operation may shrink the set.
-    MachineRemove,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderedAuthorization {
     pub user_count: usize,
     pub reload: NatsReloadEvidence,
 }
 
+/// Why reading the on-disk authorized-users file failed. A missing file is
+/// not an error: it reads as the empty set.
 #[derive(Debug)]
-pub enum NatsAuthorizationError {
-    ReadAuthority {
-        message: String,
-    },
-    ReadFile {
+pub enum AuthorizedUsersFileError {
+    Read {
         path: PathBuf,
         message: String,
     },
-    ParseFile {
+    Parse {
         path: PathBuf,
         source: AuthorizedUsersParseError,
     },
-    /// The render was refused because it would remove these principals
-    /// from the recovery-evidence file outside a machine-remove operation.
-    RefusedShrink {
-        missing: Vec<String>,
-    },
-    WriteFile {
-        path: PathBuf,
-        message: String,
-    },
-    Reload {
-        evidence: NatsReloadEvidence,
-    },
-    VerifyConnect {
-        message: String,
-    },
-    WriterClosed,
 }
 
-impl fmt::Display for NatsAuthorizationError {
+impl fmt::Display for AuthorizedUsersFileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Read { path, message } => write!(
+                formatter,
+                "failed to read authorized-users file {}: {message}",
+                path.display()
+            ),
+            Self::Parse { path, source } => write!(
+                formatter,
+                "failed to parse authorized-users file {}: {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AuthorizedUsersFileError {}
+
+/// Why a render did not complete, shaped by the pipeline phase that failed.
+/// The variant names the progress that preceded it: `Reload` means the file
+/// rendered first; `Verify` means render and reload both completed.
+#[derive(Debug)]
+pub enum RenderFailure {
+    /// Nothing reached the running server.
+    Prepare { failure: RenderPrepareFailure },
+    /// The file rendered; the nats-server reload failed.
+    Reload { failure: NatsReloadFailure },
+    /// Render and reload completed; the minted credential never
+    /// authenticated within the bounded verify window.
+    Verify { message: String },
+}
+
+impl fmt::Display for RenderFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Prepare { failure } => failure.fmt(formatter),
+            Self::Reload { failure } => failure.fmt(formatter),
+            Self::Verify { message } => {
+                write!(
+                    formatter,
+                    "minted credential failed verification: {message}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RenderFailure {}
+
+/// A render failure before anything changed on the running server.
+#[derive(Debug)]
+pub enum RenderPrepareFailure {
+    /// The single-writer render task is no longer running.
+    WriterClosed,
+    /// The KV authority set could not be read.
+    ReadAuthority { message: String },
+    /// The current on-disk file could not be read or parsed.
+    File { source: AuthorizedUsersFileError },
+    /// The render was refused because it would remove these principals
+    /// from the recovery-evidence file. Shrinking the set returns with an
+    /// explicit machine-remove operation.
+    RefusedShrink { missing: Vec<String> },
+    /// The atomic file write failed.
+    WriteFile { path: PathBuf, message: String },
+}
+
+impl fmt::Display for RenderPrepareFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WriterClosed => {
+                formatter.write_str("authorization render writer task is no longer running")
+            }
             Self::ReadAuthority { message } => {
                 write!(
                     formatter,
                     "failed to read authorized principal set: {message}"
                 )
             }
-            Self::ReadFile { path, message } => write!(
-                formatter,
-                "failed to read authorized-users file {}: {message}",
-                path.display()
-            ),
-            Self::ParseFile { path, source } => write!(
-                formatter,
-                "failed to parse authorized-users file {}: {source}",
-                path.display()
-            ),
+            Self::File { source } => source.fmt(formatter),
             Self::RefusedShrink { missing } => write!(
                 formatter,
                 "refused to shrink authorized user set outside machine-remove (missing: {})",
@@ -97,30 +132,13 @@ impl fmt::Display for NatsAuthorizationError {
                 "failed to write authorized-users file {}: {message}",
                 path.display()
             ),
-            Self::Reload { evidence } => write!(
-                formatter,
-                "nats-server reload failed: {} -> {}",
-                evidence.command, evidence.output
-            ),
-            Self::VerifyConnect { message } => {
-                write!(
-                    formatter,
-                    "minted credential failed verification: {message}"
-                )
-            }
-            Self::WriterClosed => {
-                formatter.write_str("authorization render writer task is no longer running")
-            }
         }
     }
 }
 
-impl std::error::Error for NatsAuthorizationError {}
-
 struct RenderRequest {
-    mode: RenderMode,
     verify: Option<NatsConnectConfig>,
-    reply: oneshot::Sender<Result<RenderedAuthorization, NatsAuthorizationError>>,
+    reply: oneshot::Sender<Result<RenderedAuthorization, RenderFailure>>,
 }
 
 /// Clonable submitter into the single-writer render task.
@@ -132,21 +150,18 @@ pub struct NatsAuthorizationHandle {
 impl NatsAuthorizationHandle {
     pub async fn render(
         &self,
-        mode: RenderMode,
         verify: Option<NatsConnectConfig>,
-    ) -> Result<RenderedAuthorization, NatsAuthorizationError> {
+    ) -> Result<RenderedAuthorization, RenderFailure> {
         let (reply, response) = oneshot::channel();
         self.sender
-            .send(RenderRequest {
-                mode,
-                verify,
-                reply,
-            })
+            .send(RenderRequest { verify, reply })
             .await
-            .map_err(|_| NatsAuthorizationError::WriterClosed)?;
-        response
-            .await
-            .map_err(|_| NatsAuthorizationError::WriterClosed)?
+            .map_err(|_| RenderFailure::Prepare {
+                failure: RenderPrepareFailure::WriterClosed,
+            })?;
+        response.await.map_err(|_| RenderFailure::Prepare {
+            failure: RenderPrepareFailure::WriterClosed,
+        })?
     }
 }
 
@@ -158,32 +173,14 @@ pub struct NatsAuthorizationRuntime {
 
 #[derive(Debug)]
 pub enum NatsAuthorizationStartError {
-    ReadFile {
-        path: PathBuf,
-        message: String,
-    },
-    ParseFile {
-        path: PathBuf,
-        source: AuthorizedUsersParseError,
-    },
-    AdoptAuthority {
-        message: String,
-    },
+    ReadAuthorizedUsersFile { source: AuthorizedUsersFileError },
+    AdoptAuthority { message: String },
 }
 
 impl fmt::Display for NatsAuthorizationStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReadFile { path, message } => write!(
-                formatter,
-                "failed to read authorized-users file {}: {message}",
-                path.display()
-            ),
-            Self::ParseFile { path, source } => write!(
-                formatter,
-                "failed to parse authorized-users file {}: {source}",
-                path.display()
-            ),
+            Self::ReadAuthorizedUsersFile { source } => source.fmt(formatter),
             Self::AdoptAuthority { message } => write!(
                 formatter,
                 "failed to adopt authorized users into KV authority: {message}"
@@ -208,16 +205,11 @@ impl NatsAuthorizationRuntime {
         let task = tokio::spawn(async move {
             let reload = Arc::new(reload);
             while let Some(request) = receiver.recv().await {
-                let RenderRequest {
-                    mode,
-                    verify,
-                    reply,
-                } = request;
+                let RenderRequest { verify, reply } = request;
                 let result = handle_render_request(
                     &authorized_users_file,
                     &core_state,
                     Arc::clone(&reload),
-                    mode,
                     verify,
                 )
                 .await;
@@ -246,27 +238,8 @@ async fn adopt_authorized_users_from_file(
     path: &Path,
     core_state: &AsyncNatsCoreStateStore,
 ) -> Result<(), NatsAuthorizationStartError> {
-    let users = match read_authorized_users_file(path) {
-        Ok(users) => users,
-        Err(NatsAuthorizationError::ReadFile { path, message }) => {
-            return Err(NatsAuthorizationStartError::ReadFile { path, message });
-        }
-        Err(NatsAuthorizationError::ParseFile { path, source }) => {
-            return Err(NatsAuthorizationStartError::ParseFile { path, source });
-        }
-        Err(
-            error @ (NatsAuthorizationError::ReadAuthority { .. }
-            | NatsAuthorizationError::RefusedShrink { .. }
-            | NatsAuthorizationError::WriteFile { .. }
-            | NatsAuthorizationError::Reload { .. }
-            | NatsAuthorizationError::VerifyConnect { .. }
-            | NatsAuthorizationError::WriterClosed),
-        ) => {
-            return Err(NatsAuthorizationStartError::AdoptAuthority {
-                message: error.to_string(),
-            });
-        }
-    };
+    let users = read_authorized_users_file(path)
+        .map_err(|source| NatsAuthorizationStartError::ReadAuthorizedUsersFile { source })?;
     for user in &users {
         core_state
             .adopt_nats_authorized_user_if_absent(user)
@@ -280,18 +253,18 @@ async fn adopt_authorized_users_from_file(
 
 fn read_authorized_users_file(
     path: &Path,
-) -> Result<Vec<NatsAuthorizedUser>, NatsAuthorizationError> {
+) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersFileError> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
-            return Err(NatsAuthorizationError::ReadFile {
+            return Err(AuthorizedUsersFileError::Read {
                 path: path.to_path_buf(),
                 message: error.to_string(),
             });
         }
     };
-    parse_authorized_users(&contents).map_err(|source| NatsAuthorizationError::ParseFile {
+    parse_authorized_users(&contents).map_err(|source| AuthorizedUsersFileError::Parse {
         path: path.to_path_buf(),
         source,
     })
@@ -301,15 +274,16 @@ async fn handle_render_request(
     path: &Path,
     core_state: &AsyncNatsCoreStateStore,
     reload: Arc<impl NatsReloadRunner>,
-    mode: RenderMode,
     verify: Option<NatsConnectConfig>,
-) -> Result<RenderedAuthorization, NatsAuthorizationError> {
+) -> Result<RenderedAuthorization, RenderFailure> {
+    let prepare = |failure: RenderPrepareFailure| RenderFailure::Prepare { failure };
     let desired = core_state.nats_authorized_users().await.map_err(|error| {
-        NatsAuthorizationError::ReadAuthority {
+        prepare(RenderPrepareFailure::ReadAuthority {
             message: error.to_string(),
-        }
+        })
     })?;
-    let on_disk = read_authorized_users_file(path)?;
+    let on_disk = read_authorized_users_file(path)
+        .map_err(|source| prepare(RenderPrepareFailure::File { source }))?;
 
     let desired_principals: BTreeSet<String> = desired
         .iter()
@@ -320,14 +294,11 @@ async fn handle_render_request(
         .map(|user| user.principal.authority_key())
         .filter(|key| !desired_principals.contains(key))
         .collect();
-    match (mode, missing.is_empty()) {
-        (RenderMode::PreserveUsers, false) => {
-            return Err(NatsAuthorizationError::RefusedShrink { missing });
-        }
-        (RenderMode::PreserveUsers, true) | (RenderMode::MachineRemove, true | false) => {}
+    if !missing.is_empty() {
+        return Err(prepare(RenderPrepareFailure::RefusedShrink { missing }));
     }
 
-    write_file_atomically(path, &render_authorized_users(&desired))?;
+    write_file_atomically(path, &render_authorized_users(&desired)).map_err(prepare)?;
 
     let reload_outcome = tokio::time::timeout(
         RELOAD_COMMAND_TIMEOUT,
@@ -337,24 +308,21 @@ async fn handle_render_request(
     let evidence = match reload_outcome {
         Ok(Ok(NatsReloadOutcome::Reloaded(evidence))) => evidence,
         Ok(Ok(NatsReloadOutcome::Failed(evidence))) => {
-            return Err(NatsAuthorizationError::Reload { evidence });
+            return Err(RenderFailure::Reload {
+                failure: NatsReloadFailure::CommandFailed { evidence },
+            });
         }
         Ok(Err(join_error)) => {
-            return Err(NatsAuthorizationError::Reload {
-                evidence: NatsReloadEvidence {
-                    command: "<reload runner>".to_owned(),
-                    output: format!("reload task failed: {join_error}"),
+            return Err(RenderFailure::Reload {
+                failure: NatsReloadFailure::RunnerPanicked {
+                    message: join_error.to_string(),
                 },
             });
         }
         Err(_) => {
-            return Err(NatsAuthorizationError::Reload {
-                evidence: NatsReloadEvidence {
-                    command: "<reload runner>".to_owned(),
-                    output: format!(
-                        "reload did not finish within {}s",
-                        RELOAD_COMMAND_TIMEOUT.as_secs()
-                    ),
+            return Err(RenderFailure::Reload {
+                failure: NatsReloadFailure::TimedOut {
+                    limit: RELOAD_COMMAND_TIMEOUT,
                 },
             });
         }
@@ -370,7 +338,7 @@ async fn handle_render_request(
     })
 }
 
-async fn verify_credential(config: &NatsConnectConfig) -> Result<(), NatsAuthorizationError> {
+async fn verify_credential(config: &NatsConnectConfig) -> Result<(), RenderFailure> {
     let mut last_error = "no connection attempt made".to_owned();
     for _ in 0..VERIFY_ATTEMPTS {
         match connect_authenticated(config, VERIFY_CONNECT_TIMEOUT).await {
@@ -384,13 +352,13 @@ async fn verify_credential(config: &NatsConnectConfig) -> Result<(), NatsAuthori
             }
         }
     }
-    Err(NatsAuthorizationError::VerifyConnect {
+    Err(RenderFailure::Verify {
         message: last_error,
     })
 }
 
-fn write_file_atomically(path: &Path, contents: &str) -> Result<(), NatsAuthorizationError> {
-    let write_error = |message: String| NatsAuthorizationError::WriteFile {
+fn write_file_atomically(path: &Path, contents: &str) -> Result<(), RenderPrepareFailure> {
+    let write_error = |message: String| RenderPrepareFailure::WriteFile {
         path: path.to_path_buf(),
         message,
     };

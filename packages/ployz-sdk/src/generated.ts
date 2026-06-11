@@ -88,7 +88,7 @@ export type MachineAddOperationState = { "state": "pending", join_token: IssuedJ
 
 export type MachineAddOperationStateName = "pending" | "joining" | "completed" | "failed" | "cancelled";
 
-export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "authorization_render_failed", message: FailureMessage, } | { "kind": "nats_reload_failed", message: FailureMessage, } | { "kind": "minted_credential_unusable", message: FailureMessage, };
+export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "join_token_expired", expired_at: JoinTokenExpiresAt, } | { "kind": "bootstrap_failed", message: FailureMessage, } | { "kind": "readiness_failed", evidence: MachineReadinessEvidence, } | { "kind": "authorization_render_failed", message: FailureMessage, } | { "kind": "nats_reload_failed", message: FailureMessage, } | { "kind": "minted_credential_unusable", message: FailureMessage, } | { "kind": "credential_evidence_write_failed", message: FailureMessage, };
 
 export type MachineReadinessEvidence = { nats_connection: MachineReadinessCheck, heartbeat: MachineReadinessCheck, node_inspect: MachineReadinessCheck, };
 

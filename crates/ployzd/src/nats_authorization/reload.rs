@@ -1,3 +1,4 @@
+use std::fmt;
 use std::time::Duration;
 
 pub const RELOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -8,6 +9,38 @@ pub const RELOAD_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum NatsReloadOutcome {
     Reloaded(NatsReloadEvidence),
     Failed(NatsReloadEvidence),
+}
+
+/// How the reload step failed. Each case carries only the evidence that
+/// actually exists: command output, a panic message, or the timeout bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NatsReloadFailure {
+    /// The reload command ran and reported failure.
+    CommandFailed { evidence: NatsReloadEvidence },
+    /// The reload runner panicked before producing an outcome.
+    RunnerPanicked { message: String },
+    /// The reload runner did not finish within the bounded window.
+    TimedOut { limit: Duration },
+}
+
+impl fmt::Display for NatsReloadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CommandFailed { evidence } => write!(
+                formatter,
+                "nats-server reload failed: {} -> {}",
+                evidence.command, evidence.output
+            ),
+            Self::RunnerPanicked { message } => {
+                write!(formatter, "nats-server reload runner panicked: {message}")
+            }
+            Self::TimedOut { limit } => write!(
+                formatter,
+                "nats-server reload did not finish within {}s",
+                limit.as_secs()
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

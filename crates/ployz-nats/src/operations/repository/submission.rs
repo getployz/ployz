@@ -11,8 +11,8 @@ use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
     OperationStatusStoreError, StoredBackupSubmission, StoredCertSubmission,
-    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddSecretDelivery,
-    StoredMachineAddSubmission,
+    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddMintClaim,
+    StoredMachineAddSecretDelivery, StoredMachineAddSubmission,
 };
 
 impl AsyncNatsOperationRepository {
@@ -22,6 +22,26 @@ impl AsyncNatsOperationRepository {
     ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
         self.status_store
             .machine_add_submission(idempotency_key)
+            .await
+    }
+
+    /// Every stored machine-add submission, for control-start mint
+    /// reconciliation.
+    pub async fn machine_add_submissions(
+        &self,
+    ) -> Result<Vec<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        self.status_store.machine_add_submissions().await
+    }
+
+    /// Atomic per-key claim of minted credential material (ADR-0015): the
+    /// first mint run wins; later runs receive the winning claim.
+    pub async fn put_machine_add_mint_claim_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        claim: &StoredMachineAddMintClaim,
+    ) -> Result<StoredMachineAddMintClaim, OperationStatusStoreError> {
+        self.status_store
+            .put_machine_add_mint_claim_if_absent(idempotency_key, claim)
             .await
     }
 

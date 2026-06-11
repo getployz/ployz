@@ -1,20 +1,25 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use ployz_core::ids::{NodeId, OperationId};
 use ployz_core::install::{MachineJoinNatsCredentials, MachineJoinSecretDelivery};
-use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
+use ployz_core::machine::{
+    MachineAddFailure, MachineAddOperationState, MachineCredentialProvisioningStep,
+};
 use ployz_core::nats_config::{NatsAuthorizedUser, NatsUserPublicKey, NatsUserSeed};
-use ployz_core::ops::{FailureMessage, OperationIdempotencyKey};
+use ployz_core::ops::{FailureMessage, OperationIdempotencyKey, OperationStatus};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::operations::StoredMachineAddSecretDelivery;
+use ployz_nats::operations::{
+    OperationStatusReadError, OperationStatusStoreError, StoredMachineAddMintClaim,
+    StoredMachineAddSecretDelivery,
+};
 
 use crate::controllers::OperationControllers;
 
 use super::tasks::MintTaskRegistry;
-use super::writer::{NatsAuthorizationError, NatsAuthorizationHandle, RenderMode};
+use super::writer::{NatsAuthorizationHandle, RenderFailure};
 
 /// Where the mint worker test-connects with a freshly minted seed.
 #[derive(Debug, Clone)]
@@ -61,6 +66,38 @@ pub enum MintOutcome {
     RecordingFailed { message: String },
 }
 
+/// Why the control-start mint reconciliation pass could not finish.
+#[derive(Debug)]
+pub enum MintResumeError {
+    ListSubmissions(OperationStatusStoreError),
+    ReadSecretDelivery(OperationStatusStoreError),
+    ReadStatus(OperationStatusReadError),
+}
+
+impl fmt::Display for MintResumeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ListSubmissions(error) => {
+                write!(
+                    formatter,
+                    "failed to list machine-add submissions: {error:?}"
+                )
+            }
+            Self::ReadSecretDelivery(error) => {
+                write!(
+                    formatter,
+                    "failed to read minted material record: {error:?}"
+                )
+            }
+            Self::ReadStatus(error) => {
+                write!(formatter, "failed to read machine-add status: {error:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MintResumeError {}
+
 /// Bounded operation work that mints per-machine credentials after a
 /// machine-add submission is accepted.
 #[derive(Clone)]
@@ -71,7 +108,6 @@ pub struct MachineCredentialMintRuntime {
     verify: MintVerifyEndpoint,
     node_seed_file: PathBuf,
     tasks: MintTaskRegistry,
-    mint_serial: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MachineCredentialMintRuntime {
@@ -91,7 +127,6 @@ impl MachineCredentialMintRuntime {
             verify,
             node_seed_file,
             tasks,
-            mint_serial: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -107,9 +142,58 @@ impl MachineCredentialMintRuntime {
         });
     }
 
-    pub async fn run(&self, request: MintRequest) -> MintOutcome {
-        let _serial = self.mint_serial.lock().await;
+    /// One bounded startup pass owned by control start: a control crash
+    /// between machine-add acceptance and material-ready leaves the mint
+    /// without a worker. Every accepted, still-pending machine-add that
+    /// lacks a minted-material record gets its mint resumed as owned
+    /// operation work; the per-key mint claim makes the resumed run
+    /// converge on any partially minted material.
+    pub async fn resume_unfinished_mints(&self) -> Result<Vec<MintRequest>, MintResumeError> {
+        let submissions = self
+            .controllers
+            .machine_add_submissions()
+            .await
+            .map_err(MintResumeError::ListSubmissions)?;
+        let mut resumed = Vec::new();
+        for submission in submissions {
+            let delivered = self
+                .controllers
+                .machine_add_secret_delivery(&submission.idempotency_key)
+                .await
+                .map_err(MintResumeError::ReadSecretDelivery)?;
+            if delivered.is_some() {
+                continue;
+            }
+            let Some(status) = self
+                .controllers
+                .operation_status(&submission.operation_id)
+                .await
+                .map_err(MintResumeError::ReadStatus)?
+            else {
+                continue;
+            };
+            let OperationStatus::MachineAdd { state, .. } = status else {
+                continue;
+            };
+            match state {
+                MachineAddOperationState::Pending { .. } => {}
+                MachineAddOperationState::Joining { .. }
+                | MachineAddOperationState::Completed
+                | MachineAddOperationState::Failed { .. }
+                | MachineAddOperationState::Cancelled { .. } => continue,
+            }
+            let request = MintRequest {
+                operation_id: submission.operation_id,
+                node_id: submission.node_id,
+                idempotency_key: submission.idempotency_key,
+            };
+            self.start(request.clone());
+            resumed.push(request);
+        }
+        Ok(resumed)
+    }
 
+    pub async fn run(&self, request: MintRequest) -> MintOutcome {
         match self
             .controllers
             .machine_add_secret_delivery(&request.idempotency_key)
@@ -124,8 +208,30 @@ impl MachineCredentialMintRuntime {
             }
         }
 
-        let pair = nkeys::KeyPair::new_user();
-        let minted = match minted_material(&pair) {
+        // ADR-0015: a create-only claim on the idempotency key fences
+        // duplicate mints without a cluster-wide lock. The first run claims
+        // its freshly minted seed; concurrent or resumed runs adopt the
+        // claimed material and converge on the same delivery record.
+        let candidate = match mint_claim_candidate(&request.operation_id) {
+            Ok(candidate) => candidate,
+            Err(message) => return self.fail_unusable(&request, message).await,
+        };
+        let claim = match self
+            .controllers
+            .claim_machine_add_mint_material(&request.idempotency_key, &candidate)
+            .await
+        {
+            Ok(claim) => claim,
+            Err(error) => {
+                return self
+                    .fail_render(
+                        &request,
+                        format!("failed to claim minted material: {error:?}"),
+                    )
+                    .await;
+            }
+        };
+        let minted = match minted_material_from_claim(&claim) {
             Ok(minted) => minted,
             Err(message) => return self.fail_unusable(&request, message).await,
         };
@@ -156,23 +262,12 @@ impl MachineCredentialMintRuntime {
         let verify_config = self
             .verify
             .node_connect_config(&request.node_id, minted.seed.clone());
-        match self
-            .authorization
-            .render(RenderMode::PreserveUsers, Some(verify_config))
-            .await
-        {
+        match self.authorization.render(Some(verify_config)).await {
             Ok(_) => {}
-            Err(
-                error @ (NatsAuthorizationError::ReadAuthority { .. }
-                | NatsAuthorizationError::ReadFile { .. }
-                | NatsAuthorizationError::ParseFile { .. }
-                | NatsAuthorizationError::RefusedShrink { .. }
-                | NatsAuthorizationError::WriteFile { .. }
-                | NatsAuthorizationError::WriterClosed),
-            ) => {
-                return self.fail_render(&request, error.to_string()).await;
+            Err(RenderFailure::Prepare { failure }) => {
+                return self.fail_render(&request, failure.to_string()).await;
             }
-            Err(NatsAuthorizationError::Reload { evidence }) => {
+            Err(RenderFailure::Reload { failure }) => {
                 if let Some(outcome) = self
                     .record_step(&request, MachineCredentialProvisioningStep::Rendered)
                     .await
@@ -183,15 +278,12 @@ impl MachineCredentialMintRuntime {
                     .fail(
                         &request,
                         MachineAddFailure::NatsReloadFailed {
-                            message: failure_message(&format!(
-                                "{} -> {}",
-                                evidence.command, evidence.output
-                            )),
+                            message: failure_message(&failure.to_string()),
                         },
                     )
                     .await;
             }
-            Err(NatsAuthorizationError::VerifyConnect { message }) => {
+            Err(RenderFailure::Verify { message }) => {
                 for step in [
                     MachineCredentialProvisioningStep::Rendered,
                     MachineCredentialProvisioningStep::Reloaded,
@@ -213,14 +305,6 @@ impl MachineCredentialMintRuntime {
             }
         }
 
-        let credentials = match MachineJoinNatsCredentials::try_new(minted.seed.secret()) {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                return self
-                    .fail_unusable(&request, format!("minted seed is not storable: {error}"))
-                    .await;
-            }
-        };
         if let Err(error) = self
             .controllers
             .store_machine_add_secret_delivery(
@@ -228,7 +312,7 @@ impl MachineCredentialMintRuntime {
                 &StoredMachineAddSecretDelivery {
                     operation_id: request.operation_id.clone(),
                     secret_delivery: MachineJoinSecretDelivery {
-                        nats_credentials: credentials,
+                        nats_credentials: claim.nkey_seed.clone(),
                     },
                 },
             )
@@ -256,19 +340,29 @@ impl MachineCredentialMintRuntime {
         request: &MintRequest,
         step: MachineCredentialProvisioningStep,
     ) -> Option<MintOutcome> {
-        match self
+        let error = match self
             .controllers
             .record_machine_add_credential_step(&request.operation_id, &request.node_id, step)
             .await
         {
-            Ok(_) => None,
-            Err(error) => Some(MintOutcome::RecordingFailed {
-                message: format!(
-                    "failed to record credential step {}: {error:?}",
-                    step.as_subject_token()
-                ),
-            }),
-        }
+            Ok(_) => return None,
+            Err(error) => error,
+        };
+        // The step itself ran; only its evidence write failed. Attempt the
+        // typed terminal failure so the operation is not stranded
+        // non-terminal with a keeper retrying blind.
+        Some(
+            self.fail(
+                request,
+                MachineAddFailure::CredentialEvidenceWriteFailed {
+                    message: failure_message(&format!(
+                        "failed to record credential step {}: {error:?}",
+                        step.as_subject_token()
+                    )),
+                },
+            )
+            .await,
+        )
     }
 
     async fn fail_render(&self, request: &MintRequest, message: String) -> MintOutcome {
@@ -314,15 +408,29 @@ struct MintedMaterial {
     seed: NatsUserSeed,
 }
 
-fn minted_material(pair: &nkeys::KeyPair) -> Result<MintedMaterial, String> {
+fn mint_claim_candidate(operation_id: &OperationId) -> Result<StoredMachineAddMintClaim, String> {
+    let pair = nkeys::KeyPair::new_user();
     let seed = pair
         .seed()
         .map_err(|error| format!("generated keypair has no seed: {error}"))?;
-    let seed = NatsUserSeed::try_new(seed)
-        .map_err(|error| format!("generated seed is invalid: {error}"))?;
-    let public = NatsUserPublicKey::try_new(pair.public_key())
+    let nkey_seed = MachineJoinNatsCredentials::try_new(seed)
+        .map_err(|error| format!("generated seed is not storable: {error}"))?;
+    let nkey_public = NatsUserPublicKey::try_new(pair.public_key())
         .map_err(|error| format!("generated public key is invalid: {error}"))?;
-    Ok(MintedMaterial { public, seed })
+    Ok(StoredMachineAddMintClaim {
+        operation_id: operation_id.clone(),
+        nkey_public,
+        nkey_seed,
+    })
+}
+
+fn minted_material_from_claim(claim: &StoredMachineAddMintClaim) -> Result<MintedMaterial, String> {
+    let seed = NatsUserSeed::try_new(claim.nkey_seed.secret())
+        .map_err(|error| format!("claimed seed is invalid: {error}"))?;
+    Ok(MintedMaterial {
+        public: claim.nkey_public.clone(),
+        seed,
+    })
 }
 
 fn failure_message(message: &str) -> FailureMessage {
