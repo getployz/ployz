@@ -11,62 +11,10 @@ use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
     OperationStatusStoreError, StoredBackupSubmission, StoredCertSubmission,
-    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddMintClaim,
-    StoredMachineAddSecretDelivery, StoredMachineAddSubmission,
+    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddSubmission,
 };
 
 impl AsyncNatsOperationRepository {
-    pub async fn machine_add_submission(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
-        self.status_store
-            .machine_add_submission(idempotency_key)
-            .await
-    }
-
-    /// Every stored machine-add submission, for control-start mint
-    /// reconciliation.
-    pub async fn machine_add_submissions(
-        &self,
-    ) -> Result<Vec<StoredMachineAddSubmission>, OperationStatusStoreError> {
-        self.status_store.machine_add_submissions().await
-    }
-
-    /// Atomic per-key claim of minted credential material (ADR-0015): the
-    /// first mint run wins; later runs receive the winning claim.
-    pub async fn put_machine_add_mint_claim_if_absent(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-        claim: &StoredMachineAddMintClaim,
-    ) -> Result<StoredMachineAddMintClaim, OperationStatusStoreError> {
-        self.status_store
-            .put_machine_add_mint_claim_if_absent(idempotency_key, claim)
-            .await
-    }
-
-    pub async fn machine_add_secret_delivery(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
-        self.status_store
-            .machine_add_secret_delivery(idempotency_key)
-            .await
-    }
-
-    /// Write-once store of the minted per-machine secret. The mint worker
-    /// writes it after the credential verifies; a replayed mint converges
-    /// on the first stored record instead of minting twice.
-    pub async fn put_machine_add_secret_delivery_if_absent(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-        record: &StoredMachineAddSecretDelivery,
-    ) -> Result<StoredMachineAddSecretDelivery, OperationStatusStoreError> {
-        self.status_store
-            .put_machine_add_secret_delivery_if_absent(idempotency_key, record)
-            .await
-    }
-
     pub async fn submit_deploy(
         &self,
         submission: DeployOperationSubmission,

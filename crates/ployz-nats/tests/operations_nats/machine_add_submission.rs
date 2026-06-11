@@ -37,7 +37,8 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
     );
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_machine"))
+            .records()
+            .get(&operation_id("op_machine"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
@@ -264,7 +265,8 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
     );
     assert!(
         repository
-            .operation_status(&operation_id("op_machine"))
+            .records()
+            .get(&operation_id("op_machine"))
             .await
             .expect("status lookup succeeds")
             .is_none()

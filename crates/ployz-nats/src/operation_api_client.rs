@@ -1,7 +1,8 @@
 //! Typed client for Ployz user-facing NATS services.
 
-use crate::service_protocol::{
-    NatsServiceError, NatsServiceErrorHeaderDecodeError, decode_nats_service_error,
+use crate::service_protocol::{NatsServiceError, NatsServiceErrorHeaderDecodeError};
+use crate::service_runtime::{
+    NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
 use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -149,47 +150,43 @@ impl OperationApiClient {
         C::Request: Serialize,
         OperationApiResponse<C::Success, C::Error>: DeserializeOwned,
     {
-        let payload = serde_json::to_vec(request).map_err(|error| {
-            OperationApiClientError::EncodeRequest {
-                endpoint: C::ENDPOINT,
-                message: error.to_string(),
-            }
-        })?;
-        let nats_request = async_nats::Request::new()
-            .payload(payload.into())
-            .timeout(Some(self.request_timeout));
-        let response = self
-            .client
-            .send_request(C::ENDPOINT.subject(), nats_request)
-            .await
-            .map_err(|error| OperationApiClientError::Request {
-                endpoint: C::ENDPOINT,
-                failure: request_failure(error),
-            })?;
-
-        match decode_nats_service_error(response.headers.as_ref()) {
-            Ok(Some(failure)) => {
-                return Err(OperationApiClientError::Service {
+        let response = request_json::<_, OperationApiResponse<C::Success, C::Error>>(
+            &self.client,
+            C::ENDPOINT.subject().to_owned(),
+            request,
+            self.request_timeout,
+        )
+        .await
+        .map_err(|error| match error {
+            NatsJsonServiceRequestError::EncodeRequest { message } => {
+                OperationApiClientError::EncodeRequest {
                     endpoint: C::ENDPOINT,
-                    failure,
-                });
+                    message,
+                }
             }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(OperationApiClientError::ServiceProtocol {
+            NatsJsonServiceRequestError::Request { failure } => OperationApiClientError::Request {
+                endpoint: C::ENDPOINT,
+                failure,
+            },
+            NatsJsonServiceRequestError::Service { failure } => OperationApiClientError::Service {
+                endpoint: C::ENDPOINT,
+                failure,
+            },
+            NatsJsonServiceRequestError::ServiceProtocol { error } => {
+                OperationApiClientError::ServiceProtocol {
                     endpoint: C::ENDPOINT,
                     error,
-                });
+                }
             }
-        }
+            NatsJsonServiceRequestError::DecodeResponse { message } => {
+                OperationApiClientError::DecodeResponse {
+                    endpoint: C::ENDPOINT,
+                    message,
+                }
+            }
+        })?;
 
-        match serde_json::from_slice::<OperationApiResponse<C::Success, C::Error>>(
-            &response.payload,
-        )
-        .map_err(|error| OperationApiClientError::DecodeResponse {
-            endpoint: C::ENDPOINT,
-            message: error.to_string(),
-        })? {
+        match response {
             OperationApiResponse::Ok { value } => Ok(value),
             OperationApiResponse::DomainError { error } => Err(OperationApiClientError::Domain {
                 endpoint: C::ENDPOINT,
@@ -197,29 +194,6 @@ impl OperationApiClient {
             }),
         }
     }
-}
-
-fn request_failure(error: async_nats::RequestError) -> OperationApiRequestFailure {
-    match error.kind() {
-        async_nats::RequestErrorKind::TimedOut => OperationApiRequestFailure::TimedOut,
-        async_nats::RequestErrorKind::NoResponders => OperationApiRequestFailure::NoResponders,
-        async_nats::RequestErrorKind::InvalidSubject => OperationApiRequestFailure::InvalidSubject,
-        async_nats::RequestErrorKind::MaxPayloadExceeded => {
-            OperationApiRequestFailure::MaxPayloadExceeded
-        }
-        async_nats::RequestErrorKind::Other => OperationApiRequestFailure::Other {
-            message: error.to_string(),
-        },
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationApiRequestFailure {
-    TimedOut,
-    NoResponders,
-    InvalidSubject,
-    MaxPayloadExceeded,
-    Other { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +204,7 @@ pub enum OperationApiClientError<E> {
     },
     Request {
         endpoint: OperationApiEndpoint,
-        failure: OperationApiRequestFailure,
+        failure: NatsServiceRequestFailure,
     },
     Service {
         endpoint: OperationApiEndpoint,
@@ -301,15 +275,3 @@ where
 }
 
 impl<E> Error for OperationApiClientError<E> where E: fmt::Debug {}
-
-impl fmt::Display for OperationApiRequestFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TimedOut => write!(formatter, "timed out"),
-            Self::NoResponders => write!(formatter, "no responders"),
-            Self::InvalidSubject => write!(formatter, "invalid subject"),
-            Self::MaxPayloadExceeded => write!(formatter, "max payload exceeded"),
-            Self::Other { message } => write!(formatter, "{message}"),
-        }
-    }
-}

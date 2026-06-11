@@ -96,7 +96,8 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
     assert_eq!(accepted.start_sequence, event_sequence(1));
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("operation status lookup succeeds"),
         Some(OperationStatus::Deploy {

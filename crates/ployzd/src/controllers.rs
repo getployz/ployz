@@ -222,6 +222,7 @@ impl OperationControllers {
     {
         let Some(submission) = self
             .repository
+            .records()
             .machine_add_submission(idempotency_key)
             .await
             .map_err(machine_add_bootstrap_status_read_error)?
@@ -323,7 +324,7 @@ impl OperationControllers {
         &self,
     ) -> Result<Vec<ployz_nats::operations::StoredMachineAddSubmission>, OperationStatusStoreError>
     {
-        self.repository.machine_add_submissions().await
+        self.repository.records().machine_add_submissions().await
     }
 
     /// Atomic per-key claim of minted credential material (ADR-0015 atomic
@@ -335,6 +336,7 @@ impl OperationControllers {
         claim: &ployz_nats::operations::StoredMachineAddMintClaim,
     ) -> Result<ployz_nats::operations::StoredMachineAddMintClaim, OperationStatusStoreError> {
         self.repository
+            .records()
             .put_machine_add_mint_claim_if_absent(idempotency_key, claim)
             .await
     }
@@ -350,6 +352,7 @@ impl OperationControllers {
         OperationStatusStoreError,
     > {
         self.repository
+            .records()
             .machine_add_secret_delivery(idempotency_key)
             .await
     }
@@ -362,6 +365,7 @@ impl OperationControllers {
     ) -> Result<ployz_nats::operations::StoredMachineAddSecretDelivery, OperationStatusStoreError>
     {
         self.repository
+            .records()
             .put_machine_add_secret_delivery_if_absent(idempotency_key, record)
             .await
     }
@@ -442,7 +446,7 @@ impl OperationControllers {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
-        self.repository.operation_status(operation_id).await
+        self.repository.records().get(operation_id).await
     }
 
     pub async fn operation_status_snapshot(
@@ -464,11 +468,16 @@ impl OperationControllers {
         &self,
         operation_id: &OperationId,
     ) -> Result<OperationOwnerLease, OperationStatusStoreError> {
+        let claim = self
+            .build_lease_claim()
+            .map_err(|message| OperationStatusStoreError::Clock { message })?;
         self.repository
+            .records()
             .claim_owner_lease(
                 operation_id,
-                self.build_lease_claim()
-                    .map_err(|message| OperationStatusStoreError::Clock { message })?,
+                claim.owner_id(),
+                claim.now(),
+                claim.expires_at(),
             )
             .await
     }
@@ -477,11 +486,16 @@ impl OperationControllers {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
+        let claim = self
+            .build_lease_claim()
+            .map_err(|message| OperationStatusStoreError::Clock { message })?;
         self.repository
+            .records()
             .renew_owner_lease(
                 operation_id,
-                self.build_lease_claim()
-                    .map_err(|message| OperationStatusStoreError::Clock { message })?,
+                claim.owner_id(),
+                claim.now(),
+                claim.expires_at(),
             )
             .await
     }

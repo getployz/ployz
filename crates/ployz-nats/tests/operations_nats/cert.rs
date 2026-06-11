@@ -42,7 +42,8 @@ async fn operation_repository_records_cert_lifecycle_against_real_nats() {
 
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_cert"))
+            .records()
+            .get(&operation_id("op_cert"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Cert {
@@ -77,7 +78,8 @@ async fn operation_repository_duplicate_cert_submit_returns_original_operation()
     assert_eq!(first, second);
     assert!(
         repository
-            .operation_status(&operation_id("op_other"))
+            .records()
+            .get(&operation_id("op_other"))
             .await
             .expect("status lookup succeeds")
             .is_none()
@@ -114,7 +116,8 @@ async fn operation_repository_rejects_cert_event_for_another_cert() {
     ));
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_cert"))
+            .records()
+            .get(&operation_id("op_cert"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Cert {
@@ -157,7 +160,8 @@ async fn operation_repository_rejects_cert_validation_for_another_cert() {
     ));
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_cert"))
+            .records()
+            .get(&operation_id("op_cert"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Cert {

@@ -29,7 +29,8 @@ async fn operation_repository_records_machine_add_joined_transition() {
 
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_machine"))
+            .records()
+            .get(&operation_id("op_machine"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
@@ -92,7 +93,8 @@ async fn operation_repository_redeems_machine_join_token_once() {
     assert_eq!(joined.last_event_sequence, event_sequence(2));
     assert_eq!(
         repository
-            .operation_status(&accepted.operation_id)
+            .records()
+            .get(&accepted.operation_id)
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
@@ -131,7 +133,8 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
 
     assert_eq!(
         repository
-            .operation_status(&accepted.operation_id)
+            .records()
+            .get(&accepted.operation_id)
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
@@ -299,7 +302,8 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
     ));
     assert_eq!(
         repository
-            .operation_status(&accepted.operation_id)
+            .records()
+            .get(&accepted.operation_id)
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {
@@ -347,7 +351,8 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
     );
     assert_eq!(
         repository
-            .operation_status(&accepted.operation_id)
+            .records()
+            .get(&accepted.operation_id)
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::MachineAdd {

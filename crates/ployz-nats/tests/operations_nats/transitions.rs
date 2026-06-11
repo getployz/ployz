@@ -40,7 +40,8 @@ async fn operation_repository_records_transition_status_against_real_nats() {
     ));
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -139,7 +140,8 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
 
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -187,7 +189,7 @@ async fn operation_repository_rejects_duplicate_failed_transition_payload_mismat
 
     assert!(matches!(
         mismatch,
-        RecordDeployTransitionError::StoredTransitionMismatch { .. }
+        RecordDeployTransitionError::StoredEventMismatch { .. }
     ));
 }
 
@@ -225,6 +227,6 @@ async fn operation_repository_rejects_duplicate_cancelled_transition_payload_mis
 
     assert!(matches!(
         mismatch,
-        RecordDeployTransitionError::StoredTransitionMismatch { .. }
+        RecordDeployTransitionError::StoredEventMismatch { .. }
     ));
 }

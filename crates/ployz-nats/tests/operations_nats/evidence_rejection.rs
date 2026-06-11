@@ -104,7 +104,8 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
     assert!(!late.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -216,7 +217,8 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
     assert!(!late.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -305,7 +307,8 @@ async fn operation_repository_rejects_plan_created_after_planning() {
     assert!(!late.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -499,7 +502,8 @@ async fn assert_durable_terminal_evidence_rejected(
     operation: &str,
 ) {
     let terminal_status = repository
-        .operation_status(&operation_id(operation))
+        .records()
+        .get(&operation_id(operation))
         .await
         .expect("status lookup succeeds")
         .expect("operation exists");
@@ -533,7 +537,8 @@ async fn assert_durable_terminal_evidence_rejected(
     ));
     assert_eq!(
         repository
-            .operation_status(&operation_id(operation))
+            .records()
+            .get(&operation_id(operation))
             .await
             .expect("status lookup succeeds"),
         Some(terminal_status)

@@ -85,6 +85,18 @@ pub enum NatsServiceRequestFailure {
     Other { message: String },
 }
 
+impl std::fmt::Display for NatsServiceRequestFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut => write!(formatter, "timed out"),
+            Self::NoResponders => write!(formatter, "no responders"),
+            Self::InvalidSubject => write!(formatter, "invalid subject"),
+            Self::MaxPayloadExceeded => write!(formatter, "max payload exceeded"),
+            Self::Other { message } => write!(formatter, "{message}"),
+        }
+    }
+}
+
 fn request_failure(error: async_nats::RequestError) -> NatsServiceRequestFailure {
     match error.kind() {
         async_nats::RequestErrorKind::TimedOut => NatsServiceRequestFailure::TimedOut,

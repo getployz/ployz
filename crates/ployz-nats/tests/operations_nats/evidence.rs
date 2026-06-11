@@ -2,7 +2,7 @@ use super::fixtures::*;
 use ployz_core::ops::{
     DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition, OperationStatus,
 };
-use ployz_nats::operations::RecordDeployEvidenceError;
+use ployz_nats::operations::{RecordDeployEvidenceError, StoredEventMismatchKind};
 
 #[tokio::test]
 async fn operation_repository_records_container_started_without_state_change() {
@@ -62,7 +62,8 @@ async fn operation_repository_records_container_started_without_state_change() {
     assert!(duplicate.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -132,7 +133,8 @@ async fn operation_repository_records_health_check_started_without_state_change(
     assert!(duplicate.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -185,7 +187,8 @@ async fn operation_repository_records_plan_created_without_state_change() {
     assert!(duplicate.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -234,6 +237,9 @@ async fn operation_repository_rejects_plan_retry_with_different_steps() {
 
     assert!(matches!(
         mismatch,
-        RecordDeployEvidenceError::PlanMismatch { .. }
+        RecordDeployEvidenceError::StoredEventMismatch {
+            kind: StoredEventMismatchKind::DeployPlan,
+            ..
+        }
     ));
 }

@@ -37,7 +37,8 @@ async fn operation_repository_duplicate_submit_returns_original_operation() {
     assert_eq!(first.lease.owner_id, owner_id("control_a"));
     assert!(
         repository
-            .operation_status(&operation_id("op_456"))
+            .records()
+            .get(&operation_id("op_456"))
             .await
             .expect("status lookup succeeds")
             .is_none()
@@ -71,7 +72,8 @@ async fn operation_repository_backup_submit_is_durable_and_idempotent() {
     assert_eq!(first.lease, second.lease);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_backup"))
+            .records()
+            .get(&operation_id("op_backup"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::backup_accepted(

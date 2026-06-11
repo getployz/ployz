@@ -976,7 +976,7 @@ fn machine_join_report_error(error: RecordMachineJoinReportError) -> MachineJoin
             | RecordMachineAddEventError::ProjectStatus(_)
             | RecordMachineAddEventError::AppendEvent(_)
             | RecordMachineAddEventError::StoredEventMismatch { .. }
-            | RecordMachineAddEventError::StatusCursorContended => {}
+            | RecordMachineAddEventError::StatusProjectionContended => {}
         },
         RecordMachineJoinReportError::StoreStatus(_)
         | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {}
@@ -1271,7 +1271,7 @@ fn record_machine_add_event_unavailable_source(
         RecordMachineAddEventError::MissingOperation { .. }
         | RecordMachineAddEventError::ProjectStatus(_)
         | RecordMachineAddEventError::StoredEventMismatch { .. }
-        | RecordMachineAddEventError::StatusCursorContended => {
+        | RecordMachineAddEventError::StatusProjectionContended => {
             MachineJoinRedeemUnavailableSource::OperationCorrupt
         }
     }
@@ -1319,7 +1319,7 @@ fn record_machine_add_report_unavailable_source(
         RecordMachineAddEventError::MissingOperation { .. }
         | RecordMachineAddEventError::ProjectStatus(_)
         | RecordMachineAddEventError::StoredEventMismatch { .. }
-        | RecordMachineAddEventError::StatusCursorContended => {
+        | RecordMachineAddEventError::StatusProjectionContended => {
             MachineJoinReportUnavailableSource::OperationCorrupt
         }
     }

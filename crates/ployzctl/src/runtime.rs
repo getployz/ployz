@@ -8,7 +8,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::api_client::{OperationApiClient, OperationApiClientError, OperationApiRequestFailure};
+use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::PloyzctlCommand;
 use crate::commands::init::{
     FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeInitMode,
@@ -875,8 +875,7 @@ fn retryable_operation_api_error<E>(error: &OperationApiClientError<E>) -> bool 
     matches!(
         error,
         OperationApiClientError::Request {
-            failure: OperationApiRequestFailure::NoResponders
-                | OperationApiRequestFailure::TimedOut,
+            failure: NatsServiceRequestFailure::NoResponders | NatsServiceRequestFailure::TimedOut,
             ..
         }
     )

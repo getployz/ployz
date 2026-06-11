@@ -81,7 +81,8 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
     assert!(duplicate.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -153,7 +154,8 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
     assert!(duplicate.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {
@@ -243,7 +245,8 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
     assert!(duplicate.duplicate);
     assert_eq!(
         repository
-            .operation_status(&operation_id("op_123"))
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("status lookup succeeds"),
         Some(OperationStatus::Deploy {

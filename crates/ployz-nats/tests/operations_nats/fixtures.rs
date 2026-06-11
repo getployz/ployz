@@ -110,6 +110,7 @@ pub(super) async fn store_minted_secret(
     idempotency: &str,
 ) {
     repository
+        .records()
         .put_machine_add_secret_delivery_if_absent(
             &idempotency_key(idempotency),
             &ployz_nats::operations::StoredMachineAddSecretDelivery {

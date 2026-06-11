@@ -36,7 +36,8 @@ impl AsyncNatsOperationRepository {
         }
 
         let Some(status) = self
-            .operation_status(&submission.operation_id)
+            .status_store
+            .get(&submission.operation_id)
             .await
             .map_err(RedeemMachineJoinTokenError::LoadStatus)?
         else {
@@ -257,7 +258,8 @@ impl AsyncNatsOperationRepository {
         secret_delivery: MachineJoinSecretDelivery,
     ) -> Result<Option<RedeemedMachineJoin>, RedeemMachineJoinTokenError> {
         let Some(status) = self
-            .operation_status(operation_id)
+            .status_store
+            .get(operation_id)
             .await
             .map_err(RedeemMachineJoinTokenError::LoadStatus)?
         else {

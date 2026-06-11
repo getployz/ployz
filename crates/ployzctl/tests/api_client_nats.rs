@@ -34,7 +34,7 @@ use ployz_sdk_types::{
 };
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzctl::api_client::{
-    OperationApiClient, OperationApiClientError, OperationApiRequestFailure,
+    NatsServiceRequestFailure, OperationApiClient, OperationApiClientError,
 };
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -521,7 +521,7 @@ async fn operation_api_client_reports_no_responders_as_typed_request_failure() {
         error,
         OperationApiClientError::Request {
             endpoint: OperationApiEndpoint::DeploySubmit,
-            failure: OperationApiRequestFailure::NoResponders,
+            failure: NatsServiceRequestFailure::NoResponders,
         }
     );
 }

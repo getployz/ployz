@@ -2,7 +2,6 @@
 
 mod events;
 mod keys;
-mod projection;
 mod repository;
 mod status_store;
 
@@ -25,15 +24,15 @@ pub use repository::{
     MachineJoinRedemption, OperationLeaseClaim, OperationLeaseClaimError, RecordBackupEventError,
     RecordCertEventError, RecordDeployEvidenceError, RecordDeployTransitionError,
     RecordLifecycleEventError, RecordMachineAddEventError, RecordMachineJoinReportError,
-    RecordedMachineJoinReport, RedeemMachineJoinTokenError, RedeemedMachineJoin,
-    ReplayOperationEventsError, SubmitBackupError, SubmitCertError, SubmitDeployError,
-    SubmitMachineAddError,
+    RecordOperationEventError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
+    RedeemedMachineJoin, ReplayOperationEventsError, StoredEventMismatchKind, SubmitBackupError,
+    SubmitCertError, SubmitDeployError, SubmitMachineAddError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
     OperationStatusWrite, StoredBackupSubmission, StoredCertSubmission, StoredDeploySubmission,
     StoredMachineAddJoinToken, StoredMachineAddMintClaim, StoredMachineAddSecretDelivery,
-    StoredMachineAddSubmission,
+    StoredMachineAddSubmission, StoredOperationSubmission,
 };
 
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";

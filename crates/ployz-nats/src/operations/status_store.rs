@@ -8,6 +8,7 @@ use ployz_core::ops::{
     OperationOwnershipStatus, OperationStatus,
 };
 use ployz_core::roles::FirstNodeGateway;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::KV_OPS_BUCKET;
@@ -17,7 +18,6 @@ use super::keys::{
     machine_add_secret_delivery_key, machine_add_submission_key, operation_owner_lease_key,
     operation_status_key,
 };
-use super::projection::{status_id, status_sequence};
 use crate::kv::{NatsIoTimeout, bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
 
 #[derive(Debug, Clone)]
@@ -25,17 +25,17 @@ pub struct AsyncNatsOperationStatusStore {
     bucket: jetstream::kv::Store,
 }
 
+/// One accepted operation submission keyed by idempotency key. Deploy,
+/// cert, and backup submissions all store this shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoredDeploySubmission {
+pub struct StoredOperationSubmission {
     pub operation_id: ployz_core::ids::OperationId,
     pub start_sequence: EventSequence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoredCertSubmission {
-    pub operation_id: ployz_core::ids::OperationId,
-    pub start_sequence: EventSequence,
-}
+pub type StoredDeploySubmission = StoredOperationSubmission;
+pub type StoredCertSubmission = StoredOperationSubmission;
+pub type StoredBackupSubmission = StoredOperationSubmission;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddSubmission {
@@ -73,10 +73,15 @@ pub struct StoredMachineAddJoinToken {
     pub idempotency_key: OperationIdempotencyKey,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoredBackupSubmission {
-    pub operation_id: ployz_core::ids::OperationId,
-    pub start_sequence: EventSequence,
+/// What to do when a create-only record write finds an existing record
+/// under the same key.
+#[derive(Debug, Clone, Copy)]
+enum AdoptPolicy {
+    /// First writer wins; later writers adopt the stored record as-is.
+    AdoptExisting,
+    /// The stored record must equal the candidate; anything else is a
+    /// conflict with this message.
+    RequireEqual { conflict_message: &'static str },
 }
 
 impl AsyncNatsOperationStatusStore {
@@ -101,12 +106,81 @@ impl AsyncNatsOperationStatusStore {
         Self { bucket }
     }
 
+    async fn get_record<T>(
+        &self,
+        operation: &'static str,
+        key: String,
+        decode_error: fn(serde_json::Error) -> OperationStatusStoreError,
+    ) -> Result<Option<T>, OperationStatusStoreError>
+    where
+        T: DeserializeOwned,
+    {
+        let Some(payload) = with_io_timeout(operation, self.bucket.get(key))
+            .await?
+            .map_err(|error| OperationStatusStoreError::GetStatus {
+                message: error.to_string(),
+            })?
+        else {
+            return Ok(None);
+        };
+
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(decode_error)
+    }
+
+    /// Create-only record write with conflict re-read: adopt or verify the
+    /// stored record when another writer got there first.
+    async fn create_or_adopt<T>(
+        &self,
+        get_operation: &'static str,
+        create_operation: &'static str,
+        key: String,
+        value: &T,
+        policy: AdoptPolicy,
+    ) -> Result<T, OperationStatusStoreError>
+    where
+        T: Serialize + DeserializeOwned + Clone + PartialEq,
+    {
+        if let Some(existing) = self
+            .get_record::<T>(
+                get_operation,
+                key.clone(),
+                OperationStatusStoreError::DecodeSubmission,
+            )
+            .await?
+        {
+            return adopt_record(existing, value, policy);
+        }
+
+        let payload =
+            serde_json::to_vec(value).map_err(OperationStatusStoreError::EncodeSubmission)?;
+        match with_io_timeout(create_operation, self.bucket.create(&key, payload.into())).await? {
+            Ok(_) => Ok(value.clone()),
+            Err(error) => {
+                let Some(existing) = self
+                    .get_record::<T>(
+                        get_operation,
+                        key,
+                        OperationStatusStoreError::DecodeSubmission,
+                    )
+                    .await?
+                else {
+                    return Err(OperationStatusStoreError::CasConflict {
+                        message: error.to_string(),
+                    });
+                };
+                adopt_record(existing, value, policy)
+            }
+        }
+    }
+
     pub async fn put_if_newer(
         &self,
         status: &OperationStatus,
     ) -> Result<OperationStatusWrite, OperationStatusStoreError> {
-        let key = operation_status_key(status_id(status));
-        let incoming_sequence = status_sequence(status);
+        let key = operation_status_key(status.id());
+        let incoming_sequence = status.last_event_sequence();
         let payload =
             serde_json::to_vec(status).map_err(OperationStatusStoreError::EncodeStatus)?;
         let Some(existing) = with_io_timeout(
@@ -138,7 +212,7 @@ impl AsyncNatsOperationStatusStore {
 
         let current: OperationStatus = serde_json::from_slice(&existing.value)
             .map_err(OperationStatusStoreError::DecodeStatus)?;
-        let current_sequence = status_sequence(&current);
+        let current_sequence = current.last_event_sequence();
         if current_sequence >= incoming_sequence {
             return Ok(OperationStatusWrite::Stale {
                 current_sequence,
@@ -169,21 +243,12 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredDeploySubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "deploy submission get",
-            self.bucket.get(deploy_submission_key(idempotency_key)),
+            deploy_submission_key(idempotency_key),
+            OperationStatusStoreError::DecodeSubmission,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
+        .await
     }
 
     pub async fn put_deploy_submission_if_absent(
@@ -191,103 +256,26 @@ impl AsyncNatsOperationStatusStore {
         idempotency_key: &OperationIdempotencyKey,
         submission: &StoredDeploySubmission,
     ) -> Result<StoredDeploySubmission, OperationStatusStoreError> {
-        if let Some(existing) = self.deploy_submission(idempotency_key).await? {
-            return Ok(existing);
-        }
-
-        let key = deploy_submission_key(idempotency_key);
-        let payload =
-            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
+        self.create_or_adopt(
+            "deploy submission get",
             "deploy submission create",
-            self.bucket.create(&key, payload.into()),
+            deploy_submission_key(idempotency_key),
+            submission,
+            AdoptPolicy::AdoptExisting,
         )
-        .await?
-        {
-            Ok(_) => Ok(submission.clone()),
-            Err(error) => {
-                if let Some(existing) = self.deploy_submission(idempotency_key).await? {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    })
-                }
-            }
-        }
+        .await
     }
 
     pub async fn cert_submission(
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredCertSubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "cert submission get",
-            self.bucket.get(cert_submission_key(idempotency_key)),
+            cert_submission_key(idempotency_key),
+            OperationStatusStoreError::DecodeSubmission,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
-    }
-
-    pub async fn backup_submission(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Result<Option<StoredBackupSubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
-            "backup submission get",
-            self.bucket.get(backup_submission_key(idempotency_key)),
-        )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
-    }
-
-    pub async fn put_backup_submission_if_absent(
-        &self,
-        idempotency_key: &OperationIdempotencyKey,
-        submission: &StoredBackupSubmission,
-    ) -> Result<StoredBackupSubmission, OperationStatusStoreError> {
-        if let Some(existing) = self.backup_submission(idempotency_key).await? {
-            return Ok(existing);
-        }
-
-        let key = backup_submission_key(idempotency_key);
-        let payload =
-            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
-            "backup submission create",
-            self.bucket.create(&key, payload.into()),
-        )
-        .await?
-        {
-            Ok(_) => Ok(submission.clone()),
-            Err(error) => {
-                if let Some(existing) = self.backup_submission(idempotency_key).await? {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    })
-                }
-            }
-        }
+        .await
     }
 
     pub async fn put_cert_submission_if_absent(
@@ -295,51 +283,53 @@ impl AsyncNatsOperationStatusStore {
         idempotency_key: &OperationIdempotencyKey,
         submission: &StoredCertSubmission,
     ) -> Result<StoredCertSubmission, OperationStatusStoreError> {
-        if let Some(existing) = self.cert_submission(idempotency_key).await? {
-            return Ok(existing);
-        }
-
-        let key = cert_submission_key(idempotency_key);
-        let payload =
-            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
+        self.create_or_adopt(
+            "cert submission get",
             "cert submission create",
-            self.bucket.create(&key, payload.into()),
+            cert_submission_key(idempotency_key),
+            submission,
+            AdoptPolicy::AdoptExisting,
         )
-        .await?
-        {
-            Ok(_) => Ok(submission.clone()),
-            Err(error) => {
-                if let Some(existing) = self.cert_submission(idempotency_key).await? {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    })
-                }
-            }
-        }
+        .await
+    }
+
+    pub async fn backup_submission(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredBackupSubmission>, OperationStatusStoreError> {
+        self.get_record(
+            "backup submission get",
+            backup_submission_key(idempotency_key),
+            OperationStatusStoreError::DecodeSubmission,
+        )
+        .await
+    }
+
+    pub async fn put_backup_submission_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredBackupSubmission,
+    ) -> Result<StoredBackupSubmission, OperationStatusStoreError> {
+        self.create_or_adopt(
+            "backup submission get",
+            "backup submission create",
+            backup_submission_key(idempotency_key),
+            submission,
+            AdoptPolicy::AdoptExisting,
+        )
+        .await
     }
 
     pub async fn machine_add_submission(
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "machine add submission get",
-            self.bucket.get(machine_add_submission_key(idempotency_key)),
+            machine_add_submission_key(idempotency_key),
+            OperationStatusStoreError::DecodeSubmission,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
+        .await
     }
 
     pub async fn put_machine_add_submission_if_absent(
@@ -347,30 +337,14 @@ impl AsyncNatsOperationStatusStore {
         idempotency_key: &OperationIdempotencyKey,
         submission: &StoredMachineAddSubmission,
     ) -> Result<StoredMachineAddSubmission, OperationStatusStoreError> {
-        if let Some(existing) = self.machine_add_submission(idempotency_key).await? {
-            return Ok(existing);
-        }
-
-        let key = machine_add_submission_key(idempotency_key);
-        let payload =
-            serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
+        self.create_or_adopt(
+            "machine add submission get",
             "machine add submission create",
-            self.bucket.create(&key, payload.into()),
+            machine_add_submission_key(idempotency_key),
+            submission,
+            AdoptPolicy::AdoptExisting,
         )
-        .await?
-        {
-            Ok(_) => Ok(submission.clone()),
-            Err(error) => {
-                if let Some(existing) = self.machine_add_submission(idempotency_key).await? {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    })
-                }
-            }
-        }
+        .await
     }
 
     /// Every stored machine-add submission. Used by control-start mint
@@ -402,21 +376,12 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "machine add mint claim get",
-            self.bucket.get(machine_add_mint_claim_key(idempotency_key)),
+            machine_add_mint_claim_key(idempotency_key),
+            OperationStatusStoreError::DecodeSubmission,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
+        .await
     }
 
     /// Create-only claim of minted credential material for one idempotency
@@ -427,52 +392,26 @@ impl AsyncNatsOperationStatusStore {
         idempotency_key: &OperationIdempotencyKey,
         claim: &StoredMachineAddMintClaim,
     ) -> Result<StoredMachineAddMintClaim, OperationStatusStoreError> {
-        if let Some(existing) = self.machine_add_mint_claim(idempotency_key).await? {
-            return Ok(existing);
-        }
-
-        let key = machine_add_mint_claim_key(idempotency_key);
-        let payload =
-            serde_json::to_vec(claim).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
+        self.create_or_adopt(
+            "machine add mint claim get",
             "machine add mint claim create",
-            self.bucket.create(&key, payload.into()),
+            machine_add_mint_claim_key(idempotency_key),
+            claim,
+            AdoptPolicy::AdoptExisting,
         )
-        .await?
-        {
-            Ok(_) => Ok(claim.clone()),
-            Err(error) => {
-                if let Some(existing) = self.machine_add_mint_claim(idempotency_key).await? {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    })
-                }
-            }
-        }
+        .await
     }
 
     pub async fn machine_add_secret_delivery(
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "machine add secret delivery get",
-            self.bucket
-                .get(machine_add_secret_delivery_key(idempotency_key)),
+            machine_add_secret_delivery_key(idempotency_key),
+            OperationStatusStoreError::DecodeSubmission,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
+        .await
     }
 
     pub async fn put_machine_add_secret_delivery_if_absent(
@@ -480,41 +419,16 @@ impl AsyncNatsOperationStatusStore {
         idempotency_key: &OperationIdempotencyKey,
         secret_delivery: &StoredMachineAddSecretDelivery,
     ) -> Result<StoredMachineAddSecretDelivery, OperationStatusStoreError> {
-        if let Some(existing) = self.machine_add_secret_delivery(idempotency_key).await? {
-            if existing == *secret_delivery {
-                return Ok(existing);
-            }
-            return Err(OperationStatusStoreError::CasConflict {
-                message: "machine add secret delivery is already assigned".to_owned(),
-            });
-        }
-
-        let key = machine_add_secret_delivery_key(idempotency_key);
-        let payload = serde_json::to_vec(secret_delivery)
-            .map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
+        self.create_or_adopt(
+            "machine add secret delivery get",
             "machine add secret delivery create",
-            self.bucket.create(&key, payload.into()),
+            machine_add_secret_delivery_key(idempotency_key),
+            secret_delivery,
+            AdoptPolicy::RequireEqual {
+                conflict_message: "machine add secret delivery is already assigned",
+            },
         )
-        .await?
-        {
-            Ok(_) => Ok(secret_delivery.clone()),
-            Err(error) => {
-                let Some(existing) = self.machine_add_secret_delivery(idempotency_key).await?
-                else {
-                    return Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    });
-                };
-                if existing == *secret_delivery {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: "machine add secret delivery is already assigned".to_owned(),
-                    })
-                }
-            }
-        }
+        .await
     }
 
     pub async fn delete_machine_add_secret_delivery(
@@ -537,40 +451,16 @@ impl AsyncNatsOperationStatusStore {
         fingerprint: &JoinTokenFingerprint,
         token: &StoredMachineAddJoinToken,
     ) -> Result<StoredMachineAddJoinToken, OperationStatusStoreError> {
-        if let Some(existing) = self.machine_add_join_token(fingerprint).await? {
-            if existing == *token {
-                return Ok(existing);
-            }
-            return Err(OperationStatusStoreError::CasConflict {
-                message: "join token fingerprint is already assigned".to_owned(),
-            });
-        }
-
-        let key = machine_add_join_token_key(fingerprint);
-        let payload =
-            serde_json::to_vec(token).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_io_timeout(
+        self.create_or_adopt(
+            "machine add join token index get",
             "machine add join token index create",
-            self.bucket.create(&key, payload.into()),
+            machine_add_join_token_key(fingerprint),
+            token,
+            AdoptPolicy::RequireEqual {
+                conflict_message: "join token fingerprint is already assigned",
+            },
         )
-        .await?
-        {
-            Ok(_) => Ok(token.clone()),
-            Err(error) => {
-                let Some(existing) = self.machine_add_join_token(fingerprint).await? else {
-                    return Err(OperationStatusStoreError::CasConflict {
-                        message: error.to_string(),
-                    });
-                };
-                if existing == *token {
-                    Ok(existing)
-                } else {
-                    Err(OperationStatusStoreError::CasConflict {
-                        message: "join token fingerprint is already assigned".to_owned(),
-                    })
-                }
-            }
-        }
+        .await
     }
 
     pub async fn machine_add_submission_for_join_token(
@@ -601,21 +491,12 @@ impl AsyncNatsOperationStatusStore {
         &self,
         fingerprint: &JoinTokenFingerprint,
     ) -> Result<Option<StoredMachineAddJoinToken>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "machine add join token index get",
-            self.bucket.get(machine_add_join_token_key(fingerprint)),
+            machine_add_join_token_key(fingerprint),
+            OperationStatusStoreError::DecodeSubmission,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeSubmission)
+        .await
     }
 
     pub async fn record_machine_add_submission_sequence(
@@ -802,21 +683,12 @@ impl AsyncNatsOperationStatusStore {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
-        let Some(payload) = with_io_timeout(
+        self.get_record(
             "operation owner lease get",
-            self.bucket.get(operation_owner_lease_key(operation_id)),
+            operation_owner_lease_key(operation_id),
+            OperationStatusStoreError::DecodeLease,
         )
-        .await?
-        .map_err(|error| OperationStatusStoreError::GetStatus {
-            message: error.to_string(),
-        })?
-        else {
-            return Ok(None);
-        };
-
-        serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(OperationStatusStoreError::DecodeLease)
+        .await
     }
 
     async fn claim_owner_lease_after_conflict(
@@ -858,7 +730,7 @@ impl AsyncNatsOperationStatusStore {
 
         let current: OperationStatus = serde_json::from_slice(&existing.value)
             .map_err(OperationStatusStoreError::DecodeStatus)?;
-        let current_sequence = status_sequence(&current);
+        let current_sequence = current.last_event_sequence();
         if current_sequence >= attempted_sequence {
             return Ok(OperationStatusWrite::Stale {
                 current_sequence,
@@ -891,6 +763,28 @@ impl AsyncNatsOperationStatusStore {
         serde_json::from_slice(&payload)
             .map(Some)
             .map_err(OperationStatusReadError::DecodeStatus)
+    }
+}
+
+fn adopt_record<T>(
+    existing: T,
+    candidate: &T,
+    policy: AdoptPolicy,
+) -> Result<T, OperationStatusStoreError>
+where
+    T: PartialEq,
+{
+    match policy {
+        AdoptPolicy::AdoptExisting => Ok(existing),
+        AdoptPolicy::RequireEqual { conflict_message } => {
+            if existing == *candidate {
+                Ok(existing)
+            } else {
+                Err(OperationStatusStoreError::CasConflict {
+                    message: conflict_message.to_owned(),
+                })
+            }
+        }
     }
 }
 
