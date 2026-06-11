@@ -49,16 +49,19 @@ use ployzd::docker::labels::{
 };
 use std::collections::HashMap;
 use std::time::Duration;
-use support::dind::{
-    AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, CoreContext, EDGE_NATS_CREDS_FILE, activate_first_node,
-    add_and_join_edge, assert_deploy_event_sequence, assert_journal_contains,
-    assert_machine_add_event_sequence, assert_unit_active, connect_core_client,
-    connect_with_event_capture, decode_base64, finish, gateway_http_get, host_client_config,
-    install_core_cluster, managed_workload_containers, next_permission_violation, operation_events,
-    operation_status, parse_install_line, run_edge_join, submit_machine_add,
+use support::dind::assert::{
+    assert_deploy_event_sequence, assert_journal_contains, assert_machine_add_event_sequence,
+    assert_unit_active, connect_with_event_capture, decode_base64, gateway_http_get,
+    managed_workload_containers, next_permission_violation, operation_events, operation_status,
     terminal_operation_events, unit_main_pid, wait_for_inspect, wait_for_machine_observations,
-    wait_for_terminal_deploy_status, with_evidence,
+    wait_for_terminal_deploy_status,
 };
+use support::dind::formation::{
+    CoreContext, activate_first_node, add_and_join_edge, connect_core_client, finish,
+    host_client_config, install_core_cluster, submit_machine_add,
+};
+use support::dind::join::{parse_install_line, run_edge_join};
+use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, with_evidence};
 use support::ids::{
     idempotency_key, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
 };
