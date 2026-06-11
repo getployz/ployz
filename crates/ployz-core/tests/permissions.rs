@@ -3,7 +3,7 @@ use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
     active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
     inbox_subscribe_scope, kv_read_js_api_subjects, lock_kv_write_scope,
-    nats_authorized_user_kv_write_scope, observation_kv_write_scope,
+    nats_authorized_user_kv_write_scope, node_observation_kv_write_subjects,
     operation_status_kv_write_scope,
 };
 use ployz_core::security::NatsPrincipal;
@@ -20,10 +20,12 @@ fn node_credential_renders_own_scopes_and_route_state_reads() {
         node_id: node_id.clone(),
     });
 
-    let mut expected_publish = vec![
-        node_observation_scope(&node_id),
-        observation_kv_write_scope(),
-    ];
+    let mut expected_publish = vec![node_observation_scope(&node_id)];
+    expected_publish.extend([
+        "$KV.KV_OBS.containers.node_7".to_owned(),
+        "$KV.KV_OBS.nodes.node_7.public_ip".to_owned(),
+        "$KV.KV_OBS.gateways.node_7.status".to_owned(),
+    ]);
     expected_publish.extend(kv_read_js_api_subjects("KV_OBS"));
     expected_publish.extend(kv_read_js_api_subjects("KV_CORE"));
     assert_eq!(profile.publish.allowed_subjects(), expected_publish);
@@ -40,6 +42,30 @@ fn node_credential_renders_own_scopes_and_route_state_reads() {
     );
     assert_eq!(profile.subscribe.denied_subjects(), &[] as &[String]);
     assert_eq!(profile.allow_responses, ResponsePermission::Allowed);
+}
+
+#[test]
+fn node_observation_kv_writes_are_scoped_to_the_nodes_own_keys() {
+    let node_id = node_id("node_7");
+
+    assert_eq!(
+        node_observation_kv_write_subjects(&node_id),
+        [
+            "$KV.KV_OBS.containers.node_7".to_owned(),
+            "$KV.KV_OBS.nodes.node_7.public_ip".to_owned(),
+            "$KV.KV_OBS.gateways.node_7.status".to_owned(),
+        ]
+    );
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Node {
+        node_id: node_id.clone(),
+    });
+    assert!(
+        !profile
+            .publish
+            .allowed_subjects()
+            .contains(&"$KV.KV_OBS.>".to_owned()),
+        "a node credential must not hold the bucket-wide observation write scope"
+    );
 }
 
 #[test]

@@ -105,7 +105,8 @@ async fn node_observation_snapshots_list_sorted_current_snapshots() {
         )],
     );
 
-    store
+    let node_8_store = nats.node_8().await;
+    node_8_store
         .replace_node_containers(&node_8)
         .await
         .expect("old node 8 snapshot stores");
@@ -113,7 +114,7 @@ async fn node_observation_snapshots_list_sorted_current_snapshots() {
         .replace_node_containers(&node_7)
         .await
         .expect("node 7 snapshot stores");
-    store
+    node_8_store
         .replace_node_containers(&node_8_current)
         .await
         .expect("node 8 snapshot replaces old");
@@ -138,7 +139,8 @@ async fn node_public_ip_observations_are_latest_per_node() {
         .replace_node_public_ip(&old)
         .await
         .expect("old ip stores");
-    store
+    nats.node_8()
+        .await
         .replace_node_public_ip(&other)
         .await
         .expect("other ip stores");
@@ -205,7 +207,8 @@ async fn gateway_status_observations_are_latest_per_node() {
         .replace_gateway_status(&old)
         .await
         .expect("old gateway status stores");
-    store
+    nats.node_8()
+        .await
         .replace_gateway_status(&other)
         .await
         .expect("other gateway status stores");
@@ -264,11 +267,24 @@ async fn missing_container_observation_returns_none() {
 
 struct TestNats {
     _server: SecuredTestNats,
+    /// `node_7`'s Node principal: each node may only write its own
+    /// observation keys, so cross-node fixtures need [`TestNats::node_8`].
     jetstream: jetstream::Context,
+    node_8_jetstream: jetstream::Context,
+}
+
+impl TestNats {
+    /// The observation store connected as `node_8` — the only principal
+    /// allowed to write `node_8`'s observation keys.
+    async fn node_8(&self) -> AsyncNatsObservationStore {
+        AsyncNatsObservationStore::from_jetstream(&self.node_8_jetstream)
+            .await
+            .expect("open node_8 observation store")
+    }
 }
 
 /// A secured server where the bucket is bootstrapped by the Controller and
-/// the observation store connects as a Node — the principal that writes
+/// the observation stores connect as Nodes — the principal that writes
 /// observations in production.
 async fn test_nats() -> TestNats {
     let server = SecuredTestNats::start_with_nodes(&[node_id("node_7"), node_id("node_8")])
@@ -284,18 +300,24 @@ async fn test_nats() -> TestNats {
         })
         .await
         .expect("create KV_OBS bucket");
-    let node_config = server
-        .node_config(&node_id("node_7"))
-        .expect("fixture mints the node user");
-    let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
-        .await
-        .expect("node connects");
-    let jetstream = jetstream::new(node_client);
+    let jetstream = node_jetstream(&server, "node_7").await;
+    let node_8_jetstream = node_jetstream(&server, "node_8").await;
 
     TestNats {
         _server: server,
         jetstream,
+        node_8_jetstream,
     }
+}
+
+async fn node_jetstream(server: &SecuredTestNats, node_id_value: &str) -> jetstream::Context {
+    let node_config = server
+        .node_config(&node_id(node_id_value))
+        .expect("fixture mints the node user");
+    let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("node connects");
+    jetstream::new(node_client)
 }
 
 fn managed_observation(

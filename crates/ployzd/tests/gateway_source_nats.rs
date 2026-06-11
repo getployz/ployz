@@ -40,7 +40,9 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         })
         .await
         .expect("route stores");
-    observations
+    AsyncNatsObservationStore::from_jetstream(&nats.node_7_jetstream)
+        .await
+        .expect("open node_7 observation store")
         .replace_node_containers(&node_snapshot(
             "node_7",
             [managed_observation("node_7", "ctr_7", "svc_api", "rev_1")],
@@ -89,7 +91,9 @@ async fn gateway_source_marks_old_observations_stale_before_projection() {
         })
         .await
         .expect("route stores");
-    observations
+    AsyncNatsObservationStore::from_jetstream(&nats.node_7_jetstream)
+        .await
+        .expect("open node_7 observation store")
         .replace_node_containers(&node_snapshot(
             "node_7",
             [managed_observation("node_7", "ctr_7", "svc_api", "rev_1")],
@@ -158,18 +162,22 @@ struct TestNats {
     _nats: ployz_test_support::nats::SecuredTestNats,
     /// Controller principal: route-state writes and bucket administration.
     jetstream: jetstream::Context,
-    /// Node principal: observation writes (the gateway runs as the
-    /// machine's Node user in v1).
+    /// The gateway machine's Node principal: the read side (the gateway
+    /// runs as the machine's Node user in v1).
     node_jetstream: jetstream::Context,
+    /// `node_7`'s Node principal: each node may only write its own
+    /// observation keys, so the workload node seeds its own snapshot.
+    node_7_jetstream: jetstream::Context,
 }
 
 const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn test_nats() -> TestNats {
-    let gateway_node = ployz_core::ids::NodeId::try_new("gateway_node").expect("valid node id");
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(std::slice::from_ref(
-        &gateway_node,
-    ))
+    let gateway_node = node_id("gateway_node");
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[
+        gateway_node.clone(),
+        node_id("node_7"),
+    ])
     .await
     .expect("secured test nats starts");
     let client = ployz_nats::connect::connect_authenticated(
@@ -186,8 +194,17 @@ async fn test_nats() -> TestNats {
     )
     .await
     .expect("gateway node connects");
+    let node_7_client = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&node_id("node_7"))
+            .expect("fixture minted node_7 credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("node_7 connects");
     let jetstream = jetstream::new(client);
     let node_jetstream = jetstream::new(node_client);
+    let node_7_jetstream = jetstream::new(node_7_client);
     for bucket in [KV_CORE_BUCKET, KV_OBS_BUCKET] {
         jetstream
             .create_key_value(jetstream::kv::Config {
@@ -202,6 +219,7 @@ async fn test_nats() -> TestNats {
         _nats: nats,
         jetstream,
         node_jetstream,
+        node_7_jetstream,
     }
 }
 

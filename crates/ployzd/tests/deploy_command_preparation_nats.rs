@@ -54,7 +54,8 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         ))
         .await
         .expect("node_a observations store");
-    observations
+    let node_b_observations = nats.node_observations("node_b").await;
+    node_b_observations
         .replace_node_containers(&node_snapshot(
             "node_b",
             [
@@ -80,7 +81,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         .replace_node_public_ip(&node_public_ip("node_a", 1))
         .await
         .expect("node_a public ip stores");
-    observations
+    node_b_observations
         .replace_node_public_ip(&node_public_ip("node_b", 2))
         .await
         .expect("node_b public ip stores");
@@ -143,7 +144,8 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    observations
+    let edge_observations = nats.node_observations("edge_2").await;
+    edge_observations
         .replace_node_containers(&node_snapshot(
             "edge_2",
             [managed_observation(
@@ -156,7 +158,7 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         ))
         .await
         .expect("edge observations store");
-    observations
+    edge_observations
         .replace_node_public_ip(&node_public_ip("edge_2", 7))
         .await
         .expect("edge public ip stores");
@@ -193,11 +195,13 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    observations
+    nats.node_observations("core_1")
+        .await
         .replace_node_public_ip(&node_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
-    observations
+    nats.node_observations("edge_2")
+        .await
         .replace_node_public_ip(&node_public_ip("edge_2", 2))
         .await
         .expect("edge public ip stores");
@@ -224,7 +228,8 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    observations
+    nats.node_observations("core_1")
+        .await
         .replace_node_public_ip(&node_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
@@ -255,7 +260,8 @@ async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    observations
+    nats.node_observations("core_1")
+        .await
         .replace_node_public_ip(&node_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
@@ -401,7 +407,7 @@ async fn prepare_command_from_nats(
 }
 
 struct TestNats {
-    _nats: SecuredTestNats,
+    nats: SecuredTestNats,
     jetstream: jetstream::Context,
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
@@ -410,6 +416,21 @@ struct TestNats {
 impl TestNats {
     fn stores(&self) -> (AsyncNatsCoreStateStore, AsyncNatsObservationStore) {
         (self.core_state.clone(), self.observations.clone())
+    }
+
+    /// The observation store connected as the given node — each node may
+    /// only write its own observation keys.
+    async fn node_observations(&self, node_id_value: &str) -> AsyncNatsObservationStore {
+        let node_config = self
+            .nats
+            .node_config(&node_id(node_id_value))
+            .expect("fixture minted the node credentials");
+        let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("observing node connects");
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client))
+            .await
+            .expect("open node observation store")
     }
 }
 
@@ -456,7 +477,7 @@ async fn test_nats() -> TestNats {
         .expect("open observation store");
 
     TestNats {
-        _nats: nats,
+        nats,
         jetstream,
         core_state,
         observations,

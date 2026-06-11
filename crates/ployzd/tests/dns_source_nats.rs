@@ -33,7 +33,10 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .commit_active_route(&active_route_commit("www.example.com", 443, 8080))
         .await
         .expect("www route stores");
-    observations
+    let gateway_1 = nats.node_observations("gateway_1").await;
+    let gateway_2 = nats.node_observations("gateway_2").await;
+    let gateway_3 = nats.node_observations("gateway_3").await;
+    gateway_1
         .replace_gateway_status(&gateway_status(
             "gateway_1",
             GatewayServingStatus::Current,
@@ -41,7 +44,7 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         ))
         .await
         .expect("current gateway status stores");
-    observations
+    gateway_2
         .replace_gateway_status(&gateway_status(
             "gateway_2",
             GatewayServingStatus::LastKnownGood,
@@ -49,7 +52,7 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         ))
         .await
         .expect("last-good gateway status stores");
-    observations
+    gateway_3
         .replace_gateway_status(&gateway_status(
             "gateway_3",
             GatewayServingStatus::Current,
@@ -57,19 +60,20 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         ))
         .await
         .expect("empty gateway status stores");
-    observations
+    gateway_1
         .replace_node_public_ip(&node_public_ip("gateway_1", [203, 0, 113, 10]))
         .await
         .expect("gateway one public ip stores");
-    observations
+    gateway_2
         .replace_node_public_ip(&node_public_ip("gateway_2", [203, 0, 113, 11]))
         .await
         .expect("gateway two public ip stores");
-    observations
+    gateway_3
         .replace_node_public_ip(&node_public_ip("gateway_3", [203, 0, 113, 12]))
         .await
         .expect("empty gateway public ip stores");
-    observations
+    nats.node_observations("edge_4")
+        .await
         .replace_node_public_ip(&node_public_ip("edge_4", [203, 0, 113, 13]))
         .await
         .expect("non-gateway public ip stores");
@@ -152,7 +156,8 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         .commit_active_route(&active_route_commit("api.example.com", 443, 8080))
         .await
         .expect("route stores");
-    observations
+    let gateway_1 = nats.node_observations("gateway_1").await;
+    gateway_1
         .replace_gateway_status(&gateway_status(
             "gateway_1",
             GatewayServingStatus::Current,
@@ -160,7 +165,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         ))
         .await
         .expect("gateway status stores");
-    observations
+    gateway_1
         .replace_node_public_ip(&node_public_ip("gateway_1", [203, 0, 113, 10]))
         .await
         .expect("public ip stores");
@@ -176,7 +181,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         &[DnsAnswer::try_new("203.0.113.10").expect("valid answer")]
     );
 
-    observations
+    gateway_1
         .replace_node_public_ip(&node_public_ip("gateway_1", [203, 0, 113, 20]))
         .await
         .expect("updated public ip stores");
@@ -194,21 +199,44 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 }
 
 struct TestNats {
-    _nats: ployz_test_support::nats::SecuredTestNats,
+    nats: ployz_test_support::nats::SecuredTestNats,
     /// Controller principal: route-state writes and bucket administration.
     jetstream: jetstream::Context,
-    /// Node principal: observation writes (DNS runs as the machine's Node
-    /// user in v1).
+    /// The DNS machine's Node principal: the read side (DNS runs as the
+    /// machine's Node user in v1).
     node_jetstream: jetstream::Context,
+}
+
+impl TestNats {
+    /// The observation store connected as the given node — each node may
+    /// only write its own observation keys.
+    async fn node_observations(&self, node_id_value: &str) -> AsyncNatsObservationStore {
+        let node_client = ployz_nats::connect::connect_authenticated(
+            &self
+                .nats
+                .node_config(&node_id(node_id_value))
+                .expect("fixture minted the node credentials"),
+            TEST_NATS_CONNECT_TIMEOUT,
+        )
+        .await
+        .expect("observing node connects");
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client))
+            .await
+            .expect("open node observation store")
+    }
 }
 
 const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn test_nats() -> TestNats {
-    let dns_node = ployz_core::ids::NodeId::try_new("dns_node").expect("valid node id");
-    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(std::slice::from_ref(
-        &dns_node,
-    ))
+    let dns_node = node_id("dns_node");
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[
+        dns_node.clone(),
+        node_id("gateway_1"),
+        node_id("gateway_2"),
+        node_id("gateway_3"),
+        node_id("edge_4"),
+    ])
     .await
     .expect("secured test nats starts");
     let client = ployz_nats::connect::connect_authenticated(
@@ -238,7 +266,7 @@ async fn test_nats() -> TestNats {
     }
 
     TestNats {
-        _nats: nats,
+        nats,
         jetstream,
         node_jetstream,
     }

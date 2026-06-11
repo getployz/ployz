@@ -9,11 +9,13 @@ use futures_util::StreamExt;
 use ployz_core::ids::NodeId;
 use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
+use ployz_core::state::{NodePublicIpObservation, NodePublicIpObservationKey};
 use ployz_core::subjects::{NodeServiceEndpoint, node_service, node_service_scope};
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
     connect_with_timeout,
 };
+use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployz_test_support::nats::SecuredTestNats;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -83,6 +85,59 @@ async fn node_publish_outside_allow_list_gets_permission_violation() {
         .await
         .expect("publish is accepted client-side");
     client.flush().await.expect("flush");
+
+    let violation = next_permission_violation(&mut events).await;
+    assert!(
+        violation.contains("Publish"),
+        "expected a publish violation, got: {violation}"
+    );
+}
+
+#[tokio::test]
+async fn node_observation_writes_are_fenced_to_its_own_keys() {
+    let node_id = NodeId::try_new("node-a").expect("valid node id");
+    let other_node_id = NodeId::try_new("node-b").expect("valid node id");
+    let fixture = SecuredTestNats::start_with_nodes(std::slice::from_ref(&node_id))
+        .await
+        .expect("secured fixture");
+    let controller = connect_authenticated(&fixture.controller_config(), CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
+    async_nats::jetstream::new(controller)
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: KV_OBS_BUCKET.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("controller creates the observation bucket");
+    let Some(config) = fixture.node_config(&node_id) else {
+        panic!("fixture mints a user for every requested node");
+    };
+    let (node_client, mut events) = connect_with_event_capture(&config).await;
+    let observations =
+        AsyncNatsObservationStore::from_jetstream(&async_nats::jetstream::new(node_client.clone()))
+            .await
+            .expect("node opens the observation store");
+
+    // Writing this node's own observation key succeeds.
+    observations
+        .replace_node_public_ip(&NodePublicIpObservation {
+            node_id: node_id.clone(),
+            public_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1)),
+        })
+        .await
+        .expect("a node writes its own observation key");
+
+    // Writing another node's observation key is denied server-side.
+    let other_key = NodePublicIpObservationKey::from_node_id(&other_node_id);
+    node_client
+        .publish(
+            format!("$KV.{KV_OBS_BUCKET}.{}", other_key.as_str()),
+            "evidence".into(),
+        )
+        .await
+        .expect("publish is accepted client-side");
+    node_client.flush().await.expect("flush");
 
     let violation = next_permission_violation(&mut events).await;
     assert!(

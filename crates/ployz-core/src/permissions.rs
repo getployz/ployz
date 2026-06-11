@@ -10,10 +10,12 @@
 //! authenticate as their machine's `Node{node_id}` user, and the Node
 //! profile carries the read-only route-state subjects they need.
 
+use crate::ids::NodeId;
 use crate::security::NatsPrincipal;
 use crate::state::{
     ACTIVE_MACHINE_STATE_PREFIX, ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX,
-    KV_CORE_BUCKET, KV_LOCKS_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET, NATS_AUTHORIZED_USER_PREFIX,
+    GatewayStatusObservationKey, KV_CORE_BUCKET, KV_LOCKS_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
+    NATS_AUTHORIZED_USER_PREFIX, NodeContainerObservationKey, NodePublicIpObservationKey,
 };
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT,
@@ -82,9 +84,24 @@ pub fn lock_kv_write_scope() -> String {
     format!("$KV.{KV_LOCKS_BUCKET}.>")
 }
 
+/// A node's observation writes in `KV_OBS`, fenced to its own keys.
+///
+/// The subjects derive from the same typed keys the observation store
+/// writes (`containers.<node>`, `nodes.<node>.public_ip`,
+/// `gateways.<node>.status`), so one machine's Node credential cannot
+/// overwrite another machine's observations — routing and serving
+/// eligibility read these. Nodes keep read access to the whole bucket via
+/// [`kv_read_js_api_subjects`].
 #[must_use]
-pub fn observation_kv_write_scope() -> String {
-    format!("$KV.{KV_OBS_BUCKET}.>")
+pub fn node_observation_kv_write_subjects(node_id: &NodeId) -> [String; 3] {
+    let containers = NodeContainerObservationKey::from_node_id(node_id);
+    let public_ip = NodePublicIpObservationKey::from_node_id(node_id);
+    let gateway_status = GatewayStatusObservationKey::from_node_id(node_id);
+    [
+        format!("$KV.{KV_OBS_BUCKET}.{}", containers.as_str()),
+        format!("$KV.{KV_OBS_BUCKET}.{}", public_ip.as_str()),
+        format!("$KV.{KV_OBS_BUCKET}.{}", gateway_status.as_str()),
+    ]
 }
 
 /// JetStream API subjects a client publishes to for read-only access to one
@@ -125,10 +142,8 @@ impl NatsPermissionProfile {
                 // Gateway and DNS authenticate as the machine's Node user in
                 // v1, so this profile carries their read-only route-state
                 // access (KV_CORE reads stay read-only via the publish deny).
-                let mut publish_allow = vec![
-                    node_observation_scope(node_id),
-                    observation_kv_write_scope(),
-                ];
+                let mut publish_allow = vec![node_observation_scope(node_id)];
+                publish_allow.extend(node_observation_kv_write_subjects(node_id));
                 publish_allow.extend(kv_read_js_api_subjects(KV_OBS_BUCKET));
                 publish_allow.extend(kv_read_js_api_subjects(KV_CORE_BUCKET));
                 Self {
