@@ -1,7 +1,7 @@
 ---
 title: "feat: Direct NATS v1 — auth, iroh removal, DinD e2e"
 type: feat
-status: planned
+status: implemented
 date: 2026-06-10
 origin:
   - docs/adr/0013-v1-uses-direct-tls-nats.md
@@ -12,7 +12,7 @@ origin:
 
 # feat: Direct NATS v1 — auth, iroh removal, DinD e2e
 
-Status: planned. Governed by [`ADR-0013`](../adr/0013-v1-uses-direct-tls-nats.md):
+Status: implemented. Governed by [`ADR-0013`](../adr/0013-v1-uses-direct-tls-nats.md):
 v1 machine connectivity is a direct TLS-authenticated NATS connection. All
 iroh/tunnel machinery leaves the v1 path. NATS credentials plus server-side
 subject permissions become the authority boundary. Hetzner acceptance is out

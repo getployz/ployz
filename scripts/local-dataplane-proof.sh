@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Local data-plane proof, two layers:
+#
+# Layer A — WireGuard/eBPF data-plane proof. Builds the workspace inside a
+# privileged builder container and runs the gated
+# `cargo test -p ployzd --test wireguard_dataplane` suite against real
+# WireGuard interfaces and eBPF programs. This remains this script's job.
+#
+# Layer B — two-machine systemd cluster proof (everything from the machine
+# containers down). SUPERSEDED by the Docker-in-Docker e2e harness:
+# `scripts/dind-e2e.sh`, `crates/ployz-e2e/tests/dind_cluster.rs`,
+# docs/operations/dind-e2e.md. The harness drives the same product path as
+# gated Rust tests with evidence capture and label-based cleanup, and covers
+# more (restart invisibility, auth rejection). The bash recipe below is kept
+# as the original proven reference; prefer the harness for acceptance runs.
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${PLOYZ_LOCAL_DATAPLANE_IMAGE:-rust:1.91-bookworm}"
 PROOF_IMAGE="${PLOYZ_LOCAL_DATAPLANE_PROOF_IMAGE:-ployz-local-dataplane-proof:rust-1.91-bookworm-v5}"

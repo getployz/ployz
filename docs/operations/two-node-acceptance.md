@@ -3,6 +3,12 @@
 This runbook proves that Ployz installs and runs on two fresh Linux machines.
 Hetzner only supplies disposable hosts, public IPs, SSH, and cleanup.
 
+> **Local acceptance path:** the same two-machine product flow (first-node
+> install, machine add/join, deploy, gateway routing) runs locally as gated
+> Rust tests in the Docker-in-Docker harness — `scripts/dind-e2e.sh`, see
+> [`dind-e2e.md`](dind-e2e.md). Use the DinD harness for day-to-day
+> acceptance; this Hetzner runbook remains the real-host proof.
+
 The rule is blunt: Hetzner is not an architecture slice. If the product cannot
 install, join a node, deploy, route traffic, and expose operation status through
 normal Ployz commands, this proof fails.
