@@ -3,6 +3,7 @@
 mod active_machine;
 mod active_route;
 mod active_service;
+mod nats_authorized_user;
 
 use crate::kv::KV_CORE_BUCKET;
 pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};

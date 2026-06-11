@@ -42,8 +42,10 @@ command -v sha256sum >/dev/null
 
 install_dir="/usr/local/bin"
 state_dir="/var/lib/ployz/keeper"
+nats_dir="/var/lib/ployz/nats"
 keeper_bin="${install_dir}/ployz-keeper"
 join_token_file="${state_dir}/join-token"
+ca_file="${nats_dir}/ca.pem"
 tmp_file="$(mktemp)"
 
 cleanup() {
@@ -58,11 +60,22 @@ install -d -m 0755 "$install_dir"
 install -d -m 0700 "$state_dir"
 install -m 0755 "$tmp_file" "$keeper_bin"
 
+# The cluster CA (public material) arrives base64-packed on the install
+# command line; the keeper verifies the core's TLS NATS against it.
+if [ "${PLOYZ_NATS_CA_B64:-}" ]; then
+  install -d -m 0755 "$nats_dir"
+  printf '%s' "$PLOYZ_NATS_CA_B64" | base64 -d > "$ca_file"
+  PLOYZ_NATS_CA_FILE="$ca_file"
+  export PLOYZ_NATS_CA_FILE
+fi
+
 if [ "${PLOYZ_JOIN_TOKEN:-}" ]; then
   umask 077
   printf '%s\n' "$PLOYZ_JOIN_TOKEN" > "$join_token_file"
 fi
 
+# PLOYZ_NATS_URL, PLOYZ_NATS_CA_FILE, and PLOYZ_JOIN_NKEY_SEED flow to the
+# keeper, which redeems the join token with the low-privilege Join user.
 if [ "${PLOYZ_JOIN_TOKEN:-}" ]; then
   "$keeper_bin" --join-token-file "$join_token_file"
 fi

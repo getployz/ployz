@@ -18,8 +18,9 @@ use ployz_core::subjects::{
     op_cert_validation_started, op_deploy_cleanup_finished, op_deploy_completed,
     op_deploy_container_started, op_deploy_failed, op_deploy_health_check_started,
     op_deploy_plan_created, op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
-    op_deploy_wireguard_ebpf_prepared, op_machine_add_completed, op_machine_add_failed,
-    op_machine_add_joined, op_machine_add_submitted, op_watch,
+    op_deploy_wireguard_ebpf_prepared, op_machine_add_completed,
+    op_machine_add_credential_provisioned, op_machine_add_failed, op_machine_add_joined,
+    op_machine_add_submitted, op_watch,
 };
 use std::future::Future;
 
@@ -152,6 +153,26 @@ impl OperationEventAppend {
                 operation_id: operation_id.clone(),
                 node_id: node_id.clone(),
                 joined_at,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn machine_add_credential_provisioned(
+        operation_id: &OperationId,
+        node_id: &NodeId,
+        step: ployz_core::machine::MachineCredentialProvisioningStep,
+    ) -> Self {
+        Self::from_event(
+            MessageId::new(format!(
+                "machine.add.credential.{}.{}",
+                step.as_subject_token(),
+                operation_id.as_str()
+            )),
+            OperationEvent::MachineAddCredentialProvisioned {
+                operation_id: operation_id.clone(),
+                node_id: node_id.clone(),
+                step,
             },
         )
     }
@@ -544,6 +565,9 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::MachineAddJoined { operation_id, .. } => {
             op_machine_add_joined(operation_id)
         }
+        OperationEvent::MachineAddCredentialProvisioned {
+            operation_id, step, ..
+        } => op_machine_add_credential_provisioned(operation_id, *step),
         OperationEvent::MachineAddCompleted { operation_id, .. } => {
             op_machine_add_completed(operation_id)
         }

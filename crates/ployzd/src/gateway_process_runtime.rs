@@ -7,11 +7,12 @@ use crate::gateway_http::{
 };
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
+use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use futures_util::StreamExt;
 use ployz_core::ids::NodeId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
-use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
+use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::NatsClient;
@@ -71,7 +72,16 @@ impl RunningGatewayProcessRuntime {
 pub async fn start_gateway_process_runtime(
     config: &GatewayProcessConfig,
 ) -> Result<RunningGatewayProcessRuntime, GatewayProcessRuntimeError> {
-    let client = connect_with_timeout(&config.nats_url, GATEWAY_NATS_CONNECT_TIMEOUT)
+    // Gateway authenticates as the machine's Node user (no Gateway
+    // principal in v1) and awaits the seed file like the node role does.
+    let connect = await_role_credentials(
+        "gateway",
+        &config.nats,
+        &SeedFileRetryPolicy::default_policy(),
+    )
+    .await
+    .map_err(GatewayProcessRuntimeError::AwaitCredentials)?;
+    let client = connect_authenticated(&connect, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(GatewayProcessRuntimeError::ConnectNats)?;
     start_gateway_process_runtime_with_client(
@@ -657,6 +667,7 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 
 #[derive(Debug)]
 pub enum GatewayProcessRuntimeError {
+    AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
     BindHttp {
         addr: SocketAddr,
@@ -677,6 +688,7 @@ pub enum GatewayProcessRuntimeError {
 impl fmt::Display for GatewayProcessRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AwaitCredentials(error) => write!(formatter, "{error}"),
             Self::ConnectNats(error) => write!(formatter, "{error}"),
             Self::BindHttp { addr, source } => {
                 write!(

@@ -14,9 +14,11 @@ use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
     ExpectedActiveService, NodePublicIpObservation,
 };
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
+use ployz_test_support::nats::SecuredTestNats;
 use ployzd::deploy_worker::{
     ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
     load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
@@ -24,15 +26,12 @@ use ployzd::deploy_worker::{
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[tokio::test]
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
 
     core_state
         .commit_active_service(&ActiveServiceCommitRequest {
@@ -139,12 +138,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
 #[tokio::test]
 async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -194,12 +188,7 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
 #[tokio::test]
 async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -234,12 +223,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 #[tokio::test]
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
     observations
         .replace_node_public_ip(&node_public_ip("core_1", 1))
         .await
@@ -266,12 +250,7 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
 #[tokio::test]
 async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
     core_state
         .replace_active_machine(&active_machine("edge_2"))
         .await
@@ -301,12 +280,7 @@ async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
 #[tokio::test]
 async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
@@ -325,12 +299,7 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
 #[tokio::test]
 async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
     let key = ActiveServiceStateKey::from_service_id(&service_id("svc_api"));
     let wrong_service_state = ActiveServiceState {
         service_id: service_id("svc_worker"),
@@ -380,12 +349,7 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
 #[tokio::test]
 async fn nats_preparation_preserves_decode_failure_message() {
     let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observation store");
+    let (core_state, observations) = nats.stores();
     let request = deploy_request();
     let key = ActiveServiceStateKey::from_service_id(&request.service_id);
     nats.jetstream
@@ -437,19 +401,31 @@ async fn prepare_command_from_nats(
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: SecuredTestNats,
     jetstream: jetstream::Context,
+    core_state: AsyncNatsCoreStateStore,
+    observations: AsyncNatsObservationStore,
+}
+
+impl TestNats {
+    fn stores(&self) -> (AsyncNatsCoreStateStore, AsyncNatsObservationStore) {
+        (self.core_state.clone(), self.observations.clone())
+    }
 }
 
 async fn test_nats() -> TestNats {
-    let config = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../ployz-nats/tests/configs/jetstream.conf"
-    );
-    let server = nats_server::run_server(config);
-    let client = async_nats::connect(server.client_url())
+    let node_ids = [
+        node_id("node_a"),
+        node_id("node_b"),
+        node_id("edge_2"),
+        node_id("core_1"),
+    ];
+    let nats = SecuredTestNats::start_with_nodes(&node_ids)
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
     let jetstream = jetstream::new(client);
     jetstream
         .create_key_value(jetstream::kv::Config {
@@ -465,10 +441,25 @@ async fn test_nats() -> TestNats {
         })
         .await
         .expect("create KV_OBS bucket");
+    let node_config = nats
+        .node_config(&node_id("node_a"))
+        .expect("fixture minted node_a credentials");
+    let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("node connects");
+    let node_jetstream = jetstream::new(node_client);
+    let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+        .await
+        .expect("open core state store");
+    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+        .await
+        .expect("open observation store");
 
     TestNats {
-        _server: server,
+        _nats: nats,
         jetstream,
+        core_state,
+        observations,
     }
 }
 

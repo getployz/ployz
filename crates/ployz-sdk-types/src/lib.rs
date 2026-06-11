@@ -410,6 +410,12 @@ pub enum MachineJoinRedeemResult {
 pub enum MachineJoinRedeemError {
     InvalidJoinToken,
     UnknownJoinToken,
+    /// The operation is accepted but its per-machine credential has not
+    /// reached `material-ready` yet. The keeper retries redeem boundedly
+    /// until the material lands or the join token TTL expires.
+    MaterialNotReady {
+        operation_id: OperationId,
+    },
     Rejected {
         operation_id: OperationId,
         failure: MachineAddFailure,
@@ -438,6 +444,11 @@ pub enum InitFirstNodeActivateError {
     },
     JoinReport {
         failure: MachineJoinReportError,
+    },
+    /// Control could not write the first node's `node.seed` after the
+    /// minted material was redeemed.
+    NodeSeedWrite {
+        message: FailureMessage,
     },
 }
 

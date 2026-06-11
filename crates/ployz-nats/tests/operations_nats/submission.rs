@@ -120,32 +120,33 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
     );
 }
 
+/// Redeem before the mint worker reaches `material-ready` is the typed
+/// not-ready error and must not transition the operation out of Pending.
 #[tokio::test]
-async fn operation_repository_machine_add_retry_rejects_secret_delivery_drift() {
+async fn operation_repository_redeem_before_material_ready_is_typed_not_ready() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
-
-    repository
+    let accepted = repository
         .submit_machine_add(
             machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
             default_lease_claim(),
         )
         .await
-        .expect("first machine add accepted");
-    let mut retry = machine_add_submission("op_other", "idem_machine", "node_2", "edge_2");
-    retry.secret_delivery = ployz_core::install::MachineJoinSecretDelivery {
-        nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
-            "different-user-jwt-and-seed",
-        )
-        .expect("valid nats credentials"),
-    };
+        .expect("machine add accepted");
 
-    assert!(
+    assert!(matches!(
         repository
-            .submit_machine_add(retry, default_lease_claim())
-            .await
-            .is_err()
-    );
+            .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
+            .await,
+        Err(RedeemMachineJoinTokenError::MissingSecretDelivery { operation_id })
+            if operation_id == accepted.operation_id
+    ));
+    // The operation is still Pending: a later redeem (after material) works.
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
+    repository
+        .redeem_machine_join_token(&accepted.raw_join_token, joined_at(55))
+        .await
+        .expect("redeem succeeds once material is ready");
 }
 
 #[tokio::test]
@@ -270,6 +271,7 @@ async fn operation_repository_redeems_machine_join_token_once() {
         )
         .await
         .expect("machine add accepted");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
 
     let redemption = repository
         .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
@@ -314,6 +316,7 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
         )
         .await
         .expect("machine add accepted");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
 
     repository
         .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
@@ -351,6 +354,7 @@ async fn operation_repository_repeated_machine_join_token_returns_joined_facts()
         )
         .await
         .expect("machine add accepted");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
 
     repository
         .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
@@ -391,6 +395,7 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
         )
         .await
         .expect("machine add accepted");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
     event_log
         .append(OperationEventAppend::machine_add_joined(
             &accepted.operation_id,
@@ -431,6 +436,7 @@ async fn operation_repository_completed_machine_join_redeem_does_not_need_secret
         )
         .await
         .expect("machine add accepted");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
     repository
         .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
         .await
@@ -504,7 +510,6 @@ async fn machine_add_partial_submission_does_not_expose_join_token_before_accept
                 name: original.name.clone(),
                 gateway: original.gateway,
                 join_bundle: machine_join_bundle(),
-                secret_delivery: machine_join_secret_delivery(),
                 raw_join_token: original.raw_join_token.clone(),
                 join_token: original.join_token.clone(),
                 idempotency_key,
@@ -513,6 +518,7 @@ async fn machine_add_partial_submission_does_not_expose_join_token_before_accept
         )
         .await
         .expect("retry accepts original machine add");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
     repository
         .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
         .await
@@ -618,7 +624,6 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     gateway: FirstNodeGateway::Skip,
                     join_bundle: machine_join_bundle(),
-                    secret_delivery: machine_join_secret_delivery(),
                     raw_join_token,
                     join_token: issued_join_token_for_raw("shared_raw_join_token"),
                     idempotency_key: idempotency_key("idem_machine"),
@@ -649,7 +654,6 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
                 gateway: FirstNodeGateway::Skip,
                 join_bundle: machine_join_bundle(),
-                secret_delivery: machine_join_secret_delivery(),
                 raw_join_token: raw_join_token("short_lived_join_token"),
                 join_token: issued_join_token_for_raw_with_expiry("short_lived_join_token", 40),
                 idempotency_key: idempotency_key("idem_machine"),
@@ -699,6 +703,7 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
         )
         .await
         .expect("machine add accepted");
+    store_minted_secret(&repository, "op_machine", "idem_machine").await;
     repository
         .redeem_machine_join_token(&accepted.raw_join_token, joined_at(50))
         .await
@@ -778,7 +783,6 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
                 name: original.name.clone(),
                 gateway: original.gateway,
                 join_bundle: machine_join_bundle(),
-                secret_delivery: machine_join_secret_delivery(),
                 raw_join_token: original.raw_join_token.clone(),
                 join_token: original.join_token.clone(),
                 idempotency_key,
@@ -854,7 +858,6 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
                 gateway: FirstNodeGateway::Skip,
                 join_bundle: machine_join_bundle(),
-                secret_delivery: machine_join_secret_delivery(),
                 raw_join_token: raw_join_token("original_raw_join_token"),
                 join_token: issued_join_token_for_raw("original_raw_join_token"),
                 idempotency_key,

@@ -1325,13 +1325,15 @@ name = "ployzctl"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "base64",
  "clap",
- "nats-server",
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",
+ "ployz-test-support",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1343,7 +1345,7 @@ dependencies = [
  "bollard",
  "clap",
  "futures-util",
- "nats-server",
+ "nkeys",
  "nuid",
  "ployz-core",
  "ployz-ebpf-common",
@@ -1352,6 +1354,7 @@ dependencies = [
  "ployz-test-support",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

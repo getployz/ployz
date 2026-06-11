@@ -1,10 +1,10 @@
 //! Log evidence commands.
 
-use clap::Parser;
+use clap::Args;
 use ployz_core::ids::{ContainerId, NodeId};
 use ployz_sdk_types::{LogsTailLines, LogsTailRequest, LogsTailResult};
 
-use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
+use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogsTailCommand {
@@ -41,11 +41,7 @@ impl LogsTailOutput {
     }
 }
 
-pub fn parse_logs_tail_command(rest: &[String]) -> Result<LogsTailCommand, PloyzctlCliError> {
-    let parsed =
-        LogsTailCli::try_parse_from(std::iter::once("logs".to_owned()).chain(rest.iter().cloned()))
-            .map_err(clap_error)?;
-
+pub(crate) fn logs_tail_command(parsed: LogsTailCli) -> Result<LogsTailCommand, PloyzctlCliError> {
     Ok(LogsTailCommand {
         container_id: ContainerId::try_new(parsed.container_id)
             .map_err(|error| invalid_value("<container_id>", error))?,
@@ -66,9 +62,8 @@ pub fn parse_logs_tail_command(rest: &[String]) -> Result<LogsTailCommand, Ployz
     })
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "logs")]
-struct LogsTailCli {
+#[derive(Debug, Args)]
+pub(crate) struct LogsTailCli {
     container_id: String,
     #[arg(long)]
     node: Option<String>,

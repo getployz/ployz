@@ -326,6 +326,38 @@ pub enum MachineAddFailure {
     JoinTokenExpired { expired_at: JoinTokenExpiresAt },
     BootstrapFailed { message: FailureMessage },
     ReadinessFailed { evidence: MachineReadinessEvidence },
+    AuthorizationRenderFailed { message: FailureMessage },
+    NatsReloadFailed { message: FailureMessage },
+    MintedCredentialUnusable { message: FailureMessage },
+}
+
+/// One step of the per-machine credential minting work that runs after a
+/// machine-add submission is accepted. Each step is recorded as an
+/// operation event so the audience can follow mint → render → reload →
+/// verify → material-ready without reading logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineCredentialProvisioningStep {
+    Minted,
+    Rendered,
+    Reloaded,
+    Verified,
+    MaterialReady,
+}
+
+impl MachineCredentialProvisioningStep {
+    /// The wire token used in event subjects and message ids.
+    #[must_use]
+    pub const fn as_subject_token(self) -> &'static str {
+        match self {
+            Self::Minted => "minted",
+            Self::Rendered => "rendered",
+            Self::Reloaded => "reloaded",
+            Self::Verified => "verified",
+            Self::MaterialReady => "material_ready",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

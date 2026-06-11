@@ -132,11 +132,17 @@ impl NatsServerConfig {
 ///
 /// Public keys plus permissions are non-secret recovery evidence; seeds
 /// never appear in the authorization file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NatsAuthorizedUser {
     pub principal: NatsPrincipal,
     pub nkey_public: NatsUserPublicKey,
 }
+
+/// The marker comment that precedes each rendered user entry. It names the
+/// entry's principal so the on-disk file works as recovery evidence: after
+/// JetStream loss the authorized principal set is re-adopted from the file.
+const PRINCIPAL_MARKER_PREFIX: &str = "# ployz-principal: ";
 
 /// Renders the `authorization { users [...] }` include file from the
 /// principals' permission profiles.
@@ -150,6 +156,10 @@ pub fn render_authorized_users(users: &[NatsAuthorizedUser]) -> String {
         } = user;
         let profile = NatsPermissionProfile::render(principal.clone());
         rendered.push_str("    {\n");
+        rendered.push_str(&format!(
+            "      {PRINCIPAL_MARKER_PREFIX}{}\n",
+            principal.authority_key()
+        ));
         rendered.push_str(&format!("      nkey: {}\n", nkey_public.as_str()));
         rendered.push_str("      permissions {\n");
         rendered.push_str("        publish {\n");
@@ -188,6 +198,90 @@ pub fn render_authorized_users(users: &[NatsAuthorizedUser]) -> String {
     rendered.push_str("  ]\n}\n");
     rendered
 }
+
+/// Parses the principal/public-key pairs back out of a rendered
+/// `authorized-users.conf`. This is the recovery-evidence read path: on
+/// control start the existing file is adopted into the KV authority set
+/// before any render, so renders never shrink the user set after
+/// JetStream loss.
+pub fn parse_authorized_users(
+    rendered: &str,
+) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersParseError> {
+    let mut users = Vec::new();
+    let mut pending_principal: Option<NatsPrincipal> = None;
+    for (index, line) in rendered.lines().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim();
+        if let Some(key) = trimmed.strip_prefix(PRINCIPAL_MARKER_PREFIX) {
+            if pending_principal.is_some() {
+                return Err(AuthorizedUsersParseError::MarkerWithoutNkey { line_number });
+            }
+            pending_principal = Some(NatsPrincipal::try_from_authority_key(key.trim()).map_err(
+                |_| AuthorizedUsersParseError::InvalidPrincipal {
+                    line_number,
+                    value: key.trim().to_owned(),
+                },
+            )?);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("nkey:") {
+            let Some(principal) = pending_principal.take() else {
+                return Err(AuthorizedUsersParseError::NkeyWithoutMarker { line_number });
+            };
+            let nkey_public = NatsUserPublicKey::try_new(value.trim()).map_err(|_| {
+                AuthorizedUsersParseError::InvalidPublicKey {
+                    line_number,
+                    value: value.trim().to_owned(),
+                }
+            })?;
+            users.push(NatsAuthorizedUser {
+                principal,
+                nkey_public,
+            });
+        }
+    }
+    if pending_principal.is_some() {
+        return Err(AuthorizedUsersParseError::TrailingMarker);
+    }
+
+    Ok(users)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthorizedUsersParseError {
+    MarkerWithoutNkey { line_number: usize },
+    NkeyWithoutMarker { line_number: usize },
+    TrailingMarker,
+    InvalidPrincipal { line_number: usize, value: String },
+    InvalidPublicKey { line_number: usize, value: String },
+}
+
+impl fmt::Display for AuthorizedUsersParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MarkerWithoutNkey { line_number } => write!(
+                formatter,
+                "authorized-users line {line_number}: principal marker is not followed by an nkey"
+            ),
+            Self::NkeyWithoutMarker { line_number } => write!(
+                formatter,
+                "authorized-users line {line_number}: nkey entry has no preceding principal marker"
+            ),
+            Self::TrailingMarker => formatter
+                .write_str("authorized-users file ends with a principal marker and no nkey"),
+            Self::InvalidPrincipal { line_number, value } => write!(
+                formatter,
+                "authorized-users line {line_number}: {value:?} is not a principal authority key"
+            ),
+            Self::InvalidPublicKey { line_number, value } => write!(
+                formatter,
+                "authorized-users line {line_number}: {value:?} is not an NKey user public key"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AuthorizedUsersParseError {}
 
 fn render_subject_list(label: &str, subjects: &[String]) -> String {
     let quoted: Vec<String> = subjects
@@ -289,7 +383,8 @@ fn is_hostname_syntax(value: &str) -> bool {
 }
 
 /// An NKey user public key (`U`-prefixed base32). Non-secret material.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct NatsUserPublicKey(String);
 
 impl NatsUserPublicKey {
@@ -304,6 +399,20 @@ impl NatsUserPublicKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for NatsUserPublicKey {
+    type Error = NatsServerConfigError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NatsUserPublicKey> for String {
+    fn from(value: NatsUserPublicKey) -> Self {
+        value.0
     }
 }
 

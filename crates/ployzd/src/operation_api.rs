@@ -6,6 +6,7 @@ use crate::controllers::{
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
 };
 use crate::deploy_runtime::DeployOperationRuntime;
+use crate::nats_authorization::{MachineCredentialMintRuntime, MintRequest, write_node_seed_file};
 use crate::node_rpc::{NatsNodeLogsTailer, NodeLogsTailRuntimeError};
 use crate::node_runtime_types::NodeLogsTailRequest as NodeRuntimeLogsTailRequest;
 use ployz_core::ids::{ContainerId, NodeId, OperationId};
@@ -58,6 +59,7 @@ pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_execution: DeploySubmitExecution,
     backup_execution: BackupCreateExecution,
+    machine_mint: MachineMintExecution,
     machine_query: MachineQueryExecution,
     service_query: ServiceQueryExecution,
     logs_query: LogsQueryExecution,
@@ -65,22 +67,11 @@ pub struct OperationApiHandlers {
 
 impl OperationApiHandlers {
     #[must_use]
-    pub fn accept_only(controllers: OperationControllers) -> Self {
-        Self {
-            controllers,
-            deploy_execution: DeploySubmitExecution::AcceptOnly,
-            backup_execution: BackupCreateExecution::AcceptOnly,
-            machine_query: MachineQueryExecution::Unavailable,
-            service_query: ServiceQueryExecution::Unavailable,
-            logs_query: LogsQueryExecution::Unavailable,
-        }
-    }
-
-    #[must_use]
     pub fn execute_operations(
         controllers: OperationControllers,
         deploy_runtime: DeployOperationRuntime,
         backup_runtime: BackupOperationRuntime,
+        machine_mint: MachineCredentialMintRuntime,
         machine_query: MachineQueryRuntime,
         logs_tailer: NatsNodeLogsTailer,
     ) -> Self {
@@ -90,6 +81,7 @@ impl OperationApiHandlers {
             controllers,
             deploy_execution: DeploySubmitExecution::Execute(Arc::new(deploy_runtime)),
             backup_execution: BackupCreateExecution::Execute(Arc::new(backup_runtime)),
+            machine_mint: MachineMintExecution::Execute(Arc::new(machine_mint)),
             machine_query: MachineQueryExecution::Execute(Arc::new(machine_query)),
             service_query: ServiceQueryExecution::Execute(Arc::new(service_query)),
             logs_query: LogsQueryExecution::Execute(Arc::new(logs_query)),
@@ -128,6 +120,23 @@ impl BackupCreateExecution {
         match (self, accepted.should_start_execution) {
             (Self::Execute(runtime), true) => runtime.start(accepted),
             (Self::AcceptOnly, true | false) | (Self::Execute(_), false) => {}
+        }
+    }
+}
+
+/// Whether accepted machine-adds get their per-machine credential minted
+/// as owned background work.
+#[derive(Clone)]
+pub enum MachineMintExecution {
+    AcceptOnly,
+    Execute(Arc<MachineCredentialMintRuntime>),
+}
+
+impl MachineMintExecution {
+    fn start_owned(&self, request: MintRequest) {
+        match self {
+            Self::Execute(runtime) => runtime.start(request),
+            Self::AcceptOnly => {}
         }
     }
 }
@@ -607,11 +616,17 @@ pub async fn deploy_submit(
     Ok(operation)
 }
 
+/// Accepts a machine-add: validates, persists the operation, and returns
+/// the operation id + join token + join bundle quickly. It does **not**
+/// mint, render, reload, or test-connect — credential minting runs as
+/// owned operation work spawned after acceptance.
 pub async fn machine_add(
-    controllers: &OperationControllers,
+    handlers: &OperationApiHandlers,
     request: MachineAddRequest,
 ) -> Result<MachineAddAccepted, MachineAddError> {
+    let controllers = handlers.controllers();
     let operation_id = request.operation_id.clone();
+    let idempotency_key = request.idempotency_key.clone();
     let material = machine_add_bootstrap_material(controllers, &request)
         .await
         .map_err(|error| MachineAddError::Unavailable {
@@ -627,7 +642,6 @@ pub async fn machine_add(
         name: request.name,
         gateway: first_node_gateway(request.gateway),
         join_bundle: material.join_bundle,
-        secret_delivery: material.secret_delivery,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,
     };
@@ -644,6 +658,11 @@ pub async fn machine_add(
             },
         }
     })?;
+    handlers.machine_mint.start_owned(MintRequest {
+        operation_id: accepted.operation_id.clone(),
+        node_id: accepted.node_id.clone(),
+        idempotency_key,
+    });
 
     Ok(MachineAddAccepted {
         accepted: owned_operation(
@@ -658,6 +677,9 @@ pub async fn machine_add(
     })
 }
 
+const FIRST_NODE_MATERIAL_WAIT_ATTEMPTS: u32 = 120;
+const FIRST_NODE_MATERIAL_WAIT_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
 pub async fn init_first_node_activate(
     handlers: &OperationApiHandlers,
     request: InitFirstNodeActivateRequest,
@@ -671,7 +693,7 @@ pub async fn init_first_node_activate(
         });
     }
     let accepted = machine_add(
-        handlers.controllers(),
+        handlers,
         MachineAddRequest {
             operation_id: plan.operation_id,
             idempotency_key: plan.idempotency_key,
@@ -682,14 +704,20 @@ pub async fn init_first_node_activate(
     )
     .await
     .map_err(|failure| InitFirstNodeActivateError::MachineAdd { failure })?;
-    machine_join_redeem(
-        handlers.controllers(),
-        MachineJoinRedeemRequest {
-            join_token: accepted.join_token.clone(),
-        },
-    )
-    .await
-    .map_err(|failure| InitFirstNodeActivateError::JoinRedeem { failure })?;
+    // The first node's Node user is minted through the same worker-side
+    // path as any machine-add; redeem waits boundedly for material-ready.
+    let redeemed = redeem_when_material_ready(handlers, &accepted.join_token).await?;
+    // The named writer of node.seed is ployzd control, which runs on this
+    // machine: a local 0600 file write, no RPC hop.
+    if let MachineMintExecution::Execute(mint) = &handlers.machine_mint {
+        write_node_seed_file(
+            mint.node_seed_file(),
+            &redeemed.secret_delivery.nats_credentials,
+        )
+        .map_err(|error| InitFirstNodeActivateError::NodeSeedWrite {
+            message: node_seed_write_failure_message(&error),
+        })?;
+    }
     let reported = machine_join_report(
         handlers,
         MachineJoinReportRequest {
@@ -703,6 +731,46 @@ pub async fn init_first_node_activate(
     Ok(InitFirstNodeActivated {
         operation_id: reported.operation_id,
         node_id: reported.node_id,
+    })
+}
+
+fn node_seed_write_failure_message(
+    error: &crate::nats_authorization::NodeSeedWriteError,
+) -> ployz_core::ops::FailureMessage {
+    match ployz_core::ops::FailureMessage::try_new(error.to_string()) {
+        Ok(message) => message,
+        Err(_) => ployz_core::ops::FailureMessage::try_new("node seed write failed")
+            .expect("static failure message is non-empty"),
+    }
+}
+
+/// Redeems the first-node join token, retrying boundedly while the mint
+/// worker has not reached `material-ready` yet.
+async fn redeem_when_material_ready(
+    handlers: &OperationApiHandlers,
+    join_token: &MachineJoinToken,
+) -> Result<MachineJoinRedeemed, InitFirstNodeActivateError> {
+    let mut last_not_ready: Option<MachineJoinRedeemError> = None;
+    for _ in 0..FIRST_NODE_MATERIAL_WAIT_ATTEMPTS {
+        match machine_join_redeem(
+            handlers.controllers(),
+            MachineJoinRedeemRequest {
+                join_token: join_token.clone(),
+            },
+        )
+        .await
+        {
+            Ok(redeemed) => return Ok(redeemed),
+            Err(failure @ MachineJoinRedeemError::MaterialNotReady { .. }) => {
+                last_not_ready = Some(failure);
+                tokio::time::sleep(FIRST_NODE_MATERIAL_WAIT_DELAY).await;
+            }
+            Err(failure) => return Err(InitFirstNodeActivateError::JoinRedeem { failure }),
+        }
+    }
+
+    Err(InitFirstNodeActivateError::JoinRedeem {
+        failure: last_not_ready.unwrap_or(MachineJoinRedeemError::UnknownJoinToken),
     })
 }
 
@@ -739,7 +807,6 @@ async fn machine_add_bootstrap_material(
         join_token: existing.join_token,
         bootstrap_url: controllers.machine_bootstrap_url().clone(),
         join_bundle: existing.join_bundle,
-        secret_delivery: existing.secret_delivery,
     })
 }
 
@@ -1057,8 +1124,12 @@ fn machine_join_redeem_error_from_repository_error(
                 source: record_machine_add_event_unavailable_source(&source),
             }
         }
+        // The mint worker has not stored the per-machine material yet:
+        // typed not-ready, the keeper retries boundedly.
+        RedeemMachineJoinTokenRepositoryError::MissingSecretDelivery { operation_id } => {
+            MachineJoinRedeemError::MaterialNotReady { operation_id }
+        }
         RedeemMachineJoinTokenRepositoryError::MissingOperation { .. }
-        | RedeemMachineJoinTokenRepositoryError::MissingSecretDelivery { .. }
         | RedeemMachineJoinTokenRepositoryError::WrongOperationKind { .. }
         | RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { .. } => {
             MachineJoinRedeemError::Unavailable {

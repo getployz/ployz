@@ -165,6 +165,21 @@ impl AsyncNatsOperationRepository {
         .map_err(RecordMachineAddEventError::from_event_record)
     }
 
+    pub async fn record_machine_add_credential_provisioned(
+        &self,
+        operation_id: &OperationId,
+        node_id: &NodeId,
+        step: ployz_core::machine::MachineCredentialProvisioningStep,
+    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEventAppend::machine_add_credential_provisioned(operation_id, node_id, step),
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+        .map_err(RecordMachineAddEventError::from_event_record)
+    }
+
     pub async fn record_machine_add_failed(
         &self,
         operation_id: &OperationId,
@@ -675,6 +690,7 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
         | OperationEvent::CertFailed { .. }
         | OperationEvent::MachineAddSubmitted { .. }
         | OperationEvent::MachineAddJoined { .. }
+        | OperationEvent::MachineAddCredentialProvisioned { .. }
         | OperationEvent::MachineAddCompleted { .. }
         | OperationEvent::MachineAddFailed { .. }
         | OperationEvent::BackupCreateSubmitted { .. }

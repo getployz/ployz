@@ -13,7 +13,8 @@ use crate::ids::{
     SubjectToken, SubjectTokenError,
 };
 use crate::machine::{
-    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState, MachineName,
+    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState,
+    MachineCredentialProvisioningStep, MachineName,
 };
 use crate::roles::FirstNodeGateway;
 use crate::state::ExpectedActiveService;
@@ -1022,6 +1023,11 @@ pub enum OperationEvent {
         operation_id: OperationId,
         node_id: NodeId,
         joined_at: JoinTokenRedeemedAt,
+    },
+    MachineAddCredentialProvisioned {
+        operation_id: OperationId,
+        node_id: NodeId,
+        step: MachineCredentialProvisioningStep,
     },
     MachineAddCompleted {
         operation_id: OperationId,

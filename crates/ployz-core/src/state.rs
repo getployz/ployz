@@ -15,6 +15,9 @@ pub const KV_OBS_BUCKET: &str = "KV_OBS";
 
 pub const ACTIVE_SERVICE_STATE_PREFIX: &str = "services";
 pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
+/// `KV_CORE` prefix of the durable NATS authorized-principal records
+/// (ADR-0001: their recovery evidence is `authorized-users.conf`).
+pub const NATS_AUTHORIZED_USER_PREFIX: &str = "nats_authorized_user";
 pub const ACTIVE_ROUTE_STATE_PREFIX: &str = "routes";
 pub const NODE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "nodes";
 pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";

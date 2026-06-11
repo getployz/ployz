@@ -22,8 +22,8 @@ use ployz_core::node::{
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnershipStatus, OperationStatus, RouteHostname, RoutePort, RouteTarget,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationStatus,
+    RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{
     ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
@@ -40,7 +40,7 @@ use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
 use ployzd::config::ControlProcessConfig;
-use ployzd::controllers::{MachineAddBootstrapConfig, OperationControllers};
+use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerRequest,
     NodeRuntimeUnavailableReason,
@@ -136,22 +136,14 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_jetstream().await?;
     let client = async_nats::connect(nats.url()).await?;
-    let jetstream = jetstream::new(client.clone());
-    bootstrap_nats_resources(&client, &jetstream).await?;
-    let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
-    let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
-        .await
-        .expect("open operation status store");
-    let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
-    let controllers = OperationControllers::with_owner(
-        event_log,
-        status_store,
-        OperationOwnerId::try_new("control").expect("valid owner id"),
-        machine_bootstrap_config(),
-    );
-    let _runtime = ployzd::api_runtime::start_operation_api_service(client.clone(), controllers)
-        .await
-        .expect("api service starts");
+    let config = ControlProcessConfig::new(
+        NatsServerRuntime::External(nats_client_url(nats.url())),
+        node_id("core_1"),
+        control_nats_connect(nats.url()),
+    )
+    .with_machine_bootstrap(machine_bootstrap_config());
+    let _runtime =
+        ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
     let api = OperationApiClient::new(client.clone());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_api_123"),
@@ -171,39 +163,24 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     assert!(lease.expires_at.unix_seconds() > 0);
     assert_eq!(accepted.watch_subject, "plz.v1.op.op_api_123.>".to_owned());
     assert_eq!(accepted.start_sequence, event_sequence(1));
-    assert_eq!(
-        repository
-            .operation_status(&operation_id("op_api_123"))
-            .await
-            .expect("operation status lookup succeeds"),
-        Some(OperationStatus::Deploy {
-            id: operation_id("op_api_123"),
-            service_id: service_id("svc_api"),
-            state: DeployOperationState::Accepted,
-            last_event_sequence: event_sequence(1),
-        })
-    );
+    // The control runtime starts executing the accepted deploy immediately,
+    // so status may have advanced past Accepted by the time we read it. The
+    // acceptance contract is: status is reachable for the id and the first
+    // durable event is the submission.
     let status_request = OpsStatusRequest {
         operation_id: operation_id("op_api_123"),
     };
     let status = api.ops_status(&status_request).await?;
-    assert_eq!(
-        status.status,
-        OperationStatus::Deploy {
-            id: operation_id("op_api_123"),
-            service_id: service_id("svc_api"),
-            state: DeployOperationState::Accepted,
-            last_event_sequence: event_sequence(1),
-        }
-    );
-    let OperationOwnershipStatus::Owned { lease } = status.ownership else {
-        panic!("accepted operation should expose active ownership");
+    let OperationStatus::Deploy {
+        id,
+        service_id: status_service_id,
+        ..
+    } = status.status
+    else {
+        panic!("submitted deploy should report a deploy status");
     };
-    assert_eq!(lease.operation_id, operation_id("op_api_123"));
-    assert_eq!(
-        lease.owner_id,
-        OperationOwnerId::try_new("control").expect("valid owner id")
-    );
+    assert_eq!(id, operation_id("op_api_123"));
+    assert_eq!(status_service_id, service_id("svc_api"));
 
     let watch_request = OperationEventReplayRequest {
         operation_id: operation_id("op_api_123"),
@@ -211,17 +188,16 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         limit: event_replay_limit(10),
     };
     let page = api.ops_watch(&watch_request).await?;
+    let [first, ..] = page.events.as_slice() else {
+        panic!("watch from sequence 1 should replay the submission event");
+    };
     assert_eq!(
-        page.events
-            .into_iter()
-            .map(|event| event.event)
-            .collect::<Vec<_>>(),
-        vec![OperationEvent::DeploySubmitted {
+        first.event,
+        OperationEvent::DeploySubmitted {
             operation_id: operation_id("op_api_123"),
             target: deploy_target("svc_api"),
-        }]
+        }
     );
-    assert_eq!(page.cursor, OperationEventReplayCursor::CaughtUp);
 
     Ok(())
 }
@@ -235,6 +211,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     let config = ControlProcessConfig::new(
         NatsServerRuntime::External(nats_client_url(nats.url())),
         node_id("core_1"),
+        control_nats_connect(nats.url()),
     )
     .with_deploy_nodes(vec![node_id("node_a")])
     .with_deploy_step_timeout(Duration::from_secs(2))
@@ -397,6 +374,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let config = ControlProcessConfig::new(
         NatsServerRuntime::External(nats_client_url(nats.url())),
         node_id("core_1"),
+        control_nats_connect(nats.url()),
     )
     .with_deploy_nodes(vec![node_id("node_a")])
     .with_deploy_step_timeout(Duration::from_secs(2))
@@ -488,6 +466,7 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
     let config = ControlProcessConfig::new(
         NatsServerRuntime::External(nats_client_url(nats.url())),
         node_id("core_1"),
+        control_nats_connect(nats.url()),
     )
     .with_deploy_nodes(vec![node_id("node_a")])
     .with_deploy_step_timeout(Duration::from_secs(2))
@@ -594,6 +573,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
     let config = ControlProcessConfig::new(
         NatsServerRuntime::External(nats_client_url(nats.url())),
         node_id("core_1"),
+        control_nats_connect(nats.url()),
     )
     .with_deploy_nodes(vec![node_id("node_a")])
     .with_deploy_step_timeout(Duration::from_secs(2))
@@ -752,6 +732,7 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
     let config = ControlProcessConfig::new(
         NatsServerRuntime::External(nats_client_url(nats.url())),
         node_id("core_1"),
+        control_nats_connect(nats.url()),
     )
     .with_deploy_nodes(vec![node_id("core_1"), node_id("edge_2")])
     .with_deploy_step_timeout(Duration::from_secs(2))
@@ -1121,6 +1102,22 @@ fn test_lease_claim() -> OperationLeaseClaim {
     .expect("valid lease claim")
 }
 
+/// Connection material carried by the control config; the plaintext e2e
+/// fixture never dials it (the runtime is started with an injected client).
+fn control_nats_connect(url: &str) -> ployz_nats::connect::NatsConnectConfig {
+    ployz_nats::connect::NatsConnectConfig {
+        url: nats_client_url(url),
+        auth: ployz_nats::connect::NatsClientAuth::NkeySeed(
+            ployz_core::nats_config::NatsUserSeed::try_new(
+                "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .expect("test seed is valid"),
+        ),
+        trust: ployz_nats::connect::NatsTlsTrust::ClusterCa("/tmp/ployz-test-ca.pem".into()),
+        principal: ployz_core::security::NatsPrincipal::Controller,
+    }
+}
+
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {
     MachineAddBootstrapConfig::new(
         MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
@@ -1159,9 +1156,6 @@ fn machine_join_template() -> MachineJoinTemplate {
         "install_path": "/usr/local/bin/ployz-ebpf-ctl"
       }
     }
-  },
-  "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed"
   }
 }
 "#,

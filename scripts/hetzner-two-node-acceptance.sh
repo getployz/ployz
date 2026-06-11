@@ -560,7 +560,7 @@ case "$command" in
     remote_join_template="/etc/ployz/machine-join-template.json"
     remote_artifact_spec="/etc/ployz/machine-join-artifacts.json"
     remote_first_node_install_spec="/etc/ployz/first-node-install.json"
-    remote_secret_delivery="/etc/ployz/machine-join-secret-delivery.json"
+    remote_trusted_nats_ca="/etc/ployz/trusted-nats-ca.pem"
     remote_core_iroh_secret="/var/lib/ployz/iroh/endpoint.key"
     core_iroh_port="4433"
     ployzd_sha256="$(sha256_file "$ployzd_bin")"
@@ -586,9 +586,11 @@ case "$command" in
     stage_host "$core_ip"
     stage_host "$edge_ip"
     remote_sh "$core_ip" "install -d -m 0700 /etc/ployz"
-    remote_sh "$core_ip" "umask 077; cat > '$remote_secret_delivery'" <<'JSON'
-{"nats_credentials":"acceptance-node-creds"}
-JSON
+    remote_sh "$core_ip" "cat > '$remote_trusted_nats_ca'" <<'PEM'
+-----BEGIN CERTIFICATE-----
+TUlJQg==
+-----END CERTIFICATE-----
+PEM
     remote_sh "$core_ip" "cat > '$remote_artifact_spec'" <<JSON
 {
   "ployzd": {
@@ -654,7 +656,7 @@ JSON
     [ -n "$core_iroh_public_key" ] || die "core iroh identity did not print a public key; output: ${core_iroh_identity_log}"
 
     run_remote_logged render-join-template "$core_ip" \
-      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --artifact-spec '$remote_artifact_spec' --secret-delivery-file '$remote_secret_delivery' > '$remote_join_template'"
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --trusted-nats-ca-file '$remote_trusted_nats_ca' --artifact-spec '$remote_artifact_spec' > '$remote_join_template'"
 
     run_remote_logged install-core "$core_ip" \
       "'$remote_keeper' first-node-install --spec '$remote_first_node_install_spec'"

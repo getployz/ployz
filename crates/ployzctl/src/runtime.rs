@@ -15,11 +15,14 @@ use crate::commands::init::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::FirstNodeInstallSpec;
+use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
     EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, ReplayedOperationEvent,
 };
+use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
-    NatsClientUrl, NatsClientUrlError, NatsConnectError, connect_with_timeout,
+    NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
+    NatsTlsTrust, connect_authenticated,
 };
 use ployz_sdk_types::{
     BackupCreateError, DeploySubmitError, InitFirstNodeActivateError, LogsTailError,
@@ -29,6 +32,9 @@ use ployz_sdk_types::{
 use tokio::time::sleep as async_sleep;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
+pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
+pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 pub const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_KEEPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_OPS_WATCH_TIMEOUT: Duration = Duration::from_secs(600);
@@ -38,6 +44,9 @@ const MAX_KEEPER_OUTPUT_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PloyzctlRuntimeConfig {
     pub nats_url: Option<String>,
+    pub nats_ca_file: Option<PathBuf>,
+    pub nats_seed_file: Option<PathBuf>,
+    pub join_seed_file: Option<PathBuf>,
     pub nats_connect_timeout: Option<Duration>,
     pub keeper_install_timeout: Option<Duration>,
     pub ops_watch_timeout: Option<Duration>,
@@ -51,6 +60,18 @@ impl PloyzctlRuntimeConfig {
             nats_url: std::env::var(PLOYZ_NATS_URL_ENV)
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            nats_ca_file: std::env::var(PLOYZ_NATS_CA_FILE_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+            nats_seed_file: std::env::var(PLOYZ_NATS_NKEY_SEED_FILE_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+            join_seed_file: std::env::var(PLOYZ_JOIN_NKEY_SEED_FILE_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
             nats_connect_timeout: None,
             keeper_install_timeout: None,
             ops_watch_timeout: None,
@@ -147,7 +168,12 @@ pub async fn execute_command(
             Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
         }
         PloyzctlCommand::MachineAdd(command) => {
-            let api = operation_api_client(config).await?;
+            let nats_connect = nats_connect_config(config)?;
+            // The install line embeds the cluster-static Join seed
+            // (deliberately low-privilege) — read it before submitting so
+            // a missing seed fails fast without creating an operation.
+            let join_seed = read_join_seed(config)?;
+            let api = operation_api_client_with_connect(config, nats_connect).await?;
             let request = command.into_request();
             let accepted = api
                 .machine_add(&request)
@@ -155,7 +181,8 @@ pub async fn execute_command(
                 .map_err(|source| PloyzctlExecutionError::MachineAddApi { source })?;
 
             Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::machine::MachineAddOutput::from_accepted(accepted).render(),
+                crate::commands::machine::MachineAddOutput::from_accepted(accepted, join_seed)
+                    .render(),
             ))
         }
         PloyzctlCommand::MachineList(command) => {
@@ -669,27 +696,91 @@ fn render_command(program: &str, args: &[String]) -> String {
         .join(" ")
 }
 
+/// Reads the cluster-static Join seed for the `machine add` install line.
+fn read_join_seed(config: &PloyzctlRuntimeConfig) -> Result<NatsUserSeed, PloyzctlExecutionError> {
+    let path = config.join_seed_file.clone().unwrap_or_else(|| {
+        ployz_core::install::NatsMachineMaterialPaths::in_default_state_dir().join_seed_file()
+    });
+    let raw =
+        fs::read_to_string(&path).map_err(|error| PloyzctlExecutionError::ReadJoinSeedFile {
+            path: path.clone(),
+            message: error.to_string(),
+        })?;
+    NatsUserSeed::try_new(raw.trim())
+        .map_err(|_| PloyzctlExecutionError::InvalidJoinSeedFile { path })
+}
+
 async fn operation_api_client(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<OperationApiClient, PloyzctlExecutionError> {
+    let connect = nats_connect_config(config)?;
+    operation_api_client_with_connect(config, connect).await
+}
+
+async fn operation_api_client_with_connect(
+    config: &PloyzctlRuntimeConfig,
+    connect: NatsConnectConfig,
+) -> Result<OperationApiClient, PloyzctlExecutionError> {
+    connect_authenticated(&connect, config.nats_connect_timeout())
+        .await
+        .map(OperationApiClient::new)
+        .map_err(PloyzctlExecutionError::NatsConnect)
+}
+
+fn nats_connect_config(
+    config: &PloyzctlRuntimeConfig,
+) -> Result<NatsConnectConfig, PloyzctlExecutionError> {
     let nats_url = config.nats_url.clone();
     let Some(nats_url) = nats_url else {
         return Err(PloyzctlExecutionError::MissingNatsUrl);
     };
-
     let nats_url =
         NatsClientUrl::try_new(nats_url).map_err(PloyzctlExecutionError::InvalidNatsUrl)?;
-
-    connect_with_timeout(&nats_url, config.nats_connect_timeout())
-        .await
-        .map(OperationApiClient::new)
-        .map_err(PloyzctlExecutionError::NatsConnect)
+    let Some(ca_file) = config.nats_ca_file.clone() else {
+        return Err(PloyzctlExecutionError::MissingNatsCaFile);
+    };
+    let Some(seed_file) = config.nats_seed_file.clone() else {
+        return Err(PloyzctlExecutionError::MissingNatsSeedFile);
+    };
+    let raw_seed = fs::read_to_string(&seed_file).map_err(|error| {
+        PloyzctlExecutionError::ReadNatsSeedFile {
+            path: seed_file.clone(),
+            message: error.to_string(),
+        }
+    })?;
+    let seed = NatsUserSeed::try_new(raw_seed.trim()).map_err(|_| {
+        PloyzctlExecutionError::InvalidNatsSeedFile {
+            path: seed_file.clone(),
+        }
+    })?;
+    Ok(NatsConnectConfig {
+        url: nats_url,
+        auth: NatsClientAuth::NkeySeed(seed),
+        trust: NatsTlsTrust::ClusterCa(ca_file),
+        principal: NatsPrincipal::User,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlExecutionError {
     MissingNatsUrl,
     InvalidNatsUrl(NatsClientUrlError),
+    MissingNatsCaFile,
+    MissingNatsSeedFile,
+    ReadNatsSeedFile {
+        path: PathBuf,
+        message: String,
+    },
+    InvalidNatsSeedFile {
+        path: PathBuf,
+    },
+    ReadJoinSeedFile {
+        path: PathBuf,
+        message: String,
+    },
+    InvalidJoinSeedFile {
+        path: PathBuf,
+    },
     NatsConnect(NatsConnectError),
     KeeperFirstNodeInstall {
         source: Box<LocalKeeperInstallError>,
@@ -742,6 +833,12 @@ impl PloyzctlExecutionError {
             Self::FirstNodeActivateApi { source } => retryable_operation_api_error(source),
             Self::MissingNatsUrl
             | Self::InvalidNatsUrl(_)
+            | Self::MissingNatsCaFile
+            | Self::MissingNatsSeedFile
+            | Self::ReadNatsSeedFile { .. }
+            | Self::InvalidNatsSeedFile { .. }
+            | Self::ReadJoinSeedFile { .. }
+            | Self::InvalidJoinSeedFile { .. }
             | Self::NatsConnect(_)
             | Self::KeeperFirstNodeInstall { .. }
             | Self::DeploySubmitApi { .. }
@@ -781,6 +878,32 @@ impl fmt::Display for PloyzctlExecutionError {
                     "--nats or {PLOYZ_NATS_URL_ENV} is invalid: {error:?}"
                 )
             }
+            Self::MissingNatsCaFile => {
+                write!(formatter, "{PLOYZ_NATS_CA_FILE_ENV} is required")
+            }
+            Self::MissingNatsSeedFile => {
+                write!(formatter, "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} is required")
+            }
+            Self::ReadNatsSeedFile { path, message } => write!(
+                formatter,
+                "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} is unreadable: {message}",
+                path.display()
+            ),
+            Self::InvalidNatsSeedFile { path } => write!(
+                formatter,
+                "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} does not contain an SU-prefixed user seed",
+                path.display()
+            ),
+            Self::ReadJoinSeedFile { path, message } => write!(
+                formatter,
+                "join seed file {} is unreadable (set {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}): {message}",
+                path.display()
+            ),
+            Self::InvalidJoinSeedFile { path } => write!(
+                formatter,
+                "join seed file {} does not contain an SU-prefixed user seed",
+                path.display()
+            ),
             Self::NatsConnect(error) => write!(formatter, "{error}"),
             Self::KeeperFirstNodeInstall { source } => write!(formatter, "{source}"),
             Self::DeploySubmitApi { source } => write!(formatter, "{source}"),

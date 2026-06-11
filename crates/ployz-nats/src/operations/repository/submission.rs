@@ -1,5 +1,5 @@
 use ployz_core::ids::{CertId, NodeId, OperationId, OperationOwnerId};
-use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
+use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
     EventSequence, OperationEvent, OperationIdempotencyKey, OperationLeaseExpiresAt,
@@ -31,6 +31,19 @@ impl AsyncNatsOperationRepository {
     ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
         self.status_store
             .machine_add_secret_delivery(idempotency_key)
+            .await
+    }
+
+    /// Write-once store of the minted per-machine secret. The mint worker
+    /// writes it after the credential verifies; a replayed mint converges
+    /// on the first stored record instead of minting twice.
+    pub async fn put_machine_add_secret_delivery_if_absent(
+        &self,
+        idempotency_key: &OperationIdempotencyKey,
+        record: &StoredMachineAddSecretDelivery,
+    ) -> Result<StoredMachineAddSecretDelivery, OperationStatusStoreError> {
+        self.status_store
+            .put_machine_add_secret_delivery_if_absent(idempotency_key, record)
             .await
     }
 
@@ -258,45 +271,12 @@ impl AsyncNatsOperationRepository {
             raw_join_token: submission.raw_join_token,
         };
 
-        let secret_operation_id = if let Some(existing) = self
-            .status_store
-            .machine_add_submission(&idempotency_key)
-            .await
-            .map_err(SubmitMachineAddError::StoreStatus)?
-        {
-            ensure_machine_add_retry_matches(&existing, &submitted_candidate)?;
-            existing.operation_id
-        } else {
-            submitted_candidate.operation_id.clone()
-        };
-
-        self.status_store
-            .put_machine_add_secret_delivery_if_absent(
-                &idempotency_key,
-                &StoredMachineAddSecretDelivery {
-                    operation_id: secret_operation_id,
-                    secret_delivery: submission.secret_delivery,
-                },
-            )
-            .await
-            .map_err(SubmitMachineAddError::StoreStatus)?;
         let submitted = self
             .status_store
             .put_machine_add_submission_if_absent(&idempotency_key, &submitted_candidate)
             .await
             .map_err(SubmitMachineAddError::StoreStatus)?;
         ensure_machine_add_retry_matches(&submitted, &submitted_candidate)?;
-        self.status_store
-            .machine_add_secret_delivery(&idempotency_key)
-            .await
-            .map_err(SubmitMachineAddError::StoreStatus)?
-            .filter(|secret| secret.operation_id == submitted.operation_id)
-            .ok_or_else(|| {
-                SubmitMachineAddError::StoreStatus(OperationStatusStoreError::CasConflict {
-                    message: "machine add secret delivery points at a different operation"
-                        .to_owned(),
-                })
-            })?;
         let fingerprint =
             validate_machine_add_join_material(&submitted.raw_join_token, &submitted.join_token)?;
         self.index_machine_add_join_token(&fingerprint, &submitted.operation_id, &idempotency_key)
@@ -629,7 +609,6 @@ pub struct MachineAddOperationSubmission {
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
     pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
     pub idempotency_key: OperationIdempotencyKey,

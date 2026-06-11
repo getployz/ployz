@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
+base64 = "0.22"
 clap.workspace = true
 ployz-core.workspace = true
 ployz-nats.workspace = true
@@ -19,8 +20,9 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [dev-dependencies]
-nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+ployz-test-support = { path = "../ployz-test-support" }
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 [[bin]]
 name = "ployzctl"

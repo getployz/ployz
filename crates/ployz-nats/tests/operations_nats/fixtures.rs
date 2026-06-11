@@ -14,28 +14,35 @@ use ployz_core::ops::{
     OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt, RouteHostname,
 };
 use ployz_core::roles::FirstNodeGateway;
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
     MachineAddOperationSubmission, OperationLeaseClaim, PLZ_JOBS_STREAM, PLZ_OPS_STREAM,
 };
 use ployz_sdk_types::{MachineJoinBundle, MachineJoinPloyzdArtifact};
+use ployz_test_support::nats::SecuredTestNats;
+use std::time::Duration;
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) struct TestNats {
-    _server: nats_server::Server,
+    _nats: SecuredTestNats,
     pub(super) jetstream: jetstream::Context,
 }
 
 pub(super) async fn test_nats() -> TestNats {
-    let server = nats_server::run_server("tests/configs/jetstream.conf");
-    let client = async_nats::connect(server.client_url())
+    let nats = SecuredTestNats::start()
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
     let jetstream = jetstream::new(client);
     bootstrap_operation_resources(&jetstream).await;
 
     TestNats {
-        _server: server,
+        _nats: nats,
         jetstream,
     }
 }
@@ -126,7 +133,6 @@ pub(super) fn machine_add_submission(
         name: MachineName::try_new(machine_name).expect("valid machine name"),
         gateway: FirstNodeGateway::Skip,
         join_bundle: machine_join_bundle(),
-        secret_delivery: machine_join_secret_delivery(),
         raw_join_token: raw_join_token("join_token"),
         join_token: issued_join_token_for_raw("join_token"),
         idempotency_key: self::idempotency_key(idempotency_key),
@@ -191,13 +197,36 @@ fn machine_join_artifact(
     }
 }
 
+/// A syntactically seed-shaped minted credential (not a real key).
+pub(super) const TEST_MINTED_SEED: &str =
+    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 pub(super) fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
     ployz_core::install::MachineJoinSecretDelivery {
         nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
-            "user-jwt-and-seed",
+            TEST_MINTED_SEED,
         )
         .expect("valid nats credentials"),
     }
+}
+
+/// Simulates the mint worker reaching `material-ready` for a submission:
+/// redeem hands out the secret only after this record exists.
+pub(super) async fn store_minted_secret(
+    repository: &ployz_nats::operations::AsyncNatsOperationRepository,
+    operation: &str,
+    idempotency: &str,
+) {
+    repository
+        .put_machine_add_secret_delivery_if_absent(
+            &idempotency_key(idempotency),
+            &ployz_nats::operations::StoredMachineAddSecretDelivery {
+                operation_id: operation_id(operation),
+                secret_delivery: machine_join_secret_delivery(),
+            },
+        )
+        .await
+        .expect("minted secret stores");
 }
 
 pub(super) fn issued_join_token_for_raw(value: &str) -> IssuedJoinToken {

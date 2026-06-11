@@ -245,7 +245,7 @@ write_join_template() {
     }
   },
   "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed"
+    "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   }
 }
 JSON

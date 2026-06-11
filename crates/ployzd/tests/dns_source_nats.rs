@@ -21,7 +21,7 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
         .await
         .expect("open observation store");
 
@@ -107,7 +107,7 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
         .await
         .expect("open observation store");
     let core_bucket = nats
@@ -142,7 +142,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
         .await
         .expect("open observation store");
     let mut runtime = DnsRuntime::new();
@@ -194,20 +194,39 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: route-state writes and bucket administration.
     jetstream: jetstream::Context,
+    /// Node principal: observation writes (DNS runs as the machine's Node
+    /// user in v1).
+    node_jetstream: jetstream::Context,
 }
 
+const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 async fn test_nats() -> TestNats {
-    let config = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../ployz-nats/tests/configs/jetstream.conf"
-    );
-    let server = nats_server::run_server(config);
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let dns_node = ployz_core::ids::NodeId::try_new("dns_node").expect("valid node id");
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(std::slice::from_ref(
+        &dns_node,
+    ))
+    .await
+    .expect("secured test nats starts");
+    let client = ployz_nats::connect::connect_authenticated(
+        &nats.controller_config(),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("controller connects");
+    let node_client = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&dns_node)
+            .expect("fixture minted dns_node credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("dns node connects");
     let jetstream = jetstream::new(client);
+    let node_jetstream = jetstream::new(node_client);
     for bucket in [KV_CORE_BUCKET, KV_OBS_BUCKET] {
         jetstream
             .create_key_value(jetstream::kv::Config {
@@ -219,8 +238,9 @@ async fn test_nats() -> TestNats {
     }
 
     TestNats {
-        _server: server,
+        _nats: nats,
         jetstream,
+        node_jetstream,
     }
 }
 

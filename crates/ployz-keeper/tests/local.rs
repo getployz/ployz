@@ -541,7 +541,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         KeeperJoinMaterial::new(
             node_id("node_2"),
             "prod",
-            "user-jwt-and-seed",
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "server_1",
             test_ca_pem(),
         )
@@ -596,7 +596,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
                 .join(JOIN_NATS_CREDENTIALS_FILE),
         )
         .expect("nats credentials are stored"),
-        "user-jwt-and-seed"
+        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     );
     assert_secret_file_mode(
         root.join("state")
@@ -658,7 +658,7 @@ fn local_effects_store_redacted_join_material() {
     let material = KeeperJoinMaterial::new(
         node_id("node_2"),
         "prod",
-        "user-jwt-and-seed",
+        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "server_1",
         test_ca_pem(),
     )
@@ -694,7 +694,7 @@ fn local_effects_store_redacted_join_material() {
                 .join(JOIN_NATS_CREDENTIALS_FILE),
         )
         .expect("nats credentials are stored"),
-        "user-jwt-and-seed"
+        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     );
     assert_secret_file_mode(
         root.join("state")

@@ -1,10 +1,10 @@
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Args};
 use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
-use crate::commands::{PloyzctlCliError, clap_error, cli_error, invalid_value};
+use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedDeployCommand {
@@ -55,11 +55,7 @@ impl DetachedDeployOutput {
     }
 }
 
-pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, PloyzctlCliError> {
-    let parsed =
-        DeployCli::try_parse_from(std::iter::once("deploy".to_owned()).chain(args.iter().cloned()))
-            .map_err(clap_error)?;
-
+pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DetachedDeployCommand, PloyzctlCliError> {
     Ok(DetachedDeployCommand {
         operation_id: OperationId::try_new(parsed.operation)
             .map_err(|error| invalid_value("--operation", error))?,
@@ -90,9 +86,8 @@ pub fn parse_deploy_command(args: &[String]) -> Result<DetachedDeployCommand, Pl
     })
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "deploy")]
-struct DeployCli {
+#[derive(Debug, Args)]
+pub(crate) struct DeployCli {
     #[arg(long, action = ArgAction::SetTrue, required = true)]
     detach: bool,
     #[arg(long)]

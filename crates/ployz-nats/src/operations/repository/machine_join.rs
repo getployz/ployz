@@ -61,13 +61,12 @@ impl AsyncNatsOperationRepository {
 
         match state {
             MachineAddOperationState::Pending { join_token } => {
-                let secret_delivery = self.load_machine_add_secret_delivery(&submission).await?;
                 self.redeem_pending_machine_join(
                     RedeemPendingMachineJoin {
                         operation_id: id,
                         node_id,
                         join_bundle: submission.join_bundle,
-                        secret_delivery,
+                        idempotency_key: submission.idempotency_key,
                         join_token,
                     },
                     token,
@@ -76,7 +75,9 @@ impl AsyncNatsOperationRepository {
                 .await
             }
             MachineAddOperationState::Joining { joined_at } => {
-                let secret_delivery = self.load_machine_add_secret_delivery(&submission).await?;
+                let secret_delivery = self
+                    .load_machine_add_secret_delivery(&submission.idempotency_key, &id)
+                    .await?;
                 Ok(MachineJoinRedemption::AlreadyJoined(RedeemedMachineJoin {
                     operation_id: id,
                     node_id,
@@ -109,17 +110,21 @@ impl AsyncNatsOperationRepository {
         }
     }
 
+    /// The minted per-machine secret, or the typed not-ready error: redeem
+    /// before the mint worker's `material-ready` must not hand out a join
+    /// without credentials, and must not transition the operation.
     async fn load_machine_add_secret_delivery(
         &self,
-        submission: &crate::operations::status_store::StoredMachineAddSubmission,
+        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+        operation_id: &OperationId,
     ) -> Result<MachineJoinSecretDelivery, RedeemMachineJoinTokenError> {
         Ok(self
             .status_store
-            .machine_add_secret_delivery(&submission.idempotency_key)
+            .machine_add_secret_delivery(idempotency_key)
             .await
             .map_err(RedeemMachineJoinTokenError::StoreStatus)?
             .ok_or_else(|| RedeemMachineJoinTokenError::MissingSecretDelivery {
-                operation_id: submission.operation_id.clone(),
+                operation_id: operation_id.clone(),
             })?
             .secret_delivery)
     }
@@ -205,6 +210,15 @@ impl AsyncNatsOperationRepository {
             .map_err(|_| RedeemMachineJoinTokenError::InvalidJoinToken)?;
         match redeem_pending_join_token(&pending.join_token, &fingerprint, joined_at) {
             Ok(joined_at) => {
+                // Material gating happens after token validation but
+                // before any state change: a not-ready redeem leaves the
+                // operation Pending so the keeper can retry.
+                let secret_delivery = self
+                    .load_machine_add_secret_delivery(
+                        &pending.idempotency_key,
+                        &pending.operation_id,
+                    )
+                    .await?;
                 self.record_machine_add_joined(&pending.operation_id, &pending.node_id, joined_at)
                     .await
                     .map_err(RedeemMachineJoinTokenError::RecordMachineAddEvent)?;
@@ -212,7 +226,7 @@ impl AsyncNatsOperationRepository {
                     .redeemed_machine_join(
                         &pending.operation_id,
                         pending.join_bundle,
-                        pending.secret_delivery,
+                        secret_delivery,
                     )
                     .await?
                     .ok_or_else(|| RedeemMachineJoinTokenError::MissingOperation {
@@ -287,7 +301,7 @@ struct RedeemPendingMachineJoin {
     node_id: NodeId,
     join_token: IssuedJoinToken,
     join_bundle: MachineJoinBundle,
-    secret_delivery: MachineJoinSecretDelivery,
+    idempotency_key: ployz_core::ops::OperationIdempotencyKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

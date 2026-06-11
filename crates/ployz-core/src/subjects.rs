@@ -253,6 +253,18 @@ pub fn op_machine_add_joined(operation_id: &OperationId) -> String {
 }
 
 #[must_use]
+pub fn op_machine_add_credential_provisioned(
+    operation_id: &OperationId,
+    step: crate::machine::MachineCredentialProvisioningStep,
+) -> String {
+    format!(
+        "plz.v1.op.{}.machine.add.credential.{}",
+        operation_id.as_str(),
+        step.as_subject_token()
+    )
+}
+
+#[must_use]
 pub fn op_machine_add_completed(operation_id: &OperationId) -> String {
     format!("plz.v1.op.{}.machine.add.completed", operation_id.as_str())
 }

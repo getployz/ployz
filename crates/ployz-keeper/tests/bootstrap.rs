@@ -1003,7 +1003,7 @@ fn keeper_join_material() -> KeeperJoinMaterial {
     KeeperJoinMaterial::new(
         node_id("node_7"),
         "prod",
-        "user-jwt-and-seed",
+        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "server_1",
         test_ca_pem(),
     )

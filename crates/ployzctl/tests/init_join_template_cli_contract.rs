@@ -13,11 +13,9 @@ const TRUSTED_NATS_CA_PEM: &str =
 #[test]
 fn cli_init_can_render_machine_join_template_json() {
     let temp = temp_dir("ployzctl-join-template");
-    let secret_delivery_file = write_secret_delivery_file(&temp);
     let artifact_spec = write_artifact_spec_file(&temp);
     let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
     let command = parse_command(init_join_template_args(
-        &secret_delivery_file,
         &artifact_spec,
         &trusted_nats_ca_file,
     ))
@@ -35,13 +33,11 @@ fn cli_init_can_render_machine_join_template_json() {
 #[test]
 fn binary_init_can_print_machine_join_template_without_nats() {
     let temp = temp_dir("ployzctl-join-template-binary");
-    let secret_delivery_file = write_secret_delivery_file(&temp);
     let artifact_spec = write_artifact_spec_file(&temp);
     let trusted_nats_ca_file = write_trusted_nats_ca_file(&temp);
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
         .args(init_join_template_args(
-            &secret_delivery_file,
             &artifact_spec,
             &trusted_nats_ca_file,
         ))
@@ -99,17 +95,9 @@ fn assert_join_template(template: MachineJoinTemplate) {
         template.join_bundle.material.ebpf_ctl.install_path.as_str(),
         "/usr/local/bin/ployz-ebpf-ctl"
     );
-    assert_eq!(
-        template.secret_delivery.nats_credentials.secret(),
-        "acceptance-node-creds"
-    );
 }
 
-fn init_join_template_args(
-    secret_delivery_file: &Path,
-    artifact_spec: &Path,
-    trusted_nats_ca_file: &Path,
-) -> Vec<String> {
+fn init_join_template_args(artifact_spec: &Path, trusted_nats_ca_file: &Path) -> Vec<String> {
     [
         "init",
         "join-template",
@@ -127,27 +115,15 @@ fn init_join_template_args(
         artifact_spec
             .to_str()
             .expect("artifact spec fixture path is utf-8"),
-        "--secret-delivery-file",
     ]
     .into_iter()
     .map(str::to_owned)
-    .chain([secret_delivery_file
-        .to_str()
-        .expect("secret delivery fixture path is utf-8")
-        .to_owned()])
     .collect()
 }
 
 fn write_trusted_nats_ca_file(dir: &Path) -> PathBuf {
     let path = dir.join("trusted-nats-ca.pem");
     fs::write(&path, TRUSTED_NATS_CA_PEM).expect("trusted CA fixture can be written");
-    path
-}
-
-fn write_secret_delivery_file(dir: &Path) -> PathBuf {
-    let path = dir.join("secret-delivery.json");
-    fs::write(&path, r#"{"nats_credentials":"acceptance-node-creds"}"#)
-        .expect("secret delivery fixture can be written");
     path
 }
 

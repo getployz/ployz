@@ -1,6 +1,5 @@
 //! NATS Service API runtime wiring for daemon commands.
 
-use crate::controllers::OperationControllers;
 use crate::operation_api::{
     OperationApiHandlers, backup_create, deploy_submit, init_first_node_activate, logs_tail,
     machine_add, machine_inspect, machine_join_redeem, machine_join_report, machine_list,
@@ -23,17 +22,6 @@ use ployz_sdk_types::{
 use serde::{Serialize, de::DeserializeOwned};
 use std::future::Future;
 use std::sync::Arc;
-
-pub async fn start_operation_api_service(
-    client: ployz_nats::service_runtime::NatsClient,
-    controllers: OperationControllers,
-) -> Result<RunningNatsService, ApiServiceRuntimeError> {
-    start_operation_api_service_with_handlers(
-        client,
-        OperationApiHandlers::accept_only(controllers),
-    )
-    .await
-}
 
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
@@ -69,12 +57,14 @@ async fn bind_operation_endpoint(
             )
             .await
         }
-        OperationApiEndpoint::MachineAdd => bind_operation_contract::<MachineAddApi, _, _>(
-            runtime,
-            handlers,
-            |handlers, request| async move { machine_add(handlers.controllers(), request).await },
-        )
-        .await,
+        OperationApiEndpoint::MachineAdd => {
+            bind_operation_contract::<MachineAddApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { machine_add(&handlers, request).await },
+            )
+            .await
+        }
         OperationApiEndpoint::InitFirstNodeActivate => bind_operation_contract::<
             InitFirstNodeActivateApi,
             _,

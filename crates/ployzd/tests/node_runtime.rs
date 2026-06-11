@@ -3,7 +3,9 @@ use ployz_core::dataplane::WireGuardEbpfPrepareRequest;
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::{ContainerRuntimeState, ManagedContainerKind};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_test_support::nats::SecuredTestNats;
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
@@ -12,6 +14,9 @@ use ployzd::node_runtime_types::{
     NodeContainerRunSpec, NodeRemoveContainerRequest, NodeRunContainerOutcome,
     NodeRunContainerRequest,
 };
+use std::time::Duration;
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod support;
 
@@ -19,7 +24,7 @@ mod support;
 async fn node_runtime_serves_container_run_and_observes_created_container() {
     let nats = TestNats::start_bootstrapped().await;
     let runtime = start_node_runtime_with_ports(
-        nats.client.clone(),
+        nats.node_client.clone(),
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
         support::ReadyWireGuardEbpf,
@@ -55,7 +60,7 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
 async fn node_runtime_serves_container_remove_and_updates_observations() {
     let nats = TestNats::start_bootstrapped().await;
     let runtime = start_node_runtime_with_ports(
-        nats.client.clone(),
+        nats.node_client.clone(),
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
         support::ReadyWireGuardEbpf,
@@ -97,7 +102,7 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
 async fn node_runtime_serves_wireguard_ebpf_prepare() {
     let nats = TestNats::start_bootstrapped().await;
     let runtime = start_node_runtime_with_ports(
-        nats.client.clone(),
+        nats.node_client.clone(),
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
         support::ReadyWireGuardEbpf,
@@ -126,30 +131,39 @@ async fn node_runtime_serves_wireguard_ebpf_prepare() {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: SecuredTestNats,
+    /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
+    /// Node principal: the node-runtime service side and its observations.
+    node_client: async_nats::Client,
     observations: AsyncNatsObservationStore,
 }
 
 impl TestNats {
     async fn start_bootstrapped() -> Self {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ployz-nats/tests/configs/jetstream.conf"
-        );
-        let server = nats_server::run_server(config);
-        let client = async_nats::connect(server.client_url())
+        let nats = SecuredTestNats::start_with_nodes(&[node_id("node_a")])
             .await
-            .expect("connect to test nats");
+            .expect("secured test nats starts");
+        let client = connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("controller connects");
         let jetstream = jetstream::new(client.clone());
         bootstrap_nats_resources(&client, &jetstream).await;
-        let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+        let node_config = nats
+            .node_config(&node_id("node_a"))
+            .expect("fixture minted node_a credentials");
+        let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("node connects");
+        let node_jetstream = jetstream::new(node_client.clone());
+        let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
             .await
             .expect("open observations");
 
         Self {
-            _server: server,
+            _nats: nats,
             client,
+            node_client,
             observations,
         }
     }

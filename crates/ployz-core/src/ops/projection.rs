@@ -384,7 +384,10 @@ fn machine_add_failure_allowed(
         (
             MachineAddOperationState::Pending { .. },
             crate::machine::MachineAddFailure::InvalidJoinToken
-            | crate::machine::MachineAddFailure::JoinTokenExpired { .. },
+            | crate::machine::MachineAddFailure::JoinTokenExpired { .. }
+            | crate::machine::MachineAddFailure::AuthorizationRenderFailed { .. }
+            | crate::machine::MachineAddFailure::NatsReloadFailed { .. }
+            | crate::machine::MachineAddFailure::MintedCredentialUnusable { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },
@@ -399,7 +402,10 @@ fn machine_add_failure_allowed(
         | (
             MachineAddOperationState::Joining { .. },
             crate::machine::MachineAddFailure::InvalidJoinToken
-            | crate::machine::MachineAddFailure::JoinTokenExpired { .. },
+            | crate::machine::MachineAddFailure::JoinTokenExpired { .. }
+            | crate::machine::MachineAddFailure::AuthorizationRenderFailed { .. }
+            | crate::machine::MachineAddFailure::NatsReloadFailed { .. }
+            | crate::machine::MachineAddFailure::MintedCredentialUnusable { .. },
         )
         | (
             MachineAddOperationState::Completed
@@ -554,10 +560,47 @@ fn project_machine_add_event(
 
     match event {
         MachineAddEvent::Submitted => Ok(OperationEventProjection::AlreadySatisfied),
+        MachineAddEvent::CredentialProvisioned => {
+            project_machine_add_credential_evidence(current, event_sequence)
+        }
         MachineAddEvent::Transition(attempted) => {
             project_machine_add_state(current, attempted, event_sequence)
         }
     }
+}
+
+/// Credential-provisioning steps are evidence: they advance the status
+/// cursor without changing the machine-add state. They are only recorded
+/// while the operation is live; once terminal, the evidence is satisfied.
+fn project_machine_add_credential_evidence(
+    current: &OperationStatus,
+    event_sequence: EventSequence,
+) -> Result<OperationEventProjection, StatusProjectionError> {
+    let OperationStatus::MachineAdd {
+        id,
+        node_id,
+        name,
+        gateway,
+        state,
+        ..
+    } = current
+    else {
+        return Err(kind_mismatch(current, OperationKind::MachineAdd));
+    };
+    if state.is_terminal() {
+        return Ok(OperationEventProjection::AlreadySatisfied);
+    }
+
+    Ok(OperationEventProjection::StatusChanged {
+        status: Box::new(OperationStatus::MachineAdd {
+            id: id.clone(),
+            node_id: node_id.clone(),
+            name: name.clone(),
+            gateway: *gateway,
+            state: state.clone(),
+            last_event_sequence: event_sequence,
+        }),
+    })
 }
 
 fn deploy_projection_to_event_projection(projection: DeployProjection) -> OperationEventProjection {

@@ -1,8 +1,9 @@
 use ployz_core::ids::NodeId;
 use ployz_core::permissions::{
-    NatsPermissionProfile, ResponsePermission, active_route_state_kv_write_scope,
-    active_service_state_kv_write_scope, inbox_prefix, inbox_subscribe_scope,
-    kv_read_js_api_subjects, lock_kv_write_scope, observation_kv_write_scope,
+    NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
+    active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
+    inbox_subscribe_scope, kv_read_js_api_subjects, lock_kv_write_scope,
+    nats_authorized_user_kv_write_scope, observation_kv_write_scope,
     operation_status_kv_write_scope,
 };
 use ployz_core::security::NatsPrincipal;
@@ -53,15 +54,23 @@ fn controller_credential_renders_owner_node_service_and_jetstream_scopes() {
             JOBS_STREAM_SUBJECT.to_owned(),
             AUDIT_STREAM_SUBJECT.to_owned(),
             "$JS.API.>".to_owned(),
+            "$JS.ACK.>".to_owned(),
+            "$O.PLZ_BACKUPS.>".to_owned(),
             active_service_state_kv_write_scope(),
             active_route_state_kv_write_scope(),
+            active_machine_state_kv_write_scope(),
+            nats_authorized_user_kv_write_scope(),
             operation_status_kv_write_scope(),
             lock_kv_write_scope(),
         ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
-        &[JOBS_STREAM_SUBJECT.to_owned(), "_INBOX_ctl.>".to_owned()]
+        &[
+            JOBS_STREAM_SUBJECT.to_owned(),
+            API_SERVICE_SCOPE.to_owned(),
+            "_INBOX_ctl.>".to_owned()
+        ]
     );
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
 }

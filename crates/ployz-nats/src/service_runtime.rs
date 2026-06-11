@@ -101,6 +101,7 @@ fn request_failure(error: async_nats::RequestError) -> NatsServiceRequestFailure
 
 #[derive(Debug)]
 pub struct RunningNatsService {
+    client: async_nats::Client,
     service: Option<async_nats::service::Service>,
     endpoint_tasks: Vec<JoinHandle<()>>,
     health: Arc<NatsServiceHealthCounters>,
@@ -141,6 +142,13 @@ impl RunningNatsService {
             .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
                 subject: endpoint.subject.clone(),
                 message: error.to_string(),
+            })?;
+        self.client
+            .flush()
+            .await
+            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+                subject: endpoint.subject.clone(),
+                message: format!("subscription flush failed: {error}"),
             })?;
 
         let handler = Arc::new(handler);
@@ -191,6 +199,14 @@ impl RunningNatsService {
                 .fetch_add(1, Ordering::Relaxed);
         });
         self.endpoint_tasks.push(task);
+        tokio::task::yield_now().await;
+        self.client
+            .flush()
+            .await
+            .map_err(|error| NatsServiceRuntimeError::AddEndpoint {
+                subject: endpoint.subject.clone(),
+                message: format!("endpoint task flush failed: {error}"),
+            })?;
         Ok(())
     }
 
@@ -392,6 +408,7 @@ pub async fn start_nats_service(
         })?;
 
     Ok(RunningNatsService {
+        client,
         service: Some(service),
         endpoint_tasks: Vec::new(),
         health: Arc::new(NatsServiceHealthCounters::default()),

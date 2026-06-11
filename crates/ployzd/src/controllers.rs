@@ -4,9 +4,7 @@ pub mod cert;
 
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::{
-    MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery, MachineJoinTemplate,
-};
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
     RawJoinToken,
@@ -22,9 +20,10 @@ use ployz_nats::operations::{
     BackupOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
     MachineJoinRedemption, OperationLeaseClaim, OperationStatusReadError,
     OperationStatusStoreError, OperationStatusWrite, RecordBackupEventError,
-    RecordDeployEvidenceError, RecordDeployTransitionError, RecordMachineJoinReportError,
-    RecordedMachineJoinReport, RedeemMachineJoinTokenError, ReplayOperationEventsError,
-    StoredOperationEvent, SubmitBackupError, SubmitDeployError, SubmitMachineAddError,
+    RecordDeployEvidenceError, RecordDeployTransitionError, RecordMachineAddEventError,
+    RecordMachineJoinReportError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
+    ReplayOperationEventsError, StoredOperationEvent, SubmitBackupError, SubmitDeployError,
+    SubmitMachineAddError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,7 +48,6 @@ pub struct MachineAddSubmitCommand {
     pub name: MachineName,
     pub gateway: FirstNodeGateway,
     pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
 }
@@ -60,13 +58,15 @@ pub struct BackupCreateCommand {
     pub idempotency_key: IdempotencyKey,
 }
 
+/// Non-secret material available at submit time: the install line needs
+/// only the join token, bootstrap URL, and join bundle. The per-machine
+/// secret is minted afterwards as bounded operation work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddBootstrapMaterial {
     pub raw_join_token: RawJoinToken,
     pub join_token: IssuedJoinToken,
     pub bootstrap_url: MachineBootstrapUrl,
     pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +194,6 @@ impl OperationControllers {
                     name: command.name,
                     gateway: command.gateway,
                     join_bundle: command.join_bundle,
-                    secret_delivery: command.secret_delivery,
                     join_token: command.join_token,
                     raw_join_token: command.raw_join_token,
                     idempotency_key: command.idempotency_key,
@@ -229,19 +228,8 @@ impl OperationControllers {
         else {
             return Ok(None);
         };
-        let Some(secret_delivery) = self
-            .repository
-            .machine_add_secret_delivery(idempotency_key)
-            .await
-            .map_err(machine_add_bootstrap_status_read_error)?
-        else {
-            return Err(MachineAddBootstrapMaterialError::StatusRead {
-                message: "machine add submission is missing secret delivery".to_owned(),
-            });
-        };
         Ok(Some(SubmittedMachineAddBootstrapMaterial {
             join_bundle: submission.join_bundle,
-            secret_delivery: secret_delivery.secret_delivery,
             join_token: submission.join_token,
             raw_join_token: submission.raw_join_token,
         }))
@@ -325,8 +313,56 @@ impl OperationControllers {
             join_token: IssuedJoinToken::new(fingerprint, expires_at),
             bootstrap_url: self.machine_bootstrap.bootstrap_url.clone(),
             join_bundle: join_template.join_bundle.clone(),
-            secret_delivery: join_template.secret_delivery.clone(),
         })
+    }
+
+    /// The minted per-machine secret record, if the mint worker has
+    /// finished. Used both for idempotent replay (never mint twice) and
+    /// by redeem gating (material-ready).
+    pub async fn machine_add_secret_delivery(
+        &self,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<
+        Option<ployz_nats::operations::StoredMachineAddSecretDelivery>,
+        OperationStatusStoreError,
+    > {
+        self.repository
+            .machine_add_secret_delivery(idempotency_key)
+            .await
+    }
+
+    /// Write-once store of the minted per-machine secret.
+    pub async fn store_machine_add_secret_delivery(
+        &self,
+        idempotency_key: &IdempotencyKey,
+        record: &ployz_nats::operations::StoredMachineAddSecretDelivery,
+    ) -> Result<ployz_nats::operations::StoredMachineAddSecretDelivery, OperationStatusStoreError>
+    {
+        self.repository
+            .put_machine_add_secret_delivery_if_absent(idempotency_key, record)
+            .await
+    }
+
+    pub async fn record_machine_add_credential_step(
+        &self,
+        operation_id: &OperationId,
+        node_id: &ployz_core::ids::NodeId,
+        step: ployz_core::machine::MachineCredentialProvisioningStep,
+    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
+        self.repository
+            .record_machine_add_credential_provisioned(operation_id, node_id, step)
+            .await
+    }
+
+    pub async fn record_machine_add_mint_failure(
+        &self,
+        operation_id: &OperationId,
+        node_id: &ployz_core::ids::NodeId,
+        failure: MachineAddFailure,
+    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
+        self.repository
+            .record_machine_add_failed(operation_id, node_id, failure)
+            .await
     }
 
     #[must_use]
@@ -529,7 +565,6 @@ fn current_lease_time() -> Result<OperationLeaseExpiresAt, OperationLeaseClockEr
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmittedMachineAddBootstrapMaterial {
     pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
 }

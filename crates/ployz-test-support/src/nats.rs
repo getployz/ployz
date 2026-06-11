@@ -34,11 +34,12 @@ type FixtureError = Box<dyn Error + Send + Sync>;
 
 /// A running TLS + NKey-authorized `nats-server` for tests.
 pub struct SecuredTestNats {
-    _server: FixtureNatsServer,
+    server: FixtureNatsServer,
     _dir: tempfile::TempDir,
     url: NatsClientUrl,
     port: u16,
     ca_path: PathBuf,
+    authorized_users_path: PathBuf,
     controller_seed: NatsUserSeed,
     user_seed: NatsUserSeed,
     join_seed: NatsUserSeed,
@@ -81,10 +82,8 @@ impl SecuredTestNats {
                 minted,
             ));
         }
-        fs::write(
-            dir.path().join("authorized-users.conf"),
-            render_authorized_users(&authorized),
-        )?;
+        let authorized_users_path = dir.path().join("authorized-users.conf");
+        fs::write(&authorized_users_path, render_authorized_users(&authorized))?;
 
         let server_config = NatsServerConfig::single_node(
             NodeId::try_new(SERVER_NODE_ID)
@@ -109,11 +108,12 @@ impl SecuredTestNats {
             .expect("fixture-rendered NATS URL is valid");
 
         let fixture = Self {
-            _server: server,
+            server,
             _dir: dir,
             url,
             port,
             ca_path: tls.ca_path,
+            authorized_users_path,
             controller_seed: controller.seed,
             user_seed: user.seed,
             join_seed: join.seed,
@@ -140,6 +140,30 @@ impl SecuredTestNats {
     #[must_use]
     pub fn ca_path(&self) -> &Path {
         &self.ca_path
+    }
+
+    /// The server's `authorized-users.conf`. Control-runtime tests point
+    /// the ployzd authorization writer at this exact file so renders feed
+    /// the same server the fixture spawned.
+    #[must_use]
+    pub fn authorized_users_path(&self) -> &Path {
+        &self.authorized_users_path
+    }
+
+    /// The spawned `nats-server` pid, for signal-based config reloads.
+    #[must_use]
+    pub fn server_pid(&self) -> u32 {
+        self.server.child.id()
+    }
+
+    #[must_use]
+    pub fn join_seed(&self) -> &NatsUserSeed {
+        &self.join_seed
+    }
+
+    #[must_use]
+    pub fn user_seed(&self) -> &NatsUserSeed {
+        &self.user_seed
     }
 
     #[must_use]

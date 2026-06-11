@@ -190,6 +190,15 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 subject: OperationSubjectRef::MachineAdd(node_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Joining { joined_at }),
             },
+            OperationEvent::MachineAddCredentialProvisioned {
+                operation_id,
+                node_id,
+                ..
+            } => Self::MachineAdd {
+                operation_id,
+                subject: OperationSubjectRef::MachineAdd(node_id),
+                event: MachineAddEvent::CredentialProvisioned,
+            },
             OperationEvent::MachineAddCompleted {
                 operation_id,
                 node_id,
@@ -262,5 +271,6 @@ pub(super) enum CertEvent {
 
 pub(super) enum MachineAddEvent {
     Submitted,
+    CredentialProvisioned,
     Transition(MachineAddOperationState),
 }

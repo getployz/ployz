@@ -131,7 +131,12 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").is_ok());
     assert!(MachineJoinNatsCredentials::try_new("").is_err());
     assert!(MachineJoinNatsCredentials::try_new("creds\0bad").is_err());
-    assert!(MachineJoinNatsCredentials::try_new("user-jwt-and-seed").is_ok());
+    assert!(
+        MachineJoinNatsCredentials::try_new(
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        .is_ok()
+    );
     assert!(NatsServerName::try_new("").is_err());
     assert!(NatsServerName::try_new("server one").is_err());
     assert!(NatsServerName::try_new("server_1").is_ok());
@@ -221,7 +226,7 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
 fn machine_join_bundle_debug_redacts_secrets() {
     let rendered = format!("{:?}", machine_join_secret_delivery());
 
-    assert!(!rendered.contains("user-jwt-and-seed"));
+    assert!(!rendered.contains("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
 }
 
 fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
@@ -324,7 +329,9 @@ fn machine_join_bundle() -> MachineJoinBundle {
 
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
-        nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
-            .expect("valid nats credentials"),
+        nats_credentials: MachineJoinNatsCredentials::try_new(
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("valid nats credentials"),
     }
 }

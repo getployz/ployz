@@ -287,12 +287,14 @@ pub struct MachineJoinSecretDelivery {
     pub nats_credentials: MachineJoinNatsCredentials,
 }
 
+/// Non-secret machine-add bootstrap material loaded by the control role.
+/// Per-machine secrets are minted at machine-add as bounded operation
+/// work; the template never carries credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinTemplate {
     pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

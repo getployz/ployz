@@ -1,10 +1,10 @@
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Args};
 use ployz_core::backup::{RestoreStep, single_core_restore_contract};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{AcceptedOperation, BackupCreateRequest};
 
-use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
+use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupCreateCommand {
@@ -74,14 +74,9 @@ impl BackupRestorePlanOutput {
     }
 }
 
-pub fn parse_backup_create_command(
-    args: &[String],
+pub(crate) fn backup_create_command(
+    parsed: BackupCreateCli,
 ) -> Result<BackupCreateCommand, PloyzctlCliError> {
-    let parsed = BackupCreateCli::try_parse_from(
-        std::iter::once("backup create".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
-
     Ok(BackupCreateCommand {
         operation_id: OperationId::try_new(parsed.operation)
             .map_err(|error| invalid_value("--operation", error))?,
@@ -90,29 +85,20 @@ pub fn parse_backup_create_command(
     })
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "backup create")]
-struct BackupCreateCli {
+#[derive(Debug, Args)]
+pub(crate) struct BackupCreateCli {
     #[arg(long)]
     operation: String,
     #[arg(long)]
     idempotency_key: String,
 }
 
-pub fn parse_backup_restore_command(
-    args: &[String],
-) -> Result<BackupRestorePlanCommand, PloyzctlCliError> {
-    BackupRestoreCli::try_parse_from(
-        std::iter::once("backup restore".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
-
-    Ok(BackupRestorePlanCommand)
+pub(crate) fn backup_restore_command(_: BackupRestoreCli) -> BackupRestorePlanCommand {
+    BackupRestorePlanCommand
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "backup restore")]
-struct BackupRestoreCli {
+#[derive(Debug, Args)]
+pub(crate) struct BackupRestoreCli {
     #[arg(long, action = ArgAction::SetTrue, required = true)]
     plan: bool,
 }

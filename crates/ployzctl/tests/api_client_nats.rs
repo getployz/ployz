@@ -12,6 +12,7 @@ use ployz_core::state::{
     NodePublicIpObservation,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
 };
@@ -32,19 +33,55 @@ use ployz_sdk_types::{
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
+use ployz_test_support::nats::SecuredTestNats;
 use ployzctl::api_client::{
     OperationApiClient, OperationApiClientError, OperationApiRequestFailure,
 };
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use tokio::sync::{Mutex, OwnedMutexGuard};
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+static SECURED_API_FIXTURE_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+
+struct SecuredApiFixture {
+    _lock: OwnedMutexGuard<()>,
+    _nats: SecuredTestNats,
+    service_client: async_nats::Client,
+    user_client: async_nats::Client,
+}
+
+async fn secured_api_fixture() -> SecuredApiFixture {
+    let lock = SECURED_API_FIXTURE_LOCK
+        .get_or_init(|| Arc::new(Mutex::new(())))
+        .clone()
+        .lock_owned()
+        .await;
+    let nats = SecuredTestNats::start()
+        .await
+        .expect("secured test nats starts");
+    let service_client =
+        connect_authenticated(&nats.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+            .await
+            .expect("controller connects");
+    let user_client = connect_authenticated(&nats.user_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("user connects");
+    SecuredApiFixture {
+        _lock: lock,
+        _nats: nats,
+        service_client,
+        user_client,
+    }
+}
 
 #[tokio::test]
 async fn operation_api_client_decodes_successful_envelope() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -82,13 +119,11 @@ async fn operation_api_client_decodes_successful_envelope() {
 
 #[tokio::test]
 async fn operation_api_client_routes_machine_add_success() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(MachineAddApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -126,13 +161,11 @@ async fn operation_api_client_routes_machine_add_success() {
 
 #[tokio::test]
 async fn operation_api_client_routes_machine_join_redeem_success() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(MachineJoinRedeemApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -169,13 +202,11 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
 
 #[tokio::test]
 async fn operation_api_client_routes_machine_list_success() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(MachineListApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -202,13 +233,11 @@ async fn operation_api_client_routes_machine_list_success() {
 
 #[tokio::test]
 async fn operation_api_client_routes_machine_inspect_success() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(MachineInspectApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -239,13 +268,11 @@ async fn operation_api_client_routes_machine_inspect_success() {
 
 #[tokio::test]
 async fn operation_api_client_routes_service_list_success() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(ServiceListApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -272,13 +299,11 @@ async fn operation_api_client_routes_service_list_success() {
 
 #[tokio::test]
 async fn operation_api_client_routes_service_inspect_success() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(ServiceInspectApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -312,13 +337,11 @@ async fn operation_api_client_routes_service_inspect_success() {
 
 #[tokio::test]
 async fn operation_api_client_returns_service_error_headers_as_transport_failure() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -349,13 +372,11 @@ async fn operation_api_client_returns_service_error_headers_as_transport_failure
 
 #[tokio::test]
 async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -392,13 +413,11 @@ async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() 
 
 #[tokio::test]
 async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(DeploySubmitApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -426,13 +445,11 @@ async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
 
 #[tokio::test]
 async fn operation_api_client_routes_ops_status_domain_errors() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(OpsStatusApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -469,13 +486,11 @@ async fn operation_api_client_routes_ops_status_domain_errors() {
 
 #[tokio::test]
 async fn operation_api_client_routes_ops_watch_decode_failures() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let spec = test_api_service(OpsWatchApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
-    let mut runtime = start_nats_service(client.clone(), &spec)
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
         .expect("service starts");
 
@@ -503,10 +518,8 @@ async fn operation_api_client_routes_ops_watch_decode_failures() {
 
 #[tokio::test]
 async fn operation_api_client_reports_no_responders_as_typed_request_failure() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = secured_api_fixture().await;
+    let client = nats.user_client.clone();
     let api = OperationApiClient::new(client);
 
     let error = api
@@ -659,7 +672,7 @@ fn machine_snapshot(node_id: &str) -> MachineSnapshot {
 fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
     ployz_core::install::MachineJoinSecretDelivery {
         nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
-            "user-jwt-and-seed",
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         )
         .expect("valid nats credentials"),
     }

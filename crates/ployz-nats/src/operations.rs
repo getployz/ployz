@@ -32,7 +32,7 @@ pub use repository::{
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
     OperationStatusWrite, StoredBackupSubmission, StoredCertSubmission, StoredDeploySubmission,
-    StoredMachineAddJoinToken, StoredMachineAddSubmission,
+    StoredMachineAddJoinToken, StoredMachineAddSecretDelivery, StoredMachineAddSubmission,
 };
 
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";

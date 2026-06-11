@@ -6,6 +6,7 @@ use crate::docker::runner::LazyLocalDockerManagedContainerRunner;
 use crate::node_agent::runtime::{
     ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError, NodeLogReader,
 };
+use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::node_runtime::{
     NodeRuntimeStartError, RunningNodeRuntime, start_node_runtime_with_ports,
 };
@@ -15,7 +16,7 @@ use ployz_core::node::{
     NodeContainerObservationSnapshotError,
 };
 use ployz_core::state::NodePublicIpObservation;
-use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
+use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError};
 use std::fmt;
@@ -49,7 +50,14 @@ impl RunningNodeProcessRuntime {
 pub async fn start_node_process_runtime(
     config: &NodeProcessConfig,
 ) -> Result<RunningNodeProcessRuntime, NodeProcessRuntimeError> {
-    let client = connect_with_timeout(&config.nats_url, NODE_NATS_CONNECT_TIMEOUT)
+    // The machine credential may not exist yet (first node before
+    // activate-first-node): awaiting it is a typed bounded-retry state,
+    // not a crash loop.
+    let connect =
+        await_role_credentials("node", &config.nats, &SeedFileRetryPolicy::default_policy())
+            .await
+            .map_err(NodeProcessRuntimeError::AwaitCredentials)?;
+    let client = connect_authenticated(&connect, NODE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(NodeProcessRuntimeError::ConnectNats)?;
     let runner = LazyLocalDockerManagedContainerRunner::new(
@@ -342,6 +350,7 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 
 #[derive(Debug)]
 pub enum NodeProcessRuntimeError {
+    AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
     OpenObservations(ObservationStoreError),
     ListContainers(NodeContainerRunnerError),
@@ -356,6 +365,7 @@ pub enum NodeProcessRuntimeError {
 impl fmt::Display for NodeProcessRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AwaitCredentials(error) => write!(formatter, "{error}"),
             Self::ConnectNats(error) => write!(formatter, "{error}"),
             Self::OpenObservations(error) => {
                 write!(formatter, "failed to open observation store: {error}")
@@ -716,33 +726,43 @@ mod tests {
     }
 
     struct TestNats {
-        _server: nats_server::Server,
+        _nats: ployz_test_support::nats::SecuredTestNats,
+        /// Node principal: the node process side under test.
         client: async_nats::Client,
         observations: AsyncNatsObservationStore,
     }
 
     impl TestNats {
         async fn start_bootstrapped() -> Self {
-            let config = concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../ployz-nats/tests/configs/jetstream.conf"
-            );
-            let server = nats_server::run_server(config);
-            let client = async_nats::connect(server.client_url())
-                .await
-                .expect("connect to test nats");
-            let jetstream = async_nats::jetstream::new(client.clone());
-            let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client(&client)
+            let nats =
+                ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_a")])
+                    .await
+                    .expect("secured test nats starts");
+            let controller =
+                connect_authenticated(&nats.controller_config(), NODE_NATS_CONNECT_TIMEOUT)
+                    .await
+                    .expect("controller connects");
+            let jetstream = async_nats::jetstream::new(controller.clone());
+            let plan = ployz_nats::bootstrap::BootstrapPlan::for_single_server_client(&controller)
                 .expect("bootstrap plan builds");
             ployz_nats::bootstrap::assure_nats_resources(&jetstream, &plan)
                 .await
                 .expect("nats resources are bootstrapped");
-            let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+            let client = connect_authenticated(
+                &nats
+                    .node_config(&node_id("node_a"))
+                    .expect("fixture minted node_a credentials"),
+                NODE_NATS_CONNECT_TIMEOUT,
+            )
+            .await
+            .expect("node_a connects");
+            let node_jetstream = async_nats::jetstream::new(client.clone());
+            let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
                 .await
                 .expect("open observations");
 
             Self {
-                _server: server,
+                _nats: nats,
                 client,
                 observations,
             }

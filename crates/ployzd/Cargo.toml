@@ -19,12 +19,13 @@ ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+nkeys = "0.4"
 nuid.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
 ployz-test-support.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]

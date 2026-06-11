@@ -26,9 +26,8 @@ impl DaemonProcessRole {
     /// The `ployzd` process arguments that select this role.
     ///
     /// This is the single owner of the role argv contract: supervisor unit
-    /// rendering (`ployz-keeper`) emits exactly this shape and `ployzd`'s
-    /// role parser must accept it. The round-trip test lives in
-    /// `crates/ployzd/tests/role_process.rs`.
+    /// rendering emits exactly this shape and `ployzd`'s role parser must
+    /// accept it.
     #[must_use]
     pub fn argv(&self) -> Vec<String> {
         match self {

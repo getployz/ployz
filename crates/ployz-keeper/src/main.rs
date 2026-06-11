@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::joined_node_process_set;
+use ployz_core::security::NatsPrincipal;
 use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
     EbpfCtlArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
@@ -21,16 +23,25 @@ use ployz_keeper::steps::{
     FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, NonEmptyRoleSet,
     PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_node_install_plan,
 };
-use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError, connect_with_timeout};
-use ployz_nats::operation_api_client::OperationApiClient;
+use ployz_nats::connect::{
+    NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsTlsTrust,
+    connect_authenticated,
+};
+use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportOutcome,
-    MachineJoinReportRequest, MachineJoinToken,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
 };
 
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
+const PLOYZ_JOIN_NKEY_SEED_ENV: &str = "PLOYZ_JOIN_NKEY_SEED";
 const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
 const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bounded redeem retry while the core mints this machine's credential:
+/// the join token TTL is 600 seconds, so stop well within it.
+const REDEEM_MATERIAL_ATTEMPTS: u32 = 150;
+const REDEEM_MATERIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
 
 fn main() -> ExitCode {
@@ -135,14 +146,14 @@ fn failure_summary(failure: &KeeperPlanFailure) -> &str {
 }
 
 struct SystemJoinRedeemer {
-    nats_url: Result<NatsClientUrl, KeeperNatsUrlError>,
+    connect: Result<NatsConnectConfig, KeeperNatsConnectError>,
     node_public_ip: Result<Option<std::net::IpAddr>, KeeperNodePublicIpError>,
 }
 
 impl SystemJoinRedeemer {
     fn from_env() -> Self {
         Self {
-            nats_url: load_nats_url_from_env(),
+            connect: load_join_connect_from_env(),
             node_public_ip: load_node_public_ip_from_env(),
         }
     }
@@ -153,8 +164,8 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
         &mut self,
         token: &JoinToken,
     ) -> Result<RedeemedKeeperJoin, FailureMessage> {
-        let nats_url = self
-            .nats_url
+        let connect = self
+            .connect
             .clone()
             .map_err(|error| failure_message(&format!("{error}")))?;
         let node_public_ip = self
@@ -168,30 +179,64 @@ impl KeeperJoinRedeemer for SystemJoinRedeemer {
             .build()
             .map_err(|error| failure_message(&format!("failed to start async runtime: {error}")))?;
 
-        let redeem_nats_url = nats_url.clone();
         let redeemed = runtime.block_on(async move {
-            let client = connect_with_timeout(&redeem_nats_url, DEFAULT_NATS_CONNECT_TIMEOUT)
+            let client = connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT)
                 .await
                 .map_err(|error| failure_message(&error.to_string()))?;
-            OperationApiClient::new(client)
-                .machine_join_redeem(&MachineJoinRedeemRequest { join_token })
-                .await
-                .map_err(|error| failure_message(&format!("failed to redeem join token: {error}")))
+            redeem_until_material_ready(&OperationApiClient::new(client), join_token).await
         })?;
 
         keeper_join_target_with_public_ip(redeemed, node_public_ip)
     }
 }
 
+/// Redeems the join token, retrying boundedly while the core's mint worker
+/// has not reached `material-ready` yet. Any other failure is terminal.
+async fn redeem_until_material_ready(
+    api: &OperationApiClient,
+    join_token: MachineJoinToken,
+) -> Result<MachineJoinRedeemed, FailureMessage> {
+    let mut last_not_ready = String::new();
+    for _ in 0..REDEEM_MATERIAL_ATTEMPTS {
+        match api
+            .machine_join_redeem(&MachineJoinRedeemRequest {
+                join_token: join_token.clone(),
+            })
+            .await
+        {
+            Ok(redeemed) => return Ok(redeemed),
+            Err(OperationApiClientError::Domain {
+                error: MachineJoinRedeemError::MaterialNotReady { operation_id },
+                ..
+            }) => {
+                last_not_ready = format!(
+                    "operation {} has not reached material-ready",
+                    operation_id.as_str()
+                );
+                tokio::time::sleep(REDEEM_MATERIAL_RETRY_DELAY).await;
+            }
+            Err(error) => {
+                return Err(failure_message(&format!(
+                    "failed to redeem join token: {error}"
+                )));
+            }
+        }
+    }
+
+    Err(failure_message(&format!(
+        "join material did not become ready within {REDEEM_MATERIAL_ATTEMPTS} attempts: {last_not_ready}"
+    )))
+}
+
 struct SystemJoinReporter {
-    nats_url: Result<NatsClientUrl, KeeperNatsUrlError>,
+    connect: Result<NatsConnectConfig, KeeperNatsConnectError>,
     join_token: JoinToken,
 }
 
 impl SystemJoinReporter {
     fn from_env(join_token: JoinToken) -> Self {
         Self {
-            nats_url: load_nats_url_from_env(),
+            connect: load_join_connect_from_env(),
             join_token,
         }
     }
@@ -218,8 +263,8 @@ impl KeeperJoinReporter for SystemJoinReporter {
 
 impl SystemJoinReporter {
     fn report_join_result(&self, request: MachineJoinReportRequest) -> Result<(), FailureMessage> {
-        let nats_url = self
-            .nats_url
+        let connect = self
+            .connect
             .clone()
             .map_err(|error| failure_message(&format!("{error}")))?;
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -228,7 +273,7 @@ impl SystemJoinReporter {
             .map_err(|error| failure_message(&format!("failed to start async runtime: {error}")))?;
 
         runtime.block_on(async move {
-            let client = connect_with_timeout(&nats_url, DEFAULT_NATS_CONNECT_TIMEOUT)
+            let client = connect_authenticated(&connect, DEFAULT_NATS_CONNECT_TIMEOUT)
                 .await
                 .map_err(|error| failure_message(&error.to_string()))?;
             OperationApiClient::new(client)
@@ -245,10 +290,31 @@ impl SystemJoinReporter {
     }
 }
 
-fn load_nats_url_from_env() -> Result<NatsClientUrl, KeeperNatsUrlError> {
-    let value = std::env::var(PLOYZ_NATS_URL_ENV).map_err(|_| KeeperNatsUrlError::Missing)?;
-    NatsClientUrl::try_new(value.clone())
-        .map_err(|source| KeeperNatsUrlError::Invalid { value, source })
+/// Builds the keeper's Join-credential connection: TLS against the cluster
+/// CA file plus the deliberately low-privilege Join seed, both delivered by
+/// the install command env.
+fn load_join_connect_from_env() -> Result<NatsConnectConfig, KeeperNatsConnectError> {
+    let url = std::env::var(PLOYZ_NATS_URL_ENV).map_err(|_| KeeperNatsConnectError::MissingUrl)?;
+    let url = NatsClientUrl::try_new(url.clone())
+        .map_err(|source| KeeperNatsConnectError::InvalidUrl { value: url, source })?;
+    let ca_file = std::env::var(PLOYZ_NATS_CA_FILE_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or(KeeperNatsConnectError::MissingCaFile)?;
+    let seed = std::env::var(PLOYZ_JOIN_NKEY_SEED_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or(KeeperNatsConnectError::MissingJoinSeed)?;
+    let seed =
+        NatsUserSeed::try_new(seed.trim()).map_err(|_| KeeperNatsConnectError::InvalidJoinSeed)?;
+
+    Ok(NatsConnectConfig {
+        url,
+        auth: NatsClientAuth::NkeySeed(seed),
+        trust: NatsTlsTrust::ClusterCa(ca_file),
+        principal: NatsPrincipal::Join,
+    })
 }
 
 fn load_node_public_ip_from_env() -> Result<Option<std::net::IpAddr>, KeeperNodePublicIpError> {
@@ -265,12 +331,15 @@ fn load_node_public_ip_from_env() -> Result<Option<std::net::IpAddr>, KeeperNode
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum KeeperNatsUrlError {
-    Missing,
-    Invalid {
+enum KeeperNatsConnectError {
+    MissingUrl,
+    InvalidUrl {
         value: String,
         source: NatsClientUrlError,
     },
+    MissingCaFile,
+    MissingJoinSeed,
+    InvalidJoinSeed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,13 +350,21 @@ enum KeeperNodePublicIpError {
     },
 }
 
-impl std::fmt::Display for KeeperNatsUrlError {
+impl std::fmt::Display for KeeperNatsConnectError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing => write!(formatter, "{PLOYZ_NATS_URL_ENV} is required"),
-            Self::Invalid { value, .. } => {
+            Self::MissingUrl => write!(formatter, "{PLOYZ_NATS_URL_ENV} is required"),
+            Self::InvalidUrl { value, .. } => {
                 write!(formatter, "{PLOYZ_NATS_URL_ENV}={value:?} is invalid")
             }
+            Self::MissingCaFile => write!(formatter, "{PLOYZ_NATS_CA_FILE_ENV} is required"),
+            Self::MissingJoinSeed => {
+                write!(formatter, "{PLOYZ_JOIN_NKEY_SEED_ENV} is required")
+            }
+            Self::InvalidJoinSeed => write!(
+                formatter,
+                "{PLOYZ_JOIN_NKEY_SEED_ENV} must be an SU-prefixed user seed"
+            ),
         }
     }
 }
@@ -526,8 +603,10 @@ mod tests {
 
     fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
         MachineJoinSecretDelivery {
-            nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
-                .expect("valid nats credentials"),
+            nats_credentials: MachineJoinNatsCredentials::try_new(
+                "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .expect("valid nats credentials"),
         }
     }
 }

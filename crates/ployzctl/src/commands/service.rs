@@ -1,10 +1,10 @@
-use clap::Parser;
+use clap::Args;
 use ployz_core::ids::ServiceId;
 use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListRequest, ServiceListResult, ServiceSnapshot,
 };
 
-use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
+use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceListCommand;
@@ -16,12 +16,8 @@ impl ServiceListCommand {
     }
 }
 
-pub fn parse_service_list_command(args: &[String]) -> Result<ServiceListCommand, PloyzctlCliError> {
-    EmptyCli::try_parse_from(
-        std::iter::once("service list".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
-    Ok(ServiceListCommand)
+pub(crate) fn service_list_command(_: EmptyCli) -> ServiceListCommand {
+    ServiceListCommand
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,25 +34,20 @@ impl ServiceInspectCommand {
     }
 }
 
-pub fn parse_service_inspect_command(
-    args: &[String],
+pub(crate) fn service_inspect_command(
+    parsed: ServiceInspectCli,
 ) -> Result<ServiceInspectCommand, PloyzctlCliError> {
-    let parsed = ServiceInspectCli::try_parse_from(
-        std::iter::once("service inspect".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
     let service_id = ServiceId::try_new(parsed.service_id)
         .map_err(|error| invalid_value("<service_id>", error))?;
 
     Ok(ServiceInspectCommand { service_id })
 }
 
-#[derive(Debug, Parser)]
-struct EmptyCli {}
+#[derive(Debug, Args)]
+pub(crate) struct EmptyCli {}
 
-#[derive(Debug, Parser)]
-#[command(name = "service inspect")]
-struct ServiceInspectCli {
+#[derive(Debug, Args)]
+pub(crate) struct ServiceInspectCli {
     service_id: String,
 }
 

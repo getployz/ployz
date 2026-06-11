@@ -1,21 +1,19 @@
 use std::fs;
 use std::io::Read;
 
-use clap::Parser;
+use clap::Args;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
     MachineJoinArtifact, MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTemplate,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, trusted_nats_for_first_node};
 
-use crate::commands::{PloyzctlCliError, clap_error, invalid_value};
+use crate::commands::{PloyzctlCliError, invalid_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineJoinTemplateCommand {
     pub join_bundle: MachineJoinBundle,
-    pub secret_delivery: MachineJoinSecretDelivery,
 }
 
 impl MachineJoinTemplateCommand {
@@ -23,7 +21,6 @@ impl MachineJoinTemplateCommand {
     pub fn template(&self) -> MachineJoinTemplate {
         MachineJoinTemplate {
             join_bundle: self.join_bundle.clone(),
-            secret_delivery: self.secret_delivery.clone(),
         }
     }
 
@@ -36,14 +33,9 @@ impl MachineJoinTemplateCommand {
     }
 }
 
-pub fn parse_machine_join_template_command(
-    args: &[String],
+pub(crate) fn machine_join_template_command(
+    parsed: MachineJoinTemplateCli,
 ) -> Result<MachineJoinTemplateCommand, PloyzctlCliError> {
-    let parsed = MachineJoinTemplateCli::try_parse_from(
-        std::iter::once("init join-template".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
-
     let trusted_first_node = NodeId::try_new(parsed.trusted_first_node)
         .map_err(|error| invalid_value("--trusted-first-node", error))?;
     let trusted_nats_ca = read_trusted_nats_ca(parsed.trusted_nats_ca_file)?;
@@ -77,13 +69,11 @@ pub fn parse_machine_join_template_command(
                 },
             },
         },
-        secret_delivery: read_secret_delivery(parsed.secret_delivery_file)?,
     })
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "init join-template")]
-struct MachineJoinTemplateCli {
+#[derive(Debug, Args)]
+pub(crate) struct MachineJoinTemplateCli {
     #[arg(long)]
     cluster: String,
     #[arg(long)]
@@ -94,8 +84,6 @@ struct MachineJoinTemplateCli {
     trusted_nats_ca_file: String,
     #[arg(long)]
     artifact_spec: String,
-    #[arg(long)]
-    secret_delivery_file: String,
 }
 
 fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCliError> {
@@ -106,17 +94,6 @@ fn read_trusted_nats_ca(path: String) -> Result<NatsCaCertificatePem, PloyzctlCl
     NatsCaCertificatePem::try_new(contents).map_err(|error| PloyzctlCliError::InvalidValue {
         flag: "--trusted-nats-ca-file",
         message: error.to_string(),
-    })
-}
-
-fn read_secret_delivery(path: String) -> Result<MachineJoinSecretDelivery, PloyzctlCliError> {
-    let contents = fs::read_to_string(&path).map_err(|error| PloyzctlCliError::InvalidValue {
-        flag: "--secret-delivery-file",
-        message: format!("cannot read {path}: {error}"),
-    })?;
-    serde_json::from_str(&contents).map_err(|error| PloyzctlCliError::InvalidValue {
-        flag: "--secret-delivery-file",
-        message: format!("invalid secret delivery json: {error}"),
     })
 }
 

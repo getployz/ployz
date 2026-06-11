@@ -38,7 +38,7 @@ async fn node_runtime_service_ensures_endpoint_network() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
@@ -46,6 +46,10 @@ async fn node_runtime_service_ensures_endpoint_network() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     client
@@ -64,7 +68,7 @@ async fn node_runtime_service_creates_missing_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone()).with_next_container("ctr_created"),
         ready_wireguard_ebpf(),
@@ -72,6 +76,10 @@ async fn node_runtime_service_creates_missing_container() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = client
@@ -100,7 +108,7 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone())
             .with_existing(existing_container("ctr_existing", managed_labels())),
@@ -109,6 +117,10 @@ async fn node_runtime_service_reuses_existing_operation_step_container() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = client
@@ -130,7 +142,7 @@ async fn node_runtime_service_starts_existing_stopped_operation_step_container()
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone()).with_existing(existing_container_with_state(
             "ctr_existing",
@@ -142,6 +154,10 @@ async fn node_runtime_service_starts_existing_stopped_operation_step_container()
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let outcome = client
@@ -164,7 +180,7 @@ async fn node_runtime_service_reports_start_failure_with_container_evidence() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state).with_start_failure("ctr_created", "exec format error"),
         ready_wireguard_ebpf(),
@@ -172,6 +188,10 @@ async fn node_runtime_service_reports_start_failure_with_container_evidence() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
@@ -195,7 +215,7 @@ async fn node_runtime_service_reports_existing_start_failure_without_created_evi
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state).with_existing_start_failure("ctr_existing", "still stopping"),
         ready_wireguard_ebpf(),
@@ -203,6 +223,10 @@ async fn node_runtime_service_reports_existing_start_failure_without_created_evi
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
@@ -228,7 +252,7 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
     conflicting_labels.revision_id = revision_id("rev_other");
     let state = RecordingRunnerState::default();
     let service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state).with_existing(existing_container(
             "ctr_conflict",
@@ -239,6 +263,10 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
@@ -262,7 +290,7 @@ async fn node_runtime_service_reports_operation_step_conflict_as_domain_error() 
 async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
     let nats = test_nats().await;
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(RecordingRunnerState::default()).with_create_failure("disk full"),
         ready_wireguard_ebpf(),
@@ -270,6 +298,10 @@ async fn node_runtime_service_maps_create_failure_to_unavailable_runtime() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     let error = client
@@ -293,7 +325,7 @@ async fn node_runtime_service_removes_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
@@ -301,6 +333,10 @@ async fn node_runtime_service_removes_container() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
 
     let response = request_json::<_, NodeContainerRemoveRpcResponse>(
         &nats.client,
@@ -330,7 +366,7 @@ async fn node_runtime_service_stops_container() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(state.clone()),
         ready_wireguard_ebpf(),
@@ -338,6 +374,10 @@ async fn node_runtime_service_stops_container() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeContainerRuntime::new(nats.client);
 
     client
@@ -357,7 +397,7 @@ async fn node_runtime_service_stops_container() {
 async fn node_runtime_service_reports_remove_failure_as_domain_error() {
     let nats = test_nats().await;
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(RecordingRunnerState::default())
             .with_remove_failure("ctr_old", "busy"),
@@ -366,6 +406,10 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
 
     let response = request_json::<_, NodeContainerRemoveRpcResponse>(
         &nats.client,
@@ -397,7 +441,7 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
 async fn node_runtime_service_reports_stop_failure_as_domain_error() {
     let nats = test_nats().await;
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(RecordingRunnerState::default())
             .with_stop_failure("ctr_failed", "permission denied"),
@@ -406,6 +450,10 @@ async fn node_runtime_service_reports_stop_failure_as_domain_error() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
 
     let response = request_json::<_, NodeContainerStopRpcResponse>(
         &nats.client,
@@ -437,7 +485,7 @@ async fn node_runtime_service_reports_stop_failure_as_domain_error() {
 async fn node_runtime_service_tails_container_logs() {
     let nats = test_nats().await;
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         RecordingRunner::new(RecordingRunnerState::default())
             .with_existing(existing_container("ctr_failed", managed_labels())),
@@ -446,6 +494,10 @@ async fn node_runtime_service_tails_container_logs() {
     )
     .await
     .expect("node runtime service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
 
     let response = request_json::<_, NodeLogsTailRpcResponse>(
         &nats.client,
@@ -477,7 +529,7 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
@@ -485,6 +537,10 @@ async fn node_wireguard_ebpf_service_calls_local_preparer() {
     )
     .await
     .expect("node wireguard ebpf service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
 
     let report = client
@@ -503,7 +559,7 @@ async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state.clone()),
@@ -511,6 +567,10 @@ async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
     )
     .await
     .expect("node wireguard ebpf service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
         &nats.client,
         node_endpoint_subject(
@@ -549,7 +609,7 @@ async fn node_wireguard_ebpf_service_preserves_prepare_failure() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_a.clone(),
         node_id("node_a"),
         idle_runner(),
         RecordingWireGuardEbpf::new(state).with_failure(WireGuardEbpfPrepareError::Unavailable {
@@ -561,6 +621,10 @@ async fn node_wireguard_ebpf_service_preserves_prepare_failure() {
     )
     .await
     .expect("node wireguard ebpf service starts");
+    nats.node_a
+        .flush()
+        .await
+        .expect("flush node service subscription");
     let mut client = NatsNodeWireGuardEbpfPreparer::new(nats.client);
 
     let error = client
@@ -967,23 +1031,38 @@ impl NodeLogReader for RecordingLogReader {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
+    /// Node principal: the node-runtime service side.
+    node_a: async_nats::Client,
 }
 
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn test_nats() -> TestNats {
-    let config = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../ployz-nats/tests/configs/jetstream.conf"
-    );
-    let server = nats_server::run_server(config);
-    let client = async_nats::connect(server.client_url())
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_a")])
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = ployz_nats::connect::connect_authenticated(
+        &nats.controller_config(),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("controller connects");
+    let node_a = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&node_id("node_a"))
+            .expect("fixture minted node_a credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("node_a connects");
 
     TestNats {
-        _server: server,
+        _nats: nats,
         client,
+        node_a,
     }
 }
 

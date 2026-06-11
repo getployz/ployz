@@ -12,8 +12,8 @@
 
 use crate::security::NatsPrincipal;
 use crate::state::{
-    ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX, KV_CORE_BUCKET, KV_LOCKS_BUCKET,
-    KV_OBS_BUCKET, KV_OPS_BUCKET,
+    ACTIVE_MACHINE_STATE_PREFIX, ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX,
+    KV_CORE_BUCKET, KV_LOCKS_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET, NATS_AUTHORIZED_USER_PREFIX,
 };
 use crate::subjects::{
     API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT,
@@ -25,6 +25,10 @@ const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
+const JETSTREAM_ACK_SCOPE: &str = "$JS.ACK.>";
+/// Backup artifacts live in the `PLZ_BACKUPS` object store; its chunk and
+/// meta writes publish under this subject space.
+const BACKUP_OBJECT_SCOPE: &str = "$O.PLZ_BACKUPS.>";
 
 /// The request-reply inbox prefix a principal connects with.
 ///
@@ -58,6 +62,17 @@ pub fn active_route_state_kv_write_scope() -> String {
 }
 
 #[must_use]
+pub fn active_machine_state_kv_write_scope() -> String {
+    format!("$KV.{KV_CORE_BUCKET}.{ACTIVE_MACHINE_STATE_PREFIX}.*")
+}
+
+/// Control's writes of the durable authorized-principal set.
+#[must_use]
+pub fn nats_authorized_user_kv_write_scope() -> String {
+    format!("$KV.{KV_CORE_BUCKET}.{NATS_AUTHORIZED_USER_PREFIX}.*")
+}
+
+#[must_use]
 pub fn operation_status_kv_write_scope() -> String {
     format!("$KV.{KV_OPS_BUCKET}.>")
 }
@@ -77,12 +92,15 @@ pub fn observation_kv_write_scope() -> String {
 /// watches/scans. Replies and watch deliveries arrive on the client's own
 /// inbox prefix, so no extra subscribe permission is required.
 #[must_use]
-pub fn kv_read_js_api_subjects(bucket: &str) -> [String; 7] {
+pub fn kv_read_js_api_subjects(bucket: &str) -> [String; 8] {
     let stream = format!("KV_{bucket}");
     [
         format!("$JS.API.STREAM.INFO.{stream}"),
         format!("$JS.API.DIRECT.GET.{stream}"),
         format!("$JS.API.DIRECT.GET.{stream}.>"),
+        // Unnamed ordered consumers (KV watches/scans) create against the
+        // bare stream subject; named consumers append name and filter.
+        format!("$JS.API.CONSUMER.CREATE.{stream}"),
         format!("$JS.API.CONSUMER.CREATE.{stream}.>"),
         format!("$JS.API.CONSUMER.INFO.{stream}.>"),
         format!("$JS.API.CONSUMER.MSG.NEXT.{stream}.>"),
@@ -132,16 +150,23 @@ impl NatsPermissionProfile {
                     JOBS_STREAM_SUBJECT.to_owned(),
                     AUDIT_STREAM_SUBJECT.to_owned(),
                     JETSTREAM_API_SCOPE.to_owned(),
+                    JETSTREAM_ACK_SCOPE.to_owned(),
+                    BACKUP_OBJECT_SCOPE.to_owned(),
                     active_service_state_kv_write_scope(),
                     active_route_state_kv_write_scope(),
+                    active_machine_state_kv_write_scope(),
+                    nats_authorized_user_kv_write_scope(),
                     operation_status_kv_write_scope(),
                     lock_kv_write_scope(),
                 ]),
+                // Control serves the user-facing command API, so it
+                // subscribes the API service scope and answers requests.
                 subscribe: SubjectPermissions::allowing([
                     JOBS_STREAM_SUBJECT.to_owned(),
+                    API_SERVICE_SCOPE.to_owned(),
                     inbox_scope,
                 ]),
-                allow_responses: ResponsePermission::Denied,
+                allow_responses: ResponsePermission::Allowed,
             },
             NatsPrincipal::User => Self {
                 principal: principal.clone(),

@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 async fn gateway_process_starts_before_projection_sources_exist() {
     let nats = TestNats::start_without_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.client.clone(),
+        nats.node_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         node_id("node_7"),
@@ -48,7 +48,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream())
         .await
         .expect("open observation store");
     routes
@@ -103,7 +103,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     nats.create_gateway_buckets().await;
     let upstream = TestUpstream::start().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.client.clone(),
+        nats.node_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         node_id("node_7"),
@@ -114,7 +114,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream())
         .await
         .expect("open observation store");
 
@@ -177,7 +177,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.client.clone(),
+        nats.node_client.clone(),
         Duration::from_secs(60),
         socket_addr("127.0.0.1:0"),
         node_id("node_7"),
@@ -188,7 +188,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
     let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream())
         .await
         .expect("open observation store");
 
@@ -228,7 +228,7 @@ async fn gateway_process_records_http_proxy_failures() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.client.clone(),
+        nats.node_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
         node_id("node_7"),
@@ -309,25 +309,46 @@ fn gateway_serves_route(
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: bucket administration and route-state writes.
     client: async_nats::Client,
+    /// Node principal: the gateway process side (gateway runs as the
+    /// machine's Node user in v1) and observation writes.
+    node_client: async_nats::Client,
 }
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl TestNats {
     async fn start_without_buckets() -> Self {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ployz-nats/tests/configs/jetstream.conf"
-        );
-        let server = nats_server::run_server(config);
-        let client = async_nats::connect(server.client_url())
-            .await
-            .expect("connect to test nats");
+        let nats =
+            ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_7")])
+                .await
+                .expect("secured test nats starts");
+        let client = ployz_nats::connect::connect_authenticated(
+            &nats.controller_config(),
+            TEST_NATS_CONNECT_TIMEOUT,
+        )
+        .await
+        .expect("controller connects");
+        let node_client = ployz_nats::connect::connect_authenticated(
+            &nats
+                .node_config(&node_id("node_7"))
+                .expect("fixture minted node_7 credentials"),
+            TEST_NATS_CONNECT_TIMEOUT,
+        )
+        .await
+        .expect("node_7 connects");
 
         Self {
-            _server: server,
+            _nats: nats,
             client,
+            node_client,
         }
+    }
+
+    fn node_jetstream(&self) -> jetstream::Context {
+        jetstream::new(self.node_client.clone())
     }
 
     async fn create_gateway_buckets(&self) {

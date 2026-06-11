@@ -1,11 +1,11 @@
-use clap::Parser;
+use clap::Args;
 use ployz_core::ids::NodeId;
 use ployz_core::install::{FirstNodeInstallSpec, KeeperFirstNodeInstall, NatsMachineMaterialPaths};
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 use std::fs;
 use std::io::Read;
 
-use crate::commands::{PloyzctlCliError, clap_error, cli_error, invalid_value};
+use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 use ployz_sdk_types::{InitFirstNodeActivateRequest, MachineAddGateway};
 
 pub mod join_template;
@@ -201,10 +201,7 @@ pub fn render_first_node_credential_paths() -> String {
     )
 }
 
-pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
-    let parsed =
-        InitCli::try_parse_from(std::iter::once("init".to_owned()).chain(args.iter().cloned()))
-            .map_err(clap_error)?;
+pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
     let keeper_install_mode = match (parsed.emit_keeper_install, parsed.run_keeper_install) {
         (false, false) => ParsedKeeperInstallMode::None,
         (true, false) => ParsedKeeperInstallMode::Emit,
@@ -279,9 +276,8 @@ pub fn parse_init_command(args: &[String]) -> Result<FirstNodeInitCommand, Ployz
     }
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "init")]
-struct InitCli {
+#[derive(Debug, Args)]
+pub(crate) struct InitCli {
     #[arg(long, conflicts_with_all = ["emit_keeper_install", "run_keeper_install"])]
     node: Option<String>,
     #[arg(long, conflicts_with_all = ["emit_keeper_install", "run_keeper_install"])]
@@ -296,13 +292,9 @@ struct InitCli {
     keeper_binary: Option<String>,
 }
 
-pub fn parse_first_node_activate_command(
-    args: &[String],
+pub(crate) fn first_node_activate_command(
+    parsed: FirstNodeActivateCli,
 ) -> Result<FirstNodeActivateCommand, PloyzctlCliError> {
-    let parsed = FirstNodeActivateCli::try_parse_from(
-        std::iter::once("init activate-first-node".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
     let node_id = NodeId::try_new(parsed.node).map_err(|error| invalid_value("--node", error))?;
     Ok(FirstNodeActivateCommand::new(
         node_id,
@@ -314,13 +306,24 @@ pub fn parse_first_node_activate_command(
     ))
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "init activate-first-node")]
-struct FirstNodeActivateCli {
+#[derive(Debug, Args)]
+pub(crate) struct FirstNodeActivateCli {
     #[arg(long)]
     node: String,
     #[arg(long)]
     gateway: bool,
+}
+
+impl InitCli {
+    #[must_use]
+    pub(crate) fn has_values(&self) -> bool {
+        self.node.is_some()
+            || self.gateway
+            || self.emit_keeper_install
+            || self.run_keeper_install
+            || self.install_spec.is_some()
+            || self.keeper_binary.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

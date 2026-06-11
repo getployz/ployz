@@ -1,5 +1,7 @@
 use std::process::{Command, Output};
+use std::time::Duration;
 
+use base64::Engine as _;
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
@@ -11,6 +13,7 @@ use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -20,13 +23,18 @@ use ployz_sdk_types::{
     MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
     operation_api::{MachineAddApi, OperationApiContract},
 };
+use ployz_test_support::nats::SecuredTestNats;
+use ployzctl::runtime::{
+    PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binary_machine_add_calls_nats_service() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
+    let server = SecuredTestNats::start().await.expect("secured test nats");
+    let client = connect_authenticated(&server.controller_config(), Duration::from_secs(5))
         .await
         .expect("connect to test nats");
+    let env = CliNatsEnv::new(&server);
     let service_client = client.clone();
     let spec = test_api_service(MachineAddApi::ENDPOINT);
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
@@ -69,7 +77,10 @@ async fn binary_machine_add_calls_nats_service() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
-        .arg(server.client_url())
+        .arg(server.client_url().as_str())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.ca_path())
+        .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
+        .env(PLOYZ_JOIN_NKEY_SEED_FILE_ENV, env.join_seed_path())
         .args([
             "machine",
             "add",
@@ -93,9 +104,51 @@ async fn binary_machine_add_calls_nats_service() {
     );
     assert_eq!(
         stdout(&output),
-        "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='nats://127.0.0.1:7422' sh -s -- --join-token 'join_once_123'\n"
+        format!(
+            "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh -s -- --join-token 'join_once_123'\n",
+            shell_quote(&test_ca_b64()),
+            shell_quote(server.join_seed().secret())
+        )
     );
     assert_eq!(stderr(&output), "");
+}
+
+struct CliNatsEnv {
+    _dir: tempfile::TempDir,
+    user_seed_file: std::path::PathBuf,
+    join_seed_file: std::path::PathBuf,
+}
+
+impl CliNatsEnv {
+    fn new(server: &SecuredTestNats) -> Self {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let user_seed_file = dir.path().join("user.seed");
+        let join_seed_file = dir.path().join("join.seed");
+        std::fs::write(&user_seed_file, server.user_seed().secret()).expect("write user seed");
+        std::fs::write(&join_seed_file, server.join_seed().secret()).expect("write join seed");
+        Self {
+            _dir: dir,
+            user_seed_file,
+            join_seed_file,
+        }
+    }
+
+    fn user_seed_path(&self) -> &std::path::Path {
+        &self.user_seed_file
+    }
+
+    fn join_seed_path(&self) -> &std::path::Path {
+        &self.join_seed_file
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn test_ca_b64() -> String {
+    base64::engine::general_purpose::STANDARD
+        .encode("-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n")
 }
 
 fn test_api_service(endpoint: OperationApiEndpoint) -> NatsServiceSpec {

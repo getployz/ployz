@@ -31,7 +31,7 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
         ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config())
             .await
             .expect("control runtime starts");
-    let api = OperationApiClient::new(nats.client.clone());
+    let api = OperationApiClient::new(nats.user_client.clone());
 
     let accepted = api
         .backup_create(&BackupCreateRequest {
@@ -118,7 +118,7 @@ async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command
         ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config())
             .await
             .expect("control runtime starts");
-    let api = OperationApiClient::new(nats.client.clone());
+    let api = OperationApiClient::new(nats.user_client.clone());
 
     let status = api
         .ops_status(&OpsStatusRequest {
@@ -162,7 +162,7 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
         })
         .await
         .expect("active service stores before backup");
-    let api = OperationApiClient::new(source.client.clone());
+    let api = OperationApiClient::new(source.user_client.clone());
     api.backup_create(&BackupCreateRequest {
         operation_id: operation_id("op_backup_restore"),
         idempotency_key: idempotency_key("idem_backup_restore"),
@@ -242,6 +242,17 @@ fn config() -> ControlProcessConfig {
             NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid nats url"),
         ),
         node_id("core_1"),
+        ployz_nats::connect::NatsConnectConfig {
+            url: NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid nats url"),
+            auth: ployz_nats::connect::NatsClientAuth::NkeySeed(
+                ployz_core::nats_config::NatsUserSeed::try_new(
+                    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                )
+                .expect("test seed is valid"),
+            ),
+            trust: ployz_nats::connect::NatsTlsTrust::ClusterCa("/tmp/ployz-test-ca.pem".into()),
+            principal: ployz_core::security::NatsPrincipal::Controller,
+        },
     )
     .with_machine_bootstrap(machine_bootstrap_config())
 }
@@ -284,9 +295,6 @@ fn machine_join_template() -> MachineJoinTemplate {
         "install_path": "/usr/local/bin/ployz-ebpf-ctl"
       }
     }
-  },
-  "secret_delivery": {
-    "nats_credentials": "user-jwt-and-seed"
   }
 }
 "#,
@@ -295,26 +303,39 @@ fn machine_join_template() -> MachineJoinTemplate {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: the control-runtime side.
     client: async_nats::Client,
+    /// User principal: the operator driving API commands.
+    user_client: async_nats::Client,
     jetstream: async_nats::jetstream::Context,
 }
 
+const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl TestNats {
     async fn start() -> Self {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ployz-nats/tests/configs/jetstream.conf"
-        );
-        let server = nats_server::run_server(config);
-        let client = async_nats::connect(server.client_url())
+        let nats = ployz_test_support::nats::SecuredTestNats::start()
             .await
-            .expect("connect to test nats");
+            .expect("secured test nats starts");
+        let client = ployz_nats::connect::connect_authenticated(
+            &nats.controller_config(),
+            TEST_NATS_CONNECT_TIMEOUT,
+        )
+        .await
+        .expect("controller connects");
+        let user_client = ployz_nats::connect::connect_authenticated(
+            &nats.user_config(),
+            TEST_NATS_CONNECT_TIMEOUT,
+        )
+        .await
+        .expect("operator connects");
         let jetstream = async_nats::jetstream::new(client.clone());
 
         Self {
-            _server: server,
+            _nats: nats,
             client,
+            user_client,
             jetstream,
         }
     }
@@ -489,5 +510,12 @@ async fn wait_for_terminal_backup_status(
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    panic!("backup did not reach terminal status");
+    let status = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: operation_id.clone(),
+        })
+        .await
+        .expect("status is readable")
+        .status;
+    panic!("backup did not reach terminal status: {status:?}");
 }

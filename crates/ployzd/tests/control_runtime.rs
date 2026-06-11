@@ -1,3 +1,11 @@
+//! Control runtime against a secured (TLS + NKey-authorized) NATS server.
+//!
+//! Machine-add credential minting runs as bounded operation work: these
+//! tests drive the full mint → render → reload → verify → material-ready
+//! sequence against the fixture's real `nats-server`, including the
+//! ADR-0015 single-writer fence and the ADR-0001 authority-file
+//! durability rules.
+
 use async_nats::jetstream;
 use async_nats::jetstream::stream::StorageType;
 use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
@@ -5,48 +13,59 @@ use ployz_core::ids::{NodeId, OperationId, RevisionId, ServiceId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
     MachineBootstrapUrl, MachineJoinArtifact, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
+    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTemplate,
+    MachineJoinTrustedNats,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
+use ployz_core::nats_config::{
+    NatsCaCertificatePem, NatsServerName, NatsUserPublicKey, parse_authorized_users,
+    render_authorized_users,
+};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, EventSequence, OperationIdempotencyKey,
     OperationStatus, RouteHostname, RoutePort, RouteTarget,
 };
+use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
     GatewayStatusObservation, NodePublicIpObservation,
 };
-use ployz_nats::connect::NatsClientUrl;
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_nats::operation_api_client::OperationApiClient;
+use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    DeploySubmitRequest, MachineAddGateway, MachineAddRequest, MachineInspectRequest,
-    MachineJoinRedeemRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
-    MachineListRequest, OpsStatusRequest, ServiceInspectRequest, ServiceListRequest,
+    DeploySubmitRequest, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken, MachineListRequest,
+    OpsStatusRequest, ServiceInspectRequest, ServiceListRequest,
 };
-use ployzd::config::ControlProcessConfig;
+use ployz_test_support::nats::SecuredTestNats;
+use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
+use ployzd::nats_authorization::{
+    NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
+};
 use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 mod support;
 
+const FIXTURE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[tokio::test]
 async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     let nats = TestNats::start().await;
-    let config = control_config();
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime starts");
-    let api = OperationApiClient::new(nats.client.clone());
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
@@ -85,11 +104,8 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
 #[tokio::test]
 async fn control_runtime_does_not_mutate_machine_state_on_startup() {
     let nats = TestNats::start().await;
-    let config = control_config();
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime starts");
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state");
@@ -108,21 +124,266 @@ async fn control_runtime_does_not_mutate_machine_state_on_startup() {
         .expect("control runtime shuts down");
 }
 
+/// The machine-add handler returns its operation id + join material before
+/// any reload occurs; minting runs as owned operation work afterwards and
+/// produces a usable per-machine NKey seed.
+#[tokio::test]
+async fn machine_add_accepts_before_reload_then_mints_material() {
+    let nats = TestNats::start().await;
+    let reload = RecordingReload::gated_signal(nats.nats.server_pid());
+    let config = nats.control_config();
+    let runtime = nats
+        .start_control_with_reload(&config, reload.clone())
+        .await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_machine", "idem_machine", "node_2").await;
+
+    // The handler returned while the (gated) reload had not run: accepting
+    // is fast and never includes render/reload/verify work.
+    assert_eq!(reload.outcomes().len(), 0);
+    reload.release();
+
+    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
+    assert!(
+        redeemed
+            .secret_delivery
+            .nats_credentials
+            .secret()
+            .starts_with("SU"),
+        "minted material is an NKey user seed"
+    );
+    assert!(!reload.outcomes().is_empty(), "reload runner was invoked");
+
+    // Idempotent replay returns the already-issued token and the
+    // already-minted material — it never mints twice.
+    let retry = api
+        .machine_add(&MachineAddRequest {
+            operation_id: operation_id("op_machine_retry"),
+            idempotency_key: idempotency_key("idem_machine"),
+            node_id: node_id("node_2"),
+            name: ployz_sdk_types::MachineName::try_new("node_2").expect("valid machine name"),
+            gateway: MachineAddGateway::Skip,
+        })
+        .await
+        .expect("machine add retry succeeds");
+    assert_eq!(retry.join_token, accepted.join_token);
+    let replayed = redeem_when_ready(&api, &accepted.join_token).await;
+    assert_eq!(
+        replayed.secret_delivery.nats_credentials.secret(),
+        redeemed.secret_delivery.nats_credentials.secret(),
+        "replay returns the original minted material"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+/// Two machine-adds mint distinct credentials.
+#[tokio::test]
+async fn machine_add_mints_unique_credentials_per_machine() {
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let first = machine_add(&api, "op_machine_a", "idem_machine_a", "node_a").await;
+    let second = machine_add(&api, "op_machine_b", "idem_machine_b", "node_b").await;
+    let first_redeemed = redeem_when_ready(&api, &first.join_token).await;
+    let second_redeemed = redeem_when_ready(&api, &second.join_token).await;
+
+    assert_ne!(
+        first_redeemed.secret_delivery.nats_credentials.secret(),
+        second_redeemed.secret_delivery.nats_credentials.secret(),
+        "each machine gets its own minted seed"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+/// ADR-0015 fence: two concurrent machine-adds queue their renders through
+/// the single writer; both complete and both public keys are present in
+/// the rendered `authorized-users.conf`.
+#[tokio::test]
+async fn concurrent_machine_adds_both_render_their_keys() {
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let (left, right) = tokio::join!(
+        machine_add(&api, "op_fence_a", "idem_fence_a", "node_fa"),
+        machine_add(&api, "op_fence_b", "idem_fence_b", "node_fb"),
+    );
+    let left_redeemed = redeem_when_ready(&api, &left.join_token).await;
+    let right_redeemed = redeem_when_ready(&api, &right.join_token).await;
+
+    let rendered = std::fs::read_to_string(nats.nats.authorized_users_path())
+        .expect("authorized-users file is readable");
+    let users = parse_authorized_users(&rendered).expect("rendered authority file parses");
+    let left_key = public_key_of(left_redeemed.secret_delivery.nats_credentials.secret());
+    let right_key = public_key_of(right_redeemed.secret_delivery.nats_credentials.secret());
+    assert!(
+        rendered_principal_key(&users, "node_fa") == Some(left_key),
+        "node_fa's minted public key is rendered"
+    );
+    assert!(
+        rendered_principal_key(&users, "node_fb") == Some(right_key),
+        "node_fb's minted public key is rendered"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+/// ADR-0001 durability: with a pre-existing file containing an unknown
+/// user and an empty KV set, startup adopts the entry and a subsequent
+/// render does not shrink the file.
+#[tokio::test]
+async fn startup_adopts_existing_authorized_users_and_renders_never_shrink() {
+    let nats = TestNats::start().await;
+    // Plant an unknown principal in the recovery-evidence file before
+    // control ever runs (KV is empty: fresh JetStream).
+    let ghost = nkeys::KeyPair::new_user();
+    let ghost_public =
+        NatsUserPublicKey::try_new(ghost.public_key()).expect("generated public key is valid");
+    let existing = std::fs::read_to_string(nats.nats.authorized_users_path())
+        .expect("fixture authority file is readable");
+    let mut users = parse_authorized_users(&existing).expect("fixture authority file parses");
+    users.push(ployz_core::nats_config::NatsAuthorizedUser {
+        principal: NatsPrincipal::Node {
+            node_id: node_id("node_ghost"),
+        },
+        nkey_public: ghost_public.clone(),
+    });
+    std::fs::write(
+        nats.nats.authorized_users_path(),
+        render_authorized_users(&users),
+    )
+    .expect("authority file with unknown user writes");
+
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    // Trigger a render through a real machine-add.
+    let accepted = machine_add(&api, "op_adopt", "idem_adopt", "node_new").await;
+    redeem_when_ready(&api, &accepted.join_token).await;
+
+    let rendered = std::fs::read_to_string(nats.nats.authorized_users_path())
+        .expect("authorized-users file is readable");
+    let users = parse_authorized_users(&rendered).expect("rendered authority file parses");
+    assert_eq!(
+        rendered_principal_key(&users, "node_ghost"),
+        Some(ghost_public),
+        "adopted unknown user survives the render (never shrink)"
+    );
+    assert!(
+        rendered_principal_key(&users, "node_new").is_some(),
+        "minted user is rendered alongside the adopted one"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+/// Reload failure is a typed terminal failure with command evidence —
+/// not a retry loop.
+#[tokio::test]
+async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
+    let nats = TestNats::start().await;
+    let reload = RecordingReload::failing();
+    let config = nats.control_config();
+    let runtime = nats
+        .start_control_with_reload(&config, reload.clone())
+        .await;
+    let api = nats.api();
+
+    machine_add(&api, "op_reload_fail", "idem_reload_fail", "node_rf").await;
+    let status = wait_for_terminal_machine_add_status(&api, operation_id("op_reload_fail")).await;
+
+    let OperationStatus::MachineAdd {
+        state: MachineAddOperationState::Failed { failure },
+        ..
+    } = status
+    else {
+        panic!("expected failed machine add, got {status:?}");
+    };
+    let MachineAddFailure::NatsReloadFailed { message } = failure else {
+        panic!("expected typed reload failure, got {failure:?}");
+    };
+    assert!(
+        message.as_str().contains("reload refused by test"),
+        "failure carries the reload command evidence: {message:?}"
+    );
+    assert!(!reload.outcomes().is_empty(), "reload runner was invoked");
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+/// Redeem before the mint worker reaches material-ready is the typed
+/// not-ready response, and the keeper-style bounded retry succeeds later.
+#[tokio::test]
+async fn machine_join_redeem_waits_for_material_ready() {
+    let nats = TestNats::start().await;
+    let reload = RecordingReload::gated_signal(nats.nats.server_pid());
+    let config = nats.control_config();
+    let runtime = nats
+        .start_control_with_reload(&config, reload.clone())
+        .await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_wait", "idem_wait", "node_w").await;
+    let not_ready = api
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: accepted.join_token.clone(),
+        })
+        .await
+        .expect_err("redeem before material-ready is refused");
+    assert!(
+        matches!(
+            not_ready,
+            OperationApiClientError::Domain {
+                error: MachineJoinRedeemError::MaterialNotReady { ref operation_id },
+                ..
+            } if operation_id == &accepted.accepted.operation_id
+        ),
+        "expected typed not-ready, got {not_ready:?}"
+    );
+
+    reload.release();
+    redeem_when_ready(&api, &accepted.join_token).await;
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
 #[tokio::test]
 async fn control_runtime_uses_configured_machine_bootstrap_url() {
     let nats = TestNats::start().await;
-    let config = control_config().with_machine_bootstrap(
+    let config = nats.control_config().with_machine_bootstrap(
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new("https://example.test/ployz.sh")
                 .expect("valid bootstrap url"),
         )
-        .with_join_template(machine_join_template()),
+        .with_join_template(machine_join_template(&nats)),
     );
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime starts");
-    let api = OperationApiClient::new(nats.client.clone());
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
 
     let accepted = api
         .machine_add(&MachineAddRequest {
@@ -152,12 +413,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     assert_eq!(retry.accepted.operation_id, operation_id("op_machine"));
     assert_eq!(retry.join_token, accepted.join_token);
 
-    let redeemed = api
-        .machine_join_redeem(&MachineJoinRedeemRequest {
-            join_token: accepted.join_token.clone(),
-        })
-        .await
-        .expect("join token redeems");
+    let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
     assert_eq!(redeemed.node_id, node_id("node_2"));
 
     api.machine_join_report(&MachineJoinReportRequest {
@@ -166,7 +422,25 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     })
     .await
     .expect("join completion reports");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    // The minted per-machine seed is a working Node credential: connect
+    // with it and publish this machine's observations.
+    let minted_seed = ployz_core::nats_config::NatsUserSeed::try_new(
+        redeemed.secret_delivery.nats_credentials.secret(),
+    )
+    .expect("minted material is a valid seed");
+    let minted_client = connect_authenticated(
+        &nats.nats.config_with_seed(
+            NatsPrincipal::Node {
+                node_id: node_id("node_2"),
+            },
+            minted_seed,
+        ),
+        FIXTURE_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("minted node credential connects");
+    let node_jetstream = jetstream::new(minted_client);
+    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
         .await
         .expect("open observations");
     observations
@@ -226,11 +500,8 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
 #[tokio::test]
 async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
-    let config = control_config();
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime starts");
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state");
@@ -242,7 +513,7 @@ async fn control_runtime_serves_active_service_queries() {
         })
         .await
         .expect("service state stores");
-    let api = OperationApiClient::new(nats.client.clone());
+    let api = nats.api();
 
     let listed = api
         .service_list(&ServiceListRequest {})
@@ -272,9 +543,10 @@ async fn control_runtime_serves_active_service_queries() {
 #[tokio::test]
 async fn control_runtime_refuses_machine_add_without_join_template() {
     let nats = TestNats::start().await;
-    let result = ployzd::control_runtime::start_control_runtime_with_client(
+    let result = ployzd::control_runtime::start_control_runtime_with_client_and_reload(
         nats.client.clone(),
-        &control_config_without_join_template(),
+        &nats.control_config_without_join_template(),
+        nats.reload_runner(),
     )
     .await;
 
@@ -286,7 +558,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 
 #[tokio::test]
 async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
-    let nats = TestNats::start().await;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await;
     let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect_err("control has not bootstrapped observations yet");
@@ -295,14 +567,14 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         ployz_nats::observations::ObservationStoreError::OpenBucket { .. }
     ));
 
-    let config = control_config()
+    let config = nats
+        .control_config()
         .with_deploy_nodes(vec![node_id("node_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime starts");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    let runtime = nats.start_control(&config).await;
+    let node_client = nats.node_client(&node_id("node_a")).await;
+    let node_jetstream = jetstream::new(node_client.clone());
+    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
         .await
         .expect("open observations");
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
@@ -313,7 +585,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("active machine stores");
     let node_runtime = start_node_runtime_with_ports(
-        nats.client.clone(),
+        node_client.clone(),
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
         support::ReadyWireGuardEbpf,
@@ -321,7 +593,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     )
     .await
     .expect("node runtime starts");
-    let api = OperationApiClient::new(nats.client.clone());
+    let api = nats.api();
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_run"),
         target: deploy_target("svc_api"),
@@ -388,15 +660,15 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 
 #[tokio::test]
 async fn control_runtime_routed_deploy_serves_through_gateway() {
-    let nats = TestNats::start().await;
-    let config = control_config()
+    let nats = TestNats::start_with_nodes(&[node_id("node_a"), node_id("node_gateway")]).await;
+    let config = nats
+        .control_config()
         .with_deploy_nodes(vec![node_id("node_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config)
-            .await
-            .expect("control runtime starts");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
+    let runtime = nats.start_control(&config).await;
+    let node_client = nats.node_client(&node_id("node_a")).await;
+    let node_jetstream = jetstream::new(node_client.clone());
+    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
         .await
         .expect("open observations");
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
@@ -414,7 +686,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("node public ip stores");
     let node_runtime = start_node_runtime_with_ports(
-        nats.client.clone(),
+        node_client.clone(),
         node_id("node_a"),
         support::ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
         support::ReadyWireGuardEbpf,
@@ -422,8 +694,9 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     )
     .await
     .expect("node runtime starts");
+    let gateway_client = nats.node_client(&node_id("node_gateway")).await;
     let gateway = start_gateway_process_runtime_with_client(
-        nats.client.clone(),
+        gateway_client,
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
         node_id("node_gateway"),
@@ -431,7 +704,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     .await
     .expect("gateway runtime starts");
     let upstream = support::TestHttpUpstream::start("smoke").await;
-    let api = OperationApiClient::new(nats.client.clone());
+    let api = nats.api();
 
     let accepted = api
         .deploy_submit(&DeploySubmitRequest {
@@ -460,15 +733,24 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         ),
         "expected routed deploy to complete, got {status:?}"
     );
-    wait_until(Duration::from_secs(2), || {
-        gateway.served_projection().is_some_and(|projection| {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let ready = gateway.served_projection().is_some_and(|projection| {
             matches!(
                 projection.routes.as_slice(),
                 [route] if !route.upstreams.is_empty()
             )
-        })
-    })
-    .await;
+        });
+        if ready {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "gateway never served the routed projection; health: {:?}",
+            gateway.health()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     let mut client = TcpStream::connect(gateway.listen_addr())
         .await
@@ -517,10 +799,11 @@ async fn control_runtime_refuses_bootstrap_resource_drift() {
         .await
         .expect("create drifted PLZ_OPS stream");
 
-    let config = control_config();
-    let error = match ployzd::control_runtime::start_control_runtime_with_client(
+    let config = nats.control_config();
+    let error = match ployzd::control_runtime::start_control_runtime_with_client_and_reload(
         nats.client.clone(),
         &config,
+        nats.reload_runner(),
     )
     .await
     {
@@ -540,29 +823,266 @@ async fn control_runtime_refuses_bootstrap_resource_drift() {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    nats: SecuredTestNats,
     client: async_nats::Client,
+    user_client: async_nats::Client,
     jetstream: jetstream::Context,
+    work_dir: tempfile::TempDir,
 }
 
 impl TestNats {
     async fn start() -> Self {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../ployz-nats/tests/configs/jetstream.conf"
-        );
-        let server = nats_server::run_server(config);
-        let client = async_nats::connect(server.client_url())
+        Self::start_with_nodes(&[]).await
+    }
+
+    async fn start_with_nodes(node_ids: &[NodeId]) -> Self {
+        let nats = SecuredTestNats::start_with_nodes(node_ids)
             .await
-            .expect("connect to test nats");
+            .expect("secured test nats starts");
+        let client = connect_authenticated(&nats.controller_config(), FIXTURE_CONNECT_TIMEOUT)
+            .await
+            .expect("controller connects");
+        let user_client = connect_authenticated(&nats.user_config(), FIXTURE_CONNECT_TIMEOUT)
+            .await
+            .expect("operator connects");
         let jetstream = jetstream::new(client.clone());
+        let work_dir = tempfile::TempDir::new().expect("test work dir creates");
 
         Self {
-            _server: server,
+            nats,
             client,
+            user_client,
             jetstream,
+            work_dir,
         }
     }
+
+    fn api(&self) -> OperationApiClient {
+        OperationApiClient::new(self.user_client.clone())
+    }
+
+    async fn node_client(&self, node_id: &NodeId) -> async_nats::Client {
+        let config = self
+            .nats
+            .node_config(node_id)
+            .expect("fixture knows the node user");
+        connect_authenticated(&config, FIXTURE_CONNECT_TIMEOUT)
+            .await
+            .expect("node connects")
+    }
+
+    fn reload_runner(&self) -> RecordingReload {
+        RecordingReload::signal(self.nats.server_pid())
+    }
+
+    fn control_config(&self) -> ControlProcessConfig {
+        self.control_config_without_join_template()
+            .with_machine_bootstrap(
+                MachineAddBootstrapConfig::new(
+                    MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
+                        .expect("valid bootstrap url"),
+                )
+                .with_join_template(machine_join_template(self)),
+            )
+    }
+
+    fn control_config_without_join_template(&self) -> ControlProcessConfig {
+        ControlProcessConfig::new(
+            NatsServerRuntime::External(self.nats.client_url().clone()),
+            node_id("core_1"),
+            self.nats.controller_config(),
+        )
+        .with_nats_authorization(ControlNatsAuthorizationConfig {
+            authorized_users_file: self.nats.authorized_users_path().to_path_buf(),
+            node_seed_file: self.work_dir.path().join("node.seed"),
+        })
+    }
+
+    async fn start_control(
+        &self,
+        config: &ControlProcessConfig,
+    ) -> ployzd::control_runtime::RunningControlRuntime {
+        self.start_control_with_reload(config, self.reload_runner())
+            .await
+    }
+
+    async fn start_control_with_reload(
+        &self,
+        config: &ControlProcessConfig,
+        reload: RecordingReload,
+    ) -> ployzd::control_runtime::RunningControlRuntime {
+        ployzd::control_runtime::start_control_runtime_with_client_and_reload(
+            self.client.clone(),
+            config,
+            reload,
+        )
+        .await
+        .expect("control runtime starts")
+    }
+}
+
+/// Records reload outcomes; signals the fixture server, fails on purpose,
+/// or blocks behind a release gate to prove handler/reload ordering.
+#[derive(Clone)]
+struct RecordingReload {
+    behavior: ReloadBehavior,
+    outcomes: Arc<Mutex<Vec<NatsReloadOutcome>>>,
+}
+
+#[derive(Clone)]
+enum ReloadBehavior {
+    Signal(u32),
+    GatedSignal { pid: u32, released: Arc<AtomicBool> },
+    Fail,
+}
+
+impl RecordingReload {
+    fn signal(pid: u32) -> Self {
+        Self {
+            behavior: ReloadBehavior::Signal(pid),
+            outcomes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn gated_signal(pid: u32) -> Self {
+        Self {
+            behavior: ReloadBehavior::GatedSignal {
+                pid,
+                released: Arc::new(AtomicBool::new(false)),
+            },
+            outcomes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn failing() -> Self {
+        Self {
+            behavior: ReloadBehavior::Fail,
+            outcomes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn release(&self) {
+        if let ReloadBehavior::GatedSignal { released, .. } = &self.behavior {
+            released.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn outcomes(&self) -> Vec<NatsReloadOutcome> {
+        self.outcomes
+            .lock()
+            .expect("reload outcome lock is not poisoned")
+            .clone()
+    }
+}
+
+impl NatsReloadRunner for RecordingReload {
+    fn reload(&self) -> NatsReloadOutcome {
+        let outcome = match &self.behavior {
+            ReloadBehavior::Signal(pid) => SignalNatsReloadRunner::new(*pid).reload(),
+            ReloadBehavior::GatedSignal { pid, released } => {
+                while !released.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                SignalNatsReloadRunner::new(*pid).reload()
+            }
+            ReloadBehavior::Fail => NatsReloadOutcome::Failed(NatsReloadEvidence {
+                command: "test-reload".to_owned(),
+                output: "reload refused by test".to_owned(),
+            }),
+        };
+        self.outcomes
+            .lock()
+            .expect("reload outcome lock is not poisoned")
+            .push(outcome.clone());
+        outcome
+    }
+}
+
+async fn machine_add(
+    api: &OperationApiClient,
+    operation: &str,
+    idempotency: &str,
+    node: &str,
+) -> MachineAddAccepted {
+    api.machine_add(&MachineAddRequest {
+        operation_id: operation_id(operation),
+        idempotency_key: idempotency_key(idempotency),
+        node_id: node_id(node),
+        name: ployz_sdk_types::MachineName::try_new(node).expect("valid machine name"),
+        gateway: MachineAddGateway::Skip,
+    })
+    .await
+    .expect("machine add accepts")
+}
+
+/// Keeper-style bounded redeem retry: not-ready is retried, anything else
+/// is a test failure.
+async fn redeem_when_ready(
+    api: &OperationApiClient,
+    join_token: &MachineJoinToken,
+) -> MachineJoinRedeemed {
+    for _ in 0..200 {
+        match api
+            .machine_join_redeem(&MachineJoinRedeemRequest {
+                join_token: join_token.clone(),
+            })
+            .await
+        {
+            Ok(redeemed) => return redeemed,
+            Err(OperationApiClientError::Domain {
+                error: MachineJoinRedeemError::MaterialNotReady { .. },
+                ..
+            }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("redeem failed: {error:?}"),
+        }
+    }
+    panic!("machine-add material did not become ready");
+}
+
+fn public_key_of(seed: &str) -> NatsUserPublicKey {
+    let pair = nkeys::KeyPair::from_seed(seed).expect("minted seed parses");
+    NatsUserPublicKey::try_new(pair.public_key()).expect("derived public key is valid")
+}
+
+fn rendered_principal_key(
+    users: &[ployz_core::nats_config::NatsAuthorizedUser],
+    node: &str,
+) -> Option<NatsUserPublicKey> {
+    users
+        .iter()
+        .find(|user| {
+            user.principal
+                == NatsPrincipal::Node {
+                    node_id: node_id(node),
+                }
+        })
+        .map(|user| user.nkey_public.clone())
+}
+
+async fn wait_for_terminal_machine_add_status(
+    api: &OperationApiClient,
+    operation_id: OperationId,
+) -> OperationStatus {
+    for _ in 0..200 {
+        let status = api
+            .ops_status(&OpsStatusRequest {
+                operation_id: operation_id.clone(),
+            })
+            .await
+            .expect("status is readable")
+            .status;
+        let OperationStatus::MachineAdd { state, .. } = &status else {
+            panic!("expected machine add status");
+        };
+        if state.is_terminal() {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    panic!("machine add did not reach terminal status");
 }
 
 fn operation_id(value: &str) -> OperationId {
@@ -573,37 +1093,20 @@ fn node_id(value: &str) -> NodeId {
     NodeId::try_new(value).expect("valid node id")
 }
 
-fn control_config() -> ControlProcessConfig {
-    control_config_without_join_template().with_machine_bootstrap(
-        MachineAddBootstrapConfig::new(
-            MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
-                .expect("valid bootstrap url"),
-        )
-        .with_join_template(machine_join_template()),
-    )
-}
-
-fn control_config_without_join_template() -> ControlProcessConfig {
-    ControlProcessConfig::new(
-        NatsServerRuntime::External(NatsClientUrl::loopback(4222)),
-        ployz_core::ids::NodeId::try_new("core_1").expect("valid node id"),
-    )
-}
-
-fn machine_join_template() -> MachineJoinTemplate {
+fn machine_join_template(nats: &TestNats) -> MachineJoinTemplate {
+    let ca_pem = std::fs::read_to_string(nats.nats.ca_path()).expect("fixture CA is readable");
     MachineJoinTemplate {
         join_bundle: ployz_core::install::MachineJoinBundle {
             material: MachineJoinMaterial {
                 cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
-                    .expect("valid runtime nats url"),
+                runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
+                    nats.nats.client_url().as_str(),
+                )
+                .expect("valid runtime nats url"),
                 trusted_nats: MachineJoinTrustedNats {
                     server_name: NatsServerName::try_new("server_1")
                         .expect("valid nats server name"),
-                    ca_pem: NatsCaCertificatePem::try_new(
-                        "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
-                    )
-                    .expect("valid ca pem"),
+                    ca_pem: NatsCaCertificatePem::try_new(ca_pem).expect("valid ca pem"),
                 },
                 ployzd: MachineJoinPloyzdArtifact {
                     version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
@@ -640,10 +1143,6 @@ fn machine_join_template() -> MachineJoinTemplate {
                         .expect("valid install path"),
                 },
             },
-        },
-        secret_delivery: MachineJoinSecretDelivery {
-            nats_credentials: MachineJoinNatsCredentials::try_new("user-jwt-and-seed")
-                .expect("valid nats credentials"),
         },
     }
 }
@@ -737,15 +1236,4 @@ async fn wait_for_terminal_deploy_status(
     }
 
     panic!("deploy did not reach terminal status");
-}
-
-async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if predicate() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(predicate(), "condition did not become true before timeout");
 }

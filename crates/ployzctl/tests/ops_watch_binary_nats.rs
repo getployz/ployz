@@ -1,6 +1,7 @@
 use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use ployz_core::deploy::{ImageReference, ReplicaCount};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
@@ -10,6 +11,7 @@ use ployz_core::ops::{
     OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
@@ -18,13 +20,16 @@ use ployz_sdk_types::{
     OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{OperationApiContract, OpsStatusApi, OpsWatchApi},
 };
+use ployz_test_support::nats::SecuredTestNats;
+use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binary_ops_watch_polls_until_operation_is_terminal() {
-    let server = nats_server::run_basic_server();
-    let client = async_nats::connect(server.client_url())
+    let server = SecuredTestNats::start().await.expect("secured test nats");
+    let client = connect_authenticated(&server.controller_config(), Duration::from_secs(5))
         .await
         .expect("connect to test nats");
+    let env = CliNatsEnv::new(&server);
     let service_client = client.clone();
     let spec = test_api_service(&[OpsWatchApi::ENDPOINT, OpsStatusApi::ENDPOINT]);
     let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
@@ -105,7 +110,9 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
-        .arg(server.client_url())
+        .arg(server.client_url().as_str())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.ca_path())
+        .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .args(["ops", "watch", "op_deploy"])
         .output()
         .expect("ployzctl binary runs");
@@ -119,6 +126,27 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
     assert_eq!(stdout(&output), "1 deploy.submitted\n2 deploy.completed\n");
     assert_eq!(stderr(&output), "");
     assert_eq!(watch_calls.load(Ordering::SeqCst), 2);
+}
+
+struct CliNatsEnv {
+    _dir: tempfile::TempDir,
+    user_seed_file: std::path::PathBuf,
+}
+
+impl CliNatsEnv {
+    fn new(server: &SecuredTestNats) -> Self {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let user_seed_file = dir.path().join("user.seed");
+        std::fs::write(&user_seed_file, server.user_seed().secret()).expect("write user seed");
+        Self {
+            _dir: dir,
+            user_seed_file,
+        }
+    }
+
+    fn user_seed_path(&self) -> &std::path::Path {
+        &self.user_seed_file
+    }
 }
 
 fn test_api_service(endpoints: &[OperationApiEndpoint]) -> NatsServiceSpec {

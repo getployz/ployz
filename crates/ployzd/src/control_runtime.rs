@@ -6,11 +6,15 @@ use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
 use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
 use crate::deploy_worker::DeployExecutionNodeScope;
+use crate::nats_authorization::{
+    MachineCredentialMintRuntime, MintTaskRegistry, MintVerifyEndpoint, NatsAuthorizationRuntime,
+    NatsAuthorizationStartError, NatsReloadRunner, SystemctlNatsReloadRunner,
+};
 use crate::node_rpc::NatsNodeLogsTailer;
 use crate::operation_api::{MachineQueryRuntime, OperationApiHandlers};
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
-use ployz_nats::connect::{NatsConnectError, connect_with_timeout};
+use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
@@ -26,6 +30,8 @@ pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
     deploy_tasks: DeployTaskRegistry,
     backup_tasks: BackupTaskRegistry,
+    mint_tasks: MintTaskRegistry,
+    authorization: NatsAuthorizationRuntime,
 }
 
 impl RunningControlRuntime {
@@ -33,6 +39,8 @@ impl RunningControlRuntime {
         self.operation_api.shutdown().await?;
         self.deploy_tasks.abort_all();
         self.backup_tasks.abort_all();
+        self.mint_tasks.abort_all();
+        self.authorization.shutdown();
         Ok(())
     }
 }
@@ -40,15 +48,23 @@ impl RunningControlRuntime {
 pub async fn start_control_runtime(
     config: &ControlProcessConfig,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
-    let client = connect_with_timeout(&config.nats_url(), CONTROL_NATS_CONNECT_TIMEOUT)
+    let client = connect_authenticated(&config.nats_connect, CONTROL_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(ControlRuntimeError::ConnectNats)?;
-    start_control_runtime_with_client(client, config).await
+    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
 }
 
 pub async fn start_control_runtime_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
+) -> Result<RunningControlRuntime, ControlRuntimeError> {
+    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+}
+
+pub async fn start_control_runtime_with_client_and_reload(
+    client: NatsClient,
+    config: &ControlProcessConfig,
+    reload: impl NatsReloadRunner,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
     if config.machine_bootstrap.join_template.is_none() {
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
@@ -81,8 +97,18 @@ pub async fn start_control_runtime_with_client(
         owner_id,
         config.machine_bootstrap.clone(),
     );
+    // Adopt-on-start happens here, before any render: the on-disk
+    // authorized-users file is the authority set's recovery evidence.
+    let authorization = NatsAuthorizationRuntime::start(
+        config.nats_authorization.authorized_users_file.clone(),
+        core_state.clone(),
+        reload,
+    )
+    .await
+    .map_err(ControlRuntimeError::StartNatsAuthorization)?;
     let deploy_tasks = DeployTaskRegistry::default();
     let backup_tasks = BackupTaskRegistry::default();
+    let mint_tasks = MintTaskRegistry::default();
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         core_state.clone(),
@@ -91,6 +117,14 @@ pub async fn start_control_runtime_with_client(
         DeployExecutionNodeScope::same_nodes(config.deploy_nodes.clone()),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
+    );
+    let machine_mint = MachineCredentialMintRuntime::new(
+        controllers.clone(),
+        core_state.clone(),
+        authorization.handle(),
+        MintVerifyEndpoint::from_connect(&config.nats_connect),
+        config.nats_authorization.node_seed_file.clone(),
+        mint_tasks.clone(),
     );
     let machine_query = MachineQueryRuntime::new(core_state, observations);
     let logs_tailer = NatsNodeLogsTailer::new(client.clone());
@@ -106,6 +140,7 @@ pub async fn start_control_runtime_with_client(
             controllers,
             deploy_runtime,
             backup_runtime,
+            machine_mint,
             machine_query,
             logs_tailer,
         ),
@@ -117,6 +152,8 @@ pub async fn start_control_runtime_with_client(
         operation_api,
         deploy_tasks,
         backup_tasks,
+        mint_tasks,
+        authorization,
     })
 }
 
@@ -147,6 +184,7 @@ pub enum ControlRuntimeError {
     OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
     OpenBackupObjects(BackupObjectStoreError),
+    StartNatsAuthorization(NatsAuthorizationStartError),
     StartOperationApi(ApiServiceRuntimeError),
     ShutdownSignal(std::io::Error),
     ShutdownOperationApi(NatsServiceShutdownError),
@@ -175,6 +213,9 @@ impl fmt::Display for ControlRuntimeError {
             }
             Self::OpenBackupObjects(error) => {
                 write!(formatter, "failed to open backup object store: {error:?}")
+            }
+            Self::StartNatsAuthorization(error) => {
+                write!(formatter, "failed to start NATS authorization: {error}")
             }
             Self::StartOperationApi(error) => {
                 write!(

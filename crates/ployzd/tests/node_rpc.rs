@@ -27,11 +27,13 @@ use ployzd::services::{node_endpoint_subject, node_runtime_service};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
+const TEST_NATS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[tokio::test]
 async fn nats_node_runtime_calls_container_run_service() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
-    let _service = start_container_run_service(nats.client.clone(), &node_id("node_a"), {
+    let _service = start_container_run_service(nats.node_a.clone(), &node_id("node_a"), {
         let received = Arc::clone(&received);
         move |request| {
             received
@@ -95,7 +97,7 @@ async fn nats_node_runtime_maps_missing_responder_to_request_failure() {
 async fn nats_node_runtime_maps_service_error_headers() {
     let nats = test_nats().await;
     let _service =
-        start_container_run_raw_service(nats.client.clone(), node_id("node_a"), |_request| {
+        start_container_run_raw_service(nats.node_a.clone(), node_id("node_a"), |_request| {
             NatsServiceResponse::transport_error(
                 ployz_nats::service_runtime::NatsServiceError::bad_request("bad container request"),
             )
@@ -123,7 +125,7 @@ async fn nats_node_runtime_maps_service_error_headers() {
 async fn nats_node_runtime_reports_invalid_response_payload() {
     let nats = test_nats().await;
     let _service =
-        start_container_run_raw_service(nats.client.clone(), node_id("node_a"), |_request| {
+        start_container_run_raw_service(nats.node_a.clone(), node_id("node_a"), |_request| {
             NatsServiceResponse::ok("not json")
         })
         .await;
@@ -155,7 +157,7 @@ async fn nats_node_runtime_preserves_domain_runtime_error() {
             ..managed_labels()
         },
     };
-    let _service = start_container_run_service(nats.client.clone(), &node_id("node_a"), {
+    let _service = start_container_run_service(nats.node_a.clone(), &node_id("node_a"), {
         let conflict = conflict.clone();
         move |_request| NodeRunContainerResult::DomainError {
             error: conflict.clone(),
@@ -187,7 +189,7 @@ async fn nats_node_runtime_preserves_domain_runtime_error() {
 async fn nats_node_runtime_rejects_response_for_different_node() {
     let nats = test_nats().await;
     let _service =
-        start_container_run_raw_service(nats.client.clone(), node_id("node_a"), |_request| {
+        start_container_run_raw_service(nats.node_a.clone(), node_id("node_a"), |_request| {
             NatsServiceResponse::ok(encode_run_response(NodeContainerRunRpcResponse::Ok {
                 node_id: node_id("node_b"),
                 outcome: NodeRunContainerOutcome::Created {
@@ -218,7 +220,7 @@ async fn nats_node_runtime_rejects_response_for_different_node() {
 async fn nats_node_runtime_calls_container_remove_service() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
-    let _service = start_container_remove_service(nats.client.clone(), &node_id("node_a"), {
+    let _service = start_container_remove_service(nats.node_a.clone(), &node_id("node_a"), {
         let received = Arc::clone(&received);
         move |request| {
             received
@@ -259,7 +261,7 @@ async fn nats_node_runtime_preserves_remove_domain_error() {
         message: failure_message("container remove failed: busy"),
         inspect_hint: inspect_hint("ctr_old"),
     };
-    let _service = start_container_remove_service(nats.client.clone(), &node_id("node_a"), {
+    let _service = start_container_remove_service(nats.node_a.clone(), &node_id("node_a"), {
         let failure = failure.clone();
         move |_request| NodeRemoveContainerResult::DomainError {
             error: failure.clone(),
@@ -288,7 +290,7 @@ async fn nats_node_runtime_preserves_remove_domain_error() {
 async fn nats_node_preparer_calls_wireguard_ebpf_prepare_service() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
-    let _service = start_wireguard_ebpf_prepare_service(nats.client.clone(), &node_id("node_a"), {
+    let _service = start_wireguard_ebpf_prepare_service(nats.node_a.clone(), &node_id("node_a"), {
         let received = Arc::clone(&received);
         move |request| {
             received
@@ -328,20 +330,19 @@ async fn nats_node_preparer_bootstraps_public_keys_then_programs_peers() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));
     let mut services = Vec::new();
-    for node in ["node_a", "node_b"] {
+    for (node, node_client) in [
+        ("node_a", nats.node_a.clone()),
+        ("node_b", nats.node_b.clone()),
+    ] {
         let received = Arc::clone(&received);
         services.push(
-            start_wireguard_ebpf_prepare_service(
-                nats.client.clone(),
-                &node_id(node),
-                move |request| {
-                    received
-                        .lock()
-                        .expect("received request lock is not poisoned")
-                        .push(request);
-                    WireGuardEbpfPrepareResult::Ok
-                },
-            )
+            start_wireguard_ebpf_prepare_service(node_client, &node_id(node), move |request| {
+                received
+                    .lock()
+                    .expect("received request lock is not poisoned")
+                    .push(request);
+                WireGuardEbpfPrepareResult::Ok
+            })
             .await,
         );
     }
@@ -451,7 +452,7 @@ async fn start_container_run_raw_service(
         })
         .expect("container.run endpoint exists")
         .clone();
-    let mut service = start_nats_service(client, &spec)
+    let mut service = start_nats_service(client.clone(), &spec)
         .await
         .expect("start node service");
     service
@@ -461,6 +462,9 @@ async fn start_container_run_raw_service(
         })
         .await
         .expect("bind container.run endpoint");
+    // Round-trip so the server has registered the subscription before a
+    // request arrives from another (authenticated) connection.
+    client.flush().await.expect("flush service subscription");
     service
 }
 
@@ -499,7 +503,7 @@ async fn start_container_remove_raw_service(
         })
         .expect("container.remove endpoint exists")
         .clone();
-    let mut service = start_nats_service(client, &spec)
+    let mut service = start_nats_service(client.clone(), &spec)
         .await
         .expect("start node service");
     service
@@ -509,6 +513,7 @@ async fn start_container_remove_raw_service(
         })
         .await
         .expect("bind container.remove endpoint");
+    client.flush().await.expect("flush service subscription");
     service
 }
 
@@ -551,7 +556,7 @@ async fn start_wireguard_ebpf_prepare_raw_service(
         })
         .expect("wireguard_ebpf.prepare endpoint exists")
         .clone();
-    let mut service = start_nats_service(client, &spec)
+    let mut service = start_nats_service(client.clone(), &spec)
         .await
         .expect("start node service");
     service
@@ -561,6 +566,7 @@ async fn start_wireguard_ebpf_prepare_raw_service(
         })
         .await
         .expect("bind wireguard_ebpf.prepare endpoint");
+    client.flush().await.expect("flush service subscription");
     service
 }
 
@@ -760,23 +766,49 @@ fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: the requesting deploy-worker side.
     client: async_nats::Client,
+    /// Node principals: the node-service stub side.
+    node_a: async_nats::Client,
+    node_b: async_nats::Client,
 }
 
 async fn test_nats() -> TestNats {
-    let config = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../ployz-nats/tests/configs/jetstream.conf"
-    );
-    let server = nats_server::run_server(config);
-    let client = async_nats::connect(server.client_url())
-        .await
-        .expect("connect to test nats");
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[
+        node_id("node_a"),
+        node_id("node_b"),
+    ])
+    .await
+    .expect("secured test nats starts");
+    let client = ployz_nats::connect::connect_authenticated(
+        &nats.controller_config(),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("controller connects");
+    let node_a = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&node_id("node_a"))
+            .expect("fixture minted node_a credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("node_a connects");
+    let node_b = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&node_id("node_b"))
+            .expect("fixture minted node_b credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("node_b connects");
 
     TestNats {
-        _server: server,
+        _nats: nats,
         client,
+        node_a,
+        node_b,
     }
 }
 

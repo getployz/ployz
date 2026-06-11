@@ -236,9 +236,9 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
 async fn node_service_timeout_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
     let _endpoint_network =
-        start_endpoint_network_subscription(nats.client.clone(), node_id("node_slow")).await;
+        start_endpoint_network_subscription(nats.node_slow.clone(), node_id("node_slow")).await;
     let _unresponsive_node =
-        start_unresponsive_container_run_subscription(nats.client.clone(), node_id("node_slow"))
+        start_unresponsive_container_run_subscription(nats.node_slow.clone(), node_id("node_slow"))
             .await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
@@ -490,26 +490,41 @@ async fn expired_accepted_lease_does_not_run_runtime_side_effects() {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
+    /// Node principal for the stubbed slow node service.
+    node_slow: async_nats::Client,
     jetstream: jetstream::Context,
 }
 
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn test_nats() -> TestNats {
-    let config = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../ployz-nats/tests/configs/jetstream.conf"
-    );
-    let server = nats_server::run_server(config);
-    let client = async_nats::connect(server.client_url())
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("node_slow")])
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = ployz_nats::connect::connect_authenticated(
+        &nats.controller_config(),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("controller connects");
+    let node_slow = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&node_id("node_slow"))
+            .expect("fixture minted node_slow credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("node_slow connects");
     let jetstream = jetstream::new(client.clone());
     bootstrap_nats(&jetstream).await;
 
     TestNats {
-        _server: server,
+        _nats: nats,
         client,
+        node_slow,
         jetstream,
     }
 }

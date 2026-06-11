@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::Args;
 use ployz_core::ids::OperationId;
 use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
@@ -10,7 +10,7 @@ use ployz_core::ops::{
 use ployz_core::roles::FirstNodeGateway;
 use ployz_sdk_types::OpsStatusRequest;
 
-use crate::commands::{PloyzctlCliError, clap_error};
+use crate::commands::PloyzctlCliError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsStatusCommand {
@@ -50,21 +50,15 @@ pub enum OpsWatchOutput {
     Json,
 }
 
-pub fn parse_ops_status_command(args: &[String]) -> Result<OpsStatusCommand, PloyzctlCliError> {
-    let parsed = OpsStatusCli::try_parse_from(
-        std::iter::once("ops status".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
+pub(crate) fn ops_status_command(
+    parsed: OpsStatusCli,
+) -> Result<OpsStatusCommand, PloyzctlCliError> {
     let operation_id = parse_operation_id(&parsed.operation_id)?;
 
     Ok(OpsStatusCommand { operation_id })
 }
 
-pub fn parse_ops_watch_command(args: &[String]) -> Result<OpsWatchCommand, PloyzctlCliError> {
-    let parsed = OpsWatchCli::try_parse_from(
-        std::iter::once("ops watch".to_owned()).chain(args.iter().cloned()),
-    )
-    .map_err(clap_error)?;
+pub(crate) fn ops_watch_command(parsed: OpsWatchCli) -> Result<OpsWatchCommand, PloyzctlCliError> {
     let operation_id = parse_operation_id(&parsed.operation_id)?;
 
     Ok(OpsWatchCommand {
@@ -77,15 +71,13 @@ pub fn parse_ops_watch_command(args: &[String]) -> Result<OpsWatchCommand, Ployz
     })
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "ops status")]
-struct OpsStatusCli {
+#[derive(Debug, Args)]
+pub(crate) struct OpsStatusCli {
     operation_id: String,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "ops watch")]
-struct OpsWatchCli {
+#[derive(Debug, Args)]
+pub(crate) struct OpsWatchCli {
     operation_id: String,
     #[arg(long)]
     json: bool,
@@ -367,6 +359,23 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CertFailed { .. } => "cert.failed",
         OperationEvent::MachineAddSubmitted { .. } => "machine.add.submitted",
         OperationEvent::MachineAddJoined { .. } => "machine.add.joined",
+        OperationEvent::MachineAddCredentialProvisioned { step, .. } => match step {
+            ployz_core::machine::MachineCredentialProvisioningStep::Minted => {
+                "machine.add.credential.minted"
+            }
+            ployz_core::machine::MachineCredentialProvisioningStep::Rendered => {
+                "machine.add.credential.rendered"
+            }
+            ployz_core::machine::MachineCredentialProvisioningStep::Reloaded => {
+                "machine.add.credential.reloaded"
+            }
+            ployz_core::machine::MachineCredentialProvisioningStep::Verified => {
+                "machine.add.credential.verified"
+            }
+            ployz_core::machine::MachineCredentialProvisioningStep::MaterialReady => {
+                "machine.add.credential.material_ready"
+            }
+        },
         OperationEvent::MachineAddCompleted { .. } => "machine.add.completed",
         OperationEvent::MachineAddFailed { .. } => "machine.add.failed",
         OperationEvent::BackupCreateSubmitted { .. } => "backup.submitted",

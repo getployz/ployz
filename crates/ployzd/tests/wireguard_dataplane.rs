@@ -112,7 +112,7 @@ async fn local_privileged_node_service_prepares_real_docker_dataplane() {
     )
     .with_command_timeout(Duration::from_secs(20));
     let _service = start_node_runtime_service(
-        nats.client.clone(),
+        nats.node_client.clone(),
         node_id.clone(),
         runner.clone(),
         preparer,
@@ -330,20 +330,38 @@ fn operation_id(value: &str) -> OperationId {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _nats: ployz_test_support::nats::SecuredTestNats,
+    /// Controller principal: the deploy-worker request side.
     client: async_nats::Client,
+    /// Node principal: the node-runtime service side.
+    node_client: async_nats::Client,
 }
 
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn test_nats() -> TestNats {
-    let server = nats_server::run_server("");
-    let url = server.client_url();
-    let client = async_nats::connect(&url)
+    let nats = ployz_test_support::nats::SecuredTestNats::start_with_nodes(&[node_id("core_1")])
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = ployz_nats::connect::connect_authenticated(
+        &nats.controller_config(),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("controller connects");
+    let node_client = ployz_nats::connect::connect_authenticated(
+        &nats
+            .node_config(&node_id("core_1"))
+            .expect("fixture minted core_1 credentials"),
+        TEST_NATS_CONNECT_TIMEOUT,
+    )
+    .await
+    .expect("core_1 node connects");
 
     TestNats {
-        _server: server,
+        _nats: nats,
         client,
+        node_client,
     }
 }
 
