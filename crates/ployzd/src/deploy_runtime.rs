@@ -1,6 +1,6 @@
 //! Owned deploy execution started by the control service.
 
-use crate::controllers::{AcceptedDeployOperation, OperationControllers};
+use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
     DeployCommandPreparationError, DeployContainer, DeployExecutionError, DeployExecutionNodeScope,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
@@ -15,7 +15,9 @@ use ployz_core::ops::{
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployz_nats::operations::{OperationStatusStoreError, RecordDeployTransitionError};
+use ployz_nats::operations::{
+    AcceptedDeploySubmission, OperationStatusStoreError, RecordDeployTransitionError,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,7 +27,7 @@ const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 pub async fn run_deploy_operation<D, N, H>(
-    accepted: AcceptedDeployOperation,
+    accepted: AcceptedDeploySubmission,
     node_scope: DeployExecutionNodeScope,
     stores: DeployOperationStores,
     ports: DeployOperationPorts<'_, D, N, H>,
@@ -122,7 +124,7 @@ where
 
 async fn renew_operation_owner_lease(
     controllers: &OperationControllers,
-    accepted: &AcceptedDeployOperation,
+    accepted: &AcceptedDeploySubmission,
 ) -> Result<OperationOwnerLease, DeployOperationLeaseError> {
     verify_accepted_deploy_lease(&accepted.lease, &accepted.operation_id)?;
     let Some(lease) = controllers
@@ -162,10 +164,11 @@ fn verify_accepted_deploy_lease(
 
 async fn record_operation_failure(
     controllers: &OperationControllers,
-    accepted: &AcceptedDeployOperation,
+    accepted: &AcceptedDeploySubmission,
     failure: DeployOperationFailure,
 ) -> Result<(), RecordDeployTransitionError> {
     controllers
+        .repository()
         .record_deploy_transition(&accepted.operation_id, DeployTransition::Failed { failure })
         .await
         .map(|_| ())
@@ -286,7 +289,7 @@ impl DeployOperationRuntime {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedDeployOperation) {
+    pub fn start(&self, accepted: AcceptedDeploySubmission) {
         let runtime = self.clone();
         self.task_registry.spawn(async move {
             let _outcome = runtime.run(accepted).await;
@@ -295,7 +298,7 @@ impl DeployOperationRuntime {
 
     pub async fn run(
         self,
-        accepted: AcceptedDeployOperation,
+        accepted: AcceptedDeploySubmission,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
         let mut wireguard_ebpf = NatsNodeWireGuardEbpfPreparer::new(self.client.clone())
             .with_request_timeout(self.step_timeout);

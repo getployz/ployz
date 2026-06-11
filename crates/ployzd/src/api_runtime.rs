@@ -1,9 +1,8 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::operation_api::{
-    OperationApiHandlers, backup_create, deploy_submit, init_first_node_activate, logs_tail,
-    machine_add, machine_inspect, machine_join_redeem, machine_join_report, machine_list,
-    ops_status, ops_watch, service_inspect, service_list,
+    OperationApiHandlers, backup_create, deploy_submit, init_first_node_activate, machine_add,
+    machine_join_redeem, machine_join_report, ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -79,7 +78,7 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<MachineListApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move { machine_list(&handlers, request).await },
+                |handlers, _request| async move { handlers.machine_query().list().await },
             )
             .await
         }
@@ -87,7 +86,9 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<MachineInspectApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move { machine_inspect(&handlers, request).await },
+                |handlers, request| async move {
+                    handlers.machine_query().inspect(&request.node_id).await
+                },
             )
             .await
         }
@@ -95,7 +96,7 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<ServiceListApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move { service_list(&handlers, request).await },
+                |handlers, _request| async move { handlers.service_query().list().await },
             )
             .await
         }
@@ -103,7 +104,9 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<ServiceInspectApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move { service_inspect(&handlers, request).await },
+                |handlers, request| async move {
+                    handlers.service_query().inspect(&request.service_id).await
+                },
             )
             .await
         }
@@ -111,7 +114,7 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<LogsTailApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move { logs_tail(&handlers, request).await },
+                |handlers, request| async move { handlers.logs_query().tail(request).await },
             )
             .await
         }

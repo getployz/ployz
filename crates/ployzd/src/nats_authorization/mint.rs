@@ -151,6 +151,8 @@ impl MachineCredentialMintRuntime {
     pub async fn resume_unfinished_mints(&self) -> Result<Vec<MintRequest>, MintResumeError> {
         let submissions = self
             .controllers
+            .repository()
+            .records()
             .machine_add_submissions()
             .await
             .map_err(MintResumeError::ListSubmissions)?;
@@ -158,6 +160,8 @@ impl MachineCredentialMintRuntime {
         for submission in submissions {
             let delivered = self
                 .controllers
+                .repository()
+                .records()
                 .machine_add_secret_delivery(&submission.idempotency_key)
                 .await
                 .map_err(MintResumeError::ReadSecretDelivery)?;
@@ -166,7 +170,9 @@ impl MachineCredentialMintRuntime {
             }
             let Some(status) = self
                 .controllers
-                .operation_status(&submission.operation_id)
+                .repository()
+                .records()
+                .get(&submission.operation_id)
                 .await
                 .map_err(MintResumeError::ReadStatus)?
             else {
@@ -196,6 +202,8 @@ impl MachineCredentialMintRuntime {
     pub async fn run(&self, request: MintRequest) -> MintOutcome {
         match self
             .controllers
+            .repository()
+            .records()
             .machine_add_secret_delivery(&request.idempotency_key)
             .await
         {
@@ -218,7 +226,9 @@ impl MachineCredentialMintRuntime {
         };
         let claim = match self
             .controllers
-            .claim_machine_add_mint_material(&request.idempotency_key, &candidate)
+            .repository()
+            .records()
+            .put_machine_add_mint_claim_if_absent(&request.idempotency_key, &candidate)
             .await
         {
             Ok(claim) => claim,
@@ -303,7 +313,9 @@ impl MachineCredentialMintRuntime {
 
         if let Err(error) = self
             .controllers
-            .store_machine_add_secret_delivery(
+            .repository()
+            .records()
+            .put_machine_add_secret_delivery_if_absent(
                 &request.idempotency_key,
                 &StoredMachineAddSecretDelivery {
                     operation_id: request.operation_id.clone(),
@@ -338,7 +350,12 @@ impl MachineCredentialMintRuntime {
     ) -> Option<MintOutcome> {
         let error = match self
             .controllers
-            .record_machine_add_credential_step(&request.operation_id, &request.node_id, step)
+            .repository()
+            .record_machine_add_credential_provisioned(
+                &request.operation_id,
+                &request.node_id,
+                step,
+            )
             .await
         {
             Ok(_) => return None,
@@ -384,11 +401,8 @@ impl MachineCredentialMintRuntime {
     async fn fail(&self, request: &MintRequest, failure: MachineAddFailure) -> MintOutcome {
         match self
             .controllers
-            .record_machine_add_mint_failure(
-                &request.operation_id,
-                &request.node_id,
-                failure.clone(),
-            )
+            .repository()
+            .record_machine_add_failed(&request.operation_id, &request.node_id, failure.clone())
             .await
         {
             Ok(_) => MintOutcome::Failed(failure),

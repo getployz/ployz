@@ -85,7 +85,9 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     );
     assert!(matches!(
         controllers
-            .operation_status(&operation_id("op_123"))
+            .repository()
+            .records()
+            .get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
@@ -144,7 +146,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     );
     assert!(matches!(
         controllers
-            .operation_status(&operation_id("op_123"))
+            .repository().records().get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
@@ -208,7 +210,7 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
     );
     assert!(matches!(
         controllers
-            .operation_status(&operation_id("op_123"))
+            .repository().records().get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {
@@ -279,7 +281,9 @@ async fn node_service_timeout_marks_deploy_failed_without_committing_active_stat
             .is_none()
     );
     let status = controllers
-        .operation_status(&operation_id("op_123"))
+        .repository()
+        .records()
+        .get(&operation_id("op_123"))
         .await
         .expect("operation status reads");
     assert!(
@@ -355,7 +359,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     assert!(runtime.requests.is_empty());
     assert!(matches!(
         controllers
-            .operation_status(&operation_id("op_123"))
+            .repository().records().get(&operation_id("op_123"))
             .await
             .expect("operation status reads"),
         Some(OperationStatus::Deploy {

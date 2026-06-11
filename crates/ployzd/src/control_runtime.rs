@@ -12,7 +12,7 @@ use crate::nats_authorization::{
     SystemctlNatsReloadRunner,
 };
 use crate::node_rpc::NatsNodeLogsTailer;
-use crate::operation_api::{MachineQueryRuntime, OperationApiHandlers};
+use crate::operation_api::OperationApiHandlers;
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
@@ -135,7 +135,6 @@ pub async fn start_control_runtime_with_client_and_reload(
         .resume_unfinished_mints()
         .await
         .map_err(ControlRuntimeError::ResumeMachineAddMints)?;
-    let machine_query = MachineQueryRuntime::new(core_state, observations);
     let logs_tailer = NatsNodeLogsTailer::new(client.clone());
     let backup_runtime = BackupOperationRuntime::new(
         jetstream,
@@ -150,7 +149,8 @@ pub async fn start_control_runtime_with_client_and_reload(
             deploy_runtime,
             backup_runtime,
             machine_mint,
-            machine_query,
+            core_state,
+            observations,
             logs_tailer,
         ),
     )

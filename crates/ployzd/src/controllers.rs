@@ -6,23 +6,16 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
 use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
-    RawJoinToken,
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
 };
-use ployz_core::ops::{
-    BackupTransition, DeployEvidence, DeployTransition, EventSequence, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot,
-};
+use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease, OperationStatusSnapshot};
 use ployz_core::roles::FirstNodeGateway;
 use ployz_nats::operations::{
+    AcceptedBackupSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     BackupOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinRedemption, OperationLeaseClaim, OperationStatusReadError,
-    OperationStatusStoreError, OperationStatusWrite, RecordBackupEventError,
-    RecordDeployEvidenceError, RecordDeployTransitionError, RecordMachineAddEventError,
-    RecordMachineJoinReportError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
-    ReplayOperationEventsError, StoredOperationEvent, SubmitMachineAddError, SubmitOperationError,
+    MachineJoinRedemption, OperationLeaseClaim, OperationStatusStoreError,
+    RedeemMachineJoinTokenError, SubmitMachineAddError, SubmitOperationError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -158,8 +151,8 @@ impl OperationControllers {
     pub async fn submit_deploy(
         &self,
         command: DeploySubmitCommand,
-    ) -> Result<AcceptedDeployOperation, SubmitCommandError> {
-        let submitted = self
+    ) -> Result<AcceptedDeploySubmission, SubmitCommandError> {
+        Ok(self
             .repository
             .submit_deploy(
                 DeployOperationSubmission {
@@ -169,22 +162,14 @@ impl OperationControllers {
                 },
                 self.lease_claim()?,
             )
-            .await?;
-
-        Ok(AcceptedDeployOperation {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            target: submitted.target,
-            lease: submitted.lease,
-            should_start_execution: submitted.should_start_execution,
-        })
+            .await?)
     }
 
     pub async fn submit_machine_add(
         &self,
         command: MachineAddSubmitCommand,
-    ) -> Result<AcceptedMachineAddOperation, MachineAddSubmitCommandError> {
-        let submitted = self
+    ) -> Result<AcceptedMachineAddSubmission, MachineAddSubmitCommandError> {
+        Ok(self
             .repository
             .submit_machine_add(
                 MachineAddOperationSubmission {
@@ -200,19 +185,7 @@ impl OperationControllers {
                 self.lease_claim()
                     .map_err(MachineAddSubmitCommandError::Submit)?,
             )
-            .await?;
-
-        Ok(AcceptedMachineAddOperation {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            node_id: submitted.node_id,
-            name: submitted.name,
-            gateway: submitted.gateway,
-            join_bundle: submitted.join_bundle,
-            join_token: submitted.join_token,
-            raw_join_token: submitted.raw_join_token,
-            lease: submitted.lease,
-        })
+            .await?)
     }
 
     pub async fn submitted_machine_add_bootstrap_material(
@@ -239,8 +212,8 @@ impl OperationControllers {
     pub async fn submit_backup(
         &self,
         command: BackupCreateCommand,
-    ) -> Result<AcceptedBackupOperation, SubmitCommandError> {
-        let submitted = self
+    ) -> Result<AcceptedBackupSubmission, SubmitCommandError> {
+        Ok(self
             .repository
             .submit_backup(
                 BackupOperationSubmission {
@@ -249,14 +222,7 @@ impl OperationControllers {
                 },
                 self.lease_claim()?,
             )
-            .await?;
-
-        Ok(AcceptedBackupOperation {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            lease: submitted.lease,
-            should_start_execution: submitted.should_start_execution,
-        })
+            .await?)
     }
 
     pub async fn redeem_machine_join_token(
@@ -268,21 +234,11 @@ impl OperationControllers {
             .await
     }
 
-    pub async fn record_machine_join_completed(
-        &self,
-        token: &RawJoinToken,
-    ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
-        self.repository.record_machine_join_completed(token).await
-    }
-
-    pub async fn record_machine_join_failed(
-        &self,
-        token: &RawJoinToken,
-        failure: MachineAddFailure,
-    ) -> Result<RecordedMachineJoinReport, RecordMachineJoinReportError> {
-        self.repository
-            .record_machine_join_failed(token, failure)
-            .await
+    /// The repository this controller submits into. Record/read paths that
+    /// need no lease-clock or join-token policy go straight here.
+    #[must_use]
+    pub const fn repository(&self) -> &AsyncNatsOperationRepository {
+        &self.repository
     }
 
     pub fn issue_machine_add_bootstrap_material(
@@ -317,81 +273,6 @@ impl OperationControllers {
         })
     }
 
-    /// Every stored machine-add submission. Used by control-start mint
-    /// reconciliation to find accepted machine-adds whose mint worker died
-    /// with a previous control process.
-    pub async fn machine_add_submissions(
-        &self,
-    ) -> Result<Vec<ployz_nats::operations::StoredMachineAddSubmission>, OperationStatusStoreError>
-    {
-        self.repository.records().machine_add_submissions().await
-    }
-
-    /// Atomic per-key claim of minted credential material (ADR-0015 atomic
-    /// resource claim): the first mint run wins; concurrent or resumed runs
-    /// receive the winning claim and must continue with it.
-    pub async fn claim_machine_add_mint_material(
-        &self,
-        idempotency_key: &IdempotencyKey,
-        claim: &ployz_nats::operations::StoredMachineAddMintClaim,
-    ) -> Result<ployz_nats::operations::StoredMachineAddMintClaim, OperationStatusStoreError> {
-        self.repository
-            .records()
-            .put_machine_add_mint_claim_if_absent(idempotency_key, claim)
-            .await
-    }
-
-    /// The minted per-machine secret record, if the mint worker has
-    /// finished. Used both for idempotent replay (never mint twice) and
-    /// by redeem gating (material-ready).
-    pub async fn machine_add_secret_delivery(
-        &self,
-        idempotency_key: &IdempotencyKey,
-    ) -> Result<
-        Option<ployz_nats::operations::StoredMachineAddSecretDelivery>,
-        OperationStatusStoreError,
-    > {
-        self.repository
-            .records()
-            .machine_add_secret_delivery(idempotency_key)
-            .await
-    }
-
-    /// Write-once store of the minted per-machine secret.
-    pub async fn store_machine_add_secret_delivery(
-        &self,
-        idempotency_key: &IdempotencyKey,
-        record: &ployz_nats::operations::StoredMachineAddSecretDelivery,
-    ) -> Result<ployz_nats::operations::StoredMachineAddSecretDelivery, OperationStatusStoreError>
-    {
-        self.repository
-            .records()
-            .put_machine_add_secret_delivery_if_absent(idempotency_key, record)
-            .await
-    }
-
-    pub async fn record_machine_add_credential_step(
-        &self,
-        operation_id: &OperationId,
-        node_id: &ployz_core::ids::NodeId,
-        step: ployz_core::machine::MachineCredentialProvisioningStep,
-    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
-        self.repository
-            .record_machine_add_credential_provisioned(operation_id, node_id, step)
-            .await
-    }
-
-    pub async fn record_machine_add_mint_failure(
-        &self,
-        operation_id: &OperationId,
-        node_id: &ployz_core::ids::NodeId,
-        failure: MachineAddFailure,
-    ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
-        self.repository
-            .record_machine_add_failed(operation_id, node_id, failure)
-            .await
-    }
-
     #[must_use]
     pub fn owner_id(&self) -> &OperationOwnerId {
         &self.owner_id
@@ -410,43 +291,6 @@ impl OperationControllers {
     #[must_use]
     pub fn has_machine_join_template(&self) -> bool {
         self.machine_bootstrap.join_template.is_some()
-    }
-
-    pub async fn record_deploy_transition(
-        &self,
-        operation_id: &OperationId,
-        transition: DeployTransition,
-    ) -> Result<OperationStatusWrite, RecordDeployTransitionError> {
-        self.repository
-            .record_deploy_transition(operation_id, transition)
-            .await
-    }
-
-    pub async fn record_deploy_evidence(
-        &self,
-        operation_id: &OperationId,
-        evidence: DeployEvidence,
-    ) -> Result<StoredOperationEvent, RecordDeployEvidenceError> {
-        self.repository
-            .record_deploy_evidence(operation_id, evidence)
-            .await
-    }
-
-    pub async fn record_backup_transition(
-        &self,
-        operation_id: &OperationId,
-        transition: BackupTransition,
-    ) -> Result<OperationStatusWrite, RecordBackupEventError> {
-        self.repository
-            .record_backup_transition(operation_id, transition)
-            .await
-    }
-
-    pub async fn operation_status(
-        &self,
-        operation_id: &OperationId,
-    ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
-        self.repository.records().get(operation_id).await
     }
 
     pub async fn operation_status_snapshot(
@@ -498,13 +342,6 @@ impl OperationControllers {
                 claim.expires_at(),
             )
             .await
-    }
-
-    pub async fn replay_operation_events(
-        &self,
-        request: OperationEventReplayRequest,
-    ) -> Result<OperationEventReplayPage, ReplayOperationEventsError> {
-        self.repository.replay_operation_events(request).await
     }
 }
 
@@ -571,36 +408,6 @@ impl From<SubmitMachineAddError> for MachineAddSubmitCommandError {
             SubmitMachineAddError::JoinTokenMismatch => Self::JoinTokenMismatch,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedDeployOperation {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub target: DeployRequest,
-    pub lease: OperationOwnerLease,
-    pub should_start_execution: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedMachineAddOperation {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub node_id: ployz_core::ids::NodeId,
-    pub name: MachineName,
-    pub gateway: FirstNodeGateway,
-    pub join_bundle: MachineJoinBundle,
-    pub join_token: IssuedJoinToken,
-    pub raw_join_token: RawJoinToken,
-    pub lease: OperationOwnerLease,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedBackupOperation {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub lease: OperationOwnerLease,
-    pub should_start_execution: bool,
 }
 
 fn test_owner_id() -> OperationOwnerId {

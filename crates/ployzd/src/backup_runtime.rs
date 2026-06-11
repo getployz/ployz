@@ -1,6 +1,6 @@
 //! Owned backup operation execution.
 
-use crate::controllers::{AcceptedBackupOperation, OperationControllers};
+use crate::controllers::OperationControllers;
 use crate::operation_lease::with_advisory_operation_lease;
 use futures_util::TryStreamExt;
 use ployz_core::backup::{
@@ -16,7 +16,8 @@ use ployz_nats::kv::{KV_CORE_BUCKET, KV_LOCKS_BUCKET};
 use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::KV_OBS_BUCKET;
 use ployz_nats::operations::{
-    KV_OPS_BUCKET, OperationStatusReadError, OperationStatusStoreError, RecordBackupEventError,
+    AcceptedBackupSubmission, KV_OPS_BUCKET, OperationStatusReadError, OperationStatusStoreError,
+    RecordBackupEventError,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -348,7 +349,7 @@ impl BackupOperationRuntime {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedBackupOperation) {
+    pub fn start(&self, accepted: AcceptedBackupSubmission) {
         if !accepted.should_start_execution {
             return;
         }
@@ -365,7 +366,7 @@ impl BackupOperationRuntime {
         });
     }
 
-    pub async fn run(self, accepted: AcceptedBackupOperation) -> Result<(), BackupExecutionError> {
+    pub async fn run(self, accepted: AcceptedBackupSubmission) -> Result<(), BackupExecutionError> {
         let lease = renew_backup_owner_lease(&self.controllers, &accepted).await?;
         verify_backup_lease_owner(&lease, &accepted.operation_id, self.controllers.owner_id())?;
         let lease_policy = self.controllers.lease_policy();
@@ -394,8 +395,12 @@ impl BackupOperationRuntime {
         operation_id: &OperationId,
         error: &BackupExecutionError,
     ) {
-        if let Ok(Some(OperationStatus::Backup { state, .. })) =
-            self.controllers.operation_status(operation_id).await
+        if let Ok(Some(OperationStatus::Backup { state, .. })) = self
+            .controllers
+            .repository()
+            .records()
+            .get(operation_id)
+            .await
             && state.is_terminal()
         {
             return;
@@ -403,6 +408,7 @@ impl BackupOperationRuntime {
 
         let _ = self
             .controllers
+            .repository()
             .record_backup_transition(
                 operation_id,
                 BackupTransition::Failed {
@@ -415,7 +421,7 @@ impl BackupOperationRuntime {
 
 async fn renew_backup_owner_lease(
     controllers: &OperationControllers,
-    accepted: &AcceptedBackupOperation,
+    accepted: &AcceptedBackupSubmission,
 ) -> Result<OperationOwnerLease, BackupExecutionError> {
     verify_backup_lease_owner(
         &accepted.lease,
@@ -487,7 +493,9 @@ async fn backup_state(
     operation_id: &OperationId,
 ) -> Result<BackupOperationState, BackupExecutionError> {
     let Some(status) = controllers
-        .operation_status(operation_id)
+        .repository()
+        .records()
+        .get(operation_id)
         .await
         .map_err(BackupExecutionError::ReadStatus)?
     else {
@@ -509,6 +517,7 @@ async fn record_snapshotting(
     operation_id: &OperationId,
 ) -> Result<(), BackupExecutionError> {
     match controllers
+        .repository()
         .record_backup_transition(
             operation_id,
             BackupTransition::Running {
@@ -537,6 +546,7 @@ async fn record_manifest_write(
     artifact: BackupArtifact,
 ) -> Result<(), BackupExecutionError> {
     match controllers
+        .repository()
         .record_backup_transition(
             operation_id,
             BackupTransition::Running {
@@ -565,6 +575,7 @@ async fn record_completed(
     manifest: BackupManifest,
 ) -> Result<(), BackupExecutionError> {
     match controllers
+        .repository()
         .record_backup_transition(operation_id, BackupTransition::Completed { manifest })
         .await
     {
@@ -761,6 +772,7 @@ async fn record_backup_failure(
         BackupFailureStage::Manifest => BackupOperationFailure::ManifestWriteFailed { message },
     };
     let _ = controllers
+        .repository()
         .record_backup_transition(operation_id, BackupTransition::Failed { failure })
         .await;
 }
@@ -924,6 +936,7 @@ async fn record_backup_object_failure(
         return;
     };
     let _ = controllers
+        .repository()
         .record_backup_transition(
             operation_id,
             BackupTransition::Failed {
@@ -943,6 +956,7 @@ async fn record_backup_snapshot_failure(
         return;
     };
     let _ = controllers
+        .repository()
         .record_backup_transition(
             operation_id,
             BackupTransition::Failed {
@@ -962,6 +976,7 @@ async fn record_backup_encode_failure(
         return;
     };
     let _ = controllers
+        .repository()
         .record_backup_transition(
             operation_id,
             BackupTransition::Failed {

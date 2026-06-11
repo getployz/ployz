@@ -85,14 +85,11 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
         operation_id: &OperationId,
         transition: DeployTransition,
     ) -> Result<(), DeployOperationRecordError> {
-        crate::controllers::OperationControllers::record_deploy_transition(
-            self,
-            operation_id,
-            transition,
-        )
-        .await
-        .map(|_| ())
-        .map_err(DeployOperationRecordError::RecordTransition)
+        self.repository()
+            .record_deploy_transition(operation_id, transition)
+            .await
+            .map(|_| ())
+            .map_err(DeployOperationRecordError::RecordTransition)
     }
 
     async fn record_deploy_evidence(
@@ -100,14 +97,11 @@ impl DeployOperationRecorder for crate::controllers::OperationControllers {
         operation_id: &OperationId,
         evidence: DeployEvidence,
     ) -> Result<(), DeployOperationRecordError> {
-        crate::controllers::OperationControllers::record_deploy_evidence(
-            self,
-            operation_id,
-            evidence,
-        )
-        .await
-        .map(|_| ())
-        .map_err(DeployOperationRecordError::RecordEvidence)
+        self.repository()
+            .record_deploy_evidence(operation_id, evidence)
+            .await
+            .map(|_| ())
+            .map_err(DeployOperationRecordError::RecordEvidence)
     }
 }
 

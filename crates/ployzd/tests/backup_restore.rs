@@ -222,7 +222,9 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     let target_controllers = seed_controllers(&target).await;
     assert!(matches!(
         target_controllers
-            .operation_status(&operation_id("op_backup_restore"))
+            .repository()
+            .records()
+            .get(&operation_id("op_backup_restore"))
             .await
             .expect("restored backup status reads")
             .expect("restored backup status exists"),
