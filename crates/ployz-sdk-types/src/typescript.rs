@@ -17,15 +17,14 @@ use crate::{
     EbpfForwardingReadyEvidence, EventReplayFailure, EventSequence, ExpectedActiveService,
     FailureMessage, FirstNodeGateway, GatewayServingStatus, GatewayStatusObservation,
     HealthCheckFailure, ImageReference, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
-    InitFirstNodeActivated, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
-    KvBucketSnapshot, KvEntrySnapshot, LogsTailError, LogsTailLines, LogsTailRequest,
-    LogsTailResult, LogsTailUnavailableSource, MAX_LOGS_TAIL_LINES,
+    InitFirstNodeActivated, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallSha256Digest, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
+    JoinTokenRedeemedAt, KvBucketSnapshot, KvEntrySnapshot, LogsTailError, LogsTailLines,
+    LogsTailRequest, LogsTailResult, LogsTailUnavailableSource, MAX_LOGS_TAIL_LINES,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddFailure,
     MachineAddGateway, MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest,
     MachineAddUnavailableSource, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
-    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRedeemError,
+    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemUnavailableSource,
     MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReportUnavailableSource,
@@ -46,7 +45,7 @@ use crate::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady,
     WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
-use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::subjects::OperationApiEndpointExecution;
 use ts_rs::{Config, TS};
 
@@ -209,16 +208,15 @@ macro_rules! exported_types {
             MachineJoinMaterial,
             MachineJoinSecretDelivery,
             MachineJoinTemplate,
-            MachineJoinNatsCredentials,
+            NatsUserSeed,
             NatsCaCertificatePem,
             MachineJoinTrustedNats,
             InstallArtifactVersion,
             InstallArtifactSource,
             InstallSha256Digest,
             AbsoluteInstallPath,
+            InstallArtifactSpec,
             MachineJoinBundle,
-            MachineJoinPloyzdArtifact,
-            MachineJoinArtifact,
             MachineJoinRedeemRequest,
             MachineJoinRedeemed,
             MachineJoinRedeemResult,

@@ -1,6 +1,6 @@
 use clap::Args;
 use ployz_core::ids::NodeId;
-use ployz_core::install::{FirstNodeInstallSpec, KeeperFirstNodeInstall, NatsMachineMaterialPaths};
+use ployz_core::install::{FirstNodeInstallSpec, NatsMachineMaterialPaths};
 pub use ployz_core::roles::{FirstNodeGateway, first_node_process_set};
 use std::fs;
 use std::io::Read;
@@ -24,17 +24,14 @@ impl FirstNodeInitCommand {
     }
 
     #[must_use]
-    pub fn keeper_install(keeper_install: KeeperFirstNodeInstall) -> Self {
+    pub fn keeper_install(keeper_install: FirstNodeInstallSpec) -> Self {
         Self {
             mode: FirstNodeInitMode::EmitKeeperInstall(keeper_install),
         }
     }
 
     #[must_use]
-    pub fn run_keeper_install(
-        keeper_install: KeeperFirstNodeInstall,
-        keeper_binary: String,
-    ) -> Self {
+    pub fn run_keeper_install(keeper_install: FirstNodeInstallSpec, keeper_binary: String) -> Self {
         Self {
             mode: FirstNodeInitMode::RunKeeperInstall {
                 keeper_install,
@@ -47,9 +44,9 @@ impl FirstNodeInitCommand {
     pub fn node_id(&self) -> &NodeId {
         match &self.mode {
             FirstNodeInitMode::Summary { node_id, .. }
-            | FirstNodeInitMode::EmitKeeperInstall(KeeperFirstNodeInstall { node_id, .. })
+            | FirstNodeInitMode::EmitKeeperInstall(FirstNodeInstallSpec { node_id, .. })
             | FirstNodeInitMode::RunKeeperInstall {
-                keeper_install: KeeperFirstNodeInstall { node_id, .. },
+                keeper_install: FirstNodeInstallSpec { node_id, .. },
                 ..
             } => node_id,
         }
@@ -59,9 +56,9 @@ impl FirstNodeInitCommand {
     pub fn gateway(&self) -> FirstNodeGateway {
         match &self.mode {
             FirstNodeInitMode::Summary { gateway, .. }
-            | FirstNodeInitMode::EmitKeeperInstall(KeeperFirstNodeInstall { gateway, .. })
+            | FirstNodeInitMode::EmitKeeperInstall(FirstNodeInstallSpec { gateway, .. })
             | FirstNodeInitMode::RunKeeperInstall {
-                keeper_install: KeeperFirstNodeInstall { gateway, .. },
+                keeper_install: FirstNodeInstallSpec { gateway, .. },
                 ..
             } => *gateway,
         }
@@ -86,9 +83,9 @@ pub enum FirstNodeInitMode {
         node_id: NodeId,
         gateway: FirstNodeGateway,
     },
-    EmitKeeperInstall(KeeperFirstNodeInstall),
+    EmitKeeperInstall(FirstNodeInstallSpec),
     RunKeeperInstall {
-        keeper_install: KeeperFirstNodeInstall,
+        keeper_install: FirstNodeInstallSpec,
         keeper_binary: String,
     },
 }
@@ -179,7 +176,7 @@ impl FirstNodeInitOutput {
             output.push_str("install ployz-keeper first-node-install --spec -\n");
             output.push_str(&render_first_node_credential_paths());
             output.push_str(
-                &serde_json::to_string_pretty(&FirstNodeInstallSpec::from(keeper_install.clone()))
+                &serde_json::to_string_pretty(keeper_install)
                     .expect("first-node install spec serializes"),
             );
             output.push('\n');
@@ -243,11 +240,11 @@ pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, Ploy
                     "--gateway cannot be used with --emit-keeper-install or --run-keeper-install",
                 ));
             }
-            let keeper_install = KeeperFirstNodeInstall::from(read_first_node_install_spec(
+            let keeper_install = read_first_node_install_spec(
                 parsed
                     .install_spec
                     .ok_or_else(|| cli_error("--install-spec is required"))?,
-            )?);
+            )?;
             match keeper_install_mode {
                 ParsedKeeperInstallMode::None => unreachable!("handled above"),
                 ParsedKeeperInstallMode::Emit => {

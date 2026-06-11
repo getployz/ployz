@@ -1,10 +1,8 @@
 use async_nats::jetstream;
 use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::install::{
-    MachineJoinBundle, MachineJoinNatsCredentials, MachineJoinSecretDelivery,
-};
+use ployz_core::install::{MachineJoinBundle, MachineJoinSecretDelivery};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenFingerprint, MachineName, RawJoinToken};
-use ployz_core::nats_config::NatsUserPublicKey;
+use ployz_core::nats_config::{NatsUserPublicKey, NatsUserSeed};
 use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
     OperationOwnershipStatus, OperationStatus,
@@ -68,7 +66,7 @@ pub struct StoredMachineAddSecretDelivery {
 pub struct StoredMachineAddMintClaim {
     pub operation_id: ployz_core::ids::OperationId,
     pub nkey_public: NatsUserPublicKey,
-    pub nkey_seed: MachineJoinNatsCredentials,
+    pub nkey_seed: NatsUserSeed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

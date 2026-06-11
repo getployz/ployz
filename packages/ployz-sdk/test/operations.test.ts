@@ -867,7 +867,7 @@ function machineJoinArtifact(source: string, installPath: string) {
 
 function machineJoinSecretDelivery(): MachineJoinSecretDelivery {
   return {
-    nats_credentials: "user-jwt-and-seed",
+    nats_credentials: "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   };
 }
 

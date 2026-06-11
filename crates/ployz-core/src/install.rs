@@ -3,35 +3,9 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use crate::ids::NodeId;
-use crate::nats_config::{NatsCaCertificatePem, is_valid_host_syntax};
+use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
 use crate::roles::{DaemonProcessRole, FirstNodeGateway};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeeperFirstNodeInstall {
-    pub node_id: NodeId,
-    pub gateway: FirstNodeGateway,
-    pub node_public_ip: Option<IpAddr>,
-    pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
-    pub machine_join_template_file: Option<AbsoluteInstallPath>,
-    pub ployzd_version: InstallArtifactVersion,
-    pub ployzd_source: InstallArtifactSource,
-    pub ployzd_sha256: InstallSha256Digest,
-    pub ployzd_install_path: AbsoluteInstallPath,
-    pub ebpf_bytecode_version: InstallArtifactVersion,
-    pub ebpf_bytecode_source: InstallArtifactSource,
-    pub ebpf_bytecode_sha256: InstallSha256Digest,
-    pub ebpf_bytecode_install_path: AbsoluteInstallPath,
-    pub ebpf_ctl_version: InstallArtifactVersion,
-    pub ebpf_ctl_source: InstallArtifactSource,
-    pub ebpf_ctl_sha256: InstallSha256Digest,
-    pub ebpf_ctl_install_path: AbsoluteInstallPath,
-    pub nats_version: InstallArtifactVersion,
-    pub nats_source: InstallArtifactSource,
-    pub nats_sha256: InstallSha256Digest,
-    pub nats_binary: AbsoluteInstallPath,
-    pub nats_config: AbsoluteInstallPath,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -83,137 +57,6 @@ pub struct NatsServerInstallSpec {
     pub sha256: InstallSha256Digest,
     pub binary: AbsoluteInstallPath,
     pub config: AbsoluteInstallPath,
-}
-
-impl From<FirstNodeInstallSpec> for KeeperFirstNodeInstall {
-    fn from(value: FirstNodeInstallSpec) -> Self {
-        let FirstNodeInstallSpec {
-            node_id,
-            gateway,
-            node_public_ip,
-            machine_bootstrap_url,
-            machine_join_template_file,
-            artifacts:
-                FirstNodeInstallArtifacts {
-                    ployzd,
-                    ebpf_bytecode,
-                    ebpf_ctl,
-                    nats_server,
-                },
-        } = value;
-        let InstallArtifactSpec {
-            version: ployzd_version,
-            source: ployzd_source,
-            sha256: ployzd_sha256,
-            install_path: ployzd_install_path,
-        } = ployzd;
-        let InstallArtifactSpec {
-            version: ebpf_bytecode_version,
-            source: ebpf_bytecode_source,
-            sha256: ebpf_bytecode_sha256,
-            install_path: ebpf_bytecode_install_path,
-        } = ebpf_bytecode;
-        let InstallArtifactSpec {
-            version: ebpf_ctl_version,
-            source: ebpf_ctl_source,
-            sha256: ebpf_ctl_sha256,
-            install_path: ebpf_ctl_install_path,
-        } = ebpf_ctl;
-        let NatsServerInstallSpec {
-            version: nats_version,
-            source: nats_source,
-            sha256: nats_sha256,
-            binary: nats_binary,
-            config: nats_config,
-        } = nats_server;
-        Self {
-            node_id,
-            gateway,
-            node_public_ip,
-            machine_bootstrap_url,
-            machine_join_template_file,
-            ployzd_version,
-            ployzd_source,
-            ployzd_sha256,
-            ployzd_install_path,
-            ebpf_bytecode_version,
-            ebpf_bytecode_source,
-            ebpf_bytecode_sha256,
-            ebpf_bytecode_install_path,
-            ebpf_ctl_version,
-            ebpf_ctl_source,
-            ebpf_ctl_sha256,
-            ebpf_ctl_install_path,
-            nats_version,
-            nats_source,
-            nats_sha256,
-            nats_binary,
-            nats_config,
-        }
-    }
-}
-
-impl From<KeeperFirstNodeInstall> for FirstNodeInstallSpec {
-    fn from(value: KeeperFirstNodeInstall) -> Self {
-        let KeeperFirstNodeInstall {
-            node_id,
-            gateway,
-            node_public_ip,
-            machine_bootstrap_url,
-            machine_join_template_file,
-            ployzd_version,
-            ployzd_source,
-            ployzd_sha256,
-            ployzd_install_path,
-            ebpf_bytecode_version,
-            ebpf_bytecode_source,
-            ebpf_bytecode_sha256,
-            ebpf_bytecode_install_path,
-            ebpf_ctl_version,
-            ebpf_ctl_source,
-            ebpf_ctl_sha256,
-            ebpf_ctl_install_path,
-            nats_version,
-            nats_source,
-            nats_sha256,
-            nats_binary,
-            nats_config,
-        } = value;
-        Self {
-            node_id,
-            gateway,
-            node_public_ip,
-            machine_bootstrap_url,
-            machine_join_template_file,
-            artifacts: FirstNodeInstallArtifacts {
-                ployzd: InstallArtifactSpec {
-                    version: ployzd_version,
-                    source: ployzd_source,
-                    sha256: ployzd_sha256,
-                    install_path: ployzd_install_path,
-                },
-                ebpf_bytecode: InstallArtifactSpec {
-                    version: ebpf_bytecode_version,
-                    source: ebpf_bytecode_source,
-                    sha256: ebpf_bytecode_sha256,
-                    install_path: ebpf_bytecode_install_path,
-                },
-                ebpf_ctl: InstallArtifactSpec {
-                    version: ebpf_ctl_version,
-                    source: ebpf_ctl_source,
-                    sha256: ebpf_ctl_sha256,
-                    install_path: ebpf_ctl_install_path,
-                },
-                nats_server: NatsServerInstallSpec {
-                    version: nats_version,
-                    source: nats_source,
-                    sha256: nats_sha256,
-                    binary: nats_binary,
-                    config: nats_config,
-                },
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,16 +118,16 @@ pub struct MachineJoinMaterial {
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub trusted_nats: MachineJoinTrustedNats,
-    pub ployzd: MachineJoinPloyzdArtifact,
-    pub ebpf_bytecode: MachineJoinArtifact,
-    pub ebpf_ctl: MachineJoinArtifact,
+    pub ployzd: InstallArtifactSpec,
+    pub ebpf_bytecode: InstallArtifactSpec,
+    pub ebpf_ctl: InstallArtifactSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinSecretDelivery {
-    pub nats_credentials: MachineJoinNatsCredentials,
+    pub nats_credentials: NatsUserSeed,
 }
 
 /// Non-secret machine-add bootstrap material loaded by the control role.
@@ -381,75 +224,6 @@ impl NatsMachineMaterialPaths {
                 self.node_seed_file()
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct MachineJoinPloyzdArtifact {
-    pub version: InstallArtifactVersion,
-    pub source: InstallArtifactSource,
-    pub sha256: InstallSha256Digest,
-    pub install_path: AbsoluteInstallPath,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct MachineJoinArtifact {
-    pub version: InstallArtifactVersion,
-    pub source: InstallArtifactSource,
-    pub sha256: InstallSha256Digest,
-    pub install_path: AbsoluteInstallPath,
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct MachineJoinNatsCredentials(String);
-
-impl MachineJoinNatsCredentials {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, InstallContractError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(InstallContractError::EmptyNatsCredentials);
-        }
-        if value.contains('\0') {
-            return Err(InstallContractError::InvalidNatsCredentials);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn secret(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub const fn redacted(&self) -> &'static str {
-        "[redacted]"
-    }
-}
-
-impl TryFrom<String> for MachineJoinNatsCredentials {
-    type Error = InstallContractError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<MachineJoinNatsCredentials> for String {
-    fn from(value: MachineJoinNatsCredentials) -> Self {
-        value.0
-    }
-}
-
-impl fmt::Debug for MachineJoinNatsCredentials {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.redacted())
     }
 }
 
@@ -714,8 +488,6 @@ pub enum InstallContractError {
     InvalidBootstrapUrl { value: String },
     EmptyRuntimeNatsUrl,
     InvalidRuntimeNatsUrl { value: String },
-    EmptyNatsCredentials,
-    InvalidNatsCredentials,
     EmptyArtifactVersion,
     EmptyArtifactSource,
     RelativeArtifactSource { value: String },
@@ -747,10 +519,6 @@ impl fmt::Display for InstallContractError {
                 formatter,
                 "runtime NATS URL {value:?} must be a nats:// or tls:// URL with host and port"
             ),
-            Self::EmptyNatsCredentials => formatter.write_str("NATS credentials are empty"),
-            Self::InvalidNatsCredentials => {
-                formatter.write_str("NATS credentials contain an unsupported NUL byte")
-            }
             Self::EmptyArtifactVersion => formatter.write_str("artifact version is empty"),
             Self::EmptyArtifactSource => formatter.write_str("artifact source is empty"),
             Self::RelativeArtifactSource { value } => {

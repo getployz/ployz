@@ -5,8 +5,8 @@ use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{MachineJoinNatsCredentials, NatsMachineMaterialPaths};
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener};
+use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
@@ -990,10 +990,8 @@ fn keeper_join_material() -> KeeperJoinMaterial {
     KeeperJoinMaterial::new(
         node_id("node_7"),
         "prod",
-        MachineJoinNatsCredentials::try_new(
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        )
-        .expect("valid nats credentials"),
+        NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            .expect("valid nats credentials"),
         test_ca_pem(),
     )
     .expect("valid join material")

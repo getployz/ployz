@@ -8,8 +8,8 @@ use std::fmt;
 use std::net::IpAddr;
 
 use ployz_core::nats_config::{
-    NatsCaCertificatePem, NatsServerCertificatePem, NatsServerConfigError, NatsUserPublicKey,
-    NatsUserSeed, is_valid_host_syntax,
+    MintedNatsUser, NatsCaCertificatePem, NatsServerCertificatePem, NatsServerConfigError,
+    is_valid_host_syntax,
 };
 
 const CA_COMMON_NAME: &str = "ployz-cluster-ca";
@@ -48,14 +48,6 @@ impl fmt::Debug for NatsServerKeyPem {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("NatsServerKeyPem([redacted])")
     }
-}
-
-/// One freshly minted NKey user: public key for the authorization file,
-/// seed for the owning machine's `0600` file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MintedNatsUser {
-    pub public: NatsUserPublicKey,
-    pub seed: NatsUserSeed,
 }
 
 /// The subject alternative names the server certificate must cover:
@@ -142,17 +134,7 @@ pub fn generate_cluster_nats_identity(
 }
 
 fn mint_nkey_user() -> Result<MintedNatsUser, NatsIdentityError> {
-    let pair = nkeys::KeyPair::new_user();
-    let seed = pair
-        .seed()
-        .map_err(|error| NatsIdentityError::NkeyGeneration {
-            message: error.to_string(),
-        })?;
-    Ok(MintedNatsUser {
-        public: NatsUserPublicKey::try_new(pair.public_key())
-            .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
-        seed: NatsUserSeed::try_new(seed).map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
-    })
+    MintedNatsUser::generate().map_err(NatsIdentityError::InvalidGeneratedMaterial)
 }
 
 fn certificate_error(error: rcgen::Error) -> NatsIdentityError {
@@ -165,7 +147,6 @@ fn certificate_error(error: rcgen::Error) -> NatsIdentityError {
 pub enum NatsIdentityError {
     InvalidHostname { value: String },
     CertificateGeneration { message: String },
-    NkeyGeneration { message: String },
     InvalidGeneratedMaterial(NatsServerConfigError),
 }
 
@@ -183,9 +164,6 @@ impl fmt::Display for NatsIdentityError {
                     formatter,
                     "failed to generate cluster TLS material: {message}"
                 )
-            }
-            Self::NkeyGeneration { message } => {
-                write!(formatter, "failed to generate NKey user: {message}")
             }
             Self::InvalidGeneratedMaterial(error) => {
                 write!(formatter, "generated NATS material is invalid: {error}")

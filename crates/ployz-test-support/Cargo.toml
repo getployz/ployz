@@ -10,7 +10,6 @@ publish = false
 workspace = true
 
 [dependencies]
-nkeys = "0.4"
 ployz-core.workspace = true
 ployz-nats.workspace = true
 ployzd = { path = "../ployzd" }

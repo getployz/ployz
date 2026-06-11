@@ -480,13 +480,12 @@ mod tests {
     use super::keeper_join_target_with_public_ip;
     use ployz_core::ids::{NodeId, OperationId};
     use ployz_core::install::{
-        AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-        MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-        MachineJoinNatsCredentials, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl,
-        MachineJoinSecretDelivery, MachineJoinTrustedNats,
+        AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+        InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+        MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
-    use ployz_core::nats_config::NatsCaCertificatePem;
+    use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
     use ployz_core::roles::FirstNodeGateway;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
 
@@ -561,47 +560,31 @@ mod tests {
                     )
                     .expect("valid ca pem"),
                 },
-                ployzd: MachineJoinPloyzdArtifact {
-                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                    source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
-                    sha256: InstallSha256Digest::try_new(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .expect("valid digest"),
-                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-                        .expect("valid install path"),
-                },
-                ebpf_bytecode: MachineJoinArtifact {
-                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                    source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc")
-                        .expect("valid source"),
-                    sha256: InstallSha256Digest::try_new(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .expect("valid digest"),
-                    install_path: AbsoluteInstallPath::try_new(
-                        "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                    )
-                    .expect("valid install path"),
-                },
-                ebpf_ctl: MachineJoinArtifact {
-                    version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                    source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
-                        .expect("valid source"),
-                    sha256: InstallSha256Digest::try_new(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .expect("valid digest"),
-                    install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
-                        .expect("valid install path"),
-                },
+                ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
+                ebpf_bytecode: join_artifact(
+                    "/tmp/ployz-ebpf-tc",
+                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+                ),
+                ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
             },
+        }
+    }
+
+    fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
+        InstallArtifactSpec {
+            version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+            source: InstallArtifactSource::try_new(source).expect("valid source"),
+            sha256: InstallSha256Digest::try_new(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect("valid digest"),
+            install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
         }
     }
 
     fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
         MachineJoinSecretDelivery {
-            nats_credentials: MachineJoinNatsCredentials::try_new(
+            nats_credentials: NatsUserSeed::try_new(
                 "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             )
             .expect("valid nats credentials"),

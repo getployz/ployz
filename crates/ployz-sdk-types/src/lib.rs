@@ -37,18 +37,17 @@ pub use ployz_core::ids::{
     SubjectTokenError,
 };
 pub use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallContractError,
-    InstallSha256Digest, MachineBootstrapUrl, MachineJoinArtifact, MachineJoinBundle,
-    MachineJoinClusterName, MachineJoinMaterial, MachineJoinNatsCredentials,
-    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
-    MachineJoinTemplate, MachineJoinTrustedNats,
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallContractError, InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle,
+    MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
     MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
     MachineReadinessCheck, MachineReadinessEvidence,
 };
-pub use ployz_core::nats_config::NatsCaCertificatePem;
+pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 pub use ployz_core::node::ManagedContainerKind;
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,

@@ -20,7 +20,7 @@ use ployz_nats::operations::{
     BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission, KV_OPS_BUCKET,
     MachineAddOperationSubmission, OperationLeaseClaim, PLZ_JOBS_STREAM, PLZ_OPS_STREAM,
 };
-use ployz_sdk_types::{MachineJoinBundle, MachineJoinPloyzdArtifact};
+use ployz_sdk_types::MachineJoinBundle;
 use ployz_test_support::nats::SecuredTestNats;
 use std::time::Duration;
 
@@ -154,20 +154,7 @@ pub(super) fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
-            ployzd: MachineJoinPloyzdArtifact {
-                version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-                    .expect("valid version"),
-                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
-                    .expect("valid source"),
-                sha256: ployz_core::install::InstallSha256Digest::try_new(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("valid digest"),
-                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
-                    "/usr/local/bin/ployzd",
-                )
-                .expect("valid install path"),
-            },
+            ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
@@ -180,8 +167,8 @@ pub(super) fn machine_join_bundle() -> MachineJoinBundle {
 fn machine_join_artifact(
     source: &str,
     install_path: &str,
-) -> ployz_core::install::MachineJoinArtifact {
-    ployz_core::install::MachineJoinArtifact {
+) -> ployz_core::install::InstallArtifactSpec {
+    ployz_core::install::InstallArtifactSpec {
         version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
             .expect("valid artifact version"),
         source: ployz_core::install::InstallArtifactSource::try_new(source)
@@ -201,10 +188,8 @@ pub(super) const TEST_MINTED_SEED: &str =
 
 pub(super) fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDelivery {
     ployz_core::install::MachineJoinSecretDelivery {
-        nats_credentials: ployz_core::install::MachineJoinNatsCredentials::try_new(
-            TEST_MINTED_SEED,
-        )
-        .expect("valid nats credentials"),
+        nats_credentials: ployz_core::nats_config::NatsUserSeed::try_new(TEST_MINTED_SEED)
+            .expect("valid nats credentials"),
     }
 }
 

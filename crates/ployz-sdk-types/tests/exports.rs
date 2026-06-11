@@ -10,19 +10,18 @@ use ployz_sdk_types::{
     InstallContractError, LogsTailError, LogsTailRequest, LogsTailResult,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddGateway,
     MachineAddRequest, MachineAddResponse, MachineBootstrapUrl, MachineInspectError,
-    MachineInspectRequest, MachineJoinBundle, MachineJoinMaterial, MachineJoinNatsCredentials,
-    MachineJoinPloyzdArtifact, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineInspectRequest, MachineJoinBundle, MachineJoinMaterial, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
-    MachineSnapshot, NatsCaCertificatePem, NonEmptyTextError, OperationApiResponse, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest, OpsStatusResponse,
-    OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, ServiceId, ServiceInspectError,
+    MachineSnapshot, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
+    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, ServiceInspectError,
     ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
     ServiceSnapshot, SubjectTokenError,
     operation_api::{
@@ -542,20 +541,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
-            ployzd: MachineJoinPloyzdArtifact {
-                version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
-                    .expect("valid version"),
-                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/ployzd")
-                    .expect("valid source"),
-                sha256: ployz_core::install::InstallSha256Digest::try_new(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("valid digest"),
-                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
-                    "/usr/local/bin/ployzd",
-                )
-                .expect("valid install path"),
-            },
+            ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
@@ -568,8 +554,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
 fn machine_join_artifact(
     source: &str,
     install_path: &str,
-) -> ployz_core::install::MachineJoinArtifact {
-    ployz_core::install::MachineJoinArtifact {
+) -> ployz_core::install::InstallArtifactSpec {
+    ployz_core::install::InstallArtifactSpec {
         version: ployz_core::install::InstallArtifactVersion::try_new("0.1.0")
             .expect("valid artifact version"),
         source: ployz_core::install::InstallArtifactSource::try_new(source)
@@ -585,7 +571,7 @@ fn machine_join_artifact(
 
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
-        nats_credentials: MachineJoinNatsCredentials::try_new(
+        nats_credentials: NatsUserSeed::try_new(
             "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         )
         .expect("valid nats credentials"),

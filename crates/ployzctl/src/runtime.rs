@@ -405,7 +405,7 @@ async fn activate_first_node_machine_once(
 
 fn run_keeper_first_node_install(
     keeper_binary: &str,
-    keeper_install: &ployz_core::install::KeeperFirstNodeInstall,
+    keeper_install: &FirstNodeInstallSpec,
     timeout: Duration,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let args = vec![
@@ -413,8 +413,7 @@ fn run_keeper_first_node_install(
         "--spec".to_owned(),
         "-".to_owned(),
     ];
-    let spec = serde_json::to_vec(&FirstNodeInstallSpec::from(keeper_install.clone()))
-        .expect("first-node install spec serializes");
+    let spec = serde_json::to_vec(keeper_install).expect("first-node install spec serializes");
     let mut capture =
         OutputCapture::new().map_err(|message| PloyzctlExecutionError::KeeperFirstNodeInstall {
             source: Box::new(LocalKeeperInstallError::CaptureSetup {

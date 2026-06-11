@@ -3,9 +3,8 @@ use std::io::Read;
 
 use clap::Args;
 use ployz_core::install::{
-    MachineJoinArtifact, MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTemplate,
-    MachineJoinTrustedNats,
+    MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+    MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 
@@ -49,24 +48,9 @@ pub(crate) fn machine_join_template_command(
                 trusted_nats: MachineJoinTrustedNats {
                     ca_pem: trusted_nats_ca,
                 },
-                ployzd: MachineJoinPloyzdArtifact {
-                    version: artifacts.ployzd.version,
-                    source: artifacts.ployzd.source,
-                    sha256: artifacts.ployzd.sha256,
-                    install_path: artifacts.ployzd.install_path,
-                },
-                ebpf_bytecode: MachineJoinArtifact {
-                    version: artifacts.ebpf_bytecode.version,
-                    source: artifacts.ebpf_bytecode.source,
-                    sha256: artifacts.ebpf_bytecode.sha256,
-                    install_path: artifacts.ebpf_bytecode.install_path,
-                },
-                ebpf_ctl: MachineJoinArtifact {
-                    version: artifacts.ebpf_ctl.version,
-                    source: artifacts.ebpf_ctl.source,
-                    sha256: artifacts.ebpf_ctl.sha256,
-                    install_path: artifacts.ebpf_ctl.install_path,
-                },
+                ployzd: artifacts.ployzd,
+                ebpf_bytecode: artifacts.ebpf_bytecode,
+                ebpf_ctl: artifacts.ebpf_ctl,
             },
         },
     })

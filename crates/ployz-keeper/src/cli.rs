@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use ployz_core::install::{
-    AbsoluteInstallPath, FirstNodeInstallSpec, InstallArtifactSource, InstallArtifactVersion,
-    InstallSha256Digest, KeeperFirstNodeInstall,
+    AbsoluteInstallPath, FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSource,
+    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
 };
 
 use crate::artifacts::{
@@ -53,7 +53,7 @@ pub fn load_command(
         Some(KeeperSubcommand::FirstNodeInstall { spec }) => {
             let spec = read_first_node_install_spec(spec)?;
             Ok(KeeperCommand::FirstNodeInstall(Box::new(
-                first_node_install_target(KeeperFirstNodeInstall::from(spec))?,
+                first_node_install_target(spec)?,
             )))
         }
     }
@@ -144,32 +144,47 @@ fn machine_hostname() -> Option<String> {
 }
 
 fn first_node_install_target(
-    install: KeeperFirstNodeInstall,
+    install: FirstNodeInstallSpec,
 ) -> Result<FirstNodeInstallTarget, KeeperCliError> {
-    let KeeperFirstNodeInstall {
+    let FirstNodeInstallSpec {
         node_id,
         gateway,
         node_public_ip,
         machine_bootstrap_url,
         machine_join_template_file,
-        ployzd_version,
-        ployzd_source,
-        ployzd_sha256,
-        ployzd_install_path,
-        ebpf_bytecode_version,
-        ebpf_bytecode_source,
-        ebpf_bytecode_sha256,
-        ebpf_bytecode_install_path,
-        ebpf_ctl_version,
-        ebpf_ctl_source,
-        ebpf_ctl_sha256,
-        ebpf_ctl_install_path,
-        nats_version,
-        nats_source,
-        nats_sha256,
-        nats_binary,
-        nats_config,
+        artifacts:
+            FirstNodeInstallArtifacts {
+                ployzd,
+                ebpf_bytecode,
+                ebpf_ctl,
+                nats_server,
+            },
     } = install;
+    let InstallArtifactSpec {
+        version: ployzd_version,
+        source: ployzd_source,
+        sha256: ployzd_sha256,
+        install_path: ployzd_install_path,
+    } = ployzd;
+    let InstallArtifactSpec {
+        version: ebpf_bytecode_version,
+        source: ebpf_bytecode_source,
+        sha256: ebpf_bytecode_sha256,
+        install_path: ebpf_bytecode_install_path,
+    } = ebpf_bytecode;
+    let InstallArtifactSpec {
+        version: ebpf_ctl_version,
+        source: ebpf_ctl_source,
+        sha256: ebpf_ctl_sha256,
+        install_path: ebpf_ctl_install_path,
+    } = ebpf_ctl;
+    let NatsServerInstallSpec {
+        version: nats_version,
+        source: nats_source,
+        sha256: nats_sha256,
+        binary: nats_binary,
+        config: nats_config,
+    } = nats_server;
     let ployzd_artifact = PloyzdArtifactTarget::new(
         artifact_version(&ployzd_version)?,
         artifact_source(&ployzd_source)?,

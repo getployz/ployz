@@ -1,8 +1,8 @@
 use ployz_core::ids::{NodeId, OperationId, OperationOwnerId};
 use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactVersion, InstallSha256Digest,
-    MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinPloyzdArtifact, MachineJoinTrustedNats,
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+    MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLease};
@@ -228,19 +228,19 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 )
                 .expect("valid CA pem"),
             },
-            ployzd: MachineJoinPloyzdArtifact {
+            ployzd: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployzd"),
                 sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 install_path: absolute_path("/usr/local/bin/ployzd"),
             },
-            ebpf_bytecode: MachineJoinArtifact {
+            ebpf_bytecode: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployz-ebpf-tc"),
                 sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 install_path: absolute_path("/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"),
             },
-            ebpf_ctl: MachineJoinArtifact {
+            ebpf_ctl: InstallArtifactSpec {
                 version: version("0.1.0"),
                 source: source("/tmp/ployz-ebpf-ctl"),
                 sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),

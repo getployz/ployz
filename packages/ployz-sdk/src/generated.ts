@@ -270,13 +270,13 @@ export type MachineJoinClusterName = string;
 
 export type MachineJoinRuntimeNatsUrl = string;
 
-export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, ployzd: MachineJoinPloyzdArtifact, ebpf_bytecode: MachineJoinArtifact, ebpf_ctl: MachineJoinArtifact, };
+export type MachineJoinMaterial = { cluster_name: MachineJoinClusterName, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, };
 
-export type MachineJoinSecretDelivery = { nats_credentials: MachineJoinNatsCredentials, };
+export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
-export type MachineJoinNatsCredentials = string;
+export type NatsUserSeed = string;
 
 export type NatsCaCertificatePem = string;
 
@@ -290,11 +290,9 @@ export type InstallSha256Digest = string;
 
 export type AbsoluteInstallPath = string;
 
+export type InstallArtifactSpec = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
+
 export type MachineJoinBundle = { material: MachineJoinMaterial, };
-
-export type MachineJoinPloyzdArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
-
-export type MachineJoinArtifact = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, install_path: AbsoluteInstallPath, };
 
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 

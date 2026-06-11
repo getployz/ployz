@@ -1,13 +1,13 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use ployz_core::install::MachineJoinNatsCredentials;
+use ployz_core::nats_config::NatsUserSeed;
 
 /// Writes the first node's `node.seed` (`0600`). The named writer is ployzd
 /// control, which runs on the same machine; this is a local file write.
 pub fn write_node_seed_file(
     path: &Path,
-    credentials: &MachineJoinNatsCredentials,
+    credentials: &NatsUserSeed,
 ) -> Result<(), NodeSeedWriteError> {
     let write_error = |message: String| NodeSeedWriteError::Write {
         path: path.to_path_buf(),

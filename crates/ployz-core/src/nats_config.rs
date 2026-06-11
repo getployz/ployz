@@ -375,7 +375,10 @@ impl From<NatsUserPublicKey> for String {
 
 /// An NKey user seed (`SU`-prefixed base32). Secret material: `Debug`
 /// output is redacted and the value never appears in error variants.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
 pub struct NatsUserSeed(String);
 
 impl NatsUserSeed {
@@ -393,9 +396,46 @@ impl NatsUserSeed {
     }
 }
 
+impl TryFrom<String> for NatsUserSeed {
+    type Error = NatsServerConfigError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<NatsUserSeed> for String {
+    fn from(value: NatsUserSeed) -> Self {
+        value.0
+    }
+}
+
 impl fmt::Debug for NatsUserSeed {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("NatsUserSeed([redacted])")
+    }
+}
+
+/// One freshly minted NKey user: public key for the authorization file,
+/// seed for the owning machine's `0600` file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintedNatsUser {
+    pub public: NatsUserPublicKey,
+    pub seed: NatsUserSeed,
+}
+
+impl MintedNatsUser {
+    pub fn generate() -> Result<Self, NatsServerConfigError> {
+        let pair = nkeys::KeyPair::new_user();
+        let seed = pair
+            .seed()
+            .map_err(|error| NatsServerConfigError::NkeySeedGeneration {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            public: NatsUserPublicKey::try_new(pair.public_key())?,
+            seed: NatsUserSeed::try_new(seed)?,
+        })
     }
 }
 
@@ -476,6 +516,7 @@ pub enum NatsServerConfigError {
     InvalidAdvertisedHost { value: String },
     InvalidUserPublicKey { value: String },
     InvalidUserSeed,
+    NkeySeedGeneration { message: String },
     InvalidCaCertificatePem,
     InvalidServerCertificatePem,
 }
@@ -504,6 +545,9 @@ impl fmt::Display for NatsServerConfigError {
             }
             Self::InvalidUserSeed => formatter
                 .write_str("NATS user seed must be a 58-character SU-prefixed base32 NKey seed"),
+            Self::NkeySeedGeneration { message } => {
+                write!(formatter, "failed to generate NKey user seed: {message}")
+            }
             Self::InvalidCaCertificatePem => {
                 formatter.write_str("NATS cluster CA must be a PEM CERTIFICATE block")
             }

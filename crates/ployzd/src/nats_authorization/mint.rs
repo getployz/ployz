@@ -2,11 +2,11 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{MachineJoinNatsCredentials, MachineJoinSecretDelivery};
+use ployz_core::install::MachineJoinSecretDelivery;
 use ployz_core::machine::{
     MachineAddFailure, MachineAddOperationState, MachineCredentialProvisioningStep,
 };
-use ployz_core::nats_config::{NatsAuthorizedUser, NatsUserPublicKey, NatsUserSeed};
+use ployz_core::nats_config::{MintedNatsUser, NatsAuthorizedUser, NatsUserSeed};
 use ployz_core::ops::{FailureMessage, OperationIdempotencyKey, OperationStatus};
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
@@ -231,17 +231,13 @@ impl MachineCredentialMintRuntime {
                     .await;
             }
         };
-        let minted = match minted_material_from_claim(&claim) {
-            Ok(minted) => minted,
-            Err(message) => return self.fail_unusable(&request, message).await,
-        };
         if let Err(error) = self
             .core_state
             .replace_nats_authorized_user(&NatsAuthorizedUser {
                 principal: NatsPrincipal::Node {
                     node_id: request.node_id.clone(),
                 },
-                nkey_public: minted.public,
+                nkey_public: claim.nkey_public.clone(),
             })
             .await
         {
@@ -261,7 +257,7 @@ impl MachineCredentialMintRuntime {
 
         let verify_config = self
             .verify
-            .node_connect_config(&request.node_id, minted.seed.clone());
+            .node_connect_config(&request.node_id, claim.nkey_seed.clone());
         match self.authorization.render(Some(verify_config)).await {
             Ok(_) => {}
             Err(RenderFailure::Prepare { failure }) => {
@@ -403,33 +399,13 @@ impl MachineCredentialMintRuntime {
     }
 }
 
-struct MintedMaterial {
-    public: NatsUserPublicKey,
-    seed: NatsUserSeed,
-}
-
 fn mint_claim_candidate(operation_id: &OperationId) -> Result<StoredMachineAddMintClaim, String> {
-    let pair = nkeys::KeyPair::new_user();
-    let seed = pair
-        .seed()
-        .map_err(|error| format!("generated keypair has no seed: {error}"))?;
-    let nkey_seed = MachineJoinNatsCredentials::try_new(seed)
-        .map_err(|error| format!("generated seed is not storable: {error}"))?;
-    let nkey_public = NatsUserPublicKey::try_new(pair.public_key())
-        .map_err(|error| format!("generated public key is invalid: {error}"))?;
+    let minted =
+        MintedNatsUser::generate().map_err(|error| format!("failed to mint NKey user: {error}"))?;
     Ok(StoredMachineAddMintClaim {
         operation_id: operation_id.clone(),
-        nkey_public,
-        nkey_seed,
-    })
-}
-
-fn minted_material_from_claim(claim: &StoredMachineAddMintClaim) -> Result<MintedMaterial, String> {
-    let seed = NatsUserSeed::try_new(claim.nkey_seed.secret())
-        .map_err(|error| format!("claimed seed is invalid: {error}"))?;
-    Ok(MintedMaterial {
-        public: claim.nkey_public.clone(),
-        seed,
+        nkey_public: minted.public,
+        nkey_seed: minted.seed,
     })
 }
 

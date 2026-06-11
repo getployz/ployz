@@ -8,10 +8,10 @@ use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
-    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinNatsCredentials,
-    MachineJoinSecretDelivery, NatsMachineMaterialPaths,
+    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
+    NatsMachineMaterialPaths,
 };
-use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
 use ployz_nats::connect::NatsClientUrl;
@@ -155,7 +155,7 @@ impl fmt::Debug for JoinToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperJoinMaterial {
     redacted: RedactedJoinMaterial,
-    nats_credentials: MachineJoinNatsCredentials,
+    nats_credentials: NatsUserSeed,
     trusted_ca_pem: NatsCaCertificatePem,
 }
 
@@ -176,7 +176,7 @@ impl KeeperJoinMaterial {
     pub fn new(
         node_id: NodeId,
         cluster_name: impl Into<String>,
-        nats_credentials: MachineJoinNatsCredentials,
+        nats_credentials: NatsUserSeed,
         trusted_ca_pem: NatsCaCertificatePem,
     ) -> Result<Self, JoinMaterialError> {
         let redacted = RedactedJoinMaterial::new(
@@ -199,7 +199,7 @@ impl KeeperJoinMaterial {
     /// The redeemed per-machine secret. `Debug` output stays redacted via
     /// the typed credential.
     #[must_use]
-    pub fn nats_credentials(&self) -> &MachineJoinNatsCredentials {
+    pub fn nats_credentials(&self) -> &NatsUserSeed {
         &self.nats_credentials
     }
 

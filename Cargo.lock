@@ -1206,6 +1206,7 @@ dependencies = [
 name = "ployz-core"
 version = "0.1.0"
 dependencies = [
+ "nkeys",
  "serde",
  "serde_json",
  "sha2",
@@ -1257,7 +1258,6 @@ dependencies = [
  "async-nats",
  "clap",
  "gethostname",
- "nkeys",
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",
@@ -1295,7 +1295,6 @@ dependencies = [
 name = "ployz-test-support"
 version = "0.1.0"
 dependencies = [
- "nkeys",
  "ployz-core",
  "ployz-nats",
  "ployzd",

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ployz_core::ids::NodeId;
 use ployz_core::nats_config::{
-    NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
+    MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
     NatsUserSeed, render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
@@ -59,13 +59,13 @@ impl SecuredTestNats {
         let dir = tempfile::TempDir::new()?;
         let tls = write_tls_material(dir.path())?;
 
-        let controller = mint_nkey_user()?;
-        let user = mint_nkey_user()?;
-        let join = mint_nkey_user()?;
-        let system = mint_nkey_user()?;
+        let controller = MintedNatsUser::generate()?;
+        let user = MintedNatsUser::generate()?;
+        let join = MintedNatsUser::generate()?;
+        let system = MintedNatsUser::generate()?;
         let mut node_users = Vec::with_capacity(node_ids.len());
         for node_id in node_ids {
-            node_users.push((node_id.clone(), mint_nkey_user()?));
+            node_users.push((node_id.clone(), MintedNatsUser::generate()?));
         }
 
         let mut authorized = vec![
@@ -221,7 +221,7 @@ impl SecuredTestNats {
 
     /// A freshly generated user seed that is not in the authorized set.
     pub fn fresh_unauthorized_seed() -> Result<NatsUserSeed, FixtureError> {
-        Ok(mint_nkey_user()?.seed)
+        Ok(MintedNatsUser::generate()?.seed)
     }
 
     async fn wait_until_ready(&self) -> Result<(), FixtureError> {
@@ -249,19 +249,7 @@ impl SecuredTestNats {
     }
 }
 
-struct MintedNkeyUser {
-    public: NatsUserPublicKey,
-    seed: NatsUserSeed,
-}
-
-fn mint_nkey_user() -> Result<MintedNkeyUser, FixtureError> {
-    let pair = nkeys::KeyPair::new_user();
-    let seed = NatsUserSeed::try_new(pair.seed()?)?;
-    let public = NatsUserPublicKey::try_new(pair.public_key())?;
-    Ok(MintedNkeyUser { public, seed })
-}
-
-fn authorized_user(principal: NatsPrincipal, minted: &MintedNkeyUser) -> NatsAuthorizedUser {
+fn authorized_user(principal: NatsPrincipal, minted: &MintedNatsUser) -> NatsAuthorizedUser {
     NatsAuthorizedUser {
         principal,
         nkey_public: minted.public.clone(),

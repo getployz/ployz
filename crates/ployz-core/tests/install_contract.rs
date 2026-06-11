@@ -1,17 +1,16 @@
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
-    AbsoluteInstallPath, FirstNodeInstallSpec, InstallArtifactSource, InstallArtifactVersion,
-    InstallSha256Digest, KeeperFirstNodeInstall, MachineBootstrapUrl, MachineJoinArtifact,
-    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinNatsCredentials,
-    MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
-    MachineJoinTrustedNats,
+    AbsoluteInstallPath, FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSource,
+    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, MachineBootstrapUrl,
+    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTrustedNats, NatsServerInstallSpec,
 };
-use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::roles::FirstNodeGateway;
 
 #[test]
 fn first_node_install_spec_wire_shape_is_grouped_json() {
-    let mut install = keeper_install(FirstNodeGateway::Install);
+    let mut install = first_node_install_spec(FirstNodeGateway::Install);
     install.machine_bootstrap_url = Some(
         MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
     );
@@ -21,7 +20,7 @@ fn first_node_install_spec_wire_shape_is_grouped_json() {
     );
     install.node_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
 
-    let value = serde_json::to_value(FirstNodeInstallSpec::from(install)).expect("spec serializes");
+    let value = serde_json::to_value(install).expect("spec serializes");
 
     assert_eq!(
         value,
@@ -63,7 +62,7 @@ fn first_node_install_spec_wire_shape_is_grouped_json() {
 }
 
 #[test]
-fn first_node_install_spec_converts_to_install_contract() {
+fn first_node_install_spec_parses_from_grouped_json() {
     let spec = serde_json::from_value::<FirstNodeInstallSpec>(serde_json::json!({
         "node_id": "node_1",
         "gateway": "skip",
@@ -100,10 +99,7 @@ fn first_node_install_spec_converts_to_install_contract() {
     }))
     .expect("spec parses");
 
-    assert_eq!(
-        KeeperFirstNodeInstall::from(spec),
-        keeper_install(FirstNodeGateway::Skip)
-    );
+    assert_eq!(spec, first_node_install_spec(FirstNodeGateway::Skip));
 }
 
 #[test]
@@ -129,13 +125,10 @@ fn keeper_install_contract_validates_artifact_inputs() {
     assert!(MachineJoinRuntimeNatsUrl::try_new("nats://[::1]:7422").is_ok());
     assert!(MachineJoinRuntimeNatsUrl::try_new("tls://core.example.test:4222").is_ok());
     assert!(MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").is_ok());
-    assert!(MachineJoinNatsCredentials::try_new("").is_err());
-    assert!(MachineJoinNatsCredentials::try_new("creds\0bad").is_err());
+    assert!(NatsUserSeed::try_new("").is_err());
+    assert!(NatsUserSeed::try_new("creds\0bad").is_err());
     assert!(
-        MachineJoinNatsCredentials::try_new(
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-        )
-        .is_ok()
+        NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_ok()
     );
     assert!(NatsCaCertificatePem::try_new("").is_err());
     assert!(NatsCaCertificatePem::try_new("not-a-pem").is_err());
@@ -224,51 +217,46 @@ fn machine_join_bundle_debug_redacts_secrets() {
     assert!(!rendered.contains("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
 }
 
-fn keeper_install(gateway: FirstNodeGateway) -> KeeperFirstNodeInstall {
-    KeeperFirstNodeInstall {
+fn first_node_install_spec(gateway: FirstNodeGateway) -> FirstNodeInstallSpec {
+    FirstNodeInstallSpec {
         node_id: NodeId::try_new("node_1").expect("valid node id"),
         gateway,
         node_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,
-        ployzd_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-        ployzd_source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
-        ployzd_sha256: InstallSha256Digest::try_new(
+        artifacts: FirstNodeInstallArtifacts {
+            ployzd: install_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
+            ebpf_bytecode: install_artifact(
+                "/tmp/ployz-ebpf-tc",
+                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            ),
+            ebpf_ctl: install_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+            nats_server: NatsServerInstallSpec {
+                version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
+                source: InstallArtifactSource::try_new("/tmp/nats-server")
+                    .expect("valid nats source"),
+                sha256: InstallSha256Digest::try_new(
+                    "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                )
+                .expect("valid nats digest"),
+                binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
+                    .expect("valid nats binary path"),
+                config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
+                    .expect("valid nats config path"),
+            },
+        },
+    }
+}
+
+fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
+    InstallArtifactSpec {
+        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+        source: InstallArtifactSource::try_new(source).expect("valid source"),
+        sha256: InstallSha256Digest::try_new(
             "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
         )
         .expect("valid digest"),
-        ployzd_install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-            .expect("valid install path"),
-        ebpf_bytecode_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-        ebpf_bytecode_source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc")
-            .expect("valid source"),
-        ebpf_bytecode_sha256: InstallSha256Digest::try_new(
-            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-        )
-        .expect("valid digest"),
-        ebpf_bytecode_install_path: AbsoluteInstallPath::try_new(
-            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-        )
-        .expect("valid install path"),
-        ebpf_ctl_version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-        ebpf_ctl_source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
-            .expect("valid source"),
-        ebpf_ctl_sha256: InstallSha256Digest::try_new(
-            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-        )
-        .expect("valid digest"),
-        ebpf_ctl_install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
-            .expect("valid install path"),
-        nats_version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
-        nats_source: InstallArtifactSource::try_new("/tmp/nats-server").expect("valid nats source"),
-        nats_sha256: InstallSha256Digest::try_new(
-            "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
-        )
-        .expect("valid nats digest"),
-        nats_binary: AbsoluteInstallPath::try_new("/usr/local/bin/nats-server")
-            .expect("valid nats binary path"),
-        nats_config: AbsoluteInstallPath::try_new("/etc/nats/nats-server.conf")
-            .expect("valid nats config path"),
+        install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
     }
 }
 
@@ -284,46 +272,31 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid ca pem"),
             },
-            ployzd: MachineJoinPloyzdArtifact {
-                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                source: InstallArtifactSource::try_new("/tmp/ployzd").expect("valid source"),
-                sha256: InstallSha256Digest::try_new(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("valid digest"),
-                install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployzd")
-                    .expect("valid install path"),
-            },
-            ebpf_bytecode: MachineJoinArtifact {
-                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-tc").expect("valid source"),
-                sha256: InstallSha256Digest::try_new(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("valid digest"),
-                install_path: AbsoluteInstallPath::try_new(
-                    "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
-                )
-                .expect("valid install path"),
-            },
-            ebpf_ctl: MachineJoinArtifact {
-                version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
-                source: InstallArtifactSource::try_new("/tmp/ployz-ebpf-ctl")
-                    .expect("valid source"),
-                sha256: InstallSha256Digest::try_new(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
-                .expect("valid digest"),
-                install_path: AbsoluteInstallPath::try_new("/usr/local/bin/ployz-ebpf-ctl")
-                    .expect("valid install path"),
-            },
+            ployzd: join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
+            ebpf_bytecode: join_artifact(
+                "/tmp/ployz-ebpf-tc",
+                "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
+            ),
+            ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
         },
+    }
+}
+
+fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {
+    InstallArtifactSpec {
+        version: InstallArtifactVersion::try_new("0.1.0").expect("valid version"),
+        source: InstallArtifactSource::try_new(source).expect("valid source"),
+        sha256: InstallSha256Digest::try_new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("valid digest"),
+        install_path: AbsoluteInstallPath::try_new(install_path).expect("valid install path"),
     }
 }
 
 fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
     MachineJoinSecretDelivery {
-        nats_credentials: MachineJoinNatsCredentials::try_new(
+        nats_credentials: NatsUserSeed::try_new(
             "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         )
         .expect("valid nats credentials"),

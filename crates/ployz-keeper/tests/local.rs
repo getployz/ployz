@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::{MachineJoinNatsCredentials, NatsMachineMaterialPaths};
-use ployz_core::nats_config::NatsCaCertificatePem;
+use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
@@ -494,10 +494,8 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         KeeperJoinMaterial::new(
             node_id("node_2"),
             "prod",
-            MachineJoinNatsCredentials::try_new(
-                "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            )
-            .expect("valid nats credentials"),
+            NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                .expect("valid nats credentials"),
             test_ca_pem(),
         )
         .expect("valid join material"),
@@ -613,10 +611,8 @@ fn local_effects_store_redacted_join_material() {
     let material = KeeperJoinMaterial::new(
         node_id("node_2"),
         "prod",
-        MachineJoinNatsCredentials::try_new(
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        )
-        .expect("valid nats credentials"),
+        NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            .expect("valid nats credentials"),
         test_ca_pem(),
     )
     .expect("valid join material");

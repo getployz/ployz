@@ -155,7 +155,7 @@
         }
       },
       "secret_delivery": {
-        "nats_credentials": "user-jwt-and-seed"
+        "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
       },
       "joined_at": "60",
       "last_event_sequence": "8",
