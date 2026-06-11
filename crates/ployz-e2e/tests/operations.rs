@@ -29,7 +29,6 @@ use ployz_core::state::{
     ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
     NodePublicIpObservation,
 };
-use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
@@ -39,14 +38,12 @@ use ployz_nats::operations::{
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzctl::api_client::OperationApiClient;
-use ployzd::config::ControlProcessConfig;
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError, NodeRunContainerRequest,
     NodeRuntimeUnavailableReason,
 };
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::nats_process::NatsServerRuntime;
 use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::node_runtime::start_node_runtime_with_ports;
 
@@ -65,8 +62,8 @@ async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sy
 
 async fn e2e_repository_submit_and_transition_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
+    let nats = TestNats::start_with_nodes(&[]).await?;
+    let client = nats.controller_client();
     let jetstream = jetstream::new(client.clone());
     bootstrap_nats_resources(&client, &jetstream).await?;
     let event_log = AsyncNatsOperationEventLog::new(jetstream.clone());
@@ -134,17 +131,14 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
 
 async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-        control_nats_connect(nats.url()),
-    )
-    .with_machine_bootstrap(machine_bootstrap_config());
+    let nats = TestNats::start_with_nodes(&[]).await?;
+    let client = nats.controller_client();
+    let config = nats
+        .control_config(node_id("core_1"))
+        .with_machine_bootstrap(machine_bootstrap_config());
     let _runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let api = OperationApiClient::new(client.clone());
+    let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_api_123"),
         target: deploy_target("svc_api"),
@@ -205,32 +199,31 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
 #[tokio::test]
 async fn e2e_control_and_node_complete_deploy_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let client = nats.controller_client();
     let jetstream = jetstream::new(client.clone());
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-        control_nats_connect(nats.url()),
-    )
-    .with_deploy_nodes(vec![node_id("node_a")])
-    .with_deploy_step_timeout(Duration::from_secs(2))
-    .with_machine_bootstrap(machine_bootstrap_config());
+    let config = nats
+        .control_config(node_id("core_1"))
+        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2))
+        .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .expect("open observation store");
+    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let observations =
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
+            .await
+            .expect("open observation store");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations.clone());
     let node_runtime = start_node_runtime_with_ports(
-        client.clone(),
+        node_client.clone(),
         node_id("node_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
         runner,
     )
     .await?;
-    let api = OperationApiClient::new(client.clone());
+    let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_e2e_run"),
         target: deploy_target("svc_api"),
@@ -368,29 +361,27 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
 #[tokio::test]
 async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn Error + Send + Sync>>
 {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
-    let jetstream = jetstream::new(client.clone());
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-        control_nats_connect(nats.url()),
-    )
-    .with_deploy_nodes(vec![node_id("node_a")])
-    .with_deploy_step_timeout(Duration::from_secs(2))
-    .with_machine_bootstrap(machine_bootstrap_config());
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let client = nats.controller_client();
+    let config = nats
+        .control_config(node_id("core_1"))
+        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2))
+        .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .expect("open observation store");
+    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let observations =
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
+            .await
+            .expect("open observation store");
     observations
         .replace_node_public_ip(&node_public_ip("node_a", 7))
         .await
         .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
     let node_runtime = start_node_runtime_with_ports(
-        client.clone(),
+        node_client.clone(),
         node_id("node_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
@@ -398,14 +389,14 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     )
     .await?;
     let gateway_runtime = start_gateway_process_runtime_with_client(
-        client.clone(),
+        node_client.clone(),
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
         node_id("node_a"),
     )
     .await?;
     let upstream = TestUpstream::start().await;
-    let api = OperationApiClient::new(client.clone());
+    let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_e2e_route"),
         target: deploy_target_with_route(
@@ -460,29 +451,27 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
 #[tokio::test]
 async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
-    let jetstream = jetstream::new(client.clone());
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-        control_nats_connect(nats.url()),
-    )
-    .with_deploy_nodes(vec![node_id("node_a")])
-    .with_deploy_step_timeout(Duration::from_secs(2))
-    .with_machine_bootstrap(machine_bootstrap_config());
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let client = nats.controller_client();
+    let config = nats
+        .control_config(node_id("core_1"))
+        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2))
+        .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .expect("open observation store");
+    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let observations =
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
+            .await
+            .expect("open observation store");
     observations
         .replace_node_public_ip(&node_public_ip("node_a", 7))
         .await
         .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
     let node_runtime = start_node_runtime_with_ports(
-        client.clone(),
+        node_client.clone(),
         node_id("node_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
@@ -490,14 +479,14 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
     )
     .await?;
     let gateway_runtime = start_gateway_process_runtime_with_client(
-        client.clone(),
+        node_client.clone(),
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
         node_id("node_a"),
     )
     .await?;
     let upstream = TestUpstream::start_with_expected_requests(2).await;
-    let api = OperationApiClient::new(client.clone());
+    let api = OperationApiClient::new(nats.user_client());
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let route_host = format!("node-down.local:{}", route_port.get());
     let request = DeploySubmitRequest {
@@ -567,29 +556,28 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
 #[tokio::test]
 async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
+    let nats = TestNats::start_with_nodes(&[node_id("node_a")]).await?;
+    let client = nats.controller_client();
     let jetstream = jetstream::new(client.clone());
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-        control_nats_connect(nats.url()),
-    )
-    .with_deploy_nodes(vec![node_id("node_a")])
-    .with_deploy_step_timeout(Duration::from_secs(2))
-    .with_machine_bootstrap(machine_bootstrap_config());
+    let config = nats
+        .control_config(node_id("core_1"))
+        .with_deploy_nodes(vec![node_id("node_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2))
+        .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .expect("open observation store");
+    let node_client = nats.node_client(&node_id("node_a")).await?;
+    let observations =
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client.clone()))
+            .await
+            .expect("open observation store");
     observations
         .replace_node_public_ip(&node_public_ip("node_a", 7))
         .await
         .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations.clone());
     let node_runtime = start_node_runtime_with_ports(
-        client.clone(),
+        node_client.clone(),
         node_id("node_a"),
         runner.clone(),
         ReadyWireGuardEbpf,
@@ -597,7 +585,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
     )
     .await?;
     let gateway_runtime = start_gateway_process_runtime_with_client(
-        client.clone(),
+        node_client.clone(),
         Duration::from_millis(10),
         "127.0.0.1:0".parse().expect("valid gateway listen addr"),
         node_id("node_a"),
@@ -605,7 +593,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
     .await?;
     let first_upstream = TestUpstream::start().await;
     let first_upstream_port = first_upstream.port();
-    let api = OperationApiClient::new(client.clone());
+    let api = OperationApiClient::new(nats.user_client());
     let route_hostname = route_hostname("control-down.local");
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let request = DeploySubmitRequest {
@@ -725,35 +713,38 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
 #[tokio::test]
 async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
 -> Result<(), Box<dyn Error + Send + Sync>> {
-    let nats = TestNats::start_jetstream().await?;
-    let client = async_nats::connect(nats.url()).await?;
-    let jetstream = jetstream::new(client.clone());
+    let nats = TestNats::start_with_nodes(&[node_id("core_1"), node_id("edge_2")]).await?;
+    let client = nats.controller_client();
     let route_port = free_loopback_port().await?;
-    let config = ControlProcessConfig::new(
-        NatsServerRuntime::External(nats_client_url(nats.url())),
-        node_id("core_1"),
-        control_nats_connect(nats.url()),
-    )
-    .with_deploy_nodes(vec![node_id("core_1"), node_id("edge_2")])
-    .with_deploy_step_timeout(Duration::from_secs(2))
-    .with_machine_bootstrap(machine_bootstrap_config());
+    let config = nats
+        .control_config(node_id("core_1"))
+        .with_deploy_nodes(vec![node_id("core_1"), node_id("edge_2")])
+        .with_deploy_step_timeout(Duration::from_secs(2))
+        .with_machine_bootstrap(machine_bootstrap_config());
     let control_runtime =
         ployzd::control_runtime::start_control_runtime_with_client(client.clone(), &config).await?;
-    let observations = AsyncNatsObservationStore::from_jetstream(&jetstream)
-        .await
-        .expect("open observation store");
+    let core_node_client = nats.node_client(&node_id("core_1")).await?;
+    let edge_node_client = nats.node_client(&node_id("edge_2")).await?;
+    let observations =
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(core_node_client.clone()))
+            .await
+            .expect("open core observation store");
+    let edge_observations =
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(edge_node_client.clone()))
+            .await
+            .expect("open edge observation store");
     observations
         .replace_node_public_ip(&node_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
-    observations
+    edge_observations
         .replace_node_public_ip(&node_public_ip("edge_2", 2))
         .await
         .expect("edge public ip stores");
     let core_runner = ObservingContainerRunner::new(node_id("core_1"), observations.clone());
-    let edge_runner = ObservingContainerRunner::new(node_id("edge_2"), observations.clone());
+    let edge_runner = ObservingContainerRunner::new(node_id("edge_2"), edge_observations.clone());
     let core_node_runtime = start_node_runtime_with_ports(
-        client.clone(),
+        core_node_client.clone(),
         node_id("core_1"),
         core_runner.clone(),
         ReadyWireGuardEbpf,
@@ -761,7 +752,7 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
     )
     .await?;
     let edge_node_runtime = start_node_runtime_with_ports(
-        client.clone(),
+        edge_node_client.clone(),
         node_id("edge_2"),
         edge_runner.clone(),
         ReadyWireGuardEbpf,
@@ -769,21 +760,21 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
     )
     .await?;
     let core_gateway_runtime = start_gateway_process_runtime_with_client(
-        client.clone(),
+        core_node_client.clone(),
         Duration::from_millis(10),
         format!("127.0.0.1:{route_port}").parse()?,
         node_id("core_1"),
     )
     .await?;
     let edge_gateway_runtime = start_gateway_process_runtime_with_client(
-        client.clone(),
+        edge_node_client.clone(),
         Duration::from_millis(10),
         format!("[::1]:{route_port}").parse()?,
         node_id("edge_2"),
     )
     .await?;
     let upstream = TestUpstream::start_with_expected_requests(2).await;
-    let api = OperationApiClient::new(client.clone());
+    let api = OperationApiClient::new(nats.user_client());
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_e2e_two_node_route"),
         target: deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
@@ -953,10 +944,6 @@ fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
     WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
-fn nats_client_url(value: &str) -> NatsClientUrl {
-    NatsClientUrl::try_new(value).expect("valid nats client url")
-}
-
 fn service_id(value: &str) -> ServiceId {
     ServiceId::try_new(value).expect("valid service id")
 }
@@ -1100,22 +1087,6 @@ fn test_lease_claim() -> OperationLeaseClaim {
         lease_time(160),
     )
     .expect("valid lease claim")
-}
-
-/// Connection material carried by the control config; the plaintext e2e
-/// fixture never dials it (the runtime is started with an injected client).
-fn control_nats_connect(url: &str) -> ployz_nats::connect::NatsConnectConfig {
-    ployz_nats::connect::NatsConnectConfig {
-        url: nats_client_url(url),
-        auth: ployz_nats::connect::NatsClientAuth::NkeySeed(
-            ployz_core::nats_config::NatsUserSeed::try_new(
-                "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            )
-            .expect("test seed is valid"),
-        ),
-        trust: ployz_nats::connect::NatsTlsTrust::ClusterCa("/tmp/ployz-test-ca.pem".into()),
-        principal: ployz_core::security::NatsPrincipal::Controller,
-    }
 }
 
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {

@@ -8,8 +8,13 @@ use ployz_core::state::{
     ActiveServiceState, ActiveServiceStateKey, ExpectedActiveRoute, ExpectedActiveRouteRevision,
     ExpectedActiveService,
 };
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
+use ployz_test_support::nats::SecuredTestNats;
+use std::time::Duration;
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn active_service_state_round_trips_through_kv_core() {
@@ -717,15 +722,19 @@ fn active_machine_state_key_matches_kv_core_path() {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _server: SecuredTestNats,
     jetstream: jetstream::Context,
 }
 
+/// A secured server with the store connected as the Controller — the
+/// principal that commits active state in production.
 async fn test_nats() -> TestNats {
-    let server = nats_server::run_server("tests/configs/jetstream.conf");
-    let client = async_nats::connect(server.client_url())
+    let server = SecuredTestNats::start()
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
     let jetstream = jetstream::new(client);
     jetstream
         .create_key_value(jetstream::kv::Config {

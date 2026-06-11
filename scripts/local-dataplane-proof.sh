@@ -151,6 +151,14 @@ ployzctl="${TARGET_DIR}/debug/ployzctl"
 keeper="${TARGET_DIR}/debug/ployz-keeper"
 ebpf_ctl="${TARGET_DIR}/debug/ployz-ebpf-ctl"
 nats_server="/usr/local/bin/nats-server"
+# Keeper install leaves the operator credential and cluster CA at the
+# well-known material paths; every ployzctl call on the core authenticates
+# with them over TLS.
+core_ctl="PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/operator.seed ${ployzctl} --nats tls://127.0.0.1:4222"
+# A syntactically valid PEM stand-in: the join template must parse when
+# ployzd-control first starts, before the cluster CA exists. It is replaced
+# with the real CA (and control restarted) right after keeper install.
+placeholder_ca_json='-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n'
 
 docker rm -f "${core_machine}" "${edge_machine}" >/dev/null 2>&1 || true
 docker network rm "${proof_net}" >/dev/null 2>&1 || true
@@ -211,9 +219,10 @@ start_machine() {
 
 write_join_template() {
   local runtime_nats_url="$1"
-  local ployzd_sha="$2"
-  local ebpf_bytecode_sha="$3"
-  local ebpf_ctl_sha="$4"
+  local ca_pem_json="$2"
+  local ployzd_sha="$3"
+  local ebpf_bytecode_sha="$4"
+  local ebpf_ctl_sha="$5"
   docker exec -i "${core_machine}" bash -lc "cat > /tmp/ployz-join-template.json" <<JSON
 {
   "join_bundle": {
@@ -221,8 +230,8 @@ write_join_template() {
       "cluster_name": "local-dind",
       "runtime_nats_url": "${runtime_nats_url}",
       "trusted_nats": {
-        "server_name": "server_1",
-        "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
+        "server_name": "core_1",
+        "ca_pem": "${ca_pem_json}"
       },
       "ployzd": {
         "version": "local",
@@ -243,9 +252,6 @@ write_join_template() {
         "install_path": "/usr/local/bin/ployz-ebpf-ctl"
       }
     }
-  },
-  "secret_delivery": {
-    "nats_credentials": "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   }
 }
 JSON
@@ -259,18 +265,17 @@ machine_ip() {
 
 start_nats_and_control() {
   local core_ip="$1"
-  local core_nats_url="nats://${core_ip}:4222"
+  local core_nats_url="tls://${core_ip}:4222"
   local ployzd_sha
-  local keeper_sha
   local ebpf_bytecode_sha
   local ebpf_ctl_sha
   local nats_sha
+  local real_ca_json
   ployzd_sha="$(docker exec "${core_machine}" sha256sum "${ployzd}" | cut -d" " -f1)"
-  keeper_sha="$(docker exec "${core_machine}" sha256sum "${keeper}" | cut -d" " -f1)"
   ebpf_bytecode_sha="$(docker exec "${core_machine}" sha256sum "${ebpf_bytecode}" | cut -d" " -f1)"
   ebpf_ctl_sha="$(docker exec "${core_machine}" sha256sum "${ebpf_ctl}" | cut -d" " -f1)"
   nats_sha="$(docker exec "${core_machine}" sha256sum "${nats_server}" | cut -d" " -f1)"
-  write_join_template "${core_nats_url}" "${ployzd_sha}" "${ebpf_bytecode_sha}" "${ebpf_ctl_sha}"
+  write_join_template "${core_nats_url}" "${placeholder_ca_json}" "${ployzd_sha}" "${ebpf_bytecode_sha}" "${ebpf_ctl_sha}"
   docker exec -i "${core_machine}" bash -lc "cat > /tmp/ployz-first-node-install.json" <<JSON
 {
   "node_id": "core_1",
@@ -308,10 +313,15 @@ start_nats_and_control() {
 }
 JSON
   docker exec "${core_machine}" bash -lc "${ployzctl} init --run-keeper-install --install-spec /tmp/ployz-first-node-install.json --keeper-binary ${keeper} >/tmp/ployz-init.log 2>&1"
-  docker exec "${core_machine}" bash -lc "sed -i 's/^host: 127.0.0.1$/host: 0.0.0.0/' /etc/nats/nats-server.conf && systemctl restart nats-server ployzd-control ployzd-node-core_1 ployzd-gateway"
+  # The keeper minted the cluster CA during install; the join template can
+  # only carry the real CA now. Re-render it and restart the (disposable)
+  # control role so machine-add bundles hand out the trusted CA.
+  real_ca_json="$(docker exec "${core_machine}" awk '{printf "%s\\n", $0}' /var/lib/ployz/nats/ca.pem)"
+  write_join_template "${core_nats_url}" "${real_ca_json}" "${ployzd_sha}" "${ebpf_bytecode_sha}" "${ebpf_ctl_sha}"
+  docker exec "${core_machine}" systemctl restart ployzd-control
   for _ in $(seq 1 120); do
-    if docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 machine list >/tmp/ployz-machine-list.log 2>&1"; then
-      docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 init activate-first-node --node core_1 --gateway >/tmp/ployz-activate.log 2>&1"
+    if docker exec "${core_machine}" bash -lc "${core_ctl} machine list >/tmp/ployz-machine-list.log 2>&1"; then
+      docker exec "${core_machine}" bash -lc "${core_ctl} init activate-first-node --node core_1 --gateway >/tmp/ployz-activate.log 2>&1"
       return 0
     fi
     sleep 0.5
@@ -325,14 +335,37 @@ JSON
   return 1
 }
 
+# Reads one env assignment off the machine-add install command line
+# (values may or may not be shell-quoted).
+install_line_env() {
+  local line="$1"
+  local name="$2"
+  printf '%s\n' "${line}" | grep -o "${name}=[^ ]*" | head -n 1 | sed "s/^${name}=//; s/^'//; s/'\$//"
+}
+
 join_edge_machine() {
   local edge_ip="$1"
+  local add_output
+  local install_line
   local join_token
+  local nats_url
+  local nats_ca_b64
+  local join_seed
   local keeper_sha
-  join_token="$(docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 machine add --node edge_2 --name edge-2 --gateway --operation op_add_edge_2 --idempotency-key idem_add_edge_2" | awk '/^join-token / {print $2}')"
+  add_output="$(docker exec "${core_machine}" bash -lc "${core_ctl} machine add --node edge_2 --name edge-2 --gateway --operation op_add_edge_2 --idempotency-key idem_add_edge_2")"
+  join_token="$(printf '%s\n' "${add_output}" | awk '/^join-token / {print $2}')"
+  install_line="$(printf '%s\n' "${add_output}" | sed -n 's/^install //p')"
+  # The edge joins with exactly the material the product printed: the
+  # runtime NATS URL, the cluster CA, and the low-privilege Join seed.
+  nats_url="$(install_line_env "${install_line}" PLOYZ_NATS_URL)"
+  nats_ca_b64="$(install_line_env "${install_line}" PLOYZ_NATS_CA_B64)"
+  join_seed="$(install_line_env "${install_line}" PLOYZ_JOIN_NKEY_SEED)"
   test -n "${join_token}"
+  test -n "${nats_url}"
+  test -n "${nats_ca_b64}"
+  test -n "${join_seed}"
   keeper_sha="$(docker exec "${edge_machine}" sha256sum "${keeper}" | cut -d" " -f1)"
-  if ! docker exec "${edge_machine}" bash -lc "PLOYZ_KEEPER_URL=file://${keeper} PLOYZ_KEEPER_SHA256=${keeper_sha} PLOYZ_NATS_URL=nats://$(machine_ip "${core_machine}"):4222 PLOYZ_NODE_PUBLIC_IP=${edge_ip} sh /work/scripts/ployz.sh --join-token ${join_token} >/tmp/ployz-edge-join.log 2>&1"; then
+  if ! docker exec "${edge_machine}" bash -lc "PLOYZ_KEEPER_URL=file://${keeper} PLOYZ_KEEPER_SHA256=${keeper_sha} PLOYZ_NATS_URL=${nats_url} PLOYZ_NATS_CA_B64=${nats_ca_b64} PLOYZ_JOIN_NKEY_SEED=${join_seed} PLOYZ_NODE_PUBLIC_IP=${edge_ip} sh /work/scripts/ployz.sh --join-token ${join_token} >/tmp/ployz-edge-join.log 2>&1"; then
     docker exec "${edge_machine}" cat /tmp/ployz-edge-join.log >&2 || true
     docker exec "${edge_machine}" systemctl status ployzd-node-edge_2 ployzd-gateway --no-pager >&2 || true
     docker exec "${edge_machine}" journalctl -u ployzd-node-edge_2 -u ployzd-gateway --no-pager -n 160 >&2 || true
@@ -348,7 +381,7 @@ prepare_machine_dataplane() {
 
 wait_for_processes_to_publish() {
   for _ in $(seq 1 120); do
-    if docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 machine inspect edge_2 | grep -q \"containers 0\"" >/dev/null 2>&1; then
+    if docker exec "${core_machine}" bash -lc "${core_ctl} machine inspect edge_2 | grep -q \"containers 0\"" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.5
@@ -376,9 +409,9 @@ start_nats_and_control "${core_ip}"
 join_edge_machine "${edge_ip}"
 wait_for_processes_to_publish
 
-docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 deploy --detach --service svc_smoke --revision rev_local --image ${smoke_image} --replicas 2 --operation op_local_dind --idempotency-key idem_local_dind --route-hostname smoke.local --route-port ${route_port} --endpoint-port ${endpoint_port}"
-docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 ops watch op_local_dind --json" | tee /tmp/ployz-local-dind-events.jsonl
-docker exec "${core_machine}" bash -lc "${ployzctl} --nats nats://127.0.0.1:4222 ops status op_local_dind" | tee /tmp/ployz-local-dind-status.txt
+docker exec "${core_machine}" bash -lc "${core_ctl} deploy --detach --service svc_smoke --revision rev_local --image ${smoke_image} --replicas 2 --operation op_local_dind --idempotency-key idem_local_dind --route-hostname smoke.local --route-port ${route_port} --endpoint-port ${endpoint_port}"
+docker exec "${core_machine}" bash -lc "${core_ctl} ops watch op_local_dind --json" | tee /tmp/ployz-local-dind-events.jsonl
+docker exec "${core_machine}" bash -lc "${core_ctl} ops status op_local_dind" | tee /tmp/ployz-local-dind-status.txt
 grep -q "state completed" /tmp/ployz-local-dind-status.txt
 grep -q "deploy.wireguard_ebpf_prepared" /tmp/ployz-local-dind-events.jsonl
 assert_gateway "${core_host_port}"

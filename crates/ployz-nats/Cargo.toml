@@ -18,7 +18,6 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-nats_server = { git = "https://github.com/nats-io/nats.rs", package = "nats-server" }
 ployz-test-support.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 

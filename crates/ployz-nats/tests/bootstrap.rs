@@ -1,9 +1,15 @@
+use std::time::Duration;
+
 use ployz_nats::bootstrap::{
     BootstrapPlan, BootstrapRefusal, BootstrapResourceAction, BootstrapResourceRefusal,
     ExistingResources, NatsServerCapabilities, ResourceReplicas, assure_nats_resources,
 };
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::schedules::NatsServerVersion;
 use ployz_nats::streams::{DiscardPolicy, RetentionPolicy};
+use ployz_test_support::nats::SecuredTestNats;
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn supported_single_core_plan() -> BootstrapPlan {
     BootstrapPlan::for_single_core(single_capabilities(NatsServerVersion::new(2, 14, 2), true))
@@ -136,10 +142,12 @@ fn reboot_bootstrap_adopts_existing_resources() {
 
 #[tokio::test]
 async fn bootstrap_assurance_adopts_resources_created_by_parallel_startup() {
-    let server = nats_server::run_server("tests/configs/jetstream.conf");
-    let client = async_nats::connect(server.client_url())
+    let server = SecuredTestNats::start()
         .await
-        .expect("connect to test nats");
+        .expect("secured test nats starts");
+    let client = connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
     let jetstream = async_nats::jetstream::new(client);
     let plan = supported_single_core_plan();
 

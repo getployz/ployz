@@ -5,8 +5,13 @@ use ployz_core::node::{
     NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
 };
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
+use ployz_test_support::nats::SecuredTestNats;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Duration;
+
+const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn container_observation_store_writes_latest_container_to_kv_obs() {
@@ -258,23 +263,34 @@ async fn missing_container_observation_returns_none() {
 }
 
 struct TestNats {
-    _server: nats_server::Server,
+    _server: SecuredTestNats,
     jetstream: jetstream::Context,
 }
 
+/// A secured server where the bucket is bootstrapped by the Controller and
+/// the observation store connects as a Node — the principal that writes
+/// observations in production.
 async fn test_nats() -> TestNats {
-    let server = nats_server::run_server("tests/configs/jetstream.conf");
-    let client = async_nats::connect(server.client_url())
+    let server = SecuredTestNats::start_with_nodes(&[node_id("node_7"), node_id("node_8")])
         .await
-        .expect("connect to test nats");
-    let jetstream = jetstream::new(client);
-    jetstream
+        .expect("secured test nats starts");
+    let controller = connect_authenticated(&server.controller_config(), TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("controller connects");
+    jetstream::new(controller)
         .create_key_value(jetstream::kv::Config {
             bucket: KV_OBS_BUCKET.to_owned(),
             ..Default::default()
         })
         .await
         .expect("create KV_OBS bucket");
+    let node_config = server
+        .node_config(&node_id("node_7"))
+        .expect("fixture mints the node user");
+    let node_client = connect_authenticated(&node_config, TEST_NATS_CONNECT_TIMEOUT)
+        .await
+        .expect("node connects");
+    let jetstream = jetstream::new(node_client);
 
     TestNats {
         _server: server,

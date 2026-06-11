@@ -1026,20 +1026,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nats-server"
-version = "0.1.0"
-source = "git+https://github.com/nats-io/nats.rs#a1b29becd2e811bc9f0b43a192dc2fc5898b77fc"
-dependencies = [
- "lazy_static",
- "nuid",
- "rand 0.10.1",
- "regex",
- "serde_json",
- "tokio-retry",
- "url",
-]
-
-[[package]]
 name = "nkeys"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1231,7 +1217,6 @@ name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
  "async-nats",
- "nats-server",
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",
@@ -1239,6 +1224,7 @@ dependencies = [
  "ployzctl",
  "ployzd",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1283,7 +1269,6 @@ version = "0.1.0"
 dependencies = [
  "async-nats",
  "futures-util",
- "nats-server",
  "ployz-core",
  "ployz-sdk-types",
  "ployz-test-support",
@@ -1971,17 +1956,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tokio-retry"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40f644c762e9d396831ae2f8935c954b0d758c4532e924bead0f666d0c1c8640"
-dependencies = [
- "pin-project-lite",
- "rand 0.10.1",
- "tokio",
 ]
 
 [[package]]
