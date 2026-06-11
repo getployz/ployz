@@ -3,7 +3,8 @@
 use crate::backup_runtime::BackupOperationRuntime;
 use crate::controllers::{
     BackupCreateCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, OperationControllers,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineAddSubmitCommandError,
+    OperationControllers, SubmitCommandError,
 };
 use crate::deploy_runtime::DeployOperationRuntime;
 use crate::nats_authorization::{MachineCredentialMintRuntime, MintRequest, write_node_seed_file};
@@ -14,8 +15,8 @@ use ployz_core::machine::{
     MachineName, RawJoinToken, active_machine_from_completed_add, plan_first_node_activation,
 };
 use ployz_core::ops::{
-    OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot, ProjectionOperationState, StatusProjectionError,
+    EventSequence, OperationEventReplayPage, OperationEventReplayRequest, OperationOwnerLease,
+    OperationStatus, OperationStatusSnapshot, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_core::state::ActiveMachineState;
@@ -30,14 +31,11 @@ use ployz_nats::operations::{
     OperationStatusReadError, OperationStatusStoreError, RecordMachineAddEventError,
     RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
-    ReplayOperationEventsError, SubmitBackupError as SubmitBackupRepositoryError,
-    SubmitDeployError as SubmitDeployRepositoryError,
-    SubmitMachineAddError as SubmitMachineAddRepositoryError,
+    ReplayOperationEventsError, SubmitOperationError,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, BackupCreateError, BackupCreateRequest, BackupCreateUnavailableSource,
-    BootstrapMaterialFailure, DeploySubmitError, DeploySubmitRequest,
-    DeploySubmitUnavailableSource, EventReplayFailure, InitFirstNodeActivateError,
+    AcceptedOperation, BackupCreateError, BackupCreateRequest, BootstrapMaterialFailure,
+    DeploySubmitError, DeploySubmitRequest, EventReplayFailure, InitFirstNodeActivateError,
     InitFirstNodeActivateRequest, InitFirstNodeActivated, LogsTailError, LogsTailRequest,
     LogsTailResult, LogsTailUnavailableSource, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineAddUnavailableSource, MachineInspectError, MachineInspectRequest,
@@ -47,9 +45,10 @@ use ployz_sdk_types::{
     MachineJoinReportUnavailableSource, MachineJoinReported, MachineJoinToken, MachineListError,
     MachineListRequest, MachineListResult, MachineQueryUnavailableSource, MachineSnapshot,
     OperationSubmitClockFailure, OperationSubmitEventFailure, OperationSubmitStatusFailure,
-    OpsStatusError, OpsStatusUnavailableSource, OpsWatchError, OpsWatchUnavailableSource,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
-    ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot, StatusReadFailure,
+    OperationSubmitUnavailableSource, OpsStatusError, OpsStatusUnavailableSource, OpsWatchError,
+    OpsWatchUnavailableSource, ServiceInspectError, ServiceInspectRequest, ServiceListError,
+    ServiceListRequest, ServiceListResult, ServiceQueryUnavailableSource, ServiceSnapshot,
+    StatusReadFailure,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -859,7 +858,15 @@ async fn repair_completed_machine_join_report(
     }))
 }
 
-fn completed_machine_add_operation_id(error: &RecordMachineJoinReportError) -> Option<OperationId> {
+/// The (operation id, machine-add state) pair when recording a join
+/// report failed because the operation already sits in a conflicting
+/// machine-add state (invalid transition or terminal).
+fn machine_add_state_conflict(
+    error: &RecordMachineJoinReportError,
+) -> Option<(
+    OperationId,
+    ployz_core::machine::MachineAddOperationStateName,
+)> {
     let RecordMachineJoinReportError::RecordMachineAddEvent(
         RecordMachineAddEventError::ProjectStatus(
             StatusProjectionError::InvalidTransition {
@@ -880,11 +887,14 @@ fn completed_machine_add_operation_id(error: &RecordMachineJoinReportError) -> O
     let ProjectionOperationState::MachineAdd(state) = current.as_ref() else {
         return None;
     };
-    if state.name() == ployz_core::machine::MachineAddOperationStateName::Completed {
-        Some(operation_id.clone())
-    } else {
-        None
-    }
+    Some((operation_id.clone(), state.name()))
+}
+
+fn completed_machine_add_operation_id(error: &RecordMachineJoinReportError) -> Option<OperationId> {
+    machine_add_state_conflict(error).and_then(|(operation_id, state)| {
+        (state == ployz_core::machine::MachineAddOperationStateName::Completed)
+            .then_some(operation_id)
+    })
 }
 
 async fn activate_reported_machine(
@@ -950,36 +960,15 @@ fn machine_join_report_error(error: RecordMachineJoinReportError) -> MachineJoin
         RecordMachineJoinReportError::UnknownJoinToken => {
             return MachineJoinReportError::UnknownJoinToken;
         }
-        RecordMachineJoinReportError::RecordMachineAddEvent(error) => match error {
-            RecordMachineAddEventError::ProjectStatus(
-                StatusProjectionError::InvalidTransition {
-                    operation_id,
-                    current,
-                    ..
-                }
-                | StatusProjectionError::TerminalState {
-                    operation_id,
-                    current,
-                    ..
-                },
-            ) => {
-                if let ProjectionOperationState::MachineAdd(state) = current.as_ref() {
-                    return MachineJoinReportError::OperationNotJoining {
-                        operation_id: operation_id.clone(),
-                        current: state.name(),
-                    };
-                }
-            }
-            RecordMachineAddEventError::LoadStatus(_)
-            | RecordMachineAddEventError::StoreStatus(_)
-            | RecordMachineAddEventError::MissingOperation { .. }
-            | RecordMachineAddEventError::ProjectStatus(_)
-            | RecordMachineAddEventError::AppendEvent(_)
-            | RecordMachineAddEventError::StoredEventMismatch { .. }
-            | RecordMachineAddEventError::StatusProjectionContended => {}
-        },
-        RecordMachineJoinReportError::StoreStatus(_)
+        RecordMachineJoinReportError::RecordMachineAddEvent(_)
+        | RecordMachineJoinReportError::StoreStatus(_)
         | RecordMachineJoinReportError::JoinTokenMismatch { .. } => {}
+    }
+    if let Some((operation_id, current)) = machine_add_state_conflict(&error) {
+        return MachineJoinReportError::OperationNotJoining {
+            operation_id,
+            current,
+        };
     }
 
     MachineJoinReportError::Unavailable {
@@ -1052,30 +1041,46 @@ fn machine_join_redeem_error_from_repository_error(
     }
 }
 
+/// The endpoint-independent core of a submit command failure: either an
+/// unavailable source or the duplicate-sequence collision.
+enum SubmitFailure {
+    Unavailable(OperationSubmitUnavailableSource),
+    DuplicateSequenceMismatch { sequence: EventSequence },
+}
+
+fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
+    match error {
+        SubmitCommandError::Clock { .. } => {
+            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::Clock {
+                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
+            })
+        }
+        SubmitCommandError::Submit(SubmitOperationError::AppendEvent(source)) => {
+            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::EventLog {
+                failure: operation_submit_event_failure(&source),
+            })
+        }
+        SubmitCommandError::Submit(SubmitOperationError::StoreStatus(source)) => {
+            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::StatusStore {
+                failure: operation_submit_status_failure(&source),
+            })
+        }
+        SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
+            sequence,
+        }) => SubmitFailure::DuplicateSequenceMismatch { sequence },
+    }
+}
+
 fn deploy_submit_error_from_submit_error(
     operation_id: OperationId,
-    error: SubmitDeployRepositoryError,
+    error: SubmitCommandError,
 ) -> DeploySubmitError {
-    match error {
-        SubmitDeployRepositoryError::AppendEvent(source) => DeploySubmitError::Unavailable {
+    match submit_failure(error) {
+        SubmitFailure::Unavailable(source) => DeploySubmitError::Unavailable {
             operation_id,
-            source: DeploySubmitUnavailableSource::EventLog {
-                failure: operation_submit_event_failure(&source),
-            },
+            source,
         },
-        SubmitDeployRepositoryError::StoreStatus(source) => DeploySubmitError::Unavailable {
-            operation_id,
-            source: DeploySubmitUnavailableSource::StatusStore {
-                failure: operation_submit_status_failure(&source),
-            },
-        },
-        SubmitDeployRepositoryError::Clock { .. } => DeploySubmitError::Unavailable {
-            operation_id,
-            source: DeploySubmitUnavailableSource::Clock {
-                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
-            },
-        },
-        SubmitDeployRepositoryError::DuplicateSequenceMismatch { sequence } => {
+        SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             DeploySubmitError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,
@@ -1086,28 +1091,14 @@ fn deploy_submit_error_from_submit_error(
 
 fn backup_create_error_from_submit_error(
     operation_id: OperationId,
-    error: SubmitBackupRepositoryError,
+    error: SubmitCommandError,
 ) -> BackupCreateError {
-    match error {
-        SubmitBackupRepositoryError::AppendEvent(source) => BackupCreateError::Unavailable {
+    match submit_failure(error) {
+        SubmitFailure::Unavailable(source) => BackupCreateError::Unavailable {
             operation_id,
-            source: BackupCreateUnavailableSource::EventLog {
-                failure: operation_submit_event_failure(&source),
-            },
+            source,
         },
-        SubmitBackupRepositoryError::StoreStatus(source) => BackupCreateError::Unavailable {
-            operation_id,
-            source: BackupCreateUnavailableSource::StatusStore {
-                failure: operation_submit_status_failure(&source),
-            },
-        },
-        SubmitBackupRepositoryError::Clock { .. } => BackupCreateError::Unavailable {
-            operation_id,
-            source: BackupCreateUnavailableSource::Clock {
-                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
-            },
-        },
-        SubmitBackupRepositoryError::DuplicateSequenceMismatch { sequence } => {
+        SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             BackupCreateError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,
@@ -1118,34 +1109,25 @@ fn backup_create_error_from_submit_error(
 
 fn machine_add_error_from_submit_error(
     operation_id: OperationId,
-    error: SubmitMachineAddRepositoryError,
+    error: MachineAddSubmitCommandError,
 ) -> MachineAddError {
-    match error {
-        SubmitMachineAddRepositoryError::AppendEvent(source) => MachineAddError::Unavailable {
+    let submit = match error {
+        MachineAddSubmitCommandError::JoinTokenMismatch => {
+            return MachineAddError::Unavailable {
+                operation_id,
+                source: MachineAddUnavailableSource::BootstrapMaterial {
+                    failure: BootstrapMaterialFailure::IssueJoinToken,
+                },
+            };
+        }
+        MachineAddSubmitCommandError::Submit(error) => error,
+    };
+    match submit_failure(submit) {
+        SubmitFailure::Unavailable(source) => MachineAddError::Unavailable {
             operation_id,
-            source: MachineAddUnavailableSource::EventLog {
-                failure: operation_submit_event_failure(&source),
-            },
+            source: source.into(),
         },
-        SubmitMachineAddRepositoryError::StoreStatus(source) => MachineAddError::Unavailable {
-            operation_id,
-            source: MachineAddUnavailableSource::StatusStore {
-                failure: operation_submit_status_failure(&source),
-            },
-        },
-        SubmitMachineAddRepositoryError::Clock { .. } => MachineAddError::Unavailable {
-            operation_id,
-            source: MachineAddUnavailableSource::Clock {
-                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
-            },
-        },
-        SubmitMachineAddRepositoryError::JoinTokenMismatch => MachineAddError::Unavailable {
-            operation_id,
-            source: MachineAddUnavailableSource::BootstrapMaterial {
-                failure: BootstrapMaterialFailure::IssueJoinToken,
-            },
-        },
-        SubmitMachineAddRepositoryError::DuplicateSequenceMismatch { sequence } => {
+        SubmitFailure::DuplicateSequenceMismatch { sequence } => {
             MachineAddError::DuplicateSequenceMismatch {
                 operation_id,
                 sequence,
@@ -1389,16 +1371,16 @@ mod tests {
         deploy_submit_error_from_submit_error, ops_watch_error_from_replay_error,
         status_read_failure,
     };
+    use crate::controllers::SubmitCommandError;
     use ployz_core::ids::OperationId;
     use ployz_core::ops::EventSequence;
     use ployz_nats::operations::{
         OperationEventLogError, OperationEventReplayReadError, OperationStatusReadError,
-        OperationStatusStoreError, ReplayOperationEventsError,
-        SubmitDeployError as SubmitDeployRepositoryError,
+        OperationStatusStoreError, ReplayOperationEventsError, SubmitOperationError,
     };
     use ployz_sdk_types::{
-        DeploySubmitError, DeploySubmitUnavailableSource, EventReplayFailure,
-        OperationSubmitEventFailure, OperationSubmitStatusFailure, OpsWatchError,
+        DeploySubmitError, EventReplayFailure, OperationSubmitEventFailure,
+        OperationSubmitStatusFailure, OperationSubmitUnavailableSource, OpsWatchError,
         OpsWatchUnavailableSource, StatusReadFailure,
     };
 
@@ -1409,13 +1391,15 @@ mod tests {
         assert_eq!(
             deploy_submit_error_from_submit_error(
                 operation_id.clone(),
-                SubmitDeployRepositoryError::StoreStatus(OperationStatusStoreError::CasConflict {
-                    message: "contended".to_owned(),
-                }),
+                SubmitCommandError::Submit(SubmitOperationError::StoreStatus(
+                    OperationStatusStoreError::CasConflict {
+                        message: "contended".to_owned(),
+                    },
+                )),
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                source: DeploySubmitUnavailableSource::StatusStore {
+                source: OperationSubmitUnavailableSource::StatusStore {
                     failure: OperationSubmitStatusFailure::CasConflict,
                 },
             }
@@ -1429,13 +1413,15 @@ mod tests {
         assert_eq!(
             deploy_submit_error_from_submit_error(
                 operation_id.clone(),
-                SubmitDeployRepositoryError::AppendEvent(OperationEventLogError::PublishRequest {
-                    message: "publish unavailable".to_owned(),
-                }),
+                SubmitCommandError::Submit(SubmitOperationError::AppendEvent(
+                    OperationEventLogError::PublishRequest {
+                        message: "publish unavailable".to_owned(),
+                    },
+                )),
             ),
             DeploySubmitError::Unavailable {
                 operation_id,
-                source: DeploySubmitUnavailableSource::EventLog {
+                source: OperationSubmitUnavailableSource::EventLog {
                     failure: OperationSubmitEventFailure::PublishRequest,
                 },
             }
@@ -1449,9 +1435,9 @@ mod tests {
         assert_eq!(
             deploy_submit_error_from_submit_error(
                 operation_id.clone(),
-                SubmitDeployRepositoryError::DuplicateSequenceMismatch {
+                SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
                     sequence: event_sequence(9),
-                },
+                }),
             ),
             DeploySubmitError::DuplicateSequenceMismatch {
                 operation_id,

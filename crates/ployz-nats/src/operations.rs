@@ -25,8 +25,8 @@ pub use repository::{
     RecordCertEventError, RecordDeployEvidenceError, RecordDeployTransitionError,
     RecordLifecycleEventError, RecordMachineAddEventError, RecordMachineJoinReportError,
     RecordOperationEventError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
-    RedeemedMachineJoin, ReplayOperationEventsError, StoredEventMismatchKind, SubmitBackupError,
-    SubmitCertError, SubmitDeployError, SubmitMachineAddError,
+    RedeemedMachineJoin, ReplayOperationEventsError, StoredEventMismatchKind,
+    SubmitMachineAddError, SubmitOperationError,
 };
 pub use status_store::{
     AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,

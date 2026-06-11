@@ -529,6 +529,18 @@ pub enum MachineAddUnavailableSource {
     },
 }
 
+impl From<OperationSubmitUnavailableSource> for MachineAddUnavailableSource {
+    fn from(value: OperationSubmitUnavailableSource) -> Self {
+        match value {
+            OperationSubmitUnavailableSource::StatusStore { failure } => {
+                Self::StatusStore { failure }
+            }
+            OperationSubmitUnavailableSource::EventLog { failure } => Self::EventLog { failure },
+            OperationSubmitUnavailableSource::Clock { failure } => Self::Clock { failure },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum BootstrapMaterialFailure {
@@ -612,7 +624,7 @@ pub struct AcceptedOperation {
 pub enum DeploySubmitError {
     Unavailable {
         operation_id: OperationId,
-        source: DeploySubmitUnavailableSource,
+        source: OperationSubmitUnavailableSource,
     },
     DuplicateSequenceMismatch {
         operation_id: OperationId,
@@ -625,7 +637,7 @@ pub enum DeploySubmitError {
 pub enum BackupCreateError {
     Unavailable {
         operation_id: OperationId,
-        source: BackupCreateUnavailableSource,
+        source: OperationSubmitUnavailableSource,
     },
     DuplicateSequenceMismatch {
         operation_id: OperationId,
@@ -633,23 +645,11 @@ pub enum BackupCreateError {
     },
 }
 
+/// The shared unavailable source for operation submits (deploy, backup,
+/// and the submit core of machine-add).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BackupCreateUnavailableSource {
-    StatusStore {
-        failure: OperationSubmitStatusFailure,
-    },
-    EventLog {
-        failure: OperationSubmitEventFailure,
-    },
-    Clock {
-        failure: OperationSubmitClockFailure,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DeploySubmitUnavailableSource {
+pub enum OperationSubmitUnavailableSource {
     StatusStore {
         failure: OperationSubmitStatusFailure,
     },

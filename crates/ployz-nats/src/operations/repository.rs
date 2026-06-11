@@ -11,8 +11,7 @@ pub use submission::{
     AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
     AcceptedMachineAddSubmission, BackupOperationSubmission, CertOperationSubmission,
     DeployOperationSubmission, MachineAddOperationSubmission, OperationLeaseClaim,
-    OperationLeaseClaimError, SubmitBackupError, SubmitCertError, SubmitDeployError,
-    SubmitMachineAddError,
+    OperationLeaseClaimError, SubmitMachineAddError, SubmitOperationError,
 };
 
 use ployz_core::ids::{CertId, NodeId, OperationId};

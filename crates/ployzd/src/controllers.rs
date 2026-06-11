@@ -22,8 +22,7 @@ use ployz_nats::operations::{
     OperationStatusStoreError, OperationStatusWrite, RecordBackupEventError,
     RecordDeployEvidenceError, RecordDeployTransitionError, RecordMachineAddEventError,
     RecordMachineJoinReportError, RecordedMachineJoinReport, RedeemMachineJoinTokenError,
-    ReplayOperationEventsError, StoredOperationEvent, SubmitBackupError, SubmitDeployError,
-    SubmitMachineAddError,
+    ReplayOperationEventsError, StoredOperationEvent, SubmitMachineAddError, SubmitOperationError,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -159,7 +158,7 @@ impl OperationControllers {
     pub async fn submit_deploy(
         &self,
         command: DeploySubmitCommand,
-    ) -> Result<AcceptedDeployOperation, SubmitDeployError> {
+    ) -> Result<AcceptedDeployOperation, SubmitCommandError> {
         let submitted = self
             .repository
             .submit_deploy(
@@ -184,7 +183,7 @@ impl OperationControllers {
     pub async fn submit_machine_add(
         &self,
         command: MachineAddSubmitCommand,
-    ) -> Result<AcceptedMachineAddOperation, SubmitMachineAddError> {
+    ) -> Result<AcceptedMachineAddOperation, MachineAddSubmitCommandError> {
         let submitted = self
             .repository
             .submit_machine_add(
@@ -198,7 +197,8 @@ impl OperationControllers {
                     raw_join_token: command.raw_join_token,
                     idempotency_key: command.idempotency_key,
                 },
-                self.machine_add_lease_claim()?,
+                self.lease_claim()
+                    .map_err(MachineAddSubmitCommandError::Submit)?,
             )
             .await?;
 
@@ -239,7 +239,7 @@ impl OperationControllers {
     pub async fn submit_backup(
         &self,
         command: BackupCreateCommand,
-    ) -> Result<AcceptedBackupOperation, SubmitBackupError> {
+    ) -> Result<AcceptedBackupOperation, SubmitCommandError> {
         let submitted = self
             .repository
             .submit_backup(
@@ -247,7 +247,7 @@ impl OperationControllers {
                     operation_id: command.operation_id,
                     idempotency_key: command.idempotency_key,
                 },
-                self.backup_lease_claim()?,
+                self.lease_claim()?,
             )
             .await?;
 
@@ -517,19 +517,9 @@ fn machine_add_bootstrap_status_read_error(
 }
 
 impl OperationControllers {
-    fn lease_claim(&self) -> Result<OperationLeaseClaim, SubmitDeployError> {
+    fn lease_claim(&self) -> Result<OperationLeaseClaim, SubmitCommandError> {
         self.build_lease_claim()
-            .map_err(|message| SubmitDeployError::Clock { message })
-    }
-
-    fn machine_add_lease_claim(&self) -> Result<OperationLeaseClaim, SubmitMachineAddError> {
-        self.build_lease_claim()
-            .map_err(|message| SubmitMachineAddError::Clock { message })
-    }
-
-    fn backup_lease_claim(&self) -> Result<OperationLeaseClaim, SubmitBackupError> {
-        self.build_lease_claim()
-            .map_err(|message| SubmitBackupError::Clock { message })
+            .map_err(|message| SubmitCommandError::Clock { message })
     }
 
     fn build_lease_claim(&self) -> Result<OperationLeaseClaim, String> {
@@ -546,6 +536,40 @@ impl OperationControllers {
 
     fn current_lease_time(&self) -> Result<OperationLeaseExpiresAt, OperationLeaseClockError> {
         current_lease_time()
+    }
+}
+
+/// How a submit command fails at the controller: the repository submit
+/// failure plus the lease-clock read this process performs before
+/// submitting (`ployz-nats` never constructs a clock failure).
+#[derive(Debug)]
+pub enum SubmitCommandError {
+    Clock { message: String },
+    Submit(SubmitOperationError),
+}
+
+impl From<SubmitOperationError> for SubmitCommandError {
+    fn from(value: SubmitOperationError) -> Self {
+        Self::Submit(value)
+    }
+}
+
+/// Machine-add extends the shared submit command failure with join-token
+/// validation.
+#[derive(Debug)]
+pub enum MachineAddSubmitCommandError {
+    Submit(SubmitCommandError),
+    JoinTokenMismatch,
+}
+
+impl From<SubmitMachineAddError> for MachineAddSubmitCommandError {
+    fn from(value: SubmitMachineAddError) -> Self {
+        match value {
+            SubmitMachineAddError::Operation(error) => {
+                Self::Submit(SubmitCommandError::Submit(error))
+            }
+            SubmitMachineAddError::JoinTokenMismatch => Self::JoinTokenMismatch,
+        }
     }
 }
 

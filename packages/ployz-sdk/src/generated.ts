@@ -322,13 +322,11 @@ export type AcceptedOperation = { operation_id: OperationId, watch_subject: stri
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
-export type DeploySubmitError = { "error": "unavailable", operation_id: OperationId, source: DeploySubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type DeploySubmitError = { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type DeploySubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
+export type BackupCreateError = { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type BackupCreateError = { "error": "unavailable", operation_id: OperationId, source: BackupCreateUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
-
-export type BackupCreateUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
+export type OperationSubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
 
 export type OperationSubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "encode_lease" | "decode_lease" | "cas_conflict" | "get_status" | "clock" | "timeout";
 

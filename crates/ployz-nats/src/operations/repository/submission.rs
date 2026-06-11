@@ -10,115 +10,239 @@ use ployz_core::roles::FirstNodeGateway;
 use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
 use crate::operations::status_store::{
-    OperationStatusStoreError, StoredBackupSubmission, StoredCertSubmission,
-    StoredDeploySubmission, StoredMachineAddJoinToken, StoredMachineAddSubmission,
+    AsyncNatsOperationStatusStore, OperationStatusStoreError, StoredMachineAddJoinToken,
+    StoredMachineAddSubmission, StoredOperationSubmission,
 };
+
+/// Per-kind adapter for the shared idempotent submit flow: where the
+/// submission record lives, how to build the submitted event, recognize
+/// it on duplicate re-read, and build the accepted status.
+trait SubmitKind: Sized {
+    type Payload: Clone;
+
+    async fn submission(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredOperationSubmission>, OperationStatusStoreError>;
+
+    async fn put_submission_if_absent(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredOperationSubmission,
+    ) -> Result<StoredOperationSubmission, OperationStatusStoreError>;
+
+    fn submitted_event(
+        operation_id: OperationId,
+        payload: Self::Payload,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> OperationEventAppend;
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)>;
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus;
+
+    /// The payload as recorded by the winning submitted event. Kinds whose
+    /// payload is carried on the event re-read it; payload-free kinds skip
+    /// the read.
+    async fn stored_payload(
+        repository: &AsyncNatsOperationRepository,
+        expected_operation_id: &OperationId,
+        sequence: EventSequence,
+    ) -> Result<Self::Payload, SubmitOperationError> {
+        repository
+            .submitted_event_payload::<Self>(expected_operation_id, sequence)
+            .await
+    }
+}
+
+struct SubmittedOperation<P> {
+    operation_id: OperationId,
+    start_sequence: EventSequence,
+    payload: P,
+    lease: OperationOwnerLease,
+    should_start_execution: bool,
+}
+
+impl SubmitKind for DeployOperationSubmission {
+    type Payload = ployz_core::deploy::DeployRequest;
+
+    async fn submission(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredOperationSubmission>, OperationStatusStoreError> {
+        store.deploy_submission(idempotency_key).await
+    }
+
+    async fn put_submission_if_absent(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredOperationSubmission,
+    ) -> Result<StoredOperationSubmission, OperationStatusStoreError> {
+        store
+            .put_deploy_submission_if_absent(idempotency_key, submission)
+            .await
+    }
+
+    fn submitted_event(
+        operation_id: OperationId,
+        payload: Self::Payload,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> OperationEventAppend {
+        OperationEventAppend::deploy_submitted(operation_id, payload, idempotency_key)
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::DeploySubmitted {
+            operation_id,
+            target,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, target))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::deploy_accepted(operation_id, payload.service_id.clone(), sequence)
+    }
+}
+
+impl SubmitKind for CertOperationSubmission {
+    type Payload = CertId;
+
+    async fn submission(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredOperationSubmission>, OperationStatusStoreError> {
+        store.cert_submission(idempotency_key).await
+    }
+
+    async fn put_submission_if_absent(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredOperationSubmission,
+    ) -> Result<StoredOperationSubmission, OperationStatusStoreError> {
+        store
+            .put_cert_submission_if_absent(idempotency_key, submission)
+            .await
+    }
+
+    fn submitted_event(
+        operation_id: OperationId,
+        payload: Self::Payload,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> OperationEventAppend {
+        OperationEventAppend::cert_submitted(operation_id, payload, idempotency_key)
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::CertRenewalSubmitted {
+            operation_id,
+            cert_id,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, cert_id))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::cert_accepted(operation_id, payload.clone(), sequence)
+    }
+}
+
+impl SubmitKind for BackupOperationSubmission {
+    type Payload = ();
+
+    async fn submission(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> Result<Option<StoredOperationSubmission>, OperationStatusStoreError> {
+        store.backup_submission(idempotency_key).await
+    }
+
+    async fn put_submission_if_absent(
+        store: &AsyncNatsOperationStatusStore,
+        idempotency_key: &OperationIdempotencyKey,
+        submission: &StoredOperationSubmission,
+    ) -> Result<StoredOperationSubmission, OperationStatusStoreError> {
+        store
+            .put_backup_submission_if_absent(idempotency_key, submission)
+            .await
+    }
+
+    fn submitted_event(
+        operation_id: OperationId,
+        (): Self::Payload,
+        idempotency_key: &OperationIdempotencyKey,
+    ) -> OperationEventAppend {
+        OperationEventAppend::backup_submitted(operation_id, idempotency_key)
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::BackupCreateSubmitted { operation_id } = event else {
+            return None;
+        };
+        Some((operation_id, ()))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        (): &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::backup_accepted(operation_id, sequence)
+    }
+
+    /// Backup submissions carry no payload beyond the operation id, so
+    /// there is nothing to re-read from the stored event.
+    async fn stored_payload(
+        _repository: &AsyncNatsOperationRepository,
+        _expected_operation_id: &OperationId,
+        _sequence: EventSequence,
+    ) -> Result<Self::Payload, SubmitOperationError> {
+        Ok(())
+    }
+}
 
 impl AsyncNatsOperationRepository {
     pub async fn submit_deploy(
         &self,
         submission: DeployOperationSubmission,
         owner: OperationLeaseClaim,
-    ) -> Result<AcceptedDeploySubmission, SubmitDeployError> {
-        if let Some(existing) = self
-            .status_store
-            .deploy_submission(&submission.idempotency_key)
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?
-        {
-            let target = self
-                .submitted_deploy_target(&existing.operation_id, existing.start_sequence)
-                .await?;
-            let lease = self
-                .status_store
-                .claim_owner_lease(
-                    &existing.operation_id,
-                    owner.owner_id(),
-                    owner.now(),
-                    owner.expires_at(),
-                )
-                .await
-                .map_err(SubmitDeployError::StoreStatus)?;
-            return Ok(AcceptedDeploySubmission {
-                operation_id: existing.operation_id,
-                start_sequence: existing.start_sequence,
-                target,
-                lease,
-                should_start_execution: false,
-            });
-        }
-
-        let stored = self
-            .event_log
-            .append(OperationEventAppend::deploy_submitted(
-                submission.operation_id.clone(),
-                submission.target.clone(),
-                &submission.idempotency_key,
-            ))
-            .await
-            .map_err(SubmitDeployError::AppendEvent)?;
-        let (operation_id, target, should_start_execution) = if stored.duplicate {
-            let original = self
-                .event_log
-                .event_at_sequence(stored.sequence)
-                .await
-                .map_err(SubmitDeployError::AppendEvent)?;
-            let OperationEvent::DeploySubmitted {
+    ) -> Result<AcceptedDeploySubmission, SubmitOperationError> {
+        let DeployOperationSubmission {
+            operation_id,
+            target,
+            idempotency_key,
+        } = submission;
+        let submitted = self
+            .submit_operation::<DeployOperationSubmission>(
                 operation_id,
                 target,
-            } = original
-            else {
-                return Err(SubmitDeployError::DuplicateSequenceMismatch {
-                    sequence: stored.sequence,
-                });
-            };
-            (operation_id, target, false)
-        } else {
-            (submission.operation_id, submission.target, true)
-        };
-        let status = OperationStatus::deploy_accepted(
-            operation_id.clone(),
-            target.service_id.clone(),
-            stored.sequence,
-        );
-        self.status_store
-            .put_if_newer(&status)
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?;
-        let submitted = StoredDeploySubmission {
-            operation_id: operation_id.clone(),
-            start_sequence: stored.sequence,
-        };
-
-        let submitted = self
-            .status_store
-            .put_deploy_submission_if_absent(&submission.idempotency_key, &submitted)
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?;
-        let target = self
-            .submitted_deploy_target(&submitted.operation_id, submitted.start_sequence)
-            .await?;
-        let should_start_execution = should_start_execution
-            && submitted.operation_id == operation_id
-            && submitted.start_sequence == stored.sequence;
-
-        let lease = self
-            .status_store
-            .claim_owner_lease(
-                &submitted.operation_id,
-                owner.owner_id(),
-                owner.now(),
-                owner.expires_at(),
+                idempotency_key,
+                owner,
             )
-            .await
-            .map_err(SubmitDeployError::StoreStatus)?;
+            .await?;
 
         Ok(AcceptedDeploySubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
-            target,
-            lease,
-            should_start_execution,
+            target: submitted.payload,
+            lease: submitted.lease,
+            should_start_execution: submitted.should_start_execution,
         })
     }
 
@@ -126,97 +250,131 @@ impl AsyncNatsOperationRepository {
         &self,
         submission: CertOperationSubmission,
         owner: OperationLeaseClaim,
-    ) -> Result<AcceptedCertSubmission, SubmitCertError> {
-        if let Some(existing) = self
-            .status_store
-            .cert_submission(&submission.idempotency_key)
+    ) -> Result<AcceptedCertSubmission, SubmitOperationError> {
+        let CertOperationSubmission {
+            operation_id,
+            cert_id,
+            idempotency_key,
+        } = submission;
+        let submitted = self
+            .submit_operation::<CertOperationSubmission>(
+                operation_id,
+                cert_id,
+                idempotency_key,
+                owner,
+            )
+            .await?;
+
+        Ok(AcceptedCertSubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            cert_id: submitted.payload,
+            lease: submitted.lease,
+        })
+    }
+
+    pub async fn submit_backup(
+        &self,
+        submission: BackupOperationSubmission,
+        owner: OperationLeaseClaim,
+    ) -> Result<AcceptedBackupSubmission, SubmitOperationError> {
+        let BackupOperationSubmission {
+            operation_id,
+            idempotency_key,
+        } = submission;
+        let submitted = self
+            .submit_operation::<BackupOperationSubmission>(operation_id, (), idempotency_key, owner)
+            .await?;
+
+        Ok(AcceptedBackupSubmission {
+            operation_id: submitted.operation_id,
+            start_sequence: submitted.start_sequence,
+            lease: submitted.lease,
+            should_start_execution: submitted.should_start_execution,
+        })
+    }
+
+    /// The shared idempotent-accept flow: adopt an existing submission
+    /// record, otherwise append the submitted event (adopting a duplicate),
+    /// project the accepted status, store the submission record, and claim
+    /// the owner lease.
+    async fn submit_operation<K: SubmitKind>(
+        &self,
+        operation_id: OperationId,
+        payload: K::Payload,
+        idempotency_key: OperationIdempotencyKey,
+        owner: OperationLeaseClaim,
+    ) -> Result<SubmittedOperation<K::Payload>, SubmitOperationError> {
+        if let Some(existing) = K::submission(&self.status_store, &idempotency_key)
             .await
-            .map_err(SubmitCertError::StoreStatus)?
+            .map_err(SubmitOperationError::StoreStatus)?
         {
-            let cert_id = self
-                .submitted_cert_id(&existing.operation_id, existing.start_sequence)
-                .await?;
+            let payload =
+                K::stored_payload(self, &existing.operation_id, existing.start_sequence).await?;
             let lease = self
-                .status_store
-                .claim_owner_lease(
-                    &existing.operation_id,
-                    owner.owner_id(),
-                    owner.now(),
-                    owner.expires_at(),
-                )
-                .await
-                .map_err(SubmitCertError::StoreStatus)?;
-            return Ok(AcceptedCertSubmission {
+                .claim_submit_lease(&existing.operation_id, &owner)
+                .await?;
+            return Ok(SubmittedOperation {
                 operation_id: existing.operation_id,
                 start_sequence: existing.start_sequence,
-                cert_id,
+                payload,
                 lease,
+                should_start_execution: false,
             });
         }
 
         let stored = self
             .event_log
-            .append(OperationEventAppend::cert_submitted(
-                submission.operation_id.clone(),
-                submission.cert_id.clone(),
-                &submission.idempotency_key,
+            .append(K::submitted_event(
+                operation_id.clone(),
+                payload.clone(),
+                &idempotency_key,
             ))
             .await
-            .map_err(SubmitCertError::AppendEvent)?;
-        let (operation_id, cert_id) = if stored.duplicate {
+            .map_err(SubmitOperationError::AppendEvent)?;
+        let (operation_id, payload) = if stored.duplicate {
             let original = self
                 .event_log
                 .event_at_sequence(stored.sequence)
                 .await
-                .map_err(SubmitCertError::AppendEvent)?;
-            let OperationEvent::CertRenewalSubmitted {
-                operation_id,
-                cert_id,
-            } = original
-            else {
-                return Err(SubmitCertError::DuplicateSequenceMismatch {
+                .map_err(SubmitOperationError::AppendEvent)?;
+            K::submitted_event_parts(original).ok_or(
+                SubmitOperationError::DuplicateSequenceMismatch {
                     sequence: stored.sequence,
-                });
-            };
-            (operation_id, cert_id)
+                },
+            )?
         } else {
-            (submission.operation_id, submission.cert_id)
+            (operation_id, payload)
         };
-        let status =
-            OperationStatus::cert_accepted(operation_id.clone(), cert_id.clone(), stored.sequence);
+        let status = K::accepted_status(operation_id.clone(), &payload, stored.sequence);
         self.status_store
             .put_if_newer(&status)
             .await
-            .map_err(SubmitCertError::StoreStatus)?;
-        let submitted = StoredCertSubmission {
-            operation_id,
+            .map_err(SubmitOperationError::StoreStatus)?;
+        let candidate = StoredOperationSubmission {
+            operation_id: operation_id.clone(),
             start_sequence: stored.sequence,
         };
 
-        let submitted = self
-            .status_store
-            .put_cert_submission_if_absent(&submission.idempotency_key, &submitted)
-            .await
-            .map_err(SubmitCertError::StoreStatus)?;
-        let cert_id = self
-            .submitted_cert_id(&submitted.operation_id, submitted.start_sequence)
-            .await?;
+        let submitted =
+            K::put_submission_if_absent(&self.status_store, &idempotency_key, &candidate)
+                .await
+                .map_err(SubmitOperationError::StoreStatus)?;
+        let payload =
+            K::stored_payload(self, &submitted.operation_id, submitted.start_sequence).await?;
+        let should_start_execution = !stored.duplicate
+            && submitted.operation_id == operation_id
+            && submitted.start_sequence == stored.sequence;
         let lease = self
-            .status_store
-            .claim_owner_lease(
-                &submitted.operation_id,
-                owner.owner_id(),
-                owner.now(),
-                owner.expires_at(),
-            )
-            .await
-            .map_err(SubmitCertError::StoreStatus)?;
+            .claim_submit_lease(&submitted.operation_id, &owner)
+            .await?;
 
-        Ok(AcceptedCertSubmission {
+        Ok(SubmittedOperation {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
-            cert_id,
+            payload,
             lease,
+            should_start_execution,
         })
     }
 
@@ -243,7 +401,7 @@ impl AsyncNatsOperationRepository {
             .status_store
             .put_machine_add_submission_if_absent(&idempotency_key, &submitted_candidate)
             .await
-            .map_err(SubmitMachineAddError::StoreStatus)?;
+            .map_err(submit_machine_add_store_status)?;
         ensure_machine_add_retry_matches(&submitted, &submitted_candidate)?;
         let fingerprint =
             validate_machine_add_join_material(&submitted.raw_join_token, &submitted.join_token)?;
@@ -251,15 +409,9 @@ impl AsyncNatsOperationRepository {
             .await?;
         if let Some(start_sequence) = submitted.start_sequence {
             let lease = self
-                .status_store
-                .claim_owner_lease(
-                    &submitted.operation_id,
-                    owner.owner_id(),
-                    owner.now(),
-                    owner.expires_at(),
-                )
+                .claim_submit_lease(&submitted.operation_id, &owner)
                 .await
-                .map_err(SubmitMachineAddError::StoreStatus)?;
+                .map_err(SubmitMachineAddError::Operation)?;
             return Ok(AcceptedMachineAddSubmission {
                 operation_id: submitted.operation_id,
                 start_sequence,
@@ -284,13 +436,13 @@ impl AsyncNatsOperationRepository {
                 &idempotency_key,
             ))
             .await
-            .map_err(SubmitMachineAddError::AppendEvent)?;
+            .map_err(submit_machine_add_append_event)?;
         let operation_id = if stored.duplicate {
             let original = self
                 .event_log
                 .event_at_sequence(stored.sequence)
                 .await
-                .map_err(SubmitMachineAddError::AppendEvent)?;
+                .map_err(submit_machine_add_append_event)?;
             let OperationEvent::MachineAddSubmitted {
                 operation_id,
                 node_id,
@@ -299,18 +451,14 @@ impl AsyncNatsOperationRepository {
                 join_token,
             } = original
             else {
-                return Err(SubmitMachineAddError::DuplicateSequenceMismatch {
-                    sequence: stored.sequence,
-                });
+                return Err(submit_machine_add_duplicate_mismatch(stored.sequence));
             };
             if node_id != submitted.node_id
                 || name != submitted.name
                 || gateway != submitted.gateway
                 || join_token != submitted.join_token
             {
-                return Err(SubmitMachineAddError::DuplicateSequenceMismatch {
-                    sequence: stored.sequence,
-                });
+                return Err(submit_machine_add_duplicate_mismatch(stored.sequence));
             }
             operation_id
         } else {
@@ -327,27 +475,19 @@ impl AsyncNatsOperationRepository {
         self.status_store
             .put_if_newer(&status)
             .await
-            .map_err(SubmitMachineAddError::StoreStatus)?;
+            .map_err(submit_machine_add_store_status)?;
         let submitted = self
             .status_store
             .record_machine_add_submission_sequence(&idempotency_key, stored.sequence)
             .await
-            .map_err(SubmitMachineAddError::StoreStatus)?;
+            .map_err(submit_machine_add_store_status)?;
         if submitted.operation_id != operation_id {
-            return Err(SubmitMachineAddError::DuplicateSequenceMismatch {
-                sequence: stored.sequence,
-            });
+            return Err(submit_machine_add_duplicate_mismatch(stored.sequence));
         }
         let lease = self
-            .status_store
-            .claim_owner_lease(
-                &submitted.operation_id,
-                owner.owner_id(),
-                owner.now(),
-                owner.expires_at(),
-            )
+            .claim_submit_lease(&submitted.operation_id, &owner)
             .await
-            .map_err(SubmitMachineAddError::StoreStatus)?;
+            .map_err(SubmitMachineAddError::Operation)?;
 
         Ok(AcceptedMachineAddSubmission {
             operation_id: submitted.operation_id,
@@ -362,93 +502,40 @@ impl AsyncNatsOperationRepository {
         })
     }
 
-    pub async fn submit_backup(
+    async fn claim_submit_lease(
         &self,
-        submission: BackupOperationSubmission,
-        owner: OperationLeaseClaim,
-    ) -> Result<AcceptedBackupSubmission, SubmitBackupError> {
-        if let Some(existing) = self
-            .status_store
-            .backup_submission(&submission.idempotency_key)
-            .await
-            .map_err(SubmitBackupError::StoreStatus)?
-        {
-            let lease = self
-                .status_store
-                .claim_owner_lease(
-                    &existing.operation_id,
-                    owner.owner_id(),
-                    owner.now(),
-                    owner.expires_at(),
-                )
-                .await
-                .map_err(SubmitBackupError::StoreStatus)?;
-            return Ok(AcceptedBackupSubmission {
-                operation_id: existing.operation_id,
-                start_sequence: existing.start_sequence,
-                lease,
-                should_start_execution: false,
-            });
-        }
-
-        let stored = self
-            .event_log
-            .append(OperationEventAppend::backup_submitted(
-                submission.operation_id.clone(),
-                &submission.idempotency_key,
-            ))
-            .await
-            .map_err(SubmitBackupError::AppendEvent)?;
-        let operation_id = if stored.duplicate {
-            let original = self
-                .event_log
-                .event_at_sequence(stored.sequence)
-                .await
-                .map_err(SubmitBackupError::AppendEvent)?;
-            let OperationEvent::BackupCreateSubmitted { operation_id } = original else {
-                return Err(SubmitBackupError::DuplicateSequenceMismatch {
-                    sequence: stored.sequence,
-                });
-            };
-            operation_id
-        } else {
-            submission.operation_id
-        };
-        let status = OperationStatus::backup_accepted(operation_id.clone(), stored.sequence);
+        operation_id: &OperationId,
+        owner: &OperationLeaseClaim,
+    ) -> Result<OperationOwnerLease, SubmitOperationError> {
         self.status_store
-            .put_if_newer(&status)
-            .await
-            .map_err(SubmitBackupError::StoreStatus)?;
-        let submitted = StoredBackupSubmission {
-            operation_id: operation_id.clone(),
-            start_sequence: stored.sequence,
-        };
-
-        let submitted = self
-            .status_store
-            .put_backup_submission_if_absent(&submission.idempotency_key, &submitted)
-            .await
-            .map_err(SubmitBackupError::StoreStatus)?;
-        let lease = self
-            .status_store
             .claim_owner_lease(
-                &submitted.operation_id,
+                operation_id,
                 owner.owner_id(),
                 owner.now(),
                 owner.expires_at(),
             )
             .await
-            .map_err(SubmitBackupError::StoreStatus)?;
-        let should_start_execution = !stored.duplicate
-            && submitted.operation_id == operation_id
-            && submitted.start_sequence == stored.sequence;
+            .map_err(SubmitOperationError::StoreStatus)
+    }
 
-        Ok(AcceptedBackupSubmission {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            lease,
-            should_start_execution,
-        })
+    async fn submitted_event_payload<K: SubmitKind>(
+        &self,
+        expected_operation_id: &OperationId,
+        sequence: EventSequence,
+    ) -> Result<K::Payload, SubmitOperationError> {
+        let event = self
+            .event_log
+            .event_at_sequence(sequence)
+            .await
+            .map_err(SubmitOperationError::AppendEvent)?;
+        let Some((operation_id, payload)) = K::submitted_event_parts(event) else {
+            return Err(SubmitOperationError::DuplicateSequenceMismatch { sequence });
+        };
+        if &operation_id != expected_operation_id {
+            return Err(SubmitOperationError::DuplicateSequenceMismatch { sequence });
+        }
+
+        Ok(payload)
     }
 
     async fn index_machine_add_join_token(
@@ -467,56 +554,20 @@ impl AsyncNatsOperationRepository {
             )
             .await
             .map(|_| ())
-            .map_err(SubmitMachineAddError::StoreStatus)
+            .map_err(submit_machine_add_store_status)
     }
+}
 
-    async fn submitted_deploy_target(
-        &self,
-        expected_operation_id: &OperationId,
-        sequence: EventSequence,
-    ) -> Result<ployz_core::deploy::DeployRequest, SubmitDeployError> {
-        let event = self
-            .event_log
-            .event_at_sequence(sequence)
-            .await
-            .map_err(SubmitDeployError::AppendEvent)?;
-        let OperationEvent::DeploySubmitted {
-            operation_id,
-            target,
-        } = event
-        else {
-            return Err(SubmitDeployError::DuplicateSequenceMismatch { sequence });
-        };
-        if &operation_id != expected_operation_id {
-            return Err(SubmitDeployError::DuplicateSequenceMismatch { sequence });
-        }
+fn submit_machine_add_store_status(error: OperationStatusStoreError) -> SubmitMachineAddError {
+    SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(error))
+}
 
-        Ok(target)
-    }
+fn submit_machine_add_append_event(error: OperationEventLogError) -> SubmitMachineAddError {
+    SubmitMachineAddError::Operation(SubmitOperationError::AppendEvent(error))
+}
 
-    async fn submitted_cert_id(
-        &self,
-        expected_operation_id: &OperationId,
-        sequence: EventSequence,
-    ) -> Result<CertId, SubmitCertError> {
-        let event = self
-            .event_log
-            .event_at_sequence(sequence)
-            .await
-            .map_err(SubmitCertError::AppendEvent)?;
-        let OperationEvent::CertRenewalSubmitted {
-            operation_id,
-            cert_id,
-        } = event
-        else {
-            return Err(SubmitCertError::DuplicateSequenceMismatch { sequence });
-        };
-        if &operation_id != expected_operation_id {
-            return Err(SubmitCertError::DuplicateSequenceMismatch { sequence });
-        }
-
-        Ok(cert_id)
-    }
+const fn submit_machine_add_duplicate_mismatch(sequence: EventSequence) -> SubmitMachineAddError {
+    SubmitMachineAddError::Operation(SubmitOperationError::DuplicateSequenceMismatch { sequence })
 }
 
 fn validate_machine_add_join_material(
@@ -548,7 +599,7 @@ fn ensure_machine_add_retry_matches(
         return Ok(());
     }
 
-    Err(SubmitMachineAddError::StoreStatus(
+    Err(submit_machine_add_store_status(
         OperationStatusStoreError::CasConflict {
             message: "machine add idempotency key is already assigned to different join material"
                 .to_owned(),
@@ -687,34 +738,20 @@ pub struct AcceptedBackupSubmission {
     pub should_start_execution: bool,
 }
 
+/// How a deploy, cert, or backup submission fails inside the repository.
+/// The lease-clock failure lives with the caller that reads the clock
+/// (`ployzd` controllers); this crate never constructs it.
 #[derive(Debug)]
-pub enum SubmitDeployError {
-    AppendEvent(OperationEventLogError),
-    StoreStatus(OperationStatusStoreError),
-    Clock { message: String },
-    DuplicateSequenceMismatch { sequence: EventSequence },
-}
-
-#[derive(Debug)]
-pub enum SubmitCertError {
+pub enum SubmitOperationError {
     AppendEvent(OperationEventLogError),
     StoreStatus(OperationStatusStoreError),
     DuplicateSequenceMismatch { sequence: EventSequence },
 }
 
+/// Machine-add extends the shared submit failure with join-token
+/// validation.
 #[derive(Debug)]
 pub enum SubmitMachineAddError {
-    AppendEvent(OperationEventLogError),
-    StoreStatus(OperationStatusStoreError),
-    Clock { message: String },
-    DuplicateSequenceMismatch { sequence: EventSequence },
+    Operation(SubmitOperationError),
     JoinTokenMismatch,
-}
-
-#[derive(Debug)]
-pub enum SubmitBackupError {
-    AppendEvent(OperationEventLogError),
-    StoreStatus(OperationStatusStoreError),
-    Clock { message: String },
-    DuplicateSequenceMismatch { sequence: EventSequence },
 }
