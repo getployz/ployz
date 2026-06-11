@@ -425,7 +425,7 @@ async fn duplicate_submit_without_ownership_does_not_run_runtime_side_effects() 
     assert!(matches!(
         error,
         DeployOperationRunError::LeaseNotHeld(
-            ployzd::deploy_runtime::DeployOperationLeaseError::NoCurrentLease {
+            ployzd::operation_lease::OwnerLeaseError::NoCurrentLease {
                 operation_id: current_operation_id,
                 expected_owner,
             }
@@ -485,7 +485,7 @@ async fn expired_accepted_lease_does_not_run_runtime_side_effects() {
     assert!(matches!(
         error,
         DeployOperationRunError::LeaseNotHeld(
-            ployzd::deploy_runtime::DeployOperationLeaseError::NoCurrentLease { .. }
+            ployzd::operation_lease::OwnerLeaseError::NoCurrentLease { .. }
         )
     ));
     assert!(runtime.requests.is_empty());

@@ -18,8 +18,8 @@ use ployz_nats::operations::{
 
 use crate::controllers::OperationControllers;
 
-use super::tasks::MintTaskRegistry;
 use super::writer::{NatsAuthorizationHandle, RenderFailure};
+use crate::tasks::TaskRegistry;
 
 /// Where the mint worker test-connects with a freshly minted seed.
 #[derive(Debug, Clone)]
@@ -107,7 +107,7 @@ pub struct MachineCredentialMintRuntime {
     authorization: NatsAuthorizationHandle,
     verify: MintVerifyEndpoint,
     node_seed_file: PathBuf,
-    tasks: MintTaskRegistry,
+    tasks: TaskRegistry,
 }
 
 impl MachineCredentialMintRuntime {
@@ -118,7 +118,7 @@ impl MachineCredentialMintRuntime {
         authorization: NatsAuthorizationHandle,
         verify: MintVerifyEndpoint,
         node_seed_file: PathBuf,
-        tasks: MintTaskRegistry,
+        tasks: TaskRegistry,
     ) -> Self {
         Self {
             controllers,

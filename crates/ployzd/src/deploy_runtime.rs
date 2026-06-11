@@ -8,20 +8,16 @@ use crate::deploy_worker::{
     load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
 use crate::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use crate::operation_lease::with_advisory_operation_lease;
-use ployz_core::ids::OperationOwnerId;
-use ployz_core::ops::{
-    DeployOperationFailure, DeployTransition, FailureMessage, OperationOwnerLease, OperatorHint,
+use crate::operation_lease::{
+    OwnerLeaseError, renew_verified_owner_lease, with_advisory_operation_lease,
 };
+use crate::tasks::TaskRegistry;
+use ployz_core::ops::{DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployz_nats::operations::{
-    AcceptedDeploySubmission, OperationStatusStoreError, RecordDeployTransitionError,
-};
+use ployz_nats::operations::{AcceptedDeploySubmission, RecordDeployTransitionError};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::task::JoinHandle;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
@@ -48,7 +44,7 @@ where
         node_runtime,
         health_checker,
     } = ports;
-    renew_operation_owner_lease(&controllers, &accepted)
+    renew_verified_owner_lease(&controllers, &accepted.lease, &accepted.operation_id)
         .await
         .map_err(DeployOperationRunError::LeaseNotHeld)?;
     let lease_policy = controllers.lease_policy();
@@ -122,46 +118,6 @@ where
     .await
 }
 
-async fn renew_operation_owner_lease(
-    controllers: &OperationControllers,
-    accepted: &AcceptedDeploySubmission,
-) -> Result<OperationOwnerLease, DeployOperationLeaseError> {
-    verify_accepted_deploy_lease(&accepted.lease, &accepted.operation_id)?;
-    let Some(lease) = controllers
-        .renew_owner_lease(&accepted.operation_id)
-        .await
-        .map_err(DeployOperationLeaseError::Renew)?
-    else {
-        return Err(DeployOperationLeaseError::NoCurrentLease {
-            operation_id: accepted.operation_id.clone(),
-            expected_owner: controllers.owner_id().clone(),
-        });
-    };
-    verify_accepted_deploy_lease(&lease, &accepted.operation_id)?;
-    if lease.owner_id != *controllers.owner_id() {
-        return Err(DeployOperationLeaseError::NotCurrentOwner {
-            lease,
-            expected_owner: controllers.owner_id().clone(),
-        });
-    }
-
-    Ok(lease)
-}
-
-fn verify_accepted_deploy_lease(
-    lease: &OperationOwnerLease,
-    operation_id: &ployz_core::ids::OperationId,
-) -> Result<(), DeployOperationLeaseError> {
-    if &lease.operation_id != operation_id {
-        return Err(DeployOperationLeaseError::OperationMismatch {
-            lease: lease.clone(),
-            expected_operation_id: operation_id.clone(),
-        });
-    }
-
-    Ok(())
-}
-
 async fn record_operation_failure(
     controllers: &OperationControllers,
     accepted: &AcceptedDeploySubmission,
@@ -181,7 +137,8 @@ fn fact_load_failure(
     DeployOperationFailure::PlanningFailed {
         service_id: request.service_id.clone(),
         revision_id: request.target_revision.clone(),
-        message: operation_failure_message(fact_load_failure_message(source)),
+        message: FailureMessage::try_new(source.to_string())
+            .expect("rendered fact load failure message is non-empty"),
     }
 }
 
@@ -189,27 +146,9 @@ fn preparation_failure(request: &ployz_core::deploy::DeployRequest) -> DeployOpe
     DeployOperationFailure::PlanningFailed {
         service_id: request.service_id.clone(),
         revision_id: request.target_revision.clone(),
-        message: operation_failure_message("deploy command could not be prepared"),
+        message: FailureMessage::try_new("deploy command could not be prepared")
+            .expect("static operation failure message is non-empty"),
     }
-}
-
-fn fact_load_failure_message(source: &DeployFactLoadError) -> &'static str {
-    match source {
-        DeployFactLoadError::ActiveServiceRead { .. } => "active service state could not be loaded",
-        DeployFactLoadError::ActiveRouteRead { .. } => "active route state could not be loaded",
-        DeployFactLoadError::ActiveMachineRead { .. } => "active machines could not be loaded",
-        DeployFactLoadError::NodeObservationRead { .. } => "node observations could not be loaded",
-        DeployFactLoadError::NodePublicIpObservationRead { .. } => {
-            "node public ip observations could not be loaded"
-        }
-        DeployFactLoadError::MissingNodePublicIpObservation { .. } => {
-            "node public ip observation is missing"
-        }
-    }
-}
-
-fn operation_failure_message(message: &'static str) -> FailureMessage {
-    FailureMessage::try_new(message).expect("static operation failure message is non-empty")
 }
 
 #[derive(Debug, Clone)]
@@ -227,7 +166,7 @@ pub struct DeployOperationPorts<'a, D, N, H> {
 
 #[derive(Debug)]
 pub enum DeployOperationRunError {
-    LeaseNotHeld(DeployOperationLeaseError),
+    LeaseNotHeld(OwnerLeaseError),
     LoadFacts {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
@@ -239,23 +178,6 @@ pub enum DeployOperationRunError {
     Execute(DeployExecutionError),
 }
 
-#[derive(Debug)]
-pub enum DeployOperationLeaseError {
-    OperationMismatch {
-        lease: OperationOwnerLease,
-        expected_operation_id: ployz_core::ids::OperationId,
-    },
-    NoCurrentLease {
-        operation_id: ployz_core::ids::OperationId,
-        expected_owner: OperationOwnerId,
-    },
-    NotCurrentOwner {
-        lease: OperationOwnerLease,
-        expected_owner: OperationOwnerId,
-    },
-    Renew(OperationStatusStoreError),
-}
-
 #[derive(Debug, Clone)]
 pub struct DeployOperationRuntime {
     client: async_nats::Client,
@@ -264,7 +186,7 @@ pub struct DeployOperationRuntime {
     controllers: OperationControllers,
     node_scope: DeployExecutionNodeScope,
     step_timeout: Duration,
-    task_registry: DeployTaskRegistry,
+    task_registry: TaskRegistry,
 }
 
 impl DeployOperationRuntime {
@@ -276,7 +198,7 @@ impl DeployOperationRuntime {
         controllers: OperationControllers,
         node_scope: DeployExecutionNodeScope,
         step_timeout: Duration,
-        task_registry: DeployTaskRegistry,
+        task_registry: TaskRegistry,
     ) -> Self {
         Self {
             client,
@@ -323,32 +245,6 @@ impl DeployOperationRuntime {
             self.step_timeout,
         )
         .await
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DeployTaskRegistry {
-    handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-}
-
-impl DeployTaskRegistry {
-    pub fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
-        let mut handles = self
-            .handles
-            .lock()
-            .expect("deploy task registry lock is not poisoned");
-        handles.retain(|handle| !handle.is_finished());
-        handles.push(tokio::spawn(future));
-    }
-
-    pub fn abort_all(&self) {
-        let mut handles = self
-            .handles
-            .lock()
-            .expect("deploy task registry lock is not poisoned");
-        for handle in handles.drain(..) {
-            handle.abort();
-        }
     }
 }
 

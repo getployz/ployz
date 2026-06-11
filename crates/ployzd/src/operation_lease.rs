@@ -1,9 +1,10 @@
 //! Operation lease policy.
 
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::ops::OperationLeaseDurationSeconds;
 use ployz_core::ops::OperationOwnerLease;
 use ployz_nats::operations::OperationStatusStoreError;
+use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -76,6 +77,104 @@ impl OperationLeaseRenewer for crate::controllers::OperationControllers {
         operation_id: &OperationId,
     ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
         crate::controllers::OperationControllers::renew_owner_lease(self, operation_id).await
+    }
+}
+
+/// Verify an accepted owner lease against the operation, renew it, and verify
+/// the renewed lease still names this operation and owner.
+pub async fn renew_verified_owner_lease(
+    controllers: &crate::controllers::OperationControllers,
+    accepted_lease: &OperationOwnerLease,
+    operation_id: &OperationId,
+) -> Result<OperationOwnerLease, OwnerLeaseError> {
+    verify_lease_operation(accepted_lease, operation_id)?;
+    let Some(lease) = controllers
+        .renew_owner_lease(operation_id)
+        .await
+        .map_err(OwnerLeaseError::Renew)?
+    else {
+        return Err(OwnerLeaseError::NoCurrentLease {
+            operation_id: operation_id.clone(),
+            expected_owner: controllers.owner_id().clone(),
+        });
+    };
+    verify_lease_operation(&lease, operation_id)?;
+    if lease.owner_id != *controllers.owner_id() {
+        return Err(OwnerLeaseError::NotCurrentOwner {
+            lease,
+            expected_owner: controllers.owner_id().clone(),
+        });
+    }
+
+    Ok(lease)
+}
+
+fn verify_lease_operation(
+    lease: &OperationOwnerLease,
+    operation_id: &OperationId,
+) -> Result<(), OwnerLeaseError> {
+    if &lease.operation_id != operation_id {
+        return Err(OwnerLeaseError::OperationMismatch {
+            lease: lease.clone(),
+            expected_operation_id: operation_id.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+pub enum OwnerLeaseError {
+    OperationMismatch {
+        lease: OperationOwnerLease,
+        expected_operation_id: OperationId,
+    },
+    NoCurrentLease {
+        operation_id: OperationId,
+        expected_owner: OperationOwnerId,
+    },
+    NotCurrentOwner {
+        lease: OperationOwnerLease,
+        expected_owner: OperationOwnerId,
+    },
+    Renew(OperationStatusStoreError),
+}
+
+impl fmt::Display for OwnerLeaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OperationMismatch {
+                lease,
+                expected_operation_id,
+            } => write!(
+                formatter,
+                "lease operation {} did not match operation {}",
+                lease.operation_id.as_str(),
+                expected_operation_id.as_str()
+            ),
+            Self::NoCurrentLease {
+                operation_id,
+                expected_owner,
+            } => write!(
+                formatter,
+                "operation {} has no current owner lease for {}",
+                operation_id.as_str(),
+                expected_owner.as_str()
+            ),
+            Self::NotCurrentOwner {
+                lease,
+                expected_owner,
+            } => write!(
+                formatter,
+                "operation {} lease is held by {}, not {}",
+                lease.operation_id.as_str(),
+                lease.owner_id.as_str(),
+                expected_owner.as_str()
+            ),
+            Self::Renew(error) => {
+                write!(formatter, "owner lease could not be renewed: {error:?}")
+            }
+        }
     }
 }
 

@@ -1,18 +1,18 @@
 //! Runtime wiring for the control role.
 
 use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
-use crate::backup_runtime::{BackupOperationRuntime, BackupTaskRegistry};
+use crate::backup_runtime::BackupOperationRuntime;
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
-use crate::deploy_runtime::{DeployOperationRuntime, DeployTaskRegistry};
+use crate::deploy_runtime::DeployOperationRuntime;
 use crate::deploy_worker::DeployExecutionNodeScope;
 use crate::nats_authorization::{
-    MachineCredentialMintRuntime, MintResumeError, MintTaskRegistry, MintVerifyEndpoint,
-    NatsAuthorizationRuntime, NatsAuthorizationStartError, NatsReloadRunner,
-    SystemctlNatsReloadRunner,
+    MachineCredentialMintRuntime, MintResumeError, MintVerifyEndpoint, NatsAuthorizationRuntime,
+    NatsAuthorizationStartError, NatsReloadRunner, SystemctlNatsReloadRunner,
 };
 use crate::node::client::NatsNodeLogsTailer;
 use crate::operation_api::OperationApiHandlers;
+use crate::tasks::TaskRegistry;
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
@@ -29,9 +29,9 @@ const CONTROL_OPERATION_OWNER_ID: &str = "control";
 
 pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
-    deploy_tasks: DeployTaskRegistry,
-    backup_tasks: BackupTaskRegistry,
-    mint_tasks: MintTaskRegistry,
+    deploy_tasks: TaskRegistry,
+    backup_tasks: TaskRegistry,
+    mint_tasks: TaskRegistry,
     authorization: NatsAuthorizationRuntime,
 }
 
@@ -107,9 +107,9 @@ pub async fn start_control_runtime_with_client_and_reload(
     )
     .await
     .map_err(ControlRuntimeError::StartNatsAuthorization)?;
-    let deploy_tasks = DeployTaskRegistry::default();
-    let backup_tasks = BackupTaskRegistry::default();
-    let mint_tasks = MintTaskRegistry::default();
+    let deploy_tasks = TaskRegistry::default();
+    let backup_tasks = TaskRegistry::default();
+    let mint_tasks = TaskRegistry::default();
     let deploy_runtime = DeployOperationRuntime::new(
         client.clone(),
         core_state.clone(),

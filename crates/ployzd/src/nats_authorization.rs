@@ -15,7 +15,6 @@
 mod mint;
 mod node_seed;
 mod reload;
-mod tasks;
 mod writer;
 
 pub use mint::{
@@ -26,7 +25,6 @@ pub use reload::{
     NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
     SignalNatsReloadRunner, SystemctlNatsReloadRunner,
 };
-pub use tasks::MintTaskRegistry;
 pub use writer::{
     AuthorizedUsersFileError, NatsAuthorizationHandle, NatsAuthorizationRuntime,
     NatsAuthorizationStartError, RenderFailure, RenderPrepareFailure, RenderedAuthorization,

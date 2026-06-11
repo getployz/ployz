@@ -8,6 +8,7 @@
 
 pub mod api_runtime;
 pub mod app;
+pub mod backup_restore;
 pub mod backup_runtime;
 pub mod config;
 pub mod control_runtime;
@@ -33,3 +34,4 @@ pub mod operation_lease;
 pub mod projection;
 pub mod role;
 pub mod services;
+pub mod tasks;

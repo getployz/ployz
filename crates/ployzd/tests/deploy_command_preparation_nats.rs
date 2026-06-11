@@ -21,8 +21,8 @@ use ployz_test_support::ids::{
     container_id, node_id, operation_id, revision_id, route_port, service_id,
 };
 use ployzd::deploy_worker::{
-    ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployExecutionNodeScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -338,16 +338,10 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
         error,
         DeployFactLoadError::ActiveServiceRead {
             service_id,
-            failure:
-                ActiveServiceReadFailure::CorruptState {
-                    key: corrupt_key,
-                    expected_service_id,
-                    actual_service_id,
-                },
+            ref message,
         } if service_id == self::service_id("svc_api")
-            && corrupt_key == key.as_str()
-            && expected_service_id == self::service_id("svc_api")
-            && actual_service_id == self::service_id("svc_worker")
+            && message.contains(key.as_str())
+            && message.contains("belongs to svc_worker, not svc_api")
     ));
 }
 
@@ -378,9 +372,9 @@ async fn nats_preparation_preserves_decode_failure_message() {
     assert!(matches!(
         error,
         DeployFactLoadError::ActiveServiceRead {
-            failure: ActiveServiceReadFailure::Decode { message },
+            ref message,
             ..
-        } if !message.is_empty()
+        } if message.contains("decode active service state")
     ));
 }
 
