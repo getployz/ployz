@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local data-plane proof, two layers:
+# Local WireGuard/eBPF data-plane proof.
 #
-# Layer A — WireGuard/eBPF data-plane proof. Builds the workspace inside a
-# privileged builder container and runs the gated
-# `cargo test -p ployzd --test wireguard_dataplane` suite against real
-# WireGuard interfaces and eBPF programs. This remains this script's job.
+# Runs the gated `cargo test -p ployzd --test wireguard_dataplane` suite
+# against real WireGuard interfaces and eBPF programs inside a privileged
+# builder container.
 #
-# Layer B — two-machine systemd cluster proof (everything from the machine
-# containers down). SUPERSEDED by the Docker-in-Docker e2e harness:
-# `scripts/dind-e2e.sh`, `crates/ployz-e2e/tests/dind_cluster.rs`,
-# docs/operations/dind-e2e.md. The harness drives the same product path as
-# gated Rust tests with evidence capture and label-based cleanup, and covers
-# more (restart invisibility, auth rejection). The bash recipe below is kept
-# as the original proven reference; prefer the harness for acceptance runs.
+# The linux artifacts it needs (ployz-ebpf-ctl, ployz-ebpf-tc bytecode) are
+# built by scripts/build-dind-machine-image.sh — the only builder of linux
+# artifacts/eBPF bytecode — and consumed from its output directory. They are
+# built automatically when missing.
+#
+# The two-machine cluster proof that used to live here (Layer B) is owned by
+# the Docker-in-Docker e2e harness: `scripts/dind-e2e.sh`,
+# `crates/ployz-e2e/tests/dind_cluster.rs`, docs/operations/dind-e2e.md.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
+
 IMAGE="${PLOYZ_LOCAL_DATAPLANE_IMAGE:-rust:1.91-bookworm}"
 PROOF_IMAGE="${PLOYZ_LOCAL_DATAPLANE_PROOF_IMAGE:-ployz-local-dataplane-proof:rust-1.91-bookworm-v5}"
 NATS_SERVER_VERSION="${PLOYZ_LOCAL_DATAPLANE_NATS_SERVER_VERSION:-2.14.2}"
 TARGET_DIR="${PLOYZ_LOCAL_DATAPLANE_TARGET_DIR:-/tmp/ployz-local-dataplane-target}"
-EBPF_TARGET_DIR="${PLOYZ_LOCAL_DATAPLANE_EBPF_TARGET_DIR:-/tmp/ployz-local-dataplane-ebpf-target}"
 CARGO_REGISTRY_DIR="${PLOYZ_LOCAL_DATAPLANE_CARGO_REGISTRY_DIR:-/tmp/ployz-local-dataplane-cargo-registry}"
 CARGO_GIT_DIR="${PLOYZ_LOCAL_DATAPLANE_CARGO_GIT_DIR:-/tmp/ployz-local-dataplane-cargo-git}"
+DIND_TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
+ARTIFACT_DIR="${DIND_TARGET_DIR}/release"
+EBPF_CTL="${ARTIFACT_DIR}/ployz-ebpf-ctl"
+EBPF_BYTECODE="${ARTIFACT_DIR}/ployz-ebpf-tc"
 CONTAINER_NAME="ployz-local-dataplane-proof-$$"
 
 command -v docker >/dev/null 2>&1 || {
@@ -31,28 +37,7 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
-docker_platform() {
-  if [ -n "${PLOYZ_LOCAL_DATAPLANE_PLATFORM:-}" ]; then
-    printf '%s\n' "${PLOYZ_LOCAL_DATAPLANE_PLATFORM}"
-    return 0
-  fi
-
-  case "$(docker info --format '{{.Architecture}}')" in
-    aarch64 | arm64)
-      printf 'linux/arm64\n'
-      ;;
-    x86_64 | amd64)
-      printf 'linux/amd64\n'
-      ;;
-    *)
-      docker info --format 'linux/{{.Architecture}}'
-      ;;
-  esac
-}
-
 cleanup() {
-  docker rm -f ployz-local-core ployz-local-edge >/dev/null 2>&1 || true
-  docker network rm ployz-local-dind-proof >/dev/null 2>&1 || true
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -63,7 +48,7 @@ build_proof_image() {
   fi
 
   docker build \
-    --platform "$(docker_platform)" \
+    --platform "$(docker_platform "${PLOYZ_LOCAL_DATAPLANE_PLATFORM:-}")" \
     --tag "${PROOF_IMAGE}" \
     - <<DOCKERFILE
 FROM ${IMAGE}
@@ -98,18 +83,28 @@ RUN rustup install nightly \\
 DOCKERFILE
 }
 
-mkdir -p "${TARGET_DIR}" "${EBPF_TARGET_DIR}" "${CARGO_REGISTRY_DIR}" "${CARGO_GIT_DIR}"
+ensure_dind_artifacts() {
+  if [ -x "${EBPF_CTL}" ] && [ -f "${EBPF_BYTECODE}" ]; then
+    return 0
+  fi
+  echo "linux artifacts missing; building via scripts/build-dind-machine-image.sh"
+  PLOYZ_DIND_TARGET_DIR="${DIND_TARGET_DIR}" \
+    bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh"
+}
+
+mkdir -p "${TARGET_DIR}" "${CARGO_REGISTRY_DIR}" "${CARGO_GIT_DIR}"
+ensure_dind_artifacts
 build_proof_image
 
 docker run \
   --name "${CONTAINER_NAME}" \
   --detach \
-  --platform "$(docker_platform)" \
+  --platform "$(docker_platform "${PLOYZ_LOCAL_DATAPLANE_PLATFORM:-}")" \
   --privileged \
   --workdir /work \
   --volume "${ROOT_DIR}:/work" \
   --volume "${TARGET_DIR}:${TARGET_DIR}" \
-  --volume "${EBPF_TARGET_DIR}:${EBPF_TARGET_DIR}" \
+  --volume "${ARTIFACT_DIR}:${ARTIFACT_DIR}:ro" \
   --volume "${CARGO_REGISTRY_DIR}:/usr/local/cargo/registry" \
   --volume "${CARGO_GIT_DIR}:/usr/local/cargo/git" \
   --tmpfs /run \
@@ -140,294 +135,11 @@ docker info >/dev/null
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 
 export CARGO_TARGET_DIR='"${TARGET_DIR}"'
-export PLOYZ_EBPF_TARGET_DIR='"${EBPF_TARGET_DIR}"'
-cargo build -p ployzd -p ployzctl -p ployz-keeper -p ployz-ebpf-ctl
-ebpf_bytecode="$(scripts/build-ebpf-bytecode.sh | tail -n 1)"
-printf "%s\n" "${ebpf_bytecode}" > "${CARGO_TARGET_DIR}/ployz-ebpf-bytecode.path"
 
 PLOYZ_LOCAL_DATAPLANE_PROOF=1 \
-PLOYZ_LOCAL_DATAPLANE_EBPF_CTL="${CARGO_TARGET_DIR}/debug/ployz-ebpf-ctl" \
-PLOYZ_LOCAL_DATAPLANE_EBPF_BYTECODE="${ebpf_bytecode}" \
+PLOYZ_LOCAL_DATAPLANE_EBPF_CTL='"${EBPF_CTL}"' \
+PLOYZ_LOCAL_DATAPLANE_EBPF_BYTECODE='"${EBPF_BYTECODE}"' \
 cargo test -p ployzd --test wireguard_dataplane -- --test-threads=1 --nocapture
 '
 
-ebpf_bytecode="$(cat "${TARGET_DIR}/ployz-ebpf-bytecode.path")"
-proof_net="ployz-local-dind-proof"
-core_machine="ployz-local-core"
-edge_machine="ployz-local-edge"
-route_port=8080
-endpoint_port=80
-smoke_image="nginx:1.27-alpine"
-core_host_port=19080
-edge_host_port=19081
-proof_image="${PROOF_IMAGE}"
-ployzd="${TARGET_DIR}/debug/ployzd"
-ployzctl="${TARGET_DIR}/debug/ployzctl"
-keeper="${TARGET_DIR}/debug/ployz-keeper"
-ebpf_ctl="${TARGET_DIR}/debug/ployz-ebpf-ctl"
-nats_server="/usr/local/bin/nats-server"
-# Keeper install leaves the operator credential and cluster CA at the
-# well-known material paths; every ployzctl call on the core authenticates
-# with them over TLS.
-core_ctl="PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/operator.seed ${ployzctl} --nats tls://127.0.0.1:4222"
-# A syntactically valid PEM stand-in: the join template must parse when
-# ployzd-control first starts, before the cluster CA exists. It is replaced
-# with the real CA (and control restarted) right after keeper install.
-placeholder_ca_json='-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n'
-
-docker rm -f "${core_machine}" "${edge_machine}" >/dev/null 2>&1 || true
-docker network rm "${proof_net}" >/dev/null 2>&1 || true
-docker network create "${proof_net}" >/dev/null
-
-start_machine() {
-  local name="$1"
-  local host_port="$2"
-  docker run \
-    --detach \
-    --privileged \
-    --cgroupns=host \
-    --network "${proof_net}" \
-    --name "${name}" \
-    --hostname "${name}" \
-    --platform "$(docker_platform)" \
-    --publish "127.0.0.1:${host_port}:${route_port}" \
-    --stop-signal SIGRTMIN+3 \
-    --volume "${ROOT_DIR}:/work" \
-    --volume "${TARGET_DIR}:${TARGET_DIR}:ro" \
-    --volume "${EBPF_TARGET_DIR}:${EBPF_TARGET_DIR}:ro" \
-    --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
-    --tmpfs /run \
-    --tmpfs /run/lock \
-    "${proof_image}" \
-    /sbin/init >/dev/null
-  for _ in $(seq 1 120); do
-    if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || true)" != "true" ]; then
-      docker inspect "${name}" >&2 || true
-      docker logs "${name}" >&2 || true
-      echo "${name} exited before systemd became ready" >&2
-      return 1
-    fi
-    state="$(docker exec "${name}" systemctl is-system-running 2>/dev/null || true)"
-    if printf '%s\n' "${state}" | grep -Eq "^(running|degraded)$"; then
-      break
-    fi
-    sleep 0.5
-  done
-  if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || true)" != "true" ]; then
-    docker inspect "${name}" >&2 || true
-    docker logs "${name}" >&2 || true
-    echo "${name} exited before docker could start" >&2
-    return 1
-  fi
-  docker exec "${name}" systemctl start docker
-  for _ in $(seq 1 120); do
-    if docker exec "${name}" docker info >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  docker exec "${name}" systemctl status docker --no-pager >&2 || true
-  docker exec "${name}" journalctl -u docker --no-pager -n 80 >&2 || true
-  echo "${name} dockerd did not become ready" >&2
-  return 1
-}
-
-write_join_template() {
-  local runtime_nats_url="$1"
-  local ca_pem_json="$2"
-  local ployzd_sha="$3"
-  local ebpf_bytecode_sha="$4"
-  local ebpf_ctl_sha="$5"
-  docker exec -i "${core_machine}" bash -lc "cat > /tmp/ployz-join-template.json" <<JSON
-{
-  "join_bundle": {
-    "material": {
-      "cluster_name": "local-dind",
-      "runtime_nats_url": "${runtime_nats_url}",
-      "trusted_nats": {
-        "ca_pem": "${ca_pem_json}"
-      },
-      "ployzd": {
-        "version": "local",
-        "source": "${ployzd}",
-        "sha256": "${ployzd_sha}",
-        "install_path": "/usr/local/bin/ployzd"
-      },
-      "ebpf_bytecode": {
-        "version": "local",
-        "source": "${ebpf_bytecode}",
-        "sha256": "${ebpf_bytecode_sha}",
-        "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-      },
-      "ebpf_ctl": {
-        "version": "local",
-        "source": "${ebpf_ctl}",
-        "sha256": "${ebpf_ctl_sha}",
-        "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-      }
-    }
-  }
-}
-JSON
-  docker exec "${core_machine}" install -d -m 0755 /etc/ployz
-  docker exec "${core_machine}" install -m 0644 /tmp/ployz-join-template.json /etc/ployz/machine-join-template.json
-}
-
-machine_ip() {
-  docker exec "$1" bash -lc "hostname -i | sed \"s/ .*//\""
-}
-
-start_nats_and_control() {
-  local core_ip="$1"
-  local core_nats_url="tls://${core_ip}:4222"
-  local ployzd_sha
-  local ebpf_bytecode_sha
-  local ebpf_ctl_sha
-  local nats_sha
-  local real_ca_json
-  ployzd_sha="$(docker exec "${core_machine}" sha256sum "${ployzd}" | cut -d" " -f1)"
-  ebpf_bytecode_sha="$(docker exec "${core_machine}" sha256sum "${ebpf_bytecode}" | cut -d" " -f1)"
-  ebpf_ctl_sha="$(docker exec "${core_machine}" sha256sum "${ebpf_ctl}" | cut -d" " -f1)"
-  nats_sha="$(docker exec "${core_machine}" sha256sum "${nats_server}" | cut -d" " -f1)"
-  write_join_template "${core_nats_url}" "${placeholder_ca_json}" "${ployzd_sha}" "${ebpf_bytecode_sha}" "${ebpf_ctl_sha}"
-  docker exec -i "${core_machine}" bash -lc "cat > /tmp/ployz-first-node-install.json" <<JSON
-{
-  "node_id": "core_1",
-  "gateway": "install",
-  "node_public_ip": "${core_ip}",
-  "machine_bootstrap_url": "https://local.invalid/ployz.sh",
-  "machine_join_template_file": "/etc/ployz/machine-join-template.json",
-  "artifacts": {
-    "ployzd": {
-      "version": "local",
-      "source": "${ployzd}",
-      "sha256": "${ployzd_sha}",
-      "install_path": "/usr/local/bin/ployzd"
-    },
-    "ebpf_bytecode": {
-      "version": "local",
-      "source": "${ebpf_bytecode}",
-      "sha256": "${ebpf_bytecode_sha}",
-      "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
-    },
-    "ebpf_ctl": {
-      "version": "local",
-      "source": "${ebpf_ctl}",
-      "sha256": "${ebpf_ctl_sha}",
-      "install_path": "/usr/local/bin/ployz-ebpf-ctl"
-    },
-    "nats_server": {
-      "version": "local",
-      "source": "${nats_server}",
-      "sha256": "${nats_sha}",
-      "binary": "/usr/local/bin/nats-server",
-      "config": "/etc/nats/nats-server.conf"
-    }
-  }
-}
-JSON
-  docker exec "${core_machine}" bash -lc "${ployzctl} init --run-keeper-install --install-spec /tmp/ployz-first-node-install.json --keeper-binary ${keeper} >/tmp/ployz-init.log 2>&1"
-  # The keeper minted the cluster CA during install; the join template can
-  # only carry the real CA now. Re-render it and restart the (disposable)
-  # control role so machine-add bundles hand out the trusted CA.
-  real_ca_json="$(docker exec "${core_machine}" awk '{printf "%s\\n", $0}' /var/lib/ployz/nats/ca.pem)"
-  write_join_template "${core_nats_url}" "${real_ca_json}" "${ployzd_sha}" "${ebpf_bytecode_sha}" "${ebpf_ctl_sha}"
-  docker exec "${core_machine}" systemctl restart ployzd-control
-  for _ in $(seq 1 120); do
-    if docker exec "${core_machine}" bash -lc "${core_ctl} machine list >/tmp/ployz-machine-list.log 2>&1"; then
-      docker exec "${core_machine}" bash -lc "${core_ctl} init activate-first-node --node core_1 --gateway >/tmp/ployz-activate.log 2>&1"
-      return 0
-    fi
-    sleep 0.5
-  done
-  docker exec "${core_machine}" cat /tmp/ployz-init.log >&2 || true
-  docker exec "${core_machine}" cat /etc/ployz/ployzd.env >&2 || true
-  docker exec "${core_machine}" systemctl status nats-server ployzd-control ployzd-node-core_1 ployzd-gateway --no-pager >&2 || true
-  docker exec "${core_machine}" journalctl -u ployzd-control --no-pager -n 120 >&2 || true
-  docker exec "${core_machine}" cat /tmp/ployz-machine-list.log >&2 || true
-  echo "control API did not become ready" >&2
-  return 1
-}
-
-# Reads one env assignment off the machine-add install command line
-# (values may or may not be shell-quoted).
-install_line_env() {
-  local line="$1"
-  local name="$2"
-  printf '%s\n' "${line}" | grep -o "${name}=[^ ]*" | head -n 1 | sed "s/^${name}=//; s/^'//; s/'\$//"
-}
-
-join_edge_machine() {
-  local edge_ip="$1"
-  local add_output
-  local install_line
-  local join_token
-  local nats_url
-  local nats_ca_b64
-  local join_seed
-  local keeper_sha
-  add_output="$(docker exec "${core_machine}" bash -lc "${core_ctl} machine add --node edge_2 --name edge-2 --gateway --operation op_add_edge_2 --idempotency-key idem_add_edge_2")"
-  join_token="$(printf '%s\n' "${add_output}" | awk '/^join-token / {print $2}')"
-  install_line="$(printf '%s\n' "${add_output}" | sed -n 's/^install //p')"
-  # The edge joins with exactly the material the product printed: the
-  # runtime NATS URL, the cluster CA, and the low-privilege Join seed.
-  nats_url="$(install_line_env "${install_line}" PLOYZ_NATS_URL)"
-  nats_ca_b64="$(install_line_env "${install_line}" PLOYZ_NATS_CA_B64)"
-  join_seed="$(install_line_env "${install_line}" PLOYZ_JOIN_NKEY_SEED)"
-  test -n "${join_token}"
-  test -n "${nats_url}"
-  test -n "${nats_ca_b64}"
-  test -n "${join_seed}"
-  keeper_sha="$(docker exec "${edge_machine}" sha256sum "${keeper}" | cut -d" " -f1)"
-  if ! docker exec "${edge_machine}" bash -lc "PLOYZ_KEEPER_URL=file://${keeper} PLOYZ_KEEPER_SHA256=${keeper_sha} PLOYZ_NATS_URL=${nats_url} PLOYZ_NATS_CA_B64=${nats_ca_b64} PLOYZ_JOIN_NKEY_SEED=${join_seed} PLOYZ_NODE_PUBLIC_IP=${edge_ip} sh /work/scripts/ployz.sh --join-token ${join_token} >/tmp/ployz-edge-join.log 2>&1"; then
-    docker exec "${edge_machine}" cat /tmp/ployz-edge-join.log >&2 || true
-    docker exec "${edge_machine}" systemctl status ployzd-node-edge_2 ployzd-gateway --no-pager >&2 || true
-    docker exec "${edge_machine}" journalctl -u ployzd-node-edge_2 -u ployzd-gateway --no-pager -n 160 >&2 || true
-    echo "edge bootstrap command failed" >&2
-    return 1
-  fi
-}
-
-prepare_machine_dataplane() {
-  local machine="$1"
-  docker exec "${machine}" bash -lc "mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf"
-}
-
-wait_for_processes_to_publish() {
-  for _ in $(seq 1 120); do
-    if docker exec "${core_machine}" bash -lc "${core_ctl} machine inspect edge_2 | grep -q \"containers 0\"" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  docker exec "${edge_machine}" cat /tmp/ployz-edge-join.log >&2 || true
-  docker exec "${edge_machine}" systemctl status ployzd-node-edge_2 ployzd-gateway --no-pager >&2 || true
-  echo "edge machine did not publish observations" >&2
-  return 1
-}
-
-assert_gateway() {
-  local host_port="$1"
-  local response
-  response="$(curl -fsS --max-time 10 -H "Host: smoke.local:${route_port}" "http://127.0.0.1:${host_port}/")"
-  printf '%s\n' "${response}" | grep -q "Welcome to nginx"
-}
-
-start_machine "${core_machine}" "${core_host_port}"
-start_machine "${edge_machine}" "${edge_host_port}"
-prepare_machine_dataplane "${core_machine}"
-prepare_machine_dataplane "${edge_machine}"
-core_ip="$(machine_ip "${core_machine}")"
-edge_ip="$(machine_ip "${edge_machine}")"
-start_nats_and_control "${core_ip}"
-join_edge_machine "${edge_ip}"
-wait_for_processes_to_publish
-
-docker exec "${core_machine}" bash -lc "${core_ctl} deploy --detach --service svc_smoke --revision rev_local --image ${smoke_image} --replicas 2 --operation op_local_dind --idempotency-key idem_local_dind --route-hostname smoke.local --route-port ${route_port} --endpoint-port ${endpoint_port}"
-docker exec "${core_machine}" bash -lc "${core_ctl} ops watch op_local_dind --json" | tee /tmp/ployz-local-dind-events.jsonl
-docker exec "${core_machine}" bash -lc "${core_ctl} ops status op_local_dind" | tee /tmp/ployz-local-dind-status.txt
-grep -q "state completed" /tmp/ployz-local-dind-status.txt
-grep -q "deploy.wireguard_ebpf_prepared" /tmp/ployz-local-dind-events.jsonl
-assert_gateway "${core_host_port}"
-assert_gateway "${edge_host_port}"
-echo "local DIND two-machine deploy proof passed"
+echo "local WireGuard/eBPF dataplane proof passed"

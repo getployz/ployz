@@ -5,10 +5,9 @@ set -euo pipefail
 # (docs/plans/2026-06-10-001-feat-direct-nats-v1-auth-iroh-removal-dind-e2e.md, C1).
 #
 # 1. Builds linux release binaries for the HOST docker architecture inside
-#    rust:1.91-bookworm with cached target/registry dirs (the proven
-#    local-dataplane-proof.sh / prepare-h0-artifacts.sh recipe). The binaries
-#    are NOT baked into the image — the harness volume-mounts them at test
-#    time so the image is rebuilt rarely.
+#    rust:1.91-bookworm with cached target/registry dirs. The binaries are
+#    NOT baked into the image — the harness volume-mounts them at test time
+#    so the image is rebuilt rarely.
 # 2. Builds the eBPF bytecode (bpfel target, host-arch-independent) inside a
 #    derived builder image with nightly + bpf-linker baked, and copies it next
 #    to the binaries so the keeper install spec can reference it.
@@ -17,6 +16,9 @@ set -euo pipefail
 # 4. Builds the machine image: systemd PID 1 + inner dockerd + nats-server.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
+
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
 EBPF_BUILDER_IMAGE="${PLOYZ_DIND_EBPF_BUILDER_IMAGE:-ployz-dind-ebpf-builder:rust-1.91-bookworm-v1}"
@@ -33,57 +35,38 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
-# Always the HOST docker server architecture — never hardcode amd64.
-docker_platform() {
-  if [ -n "${PLOYZ_DIND_PLATFORM:-}" ]; then
-    printf '%s\n' "${PLOYZ_DIND_PLATFORM}"
-    return 0
-  fi
-
-  case "$(docker info --format '{{.Architecture}}')" in
-    aarch64 | arm64)
-      printf 'linux/arm64\n'
-      ;;
-    x86_64 | amd64)
-      printf 'linux/amd64\n'
-      ;;
-    *)
-      docker info --format 'linux/{{.Architecture}}'
-      ;;
-  esac
-}
-
 build_linux_artifacts() {
   if [ "${PLOYZ_DIND_SKIP_BUILD:-0}" = "1" ]; then
     return 0
   fi
 
+  local crate
+  local package_args=()
+  for crate in "${PLOYZ_BINARY_CRATES[@]}"; do
+    package_args+=("--package=${crate}")
+  done
+
   mkdir -p "${TARGET_DIR}" "${CARGO_REGISTRY_DIR}" "${CARGO_GIT_DIR}"
   docker run --rm \
-    --platform "$(docker_platform)" \
+    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
     --volume "${ROOT_DIR}:/work" \
     --volume "${TARGET_DIR}:/target" \
     --volume "${CARGO_REGISTRY_DIR}:/usr/local/cargo/registry" \
     --volume "${CARGO_GIT_DIR}:/usr/local/cargo/git" \
     --workdir /work \
     "${BUILD_IMAGE}" \
-    cargo build --release --target-dir /target \
-      -p ployzctl \
-      -p ployzd \
-      -p ployz-keeper \
-      -p ployz-ebpf-ctl
+    cargo build --release --target-dir /target "${package_args[@]}"
 }
 
 # The eBPF bytecode build needs nightly + rust-src + bpf-linker; baking them
-# into a derived builder image (the local-dataplane-proof.sh recipe) keeps
-# repeat builds fast.
+# into a derived builder image keeps repeat builds fast.
 build_ebpf_builder_image() {
   if docker image inspect "${EBPF_BUILDER_IMAGE}" >/dev/null 2>&1; then
     return 0
   fi
 
   docker build \
-    --platform "$(docker_platform)" \
+    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
     --tag "${EBPF_BUILDER_IMAGE}" \
     - <<DOCKERFILE
 FROM ${BUILD_IMAGE}
@@ -105,7 +88,7 @@ build_ebpf_bytecode() {
   build_ebpf_builder_image
   mkdir -p "${EBPF_TARGET_DIR}" "${TARGET_DIR}/release"
   docker run --rm \
-    --platform "$(docker_platform)" \
+    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
     --volume "${ROOT_DIR}:/work" \
     --volume "${EBPF_TARGET_DIR}:/ebpf-target" \
     --volume "${TARGET_DIR}:/target" \
@@ -127,7 +110,7 @@ bake_workload_tarball() {
 
 build_machine_image() {
   docker build \
-    --platform "$(docker_platform)" \
+    --platform "$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")" \
     --label dev.ployz.dind.managed=true \
     --build-arg "NATS_SERVER_VERSION=${NATS_SERVER_VERSION}" \
     --tag "${MACHINE_IMAGE}" \

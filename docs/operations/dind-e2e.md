@@ -5,8 +5,8 @@ boots privileged systemd "machine" containers, installs the real keeper
 artifacts, forms a real TLS-authenticated NATS cluster through product
 commands only, and asserts operations, running workloads, daemon-restart
 invisibility, and auth rejection. It supersedes the two-machine bash recipe
-that used to live in `scripts/local-dataplane-proof.sh` (Layer B); that
-script still owns the WireGuard/eBPF data-plane proof (Layer A).
+that used to live in `scripts/local-dataplane-proof.sh`; that script still
+owns the WireGuard/eBPF data-plane proof.
 
 Plan: `docs/plans/2026-06-10-001-feat-direct-nats-v1-auth-iroh-removal-dind-e2e.md`
 (Phase C).

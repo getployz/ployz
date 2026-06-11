@@ -16,11 +16,14 @@ set -euo pipefail
 # Leftover Docker resources from crashed runs: scripts/dind-clean.sh.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
+
 TARGET_DIR="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
 ARTIFACT_DIR="${TARGET_DIR}/release"
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 MARKER_FILE="${TARGET_DIR}/.dind-e2e-build-marker"
-BINARIES=(ployzd ployzctl ployz-keeper ployz-ebpf-ctl ployz-ebpf-tc)
+BINARIES=("${PLOYZ_BINARY_CRATES[@]}" ployz-ebpf-tc)
 
 CHECK_STALE=0
 if [ "${1:-}" = "--check-stale" ]; then
@@ -31,14 +34,6 @@ fi
 command -v docker >/dev/null 2>&1 || {
   echo "docker is required for the DinD e2e suite" >&2
   exit 1
-}
-
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  else
-    shasum -a 256 "$1" | cut -d' ' -f1
-  fi
 }
 
 if [ "$(uname)" = "Darwin" ]; then
@@ -55,7 +50,8 @@ fi
 newest_source_mtime() {
   git -C "${ROOT_DIR}" ls-files -z --cached --others --exclude-standard -- \
     'crates' 'Cargo.toml' 'Cargo.lock' 'docker/dind-machine' \
-    'scripts/build-dind-machine-image.sh' 'scripts/build-ebpf-bytecode.sh' |
+    'scripts/build-dind-machine-image.sh' 'scripts/build-ebpf-bytecode.sh' \
+    'scripts/lib.sh' |
     (cd "${ROOT_DIR}" && mtimes_of_stdin0) | sort -n | tail -n 1
 }
 
