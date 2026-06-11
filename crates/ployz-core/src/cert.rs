@@ -2,11 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::num::NonZeroU64;
 
 use crate::ids::CertId;
 use crate::ops::RouteHostname;
-use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
@@ -190,79 +189,16 @@ impl CertValidityWindow {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"CertValidAt\">"))]
-#[serde(try_from = "String", into = "String")]
-pub struct CertValidAt(NonZeroU64);
-
-impl CertValidAt {
-    pub fn try_new(unix_seconds: u64) -> Result<Self, CertValidAtError> {
-        let Some(value) = NonZeroU64::new(unix_seconds) else {
-            return Err(CertValidAtError::Zero);
-        };
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn unix_seconds(self) -> u64 {
-        self.0.get()
-    }
+positive_u64_wire_newtype! {
+    pub struct CertValidAt;
+    ts_brand: "Brand<string, \"CertValidAt\">";
+    accessor: unix_seconds;
+    error: CertValidAtError;
 }
 
-impl TryFrom<u64> for CertValidAt {
-    type Error = CertValidAtError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<CertValidAt> for u64 {
-    fn from(value: CertValidAt) -> Self {
-        value.unix_seconds()
-    }
-}
-
-impl TryFrom<String> for CertValidAt {
-    type Error = CertValidAtError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match parse_positive_u64_string(value) {
-            Ok(value) => Self::try_new(value),
-            Err(PositiveU64StringError::Zero) => Err(CertValidAtError::Zero),
-            Err(PositiveU64StringError::Invalid { value }) => {
-                Err(CertValidAtError::InvalidWireValue { value })
-            }
-        }
-    }
-}
-
-impl From<CertValidAt> for String {
-    fn from(value: CertValidAt) -> Self {
-        format_u64_string(value.unix_seconds())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CertValidAtError {
-    Zero,
-    InvalidWireValue { value: String },
-}
-
-impl fmt::Display for CertValidAtError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => {
-                formatter.write_str("certificate validity timestamp must be greater than zero")
-            }
-            Self::InvalidWireValue { value } => write!(
-                formatter,
-                "certificate validity timestamp {value:?} must be a positive integer string"
-            ),
-        }
-    }
+positive_u64_wire_error! {
+    pub enum CertValidAtError;
+    noun: "certificate validity timestamp";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,80 +219,16 @@ impl fmt::Display for CertValidityError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"AcmeChallengeTtlSeconds\">")
-)]
-#[serde(try_from = "String", into = "String")]
-pub struct AcmeChallengeTtlSeconds(NonZeroU64);
-
-impl AcmeChallengeTtlSeconds {
-    pub fn try_new(seconds: u64) -> Result<Self, AcmeChallengeTtlError> {
-        let Some(value) = NonZeroU64::new(seconds) else {
-            return Err(AcmeChallengeTtlError::Zero);
-        };
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
+positive_u64_wire_newtype! {
+    pub struct AcmeChallengeTtlSeconds;
+    ts_brand: "Brand<string, \"AcmeChallengeTtlSeconds\">";
+    accessor: get;
+    error: AcmeChallengeTtlError;
 }
 
-impl TryFrom<u64> for AcmeChallengeTtlSeconds {
-    type Error = AcmeChallengeTtlError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<AcmeChallengeTtlSeconds> for u64 {
-    fn from(value: AcmeChallengeTtlSeconds) -> Self {
-        value.get()
-    }
-}
-
-impl TryFrom<String> for AcmeChallengeTtlSeconds {
-    type Error = AcmeChallengeTtlError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match parse_positive_u64_string(value) {
-            Ok(value) => Self::try_new(value),
-            Err(PositiveU64StringError::Zero) => Err(AcmeChallengeTtlError::Zero),
-            Err(PositiveU64StringError::Invalid { value }) => {
-                Err(AcmeChallengeTtlError::InvalidWireValue { value })
-            }
-        }
-    }
-}
-
-impl From<AcmeChallengeTtlSeconds> for String {
-    fn from(value: AcmeChallengeTtlSeconds) -> Self {
-        format_u64_string(value.get())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AcmeChallengeTtlError {
-    Zero,
-    InvalidWireValue { value: String },
-}
-
-impl fmt::Display for AcmeChallengeTtlError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("ACME challenge TTL must be greater than zero"),
-            Self::InvalidWireValue { value } => write!(
-                formatter,
-                "ACME challenge TTL {value:?} must be a positive integer string"
-            ),
-        }
-    }
+positive_u64_wire_error! {
+    pub enum AcmeChallengeTtlError;
+    noun: "ACME challenge TTL";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

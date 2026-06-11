@@ -18,9 +18,9 @@ pub use submission::{
 use ployz_core::ids::{CertId, NodeId, OperationId};
 use ployz_core::ops::{
     BackupTransition, CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
-    OperationEvent, OperationEventProjection, OperationEventReplayCursor, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationStatus,
-    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationLeaseExpiresAt, OperationOwnerLease, OperationProjection,
+    OperationStatus, OperationStatusSnapshot, StatusProjectionError, project_operation_event,
     validate_fresh_deploy_evidence,
 };
 
@@ -378,8 +378,8 @@ impl AsyncNatsOperationRepository {
         )
         .map_err(RecordOperationEventError::ProjectStatus)?
         {
-            OperationEventProjection::StatusChanged { .. } => {}
-            OperationEventProjection::AlreadySatisfied => {
+            OperationProjection::StatusChanged { .. } => {}
+            OperationProjection::AlreadySatisfied => {
                 return Ok(RecordOperationEventOutcome::AlreadySatisfied {
                     current_sequence: status_sequence(&current),
                 });
@@ -459,8 +459,8 @@ impl AsyncNatsOperationRepository {
         )
         .map_err(RecordOperationEventError::ProjectStatus)?
         {
-            OperationEventProjection::StatusChanged { .. } => {}
-            OperationEventProjection::AlreadySatisfied => {
+            OperationProjection::StatusChanged { .. } => {}
+            OperationProjection::AlreadySatisfied => {
                 if let Some(evidence) = deploy_evidence_from_event(&attempted_event) {
                     validate_fresh_deploy_evidence(&current, &evidence)
                         .map_err(RecordOperationEventError::ProjectStatus)?;
@@ -514,14 +514,14 @@ impl AsyncNatsOperationRepository {
         let projection = project_operation_event(&current, event, stored.sequence)
             .map_err(RecordOperationEventError::ProjectStatus)?;
         match projection {
-            OperationEventProjection::StatusChanged { status } => {
+            OperationProjection::StatusChanged { status } => {
                 let status_write = self.put_projected_status(&status).await?;
                 Ok(RecordOperationEventOutcome::Stored {
                     stored,
                     status_write,
                 })
             }
-            OperationEventProjection::AlreadySatisfied => Ok(RecordOperationEventOutcome::Stored {
+            OperationProjection::AlreadySatisfied => Ok(RecordOperationEventOutcome::Stored {
                 stored,
                 status_write: OperationStatusWrite::AlreadySatisfied {
                     current_sequence: status_sequence(&current),

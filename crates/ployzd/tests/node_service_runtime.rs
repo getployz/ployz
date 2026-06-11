@@ -957,7 +957,10 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 }
 
 fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
-    WireGuardEbpfNodeReady::new(self::node_id(node_id), ready_components())
+    WireGuardEbpfNodeReady {
+        node_id: self::node_id(node_id),
+        ready: ready_components(),
+    }
 }
 
 fn ready_components() -> WireGuardEbpfReady {

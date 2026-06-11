@@ -570,7 +570,7 @@ where
                 .await
             {
                 Ok(ready) => node_success(NodeWireGuardEbpfPrepareRpcResponse::Ok {
-                    readiness: WireGuardEbpfNodeReady::new(node_id, ready),
+                    readiness: WireGuardEbpfNodeReady { node_id, ready },
                 }),
                 Err(error) => node_domain_error(NodeWireGuardEbpfPrepareRpcResponse::DomainError {
                     node_id,

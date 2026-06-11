@@ -676,9 +676,9 @@ fn ready_node(node_id: &str) -> WireGuardEbpfNodeReady {
 
 fn ready_node_for_id(node_id: NodeId) -> WireGuardEbpfNodeReady {
     let public_key = wireguard_public_key(format!("public-{}", node_id.as_str()));
-    WireGuardEbpfNodeReady::new(
+    WireGuardEbpfNodeReady {
         node_id,
-        WireGuardEbpfReady {
+        ready: WireGuardEbpfReady {
             wireguard: WireGuardReady {
                 public_key,
                 evidence: vec![WireGuardReadyEvidence::Command {
@@ -693,7 +693,7 @@ fn ready_node_for_id(node_id: NodeId) -> WireGuardEbpfNodeReady {
                 }],
             },
         },
-    )
+    }
 }
 
 fn remove_request(node_id: &str, container_id: &str) -> NodeRemoveContainerRequest {

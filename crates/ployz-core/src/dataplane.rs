@@ -264,7 +264,7 @@ impl WireGuardEbpfPrepareReport {
         }
         let actual = nodes
             .iter()
-            .map(WireGuardEbpfNodeReady::node_id)
+            .map(|node| &node.node_id)
             .collect::<BTreeSet<_>>();
         if actual.len() != nodes.len() {
             return Err(WireGuardEbpfPrepareReportError::DuplicateNode);
@@ -284,10 +284,7 @@ impl WireGuardEbpfPrepareReport {
             return Err(WireGuardEbpfPrepareReportError::Empty);
         }
         let mut seen = BTreeSet::new();
-        if nodes
-            .iter()
-            .any(|node| !seen.insert(node.node_id().clone()))
-        {
+        if nodes.iter().any(|node| !seen.insert(node.node_id.clone())) {
             return Err(WireGuardEbpfPrepareReportError::DuplicateNode);
         }
 
@@ -297,36 +294,53 @@ impl WireGuardEbpfPrepareReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[serde(
+    from = "WireGuardEbpfNodeReadyWire",
+    into = "WireGuardEbpfNodeReadyWire"
+)]
 pub struct WireGuardEbpfNodeReady {
+    pub node_id: NodeId,
+    #[cfg_attr(feature = "typescript", ts(flatten))]
+    pub ready: WireGuardEbpfReady,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireGuardEbpfNodeReadyWire {
     node_id: NodeId,
     wireguard: WireGuardReady,
     ebpf_forwarding: EbpfForwardingReady,
 }
 
-impl WireGuardEbpfNodeReady {
-    #[must_use]
-    pub fn new(node_id: NodeId, ready: WireGuardEbpfReady) -> Self {
+impl From<WireGuardEbpfNodeReadyWire> for WireGuardEbpfNodeReady {
+    fn from(value: WireGuardEbpfNodeReadyWire) -> Self {
+        let WireGuardEbpfNodeReadyWire {
+            node_id,
+            wireguard,
+            ebpf_forwarding,
+        } = value;
         Self {
             node_id,
-            wireguard: ready.wireguard,
-            ebpf_forwarding: ready.ebpf_forwarding,
+            ready: WireGuardEbpfReady {
+                wireguard,
+                ebpf_forwarding,
+            },
         }
     }
+}
 
-    #[must_use]
-    pub const fn node_id(&self) -> &NodeId {
-        &self.node_id
-    }
-
-    #[must_use]
-    pub const fn wireguard(&self) -> &WireGuardReady {
-        &self.wireguard
-    }
-
-    #[must_use]
-    pub const fn ebpf_forwarding(&self) -> &EbpfForwardingReady {
-        &self.ebpf_forwarding
+impl From<WireGuardEbpfNodeReady> for WireGuardEbpfNodeReadyWire {
+    fn from(value: WireGuardEbpfNodeReady) -> Self {
+        let WireGuardEbpfNodeReady { node_id, ready } = value;
+        let WireGuardEbpfReady {
+            wireguard,
+            ebpf_forwarding,
+        } = ready;
+        Self {
+            node_id,
+            wireguard,
+            ebpf_forwarding,
+        }
     }
 }
 

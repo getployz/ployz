@@ -720,9 +720,9 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
         3,
         ployz_core::ops::OperationEvent::DeployWireGuardEbpfPrepared {
             operation_id: operation_id("op_123"),
-            report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady::new(
-                node_id("node_1"),
-                WireGuardEbpfReady {
+            report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady {
+                node_id: node_id("node_1"),
+                ready: WireGuardEbpfReady {
                     wireguard: WireGuardReady {
                         public_key: WireGuardPublicKey::try_new("public-key-1")
                             .expect("valid wireguard public key"),
@@ -771,7 +771,7 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
                         ],
                     },
                 },
-            )])
+            }])
             .expect("dataplane report is valid"),
         },
     );

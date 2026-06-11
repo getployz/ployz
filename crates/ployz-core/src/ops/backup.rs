@@ -1,13 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::backup::{BackupArtifact, BackupManifest};
-use crate::ops::{
-    CancellationReason, EventSequence, FailureMessage, OperationKind, OperationStatus,
-};
+use crate::ids::OperationId;
+use crate::ops::{CancellationReason, EventSequence, FailureMessage, OperationStatus};
 
-use super::projection::{
-    OperationEventProjection, ProjectionOperationState, StatusProjectionError,
-};
+use super::projection::{OperationProjection, ProjectionOperationState, StatusProjectionError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -150,33 +147,31 @@ pub(super) enum BackupEvent {
 }
 
 pub(super) fn project_event(
-    current: &OperationStatus,
+    id: &OperationId,
     state: &BackupOperationState,
     event: BackupEvent,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
+) -> Result<OperationProjection, StatusProjectionError> {
     match event {
-        BackupEvent::Submitted => Ok(OperationEventProjection::StatusChanged {
-            status: Box::new(status_cursor(current, event_sequence)),
+        BackupEvent::Submitted => Ok(OperationProjection::StatusChanged {
+            status: Box::new(status_cursor(id, state, event_sequence)),
         }),
         BackupEvent::Transition(transition) => {
             let attempted = transition.state();
             if state == &attempted {
-                return Ok(OperationEventProjection::AlreadySatisfied);
+                return Ok(OperationProjection::AlreadySatisfied);
             }
-            transition_projection(current, transition, event_sequence)
+            transition_projection(id, state, transition, event_sequence)
         }
     }
 }
 
 pub(super) fn transition_projection(
-    current: &OperationStatus,
+    id: &OperationId,
+    state: &BackupOperationState,
     transition: BackupTransition,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
-    let OperationStatus::Backup { id, state, .. } = current else {
-        return Err(kind_mismatch(current, OperationKind::Backup));
-    };
+) -> Result<OperationProjection, StatusProjectionError> {
     let attempted = transition.state();
 
     if state.is_terminal() {
@@ -194,7 +189,7 @@ pub(super) fn transition_projection(
         });
     }
 
-    Ok(OperationEventProjection::StatusChanged {
+    Ok(OperationProjection::StatusChanged {
         status: Box::new(OperationStatus::Backup {
             id: id.clone(),
             state: attempted,
@@ -203,22 +198,14 @@ pub(super) fn transition_projection(
     })
 }
 
-fn status_cursor(current: &OperationStatus, event_sequence: EventSequence) -> OperationStatus {
-    let OperationStatus::Backup { id, state, .. } = current else {
-        unreachable!("backup status cursor is only used for backup operations");
-    };
-
+fn status_cursor(
+    id: &OperationId,
+    state: &BackupOperationState,
+    event_sequence: EventSequence,
+) -> OperationStatus {
     OperationStatus::Backup {
         id: id.clone(),
         state: state.clone(),
         last_event_sequence: event_sequence,
-    }
-}
-
-fn kind_mismatch(current: &OperationStatus, actual: OperationKind) -> StatusProjectionError {
-    StatusProjectionError::OperationKindMismatch {
-        operation_id: current.id().clone(),
-        expected: current.kind(),
-        actual,
     }
 }

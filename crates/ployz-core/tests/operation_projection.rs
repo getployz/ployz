@@ -5,9 +5,9 @@ use ployz_core::machine::{
 };
 use ployz_core::ops::{
     BackupOperationState, BackupRunningStage, DeployCompletionOutcome, DeployOperationState,
-    DeployProjection, DeployRunningStage, DeployTransition, FailureMessage, OperationEvent,
-    OperationEventProjection, OperationStatus, ProjectionOperationState, StatusProjectionError,
-    project_deploy_transition, project_operation_event,
+    DeployRunningStage, DeployTransition, FailureMessage, OperationEvent, OperationProjection,
+    OperationStatus, ProjectionOperationState, StatusProjectionError, project_deploy_transition,
+    project_operation_event,
 };
 use ployz_core::roles::FirstNodeGateway;
 use ployz_test_support::ids::{
@@ -28,7 +28,7 @@ fn deploy_transition_updates_status_sequence() {
 
     assert_eq!(
         projection,
-        DeployProjection::Updated {
+        OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -50,7 +50,7 @@ fn satisfied_deploy_transition_does_not_rewrite_status() {
 
     assert_eq!(
         project_deploy_transition(&planning, DeployTransition::Planning, event_sequence(3)),
-        Ok(DeployProjection::AlreadySatisfied)
+        Ok(OperationProjection::AlreadySatisfied)
     );
 }
 
@@ -182,7 +182,7 @@ fn deploy_completion_is_allowed_after_active_commit_stage() {
             DeployTransition::completed(),
             event_sequence(6)
         ),
-        Ok(DeployProjection::Updated {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -212,7 +212,7 @@ fn deploy_completion_can_record_warning_outcome() {
             },
             event_sequence(6),
         ),
-        Ok(DeployProjection::Updated {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -245,7 +245,7 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
     )
     .expect("route cutover follows health");
 
-    let DeployProjection::Updated { status } = route_cutover else {
+    let OperationProjection::StatusChanged { status } = route_cutover else {
         panic!("route cutover updates status");
     };
 
@@ -257,7 +257,7 @@ fn deploy_route_cutover_can_precede_active_service_commit() {
             },
             event_sequence(6),
         ),
-        Ok(DeployProjection::Updated {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -289,7 +289,7 @@ fn deploy_cleanup_can_follow_active_service_commit() {
             },
             event_sequence(7),
         ),
-        Ok(DeployProjection::Updated {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -323,7 +323,7 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
             },
             event_sequence(7),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -371,7 +371,7 @@ fn container_started_event_records_without_changing_status() {
 
     assert_eq!(
         project_operation_event(&starting, container_started_event(), event_sequence(4)),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -397,7 +397,7 @@ fn health_check_started_event_records_without_changing_status() {
 
     assert_eq!(
         project_operation_event(&waiting, health_check_started_event(), event_sequence(4)),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -421,7 +421,7 @@ fn plan_created_event_records_without_changing_status() {
 
     assert_eq!(
         project_operation_event(&planning, plan_created_event(), event_sequence(3)),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -445,7 +445,7 @@ fn plan_created_event_after_execution_starts_records_without_changing_status() {
 
     assert_eq!(
         project_operation_event(&executing, plan_created_event(), event_sequence(5)),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -471,7 +471,7 @@ fn older_container_started_event_is_satisfied_after_later_stage() {
 
     assert_eq!(
         project_operation_event(&waiting, container_started_event(), event_sequence(4)),
-        Ok(OperationEventProjection::AlreadySatisfied)
+        Ok(OperationProjection::AlreadySatisfied)
     );
 }
 
@@ -488,7 +488,7 @@ fn fresh_container_started_event_after_later_stage_records_without_changing_stat
 
     assert_eq!(
         project_operation_event(&waiting, container_started_event(), event_sequence(6)),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),
                 service_id: service_id("svc_api"),
@@ -518,7 +518,7 @@ fn machine_add_submitted_event_is_satisfied_by_accepted_status() {
             machine_add_submitted_event("node_2"),
             event_sequence(8)
         ),
-        Ok(OperationEventProjection::AlreadySatisfied)
+        Ok(OperationProjection::AlreadySatisfied)
     );
 }
 
@@ -569,7 +569,7 @@ fn machine_add_cancel_records_terminal_status() {
             },
             event_sequence(8),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
@@ -599,7 +599,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
     )
     .expect("join projects");
 
-    let OperationEventProjection::StatusChanged {
+    let OperationProjection::StatusChanged {
         status: joined_status,
     } = joined
     else {
@@ -626,7 +626,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
             },
             event_sequence(9),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
@@ -706,7 +706,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
             },
             event_sequence(9),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
@@ -745,7 +745,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
             },
             event_sequence(9),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),

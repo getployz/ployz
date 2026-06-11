@@ -5,7 +5,7 @@ use ployz_core::cert::{
 };
 use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, FailureMessage, OperationEvent,
-    OperationEventProjection, OperationStatus, OperationSubjectRef, RouteHostname,
+    OperationProjection, OperationStatus, OperationSubjectRef, RouteHostname,
     StatusProjectionError, project_operation_event,
 };
 use ployz_test_support::ids::{cert_id, event_sequence, operation_id};
@@ -122,7 +122,7 @@ fn cert_operation_events_project_visible_progress() {
             },
             event_sequence(2),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Cert {
                 id: operation_id,
                 cert_id: cert_id("cert_api"),
@@ -193,7 +193,7 @@ fn cert_completion_is_allowed_after_validation_started() {
             },
             event_sequence(4),
         ),
-        Ok(OperationEventProjection::StatusChanged {
+        Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Cert {
                 id: operation_id,
                 cert_id: cert_id("cert_api"),

@@ -44,9 +44,9 @@ fn wireguard_ebpf_running_stage_has_stable_wire_name() {
 fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
     let event = OperationEvent::DeployWireGuardEbpfPrepared {
         operation_id: operation_id("op_123"),
-        report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady::new(
-            node_id("node_7"),
-            WireGuardEbpfReady {
+        report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady {
+            node_id: node_id("node_7"),
+            ready: WireGuardEbpfReady {
                 wireguard: WireGuardReady {
                     public_key: wireguard_public_key("test-public-key"),
                     evidence: vec![WireGuardReadyEvidence::Command {
@@ -61,7 +61,7 @@ fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
                     }],
                 },
             },
-        )])
+        }])
         .expect("valid report"),
     };
 

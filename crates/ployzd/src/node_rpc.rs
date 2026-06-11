@@ -568,7 +568,7 @@ async fn prepare_node_wireguard_ebpf(
 
     match response {
         NodeWireGuardEbpfPrepareRpcResponse::Ok { readiness } => {
-            match wrong_response_node(node_id, readiness.node_id().clone()) {
+            match wrong_response_node(node_id, readiness.node_id.clone()) {
                 Some(reason) => Err(wireguard_ebpf_unavailable(
                     node_id,
                     reason.failure_message(),

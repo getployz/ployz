@@ -150,10 +150,10 @@ async fn local_privileged_node_service_prepares_real_docker_dataplane() {
     let [ready] = report.nodes.as_slice() else {
         panic!("expected one node readiness report");
     };
-    assert_eq!(ready.node_id(), &node_id);
-    assert_wireguard_peer_evidence(&ready.wireguard().evidence);
-    assert_ebpf_attached_evidence(&ready.ebpf_forwarding().evidence, &ebpf_ctl);
-    assert_edge_route_evidence(&ready.ebpf_forwarding().evidence, &ebpf_ctl);
+    assert_eq!(ready.node_id, node_id);
+    assert_wireguard_peer_evidence(&ready.ready.wireguard.evidence);
+    assert_ebpf_attached_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
+    assert_edge_route_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
 }
 
 #[tokio::test]

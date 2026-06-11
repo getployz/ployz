@@ -290,9 +290,9 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
             OperationEvent::DeployWireGuardEbpfPrepared {
                 operation_id: operation_id("op_e2e_run"),
                 report: WireGuardEbpfPrepareReport {
-                    nodes: vec![WireGuardEbpfNodeReady::new(
-                        node_id("node_a"),
-                        WireGuardEbpfReady {
+                    nodes: vec![WireGuardEbpfNodeReady {
+                        node_id: node_id("node_a"),
+                        ready: WireGuardEbpfReady {
                             wireguard: WireGuardReady {
                                 public_key: wireguard_public_key("test-public-key"),
                                 evidence: vec![WireGuardReadyEvidence::Command {
@@ -310,7 +310,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
                                 }],
                             },
                         },
-                    )],
+                    }],
                 },
             },
             OperationEvent::DeployRunning {
@@ -831,7 +831,7 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
                 report
                     .nodes
                     .into_iter()
-                    .map(|node| node.node_id().clone())
+                    .map(|node| node.node_id.clone())
                     .collect::<Vec<_>>(),
             )
         })

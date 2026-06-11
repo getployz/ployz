@@ -211,9 +211,9 @@ impl WireGuardEbpfPreparer for RecordingWireGuardEbpf {
 
 fn ready_node(node_id: NodeId) -> WireGuardEbpfNodeReady {
     let public_key = wireguard_public_key(format!("public-{}", node_id.as_str()));
-    WireGuardEbpfNodeReady::new(
+    WireGuardEbpfNodeReady {
         node_id,
-        WireGuardEbpfReady {
+        ready: WireGuardEbpfReady {
             wireguard: WireGuardReady {
                 public_key,
                 evidence: vec![WireGuardReadyEvidence::Command {
@@ -228,7 +228,7 @@ fn ready_node(node_id: NodeId) -> WireGuardEbpfNodeReady {
                 }],
             },
         },
-    )
+    }
 }
 
 pub(super) struct RecordingActiveState {

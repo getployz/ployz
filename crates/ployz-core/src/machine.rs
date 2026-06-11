@@ -2,13 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fmt, num::NonZeroU64};
+use std::fmt;
 
 use crate::ids::{NodeId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{FailureMessage, OperationIdempotencyKey};
 use crate::roles::{FirstNodeGateway, JoinedNodeProcessSet, joined_node_process_set};
 use crate::state::ActiveMachineState;
-use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -55,106 +55,23 @@ impl JoinTokenFingerprint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"JoinTokenExpiresAt\">")
-)]
-#[serde(try_from = "String", into = "String")]
-pub struct JoinTokenExpiresAt(NonZeroU64);
-
-impl JoinTokenExpiresAt {
-    pub fn try_new(unix_seconds: u64) -> Result<Self, JoinTokenTimeError> {
-        let Some(value) = NonZeroU64::new(unix_seconds) else {
-            return Err(JoinTokenTimeError::Zero);
-        };
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn unix_seconds(self) -> u64 {
-        self.0.get()
-    }
+positive_u64_wire_newtype! {
+    pub struct JoinTokenExpiresAt;
+    ts_brand: "Brand<string, \"JoinTokenExpiresAt\">";
+    accessor: unix_seconds;
+    error: JoinTokenTimeError;
 }
 
-impl TryFrom<String> for JoinTokenExpiresAt {
-    type Error = JoinTokenTimeError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        parse_join_token_time(value).and_then(Self::try_new)
-    }
+positive_u64_wire_newtype! {
+    pub struct JoinTokenRedeemedAt;
+    ts_brand: "Brand<string, \"JoinTokenRedeemedAt\">";
+    accessor: unix_seconds;
+    error: JoinTokenTimeError;
 }
 
-impl From<JoinTokenExpiresAt> for String {
-    fn from(value: JoinTokenExpiresAt) -> Self {
-        format_u64_string(value.unix_seconds())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"JoinTokenRedeemedAt\">")
-)]
-#[serde(try_from = "String", into = "String")]
-pub struct JoinTokenRedeemedAt(NonZeroU64);
-
-impl JoinTokenRedeemedAt {
-    pub fn try_new(unix_seconds: u64) -> Result<Self, JoinTokenTimeError> {
-        let Some(value) = NonZeroU64::new(unix_seconds) else {
-            return Err(JoinTokenTimeError::Zero);
-        };
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn unix_seconds(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl TryFrom<String> for JoinTokenRedeemedAt {
-    type Error = JoinTokenTimeError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        parse_join_token_time(value).and_then(Self::try_new)
-    }
-}
-
-impl From<JoinTokenRedeemedAt> for String {
-    fn from(value: JoinTokenRedeemedAt) -> Self {
-        format_u64_string(value.unix_seconds())
-    }
-}
-
-fn parse_join_token_time(value: String) -> Result<u64, JoinTokenTimeError> {
-    match parse_positive_u64_string(value) {
-        Ok(value) => Ok(value),
-        Err(PositiveU64StringError::Zero) => Err(JoinTokenTimeError::Zero),
-        Err(PositiveU64StringError::Invalid { value }) => {
-            Err(JoinTokenTimeError::InvalidWireValue { value })
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JoinTokenTimeError {
-    Zero,
-    InvalidWireValue { value: String },
-}
-
-impl fmt::Display for JoinTokenTimeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("join token timestamp must be greater than zero"),
-            Self::InvalidWireValue { value } => write!(
-                formatter,
-                "join token timestamp {value:?} must be a positive integer string"
-            ),
-        }
-    }
+positive_u64_wire_error! {
+    pub enum JoinTokenTimeError;
+    noun: "join token timestamp";
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

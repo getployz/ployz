@@ -5,24 +5,13 @@ use super::classification::{
 use super::{
     BackupOperationState, BackupTransition, CertId, CertOperationState, CertRunningStage,
     CertTransition, DeployEvidence, DeployOperationState, DeployRunningStage, DeployTransition,
-    EventSequence, NodeId, OperationEvent, OperationId, OperationKind, OperationStatus,
+    EventSequence, NodeId, OperationEvent, OperationId, OperationKind, OperationStatus, ServiceId,
 };
-use crate::machine::MachineAddOperationState;
+use crate::machine::{MachineAddOperationState, MachineName};
+use crate::roles::FirstNodeGateway;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployProjection {
-    Updated { status: Box<OperationStatus> },
-    AlreadySatisfied,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CertProjection {
-    Updated { status: Box<OperationStatus> },
-    AlreadySatisfied,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationEventProjection {
+pub enum OperationProjection {
     StatusChanged { status: Box<OperationStatus> },
     AlreadySatisfied,
 }
@@ -66,11 +55,36 @@ pub enum ProjectionOperationState {
     Backup(BackupOperationState),
 }
 
+/// What a piece of deploy evidence requires of the operation state to count
+/// as fresh. This is the single source of the evidence→stage mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceRequirement {
+    Planning,
+    RunningStage(DeployRunningStage),
+    Cleanup,
+}
+
+const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
+    match evidence {
+        DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
+        DeployEvidence::WireGuardEbpfPrepared { .. } => {
+            EvidenceRequirement::RunningStage(DeployRunningStage::PreparingWireGuardEbpf)
+        }
+        DeployEvidence::ContainerStarted { .. } => {
+            EvidenceRequirement::RunningStage(DeployRunningStage::StartingContainers)
+        }
+        DeployEvidence::HealthCheckStarted => {
+            EvidenceRequirement::RunningStage(DeployRunningStage::WaitingForHealth)
+        }
+        DeployEvidence::CleanupFinished { .. } => EvidenceRequirement::Cleanup,
+    }
+}
+
 pub fn project_cert_transition(
     current: &OperationStatus,
     transition: CertTransition,
     event_sequence: EventSequence,
-) -> Result<CertProjection, StatusProjectionError> {
+) -> Result<OperationProjection, StatusProjectionError> {
     let OperationStatus::Cert {
         id,
         cert_id,
@@ -84,15 +98,30 @@ pub fn project_cert_transition(
             actual: current.kind(),
         });
     };
-    let attempted = transition.state();
 
+    project_cert_state(
+        id,
+        cert_id,
+        current_state,
+        transition.state(),
+        event_sequence,
+    )
+}
+
+fn project_cert_state(
+    id: &OperationId,
+    cert_id: &CertId,
+    current_state: &CertOperationState,
+    attempted: CertOperationState,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
     if cert_transition_satisfied(current_state, &attempted) {
-        return Ok(CertProjection::AlreadySatisfied);
+        return Ok(OperationProjection::AlreadySatisfied);
     }
 
     validate_cert_transition(id, current_state, &attempted)?;
 
-    Ok(CertProjection::Updated {
+    Ok(OperationProjection::StatusChanged {
         status: Box::new(OperationStatus::Cert {
             id: id.clone(),
             cert_id: cert_id.clone(),
@@ -113,19 +142,12 @@ pub fn validate_fresh_deploy_evidence(
             actual: current.kind(),
         });
     };
-    let valid = match evidence {
-        DeployEvidence::PlanCreated { .. } => matches!(state, DeployOperationState::Planning),
-        DeployEvidence::WireGuardEbpfPrepared { .. } => evidence_is_current_or_past_running_stage(
-            state,
-            DeployRunningStage::PreparingWireGuardEbpf,
-        ),
-        DeployEvidence::ContainerStarted { .. } => {
-            evidence_is_current_or_past_running_stage(state, DeployRunningStage::StartingContainers)
+    let valid = match evidence_requirement(evidence) {
+        EvidenceRequirement::Planning => matches!(state, DeployOperationState::Planning),
+        EvidenceRequirement::RunningStage(stage) => {
+            evidence_is_current_or_past_running_stage(state, stage)
         }
-        DeployEvidence::HealthCheckStarted => {
-            evidence_is_current_or_past_running_stage(state, DeployRunningStage::WaitingForHealth)
-        }
-        DeployEvidence::CleanupFinished { .. } => cleanup_evidence_is_valid(state),
+        EvidenceRequirement::Cleanup => cleanup_evidence_is_valid(state),
     };
     if valid {
         return Ok(());
@@ -162,18 +184,10 @@ fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
 }
 
 fn deploy_evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
-    match evidence {
-        DeployEvidence::PlanCreated { .. } => DeployOperationState::Planning,
-        DeployEvidence::WireGuardEbpfPrepared { .. } => DeployOperationState::Running {
-            stage: DeployRunningStage::PreparingWireGuardEbpf,
-        },
-        DeployEvidence::ContainerStarted { .. } => DeployOperationState::Running {
-            stage: DeployRunningStage::StartingContainers,
-        },
-        DeployEvidence::HealthCheckStarted => DeployOperationState::Running {
-            stage: DeployRunningStage::WaitingForHealth,
-        },
-        DeployEvidence::CleanupFinished { .. } => DeployOperationState::Running {
+    match evidence_requirement(evidence) {
+        EvidenceRequirement::Planning => DeployOperationState::Planning,
+        EvidenceRequirement::RunningStage(stage) => DeployOperationState::Running { stage },
+        EvidenceRequirement::Cleanup => DeployOperationState::Running {
             stage: DeployRunningStage::RemovingSupersededContainers,
         },
     }
@@ -183,7 +197,7 @@ pub fn project_deploy_transition(
     current: &OperationStatus,
     transition: DeployTransition,
     event_sequence: EventSequence,
-) -> Result<DeployProjection, StatusProjectionError> {
+) -> Result<OperationProjection, StatusProjectionError> {
     let OperationStatus::Deploy {
         id,
         service_id,
@@ -197,15 +211,30 @@ pub fn project_deploy_transition(
             actual: current.kind(),
         });
     };
-    let attempted = transition.state();
 
+    project_deploy_state(
+        id,
+        service_id,
+        current_state,
+        transition.state(),
+        event_sequence,
+    )
+}
+
+fn project_deploy_state(
+    id: &OperationId,
+    service_id: &ServiceId,
+    current_state: &DeployOperationState,
+    attempted: DeployOperationState,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
     if deploy_transition_satisfied(current_state, &attempted) {
-        return Ok(DeployProjection::AlreadySatisfied);
+        return Ok(OperationProjection::AlreadySatisfied);
     }
 
     validate_deploy_transition(id, current_state, &attempted)?;
 
-    Ok(DeployProjection::Updated {
+    Ok(OperationProjection::StatusChanged {
         status: Box::new(OperationStatus::Deploy {
             id: id.clone(),
             service_id: service_id.clone(),
@@ -219,7 +248,7 @@ pub fn project_operation_event(
     current: &OperationStatus,
     event: OperationEvent,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
+) -> Result<OperationProjection, StatusProjectionError> {
     let event = ClassifiedOperationEvent::from(event);
     let event_operation_id = event.operation_id();
     let current_operation_id = current.id();
@@ -232,56 +261,104 @@ pub fn project_operation_event(
 
     let last_event_sequence = current.last_event_sequence();
     if event_sequence <= last_event_sequence {
-        return Ok(OperationEventProjection::AlreadySatisfied);
+        return Ok(OperationProjection::AlreadySatisfied);
     }
 
     match event {
         ClassifiedOperationEvent::Deploy { event, .. } => {
-            let OperationStatus::Deploy { state, .. } = current else {
+            let OperationStatus::Deploy {
+                id,
+                service_id,
+                state,
+                ..
+            } = current
+            else {
                 return Err(kind_mismatch(current, OperationKind::Deploy));
             };
-            project_deploy_event(current, state, event, event_sequence)
+            project_deploy_event(id, service_id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::Cert { subject, event, .. } => {
-            let OperationStatus::Cert { cert_id, .. } = current else {
+            let OperationStatus::Cert {
+                id, cert_id, state, ..
+            } = current
+            else {
                 return Err(kind_mismatch(current, OperationKind::Cert));
             };
-            project_cert_event(current, cert_id, subject, event, event_sequence)
+            project_cert_event(id, cert_id, state, subject, event, event_sequence)
         }
         ClassifiedOperationEvent::MachineAdd { subject, event, .. } => {
-            let OperationStatus::MachineAdd { node_id, .. } = current else {
+            let OperationStatus::MachineAdd {
+                id,
+                node_id,
+                name,
+                gateway,
+                state,
+                ..
+            } = current
+            else {
                 return Err(kind_mismatch(current, OperationKind::MachineAdd));
             };
-            project_machine_add_event(current, node_id, subject, event, event_sequence)
+            let fields = MachineAddFields {
+                id,
+                node_id,
+                name,
+                gateway: *gateway,
+                state,
+            };
+            project_machine_add_event(fields, subject, event, event_sequence)
         }
         ClassifiedOperationEvent::Backup { event, .. } => {
-            let OperationStatus::Backup { state, .. } = current else {
+            let OperationStatus::Backup { id, state, .. } = current else {
                 return Err(kind_mismatch(current, OperationKind::Backup));
             };
-            backup::project_event(current, state, event, event_sequence)
+            backup::project_event(id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::Cancelled {
             operation_id: _,
             reason,
         } => match current {
-            OperationStatus::Deploy { state, .. } => project_deploy_event(
-                current,
+            OperationStatus::Deploy {
+                id,
+                service_id,
+                state,
+                ..
+            } => project_deploy_event(
+                id,
+                service_id,
                 state,
                 DeployEvent::Transition(DeployTransition::Cancelled { reason }),
                 event_sequence,
             ),
-            OperationStatus::Cert { .. } => cert_transition_projection(
-                current,
-                CertTransition::Cancelled { reason },
+            OperationStatus::Cert {
+                id, cert_id, state, ..
+            } => project_cert_state(
+                id,
+                cert_id,
+                state,
+                CertTransition::Cancelled { reason }.state(),
                 event_sequence,
             ),
-            OperationStatus::MachineAdd { .. } => project_machine_add_state(
-                current,
+            OperationStatus::MachineAdd {
+                id,
+                node_id,
+                name,
+                gateway,
+                state,
+                ..
+            } => project_machine_add_state(
+                MachineAddFields {
+                    id,
+                    node_id,
+                    name,
+                    gateway: *gateway,
+                    state,
+                },
                 MachineAddOperationState::Cancelled { reason },
                 event_sequence,
             ),
-            OperationStatus::Backup { .. } => backup::transition_projection(
-                current,
+            OperationStatus::Backup { id, state, .. } => backup::transition_projection(
+                id,
+                state,
                 BackupTransition::Cancelled { reason },
                 event_sequence,
             ),
@@ -289,7 +366,10 @@ pub fn project_operation_event(
     }
 }
 
-fn kind_mismatch(current: &OperationStatus, actual: OperationKind) -> StatusProjectionError {
+pub(super) fn kind_mismatch(
+    current: &OperationStatus,
+    actual: OperationKind,
+) -> StatusProjectionError {
     StatusProjectionError::OperationKindMismatch {
         operation_id: current.id().clone(),
         expected: current.kind(),
@@ -297,50 +377,58 @@ fn kind_mismatch(current: &OperationStatus, actual: OperationKind) -> StatusProj
     }
 }
 
+/// The destructured fields of [`OperationStatus::MachineAdd`].
+#[derive(Clone, Copy)]
+struct MachineAddFields<'status> {
+    id: &'status OperationId,
+    node_id: &'status NodeId,
+    name: &'status MachineName,
+    gateway: FirstNodeGateway,
+    state: &'status MachineAddOperationState,
+}
+
+impl MachineAddFields<'_> {
+    fn status_with(
+        &self,
+        state: MachineAddOperationState,
+        event_sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::MachineAdd {
+            id: self.id.clone(),
+            node_id: self.node_id.clone(),
+            name: self.name.clone(),
+            gateway: self.gateway,
+            state,
+            last_event_sequence: event_sequence,
+        }
+    }
+}
+
 fn project_machine_add_state(
-    current: &OperationStatus,
+    fields: MachineAddFields<'_>,
     attempted: MachineAddOperationState,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
-    let OperationStatus::MachineAdd {
-        id,
-        node_id,
-        name,
-        gateway,
-        state,
-        ..
-    } = current
-    else {
-        return Err(kind_mismatch(current, OperationKind::MachineAdd));
-    };
-
-    if state == &attempted {
-        return Ok(OperationEventProjection::AlreadySatisfied);
+) -> Result<OperationProjection, StatusProjectionError> {
+    if fields.state == &attempted {
+        return Ok(OperationProjection::AlreadySatisfied);
     }
-    if state.is_terminal() {
+    if fields.state.is_terminal() {
         return Err(StatusProjectionError::TerminalState {
-            operation_id: id.clone(),
-            current: Box::new(ProjectionOperationState::MachineAdd(state.clone())),
+            operation_id: fields.id.clone(),
+            current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
             attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
         });
     }
-    if !machine_add_transition_allowed(state, &attempted) {
+    if !machine_add_transition_allowed(fields.state, &attempted) {
         return Err(StatusProjectionError::InvalidTransition {
-            operation_id: id.clone(),
-            current: Box::new(ProjectionOperationState::MachineAdd(state.clone())),
+            operation_id: fields.id.clone(),
+            current: Box::new(ProjectionOperationState::MachineAdd(fields.state.clone())),
             attempted: Box::new(ProjectionOperationState::MachineAdd(attempted)),
         });
     }
 
-    Ok(OperationEventProjection::StatusChanged {
-        status: Box::new(OperationStatus::MachineAdd {
-            id: id.clone(),
-            node_id: node_id.clone(),
-            name: name.clone(),
-            gateway: *gateway,
-            state: attempted,
-            last_event_sequence: event_sequence,
-        }),
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(fields.status_with(attempted, event_sequence)),
     })
 }
 
@@ -419,119 +507,67 @@ fn machine_add_failure_allowed(
 }
 
 fn project_deploy_event(
-    current: &OperationStatus,
+    id: &OperationId,
+    service_id: &ServiceId,
     state: &DeployOperationState,
     event: DeployEvent,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
+) -> Result<OperationProjection, StatusProjectionError> {
     match event {
-        DeployEvent::Evidence(DeployEvidence::ContainerStarted { .. }) => {
-            if !matches!(
-                state,
-                DeployOperationState::Running {
-                    stage: DeployRunningStage::StartingContainers
+        DeployEvent::Evidence(evidence) => {
+            let requirement = evidence_requirement(&evidence);
+            let fresh = match requirement {
+                EvidenceRequirement::Planning => {
+                    matches!(state, DeployOperationState::Planning)
                 }
-            ) {
-                return evidence_cursor_after_stage(
-                    evidence_is_satisfied_after_stage(
-                        state,
-                        DeployRunningStage::StartingContainers,
-                    ),
-                    current,
-                    event_sequence,
-                );
+                EvidenceRequirement::RunningStage(required) => matches!(
+                    state,
+                    DeployOperationState::Running { stage } if *stage == required
+                ),
+                EvidenceRequirement::Cleanup => cleanup_evidence_is_valid(state),
+            };
+            if fresh {
+                return Ok(OperationProjection::StatusChanged {
+                    status: Box::new(evidence_status(id, service_id, state, event_sequence)),
+                });
             }
 
-            Ok(OperationEventProjection::StatusChanged {
-                status: Box::new(evidence_status(current, event_sequence)),
-            })
-        }
-        DeployEvent::Evidence(DeployEvidence::WireGuardEbpfPrepared { .. }) => {
-            if !matches!(
-                state,
-                DeployOperationState::Running {
-                    stage: DeployRunningStage::PreparingWireGuardEbpf
+            let satisfied = match requirement {
+                EvidenceRequirement::Planning => !matches!(state, DeployOperationState::Accepted),
+                EvidenceRequirement::RunningStage(required) => {
+                    evidence_is_satisfied_after_stage(state, required)
                 }
-            ) {
-                return evidence_cursor_after_stage(
-                    evidence_is_satisfied_after_stage(
-                        state,
-                        DeployRunningStage::PreparingWireGuardEbpf,
-                    ),
-                    current,
-                    event_sequence,
-                );
+                EvidenceRequirement::Cleanup => evidence_is_satisfied_after_stage(
+                    state,
+                    DeployRunningStage::RemovingSupersededContainers,
+                ),
+            };
+            if !satisfied {
+                return Ok(OperationProjection::AlreadySatisfied);
             }
 
-            Ok(OperationEventProjection::StatusChanged {
-                status: Box::new(evidence_status(current, event_sequence)),
-            })
-        }
-        DeployEvent::Evidence(DeployEvidence::HealthCheckStarted) => {
-            if !matches!(
-                state,
-                DeployOperationState::Running {
-                    stage: DeployRunningStage::WaitingForHealth
-                }
-            ) {
-                return evidence_cursor_after_stage(
-                    evidence_is_satisfied_after_stage(state, DeployRunningStage::WaitingForHealth),
-                    current,
-                    event_sequence,
-                );
-            }
-
-            Ok(OperationEventProjection::StatusChanged {
-                status: Box::new(evidence_status(current, event_sequence)),
-            })
-        }
-        DeployEvent::Evidence(DeployEvidence::CleanupFinished { .. }) => {
-            if !cleanup_evidence_is_valid(state) {
-                return evidence_cursor_after_stage(
-                    evidence_is_satisfied_after_stage(
-                        state,
-                        DeployRunningStage::RemovingSupersededContainers,
-                    ),
-                    current,
-                    event_sequence,
-                );
-            }
-
-            Ok(OperationEventProjection::StatusChanged {
-                status: Box::new(evidence_status(current, event_sequence)),
-            })
-        }
-        DeployEvent::Evidence(DeployEvidence::PlanCreated { .. }) => {
-            if !matches!(state, DeployOperationState::Planning) {
-                return evidence_cursor_after_stage(
-                    !matches!(state, DeployOperationState::Accepted),
-                    current,
-                    event_sequence,
-                );
-            }
-
-            Ok(OperationEventProjection::StatusChanged {
-                status: Box::new(evidence_status(current, event_sequence)),
+            Ok(OperationProjection::StatusChanged {
+                status: Box::new(evidence_status(id, service_id, state, event_sequence)),
             })
         }
         DeployEvent::Transition(transition) => {
-            project_deploy_transition(current, transition, event_sequence)
-                .map(deploy_projection_to_event_projection)
+            project_deploy_state(id, service_id, state, transition.state(), event_sequence)
         }
-        DeployEvent::Submitted => Ok(OperationEventProjection::AlreadySatisfied),
+        DeployEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
     }
 }
 
 fn project_cert_event(
-    current: &OperationStatus,
+    id: &OperationId,
     cert_id: &CertId,
+    state: &CertOperationState,
     event_subject: OperationSubjectRef,
     event: CertEvent,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
+) -> Result<OperationProjection, StatusProjectionError> {
     if event_subject != OperationSubjectRef::Cert(cert_id.clone()) {
         return Err(StatusProjectionError::OperationSubjectMismatch {
-            operation_id: current.id().clone(),
+            operation_id: id.clone(),
             expected: OperationSubjectRef::Cert(cert_id.clone()),
             actual: event_subject,
         });
@@ -539,34 +575,33 @@ fn project_cert_event(
 
     match event {
         CertEvent::Transition(transition) => {
-            cert_transition_projection(current, transition, event_sequence)
+            project_cert_state(id, cert_id, state, transition.state(), event_sequence)
         }
-        CertEvent::Submitted => Ok(OperationEventProjection::AlreadySatisfied),
+        CertEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
     }
 }
 
 fn project_machine_add_event(
-    current: &OperationStatus,
-    expected_node_id: &NodeId,
+    fields: MachineAddFields<'_>,
     event_subject: OperationSubjectRef,
     event: MachineAddEvent,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
-    if event_subject != OperationSubjectRef::MachineAdd(expected_node_id.clone()) {
+) -> Result<OperationProjection, StatusProjectionError> {
+    if event_subject != OperationSubjectRef::MachineAdd(fields.node_id.clone()) {
         return Err(StatusProjectionError::OperationSubjectMismatch {
-            operation_id: current.id().clone(),
-            expected: OperationSubjectRef::MachineAdd(expected_node_id.clone()),
+            operation_id: fields.id.clone(),
+            expected: OperationSubjectRef::MachineAdd(fields.node_id.clone()),
             actual: event_subject,
         });
     }
 
     match event {
-        MachineAddEvent::Submitted => Ok(OperationEventProjection::AlreadySatisfied),
+        MachineAddEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
         MachineAddEvent::CredentialProvisioned => {
-            project_machine_add_credential_evidence(current, event_sequence)
+            project_machine_add_credential_evidence(fields, event_sequence)
         }
         MachineAddEvent::Transition(attempted) => {
-            project_machine_add_state(current, attempted, event_sequence)
+            project_machine_add_state(fields, attempted, event_sequence)
         }
     }
 }
@@ -575,67 +610,15 @@ fn project_machine_add_event(
 /// cursor without changing the machine-add state. They are only recorded
 /// while the operation is live; once terminal, the evidence is satisfied.
 fn project_machine_add_credential_evidence(
-    current: &OperationStatus,
+    fields: MachineAddFields<'_>,
     event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
-    let OperationStatus::MachineAdd {
-        id,
-        node_id,
-        name,
-        gateway,
-        state,
-        ..
-    } = current
-    else {
-        return Err(kind_mismatch(current, OperationKind::MachineAdd));
-    };
-    if state.is_terminal() {
-        return Ok(OperationEventProjection::AlreadySatisfied);
+) -> Result<OperationProjection, StatusProjectionError> {
+    if fields.state.is_terminal() {
+        return Ok(OperationProjection::AlreadySatisfied);
     }
 
-    Ok(OperationEventProjection::StatusChanged {
-        status: Box::new(OperationStatus::MachineAdd {
-            id: id.clone(),
-            node_id: node_id.clone(),
-            name: name.clone(),
-            gateway: *gateway,
-            state: state.clone(),
-            last_event_sequence: event_sequence,
-        }),
-    })
-}
-
-fn deploy_projection_to_event_projection(projection: DeployProjection) -> OperationEventProjection {
-    match projection {
-        DeployProjection::Updated { status } => OperationEventProjection::StatusChanged { status },
-        DeployProjection::AlreadySatisfied => OperationEventProjection::AlreadySatisfied,
-    }
-}
-
-fn cert_transition_projection(
-    current: &OperationStatus,
-    transition: CertTransition,
-    event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
-    match project_cert_transition(current, transition, event_sequence)? {
-        CertProjection::Updated { status } => {
-            Ok(OperationEventProjection::StatusChanged { status })
-        }
-        CertProjection::AlreadySatisfied => Ok(OperationEventProjection::AlreadySatisfied),
-    }
-}
-
-fn evidence_cursor_after_stage(
-    satisfied: bool,
-    current: &OperationStatus,
-    event_sequence: EventSequence,
-) -> Result<OperationEventProjection, StatusProjectionError> {
-    if !satisfied {
-        return Ok(OperationEventProjection::AlreadySatisfied);
-    }
-
-    Ok(OperationEventProjection::StatusChanged {
-        status: Box::new(evidence_status(current, event_sequence)),
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(fields.status_with(fields.state.clone(), event_sequence)),
     })
 }
 
@@ -655,17 +638,12 @@ fn evidence_is_satisfied_after_stage(
     }
 }
 
-fn evidence_status(current: &OperationStatus, event_sequence: EventSequence) -> OperationStatus {
-    let OperationStatus::Deploy {
-        id,
-        service_id,
-        state,
-        ..
-    } = current
-    else {
-        return current.clone();
-    };
-
+fn evidence_status(
+    id: &OperationId,
+    service_id: &ServiceId,
+    state: &DeployOperationState,
+    event_sequence: EventSequence,
+) -> OperationStatus {
     OperationStatus::Deploy {
         id: id.clone(),
         service_id: service_id.clone(),

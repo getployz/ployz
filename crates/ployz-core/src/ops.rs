@@ -1,29 +1,26 @@
 //! Operation state, events, and status models.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::num::{NonZeroU16, NonZeroU64};
 
-use crate::backup::BackupManifest;
-use crate::cert::{AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertValidityWindow};
+use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::dataplane::{WireGuardEbpfComponent, WireGuardEbpfPrepareReport};
-use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
+use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
-    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId,
-    SubjectToken, SubjectTokenError,
+    CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectToken,
+    SubjectTokenError,
 };
-use crate::machine::{
-    IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineAddOperationState,
-    MachineCredentialProvisioningStep, MachineName,
-};
+use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
 use crate::roles::FirstNodeGateway;
 use crate::state::ExpectedActiveService;
-use crate::wire::{PositiveU64StringError, format_u64_string, parse_positive_u64_string};
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 mod accessors;
 mod backup;
 mod classification;
+mod events;
+mod lease;
 mod projection;
+mod replay;
 mod routes;
 mod text;
 
@@ -31,11 +28,19 @@ pub use backup::{
     BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
 };
 pub use classification::OperationSubjectRef;
+pub use events::{OperationEvent, OperationSubject};
+pub use lease::{
+    OperationLeaseDurationError, OperationLeaseDurationSeconds, OperationLeaseExpiresAt,
+    OperationLeaseExpiresAtError, OperationOwnerLease, OperationOwnershipStatus,
+};
 pub use projection::{
-    CertProjection, DeployProjection, OperationEventProjection, ProjectionOperationState,
-    StatusProjectionError, project_cert_transition, project_deploy_transition,
-    project_operation_event, validate_cert_transition, validate_deploy_transition,
-    validate_fresh_deploy_evidence,
+    OperationProjection, ProjectionOperationState, StatusProjectionError, project_cert_transition,
+    project_deploy_transition, project_operation_event, validate_cert_transition,
+    validate_deploy_transition, validate_fresh_deploy_evidence,
+};
+pub use replay::{
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
 };
 pub use routes::{RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RouteTarget};
 pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
@@ -348,186 +353,6 @@ impl OperationStatusSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct OperationOwnerLease {
-    pub operation_id: OperationId,
-    pub owner_id: OperationOwnerId,
-    pub expires_at: OperationLeaseExpiresAt,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "u64", into = "u64")]
-pub struct OperationLeaseDurationSeconds(NonZeroU64);
-
-impl OperationLeaseDurationSeconds {
-    pub fn try_new(seconds: u64) -> Result<Self, OperationLeaseDurationError> {
-        let Some(value) = NonZeroU64::new(seconds) else {
-            return Err(OperationLeaseDurationError::Zero);
-        };
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl TryFrom<u64> for OperationLeaseDurationSeconds {
-    type Error = OperationLeaseDurationError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<OperationLeaseDurationSeconds> for u64 {
-    fn from(value: OperationLeaseDurationSeconds) -> Self {
-        value.get()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationLeaseDurationError {
-    Zero,
-}
-
-impl fmt::Display for OperationLeaseDurationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("operation lease duration must be greater than zero"),
-        }
-    }
-}
-
-impl OperationOwnerLease {
-    #[must_use]
-    pub fn new(
-        operation_id: OperationId,
-        owner_id: OperationOwnerId,
-        expires_at: OperationLeaseExpiresAt,
-    ) -> Self {
-        Self {
-            operation_id,
-            owner_id,
-            expires_at,
-        }
-    }
-
-    #[must_use]
-    pub fn is_expired_at(&self, now: OperationLeaseExpiresAt) -> bool {
-        self.expires_at <= now
-    }
-
-    #[must_use]
-    pub fn renew_until(&self, expires_at: OperationLeaseExpiresAt) -> Self {
-        Self {
-            operation_id: self.operation_id.clone(),
-            owner_id: self.owner_id.clone(),
-            expires_at,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationOwnershipStatus {
-    Unclaimed,
-    Owned { lease: OperationOwnerLease },
-    Expired { lease: OperationOwnerLease },
-}
-
-impl OperationOwnershipStatus {
-    #[must_use]
-    pub fn from_lease_at(lease: OperationOwnerLease, now: OperationLeaseExpiresAt) -> Self {
-        if lease.is_expired_at(now) {
-            Self::Expired { lease }
-        } else {
-            Self::Owned { lease }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "Brand<string, \"OperationLeaseExpiresAt\">")
-)]
-#[serde(try_from = "String", into = "String")]
-pub struct OperationLeaseExpiresAt(NonZeroU64);
-
-impl OperationLeaseExpiresAt {
-    pub fn try_new(unix_seconds: u64) -> Result<Self, OperationLeaseExpiresAtError> {
-        let Some(value) = NonZeroU64::new(unix_seconds) else {
-            return Err(OperationLeaseExpiresAtError::Zero);
-        };
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn unix_seconds(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl TryFrom<u64> for OperationLeaseExpiresAt {
-    type Error = OperationLeaseExpiresAtError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<OperationLeaseExpiresAt> for u64 {
-    fn from(value: OperationLeaseExpiresAt) -> Self {
-        value.unix_seconds()
-    }
-}
-
-impl TryFrom<String> for OperationLeaseExpiresAt {
-    type Error = OperationLeaseExpiresAtError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match parse_positive_u64_string(value) {
-            Ok(value) => Self::try_new(value),
-            Err(PositiveU64StringError::Zero) => Err(OperationLeaseExpiresAtError::Zero),
-            Err(PositiveU64StringError::Invalid { value }) => {
-                Err(OperationLeaseExpiresAtError::InvalidWireValue { value })
-            }
-        }
-    }
-}
-
-impl From<OperationLeaseExpiresAt> for String {
-    fn from(value: OperationLeaseExpiresAt) -> Self {
-        format_u64_string(value.unix_seconds())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationLeaseExpiresAtError {
-    Zero,
-    InvalidWireValue { value: String },
-}
-
-impl fmt::Display for OperationLeaseExpiresAtError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("operation lease expiry must be greater than zero"),
-            Self::InvalidWireValue { value } => write!(
-                formatter,
-                "operation lease expiry {value:?} must be a positive integer string"
-            ),
-        }
-    }
-}
-
 impl OperationStatus {
     #[must_use]
     pub fn deploy_accepted(
@@ -728,331 +553,14 @@ impl OperationIdempotencyKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"EventSequence\">"))]
-#[serde(try_from = "String", into = "String")]
-pub struct EventSequence(NonZeroU64);
-
-impl EventSequence {
-    pub fn try_new(value: u64) -> Result<Self, EventSequenceError> {
-        let Some(value) = NonZeroU64::new(value) else {
-            return Err(EventSequenceError::Zero);
-        };
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
+positive_u64_wire_newtype! {
+    pub struct EventSequence;
+    ts_brand: "Brand<string, \"EventSequence\">";
+    accessor: get;
+    error: EventSequenceError;
 }
 
-impl TryFrom<u64> for EventSequence {
-    type Error = EventSequenceError;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<EventSequence> for u64 {
-    fn from(value: EventSequence) -> Self {
-        value.get()
-    }
-}
-
-impl TryFrom<String> for EventSequence {
-    type Error = EventSequenceError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match parse_positive_u64_string(value) {
-            Ok(value) => Self::try_new(value),
-            Err(PositiveU64StringError::Zero) => Err(EventSequenceError::Zero),
-            Err(PositiveU64StringError::Invalid { value }) => {
-                Err(EventSequenceError::InvalidWireValue { value })
-            }
-        }
-    }
-}
-
-impl From<EventSequence> for String {
-    fn from(value: EventSequence) -> Self {
-        format_u64_string(value.get())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EventSequenceError {
-    Zero,
-    InvalidWireValue { value: String },
-}
-
-impl fmt::Display for EventSequenceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => formatter.write_str("event sequence must be greater than zero"),
-            Self::InvalidWireValue { value } => write!(
-                formatter,
-                "event sequence {value:?} must be a positive integer string"
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(
-    feature = "typescript",
-    ts(type = "SafeInteger<\"OperationEventReplayLimit\">")
-)]
-#[serde(try_from = "u16", into = "u16")]
-pub struct OperationEventReplayLimit(NonZeroU16);
-
-impl OperationEventReplayLimit {
-    pub fn try_new(value: u16) -> Result<Self, OperationEventReplayLimitError> {
-        let Some(value) = NonZeroU16::new(value) else {
-            return Err(OperationEventReplayLimitError::Zero);
-        };
-        if value.get() > MAX_OPERATION_EVENT_REPLAY_LIMIT {
-            return Err(OperationEventReplayLimitError::TooLarge {
-                value: value.get(),
-                max: MAX_OPERATION_EVENT_REPLAY_LIMIT,
-            });
-        }
-
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u16 {
-        self.0.get()
-    }
-
-    #[must_use]
-    pub fn as_usize(self) -> usize {
-        usize::from(self.get())
-    }
-}
-
-impl TryFrom<u16> for OperationEventReplayLimit {
-    type Error = OperationEventReplayLimitError;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<OperationEventReplayLimit> for u16 {
-    fn from(value: OperationEventReplayLimit) -> Self {
-        value.get()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperationEventReplayLimitError {
-    Zero,
-    TooLarge { value: u16, max: u16 },
-}
-
-impl fmt::Display for OperationEventReplayLimitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Zero => {
-                formatter.write_str("operation event replay limit must be greater than zero")
-            }
-            Self::TooLarge { value, max } => {
-                write!(
-                    formatter,
-                    "operation event replay limit {value} exceeds maximum {max}"
-                )
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct OperationEventReplayRequest {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub limit: OperationEventReplayLimit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct OperationEventReplayPage {
-    pub events: Vec<ReplayedOperationEvent>,
-    pub cursor: OperationEventReplayCursor,
-}
-
-impl OperationEventReplayPage {
-    #[must_use]
-    pub fn caught_up(events: Vec<ReplayedOperationEvent>) -> Self {
-        Self {
-            events,
-            cursor: OperationEventReplayCursor::CaughtUp,
-        }
-    }
-
-    #[must_use]
-    pub fn more(events: Vec<ReplayedOperationEvent>, next_start_sequence: EventSequence) -> Self {
-        Self {
-            events,
-            cursor: OperationEventReplayCursor::More {
-                next_start_sequence,
-            },
-        }
-    }
-
-    #[must_use]
-    pub fn terminal(events: Vec<ReplayedOperationEvent>) -> Self {
-        Self {
-            events,
-            cursor: OperationEventReplayCursor::Terminal,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationEventReplayCursor {
-    CaughtUp,
-    Terminal,
-    More { next_start_sequence: EventSequence },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ReplayedOperationEvent {
-    pub sequence: EventSequence,
-    pub event: OperationEvent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationSubject {
-    Deploy { service_id: ServiceId },
-    Cert { cert_id: CertId },
-    MachineAdd { node_id: NodeId },
-    Backup,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OperationEvent {
-    DeploySubmitted {
-        operation_id: OperationId,
-        target: DeployRequest,
-    },
-    DeployPlanningStarted {
-        operation_id: OperationId,
-    },
-    DeployPlanCreated {
-        operation_id: OperationId,
-        plan: DeployPlan,
-    },
-    DeployRunning {
-        operation_id: OperationId,
-        stage: DeployRunningStage,
-    },
-    #[serde(rename = "deploy_wireguard_ebpf_prepared")]
-    DeployWireGuardEbpfPrepared {
-        operation_id: OperationId,
-        report: WireGuardEbpfPrepareReport,
-    },
-    DeployContainerStarted {
-        operation_id: OperationId,
-        node_id: NodeId,
-        container_id: ContainerId,
-    },
-    DeployHealthCheckStarted {
-        operation_id: OperationId,
-    },
-    DeployCleanupFinished {
-        operation_id: OperationId,
-        removed: Vec<DeployCleanupContainer>,
-        failed: Vec<DeployCleanupFailure>,
-    },
-    DeployCompleted {
-        operation_id: OperationId,
-        outcome: DeployCompletionOutcome,
-    },
-    DeployFailed {
-        operation_id: OperationId,
-        failure: DeployOperationFailure,
-    },
-    CertRenewalSubmitted {
-        operation_id: OperationId,
-        cert_id: CertId,
-    },
-    CertChallengePublished {
-        operation_id: OperationId,
-        cert_id: CertId,
-        challenge: AcmeHttp01Challenge,
-    },
-    CertValidationStarted {
-        operation_id: OperationId,
-        cert_id: CertId,
-    },
-    CertCompleted {
-        operation_id: OperationId,
-        active_cert: ActiveCertState,
-    },
-    CertFailed {
-        operation_id: OperationId,
-        failure: CertOperationFailure,
-    },
-    MachineAddSubmitted {
-        operation_id: OperationId,
-        node_id: NodeId,
-        name: MachineName,
-        gateway: FirstNodeGateway,
-        join_token: IssuedJoinToken,
-    },
-    MachineAddJoined {
-        operation_id: OperationId,
-        node_id: NodeId,
-        joined_at: JoinTokenRedeemedAt,
-    },
-    MachineAddCredentialProvisioned {
-        operation_id: OperationId,
-        node_id: NodeId,
-        step: MachineCredentialProvisioningStep,
-    },
-    MachineAddCompleted {
-        operation_id: OperationId,
-        node_id: NodeId,
-    },
-    MachineAddFailed {
-        operation_id: OperationId,
-        node_id: NodeId,
-        failure: MachineAddFailure,
-    },
-    BackupCreateSubmitted {
-        operation_id: OperationId,
-    },
-    BackupRunning {
-        operation_id: OperationId,
-        stage: BackupRunningStage,
-    },
-    BackupCompleted {
-        operation_id: OperationId,
-        manifest: BackupManifest,
-    },
-    BackupFailed {
-        operation_id: OperationId,
-        failure: BackupOperationFailure,
-    },
-    Cancelled {
-        operation_id: OperationId,
-        reason: CancellationReason,
-    },
+positive_u64_wire_error! {
+    pub enum EventSequenceError;
+    noun: "event sequence";
 }

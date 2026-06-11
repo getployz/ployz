@@ -291,7 +291,7 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
                         if report
                             .nodes
                             .iter()
-                            .map(|node| node.node_id().clone())
+                            .map(|node| node.node_id.clone())
                             .collect::<Vec<_>>()
                             == vec![node_id("core_1"), node_id("edge_2")]
                 )
