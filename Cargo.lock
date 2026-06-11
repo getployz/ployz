@@ -1217,6 +1217,9 @@ name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "bollard",
+ "futures-util",
+ "nuid",
  "ployz-core",
  "ployz-nats",
  "ployz-sdk-types",

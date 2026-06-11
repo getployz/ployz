@@ -12,6 +12,12 @@ path = "src/lib.rs"
 [lints]
 workspace = true
 
+[dependencies]
+bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
+futures-util.workspace = true
+nuid.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
 [dev-dependencies]
 async-nats = { version = "0.49.0", default-features = false, features = ["jetstream", "kv", "nuid", "server_2_14", "service"] }
 ployz-core.workspace = true
