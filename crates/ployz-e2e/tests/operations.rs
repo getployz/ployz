@@ -11,9 +11,7 @@ use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
     plan_service_deploy,
 };
-use ployz_core::ids::{
-    ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, StepId,
-};
+use ployz_core::ids::{ContainerId, OperationId, OperationOwnerId, StepId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinTemplate};
 use ployz_core::node::{
     ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
@@ -21,9 +19,8 @@ use ployz_core::node::{
 };
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
-    EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationStatus,
-    RouteHostname, RoutePort, RouteTarget,
+    EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayRequest,
+    OperationLeaseExpiresAt, OperationStatus, RouteTarget,
 };
 use ployz_core::state::{
     ActiveRouteCommitRequest, ExpectedActiveRoute, ExpectedActiveRouteRevision,
@@ -50,6 +47,10 @@ use ployzd::node_runtime::start_node_runtime_with_ports;
 mod support;
 
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
+use support::ids::{
+    event_replay_limit, event_sequence, idempotency_key, node_id, operation_id, revision_id,
+    route_hostname, route_port, service_id,
+};
 use support::nats::TestNats;
 
 #[tokio::test]
@@ -932,24 +933,8 @@ async fn bootstrap_nats_resources(
         .map_err(Into::into)
 }
 
-fn operation_id(value: &str) -> OperationId {
-    OperationId::try_new(value).expect("valid operation id")
-}
-
-fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
-}
-
 fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
     WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
-}
-
-fn service_id(value: &str) -> ServiceId {
-    ServiceId::try_new(value).expect("valid service id")
-}
-
-fn revision_id(value: &str) -> RevisionId {
-    RevisionId::try_new(value).expect("valid revision id")
 }
 
 fn image(value: &str) -> ImageReference {
@@ -1038,14 +1023,6 @@ async fn wait_for_gateway_upstream(
     panic!("gateway upstream did not become visible");
 }
 
-fn route_hostname(value: &str) -> RouteHostname {
-    RouteHostname::try_new(value).expect("valid route hostname")
-}
-
-fn route_port(value: u16) -> RoutePort {
-    RoutePort::try_new(value).expect("valid route port")
-}
-
 fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
     NodePublicIpObservation {
         node_id: self::node_id(node_id),
@@ -1066,18 +1043,6 @@ fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
         ip: ip.parse().expect("valid endpoint ip"),
         port: route_port(port),
     }
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
-}
-
-fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
-    OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
-}
-
-fn idempotency_key(value: &str) -> OperationIdempotencyKey {
-    OperationIdempotencyKey::try_new(value).expect("valid idempotency key")
 }
 
 fn test_lease_claim() -> OperationLeaseClaim {
