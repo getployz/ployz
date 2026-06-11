@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use crate::ids::NodeId;
-use crate::nats_config::{NatsCaCertificatePem, NatsServerName, is_valid_host_syntax};
+use crate::nats_config::{NatsCaCertificatePem, is_valid_host_syntax};
 use crate::roles::{DaemonProcessRole, FirstNodeGateway};
 use serde::{Deserialize, Serialize};
 
@@ -301,7 +301,6 @@ pub struct MachineJoinTemplate {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct MachineJoinTrustedNats {
-    pub server_name: NatsServerName,
     pub ca_pem: NatsCaCertificatePem,
 }
 

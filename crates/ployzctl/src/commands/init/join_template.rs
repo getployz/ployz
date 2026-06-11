@@ -2,12 +2,12 @@ use std::fs;
 use std::io::Read;
 
 use clap::Args;
-use ployz_core::ids::NodeId;
 use ployz_core::install::{
     MachineJoinArtifact, MachineJoinArtifactBundleSpec, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTemplate,
+    MachineJoinTrustedNats,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, trusted_nats_for_first_node};
+use ployz_core::nats_config::NatsCaCertificatePem;
 
 use crate::commands::{PloyzctlCliError, invalid_value};
 
@@ -36,8 +36,6 @@ impl MachineJoinTemplateCommand {
 pub(crate) fn machine_join_template_command(
     parsed: MachineJoinTemplateCli,
 ) -> Result<MachineJoinTemplateCommand, PloyzctlCliError> {
-    let trusted_first_node = NodeId::try_new(parsed.trusted_first_node)
-        .map_err(|error| invalid_value("--trusted-first-node", error))?;
     let trusted_nats_ca = read_trusted_nats_ca(parsed.trusted_nats_ca_file)?;
     let artifacts = read_artifact_spec(parsed.artifact_spec)?;
 
@@ -48,7 +46,9 @@ pub(crate) fn machine_join_template_command(
                     .map_err(|error| invalid_value("--cluster", error))?,
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(parsed.runtime_nats_url)
                     .map_err(|error| invalid_value("--runtime-nats-url", error))?,
-                trusted_nats: trusted_nats_for_first_node(&trusted_first_node, trusted_nats_ca),
+                trusted_nats: MachineJoinTrustedNats {
+                    ca_pem: trusted_nats_ca,
+                },
                 ployzd: MachineJoinPloyzdArtifact {
                     version: artifacts.ployzd.version,
                     source: artifacts.ployzd.source,
@@ -78,8 +78,6 @@ pub(crate) struct MachineJoinTemplateCli {
     cluster: String,
     #[arg(long)]
     runtime_nats_url: String,
-    #[arg(long)]
-    trusted_first_node: String,
     #[arg(long)]
     trusted_nats_ca_file: String,
     #[arg(long)]

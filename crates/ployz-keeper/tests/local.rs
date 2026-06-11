@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::install::{MachineJoinNatsCredentials, NatsMachineMaterialPaths};
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
@@ -112,7 +112,7 @@ fn local_effects_install_first_node_process_units() {
     );
     assert_eq!(
         fs::read_to_string(root.join("nats/server.crt")).unwrap(),
-        test_identity().server_cert.cert_pem
+        test_identity().server_cert.cert_pem.as_str()
     );
     assert_eq!(
         fs::read_to_string(root.join("nats/server.key")).unwrap(),
@@ -541,8 +541,10 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         KeeperJoinMaterial::new(
             node_id("node_2"),
             "prod",
-            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "server_1",
+            MachineJoinNatsCredentials::try_new(
+                "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .expect("valid nats credentials"),
             test_ca_pem(),
         )
         .expect("valid join material"),
@@ -585,7 +587,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         )
         .expect("join material is stored"),
         format!(
-            "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_ca_sha256={}\n",
+            "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
             ployz_keeper::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -658,8 +660,10 @@ fn local_effects_store_redacted_join_material() {
     let material = KeeperJoinMaterial::new(
         node_id("node_2"),
         "prod",
-        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "server_1",
+        MachineJoinNatsCredentials::try_new(
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("valid nats credentials"),
         test_ca_pem(),
     )
     .expect("valid join material");
@@ -683,7 +687,7 @@ fn local_effects_store_redacted_join_material() {
         )
         .expect("join material is stored"),
         format!(
-            "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_server=server_1\ntrusted_nats_ca_sha256={}\n",
+            "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
             ployz_keeper::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );

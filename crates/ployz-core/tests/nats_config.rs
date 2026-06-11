@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
 use ployz_core::nats_config::{
-    NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener, NatsServerConfig,
-    NatsServerConfigError, NatsServerTlsFiles, NatsUserPublicKey, NatsUserSeed,
-    render_authorized_users, trusted_nats_for_first_node,
+    NatsAdvertisedHost, NatsAuthorizedUser, NatsListener, NatsServerCertificatePem,
+    NatsServerConfig, NatsServerConfigError, NatsServerTlsFiles, NatsUserPublicKey, NatsUserSeed,
+    render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
 
@@ -164,14 +164,17 @@ fn nats_user_key_material_is_validated_and_seed_debug_is_redacted() {
 }
 
 #[test]
-fn trusted_nats_for_first_node_carries_server_name_and_ca() {
-    let trusted = trusted_nats_for_first_node(
-        &node_id("core_1"),
-        NatsCaCertificatePem::try_new(CA_PEM).expect("valid ca pem"),
+fn server_certificate_pem_requires_a_certificate_block() {
+    assert_eq!(
+        NatsServerCertificatePem::try_new(""),
+        Err(NatsServerConfigError::InvalidServerCertificatePem)
     );
-
-    assert_eq!(trusted.server_name.as_str(), "core_1");
-    assert_eq!(trusted.ca_pem.as_str(), CA_PEM);
+    assert_eq!(
+        NatsServerCertificatePem::try_new("not-a-pem"),
+        Err(NatsServerConfigError::InvalidServerCertificatePem)
+    );
+    let pem = NatsServerCertificatePem::try_new(CA_PEM).expect("valid certificate pem");
+    assert_eq!(pem.as_str(), CA_PEM);
 }
 
 fn loopback_config(store_dir: PathBuf) -> NatsServerConfig {

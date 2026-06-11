@@ -10,7 +10,7 @@ use ployz_core::install::{
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinTemplate,
     MachineJoinTrustedNats,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
@@ -242,8 +242,6 @@ pub fn machine_join_template(nats: &TestNats) -> MachineJoinTemplate {
                 )
                 .expect("valid runtime nats url"),
                 trusted_nats: MachineJoinTrustedNats {
-                    server_name: NatsServerName::try_new("server_1")
-                        .expect("valid nats server name"),
                     ca_pem: NatsCaCertificatePem::try_new(ca_pem).expect("valid ca pem"),
                 },
                 ployzd: MachineJoinPloyzdArtifact {

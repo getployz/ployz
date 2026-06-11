@@ -838,7 +838,6 @@ function machineJoinBundle(): MachineJoinBundle {
       cluster_name: "prod",
       runtime_nats_url: "nats://127.0.0.1:7422",
       trusted_nats: {
-        server_name: "server_1",
         ca_pem:
           "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
       },

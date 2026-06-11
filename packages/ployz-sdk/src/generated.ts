@@ -278,11 +278,9 @@ export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
 export type MachineJoinNatsCredentials = string;
 
-export type NatsServerName = string;
-
 export type NatsCaCertificatePem = string;
 
-export type MachineJoinTrustedNats = { server_name: NatsServerName, ca_pem: NatsCaCertificatePem, };
+export type MachineJoinTrustedNats = { ca_pem: NatsCaCertificatePem, };
 
 export type InstallArtifactVersion = string;
 

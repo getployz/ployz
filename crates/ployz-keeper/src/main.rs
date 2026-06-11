@@ -486,7 +486,7 @@ mod tests {
         MachineJoinSecretDelivery, MachineJoinTrustedNats,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
-    use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+    use ployz_core::nats_config::NatsCaCertificatePem;
     use ployz_core::roles::FirstNodeGateway;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
 
@@ -556,8 +556,6 @@ mod tests {
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                     .expect("valid runtime nats url"),
                 trusted_nats: MachineJoinTrustedNats {
-                    server_name: NatsServerName::try_new("server_1")
-                        .expect("valid nats server name"),
                     ca_pem: NatsCaCertificatePem::try_new(
                         "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                     )

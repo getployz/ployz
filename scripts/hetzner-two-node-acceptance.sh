@@ -656,7 +656,7 @@ JSON
     [ -n "$core_iroh_public_key" ] || die "core iroh identity did not print a public key; output: ${core_iroh_identity_log}"
 
     run_remote_logged render-join-template "$core_ip" \
-      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-first-node core_1 --trusted-nats-ca-file '$remote_trusted_nats_ca' --artifact-spec '$remote_artifact_spec' > '$remote_join_template'"
+      "'$remote_ployzctl' init join-template --cluster 'acceptance-${run_id}' --runtime-nats-url '$edge_runtime_nats_url' --trusted-nats-ca-file '$remote_trusted_nats_ca' --artifact-spec '$remote_artifact_spec' > '$remote_join_template'"
 
     run_remote_logged install-core "$core_ip" \
       "'$remote_keeper' first-node-install --spec '$remote_first_node_install_spec'"

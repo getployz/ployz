@@ -177,7 +177,7 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
             target.state_dir(),
             &nats_file_name(&target.material().server_cert_file()),
             "ployz-nats-cert",
-            target.server_cert_pem().as_bytes(),
+            target.server_cert_pem().as_str().as_bytes(),
         )?;
         write_durable_secret_file(
             target.state_dir(),
@@ -342,7 +342,7 @@ fn commit_join_material_files(
     commit_join_material_secret_file(
         directory,
         JOIN_NATS_CREDENTIALS_FILE,
-        material.nats_credentials().as_bytes(),
+        material.nats_credentials().secret().as_bytes(),
     )
 }
 

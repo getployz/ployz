@@ -48,7 +48,7 @@ pub use ployz_core::machine::{
     MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
     MachineReadinessCheck, MachineReadinessEvidence,
 };
-pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+pub use ployz_core::nats_config::NatsCaCertificatePem;
 pub use ployz_core::node::ManagedContainerKind;
 pub use ployz_core::ops::{
     ActiveServiceCommitFailure, ArtifactUnavailableReason, BackupOperationFailure,

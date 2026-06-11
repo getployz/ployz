@@ -230,7 +230,6 @@ write_join_template() {
       "cluster_name": "local-dind",
       "runtime_nats_url": "${runtime_nats_url}",
       "trusted_nats": {
-        "server_name": "core_1",
         "ca_pem": "${ca_pem_json}"
       },
       "ployzd": {

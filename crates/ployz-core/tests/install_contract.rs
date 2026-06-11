@@ -6,7 +6,7 @@ use ployz_core::install::{
     MachineJoinPloyzdArtifact, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery,
     MachineJoinTrustedNats,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::FirstNodeGateway;
 
 #[test]
@@ -137,9 +137,6 @@ fn keeper_install_contract_validates_artifact_inputs() {
         )
         .is_ok()
     );
-    assert!(NatsServerName::try_new("").is_err());
-    assert!(NatsServerName::try_new("server one").is_err());
-    assert!(NatsServerName::try_new("server_1").is_ok());
     assert!(NatsCaCertificatePem::try_new("").is_err());
     assert!(NatsCaCertificatePem::try_new("not-a-pem").is_err());
     assert!(NatsCaCertificatePem::try_new("-----BEGIN CERTIFICATE-----\nTUlJQg==").is_err());
@@ -170,7 +167,6 @@ fn machine_join_bundle_rejects_invalid_wire_artifact_before_storage() {
             "cluster_name": "prod",
             "runtime_nats_url": "nats://127.0.0.1:7422",
             "trusted_nats": {
-                "server_name": "server_1",
                 "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
             },
             "ployzd": {
@@ -196,7 +192,6 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                 "cluster_name": "prod",
                 "runtime_nats_url": "nats://127.0.0.1:7422",
                 "trusted_nats": {
-                    "server_name": "server_1",
                     "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
                 },
                 "ployzd": {
@@ -284,7 +279,6 @@ fn machine_join_bundle() -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: MachineJoinTrustedNats {
-                server_name: NatsServerName::try_new("server_1").expect("valid nats server name"),
                 ca_pem: NatsCaCertificatePem::try_new(
                     "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                 )

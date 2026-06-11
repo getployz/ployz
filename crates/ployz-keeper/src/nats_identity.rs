@@ -8,8 +8,8 @@ use std::fmt;
 use std::net::IpAddr;
 
 use ployz_core::nats_config::{
-    NatsCaCertificatePem, NatsServerConfigError, NatsUserPublicKey, NatsUserSeed,
-    is_valid_host_syntax,
+    NatsCaCertificatePem, NatsServerCertificatePem, NatsServerConfigError, NatsUserPublicKey,
+    NatsUserSeed, is_valid_host_syntax,
 };
 
 const CA_COMMON_NAME: &str = "ployz-cluster-ca";
@@ -28,7 +28,7 @@ pub struct ClusterNatsIdentity {
 /// The server's TLS certificate plus its private key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsServerCertificate {
-    pub cert_pem: String,
+    pub cert_pem: NatsServerCertificatePem,
     pub key_pem: NatsServerKeyPem,
 }
 
@@ -131,7 +131,8 @@ pub fn generate_cluster_nats_identity(
     Ok(ClusterNatsIdentity {
         ca,
         server_cert: NatsServerCertificate {
-            cert_pem: server_certificate.pem(),
+            cert_pem: NatsServerCertificatePem::try_new(server_certificate.pem())
+                .map_err(NatsIdentityError::InvalidGeneratedMaterial)?,
             key_pem: NatsServerKeyPem(server_key.serialize_pem()),
         },
         controller: mint_nkey_user()?,
@@ -262,6 +263,7 @@ mod tests {
         assert!(
             server_cert
                 .cert_pem
+                .as_str()
                 .trim_start()
                 .starts_with("-----BEGIN CERTIFICATE-----")
         );

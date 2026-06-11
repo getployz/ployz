@@ -149,8 +149,6 @@ pub(super) fn machine_join_bundle() -> MachineJoinBundle {
             )
             .expect("valid runtime nats url"),
             trusted_nats: ployz_core::install::MachineJoinTrustedNats {
-                server_name: ployz_core::nats_config::NatsServerName::try_new("server_1")
-                    .expect("valid nats server name"),
                 ca_pem: ployz_core::nats_config::NatsCaCertificatePem::try_new(
                     "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                 )

@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use std::{env, fs};
 
 use ployz_core::ids::{NodeId, OperationId};
-use ployz_core::install::NatsMachineMaterialPaths;
+use ployz_core::install::{MachineJoinNatsCredentials, NatsMachineMaterialPaths};
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
@@ -482,7 +482,7 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
 fn join_material_cluster_name_rejects_persisted_format_breakers() {
     for value in ["prod\nnext", "prod\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), value, "server_1", NATS_CA_DIGEST,),
+            RedactedJoinMaterial::new(node_id("node_7"), value, NATS_CA_DIGEST),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "cluster name",
                 value: value.to_owned(),
@@ -493,11 +493,11 @@ fn join_material_cluster_name_rejects_persisted_format_breakers() {
 
 #[test]
 fn join_material_rejects_persisted_line_breakers() {
-    for value in ["server_1\nnext", "server_1\rnext"] {
+    for value in ["cccc\nnext", "cccc\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), "prod", value, NATS_CA_DIGEST,),
+            RedactedJoinMaterial::new(node_id("node_7"), "prod", value),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
-                label: "trusted NATS server",
+                label: "trusted NATS CA digest",
                 value: value.to_owned(),
             })
         );
@@ -1003,8 +1003,10 @@ fn keeper_join_material() -> KeeperJoinMaterial {
     KeeperJoinMaterial::new(
         node_id("node_7"),
         "prod",
-        "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "server_1",
+        MachineJoinNatsCredentials::try_new(
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .expect("valid nats credentials"),
         test_ca_pem(),
     )
     .expect("valid join material")

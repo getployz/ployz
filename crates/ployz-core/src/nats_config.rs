@@ -4,7 +4,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::ids::NodeId;
-use crate::install::MachineJoinTrustedNats;
 use crate::permissions::{NatsPermissionProfile, ResponsePermission};
 use crate::security::NatsPrincipal;
 use serde::{Deserialize, Serialize};
@@ -291,48 +290,6 @@ fn render_subject_list(label: &str, subjects: &[String]) -> String {
     format!("          {label}: [{}]\n", quoted.join(", "))
 }
 
-/// The TLS server name machines verify against the cluster CA.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "string"))]
-#[serde(try_from = "String", into = "String")]
-pub struct NatsServerName(String);
-
-impl NatsServerName {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, NatsServerConfigError> {
-        let value = value.into();
-        if value.is_empty()
-            || value.chars().any(|character| {
-                character.is_whitespace()
-                    || character.is_control()
-                    || matches!(character, '"' | '\'' | '{' | '}' | '=')
-            })
-        {
-            return Err(NatsServerConfigError::InvalidServerName { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for NatsServerName {
-    type Error = NatsServerConfigError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<NatsServerName> for String {
-    fn from(value: NatsServerName) -> Self {
-        value.0
-    }
-}
-
 /// The host an externally reachable listener advertises to clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsAdvertisedHost(String);
@@ -489,26 +446,38 @@ impl From<NatsCaCertificatePem> for String {
     }
 }
 
-#[must_use]
-pub fn trusted_nats_for_first_node(
-    node_id: &NodeId,
-    ca_pem: NatsCaCertificatePem,
-) -> MachineJoinTrustedNats {
-    MachineJoinTrustedNats {
-        server_name: NatsServerName::try_new(node_id.as_str())
-            .expect("node ids are valid NATS server names"),
-        ca_pem,
+/// A NATS server TLS certificate in PEM form. Public material written next
+/// to the server key on the owning machine; never serialized in contracts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsServerCertificatePem(String);
+
+impl NatsServerCertificatePem {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, NatsServerConfigError> {
+        let value = value.into();
+        let trimmed = value.trim();
+        if !trimmed.starts_with("-----BEGIN CERTIFICATE-----")
+            || !trimmed.ends_with("-----END CERTIFICATE-----")
+            || !value.is_ascii()
+        {
+            return Err(NatsServerConfigError::InvalidServerCertificatePem);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServerConfigError {
     InvalidPath { field: &'static str, value: PathBuf },
-    InvalidServerName { value: String },
     InvalidAdvertisedHost { value: String },
     InvalidUserPublicKey { value: String },
     InvalidUserSeed,
     InvalidCaCertificatePem,
+    InvalidServerCertificatePem,
 }
 
 impl fmt::Display for NatsServerConfigError {
@@ -519,12 +488,6 @@ impl fmt::Display for NatsServerConfigError {
                     formatter,
                     "NATS config path {field} {} is not a valid path",
                     value.display()
-                )
-            }
-            Self::InvalidServerName { value } => {
-                write!(
-                    formatter,
-                    "NATS server name {value:?} contains unsupported characters"
                 )
             }
             Self::InvalidAdvertisedHost { value } => {
@@ -543,6 +506,9 @@ impl fmt::Display for NatsServerConfigError {
                 .write_str("NATS user seed must be a 58-character SU-prefixed base32 NKey seed"),
             Self::InvalidCaCertificatePem => {
                 formatter.write_str("NATS cluster CA must be a PEM CERTIFICATE block")
+            }
+            Self::InvalidServerCertificatePem => {
+                formatter.write_str("NATS server certificate must be a PEM CERTIFICATE block")
             }
         }
     }

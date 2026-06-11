@@ -66,15 +66,6 @@ fn assert_join_template(template: MachineJoinTemplate) {
         "nats://127.0.0.1:7422"
     );
     assert_eq!(
-        template
-            .join_bundle
-            .material
-            .trusted_nats
-            .server_name
-            .as_str(),
-        "core_1"
-    );
-    assert_eq!(
         template.join_bundle.material.trusted_nats.ca_pem.as_str(),
         TRUSTED_NATS_CA_PEM
     );
@@ -105,8 +96,6 @@ fn init_join_template_args(artifact_spec: &Path, trusted_nats_ca_file: &Path) ->
         "acceptance-smoke",
         "--runtime-nats-url",
         "nats://127.0.0.1:7422",
-        "--trusted-first-node",
-        "core_1",
         "--trusted-nats-ca-file",
         trusted_nats_ca_file
             .to_str()

@@ -46,7 +46,7 @@ use crate::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady,
     WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::subjects::OperationApiEndpointExecution;
 use ts_rs::{Config, TS};
 
@@ -210,7 +210,6 @@ macro_rules! exported_types {
             MachineJoinSecretDelivery,
             MachineJoinTemplate,
             MachineJoinNatsCredentials,
-            NatsServerName,
             NatsCaCertificatePem,
             MachineJoinTrustedNats,
             InstallArtifactVersion,

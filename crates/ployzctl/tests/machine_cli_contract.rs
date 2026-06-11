@@ -4,7 +4,7 @@ use ployz_core::install::{
     MachineJoinArtifact, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinPloyzdArtifact, MachineJoinTrustedNats,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsServerName};
+use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
@@ -223,7 +223,6 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
                 .expect("valid runtime NATS URL"),
             trusted_nats: MachineJoinTrustedNats {
-                server_name: NatsServerName::try_new("server_1").expect("valid NATS server name"),
                 ca_pem: NatsCaCertificatePem::try_new(
                     "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
                 )
