@@ -8,8 +8,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
     ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
-    EbpfCtlArtifactTarget, KeeperArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget,
-    Sha256Digest,
+    EbpfCtlArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
 use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
@@ -27,10 +26,9 @@ use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
-    KeeperStep, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, bootstrap_script_plan,
-    first_node_install_plan,
+    FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, KeeperStep,
+    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
+    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_node_install_plan,
 };
 use ployz_keeper::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
@@ -38,32 +36,6 @@ use ployz_keeper::systemd::{
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 use std::sync::OnceLock;
-
-#[test]
-fn local_effects_install_keeper_only() {
-    let root = temp_dir("ployz-keeper-local-bootstrap");
-    let source = root.join("ployz-keeper-source");
-    let install_path = root.join("bin/ployz-keeper");
-    let systemd_dir = root.join("systemd");
-    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    fs::write(&source, "ployz\n").expect("artifact source can be written");
-
-    let keeper_artifact = keeper_artifact(&source, &install_path);
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact));
-    let mut effects = KeeperLocalEffects::new(
-        local_config(&root, &systemd_dir),
-        RecordingRunner::root_linux(),
-    );
-    let mut recorder = RecordingRecorder::default();
-
-    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
-
-    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
-    assert_eq!(fs::read_to_string(&install_path).unwrap(), "ployz\n");
-    assert!(!systemd_dir.join("ployz-keeper.service").exists());
-    assert_eq!(effects.runner().systemctl_calls, Vec::<Vec<String>>::new());
-    assert_eq!(recorder.events, execution.events);
-}
 
 #[test]
 fn local_effects_install_first_node_process_units() {
@@ -265,10 +237,10 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
     let root = temp_dir("ployz-keeper-local-not-root");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact(
-        &root.join("source"),
-        &root.join("bin/ployz-keeper"),
-    )));
+    let plan = first_node_plan_with_ployzd(
+        &root,
+        ployzd_artifact(&root.join("source"), &root.join("bin/ployzd")),
+    );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -295,18 +267,12 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
 fn local_effects_download_remote_artifact_sources() {
     let root = temp_dir("ployz-keeper-local-remote-source");
     let systemd_dir = root.join("systemd");
-    let install_path = root.join("bin/ployz-keeper");
+    let install_path = root.join("bin/ployzd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(
-        KeeperArtifactTarget::new(
-            version("0.1.0"),
-            ArtifactSource::try_new("https://example.invalid/ployz-keeper")
-                .expect("valid remote source"),
-            digest(PLOYZ_NEWLINE_SHA256),
-            install_path.clone(),
-        )
-        .expect("valid keeper artifact"),
-    ));
+    let plan = first_node_plan_with_ployzd(
+        &root,
+        remote_ployzd_artifact("https://example.invalid/ployzd", &install_path),
+    );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -325,7 +291,7 @@ fn local_effects_download_remote_artifact_sources() {
     assert!(
         downloads
             .iter()
-            .all(|download| download.url == "https://example.invalid/ployz-keeper")
+            .all(|download| download.url == "https://example.invalid/ployzd")
     );
     drop(effects);
     assert!(downloads.iter().all(RecordedDownload::is_cleaned_up));
@@ -336,16 +302,9 @@ fn local_effects_remove_partial_remote_download_after_failure() {
     let root = temp_dir("ployz-keeper-local-remote-source-fail");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let url = "https://example.invalid/ployz-keeper";
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(
-        KeeperArtifactTarget::new(
-            version("0.1.0"),
-            ArtifactSource::try_new(url).expect("valid remote source"),
-            digest(PLOYZ_NEWLINE_SHA256),
-            root.join("bin/ployz-keeper"),
-        )
-        .expect("valid keeper artifact"),
-    ));
+    let url = "https://example.invalid/ployzd";
+    let plan =
+        first_node_plan_with_ployzd(&root, remote_ployzd_artifact(url, &root.join("bin/ployzd")));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -375,16 +334,10 @@ fn local_effects_report_remote_artifact_digest_mismatch_as_verification_failure(
     let root = temp_dir("ployz-keeper-local-remote-digest-fail");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(
-        KeeperArtifactTarget::new(
-            version("0.1.0"),
-            ArtifactSource::try_new("https://example.invalid/ployz-keeper")
-                .expect("valid remote source"),
-            digest(PLOYZ_NEWLINE_SHA256),
-            root.join("bin/ployz-keeper"),
-        )
-        .expect("valid keeper artifact"),
-    ));
+    let plan = first_node_plan_with_ployzd(
+        &root,
+        remote_ployzd_artifact("https://example.invalid/ployzd", &root.join("bin/ployzd")),
+    );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -932,14 +885,35 @@ fn edge_runtime_role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
     )
 }
 
-fn keeper_artifact(source: &Path, install_path: &Path) -> KeeperArtifactTarget {
-    KeeperArtifactTarget::new(
+fn first_node_plan_with_ployzd(
+    root: &Path,
+    ployzd: PloyzdArtifactTarget,
+) -> ployz_keeper::steps::KeeperStepPlan {
+    let nats_source = root.join("nats-server-source");
+    fs::write(&nats_source, "ployz\n").expect("nats source can be written");
+    first_node_install_plan(
+        FirstNodeInstallTarget::new(
+            node_id("node_1"),
+            ployzd,
+            dataplane_artifacts(root),
+            nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
+            FirstNodeGateway::Skip,
+            test_identity().clone(),
+        )
+        .with_nats_server_unit(nats_unit(root))
+        .with_nats_material_paths(nats_material(root))
+        .with_role_environment(role_env(root)),
+    )
+}
+
+fn remote_ployzd_artifact(url: &str, install_path: &Path) -> PloyzdArtifactTarget {
+    PloyzdArtifactTarget::new(
         version("0.1.0"),
-        artifact_source(source),
+        ArtifactSource::try_new(url).expect("valid remote source"),
         digest(PLOYZ_NEWLINE_SHA256),
         install_path.to_path_buf(),
     )
-    .expect("valid keeper artifact")
+    .expect("valid ployzd artifact")
 }
 
 fn ployzd_artifact(source: &Path, install_path: &Path) -> PloyzdArtifactTarget {

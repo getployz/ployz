@@ -6,11 +6,10 @@ use ployz_core::ids::{CertId, OperationId, RevisionId, ServiceId};
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployEvidence, DeployRunningStage, DeployTransition, EventSequence, OperationEvent,
-    OperationIdempotencyKey,
+    DeployEvidence, DeployRunningStage, DeployTransition, OperationEvent, OperationIdempotencyKey,
 };
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
-use ployz_nats::streams::{MessageId, OperationEventStream};
+use ployz_nats::streams::MessageId;
 
 #[test]
 fn operation_status_key_uses_token_safe_operation_id() {
@@ -183,65 +182,6 @@ fn machine_add_joined_append_uses_stable_message_id() {
     );
 }
 
-#[test]
-fn operation_stream_replays_matching_operation_events_from_start_sequence() {
-    let mut stream = OperationEventStream::default();
-    stream.append(
-        "plz.v1.op.op_123.deploy.submitted",
-        MessageId::new("op_123.submitted"),
-        OperationEvent::DeploySubmitted {
-            operation_id: operation_id("op_123"),
-            target: deploy_target("svc_api"),
-        },
-    );
-    stream.append(
-        "plz.v1.op.op_456.deploy.submitted",
-        MessageId::new("op_456.submitted"),
-        OperationEvent::DeploySubmitted {
-            operation_id: operation_id("op_456"),
-            target: deploy_target("svc_worker"),
-        },
-    );
-
-    let replay = stream.replay("plz.v1.op.op_123.", event_sequence(1));
-    let [event] = replay.as_slice() else {
-        panic!("expected one replayed event, got {replay:?}");
-    };
-
-    assert_eq!(event.sequence, event_sequence(1));
-    assert_eq!(
-        event.payload,
-        OperationEvent::DeploySubmitted {
-            operation_id: operation_id("op_123"),
-            target: deploy_target("svc_api"),
-        }
-    );
-}
-
-#[test]
-fn operation_stream_deduplicates_by_message_id() {
-    let mut stream = OperationEventStream::default();
-    let first = stream.append(
-        "plz.v1.op.op_123.deploy.submitted",
-        MessageId::new("deploy.submit.idem_1"),
-        OperationEvent::DeploySubmitted {
-            operation_id: operation_id("op_123"),
-            target: deploy_target("svc_api"),
-        },
-    );
-    let duplicate = stream.append(
-        "plz.v1.op.op_456.deploy.submitted",
-        MessageId::new("deploy.submit.idem_1"),
-        OperationEvent::DeploySubmitted {
-            operation_id: operation_id("op_456"),
-            target: deploy_target("svc_worker"),
-        },
-    );
-
-    assert_eq!(duplicate.sequence(), first.sequence());
-    assert_eq!(stream.messages().len(), 1);
-}
-
 fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
 }
@@ -293,10 +233,6 @@ fn deploy_plan() -> DeployPlan {
         }],
         cleanup_containers: Vec::new(),
     }
-}
-
-fn event_sequence(value: u64) -> EventSequence {
-    EventSequence::try_new(value).expect("valid event sequence")
 }
 
 fn active_service_running() -> DeployRunningStage {

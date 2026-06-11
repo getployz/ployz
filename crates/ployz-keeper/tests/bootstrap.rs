@@ -12,9 +12,9 @@ use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactTargetError, ArtifactVersion,
     DataplaneArtifactTargets, EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget,
-    KeeperArtifactTarget, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
 };
-use ployz_keeper::cli::load_startup;
+use ployz_keeper::cli::{KeeperCommand, load_command};
 use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperRecordFailure, KeeperStepEffects, KeeperStepEvent,
     KeeperStepRecorder, execute_keeper_plan,
@@ -27,32 +27,16 @@ use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_keeper::steps::{
-    BootstrapScriptTarget, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
-    KeeperJoinMaterial, KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
+    FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken, KeeperJoinMaterial,
+    KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
     KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentStep,
     PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, RoleNatsCredentials, RoleSetError,
-    bootstrap_script_plan, first_node_install_plan, keeper_join_local_install_plan,
+    first_node_install_plan, keeper_join_local_install_plan,
 };
 use ployz_keeper::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
 use std::sync::OnceLock;
-
-#[test]
-fn bootstrap_script_installs_keeper_only() {
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact()));
-
-    assert!(plan.installs_artifact_kind(ArtifactKind::Keeper));
-    assert!(!plan.installs_artifact_kind(ArtifactKind::Ployzd));
-    assert!(!plan.writes_ployzd_role_units());
-    assert_eq!(
-        plan.steps(),
-        &[
-            KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-            KeeperStep::InstallArtifact(ArtifactTarget::Keeper(keeper_artifact())),
-        ]
-    );
-}
 
 #[test]
 fn bootstrap_script_file_installs_only_keeper() {
@@ -212,11 +196,14 @@ fn keeper_startup_reads_join_token_file_without_consuming_it() {
     let token_file = unique_temp_path("ployz-keeper-join-token");
     fs::write(&token_file, "join_once\n").expect("join token file can be written");
 
-    let startup = load_startup(vec![
+    let command = load_command(vec![
         "--join-token-file".into(),
         token_file.as_os_str().to_os_string(),
     ])
     .expect("startup reads join token");
+    let KeeperCommand::Start(startup) = command else {
+        panic!("expected startup command, got {command:?}");
+    };
     let join = startup.join.as_ref().expect("join token is loaded");
 
     assert_eq!(
@@ -244,10 +231,10 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         edge_role_environment(),
     ));
 
-    assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
-    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfBytecode));
-    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfCtl));
-    assert!(plan.writes_ployzd_role_units());
+    assert!(installs_artifact_kind(&plan, ArtifactKind::Ployzd));
+    assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfBytecode));
+    assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfCtl));
+    assert!(writes_ployzd_role_units(&plan));
     assert!(
         plan.steps()
             .contains(&KeeperStep::StoreJoinMaterial(material))
@@ -304,12 +291,12 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
     let role_environment = target.role_environment.clone();
     let plan = first_node_install_plan(target);
 
-    assert!(plan.installs_artifact_kind(ArtifactKind::Ployzd));
-    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfBytecode));
-    assert!(plan.installs_artifact_kind(ArtifactKind::EbpfCtl));
-    assert!(plan.installs_artifact_kind(ArtifactKind::NatsServer));
-    assert!(plan.writes_nats_server_unit());
-    assert!(plan.writes_ployzd_role_units());
+    assert!(installs_artifact_kind(&plan, ArtifactKind::Ployzd));
+    assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfBytecode));
+    assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfCtl));
+    assert!(installs_artifact_kind(&plan, ArtifactKind::NatsServer));
+    assert!(writes_nats_server_unit(&plan));
+    assert!(writes_ployzd_role_units(&plan));
     assert!(
         plan.steps()
             .contains(&KeeperStep::WriteNatsServerConfig(first_node_nats_target(
@@ -627,10 +614,10 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
 
 #[test]
 fn keeper_plan_executor_stops_on_first_failed_step() {
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact()));
-    let keeper_target = ArtifactTarget::Keeper(keeper_artifact());
+    let plan = first_node_plan();
+    let ployzd_target = ArtifactTarget::Ployzd(ployzd_artifact());
     let mut effects = RecordingEffects {
-        fail_on: Some(KeeperStepLabel::InstallArtifact(keeper_target.clone())),
+        fail_on: Some(KeeperStepLabel::InstallArtifact(ployzd_target.clone())),
         fail_message: "simulated artifact install failure",
         ..RecordingEffects::default()
     };
@@ -638,7 +625,7 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
 
     let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
     let failure = KeeperStepFailure {
-        step: KeeperStepLabel::InstallArtifact(keeper_target.clone()),
+        step: KeeperStepLabel::InstallArtifact(ployzd_target.clone()),
         reason: KeeperStepFailureReason::ArtifactInstallFailed,
         message: failure_message("simulated artifact install failure"),
     };
@@ -651,7 +638,7 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
         effects.calls,
         vec![
             KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-            KeeperStepLabel::InstallArtifact(keeper_target),
+            KeeperStepLabel::InstallArtifact(ployzd_target),
         ]
     );
     assert_eq!(
@@ -831,9 +818,9 @@ fn keeper_join_does_not_report_completed_when_token_consume_fails() {
 
 #[test]
 fn keeper_plan_executor_records_started_before_applying_step() {
-    let plan = bootstrap_script_plan(BootstrapScriptTarget::new(keeper_artifact()));
+    let plan = first_node_plan();
     let failed_event = KeeperStepEvent::Started {
-        step: KeeperStepLabel::InstallArtifact(ArtifactTarget::Keeper(keeper_artifact())),
+        step: KeeperStepLabel::InstallArtifact(ArtifactTarget::Ployzd(ployzd_artifact())),
     };
     let mut effects = RecordingEffects::default();
     let mut recorder = RecordingRecorder {
@@ -874,10 +861,10 @@ fn artifact_digest_must_be_sha256_hex() {
 #[test]
 fn artifact_install_paths_must_be_absolute() {
     assert_eq!(
-        KeeperArtifactTarget::new(
+        PloyzdArtifactTarget::new(
             version("0.1.0"),
-            source("https://example.invalid/ployz-keeper"),
-            digest(KEEPER_DIGEST),
+            source("https://example.invalid/ployzd"),
+            digest(PLOYZD_DIGEST),
             PathBuf::new(),
         ),
         Err(ArtifactTargetError::EmptyInstallPath)
@@ -1079,16 +1066,6 @@ impl Default for RecordingEffects {
     }
 }
 
-fn keeper_artifact() -> KeeperArtifactTarget {
-    KeeperArtifactTarget::new(
-        version("0.1.0"),
-        source("https://example.invalid/ployz-keeper"),
-        digest(KEEPER_DIGEST),
-        PathBuf::from("/usr/local/bin/ployz-keeper"),
-    )
-    .expect("valid keeper artifact")
-}
-
 fn ployzd_artifact() -> PloyzdArtifactTarget {
     PloyzdArtifactTarget::new(
         version("0.1.0"),
@@ -1171,6 +1148,37 @@ fn digest(value: &str) -> Sha256Digest {
 
 fn failure_message(value: &str) -> FailureMessage {
     FailureMessage::try_new(value).expect("valid failure message")
+}
+
+fn first_node_plan() -> ployz_keeper::steps::KeeperStepPlan {
+    first_node_install_plan(FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(),
+        dataplane_artifacts(),
+        nats_server_artifact(),
+        FirstNodeGateway::Skip,
+        test_identity().clone(),
+    ))
+}
+
+fn installs_artifact_kind(plan: &ployz_keeper::steps::KeeperStepPlan, kind: ArtifactKind) -> bool {
+    plan.steps().iter().any(
+        |step| matches!(step, KeeperStep::InstallArtifact(artifact) if artifact.kind() == kind),
+    )
+}
+
+fn writes_ployzd_role_units(plan: &ployz_keeper::steps::KeeperStepPlan) -> bool {
+    plan.steps().iter().any(|step| {
+        matches!(
+            step,
+            KeeperStep::WriteSupervisorUnit(spec)
+                if matches!(spec.target(), SupervisorUnitTarget::PloyzdRole(_))
+        )
+    })
+}
+
+fn writes_nats_server_unit(plan: &ployz_keeper::steps::KeeperStepPlan) -> bool {
+    plan_writes_unit(plan, &SupervisorUnitTarget::NatsServer)
 }
 
 fn plan_writes_unit(

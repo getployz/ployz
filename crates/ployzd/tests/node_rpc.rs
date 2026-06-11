@@ -8,7 +8,7 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::FailureMessage;
-use ployz_core::subjects::NodeServiceEndpoint;
+use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
@@ -23,7 +23,7 @@ use ployzd::node_protocol::{
     NodeWireGuardEbpfPrepareRpcResponse,
 };
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::services::{node_endpoint_subject, node_runtime_service};
+use ployzd::services::node_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
@@ -448,7 +448,7 @@ async fn start_container_run_raw_service(
         .endpoints
         .iter()
         .find(|endpoint| {
-            endpoint.subject == node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRun)
+            endpoint.subject == node_service(&node_id, NodeServiceEndpoint::ContainerRun)
         })
         .expect("container.run endpoint exists")
         .clone();
@@ -498,8 +498,7 @@ async fn start_container_remove_raw_service(
         .endpoints
         .iter()
         .find(|endpoint| {
-            endpoint.subject
-                == node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRemove)
+            endpoint.subject == node_service(&node_id, NodeServiceEndpoint::ContainerRemove)
         })
         .expect("container.remove endpoint exists")
         .clone();
@@ -551,8 +550,7 @@ async fn start_wireguard_ebpf_prepare_raw_service(
         .endpoints
         .iter()
         .find(|endpoint| {
-            endpoint.subject
-                == node_endpoint_subject(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare)
+            endpoint.subject == node_service(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare)
         })
         .expect("wireguard_ebpf.prepare endpoint exists")
         .clone();

@@ -13,7 +13,6 @@ use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
     let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Skip));
 
-    assert!(!plan.reservation.is_schedulable());
     assert_eq!(
         plan.operation,
         MachineAddOperationState::Pending {
@@ -132,7 +131,6 @@ fn confirmed_readiness_activates_machine_truth() {
     };
 
     assert_eq!(operation, MachineAddOperationState::Completed);
-    assert!(active_machine.is_schedulable());
     assert_eq!(active_machine.node_id, node_id("node_2"));
     assert_eq!(active_machine.activated_by, operation_id("op_machine"));
 }

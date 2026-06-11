@@ -40,12 +40,6 @@ pub fn remove_join_token_file(path: &Path) -> Result<(), JoinTokenFileError> {
     })
 }
 
-pub fn consume_join_token_file(path: &Path) -> Result<JoinToken, JoinTokenFileError> {
-    let token = read_join_token_file(path)?;
-    remove_join_token_file(path)?;
-    Ok(token)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinTokenFileError {
     ReadFailed { path: PathBuf, message: String },

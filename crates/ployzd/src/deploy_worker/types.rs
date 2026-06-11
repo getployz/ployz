@@ -94,7 +94,7 @@ impl DeployExecutionCommand {
 
     #[must_use]
     pub fn wireguard_ebpf_prepare_request(&self, plan: &DeployPlan) -> WireGuardEbpfPrepareRequest {
-        WireGuardEbpfPrepareRequest::for_deploy_plan_with_dataplane_nodes_and_peer_endpoints(
+        WireGuardEbpfPrepareRequest::for_deploy_plan(
             self.operation_id.clone(),
             plan,
             &self.dataplane_nodes,

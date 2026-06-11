@@ -10,11 +10,11 @@ use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::labels::ManagedContainerLabels;
 use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use ployzd::node_runtime::start_node_runtime_with_ports;
 use ployzd::node_runtime_types::{
     NodeContainerRunSpec, NodeRemoveContainerRequest, NodeRunContainerOutcome,
     NodeRunContainerRequest,
 };
+use ployzd::node_service_runtime::start_node_runtime_service;
 use std::time::Duration;
 
 const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -24,7 +24,7 @@ mod support;
 #[tokio::test]
 async fn node_runtime_serves_container_run_and_observes_created_container() {
     let nats = TestNats::start_bootstrapped().await;
-    let runtime = start_node_runtime_with_ports(
+    let runtime = start_node_runtime_service(
         nats.node_client.clone(),
         node_id("node_a"),
         ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
@@ -60,7 +60,7 @@ async fn node_runtime_serves_container_run_and_observes_created_container() {
 #[tokio::test]
 async fn node_runtime_serves_container_remove_and_updates_observations() {
     let nats = TestNats::start_bootstrapped().await;
-    let runtime = start_node_runtime_with_ports(
+    let runtime = start_node_runtime_service(
         nats.node_client.clone(),
         node_id("node_a"),
         ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),
@@ -102,7 +102,7 @@ async fn node_runtime_serves_container_remove_and_updates_observations() {
 #[tokio::test]
 async fn node_runtime_serves_wireguard_ebpf_prepare() {
     let nats = TestNats::start_bootstrapped().await;
-    let runtime = start_node_runtime_with_ports(
+    let runtime = start_node_runtime_service(
         nats.node_client.clone(),
         node_id("node_a"),
         ObservingContainerRunner::new(node_id("node_a"), nats.observations.clone()),

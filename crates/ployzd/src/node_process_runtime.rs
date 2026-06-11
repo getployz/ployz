@@ -7,9 +7,7 @@ use crate::node_agent::runtime::{
     ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError, NodeLogReader,
 };
 use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
-use crate::node_runtime::{
-    NodeRuntimeStartError, RunningNodeRuntime, start_node_runtime_with_ports,
-};
+use crate::node_service_runtime::{NodeServiceRuntimeError, start_node_runtime_service};
 use ployz_core::ids::NodeId;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
@@ -18,7 +16,7 @@ use ployz_core::node::{
 use ployz_core::state::NodePublicIpObservation;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError};
+use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -31,7 +29,7 @@ const NODE_OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
 const NODE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RunningNodeProcessRuntime {
-    node_service: RunningNodeRuntime,
+    node_service: RunningNatsService,
     observer: RunningNodeObserverRuntime,
 }
 
@@ -98,7 +96,7 @@ where
     P: Clone + crate::node_service_runtime::NodeWireGuardEbpfPreparer + Send + Sync + 'static,
     L: Clone + NodeLogReader + Send + Sync + 'static,
 {
-    let node_service = start_node_runtime_with_ports(
+    let node_service = start_node_runtime_service(
         client.clone(),
         node_id.clone(),
         runner.clone(),
@@ -357,7 +355,7 @@ pub enum NodeProcessRuntimeError {
     BuildSnapshot(NodeContainerObservationSnapshotError),
     PublishObservation(ObservationStoreError),
     ObservationTimedOut { timeout: Duration },
-    StartNodeService(NodeRuntimeStartError),
+    StartNodeService(NodeServiceRuntimeError),
     ShutdownSignal(std::io::Error),
     ShutdownNodeService(NatsServiceShutdownError),
 }
@@ -389,7 +387,9 @@ impl fmt::Display for NodeProcessRuntimeError {
                     timeout.as_secs()
                 )
             }
-            Self::StartNodeService(error) => write!(formatter, "{error}"),
+            Self::StartNodeService(error) => {
+                write!(formatter, "failed to start node service: {error:?}")
+            }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")
             }

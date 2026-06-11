@@ -127,7 +127,7 @@ pub fn route_target_from_authority(
     let hostname = RouteHostname::try_new(hostname)
         .map_err(|source| HttpRouteTargetError::InvalidHostname { source })?;
 
-    Ok(RouteTarget::try_new(hostname, port))
+    Ok(RouteTarget::new(hostname, port))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

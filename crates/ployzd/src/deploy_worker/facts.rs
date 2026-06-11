@@ -111,7 +111,6 @@ async fn load_active_machine_node_scope(
     Ok(DeployExecutionNodeScope::same_nodes(
         machines
             .into_iter()
-            .filter(|machine| machine.is_schedulable())
             .map(|machine| machine.node_id)
             .collect(),
     ))

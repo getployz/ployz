@@ -35,13 +35,6 @@ pub struct MachineReservation {
     pub operation_id: OperationId,
 }
 
-impl MachineReservation {
-    #[must_use]
-    pub const fn is_schedulable(&self) -> bool {
-        false
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(

@@ -7,7 +7,7 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::FailureMessage;
-use ployz_core::subjects::NodeServiceEndpoint;
+use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::service_runtime::request_json;
 use ployzd::deploy_worker::{
     NodeContainerRunSpec, NodeContainerRuntime, NodeContainerRuntimeError,
@@ -29,7 +29,6 @@ use ployzd::node_rpc::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
 use ployzd::node_service_runtime::{
     NodeWireGuardEbpfPreparer as LocalWireGuardEbpfPreparer, start_node_runtime_service,
 };
-use ployzd::services::node_endpoint_subject;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -340,7 +339,7 @@ async fn node_runtime_service_removes_container() {
 
     let response = request_json::<_, NodeContainerRemoveRpcResponse>(
         &nats.client,
-        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
+        node_service(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
         &NodeContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
@@ -413,7 +412,7 @@ async fn node_runtime_service_reports_remove_failure_as_domain_error() {
 
     let response = request_json::<_, NodeContainerRemoveRpcResponse>(
         &nats.client,
-        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
+        node_service(&node_id("node_a"), NodeServiceEndpoint::ContainerRemove),
         &NodeContainerRemoveRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_old"),
@@ -457,7 +456,7 @@ async fn node_runtime_service_reports_stop_failure_as_domain_error() {
 
     let response = request_json::<_, NodeContainerStopRpcResponse>(
         &nats.client,
-        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::ContainerStop),
+        node_service(&node_id("node_a"), NodeServiceEndpoint::ContainerStop),
         &NodeContainerStopRpcRequest {
             operation_id: operation_id("op_123"),
             container_id: container_id("ctr_failed"),
@@ -501,7 +500,7 @@ async fn node_runtime_service_tails_container_logs() {
 
     let response = request_json::<_, NodeLogsTailRpcResponse>(
         &nats.client,
-        node_endpoint_subject(&node_id("node_a"), NodeServiceEndpoint::LogsTail),
+        node_service(&node_id("node_a"), NodeServiceEndpoint::LogsTail),
         &NodeLogsTailRpcRequest {
             container_id: container_id("ctr_failed"),
             tail_lines: Some(50),
@@ -573,7 +572,7 @@ async fn node_wireguard_ebpf_service_rejects_request_not_targeting_this_node() {
         .expect("flush node service subscription");
     let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
         &nats.client,
-        node_endpoint_subject(
+        node_service(
             &node_id("node_a"),
             NodeServiceEndpoint::WireGuardEbpfPrepare,
         ),

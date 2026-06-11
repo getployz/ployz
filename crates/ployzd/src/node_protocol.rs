@@ -108,11 +108,6 @@ pub enum NodeContainerRunDomainError {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
-    StartedContainerUnhealthy {
-        container_id: ContainerId,
-        message: FailureMessage,
-        log_hint: OperatorHint,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

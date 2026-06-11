@@ -76,13 +76,6 @@ pub enum GatewayServingStatus {
     Unavailable,
 }
 
-impl ActiveMachineState {
-    #[must_use]
-    pub const fn is_schedulable(&self) -> bool {
-        true
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveServiceStateKey(String);
 

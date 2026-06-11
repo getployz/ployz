@@ -31,7 +31,7 @@ use ployz_sdk_types::{
 use ployz_test_support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use ployzd::controllers::MachineAddBootstrapConfig;
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
-use ployzd::node_runtime::start_node_runtime_with_ports;
+use ployzd::node_service_runtime::start_node_runtime_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -319,7 +319,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .replace_active_machine(&active_machine("node_a"))
         .await
         .expect("active machine stores");
-    let node_runtime = start_node_runtime_with_ports(
+    let node_runtime = start_node_runtime_service(
         node_client.clone(),
         node_id("node_a"),
         ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
@@ -420,7 +420,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         })
         .await
         .expect("node public ip stores");
-    let node_runtime = start_node_runtime_with_ports(
+    let node_runtime = start_node_runtime_service(
         node_client.clone(),
         node_id("node_a"),
         ObservingContainerRunner::new(node_id("node_a"), observations.clone()),
@@ -614,10 +614,7 @@ fn deploy_target_with_route(
 ) -> DeployRequest {
     DeployRequest {
         route: Some(DeployRoute {
-            target: RouteTarget::try_new(
-                route_hostname("api.example.com"),
-                route_port(gateway_port),
-            ),
+            target: RouteTarget::new(route_hostname("api.example.com"), route_port(gateway_port)),
             endpoint_port: route_port(endpoint_port),
         }),
         ..deploy_target(service_id)

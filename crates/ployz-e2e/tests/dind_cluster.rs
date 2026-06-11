@@ -533,7 +533,7 @@ fn smoke_deploy_target() -> DeployRequest {
         image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
         replicas: ReplicaCount::try_new(2).expect("valid replica count"),
         route: Some(DeployRoute {
-            target: RouteTarget::try_new(
+            target: RouteTarget::new(
                 route_hostname(ROUTE_HOSTNAME),
                 route_port(dind::MACHINE_GATEWAY_PORT),
             ),

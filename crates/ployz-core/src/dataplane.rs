@@ -22,29 +22,7 @@ pub struct WireGuardEbpfPrepareRequest {
 
 impl WireGuardEbpfPrepareRequest {
     #[must_use]
-    pub fn for_deploy_plan(operation_id: OperationId, plan: &DeployPlan) -> Self {
-        let nodes = plan.target_nodes();
-        Self::for_nodes(operation_id, nodes, Vec::new(), Vec::new())
-    }
-
-    #[must_use]
-    pub fn for_deploy_plan_with_peer_endpoints(
-        operation_id: OperationId,
-        plan: &DeployPlan,
-        peer_endpoints: &[WireGuardPeerEndpoint],
-    ) -> Self {
-        let nodes = plan.target_nodes();
-        let requested = nodes.iter().collect::<BTreeSet<_>>();
-        let peer_endpoints = peer_endpoints
-            .iter()
-            .filter(|peer| requested.contains(&peer.node_id))
-            .cloned()
-            .collect();
-        Self::for_nodes(operation_id, nodes, peer_endpoints, Vec::new())
-    }
-
-    #[must_use]
-    pub fn for_deploy_plan_with_dataplane_nodes_and_peer_endpoints(
+    pub fn for_deploy_plan(
         operation_id: OperationId,
         plan: &DeployPlan,
         dataplane_nodes: &[NodeId],
@@ -68,17 +46,6 @@ impl WireGuardEbpfPrepareRequest {
     pub fn with_peers(mut self, peers: Vec<WireGuardPeer>) -> Self {
         self.peers = peers;
         self
-    }
-
-    #[must_use]
-    pub fn peerless(&self) -> Self {
-        Self {
-            operation_id: self.operation_id.clone(),
-            nodes: self.nodes.clone(),
-            endpoint_routes: self.endpoint_routes.clone(),
-            peer_endpoints: self.peer_endpoints.clone(),
-            peers: Vec::new(),
-        }
     }
 
     #[must_use]
@@ -453,7 +420,8 @@ mod tests {
             cleanup_containers: Vec::new(),
         };
 
-        let request = WireGuardEbpfPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan);
+        let request =
+            WireGuardEbpfPrepareRequest::for_deploy_plan(operation_id("op_1"), &plan, &[], &[]);
 
         assert_eq!(
             request.endpoint_routes,

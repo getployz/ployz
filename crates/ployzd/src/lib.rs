@@ -31,7 +31,6 @@ pub mod node_credentials;
 pub mod node_process_runtime;
 pub mod node_protocol;
 pub mod node_rpc;
-pub mod node_runtime;
 pub mod node_runtime_types;
 pub mod node_service_runtime;
 pub mod operation_api;

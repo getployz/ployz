@@ -410,7 +410,7 @@ fn managed_observation_with_endpoint(
 }
 
 fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::try_new(route_hostname(hostname), route_port(port))
+    RouteTarget::new(route_hostname(hostname), route_port(port))
 }
 
 fn route_hostname(value: &str) -> RouteHostname {

@@ -942,8 +942,6 @@ pub enum OperationSubject {
     Cert { cert_id: CertId },
     MachineAdd { node_id: NodeId },
     Backup,
-    MachineDrain { node_id: NodeId },
-    ServiceRemove { service_id: ServiceId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

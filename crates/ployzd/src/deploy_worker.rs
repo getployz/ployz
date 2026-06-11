@@ -439,7 +439,6 @@ fn cleanup_failure_message(error: NodeContainerRuntimeError) -> FailureMessage {
         NodeContainerRuntimeError::CreatedContainerStartFailed { message, .. }
         | NodeContainerRuntimeError::ExistingContainerStartFailed { message, .. }
         | NodeContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
-        | NodeContainerRuntimeError::StartedContainerUnhealthy { message, .. }
         | NodeContainerRuntimeError::StopContainerFailed { message, .. }
         | NodeContainerRuntimeError::RemoveContainerFailed { message, .. } => message,
     }

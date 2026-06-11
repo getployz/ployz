@@ -473,12 +473,6 @@ pub enum NodeContainerRuntimeError {
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
-    StartedContainerUnhealthy {
-        node_id: NodeId,
-        container_id: ployz_core::ids::ContainerId,
-        message: FailureMessage,
-        log_hint: OperatorHint,
-    },
     RemoveContainerFailed {
         node_id: NodeId,
         container_id: ContainerId,
@@ -561,32 +555,6 @@ impl NodeContainerRuntimeError {
                 message: message.clone(),
                 retained_artifacts,
             },
-            Self::StartedContainerUnhealthy {
-                node_id,
-                container_id,
-                message,
-                log_hint,
-            } => {
-                let failing_artifact = RetainedArtifact::StartedContainer {
-                    node_id: node_id.clone(),
-                    container_id: container_id.clone(),
-                    log_hint: log_hint.clone(),
-                };
-                let mut retained_artifacts = retained_artifacts;
-                if !retained_artifacts.contains(&failing_artifact) {
-                    retained_artifacts.push(failing_artifact);
-                }
-
-                DeployOperationFailure::HealthCheckFailed {
-                    health_check: HealthCheckFailure::ProbeFailed {
-                        node_id: node_id.clone(),
-                        container_id: container_id.clone(),
-                        message: message.clone(),
-                        log_hint: log_hint.clone(),
-                    },
-                    retained_artifacts,
-                }
-            }
         }
     }
 }

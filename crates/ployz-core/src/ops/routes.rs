@@ -12,7 +12,7 @@ pub struct RouteTarget {
 
 impl RouteTarget {
     #[must_use]
-    pub fn try_new(hostname: RouteHostname, port: RoutePort) -> Self {
+    pub fn new(hostname: RouteHostname, port: RoutePort) -> Self {
         Self { hostname, port }
     }
 }

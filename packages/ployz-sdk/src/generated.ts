@@ -82,7 +82,7 @@ export type OperationStatusSnapshot = { status: OperationStatus, ownership: Oper
 
 export type OperationOwnershipStatus = { "state": "unclaimed" } | { "state": "owned", lease: OperationOwnerLease, } | { "state": "expired", lease: OperationOwnerLease, };
 
-export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "backup" } | { "kind": "machine_drain", node_id: NodeId, } | { "kind": "service_remove", service_id: ServiceId, };
+export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "backup" };
 
 export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
 

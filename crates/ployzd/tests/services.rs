@@ -3,12 +3,12 @@ use ployz_core::ops::{EventSequence, OperationLeaseExpiresAt, OperationOwnerLeas
 use ployz_core::subjects::{
     API_BACKUP_CREATE, API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_MACHINE_INSPECT,
     API_MACHINE_JOIN_REPORT, API_MACHINE_LIST, API_OPS_STATUS, API_OPS_WATCH, API_SERVICE_INSPECT,
-    API_SERVICE_LIST, NodeServiceEndpoint,
+    API_SERVICE_LIST,
 };
-use ployz_nats::services::{EndpointExecution, NatsRequestFailure, ServiceDiscoveryQuery};
+use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
 use ployzd::operation_api::{ops_status_missing, owned_operation};
-use ployzd::services::{DaemonServiceCatalog, NodeServiceCallError, node_endpoint_subject};
+use ployzd::services::DaemonServiceCatalog;
 
 #[test]
 fn control_catalog_supports_srv_ping_discovery() {
@@ -182,23 +182,6 @@ fn ops_status_returns_typed_missing_operation_error() {
     assert_eq!(
         ops_status_missing(&operation_id),
         OpsStatusError::NoSuchOperation { operation_id }
-    );
-}
-
-#[test]
-fn node_service_failures_map_actual_request_failures() {
-    let node_id = node_id("node_7");
-    let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::Inspect);
-
-    assert_eq!(subject, "plz.v1.svc.node.node_7.inspect");
-    assert_eq!(
-        NodeServiceCallError::from_request_failure(
-            &node_id,
-            NatsRequestFailure::NoResponders {
-                subject: subject.clone()
-            }
-        ),
-        NodeServiceCallError::NodeUnavailable { node_id, subject }
     );
 }
 

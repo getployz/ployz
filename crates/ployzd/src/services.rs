@@ -5,9 +5,8 @@ use ployz_core::subjects::{
     NodeServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution, node_service,
 };
 use ployz_nats::services::{
-    EndpointExecution, NatsRequestFailure, NatsServiceEndpointSpec, NatsServiceSpec,
-    ServiceDiscoveryQuery, ServiceMetadata, ServiceMetadataEntry, ServicePing, ServiceVersion,
-    discover_services,
+    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
+    ServiceMetadata, ServiceMetadataEntry, ServicePing, ServiceVersion, discover_services,
 };
 
 pub const API_SERVICE_NAME: &str = "plz-api";
@@ -92,21 +91,6 @@ pub fn api_endpoints() -> Vec<NatsServiceEndpointSpec> {
 }
 
 #[must_use]
-pub fn api_deploy_submit_endpoint() -> NatsServiceEndpointSpec {
-    api_endpoint_spec(OperationApiEndpoint::DeploySubmit)
-}
-
-#[must_use]
-pub fn api_ops_status_endpoint() -> NatsServiceEndpointSpec {
-    api_endpoint_spec(OperationApiEndpoint::OpsStatus)
-}
-
-#[must_use]
-pub fn api_ops_watch_endpoint() -> NatsServiceEndpointSpec {
-    api_endpoint_spec(OperationApiEndpoint::OpsWatch)
-}
-
-#[must_use]
 pub fn api_endpoint_spec(endpoint: OperationApiEndpoint) -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new(
         endpoint.name(),
@@ -184,31 +168,4 @@ fn node_runtime_service_spec(
         ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new("node_id", node_id.as_str())]),
         endpoints,
     )
-}
-
-#[must_use]
-pub fn node_endpoint_subject(node_id: &NodeId, endpoint: NodeServiceEndpoint) -> String {
-    node_service(node_id, endpoint)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeServiceCallError {
-    NodeUnavailable { node_id: NodeId, subject: String },
-    Timeout { node_id: NodeId, subject: String },
-}
-
-impl NodeServiceCallError {
-    #[must_use]
-    pub fn from_request_failure(node_id: &NodeId, failure: NatsRequestFailure) -> Self {
-        match failure {
-            NatsRequestFailure::NoResponders { subject } => Self::NodeUnavailable {
-                node_id: node_id.clone(),
-                subject,
-            },
-            NatsRequestFailure::Timeout { subject } => Self::Timeout {
-                node_id: node_id.clone(),
-                subject,
-            },
-        }
-    }
 }

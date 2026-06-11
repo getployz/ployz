@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum ArtifactKind {
     EbpfBytecode,
     EbpfCtl,
-    Keeper,
     NatsServer,
     Ployzd,
 }
@@ -99,35 +98,6 @@ impl ArtifactSource {
             ArtifactSourceKind::LocalPath(path) => ArtifactSourceView::LocalPath(path),
             ArtifactSourceKind::RemoteUrl(url) => ArtifactSourceView::RemoteUrl(url),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeeperArtifactTarget {
-    pub version: ArtifactVersion,
-    pub source: ArtifactSource,
-    pub digest: Sha256Digest,
-    install_path: PathBuf,
-}
-
-impl KeeperArtifactTarget {
-    pub fn new(
-        version: ArtifactVersion,
-        source: ArtifactSource,
-        digest: Sha256Digest,
-        install_path: PathBuf,
-    ) -> Result<Self, ArtifactTargetError> {
-        Ok(Self {
-            version,
-            source,
-            digest,
-            install_path: validate_install_path(install_path)?,
-        })
-    }
-
-    #[must_use]
-    pub fn install_path(&self) -> &Path {
-        &self.install_path
     }
 }
 
@@ -270,7 +240,6 @@ impl DataplaneArtifactTargets {
 pub enum ArtifactTarget {
     EbpfBytecode(EbpfBytecodeArtifactTarget),
     EbpfCtl(EbpfCtlArtifactTarget),
-    Keeper(KeeperArtifactTarget),
     NatsServer(NatsServerArtifactTarget),
     Ployzd(PloyzdArtifactTarget),
 }
@@ -281,7 +250,6 @@ impl ArtifactTarget {
         match self {
             Self::EbpfBytecode(_) => ArtifactKind::EbpfBytecode,
             Self::EbpfCtl(_) => ArtifactKind::EbpfCtl,
-            Self::Keeper(_) => ArtifactKind::Keeper,
             Self::NatsServer(_) => ArtifactKind::NatsServer,
             Self::Ployzd(_) => ArtifactKind::Ployzd,
         }
@@ -292,7 +260,6 @@ impl ArtifactTarget {
         match self {
             Self::EbpfBytecode(target) => &target.digest,
             Self::EbpfCtl(target) => &target.digest,
-            Self::Keeper(target) => &target.digest,
             Self::NatsServer(target) => &target.digest,
             Self::Ployzd(target) => &target.digest,
         }
@@ -303,7 +270,6 @@ impl ArtifactTarget {
         match self {
             Self::EbpfBytecode(target) => &target.source,
             Self::EbpfCtl(target) => &target.source,
-            Self::Keeper(target) => &target.source,
             Self::NatsServer(target) => &target.source,
             Self::Ployzd(target) => &target.source,
         }
@@ -314,16 +280,9 @@ impl ArtifactTarget {
         match self {
             Self::EbpfBytecode(target) => target.install_path(),
             Self::EbpfCtl(target) => target.install_path(),
-            Self::Keeper(target) => target.install_path(),
             Self::NatsServer(target) => target.install_path(),
             Self::Ployzd(target) => target.install_path(),
         }
-    }
-}
-
-impl From<KeeperArtifactTarget> for ArtifactTarget {
-    fn from(value: KeeperArtifactTarget) -> Self {
-        Self::Keeper(value)
     }
 }
 

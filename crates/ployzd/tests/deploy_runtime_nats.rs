@@ -12,7 +12,7 @@ use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
     OperationLeaseDurationSeconds, OperationStatus,
 };
-use ployz_core::subjects::NodeServiceEndpoint;
+use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
@@ -30,7 +30,6 @@ use ployzd::deploy_worker::DeployExecutionNodeScope;
 use ployzd::node_protocol::NodeEnsureEndpointNetworkRpcResponse;
 use ployzd::node_rpc::NatsNodeContainerRuntime;
 use ployzd::operation_lease::OperationLeasePolicy;
-use ployzd::services::node_endpoint_subject;
 use std::time::Duration;
 
 #[tokio::test]
@@ -555,7 +554,7 @@ async fn start_unresponsive_container_run_subscription(
     client: async_nats::Client,
     node_id: ployz_core::ids::NodeId,
 ) -> tokio::task::JoinHandle<()> {
-    let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRun);
+    let subject = node_service(&node_id, NodeServiceEndpoint::ContainerRun);
     let mut subscriber = client
         .subscribe(subject)
         .await
@@ -575,7 +574,7 @@ async fn start_endpoint_network_subscription(
     client: async_nats::Client,
     node_id: ployz_core::ids::NodeId,
 ) -> tokio::task::JoinHandle<()> {
-    let subject = node_endpoint_subject(
+    let subject = node_service(
         &node_id,
         NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
     );

@@ -18,8 +18,7 @@ use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
 use crate::artifacts::{
-    ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, KeeperArtifactTarget,
-    NatsServerArtifactTarget, PloyzdArtifactTarget,
+    ArtifactTarget, DataplaneArtifactTargets, NatsServerArtifactTarget, PloyzdArtifactTarget,
 };
 use crate::nats_identity::ClusterNatsIdentity;
 use crate::systemd::{
@@ -49,30 +48,6 @@ impl KeeperStepPlan {
     #[must_use]
     pub fn steps(&self) -> &[KeeperStep] {
         &self.steps
-    }
-
-    #[must_use]
-    pub fn installs_artifact_kind(&self, kind: ArtifactKind) -> bool {
-        self.steps.iter().any(|step| {
-            matches!(
-                step,
-                KeeperStep::InstallArtifact(artifact) if artifact.kind() == kind
-            )
-        })
-    }
-
-    #[must_use]
-    pub fn writes_ployzd_role_units(&self) -> bool {
-        self.steps.iter().any(|step| {
-            matches!(step, KeeperStep::WriteSupervisorUnit(spec) if matches!(spec.target(), SupervisorUnitTarget::PloyzdRole(_)))
-        })
-    }
-
-    #[must_use]
-    pub fn writes_nats_server_unit(&self) -> bool {
-        self.steps.iter().any(|step| {
-            matches!(step, KeeperStep::WriteSupervisorUnit(spec) if spec.target() == SupervisorUnitTarget::NatsServer)
-        })
     }
 }
 
@@ -288,18 +263,6 @@ fn line_value(label: &'static str, value: String) -> Result<String, JoinMaterial
         return Err(JoinMaterialError::InvalidJoinMaterialValue { label, value });
     }
     Ok(value)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapScriptTarget {
-    pub keeper_artifact: KeeperArtifactTarget,
-}
-
-impl BootstrapScriptTarget {
-    #[must_use]
-    pub const fn new(keeper_artifact: KeeperArtifactTarget) -> Self {
-        Self { keeper_artifact }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,14 +623,6 @@ impl NonEmptyRoleSet {
 pub enum RoleSetError {
     Empty,
     Duplicate { role: DaemonProcessRole },
-}
-
-#[must_use]
-pub fn bootstrap_script_plan(target: BootstrapScriptTarget) -> KeeperStepPlan {
-    KeeperStepPlan::new(vec![
-        KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-        KeeperStep::InstallArtifact(target.keeper_artifact.clone().into()),
-    ])
 }
 
 #[must_use]

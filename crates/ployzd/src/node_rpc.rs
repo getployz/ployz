@@ -18,7 +18,6 @@ use crate::node_runtime_types::{
     NodeRemoveContainerRequest, NodeRunContainerOutcome, NodeRunContainerRequest,
     NodeStopContainerRequest,
 };
-use crate::services::node_endpoint_subject;
 use futures_util::future::try_join_all;
 use ployz_core::dataplane::{
     WireGuardEbpfComponent, WireGuardEbpfNodeReady, WireGuardEbpfPrepareError,
@@ -26,7 +25,7 @@ use ployz_core::dataplane::{
     WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_core::ids::NodeId;
-use ployz_core::subjects::NodeServiceEndpoint;
+use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
@@ -90,7 +89,7 @@ impl NatsNodeLogsTailer {
         request: NodeLogsTailRequest,
     ) -> Result<NodeLogsTailResult, NodeLogsTailRuntimeError> {
         let node_id = request.node_id.clone();
-        let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::LogsTail);
+        let subject = node_service(&node_id, NodeServiceEndpoint::LogsTail);
         let response = request_json::<_, NodeLogsTailRpcResponse>(
             &self.client,
             subject,
@@ -158,7 +157,7 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
         request: NodeEnsureEndpointNetworkRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
         let node_id = request.node_id.clone();
-        let subject = node_endpoint_subject(
+        let subject = node_service(
             &node_id,
             NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
         );
@@ -197,7 +196,7 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
         request: NodeRunContainerRequest,
     ) -> Result<NodeRunContainerOutcome, NodeContainerRuntimeError> {
         let node_id = request.node_id.clone();
-        let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRun);
+        let subject = node_service(&node_id, NodeServiceEndpoint::ContainerRun);
         let response = request_json::<_, NodeContainerRunRpcResponse>(
             &self.client,
             subject,
@@ -234,7 +233,7 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
         request: NodeRemoveContainerRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
         let node_id = request.node_id.clone();
-        let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerRemove);
+        let subject = node_service(&node_id, NodeServiceEndpoint::ContainerRemove);
         let response = request_json::<_, NodeContainerRemoveRpcResponse>(
             &self.client,
             subject,
@@ -271,7 +270,7 @@ impl NodeContainerRuntime for NatsNodeContainerRuntime {
         request: NodeStopContainerRequest,
     ) -> Result<(), NodeContainerRuntimeError> {
         let node_id = request.node_id.clone();
-        let subject = node_endpoint_subject(&node_id, NodeServiceEndpoint::ContainerStop);
+        let subject = node_service(&node_id, NodeServiceEndpoint::ContainerStop);
         let response = request_json::<_, NodeContainerStopRpcResponse>(
             &self.client,
             subject,
@@ -375,16 +374,6 @@ impl NodeContainerRunDomainError {
                 container_id,
                 message,
                 inspect_hint,
-            },
-            Self::StartedContainerUnhealthy {
-                container_id,
-                message,
-                log_hint,
-            } => NodeContainerRuntimeError::StartedContainerUnhealthy {
-                node_id,
-                container_id,
-                message,
-                log_hint,
             },
         }
     }
@@ -524,7 +513,7 @@ async fn read_node_wireguard_public_key(
     node_id: &NodeId,
     request: &NodeWireGuardEbpfPrepareRpcRequest,
 ) -> Result<(NodeId, WireGuardPublicKey), WireGuardEbpfPrepareError> {
-    let subject = node_endpoint_subject(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
+    let subject = node_service(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
     let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
         &preparer.client,
         subject,
@@ -567,7 +556,7 @@ async fn prepare_node_wireguard_ebpf(
     node_id: &NodeId,
     request: &NodeWireGuardEbpfPrepareRpcRequest,
 ) -> Result<WireGuardEbpfNodeReady, WireGuardEbpfPrepareError> {
-    let subject = node_endpoint_subject(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
+    let subject = node_service(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare);
     let response = request_json::<_, NodeWireGuardEbpfPrepareRpcResponse>(
         &preparer.client,
         subject,

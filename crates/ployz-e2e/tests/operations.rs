@@ -42,7 +42,7 @@ use ployzd::deploy_worker::{
 };
 use ployzd::gateway_process_runtime::start_gateway_process_runtime_with_client;
 use ployzd::node_rpc::NatsNodeContainerRuntime;
-use ployzd::node_runtime::start_node_runtime_with_ports;
+use ployzd::node_service_runtime::start_node_runtime_service;
 
 mod support;
 
@@ -216,7 +216,7 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
             .await
             .expect("open observation store");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations.clone());
-    let node_runtime = start_node_runtime_with_ports(
+    let node_runtime = start_node_runtime_service(
         node_client.clone(),
         node_id("node_a"),
         runner.clone(),
@@ -381,7 +381,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .await
         .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
-    let node_runtime = start_node_runtime_with_ports(
+    let node_runtime = start_node_runtime_service(
         node_client.clone(),
         node_id("node_a"),
         runner.clone(),
@@ -471,7 +471,7 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
         .await
         .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations);
-    let node_runtime = start_node_runtime_with_ports(
+    let node_runtime = start_node_runtime_service(
         node_client.clone(),
         node_id("node_a"),
         runner.clone(),
@@ -577,7 +577,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .await
         .expect("node public ip stores");
     let runner = ObservingContainerRunner::new(node_id("node_a"), observations.clone());
-    let node_runtime = start_node_runtime_with_ports(
+    let node_runtime = start_node_runtime_service(
         node_client.clone(),
         node_id("node_a"),
         runner.clone(),
@@ -651,7 +651,7 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
         .expect("open core state store");
     routes
         .commit_active_route(&ActiveRouteCommitRequest {
-            target: RouteTarget::try_new(route_hostname.clone(), route_port),
+            target: RouteTarget::new(route_hostname.clone(), route_port),
             endpoint_port: self::route_port(second_upstream.port()),
             expected_current: ExpectedActiveRoute::ServiceRevision(ExpectedActiveRouteRevision {
                 service_id: service_id("svc_api"),
@@ -744,7 +744,7 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
         .expect("edge public ip stores");
     let core_runner = ObservingContainerRunner::new(node_id("core_1"), observations.clone());
     let edge_runner = ObservingContainerRunner::new(node_id("edge_2"), edge_observations.clone());
-    let core_node_runtime = start_node_runtime_with_ports(
+    let core_node_runtime = start_node_runtime_service(
         core_node_client.clone(),
         node_id("core_1"),
         core_runner.clone(),
@@ -752,7 +752,7 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
         core_runner,
     )
     .await?;
-    let edge_node_runtime = start_node_runtime_with_ports(
+    let edge_node_runtime = start_node_runtime_service(
         edge_node_client.clone(),
         node_id("edge_2"),
         edge_runner.clone(),
@@ -963,7 +963,7 @@ fn deploy_target_with_route(
 ) -> DeployRequest {
     DeployRequest {
         route: Some(DeployRoute {
-            target: RouteTarget::try_new(route_hostname(hostname), self::route_port(route_port)),
+            target: RouteTarget::new(route_hostname(hostname), self::route_port(route_port)),
             endpoint_port: self::route_port(endpoint_port),
         }),
         ..deploy_target(service_id)

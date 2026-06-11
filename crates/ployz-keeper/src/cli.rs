@@ -59,16 +59,6 @@ pub fn load_command(
     }
 }
 
-pub fn load_startup(
-    args: impl IntoIterator<Item = OsString>,
-) -> Result<KeeperStartup, KeeperCliError> {
-    let parsed = KeeperStartupCli::try_parse_from(
-        std::iter::once(OsString::from("ployz-keeper")).chain(args),
-    )
-    .map_err(KeeperCliError::Clap)?;
-    load_startup_from_path(parsed.join_token_file)
-}
-
 fn load_startup_from_path(
     join_token_file: Option<PathBuf>,
 ) -> Result<KeeperStartup, KeeperCliError> {
@@ -102,13 +92,6 @@ enum KeeperSubcommand {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
     },
-}
-
-#[derive(Debug, Parser)]
-#[command(name = "ployz-keeper", disable_help_subcommand = true)]
-struct KeeperStartupCli {
-    #[arg(long)]
-    join_token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,9 +328,30 @@ impl std::error::Error for KeeperCliError {}
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
+    use std::path::PathBuf;
 
-    use super::{KeeperCliError, KeeperCommand, SpecSource, load_command, load_startup};
+    use clap::Parser;
+
+    use super::{KeeperCliError, KeeperCommand, KeeperStartup, SpecSource, load_command};
+
+    fn load_startup(
+        args: impl IntoIterator<Item = OsString>,
+    ) -> Result<KeeperStartup, KeeperCliError> {
+        let parsed = KeeperStartupCli::try_parse_from(
+            std::iter::once(OsString::from("ployz-keeper")).chain(args),
+        )
+        .map_err(KeeperCliError::Clap)?;
+        super::load_startup_from_path(parsed.join_token_file)
+    }
+
+    #[derive(Debug, Parser)]
+    #[command(name = "ployz-keeper", disable_help_subcommand = true)]
+    struct KeeperStartupCli {
+        #[arg(long)]
+        join_token_file: Option<PathBuf>,
+    }
 
     #[test]
     fn parser_accepts_no_args() {
@@ -422,8 +426,6 @@ mod tests {
         fs::write(&path, FIRST_NODE_INSTALL_SPEC).expect("write spec");
         path
     }
-
-    use std::path::PathBuf;
 
     const FIRST_NODE_INSTALL_SPEC: &str = r#"{
         "node_id": "node_1",
