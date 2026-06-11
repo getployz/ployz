@@ -5,13 +5,10 @@
 //! `authorized-users.conf`, which survives JetStream loss — control adopts
 //! file entries back into this set on start before any render.
 
-use super::{AsyncNatsCoreStateStore, CoreStateStoreError, with_core_state_timeout};
-use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
-use async_nats::jetstream::kv::Operation;
+use super::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use crate::kv::{bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
 use ployz_core::nats_config::NatsAuthorizedUser;
 use ployz_core::state::NATS_AUTHORIZED_USER_PREFIX;
-use std::collections::BTreeMap;
-const NATS_AUTHORIZED_USER_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn authorized_user_key(user: &NatsAuthorizedUser) -> String {
     format!(
@@ -31,7 +28,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<(), CoreStateStoreError> {
         let key = authorized_user_key(user);
         let payload = serde_json::to_vec(user).map_err(CoreStateStoreError::Encode)?;
-        with_core_state_timeout(
+        with_io_timeout(
             "nats authorized user put",
             self.bucket.put(&key, payload.into()),
         )
@@ -53,7 +50,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<(), CoreStateStoreError> {
         let key = authorized_user_key(user);
         let payload = serde_json::to_vec(user).map_err(CoreStateStoreError::Encode)?;
-        let created = with_core_state_timeout(
+        let created = with_io_timeout(
             "nats authorized user create",
             self.bucket.create(&key, payload.into()),
         )
@@ -63,15 +60,13 @@ impl AsyncNatsCoreStateStore {
             Err(error) => {
                 // An existing record means the principal is already
                 // authoritative in KV; adoption has nothing to do.
-                let existing = with_core_state_timeout(
-                    "nats authorized user conflict read",
-                    self.bucket.get(&key),
-                )
-                .await?
-                .map_err(|read_error| CoreStateStoreError::Get {
-                    key: key.clone(),
-                    message: read_error.to_string(),
-                })?;
+                let existing =
+                    with_io_timeout("nats authorized user conflict read", self.bucket.get(&key))
+                        .await?
+                        .map_err(|read_error| CoreStateStoreError::Get {
+                            key: key.clone(),
+                            message: read_error.to_string(),
+                        })?;
                 if existing.is_some() {
                     Ok(())
                 } else {
@@ -90,27 +85,14 @@ impl AsyncNatsCoreStateStore {
         let entries = bounded_bucket_key_scan_entries_with_prefix(
             &self.bucket,
             &format!("{NATS_AUTHORIZED_USER_PREFIX}."),
-            NATS_AUTHORIZED_USER_SCAN_TIMEOUT,
         )
         .await
         .map_err(|error| CoreStateStoreError::ListKeys {
             message: error.message,
         })?;
 
-        let mut current: BTreeMap<String, async_nats::jetstream::kv::Entry> = BTreeMap::new();
+        let mut users = Vec::with_capacity(entries.len());
         for entry in entries {
-            match entry.operation {
-                Operation::Put => {
-                    current.insert(entry.key.clone(), entry);
-                }
-                Operation::Delete | Operation::Purge => {
-                    current.remove(&entry.key);
-                }
-            }
-        }
-
-        let mut users = Vec::with_capacity(current.len());
-        for entry in current.into_values() {
             users.push(
                 serde_json::from_slice::<NatsAuthorizedUser>(&entry.value)
                     .map_err(CoreStateStoreError::Decode)?,

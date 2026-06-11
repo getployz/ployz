@@ -7,7 +7,7 @@ use ployz_core::ids::{NodeId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
 use ployz_core::state::NodePublicIpObservation;
 use ployz_nats::core_state::{
-    ActiveMachineReadError, ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError,
+    ActiveMachineReadError, ActiveRouteStoreError, AsyncNatsCoreStateStore, CoreStateStoreError,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::fmt;
@@ -240,6 +240,10 @@ pub enum ActiveServiceReadFailure {
         expected_service_id: ServiceId,
         actual_service_id: ServiceId,
     },
+    CorruptKey {
+        key: String,
+        actual_key: String,
+    },
     Timeout {
         operation: &'static str,
     },
@@ -254,6 +258,7 @@ pub enum ActiveRouteReadFailure {
     Get { key: String, message: String },
     CorruptState { key: String, message: String },
     Timeout { operation: &'static str },
+    UnexpectedWriteFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,6 +302,10 @@ pub enum ActiveMachineReadFailure {
         key: String,
         message: String,
     },
+    CorruptKey {
+        key: String,
+        actual_key: String,
+    },
     CorruptState {
         key: String,
         expected_node_id: NodeId,
@@ -324,21 +333,24 @@ fn active_machine_read_failure(source: ActiveMachineReadError) -> ActiveMachineR
             key,
             expected_node_id,
         },
+        ActiveMachineReadError::CorruptKey { key, actual_key } => {
+            ActiveMachineReadFailure::CorruptKey { key, actual_key }
+        }
         ActiveMachineReadError::Timeout { operation } => {
             ActiveMachineReadFailure::Timeout { operation }
         }
     }
 }
 
-fn active_route_read_failure(source: ActiveRouteReadError) -> ActiveRouteReadFailure {
+fn active_route_read_failure(source: ActiveRouteStoreError) -> ActiveRouteReadFailure {
     match source {
-        ActiveRouteReadError::Decode(error) => ActiveRouteReadFailure::Decode {
+        ActiveRouteStoreError::Decode(error) => ActiveRouteReadFailure::Decode {
             message: error.to_string(),
         },
-        ActiveRouteReadError::ListKeys { message } => ActiveRouteReadFailure::ListKeys { message },
-        ActiveRouteReadError::Watch { message } => ActiveRouteReadFailure::Watch { message },
-        ActiveRouteReadError::Get { key, message } => ActiveRouteReadFailure::Get { key, message },
-        ActiveRouteReadError::CorruptActiveRouteState {
+        ActiveRouteStoreError::ListKeys { message } => ActiveRouteReadFailure::ListKeys { message },
+        ActiveRouteStoreError::Watch { message } => ActiveRouteReadFailure::Watch { message },
+        ActiveRouteStoreError::Get { key, message } => ActiveRouteReadFailure::Get { key, message },
+        ActiveRouteStoreError::CorruptActiveRouteState {
             key,
             expected_target,
             actual_target,
@@ -348,14 +360,17 @@ fn active_route_read_failure(source: ActiveRouteReadError) -> ActiveRouteReadFai
                 "active route state belongs to {actual_target:?}, not {expected_target:?}"
             ),
         },
-        ActiveRouteReadError::CorruptActiveRouteKey { key, actual_key } => {
+        ActiveRouteStoreError::CorruptKey { key, actual_key } => {
             ActiveRouteReadFailure::CorruptState {
                 key,
                 message: format!("active route key does not match encoded target {actual_key}"),
             }
         }
-        ActiveRouteReadError::Timeout { operation } => {
+        ActiveRouteStoreError::Timeout { operation } => {
             ActiveRouteReadFailure::Timeout { operation }
+        }
+        ActiveRouteStoreError::Encode(_) | ActiveRouteStoreError::CasConflict { .. } => {
+            ActiveRouteReadFailure::UnexpectedWriteFailure
         }
     }
 }
@@ -382,6 +397,9 @@ fn active_service_read_failure(source: CoreStateStoreError) -> ActiveServiceRead
             expected_service_id,
             actual_service_id,
         },
+        CoreStateStoreError::CorruptKey { key, actual_key } => {
+            ActiveServiceReadFailure::CorruptKey { key, actual_key }
+        }
         CoreStateStoreError::Timeout { operation } => {
             ActiveServiceReadFailure::Timeout { operation }
         }
@@ -402,11 +420,7 @@ fn observation_read_failure(source: ObservationStoreError) -> ObservationReadFai
         ObservationStoreError::ListKeys { message } => ObservationReadFailure::ListKeys { message },
         ObservationStoreError::Watch { message } => ObservationReadFailure::Watch { message },
         ObservationStoreError::Get { key, message } => ObservationReadFailure::Get { key, message },
-        ObservationStoreError::CorruptNodeSnapshotKey { key, actual_key } => {
-            ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
-        }
-        ObservationStoreError::CorruptNodePublicIpKey { key, actual_key }
-        | ObservationStoreError::CorruptGatewayStatusKey { key, actual_key } => {
+        ObservationStoreError::CorruptKey { key, actual_key } => {
             ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
         }
         ObservationStoreError::Timeout { operation } => {
@@ -480,6 +494,10 @@ impl fmt::Display for ActiveServiceReadFailure {
                 actual_service_id.as_str(),
                 expected_service_id.as_str()
             ),
+            Self::CorruptKey { key, actual_key } => write!(
+                formatter,
+                "state key {key} does not match canonical key {actual_key}"
+            ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
             Self::UnexpectedWriteFailure => {
                 formatter.write_str("unexpected write-path failure during read")
@@ -494,6 +512,10 @@ impl fmt::Display for ActiveMachineReadFailure {
             Self::Decode { message } => write!(formatter, "decode active machine state: {message}"),
             Self::ListKeys { message } => write!(formatter, "list active machine keys: {message}"),
             Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
+            Self::CorruptKey { key, actual_key } => write!(
+                formatter,
+                "state key {key} does not match canonical key {actual_key}"
+            ),
             Self::CorruptState {
                 key,
                 expected_node_id,
@@ -519,6 +541,9 @@ impl fmt::Display for ActiveRouteReadFailure {
                 write!(formatter, "corrupt route state at {key}: {message}")
             }
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
+            Self::UnexpectedWriteFailure => {
+                formatter.write_str("unexpected write-path failure during read")
+            }
         }
     }
 }

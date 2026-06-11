@@ -39,4 +39,3 @@ pub use status_store::{
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";
 pub const PLZ_JOBS_STREAM: &str = "PLZ_JOBS";
 pub use ployz_core::state::KV_OPS_BUCKET;
-const NATS_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

@@ -5,7 +5,7 @@ use crate::dns::{
 };
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{ActiveRouteState, GatewayServingStatus, NodePublicIpObservation};
-use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore};
+use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -81,13 +81,13 @@ impl fmt::Display for DnsSourceError {
     }
 }
 
-impl From<ActiveRouteReadError> for DnsSourceError {
-    fn from(error: ActiveRouteReadError) -> Self {
+impl From<ActiveRouteStoreError> for DnsSourceError {
+    fn from(error: ActiveRouteStoreError) -> Self {
         match error {
-            ActiveRouteReadError::Decode(error) => Self::Invalid {
+            ActiveRouteStoreError::Decode(error) => Self::Invalid {
                 message: format!("decode active route state: {error}"),
             },
-            ActiveRouteReadError::CorruptActiveRouteState {
+            ActiveRouteStoreError::CorruptActiveRouteState {
                 key,
                 expected_target,
                 actual_target,
@@ -96,15 +96,17 @@ impl From<ActiveRouteReadError> for DnsSourceError {
                     "active route state at {key} belongs to {actual_target:?}, not {expected_target:?}"
                 ),
             },
-            ActiveRouteReadError::CorruptActiveRouteKey { key, actual_key } => Self::Invalid {
+            ActiveRouteStoreError::CorruptKey { key, actual_key } => Self::Invalid {
                 message: format!(
                     "active route state key {key} does not match encoded target key {actual_key}"
                 ),
             },
-            error @ (ActiveRouteReadError::ListKeys { .. }
-            | ActiveRouteReadError::Watch { .. }
-            | ActiveRouteReadError::Get { .. }
-            | ActiveRouteReadError::Timeout { .. }) => Self::Unavailable {
+            error @ (ActiveRouteStoreError::Encode(_)
+            | ActiveRouteStoreError::CasConflict { .. }
+            | ActiveRouteStoreError::ListKeys { .. }
+            | ActiveRouteStoreError::Watch { .. }
+            | ActiveRouteStoreError::Get { .. }
+            | ActiveRouteStoreError::Timeout { .. }) => Self::Unavailable {
                 message: error.to_string(),
             },
         }
@@ -117,16 +119,10 @@ impl From<ObservationStoreError> for DnsSourceError {
             ObservationStoreError::Decode(error) => Self::Invalid {
                 message: format!("decode observation state: {error}"),
             },
-            ObservationStoreError::CorruptNodeSnapshotKey { key, actual_key } => Self::Invalid {
+            ObservationStoreError::CorruptKey { key, actual_key } => Self::Invalid {
                 message: format!(
-                    "node observation snapshot key {key} does not match snapshot key {actual_key}"
+                    "observation key {key} does not match observation key {actual_key}"
                 ),
-            },
-            ObservationStoreError::CorruptNodePublicIpKey { key, actual_key } => Self::Invalid {
-                message: format!("node public ip key {key} does not match key {actual_key}"),
-            },
-            ObservationStoreError::CorruptGatewayStatusKey { key, actual_key } => Self::Invalid {
-                message: format!("gateway status key {key} does not match key {actual_key}"),
             },
             error @ (ObservationStoreError::OpenBucket { .. }
             | ObservationStoreError::Encode(_)

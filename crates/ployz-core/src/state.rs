@@ -19,6 +19,7 @@ pub const ACTIVE_MACHINE_STATE_PREFIX: &str = "machines";
 /// (ADR-0001: their recovery evidence is `authorized-users.conf`).
 pub const NATS_AUTHORIZED_USER_PREFIX: &str = "nats_authorized_user";
 pub const ACTIVE_ROUTE_STATE_PREFIX: &str = "routes";
+pub const NODE_CONTAINER_OBSERVATION_PREFIX: &str = "containers";
 pub const NODE_PUBLIC_IP_OBSERVATION_PREFIX: &str = "nodes";
 pub const GATEWAY_STATUS_OBSERVATION_PREFIX: &str = "gateways";
 
@@ -238,7 +239,10 @@ pub struct NodeContainerObservationKey(String);
 impl NodeContainerObservationKey {
     #[must_use]
     pub fn from_node_id(node_id: &NodeId) -> Self {
-        Self(format!("containers.{}", node_id.as_str()))
+        Self(format!(
+            "{NODE_CONTAINER_OBSERVATION_PREFIX}.{}",
+            node_id.as_str()
+        ))
     }
 
     #[must_use]

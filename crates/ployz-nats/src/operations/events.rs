@@ -22,11 +22,11 @@ use ployz_core::subjects::{
     op_machine_add_credential_provisioned, op_machine_add_failed, op_machine_add_joined,
     op_machine_add_submitted, op_watch,
 };
-use std::future::Future;
 
+use crate::kv::{NatsIoTimeout, with_io_timeout};
 use crate::streams::MessageId;
 
-use super::{NATS_OPERATION_TIMEOUT, PLZ_OPS_STREAM};
+use super::PLZ_OPS_STREAM;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationEventAppend {
@@ -321,7 +321,7 @@ impl AsyncNatsOperationEventLog {
         let publish = PublishMessage::build()
             .payload(payload.into())
             .message_id(append.message_id.as_str());
-        let ack_future = with_event_timeout(
+        let ack_future = with_io_timeout(
             "operation event publish request",
             self.jetstream.send_publish(append.subject, publish),
         )
@@ -329,7 +329,7 @@ impl AsyncNatsOperationEventLog {
         .map_err(|error| OperationEventLogError::PublishRequest {
             message: error.to_string(),
         })?;
-        let ack = with_event_timeout("operation event publish ack", async { ack_future.await })
+        let ack = with_io_timeout("operation event publish ack", async { ack_future.await })
             .await?
             .map_err(|error| OperationEventLogError::PublishAck {
                 message: error.to_string(),
@@ -351,7 +351,7 @@ impl AsyncNatsOperationEventLog {
         sequence: EventSequence,
     ) -> Result<OperationEvent, OperationEventLogError> {
         let stream = self.operation_stream().await?;
-        let message = with_event_timeout(
+        let message = with_io_timeout(
             "operation event stream read",
             stream.get_raw_message(sequence.get()),
         )
@@ -404,7 +404,7 @@ impl AsyncNatsOperationEventLog {
         subject: &str,
     ) -> Result<Option<(StoredOperationEvent, OperationEvent)>, OperationEventLogError> {
         let stream = self.operation_stream().await?;
-        let message = match with_event_timeout(
+        let message = match with_io_timeout(
             "operation event subject read",
             stream.get_last_raw_message_by_subject(subject),
         )
@@ -439,7 +439,7 @@ impl AsyncNatsOperationEventLog {
     }
 
     async fn operation_stream(&self) -> Result<Stream, OperationEventLogError> {
-        with_event_timeout(
+        with_io_timeout(
             "operation event stream lookup",
             self.jetstream.get_stream(PLZ_OPS_STREAM),
         )
@@ -450,7 +450,7 @@ impl AsyncNatsOperationEventLog {
     }
 
     async fn operation_stream_for_replay(&self) -> Result<Stream, OperationEventReplayReadError> {
-        with_replay_timeout(
+        with_io_timeout(
             "operation event stream lookup",
             self.jetstream.get_stream(PLZ_OPS_STREAM),
         )
@@ -501,22 +501,20 @@ pub enum OperationEventReplayReadError {
     },
 }
 
-async fn with_event_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, OperationEventLogError> {
-    tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
-        .await
-        .map_err(|_| OperationEventLogError::Timeout { operation })
+impl From<NatsIoTimeout> for OperationEventLogError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }
 
-async fn with_replay_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, OperationEventReplayReadError> {
-    tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
-        .await
-        .map_err(|_| OperationEventReplayReadError::Timeout { operation })
+impl From<NatsIoTimeout> for OperationEventReplayReadError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }
 
 fn operation_event_subject(event: &OperationEvent) -> String {
@@ -590,7 +588,7 @@ async fn next_replay_message(
     subject: &str,
     sequence: u64,
 ) -> Result<Option<StreamMessage>, OperationEventReplayReadError> {
-    match with_replay_timeout(
+    match with_io_timeout(
         "operation event replay read",
         stream
             .raw_message_builder()

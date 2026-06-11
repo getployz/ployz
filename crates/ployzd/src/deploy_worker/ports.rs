@@ -6,7 +6,7 @@ use ployz_core::ops::{DeployEvidence, DeployTransition};
 use ployz_core::state::{
     ActiveRouteCommit, ActiveRouteCommitRequest, ActiveServiceCommit, ActiveServiceCommitRequest,
 };
-use ployz_nats::core_state::{ActiveRouteWriteError, AsyncNatsCoreStateStore};
+use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use std::future::Future;
 
 use super::{
@@ -124,7 +124,7 @@ impl ActiveRouteCommitter for AsyncNatsCoreStateStore {
 
 #[derive(Debug)]
 pub enum ActiveRouteCommitError {
-    Store(ActiveRouteWriteError),
+    Store(ActiveRouteStoreError),
 }
 
 impl ActiveServiceCommitter for AsyncNatsCoreStateStore {

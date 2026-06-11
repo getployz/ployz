@@ -3,14 +3,12 @@
 use async_nats::jetstream;
 use ployz_core::backup::{BackupArtifact, BackupArtifactKind};
 use ployz_core::ids::OperationId;
-use std::future::Future;
-use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 use crate::bootstrap::ResourceReplicas;
+use crate::kv::{NatsIoTimeout, with_io_timeout};
 
 pub const PLZ_BACKUPS_BUCKET: &str = "PLZ_BACKUPS";
-const NATS_OBJECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectBucketSpec {
@@ -48,7 +46,7 @@ impl AsyncNatsBackupObjectStore {
     pub async fn from_jetstream(
         jetstream: &jetstream::Context,
     ) -> Result<Self, BackupObjectStoreError> {
-        let bucket = with_object_timeout(
+        let bucket = with_io_timeout(
             "backup object store open",
             jetstream.get_object_store(PLZ_BACKUPS_BUCKET),
         )
@@ -67,7 +65,7 @@ impl AsyncNatsBackupObjectStore {
         payload: &[u8],
     ) -> Result<BackupArtifact, BackupObjectStoreError> {
         let object_name = control_plane_bundle_object_name(operation_id);
-        let info = with_object_timeout("backup object write", async {
+        let info = with_io_timeout("backup object write", async {
             let mut reader = payload;
             self.bucket.put(object_name.as_str(), &mut reader).await
         })
@@ -100,7 +98,7 @@ impl AsyncNatsBackupObjectStore {
             });
         }
 
-        let mut object = with_object_timeout(
+        let mut object = with_io_timeout(
             "backup object read",
             self.bucket.get(artifact.object_name.as_str()),
         )
@@ -112,7 +110,7 @@ impl AsyncNatsBackupObjectStore {
         verify_backup_artifact_info(artifact, object.info())?;
 
         let mut payload = Vec::new();
-        with_object_timeout("backup object body read", object.read_to_end(&mut payload))
+        with_io_timeout("backup object body read", object.read_to_end(&mut payload))
             .await?
             .map_err(|error| BackupObjectStoreError::GetObject {
                 object_name: artifact.object_name.clone(),
@@ -199,11 +197,10 @@ pub enum BackupObjectStoreError {
     },
 }
 
-async fn with_object_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, BackupObjectStoreError> {
-    tokio::time::timeout(NATS_OBJECT_TIMEOUT, future)
-        .await
-        .map_err(|_| BackupObjectStoreError::Timeout { operation })
+impl From<NatsIoTimeout> for BackupObjectStoreError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }

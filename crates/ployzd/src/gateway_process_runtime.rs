@@ -677,7 +677,7 @@ pub enum GatewayProcessRuntimeError {
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     WriteObservations(ObservationStoreError),
-    WatchRoutes(ployz_nats::core_state::ActiveRouteReadError),
+    WatchRoutes(ployz_nats::core_state::ActiveRouteStoreError),
     WatchObservations(ObservationStoreError),
     RefreshTimedOut {
         timeout: Duration,

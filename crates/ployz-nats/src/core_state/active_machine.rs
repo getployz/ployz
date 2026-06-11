@@ -1,13 +1,8 @@
 use super::AsyncNatsCoreStateStore;
-use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
-use async_nats::jetstream::kv::Operation;
+use crate::kv::{KvListError, NatsIoTimeout, list_current, with_io_timeout};
 use ployz_core::ids::NodeId;
 use ployz_core::state::{ACTIVE_MACHINE_STATE_PREFIX, ActiveMachineState, ActiveMachineStateKey};
-use std::collections::BTreeMap;
 use std::fmt;
-use std::future::Future;
-
-const NATS_MACHINE_STATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl AsyncNatsCoreStateStore {
     pub async fn replace_active_machine(
@@ -16,7 +11,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<(), ActiveMachineWriteError> {
         let key = ActiveMachineStateKey::from_node_id(&state.node_id);
         let payload = serde_json::to_vec(state).map_err(ActiveMachineWriteError::Encode)?;
-        with_active_machine_write_timeout(
+        with_io_timeout(
             "active machine state put",
             self.bucket.put(key.as_str(), payload.into()),
         )
@@ -34,15 +29,13 @@ impl AsyncNatsCoreStateStore {
         node_id: &NodeId,
     ) -> Result<Option<ActiveMachineState>, ActiveMachineReadError> {
         let key = ActiveMachineStateKey::from_node_id(node_id);
-        let Some(payload) = with_active_machine_read_timeout(
-            "active machine state get",
-            self.bucket.get(key.as_str()),
-        )
-        .await?
-        .map_err(|error| ActiveMachineReadError::Get {
-            key: key.as_str().to_owned(),
-            message: error.to_string(),
-        })?
+        let Some(payload) =
+            with_io_timeout("active machine state get", self.bucket.get(key.as_str()))
+                .await?
+                .map_err(|error| ActiveMachineReadError::Get {
+                    key: key.as_str().to_owned(),
+                    message: error.to_string(),
+                })?
         else {
             return Ok(None);
         };
@@ -51,64 +44,19 @@ impl AsyncNatsCoreStateStore {
     }
 
     pub async fn active_machines(&self) -> Result<Vec<ActiveMachineState>, ActiveMachineReadError> {
-        let entries = bounded_bucket_key_scan_entries_with_prefix(
+        list_current(
             &self.bucket,
             &format!("{ACTIVE_MACHINE_STATE_PREFIX}."),
-            NATS_MACHINE_STATE_TIMEOUT,
+            |state: &ActiveMachineState| {
+                ActiveMachineStateKey::from_node_id(&state.node_id)
+                    .as_str()
+                    .to_owned()
+            },
+            |state| state.node_id.clone(),
         )
         .await
-        .map_err(|error| ActiveMachineReadError::ListKeys {
-            message: error.message,
-        })?;
-        let current_entries = current_kv_entries(entries);
-        let mut machines = Vec::new();
-
-        for entry in current_entries.into_values() {
-            machines.push(decode_active_machine_state_for_key(
-                &entry.key,
-                &entry.value,
-            )?);
-        }
-
-        machines.sort_by(|left, right| left.node_id.cmp(&right.node_id));
-        Ok(machines)
+        .map_err(ActiveMachineReadError::from)
     }
-}
-
-fn current_kv_entries(
-    entries: impl IntoIterator<Item = async_nats::jetstream::kv::Entry>,
-) -> BTreeMap<String, async_nats::jetstream::kv::Entry> {
-    let mut current = BTreeMap::new();
-
-    for entry in entries {
-        match entry.operation {
-            Operation::Put => {
-                current.insert(entry.key.clone(), entry);
-            }
-            Operation::Delete | Operation::Purge => {
-                current.remove(&entry.key);
-            }
-        }
-    }
-
-    current
-}
-
-fn decode_active_machine_state_for_key(
-    key: &str,
-    payload: &[u8],
-) -> Result<ActiveMachineState, ActiveMachineReadError> {
-    let state: ActiveMachineState =
-        serde_json::from_slice(payload).map_err(ActiveMachineReadError::Decode)?;
-    let actual_key = ActiveMachineStateKey::from_node_id(&state.node_id);
-    if key != actual_key.as_str() {
-        return Err(ActiveMachineReadError::CorruptActiveMachineState {
-            key: key.to_owned(),
-            expected_node_id: state.node_id.clone(),
-        });
-    }
-
-    Ok(state)
 }
 
 fn decode_active_machine_state(
@@ -145,6 +93,14 @@ impl fmt::Display for ActiveMachineWriteError {
     }
 }
 
+impl From<NatsIoTimeout> for ActiveMachineWriteError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ActiveMachineReadError {
     Decode(serde_json::Error),
@@ -158,6 +114,10 @@ pub enum ActiveMachineReadError {
     CorruptActiveMachineState {
         key: String,
         expected_node_id: NodeId,
+    },
+    CorruptKey {
+        key: String,
+        actual_key: String,
     },
     Timeout {
         operation: &'static str,
@@ -179,25 +139,29 @@ impl fmt::Display for ActiveMachineReadError {
                 key,
                 expected_node_id.as_str()
             ),
+            Self::CorruptKey { key, actual_key } => write!(
+                formatter,
+                "active machine state key {key} does not match canonical key {actual_key}"
+            ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
     }
 }
 
-async fn with_active_machine_write_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, ActiveMachineWriteError> {
-    tokio::time::timeout(NATS_MACHINE_STATE_TIMEOUT, future)
-        .await
-        .map_err(|_| ActiveMachineWriteError::Timeout { operation })
+impl From<NatsIoTimeout> for ActiveMachineReadError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }
 
-async fn with_active_machine_read_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, ActiveMachineReadError> {
-    tokio::time::timeout(NATS_MACHINE_STATE_TIMEOUT, future)
-        .await
-        .map_err(|_| ActiveMachineReadError::Timeout { operation })
+impl From<KvListError> for ActiveMachineReadError {
+    fn from(error: KvListError) -> Self {
+        match error {
+            KvListError::Scan { message } => Self::ListKeys { message },
+            KvListError::Decode(error) => Self::Decode(error),
+            KvListError::CorruptKey { key, actual_key } => Self::CorruptKey { key, actual_key },
+        }
+    }
 }

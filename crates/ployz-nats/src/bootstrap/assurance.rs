@@ -3,7 +3,7 @@ use super::{
     BootstrapPlan, BootstrapResourceAction, BootstrapResourceKind, BootstrapResourceRef,
     BootstrapResourceRefusal, ExistingResources, ResourceReplicas,
 };
-use crate::kv::KvBucketSpec;
+use crate::kv::{KvBucketSpec, NatsIoTimeout, with_io_timeout};
 use crate::objects::ObjectBucketSpec;
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 use async_nats::jetstream;
@@ -11,9 +11,6 @@ use async_nats::jetstream::ErrorCode;
 use async_nats::jetstream::context::{GetStreamError, GetStreamErrorKind};
 use std::fmt;
 use std::future::Future;
-use std::time::Duration;
-
-const BOOTSTRAP_IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn assure_nats_resources(
     jetstream: &jetstream::Context,
@@ -255,9 +252,8 @@ async fn lookup_stream_config(
     jetstream: &jetstream::Context,
     stream_name: &str,
 ) -> Result<jetstream::stream::Stream, BootstrapStreamLookupError> {
-    tokio::time::timeout(BOOTSTRAP_IO_TIMEOUT, jetstream.get_stream(stream_name))
-        .await
-        .map_err(|_| BootstrapStreamLookupError::Timeout)?
+    with_io_timeout("stream lookup", jetstream.get_stream(stream_name))
+        .await?
         .map_err(BootstrapStreamLookupError::Nats)
 }
 
@@ -277,6 +273,12 @@ fn is_stream_not_found(error: &BootstrapStreamLookupError) -> bool {
 enum BootstrapStreamLookupError {
     Timeout,
     Nats(GetStreamError),
+}
+
+impl From<NatsIoTimeout> for BootstrapStreamLookupError {
+    fn from(NatsIoTimeout { operation: _ }: NatsIoTimeout) -> Self {
+        Self::Timeout
+    }
 }
 
 impl BootstrapIoError {
@@ -363,9 +365,8 @@ async fn with_bootstrap_timeout<T, E: fmt::Display>(
     operation: &'static str,
     future: impl Future<Output = Result<T, E>>,
 ) -> Result<T, BootstrapIoError> {
-    tokio::time::timeout(BOOTSTRAP_IO_TIMEOUT, future)
-        .await
-        .map_err(|_| BootstrapIoError::Timeout { operation })?
+    with_io_timeout(operation, future)
+        .await?
         .map_err(|error| BootstrapIoError::Nats {
             source: error.to_string(),
         })
@@ -375,6 +376,14 @@ async fn with_bootstrap_timeout<T, E: fmt::Display>(
 pub enum BootstrapIoError {
     Timeout { operation: &'static str },
     Nats { source: String },
+}
+
+impl From<NatsIoTimeout> for BootstrapIoError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }
 
 impl fmt::Display for BootstrapIoError {

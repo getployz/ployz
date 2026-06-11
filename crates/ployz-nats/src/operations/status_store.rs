@@ -9,9 +9,8 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::FirstNodeGateway;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::future::Future;
 
+use super::KV_OPS_BUCKET;
 use super::keys::{
     MACHINE_ADD_SUBMISSION_KEY_PREFIX, backup_submission_key, cert_submission_key,
     deploy_submission_key, machine_add_join_token_key, machine_add_mint_claim_key,
@@ -19,8 +18,7 @@ use super::keys::{
     operation_status_key,
 };
 use super::projection::{status_id, status_sequence};
-use super::{KV_OPS_BUCKET, NATS_OPERATION_TIMEOUT};
-use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
+use crate::kv::{NatsIoTimeout, bounded_bucket_key_scan_entries_with_prefix, with_io_timeout};
 
 #[derive(Debug, Clone)]
 pub struct AsyncNatsOperationStatusStore {
@@ -85,7 +83,7 @@ impl AsyncNatsOperationStatusStore {
     pub async fn from_jetstream(
         jetstream: &jetstream::Context,
     ) -> Result<Self, OperationStatusStoreError> {
-        let bucket = with_status_timeout(
+        let bucket = with_io_timeout(
             "operation status bucket open",
             jetstream.get_key_value(KV_OPS_BUCKET),
         )
@@ -111,7 +109,7 @@ impl AsyncNatsOperationStatusStore {
         let incoming_sequence = status_sequence(status);
         let payload =
             serde_json::to_vec(status).map_err(OperationStatusStoreError::EncodeStatus)?;
-        let Some(existing) = with_status_timeout(
+        let Some(existing) = with_io_timeout(
             "operation status entry read",
             self.bucket.entry(key.clone()),
         )
@@ -120,7 +118,7 @@ impl AsyncNatsOperationStatusStore {
             message: error.to_string(),
         })?
         else {
-            let revision = match with_status_timeout(
+            let revision = match with_io_timeout(
                 "operation status create",
                 self.bucket.create(&key, payload.into()),
             )
@@ -148,7 +146,7 @@ impl AsyncNatsOperationStatusStore {
             });
         }
 
-        let revision = match with_status_timeout(
+        let revision = match with_io_timeout(
             "operation status update",
             self.bucket.update(&key, payload.into(), existing.revision),
         )
@@ -171,7 +169,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredDeploySubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "deploy submission get",
             self.bucket.get(deploy_submission_key(idempotency_key)),
         )
@@ -200,7 +198,7 @@ impl AsyncNatsOperationStatusStore {
         let key = deploy_submission_key(idempotency_key);
         let payload =
             serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "deploy submission create",
             self.bucket.create(&key, payload.into()),
         )
@@ -223,7 +221,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredCertSubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "cert submission get",
             self.bucket.get(cert_submission_key(idempotency_key)),
         )
@@ -244,7 +242,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredBackupSubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "backup submission get",
             self.bucket.get(backup_submission_key(idempotency_key)),
         )
@@ -273,7 +271,7 @@ impl AsyncNatsOperationStatusStore {
         let key = backup_submission_key(idempotency_key);
         let payload =
             serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "backup submission create",
             self.bucket.create(&key, payload.into()),
         )
@@ -304,7 +302,7 @@ impl AsyncNatsOperationStatusStore {
         let key = cert_submission_key(idempotency_key);
         let payload =
             serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "cert submission create",
             self.bucket.create(&key, payload.into()),
         )
@@ -327,7 +325,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "machine add submission get",
             self.bucket.get(machine_add_submission_key(idempotency_key)),
         )
@@ -356,7 +354,7 @@ impl AsyncNatsOperationStatusStore {
         let key = machine_add_submission_key(idempotency_key);
         let payload =
             serde_json::to_vec(submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "machine add submission create",
             self.bucket.create(&key, payload.into()),
         )
@@ -384,27 +382,14 @@ impl AsyncNatsOperationStatusStore {
         let entries = bounded_bucket_key_scan_entries_with_prefix(
             &self.bucket,
             MACHINE_ADD_SUBMISSION_KEY_PREFIX,
-            NATS_OPERATION_TIMEOUT,
         )
         .await
         .map_err(|error| OperationStatusStoreError::GetStatus {
             message: error.message,
         })?;
 
-        let mut current: BTreeMap<String, jetstream::kv::Entry> = BTreeMap::new();
+        let mut submissions = Vec::with_capacity(entries.len());
         for entry in entries {
-            match entry.operation {
-                jetstream::kv::Operation::Put => {
-                    current.insert(entry.key.clone(), entry);
-                }
-                jetstream::kv::Operation::Delete | jetstream::kv::Operation::Purge => {
-                    current.remove(&entry.key);
-                }
-            }
-        }
-
-        let mut submissions = Vec::with_capacity(current.len());
-        for entry in current.into_values() {
             submissions.push(
                 serde_json::from_slice::<StoredMachineAddSubmission>(&entry.value)
                     .map_err(OperationStatusStoreError::DecodeSubmission)?,
@@ -417,7 +402,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "machine add mint claim get",
             self.bucket.get(machine_add_mint_claim_key(idempotency_key)),
         )
@@ -449,7 +434,7 @@ impl AsyncNatsOperationStatusStore {
         let key = machine_add_mint_claim_key(idempotency_key);
         let payload =
             serde_json::to_vec(claim).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "machine add mint claim create",
             self.bucket.create(&key, payload.into()),
         )
@@ -472,7 +457,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "machine add secret delivery get",
             self.bucket
                 .get(machine_add_secret_delivery_key(idempotency_key)),
@@ -507,7 +492,7 @@ impl AsyncNatsOperationStatusStore {
         let key = machine_add_secret_delivery_key(idempotency_key);
         let payload = serde_json::to_vec(secret_delivery)
             .map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "machine add secret delivery create",
             self.bucket.create(&key, payload.into()),
         )
@@ -536,7 +521,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Result<(), OperationStatusStoreError> {
-        with_status_timeout(
+        with_io_timeout(
             "machine add secret delivery delete",
             self.bucket
                 .delete(machine_add_secret_delivery_key(idempotency_key)),
@@ -564,7 +549,7 @@ impl AsyncNatsOperationStatusStore {
         let key = machine_add_join_token_key(fingerprint);
         let payload =
             serde_json::to_vec(token).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "machine add join token index create",
             self.bucket.create(&key, payload.into()),
         )
@@ -616,7 +601,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         fingerprint: &JoinTokenFingerprint,
     ) -> Result<Option<StoredMachineAddJoinToken>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "machine add join token index get",
             self.bucket.get(machine_add_join_token_key(fingerprint)),
         )
@@ -639,7 +624,7 @@ impl AsyncNatsOperationStatusStore {
         sequence: EventSequence,
     ) -> Result<StoredMachineAddSubmission, OperationStatusStoreError> {
         let key = machine_add_submission_key(idempotency_key);
-        let Some(existing) = with_status_timeout(
+        let Some(existing) = with_io_timeout(
             "machine add submission entry read",
             self.bucket.entry(key.clone()),
         )
@@ -670,7 +655,7 @@ impl AsyncNatsOperationStatusStore {
         submission.start_sequence = Some(sequence);
         let payload =
             serde_json::to_vec(&submission).map_err(OperationStatusStoreError::EncodeSubmission)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "machine add submission sequence update",
             self.bucket.update(&key, payload.into(), existing.revision),
         )
@@ -708,13 +693,13 @@ impl AsyncNatsOperationStatusStore {
             serde_json::to_vec(&candidate).map_err(OperationStatusStoreError::EncodeLease)?;
 
         let Some(existing) =
-            with_status_timeout("operation owner lease read", self.bucket.entry(key.clone()))
+            with_io_timeout("operation owner lease read", self.bucket.entry(key.clone()))
                 .await?
                 .map_err(|error| OperationStatusStoreError::GetStatus {
                     message: error.to_string(),
                 })?
         else {
-            return match with_status_timeout(
+            return match with_io_timeout(
                 "operation owner lease create",
                 self.bucket.create(&key, payload.into()),
             )
@@ -734,7 +719,7 @@ impl AsyncNatsOperationStatusStore {
             return Ok(current);
         }
 
-        match with_status_timeout(
+        match with_io_timeout(
             "operation owner lease update",
             self.bucket.update(&key, payload.into(), existing.revision),
         )
@@ -757,7 +742,7 @@ impl AsyncNatsOperationStatusStore {
     ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
         let key = operation_owner_lease_key(operation_id);
         let Some(existing) =
-            with_status_timeout("operation owner lease read", self.bucket.entry(key.clone()))
+            with_io_timeout("operation owner lease read", self.bucket.entry(key.clone()))
                 .await?
                 .map_err(|error| OperationStatusStoreError::GetStatus {
                     message: error.to_string(),
@@ -778,7 +763,7 @@ impl AsyncNatsOperationStatusStore {
         let renewed = current.renew_until(expires_at);
         let payload =
             serde_json::to_vec(&renewed).map_err(OperationStatusStoreError::EncodeLease)?;
-        match with_status_timeout(
+        match with_io_timeout(
             "operation owner lease update",
             self.bucket.update(&key, payload.into(), existing.revision),
         )
@@ -817,7 +802,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<OperationOwnerLease>, OperationStatusStoreError> {
-        let Some(payload) = with_status_timeout(
+        let Some(payload) = with_io_timeout(
             "operation owner lease get",
             self.bucket.get(operation_owner_lease_key(operation_id)),
         )
@@ -860,7 +845,7 @@ impl AsyncNatsOperationStatusStore {
         error: impl ToString,
     ) -> Result<OperationStatusWrite, OperationStatusStoreError> {
         let Some(existing) =
-            with_status_timeout("operation status conflict read", self.bucket.entry(key))
+            with_io_timeout("operation status conflict read", self.bucket.entry(key))
                 .await?
                 .map_err(|error| OperationStatusStoreError::GetStatus {
                     message: error.to_string(),
@@ -891,7 +876,7 @@ impl AsyncNatsOperationStatusStore {
         &self,
         operation_id: &ployz_core::ids::OperationId,
     ) -> Result<Option<OperationStatus>, OperationStatusReadError> {
-        let Some(payload) = with_status_read_timeout(
+        let Some(payload) = with_io_timeout(
             "operation status get",
             self.bucket.get(operation_status_key(operation_id)),
         )
@@ -981,20 +966,18 @@ pub enum OperationStatusReadError {
     Timeout { operation: &'static str },
 }
 
-async fn with_status_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, OperationStatusStoreError> {
-    tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
-        .await
-        .map_err(|_| OperationStatusStoreError::Timeout { operation })
+impl From<NatsIoTimeout> for OperationStatusStoreError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }
 
-async fn with_status_read_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, OperationStatusReadError> {
-    tokio::time::timeout(NATS_OPERATION_TIMEOUT, future)
-        .await
-        .map_err(|_| OperationStatusReadError::Timeout { operation })
+impl From<NatsIoTimeout> for OperationStatusReadError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
 }

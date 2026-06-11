@@ -7,7 +7,7 @@ use ployz_core::state::{
     ActiveServiceState, ActiveServiceStateKey, ExpectedActiveRoute, ExpectedActiveRouteRevision,
     ExpectedActiveService,
 };
-use ployz_nats::core_state::{ActiveRouteReadError, AsyncNatsCoreStateStore, CoreStateStoreError};
+use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore, CoreStateStoreError};
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_test_support::ids::{
     machine_name, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
@@ -378,6 +378,7 @@ async fn active_service_state_rejects_payload_for_wrong_service_key() {
         | CoreStateStoreError::CasConflict { .. }
         | CoreStateStoreError::Get { .. }
         | CoreStateStoreError::ListKeys { .. }
+        | CoreStateStoreError::CorruptKey { .. }
         | CoreStateStoreError::Timeout { .. }) => {
             panic!("unexpected error: {other:?}");
         }
@@ -674,7 +675,7 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
         .await
         .expect_err("wrong route payload is rejected");
     match error {
-        ActiveRouteReadError::CorruptActiveRouteState {
+        ActiveRouteStoreError::CorruptActiveRouteState {
             key: actual_key,
             expected_target,
             actual_target,
@@ -683,12 +684,14 @@ async fn active_route_state_rejects_payload_for_wrong_route_key() {
             assert_eq!(expected_target, target);
             assert_eq!(actual_target, other_target);
         }
-        other @ (ActiveRouteReadError::Decode(_)
-        | ActiveRouteReadError::ListKeys { .. }
-        | ActiveRouteReadError::Watch { .. }
-        | ActiveRouteReadError::Get { .. }
-        | ActiveRouteReadError::CorruptActiveRouteKey { .. }
-        | ActiveRouteReadError::Timeout { .. }) => {
+        other @ (ActiveRouteStoreError::Encode(_)
+        | ActiveRouteStoreError::Decode(_)
+        | ActiveRouteStoreError::CasConflict { .. }
+        | ActiveRouteStoreError::ListKeys { .. }
+        | ActiveRouteStoreError::Watch { .. }
+        | ActiveRouteStoreError::Get { .. }
+        | ActiveRouteStoreError::CorruptKey { .. }
+        | ActiveRouteStoreError::Timeout { .. }) => {
             panic!("unexpected error: {other:?}");
         }
     }

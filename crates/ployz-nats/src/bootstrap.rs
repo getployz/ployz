@@ -5,8 +5,10 @@ mod assurance;
 #[path = "bootstrap/resources.rs"]
 mod resources;
 
-use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
-use crate::objects::ObjectBucketSpec;
+use crate::kv::{KV_CORE_BUCKET, KV_LOCKS_BUCKET, KvBucketSpec};
+use crate::objects::{ObjectBucketSpec, PLZ_BACKUPS_BUCKET};
+use crate::observations::KV_OBS_BUCKET;
+use crate::operations::{KV_OPS_BUCKET, PLZ_JOBS_STREAM, PLZ_OPS_STREAM};
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError, ScheduleCapability};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
@@ -109,20 +111,20 @@ impl BootstrapPlan {
         Self {
             kv_buckets: vec![
                 KvBucketSpec::new(KV_CORE_BUCKET),
-                KvBucketSpec::new("KV_OPS"),
-                KvBucketSpec::new("KV_OBS"),
-                KvBucketSpec::new("KV_LOCKS"),
+                KvBucketSpec::new(KV_OPS_BUCKET),
+                KvBucketSpec::new(KV_OBS_BUCKET),
+                KvBucketSpec::new(KV_LOCKS_BUCKET),
             ],
             streams: vec![
                 StreamSpec::new(
-                    "PLZ_OPS",
+                    PLZ_OPS_STREAM,
                     vec![OPS_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
                     DiscardPolicy::Old,
                 ),
                 StreamSpec::new(
-                    "PLZ_JOBS",
+                    PLZ_JOBS_STREAM,
                     vec![JOBS_STREAM_SUBJECT.to_owned()],
                     RetentionPolicy::Limits,
                     StorageBackend::File,
@@ -155,7 +157,7 @@ impl BootstrapPlan {
                 ObjectBucketSpec::new("PLZ_BUNDLES"),
                 ObjectBucketSpec::new("PLZ_DIAGNOSTICS"),
                 ObjectBucketSpec::new("PLZ_CERTS"),
-                ObjectBucketSpec::new("PLZ_BACKUPS"),
+                ObjectBucketSpec::new(PLZ_BACKUPS_BUCKET),
             ],
             schedule_capability,
         }

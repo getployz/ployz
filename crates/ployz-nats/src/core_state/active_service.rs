@@ -1,12 +1,10 @@
-use super::{AsyncNatsCoreStateStore, CoreStateStoreError, with_core_state_timeout};
-use crate::kv::bounded_bucket_key_scan_entries_with_prefix;
-use async_nats::jetstream::kv::Operation;
+use super::{AsyncNatsCoreStateStore, CoreStateStoreError};
+use crate::kv::{list_current, with_io_timeout};
 use ployz_core::ids::ServiceId;
 use ployz_core::state::{
     ACTIVE_SERVICE_STATE_PREFIX, ActiveServiceCommit, ActiveServiceCommitRequest,
     ActiveServiceState, ActiveServiceStateKey, CoreStateRevision, ExpectedActiveService,
 };
-use std::collections::BTreeMap;
 
 impl AsyncNatsCoreStateStore {
     pub async fn commit_active_service(
@@ -19,7 +17,7 @@ impl AsyncNatsCoreStateStore {
             active_revision: request.target_revision.clone(),
         };
         let payload = serde_json::to_vec(&state).map_err(CoreStateStoreError::Encode)?;
-        let existing = with_core_state_timeout(
+        let existing = with_io_timeout(
             "active service state entry read",
             self.bucket.entry(key.as_str()),
         )
@@ -38,7 +36,7 @@ impl AsyncNatsCoreStateStore {
             &request.expected_current,
             &state,
         ) {
-            ActiveServiceCommitDecision::Create => match with_core_state_timeout(
+            ActiveServiceCommitDecision::Create => match with_io_timeout(
                 "active service state create",
                 self.bucket.create(key.as_str(), payload.into()),
             )
@@ -59,7 +57,7 @@ impl AsyncNatsCoreStateStore {
                 }
             },
             ActiveServiceCommitDecision::Update { revision } => {
-                match with_core_state_timeout(
+                match with_io_timeout(
                     "active service state update",
                     self.bucket
                         .update(key.as_str(), payload.into(), revision.get()),
@@ -91,7 +89,7 @@ impl AsyncNatsCoreStateStore {
     ) -> Result<Option<ActiveServiceState>, CoreStateStoreError> {
         let key = ActiveServiceStateKey::from_service_id(service_id);
         let Some(payload) =
-            with_core_state_timeout("active service state get", self.bucket.get(key.as_str()))
+            with_io_timeout("active service state get", self.bucket.get(key.as_str()))
                 .await?
                 .map_err(|error| CoreStateStoreError::Get {
                     key: key.as_str().to_owned(),
@@ -105,27 +103,18 @@ impl AsyncNatsCoreStateStore {
     }
 
     pub async fn active_services(&self) -> Result<Vec<ActiveServiceState>, CoreStateStoreError> {
-        let entries = bounded_bucket_key_scan_entries_with_prefix(
+        list_current(
             &self.bucket,
             &format!("{ACTIVE_SERVICE_STATE_PREFIX}."),
-            super::NATS_CORE_STATE_TIMEOUT,
+            |state: &ActiveServiceState| {
+                ActiveServiceStateKey::from_service_id(&state.service_id)
+                    .as_str()
+                    .to_owned()
+            },
+            |state| state.service_id.clone(),
         )
         .await
-        .map_err(|error| CoreStateStoreError::ListKeys {
-            message: error.message,
-        })?;
-        let current_entries = current_kv_entries(entries);
-        let mut services = Vec::new();
-
-        for entry in current_entries.into_values() {
-            services.push(decode_active_service_state_for_key(
-                &entry.key,
-                &entry.value,
-            )?);
-        }
-
-        services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
-        Ok(services)
+        .map_err(CoreStateStoreError::from)
     }
 
     async fn classify_active_service_commit_conflict(
@@ -136,7 +125,7 @@ impl AsyncNatsCoreStateStore {
         attempted: &ActiveServiceState,
         error: impl ToString,
     ) -> Result<ActiveServiceCommit, CoreStateStoreError> {
-        let Some(existing) = with_core_state_timeout(
+        let Some(existing) = with_io_timeout(
             "active service state conflict read",
             self.bucket.entry(key.as_str()),
         )
@@ -159,43 +148,6 @@ impl AsyncNatsCoreStateStore {
             attempted,
         ))
     }
-}
-
-fn current_kv_entries(
-    entries: impl IntoIterator<Item = async_nats::jetstream::kv::Entry>,
-) -> BTreeMap<String, async_nats::jetstream::kv::Entry> {
-    let mut current = BTreeMap::new();
-
-    for entry in entries {
-        match entry.operation {
-            Operation::Put => {
-                current.insert(entry.key.clone(), entry);
-            }
-            Operation::Delete | Operation::Purge => {
-                current.remove(&entry.key);
-            }
-        }
-    }
-
-    current
-}
-
-fn decode_active_service_state_for_key(
-    key: &str,
-    payload: &[u8],
-) -> Result<ActiveServiceState, CoreStateStoreError> {
-    let state: ActiveServiceState =
-        serde_json::from_slice(payload).map_err(CoreStateStoreError::Decode)?;
-    let actual_key = ActiveServiceStateKey::from_service_id(&state.service_id);
-    if key != actual_key.as_str() {
-        return Err(CoreStateStoreError::CorruptActiveServiceState {
-            key: key.to_owned(),
-            expected_service_id: state.service_id.clone(),
-            actual_service_id: state.service_id,
-        });
-    }
-
-    Ok(state)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

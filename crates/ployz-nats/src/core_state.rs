@@ -5,15 +5,12 @@ mod active_route;
 mod active_service;
 mod nats_authorized_user;
 
-use crate::kv::KV_CORE_BUCKET;
+use crate::kv::{KV_CORE_BUCKET, KvListError, NatsIoTimeout, with_io_timeout};
 pub use active_machine::{ActiveMachineReadError, ActiveMachineWriteError};
-pub use active_route::{ActiveRouteReadError, ActiveRouteWriteError};
+pub use active_route::ActiveRouteStoreError;
 use async_nats::jetstream;
 use ployz_core::ids::ServiceId;
 use std::fmt;
-use std::future::Future;
-
-const NATS_CORE_STATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct AsyncNatsCoreStateStore {
@@ -24,7 +21,7 @@ impl AsyncNatsCoreStateStore {
     pub async fn from_jetstream(
         jetstream: &jetstream::Context,
     ) -> Result<Self, CoreStateStoreError> {
-        let bucket = with_core_state_timeout(
+        let bucket = with_io_timeout(
             "core state bucket open",
             jetstream.get_key_value(KV_CORE_BUCKET),
         )
@@ -61,6 +58,10 @@ pub enum CoreStateStoreError {
         expected_service_id: ServiceId,
         actual_service_id: ServiceId,
     },
+    CorruptKey {
+        key: String,
+        actual_key: String,
+    },
     Timeout {
         operation: &'static str,
     },
@@ -88,16 +89,29 @@ impl fmt::Display for CoreStateStoreError {
                 actual_service_id.as_str(),
                 expected_service_id.as_str()
             ),
+            Self::CorruptKey { key, actual_key } => write!(
+                formatter,
+                "core state key {key} does not match canonical key {actual_key}"
+            ),
             Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
         }
     }
 }
 
-pub(crate) async fn with_core_state_timeout<T>(
-    operation: &'static str,
-    future: impl Future<Output = T>,
-) -> Result<T, CoreStateStoreError> {
-    tokio::time::timeout(NATS_CORE_STATE_TIMEOUT, future)
-        .await
-        .map_err(|_| CoreStateStoreError::Timeout { operation })
+impl From<NatsIoTimeout> for CoreStateStoreError {
+    fn from(timeout: NatsIoTimeout) -> Self {
+        Self::Timeout {
+            operation: timeout.operation,
+        }
+    }
+}
+
+impl From<KvListError> for CoreStateStoreError {
+    fn from(error: KvListError) -> Self {
+        match error {
+            KvListError::Scan { message } => Self::ListKeys { message },
+            KvListError::Decode(error) => Self::Decode(error),
+            KvListError::CorruptKey { key, actual_key } => Self::CorruptKey { key, actual_key },
+        }
+    }
 }
