@@ -92,7 +92,14 @@ NATS streams are durable timelines.
 
 Object Store holds larger control-plane artifacts.
 
-Local node storage is a cache and evidence surface, not cluster truth.
+Each machine keeps a local fact ledger of durable machine-owned facts: route
+attachments applied there, served certificate material, assigned substrate
+state, last-known-good projections. The ledger is machine truth, never
+cluster truth; the cluster view is assembled from machine facts and Docker
+reality, which is what makes the core rebuildable.
+
+Node-local storage outside the fact ledger is a cache and evidence surface,
+not truth of any kind.
 
 Operation state is first-class:
 
