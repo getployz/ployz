@@ -1,0 +1,3 @@
+# The Core Is Disposable, Not Replicated
+
+Ployz v1 runs one core machine with replication factor one for every JetStream resource, and nothing in the cluster runs consensus. Availability comes from disposability, not replication: machines own their runtime truth, the core's view is rebuildable by an explicit reindex operation (ADR-0001), and replacing a lost core is a bounded operation rather than quorum repair. When the core is unreachable, operations fail fast with typed errors and the data plane keeps serving last-known-good state. Replicated JetStream would reimport the quorum sizing, backup, and repair burden this product exists to avoid, so raising replication above one requires superseding this ADR with a design that answers quorum operations end-to-end.
