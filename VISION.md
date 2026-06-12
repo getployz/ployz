@@ -109,6 +109,21 @@ cancelled
 Terminal failures should carry typed details: what failed, where it failed,
 what was retained, and what the operator can do next.
 
+## Consistency Thesis
+
+Machines own their runtime truth. The control plane is one disposable core.
+Nothing in the cluster runs consensus.
+
+When the core is unreachable, operations fail loudly with typed errors and
+the data plane keeps serving last-known-good state with visible freshness.
+Recovering a lost core is a bounded reindex operation that rebuilds the
+core's view from fresh machine facts, not quorum repair.
+
+Loud unavailability always beats silently divergent truth. Ployz does not
+adopt a consensus database, and it does not adopt a partition-tolerant store
+whose writes merge silently. `docs/architecture/backbone.md` carries the full
+thesis and its guardrails.
+
 ## Code Standard
 
 Business logic should be extremely easy to read.
