@@ -52,6 +52,8 @@ impl KeeperStepPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperStep {
     VerifyHost(HostPrerequisite),
+    PrepareContainerRuntime(ContainerRuntime),
+    VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
     WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentStep),
     WriteNatsTlsMaterial(NatsTlsMaterialTarget),
@@ -67,6 +69,8 @@ pub enum KeeperStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperStepLabel {
     VerifyHost(HostPrerequisite),
+    PrepareContainerRuntime(ContainerRuntime),
+    VerifyContainerRuntime(ContainerRuntime),
     InstallArtifact(ArtifactTarget),
     WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentStep),
     WriteNatsTlsMaterial { state_dir: PathBuf },
@@ -87,6 +91,8 @@ impl KeeperStepLabel {
     pub fn from_step(step: &KeeperStep) -> Self {
         match step {
             KeeperStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
+            KeeperStep::PrepareContainerRuntime(runtime) => Self::PrepareContainerRuntime(*runtime),
+            KeeperStep::VerifyContainerRuntime(runtime) => Self::VerifyContainerRuntime(*runtime),
             KeeperStep::InstallArtifact(target) => Self::InstallArtifact(target.clone()),
             KeeperStep::WritePloyzdRoleEnvironment(step) => {
                 Self::WritePloyzdRoleEnvironment(step.clone())
@@ -116,6 +122,11 @@ impl KeeperStepLabel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPrerequisite {
     LinuxRootSystemd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerRuntime {
+    Docker,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -670,7 +681,11 @@ fn keeper_join_material_steps(target: &KeeperJoinTarget) -> Vec<KeeperStep> {
 }
 
 fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
-    let mut steps = vec![KeeperStep::InstallArtifact(target.ployzd_artifact.clone())];
+    let mut steps = vec![
+        KeeperStep::PrepareContainerRuntime(ContainerRuntime::Docker),
+        KeeperStep::VerifyContainerRuntime(ContainerRuntime::Docker),
+        KeeperStep::InstallArtifact(target.ployzd_artifact.clone()),
+    ];
     steps.push(KeeperStep::InstallArtifact(
         target.dataplane_artifacts.ebpf_bytecode.clone(),
     ));
@@ -710,6 +725,8 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     );
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        KeeperStep::PrepareContainerRuntime(ContainerRuntime::Docker),
+        KeeperStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         KeeperStep::InstallArtifact(target.ployzd_artifact.clone()),
         KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone()),
         KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
@@ -836,6 +853,8 @@ pub enum KeeperStepFailureReason {
     JoinReportFailed,
     JoinTokenConsumeFailed,
     JoinMaterialStoreFailed,
+    ContainerRuntimePrepareFailed,
+    ContainerRuntimeVerifyFailed,
 }
 
 impl KeeperStepFailureReason {
@@ -843,6 +862,8 @@ impl KeeperStepFailureReason {
     pub const fn from_step(step: &KeeperStep) -> Self {
         match step {
             KeeperStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
+            KeeperStep::PrepareContainerRuntime(_) => Self::ContainerRuntimePrepareFailed,
+            KeeperStep::VerifyContainerRuntime(_) => Self::ContainerRuntimeVerifyFailed,
             KeeperStep::InstallArtifact(_) => Self::ArtifactInstallFailed,
             KeeperStep::WritePloyzdRoleEnvironment(_) => Self::RoleEnvironmentWriteFailed,
             KeeperStep::WriteNatsTlsMaterial(_) => Self::NatsTlsMaterialWriteFailed,

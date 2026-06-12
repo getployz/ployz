@@ -14,6 +14,9 @@ pub trait KeeperCommandRunner {
     fn current_uid(&mut self) -> Result<u32, FailureMessage>;
     fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage>;
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage>;
+    fn docker_info(&mut self) -> Result<(), FailureMessage>;
+    fn enable_docker_service(&mut self) -> Result<(), FailureMessage>;
+    fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +91,37 @@ impl KeeperCommandRunner for SystemKeeperCommandRunner {
         }
         Err(failure_message(format!(
             "artifact download failed: {}",
+            output.failure_summary()
+        )))
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        let output = run_command("docker", &["info"], self.timeout)?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(failure_message(format!(
+            "docker info failed: {}",
+            output.failure_summary()
+        )))
+    }
+
+    fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
+        self.systemctl(&["enable", "--now", "docker"])
+    }
+
+    fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage> {
+        let output = run_os_command_with_display(
+            "sh",
+            &[script.as_os_str().to_os_string()],
+            "sh <docker-install-script>".to_owned(),
+            self.timeout,
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(failure_message(format!(
+            "docker install script failed: {}",
             output.failure_summary()
         )))
     }

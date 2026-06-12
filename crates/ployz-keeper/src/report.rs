@@ -6,7 +6,7 @@ use ployz_core::ops::FailureMessage;
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget};
 use crate::executor::{KeeperStepEvent, KeeperStepRecorder};
-use crate::steps::{HostPrerequisite, KeeperStepFailureReason, KeeperStepLabel};
+use crate::steps::{ContainerRuntime, HostPrerequisite, KeeperStepFailureReason, KeeperStepLabel};
 
 pub struct KeeperTextRecorder<W> {
     writer: W,
@@ -49,6 +49,12 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
     match step {
         KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd) => {
             "verify-host linux-root-systemd".to_owned()
+        }
+        KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker) => {
+            "prepare-container-runtime docker".to_owned()
+        }
+        KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker) => {
+            "verify-container-runtime docker".to_owned()
         }
         KeeperStepLabel::InstallArtifact(target) => {
             format!("install-artifact {}", render_artifact_target(target))
@@ -118,6 +124,10 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         KeeperStepFailureReason::JoinReportFailed => "join-report-failed",
         KeeperStepFailureReason::JoinTokenConsumeFailed => "join-token-consume-failed",
         KeeperStepFailureReason::JoinMaterialStoreFailed => "join-material-store-failed",
+        KeeperStepFailureReason::ContainerRuntimePrepareFailed => {
+            "container-runtime-prepare-failed"
+        }
+        KeeperStepFailureReason::ContainerRuntimeVerifyFailed => "container-runtime-verify-failed",
     }
 }
 

@@ -26,8 +26,8 @@ use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, KeeperStep,
-    KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
+    ContainerRuntime, FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
+    KeeperStep, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
     PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_node_install_plan,
 };
 use ployz_keeper::systemd::{
@@ -263,6 +263,174 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
         })) if message.as_str() == "keeper must run as root"
     ));
     assert_eq!(effects.runner().systemctl_calls, Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn local_effects_skip_docker_install_when_runtime_is_ready() {
+    let root = temp_dir("ployz-keeper-local-docker-ready");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(effects.runner().docker_install_runs, 0);
+    assert!(
+        !effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
+    );
+}
+
+#[test]
+fn local_effects_start_docker_service_when_daemon_is_stopped() {
+    let root = temp_dir("ployz-keeper-local-docker-stopped");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            docker_running: false,
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(effects.runner().docker_install_runs, 0);
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
+    );
+}
+
+#[test]
+fn local_effects_install_docker_when_runtime_is_missing() {
+    let root = temp_dir("ployz-keeper-local-docker-missing");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            docker_installed: false,
+            docker_running: false,
+            download_body: Some(b"docker install script\n".to_vec()),
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, KeeperPlanTerminal::Completed);
+    assert_eq!(effects.runner().docker_install_runs, 1);
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
+    );
+    let docker_downloads = effects
+        .runner()
+        .downloads
+        .iter()
+        .filter(|download| download.url == "https://get.docker.com")
+        .collect::<Vec<_>>();
+    assert_eq!(docker_downloads.len(), 1);
+    assert!(
+        docker_downloads
+            .iter()
+            .all(|download| download.is_cleaned_up())
+    );
+}
+
+#[test]
+fn local_effects_report_docker_install_failure_as_prepare_failure() {
+    let root = temp_dir("ployz-keeper-local-docker-install-fail");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            docker_installed: false,
+            docker_running: false,
+            download_body: Some(b"docker install script\n".to_vec()),
+            fail_docker_install: true,
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+            reason: KeeperStepFailureReason::ContainerRuntimePrepareFailed,
+            message,
+        })) if message.as_str() == "simulated docker install failure"
+    ));
+}
+
+#[test]
+fn local_effects_report_docker_info_failure_after_install_as_verify_failure() {
+    let root = temp_dir("ployz-keeper-local-docker-verify-fail");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let mut effects = KeeperLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            docker_installed: false,
+            docker_running: false,
+            download_body: Some(b"docker install script\n".to_vec()),
+            force_docker_info_failure: true,
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
+            reason: KeeperStepFailureReason::ContainerRuntimeVerifyFailed,
+            message,
+        })) if message.as_str() == "simulated docker info failure"
+    ));
+    assert_eq!(effects.runner().docker_install_runs, 1);
 }
 
 #[test]
@@ -723,6 +891,11 @@ impl KeeperJoinReporter for RecordingJoinReporter {
 struct RecordingRunner {
     linux: bool,
     uid: u32,
+    docker_installed: bool,
+    docker_running: bool,
+    docker_install_runs: usize,
+    fail_docker_install: bool,
+    force_docker_info_failure: bool,
     systemctl_calls: Vec<Vec<String>>,
     fail_systemctl: Option<Vec<String>>,
     downloads: Vec<RecordedDownload>,
@@ -735,6 +908,11 @@ impl RecordingRunner {
         Self {
             linux: true,
             uid: 0,
+            docker_installed: true,
+            docker_running: true,
+            docker_install_runs: 0,
+            fail_docker_install: false,
+            force_docker_info_failure: false,
             systemctl_calls: Vec::new(),
             fail_systemctl: None,
             downloads: Vec::new(),
@@ -782,6 +960,34 @@ impl KeeperCommandRunner for RecordingRunner {
             url: url.to_owned(),
             destination: destination.to_path_buf(),
         });
+        Ok(())
+    }
+
+    fn docker_info(&mut self) -> Result<(), FailureMessage> {
+        if self.force_docker_info_failure {
+            return Err(failure_message("simulated docker info failure"));
+        }
+        if self.docker_installed && self.docker_running {
+            return Ok(());
+        }
+        Err(failure_message("simulated docker info failure"))
+    }
+
+    fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
+        self.systemctl(&["enable", "--now", "docker"])?;
+        if !self.docker_installed {
+            return Err(failure_message("simulated docker service missing"));
+        }
+        self.docker_running = true;
+        Ok(())
+    }
+
+    fn run_docker_install_script(&mut self, _script: &Path) -> Result<(), FailureMessage> {
+        self.docker_install_runs += 1;
+        if self.fail_docker_install {
+            return Err(failure_message("simulated docker install failure"));
+        }
+        self.docker_installed = true;
         Ok(())
     }
 }
@@ -969,6 +1175,13 @@ fn dataplane_artifacts(root: &Path) -> DataplaneArtifactTargets {
 
 fn artifact_source(path: &Path) -> ArtifactSource {
     ArtifactSource::try_new(path.to_str().expect("temp path is utf-8")).expect("valid source")
+}
+
+fn docker_enable_call() -> Vec<String> {
+    ["enable", "--now", "docker"]
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect()
 }
 
 fn temp_dir(prefix: &str) -> PathBuf {

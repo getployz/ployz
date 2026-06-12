@@ -24,9 +24,10 @@ use ployz_keeper::join_executor::{
 use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
+use ployz_keeper::report::render_step_event;
 use ployz_keeper::steps::{
-    FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken, KeeperJoinMaterial,
-    KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
+    ContainerRuntime, FirstNodeInstallTarget, HostPrerequisite, JoinMaterialError, JoinToken,
+    KeeperJoinMaterial, KeeperJoinTarget, KeeperStep, KeeperStepEffectError, KeeperStepFailure,
     KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet, PloyzdRoleEnvironmentStep,
     PloyzdRoleEnvironmentTarget, RedactedJoinMaterial, RoleNatsCredentials, RoleSetError,
     first_node_install_plan, keeper_join_local_install_plan,
@@ -242,6 +243,32 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
         plan.steps()
             .contains(&KeeperStep::StoreJoinMaterial(material))
     );
+    let [
+        store_material,
+        prepare_runtime,
+        verify_runtime,
+        install_ployzd,
+        ..,
+    ] = plan.steps()
+    else {
+        panic!("join install plan records material and Docker prep before artifacts");
+    };
+    assert!(matches!(store_material, KeeperStep::StoreJoinMaterial(_)));
+    assert_eq!(
+        *prepare_runtime,
+        KeeperStep::PrepareContainerRuntime(ContainerRuntime::Docker)
+    );
+    assert_eq!(
+        *verify_runtime,
+        KeeperStep::VerifyContainerRuntime(ContainerRuntime::Docker)
+    );
+    assert!(matches!(
+        install_ployzd,
+        KeeperStep::InstallArtifact(ArtifactTarget {
+            kind: ArtifactKind::Ployzd,
+            ..
+        })
+    ));
     let rendered_env =
         edge_role_environment().render_for_role(&DaemonProcessRole::Node(node_id("node_7")));
     assert!(rendered_env.contains("PLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n"));
@@ -417,6 +444,8 @@ fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
         .find_map(|step| match step {
             KeeperStep::WriteNatsServerConfig(config) => Some(config.render_config()),
             KeeperStep::VerifyHost(_)
+            | KeeperStep::PrepareContainerRuntime(_)
+            | KeeperStep::VerifyContainerRuntime(_)
             | KeeperStep::InstallArtifact(_)
             | KeeperStep::WritePloyzdRoleEnvironment(_)
             | KeeperStep::WriteNatsTlsMaterial(_)
@@ -528,19 +557,27 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
     assert!(rendered.contains(PLOYZD_DIGEST));
     assert_eq!(effects.calls.len(), plan.steps().len());
     assert_eq!(recorder.events, execution.events);
-    let [first, second, ..] = effects.calls.as_slice() else {
-        panic!("plan records at least two calls");
+    let [first, second, third, fourth, ..] = effects.calls.as_slice() else {
+        panic!("plan records at least four calls");
     };
     assert_eq!(
         *first,
         KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd)
     );
-    assert_eq!(*second, KeeperStepLabel::InstallArtifact(ployzd_artifact()));
+    assert_eq!(
+        *second,
+        KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker)
+    );
+    assert_eq!(
+        *third,
+        KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker)
+    );
+    assert_eq!(*fourth, KeeperStepLabel::InstallArtifact(ployzd_artifact()));
     let [
         _,
         _,
-        third,
-        fourth,
+        _,
+        _,
         fifth,
         sixth,
         seventh,
@@ -554,46 +591,38 @@ fn keeper_plan_executor_runs_steps_in_order_and_records_progress() {
         panic!("first-node plan records nats setup calls");
     };
     assert_eq!(
-        *third,
+        *fifth,
         KeeperStepLabel::InstallArtifact(ebpf_bytecode_artifact())
     );
     assert_eq!(
-        *fourth,
+        *sixth,
         KeeperStepLabel::InstallArtifact(ebpf_ctl_artifact())
     );
     assert_eq!(
-        *fifth,
+        *seventh,
         KeeperStepLabel::InstallArtifact(nats_server_artifact())
     );
     assert_eq!(
-        *sixth,
+        *eighth,
         KeeperStepLabel::WriteNatsTlsMaterial {
             state_dir: PathBuf::from("/var/lib/ployz/nats"),
         }
     );
     assert_eq!(
-        *seventh,
+        *ninth,
         KeeperStepLabel::WriteNatsAuthorizedUsers {
             path: PathBuf::from("/etc/nats/authorized-users.conf"),
         }
     );
     assert_eq!(
-        *eighth,
+        *tenth,
         KeeperStepLabel::WriteNatsClientCredentials {
             state_dir: PathBuf::from("/var/lib/ployz/nats"),
         }
     );
     assert_eq!(
-        *ninth,
-        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
-    );
-    assert_eq!(
-        *tenth,
-        KeeperStepLabel::WriteSupervisorUnit(SupervisorUnitTarget::NatsServer)
-    );
-    assert_eq!(
         *eleventh,
-        KeeperStepLabel::StartSupervisorUnit(SupervisorUnitTarget::NatsServer)
+        KeeperStepLabel::WriteNatsServerConfig(first_node_nats_target(node_id("node_1")))
     );
     assert_eq!(
         execution.events,
@@ -638,6 +667,8 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
         effects.calls,
         vec![
             KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+            KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+            KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
             KeeperStepLabel::InstallArtifact(ployzd_target),
         ]
     );
@@ -646,6 +677,24 @@ fn keeper_plan_executor_stops_on_first_failed_step() {
         Some(&KeeperStepEvent::Failed(failure))
     );
     assert_eq!(recorder.events, execution.events);
+}
+
+#[test]
+fn keeper_progress_renders_container_runtime_steps() {
+    assert_eq!(
+        render_step_event(&KeeperStepEvent::Started {
+            step: KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+        }),
+        "started prepare-container-runtime docker"
+    );
+    assert_eq!(
+        render_step_event(&KeeperStepEvent::Failed(KeeperStepFailure {
+            step: KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
+            reason: KeeperStepFailureReason::ContainerRuntimeVerifyFailed,
+            message: failure_message("docker info failed"),
+        })),
+        "failed verify-container-runtime docker container-runtime-verify-failed: docker info failed"
+    );
 }
 
 #[test]
@@ -776,6 +825,48 @@ fn keeper_join_keeps_token_when_install_fails_after_redemption() {
 }
 
 #[test]
+fn keeper_join_reports_docker_prepare_failure_after_redemption() {
+    let token = JoinToken::try_new("join_secret").expect("valid join token");
+    let mut redeemer = RecordingJoinRedeemer::default();
+    let mut effects = RecordingEffects {
+        fail_on: Some(KeeperStepLabel::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+        )),
+        ..RecordingEffects::default()
+    };
+    let mut reporter = RecordingJoinReporter::default();
+    let mut token_consumer = RecordingTokenConsumer::default();
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_keeper_join(
+        &token,
+        &mut redeemer,
+        &mut reporter,
+        &mut token_consumer,
+        &mut effects,
+        &mut recorder,
+    );
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(KeeperPlanFailure::Step(KeeperStepFailure {
+            step: KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+            reason: KeeperStepFailureReason::ContainerRuntimePrepareFailed,
+            ..
+        }))
+    ));
+    assert_eq!(token_consumer.consumed, 0);
+    assert_eq!(
+        reporter.reports,
+        vec![JoinReport::Failed {
+            failure: MachineJoinReportFailure::BootstrapFailed {
+                message: failure_message("simulated keeper step failure"),
+            },
+        }]
+    );
+}
+
+#[test]
 fn keeper_join_does_not_report_completed_when_token_consume_fails() {
     let token = JoinToken::try_new("join_secret").expect("valid join token");
     let mut redeemer = RecordingJoinRedeemer::default();
@@ -841,9 +932,11 @@ fn keeper_plan_executor_records_started_before_applying_step() {
     );
     assert_eq!(
         effects.calls,
-        vec![KeeperStepLabel::VerifyHost(
-            HostPrerequisite::LinuxRootSystemd
-        )]
+        vec![
+            KeeperStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+            KeeperStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
+            KeeperStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
+        ]
     );
     assert_eq!(execution.events, recorder.events);
 }

@@ -20,11 +20,13 @@ use crate::join::{
     render_redacted_join_material,
 };
 use crate::steps::{
-    HostPrerequisite, KeeperJoinMaterial, KeeperStep, KeeperStepEffectError,
+    ContainerRuntime, HostPrerequisite, KeeperJoinMaterial, KeeperStep, KeeperStepEffectError,
     KeeperStepFailureReason, NatsAuthorizedUsersTarget, NatsClientCredentialsTarget,
     NatsServerConfigTarget, NatsTlsMaterialTarget, PloyzdRoleEnvironmentStep,
 };
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
+
+const DOCKER_INSTALL_SCRIPT_URL: &str = "https://get.docker.com";
 
 #[derive(Debug, Clone)]
 pub struct KeeperLocalConfig {
@@ -55,6 +57,10 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
             KeeperStep::VerifyHost(prerequisite) => {
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
+            KeeperStep::PrepareContainerRuntime(runtime) => {
+                self.prepare_container_runtime(*runtime)
+            }
+            KeeperStep::VerifyContainerRuntime(runtime) => self.verify_container_runtime(*runtime),
             KeeperStep::InstallArtifact(target) => self.install_artifact_source(target),
             KeeperStep::WritePloyzdRoleEnvironment(step) => {
                 self.write_ployzd_role_environment(step).map_err(Into::into)
@@ -105,6 +111,50 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
                 Ok(())
             }
         }
+    }
+
+    fn prepare_container_runtime(
+        &mut self,
+        runtime: ContainerRuntime,
+    ) -> Result<(), KeeperStepEffectError> {
+        match runtime {
+            ContainerRuntime::Docker => self.prepare_docker().map_err(|message| {
+                KeeperStepEffectError::new(
+                    KeeperStepFailureReason::ContainerRuntimePrepareFailed,
+                    message,
+                )
+            }),
+        }
+    }
+
+    fn verify_container_runtime(
+        &mut self,
+        runtime: ContainerRuntime,
+    ) -> Result<(), KeeperStepEffectError> {
+        match runtime {
+            ContainerRuntime::Docker => self.runner.docker_info().map_err(|message| {
+                KeeperStepEffectError::new(
+                    KeeperStepFailureReason::ContainerRuntimeVerifyFailed,
+                    message,
+                )
+            }),
+        }
+    }
+
+    fn prepare_docker(&mut self) -> Result<(), FailureMessage> {
+        if self.runner.docker_info().is_ok() {
+            return Ok(());
+        }
+
+        if self.runner.enable_docker_service().is_ok() && self.runner.docker_info().is_ok() {
+            return Ok(());
+        }
+
+        let script = DockerInstallScript::new()?;
+        self.runner
+            .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
+        self.runner.run_docker_install_script(script.path())?;
+        self.runner.enable_docker_service()
     }
 
     fn write_supervisor_unit(&self, spec: &SupervisorUnitSpec) -> Result<(), FailureMessage> {
@@ -412,9 +462,66 @@ enum AcquiredArtifactCleanup {
     Remove,
 }
 
+struct DockerInstallScript {
+    path: PathBuf,
+}
+
+impl DockerInstallScript {
+    fn new() -> Result<Self, FailureMessage> {
+        let directory = create_private_docker_install_dir()?;
+        Ok(Self {
+            path: directory.join("install-docker.sh"),
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DockerInstallScript {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+}
+
 fn create_download_path(target: &ArtifactTarget) -> Result<PathBuf, FailureMessage> {
     let directory = create_private_download_dir(target)?;
     Ok(directory.join("artifact"))
+}
+
+fn create_private_docker_install_dir() -> Result<PathBuf, FailureMessage> {
+    for attempt in 0..16 {
+        let entropy = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| {
+                failure_message(format!("failed to create Docker install path: {error}"))
+            })?
+            .as_nanos();
+        let name = format!(
+            "ployz-docker-install-{}-{entropy}-{attempt}",
+            std::process::id()
+        );
+        let directory = std::env::temp_dir().join(name);
+        match create_private_directory(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(failure_message(format!(
+                    "failed to create private Docker install directory {}: {error}",
+                    directory.display()
+                )));
+            }
+        }
+    }
+
+    Err(failure_message(format!(
+        "failed to create unique Docker install directory in {}",
+        std::env::temp_dir().display()
+    )))
 }
 
 fn create_private_download_dir(target: &ArtifactTarget) -> Result<PathBuf, FailureMessage> {
