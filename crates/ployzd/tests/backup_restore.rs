@@ -21,7 +21,7 @@ use ployz_test_support::ids::{
     revision_id, service_id,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
-use ployzd::backup_runtime::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
+use ployzd::backup_restore::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
 use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
 use ployzd::controllers::{BackupCreateCommand, MachineAddBootstrapConfig, OperationControllers};
 use ployzd::nats_process::NatsServerRuntime;

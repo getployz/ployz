@@ -18,17 +18,14 @@ use ployz_core::ops::{
 };
 
 pub use facts::{
-    ActiveServiceReadFailure, DeployExecutionNodeScope, DeployFactLoadError,
-    ObservationReadFailure, load_deploy_execution_facts_from_nats,
+    DeployExecutionNodeScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
     ActiveServiceCommitError, DeployExecutionError, DeployExecutionStep, DeployFailureRecordError,
     DeployHealthCheckError, DeployOperationRecordError, NodeContainerRuntimeError,
     NodeRuntimeUnavailableReason,
 };
-use failure::{
-    DeployExecutionFailure, fail_deploy, failure, failure_with_stop_targets, with_step_timeout,
-};
+use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DeployHealthChecker,
     DeployOperationRecorder, NodeContainerRuntime, WireGuardEbpfPreparer,
@@ -75,6 +72,49 @@ where
     }
 }
 
+/// In-flight deploy execution state: the command plus the containers started
+/// so far, which become retained failure evidence when a stage fails.
+struct DeployRun<'a> {
+    command: &'a DeployExecutionCommand,
+    started_containers: Vec<DeployContainer>,
+}
+
+impl<'a> DeployRun<'a> {
+    fn new(command: &'a DeployExecutionCommand) -> Self {
+        Self {
+            command,
+            started_containers: Vec::new(),
+        }
+    }
+
+    fn container_started(&mut self, started: DeployContainer) {
+        self.started_containers.push(started);
+    }
+
+    fn fail(&self, source: DeployExecutionError) -> DeployExecutionFailure {
+        DeployExecutionFailure::new(self.command, source, &self.started_containers)
+    }
+
+    fn fail_run_container(
+        &self,
+        slot: ReplicaSlot,
+        source: DeployExecutionError,
+    ) -> DeployExecutionFailure {
+        let retained = retained_containers_after_run_error(
+            self.command,
+            &self.started_containers,
+            slot,
+            &source,
+        );
+        DeployExecutionFailure::with_stop_targets(
+            self.command,
+            source,
+            &self.started_containers,
+            &retained,
+        )
+    }
+}
+
 async fn execute_deploy<R, D, N, H, C, A>(
     command: &DeployExecutionCommand,
     ports: &mut DeployExecutionPorts<'_, R, D, N, H, C, A>,
@@ -88,43 +128,51 @@ where
     A: ActiveServiceCommitter,
 {
     let mut containers = Vec::new();
-    let mut started_containers = Vec::new();
+    let mut run = DeployRun::new(command);
     record_stage(command, &mut *ports.recorder, DeployTransition::Planning)
         .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+        .map_err(|source| run.fail(source))?;
     let plan = plan_service_deploy(DeployPlanningInput {
         request: command.request.clone(),
         eligible_nodes: command.eligible_nodes.clone(),
         existing_replicas: command.existing_replicas.clone(),
         cleanup_candidates: command.cleanup_candidates.clone(),
     })
-    .map_err(|source| failure(command, source.into(), &started_containers))?;
-    record_plan_created(command, &mut *ports.recorder, &plan)
-        .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+    .map_err(|source| run.fail(source.into()))?;
+    record_evidence(
+        command,
+        &mut *ports.recorder,
+        DeployEvidence::PlanCreated { plan: plan.clone() },
+    )
+    .await
+    .map_err(|source| run.fail(source))?;
     record_running_stage(
         command,
         &mut *ports.recorder,
         DeployRunningStage::PreparingWireGuardEbpf,
     )
     .await
-    .map_err(|source| failure(command, source, &started_containers))?;
+    .map_err(|source| run.fail(source))?;
     ensure_endpoint_networks(command, &plan, &mut *ports.node_runtime)
         .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+        .map_err(|source| run.fail(source))?;
     let dataplane = prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
         .await
-        .map_err(|source| failure(command, source, &started_containers))?;
-    record_wireguard_ebpf_prepared(command, &mut *ports.recorder, dataplane)
-        .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+        .map_err(|source| run.fail(source))?;
+    record_evidence(
+        command,
+        &mut *ports.recorder,
+        DeployEvidence::WireGuardEbpfPrepared { report: dataplane },
+    )
+    .await
+    .map_err(|source| run.fail(source))?;
     record_running_stage(
         command,
         &mut *ports.recorder,
         DeployRunningStage::StartingContainers,
     )
     .await
-    .map_err(|source| failure(command, source, &started_containers))?;
+    .map_err(|source| run.fail(source))?;
 
     for step in &plan.steps {
         match step {
@@ -135,13 +183,8 @@ where
             } => containers.push(DeployContainer {
                 node_id: node_id.clone(),
                 container_id: container_id.clone(),
-                step_id: deploy_step_id(*slot).map_err(|source| {
-                    failure(
-                        command,
-                        DeployExecutionError::StepId(source),
-                        &started_containers,
-                    )
-                })?,
+                step_id: deploy_step_id(*slot)
+                    .map_err(|source| run.fail(DeployExecutionError::StepId(source)))?,
                 required_endpoint_port: required_endpoint_port(command),
             }),
             DeployPlanStep::RunContainer { node_id, slot } => {
@@ -155,26 +198,20 @@ where
                 .await;
                 let started = match run_result {
                     Ok(started) => started,
-                    Err(source) => {
-                        let retained = retained_containers_after_run_error(
-                            command,
-                            &started_containers,
-                            *slot,
-                            &source,
-                        );
-                        return Err(failure_with_stop_targets(
-                            command,
-                            source,
-                            &started_containers,
-                            &retained,
-                        ));
-                    }
+                    Err(source) => return Err(run.fail_run_container(*slot, source)),
                 };
                 containers.push(started.clone());
-                started_containers.push(started.clone());
-                record_container_started(&mut *ports.recorder, command, &started)
-                    .await
-                    .map_err(|source| failure(command, source, &started_containers))?;
+                run.container_started(started.clone());
+                record_evidence(
+                    command,
+                    &mut *ports.recorder,
+                    DeployEvidence::ContainerStarted {
+                        node_id: started.node_id.clone(),
+                        container_id: started.container_id.clone(),
+                    },
+                )
+                .await
+                .map_err(|source| run.fail(source))?;
             }
         }
     }
@@ -185,11 +222,15 @@ where
         DeployRunningStage::WaitingForHealth,
     )
     .await
-    .map_err(|source| failure(command, source, &started_containers))?;
+    .map_err(|source| run.fail(source))?;
 
-    record_health_check_started(command, &mut *ports.recorder)
-        .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+    record_evidence(
+        command,
+        &mut *ports.recorder,
+        DeployEvidence::HealthCheckStarted,
+    )
+    .await
+    .map_err(|source| run.fail(source))?;
 
     let health_result = with_step_timeout(
         command,
@@ -198,7 +239,7 @@ where
     )
     .await;
     if let Err(source) = health_result {
-        return Err(failure(command, source, &started_containers));
+        return Err(run.fail(source));
     }
 
     if command.active_route_commit_request().is_some() {
@@ -208,11 +249,11 @@ where
             DeployRunningStage::RouteCutover,
         )
         .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+        .map_err(|source| run.fail(source))?;
 
         cutover_route(command, &mut *ports.route_state)
             .await
-            .map_err(|source| failure(command, source, &started_containers))?;
+            .map_err(|source| run.fail(source))?;
     }
     record_running_stage(
         command,
@@ -220,11 +261,11 @@ where
         DeployRunningStage::ActiveServiceCommit,
     )
     .await
-    .map_err(|source| failure(command, source, &started_containers))?;
+    .map_err(|source| run.fail(source))?;
 
     commit_active_service(command, &mut *ports.active_state)
         .await
-        .map_err(|source| failure(command, source, &started_containers))?;
+        .map_err(|source| run.fail(source))?;
     if !plan.cleanup_containers.is_empty() {
         let _ = record_running_stage(
             command,
@@ -456,8 +497,7 @@ where
     R: DeployOperationRecorder,
 {
     if !cleanup.is_empty() {
-        let record_cleanup =
-            record_cleanup_finished(command, recorder, cleanup_evidence(cleanup)).await;
+        let record_cleanup = record_evidence(command, recorder, cleanup_evidence(cleanup)).await;
         if DeployCleanupResult::has_failure(cleanup) && record_cleanup.is_err() {
             return DeployTerminalEvent::Missing;
         }
@@ -583,20 +623,17 @@ where
     Ok(())
 }
 
-async fn record_wireguard_ebpf_prepared<R>(
+async fn record_evidence<R>(
     command: &DeployExecutionCommand,
     recorder: &mut R,
-    report: ployz_core::dataplane::WireGuardEbpfPrepareReport,
+    evidence: DeployEvidence,
 ) -> Result<(), DeployExecutionError>
 where
     R: DeployOperationRecorder,
 {
     with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
         recorder
-            .record_deploy_evidence(
-                &command.operation_id,
-                DeployEvidence::WireGuardEbpfPrepared { report },
-            )
+            .record_deploy_evidence(&command.operation_id, evidence)
             .await
             .map_err(DeployExecutionError::RecordEvidence)
     })
@@ -616,24 +653,6 @@ where
         DeployExecutionStep::RecordOperationEvent,
         record(recorder, &command.operation_id, transition),
     )
-    .await
-}
-
-async fn record_plan_created<R>(
-    command: &DeployExecutionCommand,
-    recorder: &mut R,
-    plan: &DeployPlan,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-{
-    let evidence = DeployEvidence::PlanCreated { plan: plan.clone() };
-    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
-        recorder
-            .record_deploy_evidence(&command.operation_id, evidence)
-            .await
-            .map_err(DeployExecutionError::RecordEvidence)
-    })
     .await
 }
 
@@ -669,61 +688,6 @@ where
         .record_deploy_transition(operation_id, transition)
         .await
         .map_err(DeployExecutionError::RecordTransition)
-}
-
-async fn record_health_check_started<R>(
-    command: &DeployExecutionCommand,
-    recorder: &mut R,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-{
-    let evidence = DeployEvidence::HealthCheckStarted;
-    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
-        recorder
-            .record_deploy_evidence(&command.operation_id, evidence)
-            .await
-            .map_err(DeployExecutionError::RecordEvidence)
-    })
-    .await
-}
-
-async fn record_cleanup_finished<R>(
-    command: &DeployExecutionCommand,
-    recorder: &mut R,
-    evidence: DeployEvidence,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-{
-    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
-        recorder
-            .record_deploy_evidence(&command.operation_id, evidence)
-            .await
-            .map_err(DeployExecutionError::RecordEvidence)
-    })
-    .await
-}
-
-async fn record_container_started<R>(
-    recorder: &mut R,
-    command: &DeployExecutionCommand,
-    started: &DeployContainer,
-) -> Result<(), DeployExecutionError>
-where
-    R: DeployOperationRecorder,
-{
-    let evidence = DeployEvidence::ContainerStarted {
-        node_id: started.node_id.clone(),
-        container_id: started.container_id.clone(),
-    };
-    with_step_timeout(command, DeployExecutionStep::RecordOperationEvent, async {
-        recorder
-            .record_deploy_evidence(&command.operation_id, evidence)
-            .await
-            .map_err(DeployExecutionError::RecordEvidence)
-    })
-    .await
 }
 
 async fn run_deploy_step<N>(

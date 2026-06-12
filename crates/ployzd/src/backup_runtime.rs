@@ -1,30 +1,29 @@
 //! Owned backup operation execution.
 
 use crate::controllers::OperationControllers;
-use crate::operation_lease::with_advisory_operation_lease;
+use crate::operation_lease::{
+    OwnerLeaseError, renew_verified_owner_lease, with_advisory_operation_lease,
+};
+use crate::tasks::TaskRegistry;
 use futures_util::TryStreamExt;
 use ployz_core::backup::{
     BackupArtifact, BackupBundle, BackupManifest, ControlPlaneKvSnapshot, KvBucketSnapshot,
     KvEntrySnapshot,
 };
-use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
-    FailureMessage, OperationOwnerLease, OperationStatus,
+    FailureMessage, OperationStatus,
 };
 use ployz_nats::kv::{KV_CORE_BUCKET, KV_LOCKS_BUCKET};
 use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::KV_OBS_BUCKET;
 use ployz_nats::operations::{
-    AcceptedBackupSubmission, KV_OPS_BUCKET, OperationStatusReadError, OperationStatusStoreError,
-    RecordBackupEventError,
+    AcceptedBackupSubmission, KV_OPS_BUCKET, OperationStatusReadError, RecordBackupEventError,
 };
-use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::{Arc, Mutex};
-use tokio::task::JoinHandle;
 
-const CONTROL_PLANE_KV_BUCKETS: [&str; 4] = [
+pub(crate) const CONTROL_PLANE_KV_BUCKETS: [&str; 4] = [
     KV_CORE_BUCKET,
     KV_OPS_BUCKET,
     KV_OBS_BUCKET,
@@ -36,302 +35,8 @@ pub struct BackupOperationRuntime {
     controllers: OperationControllers,
     backups: AsyncNatsBackupObjectStore,
     snapshot_source: ControlPlaneSnapshotSource,
-    task_registry: BackupTaskRegistry,
+    task_registry: TaskRegistry,
 }
-
-#[derive(Clone)]
-pub struct BackupRestoreRuntime {
-    jetstream: async_nats::jetstream::Context,
-    backups: AsyncNatsBackupObjectStore,
-}
-
-impl BackupRestoreRuntime {
-    #[must_use]
-    pub const fn new(
-        jetstream: async_nats::jetstream::Context,
-        backups: AsyncNatsBackupObjectStore,
-    ) -> Self {
-        Self { jetstream, backups }
-    }
-
-    pub async fn restore_artifact(
-        &self,
-        artifact: &BackupArtifact,
-    ) -> Result<ControlPlaneRestoreReport, BackupRestoreError> {
-        let payload = self
-            .backups
-            .read_control_plane_bundle(artifact)
-            .await
-            .map_err(BackupRestoreError::ReadArtifact)?;
-        let bundle = serde_json::from_slice::<BackupBundle>(&payload).map_err(|error| {
-            BackupRestoreError::DecodeArtifact {
-                object_name: artifact.object_name.clone(),
-                message: error.to_string(),
-            }
-        })?;
-
-        self.restore_bundle(&bundle).await
-    }
-
-    pub async fn restore_bundle(
-        &self,
-        bundle: &BackupBundle,
-    ) -> Result<ControlPlaneRestoreReport, BackupRestoreError> {
-        validate_control_plane_snapshot(&bundle.control_plane)?;
-        self.preflight_empty_restore_target(&bundle.control_plane)
-            .await?;
-
-        let mut buckets = Vec::with_capacity(bundle.control_plane.buckets.len());
-        for snapshot in &bundle.control_plane.buckets {
-            buckets.push(self.restore_bucket(snapshot).await?);
-        }
-        let restored_observation_entries = buckets
-            .iter()
-            .find(|bucket| bucket.name == KV_OBS_BUCKET)
-            .map(|bucket| bucket.entries_restored)
-            .unwrap_or(0);
-
-        Ok(ControlPlaneRestoreReport {
-            buckets,
-            observations: RestoreObservationState::RebuildableAfterNodeReconnect {
-                restored_entries: restored_observation_entries,
-            },
-        })
-    }
-
-    async fn preflight_empty_restore_target(
-        &self,
-        snapshot: &ControlPlaneKvSnapshot,
-    ) -> Result<(), BackupRestoreError> {
-        for bucket in &snapshot.buckets {
-            self.preflight_empty_bucket(bucket).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn preflight_empty_bucket(
-        &self,
-        snapshot: &KvBucketSnapshot,
-    ) -> Result<(), BackupRestoreError> {
-        let bucket = self.open_bucket(snapshot.name.as_str()).await?;
-        for entry in &snapshot.entries {
-            let existing = bucket.get(entry.key.as_str()).await.map_err(|error| {
-                BackupRestoreError::CheckDestination {
-                    bucket: snapshot.name.clone(),
-                    key: entry.key.clone(),
-                    message: error.to_string(),
-                }
-            })?;
-            if existing.is_some() {
-                return Err(BackupRestoreError::DestinationNotEmpty {
-                    bucket: snapshot.name.clone(),
-                    key: entry.key.clone(),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn restore_bucket(
-        &self,
-        snapshot: &KvBucketSnapshot,
-    ) -> Result<KvBucketRestoreReport, BackupRestoreError> {
-        let bucket = self.open_bucket(snapshot.name.as_str()).await?;
-
-        for entry in &snapshot.entries {
-            bucket
-                .create(entry.key.as_str(), entry.value.clone().into())
-                .await
-                .map_err(|error| BackupRestoreError::RestoreEntry {
-                    bucket: snapshot.name.clone(),
-                    key: entry.key.clone(),
-                    message: error.to_string(),
-                })?;
-        }
-
-        Ok(KvBucketRestoreReport {
-            name: snapshot.name.clone(),
-            entries_restored: snapshot.entries.len(),
-        })
-    }
-
-    async fn open_bucket(
-        &self,
-        bucket: &str,
-    ) -> Result<async_nats::jetstream::kv::Store, BackupRestoreError> {
-        self.jetstream
-            .get_key_value(bucket)
-            .await
-            .map_err(|error| BackupRestoreError::OpenBucket {
-                bucket: bucket.to_owned(),
-                message: error.to_string(),
-            })
-    }
-}
-
-fn validate_control_plane_snapshot(
-    snapshot: &ControlPlaneKvSnapshot,
-) -> Result<(), BackupRestoreError> {
-    let mut buckets = BTreeSet::new();
-    for bucket in &snapshot.buckets {
-        if !CONTROL_PLANE_KV_BUCKETS.contains(&bucket.name.as_str()) {
-            return Err(BackupRestoreError::UnknownBucket {
-                bucket: bucket.name.clone(),
-            });
-        }
-        if !buckets.insert(bucket.name.as_str()) {
-            return Err(BackupRestoreError::DuplicateBucket {
-                bucket: bucket.name.clone(),
-            });
-        }
-        validate_bucket_entries(bucket)?;
-    }
-
-    for expected in CONTROL_PLANE_KV_BUCKETS {
-        if !buckets.contains(expected) {
-            return Err(BackupRestoreError::MissingBucket {
-                bucket: expected.to_owned(),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_bucket_entries(bucket: &KvBucketSnapshot) -> Result<(), BackupRestoreError> {
-    let mut keys = BTreeSet::new();
-    for entry in &bucket.entries {
-        if !keys.insert(entry.key.as_str()) {
-            return Err(BackupRestoreError::DuplicateKey {
-                bucket: bucket.name.clone(),
-                key: entry.key.clone(),
-            });
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ControlPlaneRestoreReport {
-    pub buckets: Vec<KvBucketRestoreReport>,
-    pub observations: RestoreObservationState,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KvBucketRestoreReport {
-    pub name: String,
-    pub entries_restored: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RestoreObservationState {
-    RebuildableAfterNodeReconnect { restored_entries: usize },
-}
-
-#[derive(Debug)]
-pub enum BackupRestoreError {
-    ReadArtifact(BackupObjectStoreError),
-    DecodeArtifact {
-        object_name: String,
-        message: String,
-    },
-    MissingBucket {
-        bucket: String,
-    },
-    UnknownBucket {
-        bucket: String,
-    },
-    DuplicateBucket {
-        bucket: String,
-    },
-    DuplicateKey {
-        bucket: String,
-        key: String,
-    },
-    CheckDestination {
-        bucket: String,
-        key: String,
-        message: String,
-    },
-    DestinationNotEmpty {
-        bucket: String,
-        key: String,
-    },
-    OpenBucket {
-        bucket: String,
-        message: String,
-    },
-    RestoreEntry {
-        bucket: String,
-        key: String,
-        message: String,
-    },
-}
-
-impl fmt::Display for BackupRestoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadArtifact(error) => {
-                write!(formatter, "backup artifact could not be read: {error:?}")
-            }
-            Self::DecodeArtifact {
-                object_name,
-                message,
-            } => write!(
-                formatter,
-                "backup artifact {object_name} could not be decoded: {message}"
-            ),
-            Self::MissingBucket { bucket } => {
-                write!(formatter, "backup bundle is missing KV bucket {bucket}")
-            }
-            Self::UnknownBucket { bucket } => {
-                write!(
-                    formatter,
-                    "backup bundle contains unknown KV bucket {bucket}"
-                )
-            }
-            Self::DuplicateBucket { bucket } => {
-                write!(
-                    formatter,
-                    "backup bundle contains duplicate KV bucket {bucket}"
-                )
-            }
-            Self::DuplicateKey { bucket, key } => {
-                write!(
-                    formatter,
-                    "backup bundle contains duplicate key {bucket}.{key}"
-                )
-            }
-            Self::CheckDestination {
-                bucket,
-                key,
-                message,
-            } => write!(
-                formatter,
-                "restore check destination KV entry {bucket}.{key}: {message}"
-            ),
-            Self::DestinationNotEmpty { bucket, key } => {
-                write!(
-                    formatter,
-                    "restore target KV entry {bucket}.{key} already exists"
-                )
-            }
-            Self::OpenBucket { bucket, message } => {
-                write!(formatter, "restore open KV bucket {bucket}: {message}")
-            }
-            Self::RestoreEntry {
-                bucket,
-                key,
-                message,
-            } => write!(formatter, "restore KV entry {bucket}.{key}: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for BackupRestoreError {}
 
 impl BackupOperationRuntime {
     #[must_use]
@@ -339,7 +44,7 @@ impl BackupOperationRuntime {
         jetstream: async_nats::jetstream::Context,
         controllers: OperationControllers,
         backups: AsyncNatsBackupObjectStore,
-        task_registry: BackupTaskRegistry,
+        task_registry: TaskRegistry,
     ) -> Self {
         Self {
             controllers,
@@ -367,8 +72,9 @@ impl BackupOperationRuntime {
     }
 
     pub async fn run(self, accepted: AcceptedBackupSubmission) -> Result<(), BackupExecutionError> {
-        let lease = renew_backup_owner_lease(&self.controllers, &accepted).await?;
-        verify_backup_lease_owner(&lease, &accepted.operation_id, self.controllers.owner_id())?;
+        renew_verified_owner_lease(&self.controllers, &accepted.lease, &accepted.operation_id)
+            .await
+            .map_err(BackupExecutionError::Lease)?;
         let lease_policy = self.controllers.lease_policy();
         let lease_renewer = self.controllers.clone();
         let operation_id = accepted.operation_id.clone();
@@ -390,6 +96,7 @@ impl BackupOperationRuntime {
         .await
     }
 
+    /// The single writer of `Failed` transitions for backup execution.
     async fn record_execution_failure(
         &self,
         operation_id: &OperationId,
@@ -419,52 +126,6 @@ impl BackupOperationRuntime {
     }
 }
 
-async fn renew_backup_owner_lease(
-    controllers: &OperationControllers,
-    accepted: &AcceptedBackupSubmission,
-) -> Result<OperationOwnerLease, BackupExecutionError> {
-    verify_backup_lease_owner(
-        &accepted.lease,
-        &accepted.operation_id,
-        controllers.owner_id(),
-    )?;
-    let Some(lease) = controllers
-        .renew_owner_lease(&accepted.operation_id)
-        .await
-        .map_err(BackupExecutionError::RenewLease)?
-    else {
-        return Err(BackupExecutionError::NoCurrentLease {
-            operation_id: accepted.operation_id.clone(),
-            expected_owner: controllers.owner_id().clone(),
-        });
-    };
-    verify_backup_lease_owner(&lease, &accepted.operation_id, controllers.owner_id())?;
-
-    Ok(lease)
-}
-
-fn verify_backup_lease_owner(
-    lease: &OperationOwnerLease,
-    operation_id: &OperationId,
-    expected_owner: &OperationOwnerId,
-) -> Result<(), BackupExecutionError> {
-    if &lease.operation_id != operation_id {
-        return Err(BackupExecutionError::LeaseOperationMismatch {
-            operation_id: operation_id.clone(),
-            lease: lease.clone(),
-        });
-    }
-    if lease.owner_id != *expected_owner {
-        return Err(BackupExecutionError::LeaseNotHeld {
-            operation_id: operation_id.clone(),
-            lease: lease.clone(),
-            expected_owner: expected_owner.clone(),
-        });
-    }
-
-    Ok(())
-}
-
 async fn run_backup_create(
     controllers: &OperationControllers,
     backups: &AsyncNatsBackupObjectStore,
@@ -473,7 +134,15 @@ async fn run_backup_create(
 ) -> Result<(), BackupExecutionError> {
     match backup_state(controllers, operation_id).await? {
         BackupOperationState::Accepted => {
-            record_snapshotting(controllers, operation_id).await?;
+            record_transition(
+                controllers,
+                operation_id,
+                BackupFailureStage::Snapshot,
+                BackupTransition::Running {
+                    stage: BackupRunningStage::SnapshottingControlPlane,
+                },
+            )
+            .await?;
             write_artifact_and_complete(controllers, backups, snapshot_source, operation_id).await
         }
         BackupOperationState::Running {
@@ -512,85 +181,18 @@ async fn backup_state(
     Ok(state)
 }
 
-async fn record_snapshotting(
+async fn record_transition(
     controllers: &OperationControllers,
     operation_id: &OperationId,
+    stage: BackupFailureStage,
+    transition: BackupTransition,
 ) -> Result<(), BackupExecutionError> {
-    match controllers
+    controllers
         .repository()
-        .record_backup_transition(
-            operation_id,
-            BackupTransition::Running {
-                stage: BackupRunningStage::SnapshottingControlPlane,
-            },
-        )
+        .record_backup_transition(operation_id, transition)
         .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            record_backup_failure(
-                controllers,
-                operation_id,
-                BackupFailureStage::Snapshot,
-                error,
-            )
-            .await;
-            Err(BackupExecutionError::RecordTransition)
-        }
-    }
-}
-
-async fn record_manifest_write(
-    controllers: &OperationControllers,
-    operation_id: &OperationId,
-    artifact: BackupArtifact,
-) -> Result<(), BackupExecutionError> {
-    match controllers
-        .repository()
-        .record_backup_transition(
-            operation_id,
-            BackupTransition::Running {
-                stage: BackupRunningStage::WritingManifest { artifact },
-            },
-        )
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            record_backup_failure(
-                controllers,
-                operation_id,
-                BackupFailureStage::Manifest,
-                error,
-            )
-            .await;
-            Err(BackupExecutionError::RecordTransition)
-        }
-    }
-}
-
-async fn record_completed(
-    controllers: &OperationControllers,
-    operation_id: &OperationId,
-    manifest: BackupManifest,
-) -> Result<(), BackupExecutionError> {
-    match controllers
-        .repository()
-        .record_backup_transition(operation_id, BackupTransition::Completed { manifest })
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            record_backup_failure(
-                controllers,
-                operation_id,
-                BackupFailureStage::Manifest,
-                error,
-            )
-            .await;
-            Err(BackupExecutionError::RecordTransition)
-        }
-    }
+        .map(|_| ())
+        .map_err(|error| BackupExecutionError::RecordTransition { stage, error })
 }
 
 async fn write_artifact_and_complete(
@@ -599,35 +201,31 @@ async fn write_artifact_and_complete(
     snapshot_source: &ControlPlaneSnapshotSource,
     operation_id: &OperationId,
 ) -> Result<(), BackupExecutionError> {
-    let snapshot = match snapshot_source.snapshot().await {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            record_backup_snapshot_failure(controllers, operation_id, error).await;
-            return Err(BackupExecutionError::SnapshotControlPlane);
-        }
-    };
+    let snapshot = snapshot_source
+        .snapshot()
+        .await
+        .map_err(BackupExecutionError::SnapshotControlPlane)?;
     let bundle = BackupBundle::new(snapshot);
-    let payload = match serde_json::to_vec(&bundle) {
-        Ok(payload) => payload,
-        Err(error) => {
-            record_backup_encode_failure(controllers, operation_id, error.to_string()).await;
-            return Err(BackupExecutionError::EncodeSnapshot {
-                message: error.to_string(),
-            });
-        }
-    };
-    let artifact = match backups
+    let payload =
+        serde_json::to_vec(&bundle).map_err(|error| BackupExecutionError::EncodeSnapshot {
+            message: error.to_string(),
+        })?;
+    let artifact = backups
         .write_control_plane_bundle(operation_id, &payload)
         .await
-    {
-        Ok(artifact) => artifact,
-        Err(error) => {
-            record_backup_object_failure(controllers, operation_id, error).await;
-            return Err(BackupExecutionError::WriteArtifact);
-        }
-    };
+        .map_err(BackupExecutionError::WriteArtifact)?;
 
-    record_manifest_write(controllers, operation_id, artifact.clone()).await?;
+    record_transition(
+        controllers,
+        operation_id,
+        BackupFailureStage::Manifest,
+        BackupTransition::Running {
+            stage: BackupRunningStage::WritingManifest {
+                artifact: artifact.clone(),
+            },
+        },
+    )
+    .await?;
     complete_from_artifact(controllers, operation_id, artifact).await
 }
 
@@ -638,7 +236,13 @@ async fn complete_from_artifact(
 ) -> Result<(), BackupExecutionError> {
     let manifest = BackupManifest::current_control_plane_kv_only().with_artifact(artifact);
 
-    record_completed(controllers, operation_id, manifest).await
+    record_transition(
+        controllers,
+        operation_id,
+        BackupFailureStage::Manifest,
+        BackupTransition::Completed { manifest },
+    )
+    .await
 }
 
 #[derive(Clone)]
@@ -714,7 +318,7 @@ impl ControlPlaneSnapshotSource {
 }
 
 #[derive(Debug)]
-enum BackupSnapshotError {
+pub enum BackupSnapshotError {
     OpenBucket {
         bucket: &'static str,
         message: String,
@@ -751,74 +355,16 @@ impl fmt::Display for BackupSnapshotError {
     }
 }
 
+/// Which backup failure variant a recording failure maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackupFailureStage {
+pub enum BackupFailureStage {
     Snapshot,
     Manifest,
 }
 
-async fn record_backup_failure(
-    controllers: &OperationControllers,
-    operation_id: &OperationId,
-    stage: BackupFailureStage,
-    error: RecordBackupEventError,
-) {
-    let Ok(message) = FailureMessage::try_new(format!("backup operation update failed: {error:?}"))
-    else {
-        return;
-    };
-    let failure = match stage {
-        BackupFailureStage::Snapshot => BackupOperationFailure::SnapshotFailed { message },
-        BackupFailureStage::Manifest => BackupOperationFailure::ManifestWriteFailed { message },
-    };
-    let _ = controllers
-        .repository()
-        .record_backup_transition(operation_id, BackupTransition::Failed { failure })
-        .await;
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct BackupTaskRegistry {
-    handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-}
-
-impl BackupTaskRegistry {
-    pub fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
-        let mut handles = self
-            .handles
-            .lock()
-            .expect("backup task registry lock is not poisoned");
-        handles.retain(|handle| !handle.is_finished());
-        handles.push(tokio::spawn(future));
-    }
-
-    pub fn abort_all(&self) {
-        let mut handles = self
-            .handles
-            .lock()
-            .expect("backup task registry lock is not poisoned");
-        for handle in handles.drain(..) {
-            handle.abort();
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum BackupExecutionError {
-    RenewLease(OperationStatusStoreError),
-    NoCurrentLease {
-        operation_id: OperationId,
-        expected_owner: OperationOwnerId,
-    },
-    LeaseOperationMismatch {
-        operation_id: OperationId,
-        lease: OperationOwnerLease,
-    },
-    LeaseNotHeld {
-        operation_id: OperationId,
-        lease: OperationOwnerLease,
-        expected_owner: OperationOwnerId,
-    },
+    Lease(OwnerLeaseError),
     ReadStatus(OperationStatusReadError),
     MissingStatus {
         operation_id: OperationId,
@@ -826,76 +372,67 @@ pub enum BackupExecutionError {
     WrongOperationKind {
         operation_id: OperationId,
     },
-    SnapshotControlPlane,
+    SnapshotControlPlane(BackupSnapshotError),
     EncodeSnapshot {
         message: String,
     },
-    WriteArtifact,
-    RecordTransition,
+    WriteArtifact(BackupObjectStoreError),
+    RecordTransition {
+        stage: BackupFailureStage,
+        error: RecordBackupEventError,
+    },
 }
 
 fn backup_execution_failure(error: &BackupExecutionError) -> BackupOperationFailure {
-    let Ok(message) = FailureMessage::try_new(format!("backup execution failed: {error}")) else {
-        return BackupOperationFailure::SnapshotFailed {
-            message: FailureMessage::try_new("backup execution failed")
-                .expect("static failure message is valid"),
-        };
-    };
-
     match error {
-        BackupExecutionError::EncodeSnapshot { .. }
-        | BackupExecutionError::WriteArtifact
-        | BackupExecutionError::RecordTransition => {
-            BackupOperationFailure::ManifestWriteFailed { message }
+        BackupExecutionError::SnapshotControlPlane(source) => {
+            BackupOperationFailure::SnapshotFailed {
+                message: backup_failure_message(format!("control-plane snapshot failed: {source}")),
+            }
         }
-        BackupExecutionError::RenewLease(_)
-        | BackupExecutionError::NoCurrentLease { .. }
-        | BackupExecutionError::LeaseOperationMismatch { .. }
-        | BackupExecutionError::LeaseNotHeld { .. }
+        BackupExecutionError::EncodeSnapshot { message } => {
+            BackupOperationFailure::ManifestWriteFailed {
+                message: backup_failure_message(format!(
+                    "backup artifact encode failed: {message}"
+                )),
+            }
+        }
+        BackupExecutionError::WriteArtifact(source) => {
+            BackupOperationFailure::ManifestWriteFailed {
+                message: backup_failure_message(format!(
+                    "backup artifact write failed: {source:?}"
+                )),
+            }
+        }
+        BackupExecutionError::RecordTransition { stage, error } => {
+            let message =
+                backup_failure_message(format!("backup operation update failed: {error:?}"));
+            match stage {
+                BackupFailureStage::Snapshot => BackupOperationFailure::SnapshotFailed { message },
+                BackupFailureStage::Manifest => {
+                    BackupOperationFailure::ManifestWriteFailed { message }
+                }
+            }
+        }
+        BackupExecutionError::Lease(_)
         | BackupExecutionError::ReadStatus(_)
         | BackupExecutionError::MissingStatus { .. }
-        | BackupExecutionError::WrongOperationKind { .. }
-        | BackupExecutionError::SnapshotControlPlane => {
-            BackupOperationFailure::SnapshotFailed { message }
+        | BackupExecutionError::WrongOperationKind { .. } => {
+            BackupOperationFailure::SnapshotFailed {
+                message: backup_failure_message(format!("backup execution failed: {error}")),
+            }
         }
     }
+}
+
+fn backup_failure_message(message: String) -> FailureMessage {
+    FailureMessage::try_new(message).expect("generated backup failure message is non-empty")
 }
 
 impl fmt::Display for BackupExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RenewLease(error) => {
-                write!(formatter, "owner lease could not be renewed: {error:?}")
-            }
-            Self::NoCurrentLease {
-                operation_id,
-                expected_owner,
-            } => write!(
-                formatter,
-                "operation {} has no current owner lease for {}",
-                operation_id.as_str(),
-                expected_owner.as_str()
-            ),
-            Self::LeaseOperationMismatch {
-                operation_id,
-                lease,
-            } => write!(
-                formatter,
-                "lease operation {} did not match backup operation {}",
-                lease.operation_id.as_str(),
-                operation_id.as_str()
-            ),
-            Self::LeaseNotHeld {
-                operation_id,
-                lease,
-                expected_owner,
-            } => write!(
-                formatter,
-                "operation {} lease is held by {}, not {}",
-                operation_id.as_str(),
-                lease.owner_id.as_str(),
-                expected_owner.as_str()
-            ),
+            Self::Lease(error) => write!(formatter, "{error}"),
             Self::ReadStatus(error) => {
                 write!(formatter, "backup status could not be read: {error:?}")
             }
@@ -911,77 +448,27 @@ impl fmt::Display for BackupExecutionError {
                 "operation {} is not a backup operation",
                 operation_id.as_str()
             ),
-            Self::SnapshotControlPlane => formatter.write_str("control-plane snapshot failed"),
+            Self::SnapshotControlPlane(source) => {
+                write!(formatter, "control-plane snapshot failed: {source}")
+            }
             Self::EncodeSnapshot { message } => {
                 write!(
                     formatter,
                     "control-plane snapshot could not be encoded: {message}"
                 )
             }
-            Self::WriteArtifact => formatter.write_str("backup artifact could not be written"),
-            Self::RecordTransition => {
-                formatter.write_str("backup operation transition could not be recorded")
+            Self::WriteArtifact(source) => {
+                write!(
+                    formatter,
+                    "backup artifact could not be written: {source:?}"
+                )
+            }
+            Self::RecordTransition { stage: _, error } => {
+                write!(
+                    formatter,
+                    "backup operation transition could not be recorded: {error:?}"
+                )
             }
         }
     }
-}
-
-async fn record_backup_object_failure(
-    controllers: &OperationControllers,
-    operation_id: &OperationId,
-    error: BackupObjectStoreError,
-) {
-    let Ok(message) = FailureMessage::try_new(format!("backup artifact write failed: {error:?}"))
-    else {
-        return;
-    };
-    let _ = controllers
-        .repository()
-        .record_backup_transition(
-            operation_id,
-            BackupTransition::Failed {
-                failure: BackupOperationFailure::ManifestWriteFailed { message },
-            },
-        )
-        .await;
-}
-
-async fn record_backup_snapshot_failure(
-    controllers: &OperationControllers,
-    operation_id: &OperationId,
-    error: BackupSnapshotError,
-) {
-    let Ok(message) = FailureMessage::try_new(format!("control-plane snapshot failed: {error}"))
-    else {
-        return;
-    };
-    let _ = controllers
-        .repository()
-        .record_backup_transition(
-            operation_id,
-            BackupTransition::Failed {
-                failure: BackupOperationFailure::SnapshotFailed { message },
-            },
-        )
-        .await;
-}
-
-async fn record_backup_encode_failure(
-    controllers: &OperationControllers,
-    operation_id: &OperationId,
-    error: String,
-) {
-    let Ok(message) = FailureMessage::try_new(format!("backup artifact encode failed: {error}"))
-    else {
-        return;
-    };
-    let _ = controllers
-        .repository()
-        .record_backup_transition(
-            operation_id,
-            BackupTransition::Failed {
-                failure: BackupOperationFailure::ManifestWriteFailed { message },
-            },
-        )
-        .await;
 }

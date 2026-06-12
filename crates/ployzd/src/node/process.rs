@@ -1,13 +1,16 @@
 //! Runtime wiring for the node role.
 
 use crate::config::NodeProcessConfig;
-use crate::dataplane_runtime::HostWireGuardEbpfPreparer;
-use crate::docker::runner::LazyLocalDockerManagedContainerRunner;
+use crate::dataplane_runtime::{HostDataplaneConfig, HostWireGuardEbpfPreparer};
+use crate::docker::runner::DockerManagedContainerRunner;
 use crate::node::runner::{
     ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError, NodeLogReader,
 };
 use crate::node::service::{NodeServiceRuntimeError, start_node_runtime_service};
 use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::process_support::{
+    BackoffSchedule, LazyHandle, RecordedAttempt, record_attempt, shutdown_signal,
+};
 use ployz_core::ids::NodeId;
 use ployz_core::node::{
     ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
@@ -58,17 +61,17 @@ pub async fn start_node_process_runtime(
     let client = connect_authenticated(&connect, NODE_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(NodeProcessRuntimeError::ConnectNats)?;
-    let runner = LazyLocalDockerManagedContainerRunner::new(
-        config.dataplane_endpoint_subnet.clone(),
-        config.dataplane_bridge_ifname.clone(),
+    let runner = DockerManagedContainerRunner::lazy_local_defaults(
+        config.dataplane.endpoint_subnet.clone(),
+        config.dataplane.bridge_ifname.clone(),
     );
-    let preparer = HostWireGuardEbpfPreparer::new(
+    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
         config.node_id.clone(),
-        config.ebpf_bytecode_path.clone(),
-        config.ebpf_ctl_path.clone(),
-        config.dataplane_bridge_ifname.clone(),
-        config.dataplane_wg_ifname.clone(),
-    );
+        config.artifacts.ebpf_bytecode_path.clone(),
+        config.artifacts.ebpf_ctl_path.clone(),
+        config.dataplane.bridge_ifname.clone(),
+        config.dataplane.wg_ifname.clone(),
+    ));
 
     start_node_process_runtime_with_ports(
         client,
@@ -193,34 +196,39 @@ fn record_observer_attempt(
     let mut health = health
         .lock()
         .expect("node observer health lock is not poisoned");
-    match attempt {
-        Ok(()) => {
-            health.last_attempt = Some(NodeObserverAttempt::Succeeded);
-            health.consecutive_failures = 0;
-            interval
-        }
-        Err(error) => {
-            health.last_attempt = Some(NodeObserverAttempt::Failed {
-                message: error.to_string(),
-            });
-            health.consecutive_failures += 1;
-            current_backoff
-                .saturating_mul(2)
-                .min(Duration::from_secs(30))
-        }
-    }
+    let NodeObserverHealth {
+        last_attempt,
+        consecutive_failures,
+    } = &mut *health;
+    let recorded = match attempt {
+        Ok(()) => RecordedAttempt::Healthy(NodeObserverAttempt::Succeeded),
+        Err(error) => RecordedAttempt::Failed(NodeObserverAttempt::Failed {
+            message: error.to_string(),
+        }),
+    };
+
+    record_attempt(
+        last_attempt,
+        consecutive_failures,
+        recorded,
+        BackoffSchedule {
+            interval,
+            cap: Duration::from_secs(30),
+        },
+        current_backoff,
+    )
 }
 
 struct NodeObservationPublisher {
     client: NatsClient,
-    observations: Option<AsyncNatsObservationStore>,
+    observations: LazyHandle<AsyncNatsObservationStore>,
 }
 
 impl NodeObservationPublisher {
     fn new(client: NatsClient) -> Self {
         Self {
             client,
-            observations: None,
+            observations: LazyHandle::new(),
         }
     }
 
@@ -248,28 +256,19 @@ impl NodeObservationPublisher {
     where
         R: NodeContainerRunner,
     {
-        if self.observations.is_none() {
-            let jetstream = async_nats::jetstream::new(self.client.clone());
-            self.observations = Some(
-                AsyncNatsObservationStore::from_jetstream(&jetstream)
-                    .await
-                    .map_err(NodeProcessRuntimeError::OpenObservations)?,
-            );
-        }
-
-        publish_node_observation_snapshot(
-            node_id,
-            runner,
-            self.observations
-                .as_ref()
-                .expect("observation store is opened before publish"),
-        )
-        .await?;
-
+        let client = &self.client;
         let observations = self
             .observations
-            .as_ref()
-            .expect("observation store is opened before publish");
+            .get_or_open(async || {
+                let jetstream = async_nats::jetstream::new(client.clone());
+                AsyncNatsObservationStore::from_jetstream(&jetstream)
+                    .await
+                    .map_err(NodeProcessRuntimeError::OpenObservations)
+            })
+            .await?;
+
+        publish_node_observation_snapshot(node_id, runner, observations).await?;
+
         match public_ip {
             Some(public_ip) => {
                 observations
@@ -333,17 +332,13 @@ pub async fn run_node_until_shutdown(
     config: &NodeProcessConfig,
 ) -> Result<(), NodeProcessRuntimeError> {
     let runtime = start_node_process_runtime(config).await?;
-    wait_for_shutdown_signal()
+    shutdown_signal()
         .await
         .map_err(NodeProcessRuntimeError::ShutdownSignal)?;
     runtime
         .shutdown()
         .await
         .map_err(NodeProcessRuntimeError::ShutdownNodeService)
-}
-
-async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
-    tokio::signal::ctrl_c().await
 }
 
 #[derive(Debug)]

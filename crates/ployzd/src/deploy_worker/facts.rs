@@ -6,10 +6,8 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NodeId, ServiceId};
 use ployz_core::node::NodeContainerObservationSnapshot;
 use ployz_core::state::NodePublicIpObservation;
-use ployz_nats::core_state::{
-    ActiveMachineReadError, ActiveRouteStoreError, AsyncNatsCoreStateStore, CoreStateStoreError,
-};
-use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
+use ployz_nats::core_state::AsyncNatsCoreStateStore;
+use ployz_nats::observations::AsyncNatsObservationStore;
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -46,14 +44,14 @@ pub async fn load_deploy_execution_facts_from_nats(
         .await
         .map_err(|source| DeployFactLoadError::ActiveServiceRead {
             service_id: request.service_id.clone(),
-            failure: active_service_read_failure(source),
+            message: source.to_string(),
         })?;
     let active_route =
         match &request.route {
             Some(route) => Some(core_state.active_route(&route.target).await.map_err(
                 |source| DeployFactLoadError::ActiveRouteRead {
                     route: route.target.clone(),
-                    failure: active_route_read_failure(source),
+                    message: source.to_string(),
                 },
             )?),
             None => None,
@@ -101,7 +99,7 @@ async fn load_active_machine_node_scope(
 ) -> Result<DeployExecutionNodeScope, DeployFactLoadError> {
     let machines = core_state.active_machines().await.map_err(|source| {
         DeployFactLoadError::ActiveMachineRead {
-            failure: active_machine_read_failure(source),
+            message: source.to_string(),
         }
     })?;
     if machines.is_empty() {
@@ -128,7 +126,7 @@ async fn load_node_snapshots(
                 .await
                 .map_err(|source| DeployFactLoadError::NodeObservationRead {
                     node_id,
-                    failure: observation_read_failure(source),
+                    message: source.to_string(),
                 })
         })
         .buffer_unordered(MAX_CONCURRENT_OBSERVATION_READS);
@@ -152,7 +150,7 @@ async fn load_wireguard_peer_endpoints(
         .node_public_ips()
         .await
         .map_err(|source| DeployFactLoadError::NodePublicIpObservationRead {
-            failure: observation_read_failure(source),
+            message: source.to_string(),
         })?
         .into_iter()
         .filter(|observation| requested.contains(&observation.node_id))
@@ -197,239 +195,31 @@ fn sorted_unique_nodes<'a>(nodes: impl IntoIterator<Item = &'a NodeId>) -> Vec<N
         .collect()
 }
 
+/// A current-state read failed before deploy execution started. Each variant
+/// carries the rendered store-error message as failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployFactLoadError {
     ActiveServiceRead {
         service_id: ServiceId,
-        failure: ActiveServiceReadFailure,
+        message: String,
     },
     ActiveRouteRead {
         route: ployz_core::ops::RouteTarget,
-        failure: ActiveRouteReadFailure,
+        message: String,
     },
     ActiveMachineRead {
-        failure: ActiveMachineReadFailure,
+        message: String,
     },
     NodeObservationRead {
         node_id: NodeId,
-        failure: ObservationReadFailure,
+        message: String,
     },
     NodePublicIpObservationRead {
-        failure: ObservationReadFailure,
+        message: String,
     },
     MissingNodePublicIpObservation {
         node_id: NodeId,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveServiceReadFailure {
-    OpenBucket {
-        bucket: &'static str,
-        message: String,
-    },
-    Decode {
-        message: String,
-    },
-    Get {
-        key: String,
-        message: String,
-    },
-    CorruptState {
-        key: String,
-        expected_service_id: ServiceId,
-        actual_service_id: ServiceId,
-    },
-    CorruptKey {
-        key: String,
-        actual_key: String,
-    },
-    Timeout {
-        operation: &'static str,
-    },
-    UnexpectedWriteFailure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveRouteReadFailure {
-    Decode { message: String },
-    ListKeys { message: String },
-    Watch { message: String },
-    Get { key: String, message: String },
-    CorruptState { key: String, message: String },
-    Timeout { operation: &'static str },
-    UnexpectedWriteFailure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ObservationReadFailure {
-    OpenBucket {
-        bucket: &'static str,
-        message: String,
-    },
-    Decode {
-        message: String,
-    },
-    ListKeys {
-        message: String,
-    },
-    Watch {
-        message: String,
-    },
-    Get {
-        key: String,
-        message: String,
-    },
-    CorruptSnapshotKey {
-        key: String,
-        actual_key: String,
-    },
-    Timeout {
-        operation: &'static str,
-    },
-    UnexpectedWriteFailure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActiveMachineReadFailure {
-    Decode {
-        message: String,
-    },
-    ListKeys {
-        message: String,
-    },
-    Get {
-        key: String,
-        message: String,
-    },
-    CorruptKey {
-        key: String,
-        actual_key: String,
-    },
-    CorruptState {
-        key: String,
-        expected_node_id: NodeId,
-    },
-    Timeout {
-        operation: &'static str,
-    },
-}
-
-fn active_machine_read_failure(source: ActiveMachineReadError) -> ActiveMachineReadFailure {
-    match source {
-        ActiveMachineReadError::Decode(error) => ActiveMachineReadFailure::Decode {
-            message: error.to_string(),
-        },
-        ActiveMachineReadError::Get { key, message } => {
-            ActiveMachineReadFailure::Get { key, message }
-        }
-        ActiveMachineReadError::ListKeys { message } => {
-            ActiveMachineReadFailure::ListKeys { message }
-        }
-        ActiveMachineReadError::CorruptActiveMachineState {
-            key,
-            expected_node_id,
-        } => ActiveMachineReadFailure::CorruptState {
-            key,
-            expected_node_id,
-        },
-        ActiveMachineReadError::CorruptKey { key, actual_key } => {
-            ActiveMachineReadFailure::CorruptKey { key, actual_key }
-        }
-        ActiveMachineReadError::Timeout { operation } => {
-            ActiveMachineReadFailure::Timeout { operation }
-        }
-    }
-}
-
-fn active_route_read_failure(source: ActiveRouteStoreError) -> ActiveRouteReadFailure {
-    match source {
-        ActiveRouteStoreError::Decode(error) => ActiveRouteReadFailure::Decode {
-            message: error.to_string(),
-        },
-        ActiveRouteStoreError::ListKeys { message } => ActiveRouteReadFailure::ListKeys { message },
-        ActiveRouteStoreError::Watch { message } => ActiveRouteReadFailure::Watch { message },
-        ActiveRouteStoreError::Get { key, message } => ActiveRouteReadFailure::Get { key, message },
-        ActiveRouteStoreError::CorruptActiveRouteState {
-            key,
-            expected_target,
-            actual_target,
-        } => ActiveRouteReadFailure::CorruptState {
-            key,
-            message: format!(
-                "active route state belongs to {actual_target:?}, not {expected_target:?}"
-            ),
-        },
-        ActiveRouteStoreError::CorruptKey { key, actual_key } => {
-            ActiveRouteReadFailure::CorruptState {
-                key,
-                message: format!("active route key does not match encoded target {actual_key}"),
-            }
-        }
-        ActiveRouteStoreError::Timeout { operation } => {
-            ActiveRouteReadFailure::Timeout { operation }
-        }
-        ActiveRouteStoreError::Encode(_) | ActiveRouteStoreError::CasConflict { .. } => {
-            ActiveRouteReadFailure::UnexpectedWriteFailure
-        }
-    }
-}
-
-fn active_service_read_failure(source: CoreStateStoreError) -> ActiveServiceReadFailure {
-    match source {
-        CoreStateStoreError::OpenBucket { bucket, message } => {
-            ActiveServiceReadFailure::OpenBucket { bucket, message }
-        }
-        CoreStateStoreError::Decode(error) => ActiveServiceReadFailure::Decode {
-            message: error.to_string(),
-        },
-        CoreStateStoreError::Get { key, message } => ActiveServiceReadFailure::Get { key, message },
-        CoreStateStoreError::ListKeys { message } => ActiveServiceReadFailure::Get {
-            key: "services.*".to_owned(),
-            message,
-        },
-        CoreStateStoreError::CorruptActiveServiceState {
-            key,
-            expected_service_id,
-            actual_service_id,
-        } => ActiveServiceReadFailure::CorruptState {
-            key,
-            expected_service_id,
-            actual_service_id,
-        },
-        CoreStateStoreError::CorruptKey { key, actual_key } => {
-            ActiveServiceReadFailure::CorruptKey { key, actual_key }
-        }
-        CoreStateStoreError::Timeout { operation } => {
-            ActiveServiceReadFailure::Timeout { operation }
-        }
-        CoreStateStoreError::Encode(_) | CoreStateStoreError::CasConflict { .. } => {
-            ActiveServiceReadFailure::UnexpectedWriteFailure
-        }
-    }
-}
-
-fn observation_read_failure(source: ObservationStoreError) -> ObservationReadFailure {
-    match source {
-        ObservationStoreError::OpenBucket { bucket, message } => {
-            ObservationReadFailure::OpenBucket { bucket, message }
-        }
-        ObservationStoreError::Decode(error) => ObservationReadFailure::Decode {
-            message: error.to_string(),
-        },
-        ObservationStoreError::ListKeys { message } => ObservationReadFailure::ListKeys { message },
-        ObservationStoreError::Watch { message } => ObservationReadFailure::Watch { message },
-        ObservationStoreError::Get { key, message } => ObservationReadFailure::Get { key, message },
-        ObservationStoreError::CorruptKey { key, actual_key } => {
-            ObservationReadFailure::CorruptSnapshotKey { key, actual_key }
-        }
-        ObservationStoreError::Timeout { operation } => {
-            ObservationReadFailure::Timeout { operation }
-        }
-        ObservationStoreError::Encode(_)
-        | ObservationStoreError::Put { .. }
-        | ObservationStoreError::Delete { .. } => ObservationReadFailure::UnexpectedWriteFailure,
-    }
 }
 
 impl fmt::Display for DeployFactLoadError {
@@ -437,31 +227,31 @@ impl fmt::Display for DeployFactLoadError {
         match self {
             Self::ActiveServiceRead {
                 service_id,
-                failure,
+                message,
             } => write!(
                 formatter,
                 "active service state for {} could not be read: {}",
                 service_id.as_str(),
-                failure
+                message
             ),
-            Self::ActiveRouteRead { route, failure } => write!(
+            Self::ActiveRouteRead { route, message } => write!(
                 formatter,
                 "active route state for {:?} could not be read: {}",
-                route, failure
+                route, message
             ),
-            Self::ActiveMachineRead { failure } => {
-                write!(formatter, "active machines could not be read: {failure}")
+            Self::ActiveMachineRead { message } => {
+                write!(formatter, "active machines could not be read: {message}")
             }
-            Self::NodeObservationRead { node_id, failure } => write!(
+            Self::NodeObservationRead { node_id, message } => write!(
                 formatter,
                 "node observations for {} could not be read: {}",
                 node_id.as_str(),
-                failure
+                message
             ),
-            Self::NodePublicIpObservationRead { failure } => {
+            Self::NodePublicIpObservationRead { message } => {
                 write!(
                     formatter,
-                    "node public ip observations could not be read: {failure}"
+                    "node public ip observations could not be read: {message}"
                 )
             }
             Self::MissingNodePublicIpObservation { node_id } => write!(
@@ -469,106 +259,6 @@ impl fmt::Display for DeployFactLoadError {
                 "node public ip observation for {} is missing",
                 node_id.as_str()
             ),
-        }
-    }
-}
-
-impl fmt::Display for ActiveServiceReadFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OpenBucket { bucket, message } => {
-                write!(formatter, "open bucket {bucket}: {message}")
-            }
-            Self::Decode { message } => {
-                write!(formatter, "decode active service state: {message}")
-            }
-            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
-            Self::CorruptState {
-                key,
-                expected_service_id,
-                actual_service_id,
-            } => write!(
-                formatter,
-                "state at {} belongs to {}, not {}",
-                key,
-                actual_service_id.as_str(),
-                expected_service_id.as_str()
-            ),
-            Self::CorruptKey { key, actual_key } => write!(
-                formatter,
-                "state key {key} does not match canonical key {actual_key}"
-            ),
-            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
-            Self::UnexpectedWriteFailure => {
-                formatter.write_str("unexpected write-path failure during read")
-            }
-        }
-    }
-}
-
-impl fmt::Display for ActiveMachineReadFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decode { message } => write!(formatter, "decode active machine state: {message}"),
-            Self::ListKeys { message } => write!(formatter, "list active machine keys: {message}"),
-            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
-            Self::CorruptKey { key, actual_key } => write!(
-                formatter,
-                "state key {key} does not match canonical key {actual_key}"
-            ),
-            Self::CorruptState {
-                key,
-                expected_node_id,
-            } => write!(
-                formatter,
-                "state at {} does not belong to {}",
-                key,
-                expected_node_id.as_str()
-            ),
-            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
-        }
-    }
-}
-
-impl fmt::Display for ActiveRouteReadFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decode { message } => write!(formatter, "decode active route state: {message}"),
-            Self::ListKeys { message } => write!(formatter, "list active route keys: {message}"),
-            Self::Watch { message } => write!(formatter, "watch active route keys: {message}"),
-            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
-            Self::CorruptState { key, message } => {
-                write!(formatter, "corrupt route state at {key}: {message}")
-            }
-            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
-            Self::UnexpectedWriteFailure => {
-                formatter.write_str("unexpected write-path failure during read")
-            }
-        }
-    }
-}
-
-impl fmt::Display for ObservationReadFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OpenBucket { bucket, message } => {
-                write!(formatter, "open bucket {bucket}: {message}")
-            }
-            Self::Decode { message } => {
-                write!(formatter, "decode observation snapshot: {message}")
-            }
-            Self::ListKeys { message } => write!(formatter, "list observation keys: {message}"),
-            Self::Watch { message } => write!(formatter, "watch observation keys: {message}"),
-            Self::Get { key, message } => write!(formatter, "get {key}: {message}"),
-            Self::CorruptSnapshotKey { key, actual_key } => write!(
-                formatter,
-                "snapshot key {} does not match decoded snapshot key {}",
-                key, actual_key
-            ),
-            Self::Timeout { operation } => write!(formatter, "{operation} timed out"),
-            Self::UnexpectedWriteFailure => {
-                formatter.write_str("unexpected write-path failure during read")
-            }
         }
     }
 }

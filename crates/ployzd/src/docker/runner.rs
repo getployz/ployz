@@ -6,6 +6,7 @@ use crate::node::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
 };
+use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryNetworkSettings,
@@ -15,7 +16,6 @@ use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectNetworkOptions, ListContainersOptionsBuilder,
     LogsOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
-use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::node::ContainerEndpoint;
@@ -23,6 +23,7 @@ use ployz_core::ops::RoutePort;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::Arc;
 
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
@@ -30,25 +31,18 @@ const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
-    docker: Docker,
+    docker: DockerHandle,
     endpoint_network_subnet: String,
     endpoint_bridge_ifname: String,
 }
 
+/// How the runner reaches the Docker daemon: an already-built client, or a
+/// client built from local defaults on first use so the node runtime can
+/// start before Docker is reachable.
 #[derive(Debug, Clone)]
-pub struct LazyLocalDockerManagedContainerRunner {
-    endpoint_network_subnet: String,
-    endpoint_bridge_ifname: String,
-}
-
-impl LazyLocalDockerManagedContainerRunner {
-    #[must_use]
-    pub fn new(endpoint_network_subnet: String, endpoint_bridge_ifname: String) -> Self {
-        Self {
-            endpoint_network_subnet,
-            endpoint_bridge_ifname,
-        }
-    }
+enum DockerHandle {
+    Connected(Docker),
+    LazyLocalDefaults(Arc<tokio::sync::OnceCell<Docker>>),
 }
 
 impl DockerManagedContainerRunner {
@@ -56,151 +50,56 @@ impl DockerManagedContainerRunner {
         endpoint_network_subnet: impl Into<String>,
         endpoint_bridge_ifname: impl Into<String>,
     ) -> Result<Self, DockerManagedContainerRunnerConnectError> {
-        let docker = Docker::connect_with_local_defaults().map_err(|source| {
-            DockerManagedContainerRunnerConnectError {
-                message: source.to_string(),
-            }
-        })?;
+        let docker = connect_local_defaults()?;
         Ok(Self {
-            docker,
-            endpoint_network_subnet: endpoint_network_subnet.into(),
-            endpoint_bridge_ifname: endpoint_bridge_ifname.into(),
-        })
-    }
-
-    pub fn socket(
-        socket_path: impl AsRef<str>,
-        endpoint_network_subnet: impl Into<String>,
-        endpoint_bridge_ifname: impl Into<String>,
-    ) -> Result<Self, DockerManagedContainerRunnerConnectError> {
-        let docker = Docker::connect_with_socket(socket_path.as_ref(), 120, API_DEFAULT_VERSION)
-            .map_err(|source| DockerManagedContainerRunnerConnectError {
-                message: source.to_string(),
-            })?;
-        Ok(Self {
-            docker,
+            docker: DockerHandle::Connected(docker),
             endpoint_network_subnet: endpoint_network_subnet.into(),
             endpoint_bridge_ifname: endpoint_bridge_ifname.into(),
         })
     }
 
     #[must_use]
-    pub fn new(
-        docker: Docker,
-        endpoint_network_subnet: impl Into<String>,
-        endpoint_bridge_ifname: impl Into<String>,
+    pub fn lazy_local_defaults(
+        endpoint_network_subnet: String,
+        endpoint_bridge_ifname: String,
     ) -> Self {
         Self {
-            docker,
-            endpoint_network_subnet: endpoint_network_subnet.into(),
-            endpoint_bridge_ifname: endpoint_bridge_ifname.into(),
+            docker: DockerHandle::LazyLocalDefaults(Arc::new(tokio::sync::OnceCell::new())),
+            endpoint_network_subnet,
+            endpoint_bridge_ifname,
+        }
+    }
+
+    async fn docker(&self) -> Result<&Docker, DockerManagedContainerRunnerConnectError> {
+        match &self.docker {
+            DockerHandle::Connected(docker) => Ok(docker),
+            DockerHandle::LazyLocalDefaults(cell) => {
+                cell.get_or_try_init(|| async { connect_local_defaults() })
+                    .await
+            }
         }
     }
 }
 
-impl NodeContainerRunner for LazyLocalDockerManagedContainerRunner {
-    async fn existing_managed_containers(
-        &self,
-    ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
-        let runner = connect_local_docker_for_list()?;
-        runner.existing_managed_containers().await
-    }
-
-    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
-        let runner = connect_local_docker_for_create(
-            self.endpoint_network_subnet.clone(),
-            self.endpoint_bridge_ifname.clone(),
-        )?;
-        runner.ensure_endpoint_network().await
-    }
-
-    async fn create_managed_container(
-        &self,
-        command: CreateManagedContainer,
-    ) -> Result<ContainerId, NodeContainerRunnerError> {
-        let runner = connect_local_docker_for_create(
-            self.endpoint_network_subnet.clone(),
-            self.endpoint_bridge_ifname.clone(),
-        )?;
-        runner.create_managed_container(command).await
-    }
-
-    async fn start_managed_container(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<(), NodeContainerRunnerError> {
-        let runner = DockerManagedContainerRunner::local_defaults(
-            self.endpoint_network_subnet.clone(),
-            self.endpoint_bridge_ifname.clone(),
-        )
-        .map_err(|error| NodeContainerRunnerError::Start {
-            container_id: container_id.clone(),
-            message: error.to_string(),
-        })?;
-        runner.start_managed_container(container_id).await
-    }
-
-    async fn remove_managed_container(
-        &self,
-        container_id: &ContainerId,
-        expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
-        let runner = DockerManagedContainerRunner::local_defaults(
-            self.endpoint_network_subnet.clone(),
-            self.endpoint_bridge_ifname.clone(),
-        )
-        .map_err(|error| NodeContainerRunnerError::Remove {
-            container_id: container_id.clone(),
-            message: error.to_string(),
-        })?;
-        runner
-            .remove_managed_container(container_id, expected_identity)
-            .await
-    }
-
-    async fn stop_managed_container(
-        &self,
-        container_id: &ContainerId,
-        expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
-        let runner = DockerManagedContainerRunner::local_defaults(
-            self.endpoint_network_subnet.clone(),
-            self.endpoint_bridge_ifname.clone(),
-        )
-        .map_err(|error| NodeContainerRunnerError::Stop {
-            container_id: container_id.clone(),
-            message: error.to_string(),
-        })?;
-        runner
-            .stop_managed_container(container_id, expected_identity)
-            .await
-    }
-}
-
-impl NodeLogReader for LazyLocalDockerManagedContainerRunner {
-    async fn tail_container_logs(
-        &self,
-        container_id: &ContainerId,
-        tail_lines: Option<u16>,
-    ) -> Result<NodeLogTail, NodeLogReaderError> {
-        let runner = DockerManagedContainerRunner::local_defaults(
-            self.endpoint_network_subnet.clone(),
-            self.endpoint_bridge_ifname.clone(),
-        )
-        .map_err(|error| NodeLogReaderError::ReadFailed {
-            container_id: container_id.clone(),
-            message: error.to_string(),
-        })?;
-        runner.tail_container_logs(container_id, tail_lines).await
-    }
+fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnectError> {
+    Docker::connect_with_local_defaults().map_err(|source| {
+        DockerManagedContainerRunnerConnectError {
+            message: source.to_string(),
+        }
+    })
 }
 
 impl NodeContainerRunner for DockerManagedContainerRunner {
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
-        let summaries = self
-            .docker
+        let docker =
+            self.docker()
+                .await
+                .map_err(|error| NodeContainerRunnerError::ListExisting {
+                    message: error.to_string(),
+                })?;
+        let summaries = docker
             .list_containers(Some(managed_container_list_options()))
             .await
             .map_err(|error| NodeContainerRunnerError::ListExisting {
@@ -231,8 +130,13 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             self.ensure_endpoint_network_inner().await?;
         }
 
-        let response = self
-            .docker
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeContainerRunnerError::Create {
+                message: error.to_string(),
+            })?;
+        let response = docker
             .create_container(None, create_body(command))
             .await
             .map_err(|error| NodeContainerRunnerError::Create {
@@ -247,7 +151,14 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
     ) -> Result<(), NodeContainerRunnerError> {
-        self.docker
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeContainerRunnerError::Start {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        docker
             .start_container(container_id.as_str(), None)
             .await
             .map_err(|error| NodeContainerRunnerError::Start {
@@ -280,9 +191,15 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             });
         }
 
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeContainerRunnerError::Remove {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
         let options = RemoveContainerOptionsBuilder::new().force(true).build();
-        match self
-            .docker
+        match docker
             .remove_container(container_id.as_str(), Some(options))
             .await
         {
@@ -326,9 +243,15 @@ impl NodeContainerRunner for DockerManagedContainerRunner {
             return Ok(());
         }
 
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeContainerRunnerError::Stop {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
         let options = StopContainerOptionsBuilder::new().build();
-        match self
-            .docker
+        match docker
             .stop_container(container_id.as_str(), Some(options))
             .await
         {
@@ -348,9 +271,16 @@ impl NodeLogReader for DockerManagedContainerRunner {
         container_id: &ContainerId,
         tail_lines: Option<u16>,
     ) -> Result<NodeLogTail, NodeLogReaderError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeLogReaderError::ReadFailed {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
         let mut output = Vec::new();
         let mut truncated = false;
-        let mut stream = self.docker.logs(
+        let mut stream = docker.logs(
             container_id.as_str(),
             Some(logs_options(capped_tail_lines(tail_lines))),
         );
@@ -392,8 +322,14 @@ impl NodeLogReader for DockerManagedContainerRunner {
 
 impl DockerManagedContainerRunner {
     async fn pull_image(&self, image: &str) -> Result<(), NodeContainerRunnerError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeContainerRunnerError::Create {
+                message: error.to_string(),
+            })?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
-        let mut stream = self.docker.create_image(Some(options), None, None);
+        let mut stream = docker.create_image(Some(options), None, None);
 
         while let Some(result) = stream.next().await {
             result.map_err(|error| NodeContainerRunnerError::Create {
@@ -405,8 +341,13 @@ impl DockerManagedContainerRunner {
     }
 
     async fn ensure_endpoint_network_inner(&self) -> Result<(), NodeContainerRunnerError> {
-        if self
-            .docker
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| NodeContainerRunnerError::Create {
+                message: error.to_string(),
+            })?;
+        if docker
             .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
             .await
             .is_ok()
@@ -419,12 +360,11 @@ impl DockerManagedContainerRunner {
             &self.endpoint_bridge_ifname,
         );
 
-        match self.docker.create_network(request).await {
+        match docker.create_network(request).await {
             Ok(_) => Ok(()),
             Err(error) if is_network_already_exists(&error) => Ok(()),
             Err(error) => {
-                if self
-                    .docker
+                if docker
                     .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
                     .await
                     .is_ok()
@@ -460,25 +400,6 @@ fn is_container_missing(error: &BollardError) -> bool {
             ..
         }
     )
-}
-
-fn connect_local_docker_for_list() -> Result<DockerManagedContainerRunner, NodeContainerRunnerError>
-{
-    DockerManagedContainerRunner::local_defaults("10.42.1.0/24", "br-ployz").map_err(|error| {
-        NodeContainerRunnerError::ListExisting {
-            message: error.to_string(),
-        }
-    })
-}
-
-fn connect_local_docker_for_create(
-    endpoint_network_subnet: String,
-    endpoint_bridge_ifname: String,
-) -> Result<DockerManagedContainerRunner, NodeContainerRunnerError> {
-    DockerManagedContainerRunner::local_defaults(endpoint_network_subnet, endpoint_bridge_ifname)
-        .map_err(|error| NodeContainerRunnerError::Create {
-            message: error.to_string(),
-        })
 }
 
 fn docker_container_state(

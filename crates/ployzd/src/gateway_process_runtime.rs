@@ -8,6 +8,9 @@ use crate::gateway_http::{
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
 use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::process_support::{
+    BackoffSchedule, LazyHandle, RecordedAttempt, record_attempt, shutdown_signal,
+};
 use futures_util::StreamExt;
 use ployz_core::ids::NodeId;
 use ployz_core::ops::RoutePort;
@@ -227,14 +230,14 @@ pub enum GatewayStatusPublishFailure {
 
 struct GatewayProcessSource {
     client: NatsClient,
-    stores: Option<GatewayProcessStores>,
+    stores: LazyHandle<GatewayProcessStores>,
 }
 
 impl GatewayProcessSource {
     fn new(client: NatsClient) -> Self {
         Self {
             client,
-            stores: None,
+            stores: LazyHandle::new(),
         }
     }
 
@@ -282,14 +285,10 @@ impl GatewayProcessSource {
     }
 
     async fn stores(&mut self) -> Result<&GatewayProcessStores, GatewayProcessRuntimeError> {
-        if self.stores.is_none() {
-            self.stores = Some(open_gateway_process_stores(self.client.clone()).await?);
-        }
-
-        Ok(self
-            .stores
-            .as_ref()
-            .expect("gateway source stores are opened before refresh"))
+        let client = &self.client;
+        self.stores
+            .get_or_open(async || open_gateway_process_stores(client.clone()).await)
+            .await
     }
 }
 
@@ -482,26 +481,37 @@ fn record_gateway_attempt(
     current_backoff: Duration,
 ) -> Duration {
     let mut health = health.lock().expect("gateway health lock is not poisoned");
-    match attempt {
+    let GatewayProcessHealth {
+        last_attempt,
+        consecutive_failures,
+        ..
+    } = &mut *health;
+    let recorded = match attempt {
         Ok(tick) => {
             let attempt = gateway_attempt_from_tick(tick);
-            let is_current = matches!(attempt, GatewayProcessAttempt::Current { .. });
-            health.last_attempt = Some(attempt);
-            if is_current {
-                health.consecutive_failures = 0;
+            if matches!(attempt, GatewayProcessAttempt::Current { .. }) {
+                RecordedAttempt::Healthy(attempt)
             } else {
-                health.consecutive_failures += 1;
+                // Last-known-good serving counts as a failure streak but
+                // keeps the steady refresh interval.
+                RecordedAttempt::Degraded(attempt)
             }
-            interval
         }
-        Err(error) => {
-            health.last_attempt = Some(GatewayProcessAttempt::Failed {
-                message: error.to_string(),
-            });
-            health.consecutive_failures += 1;
-            next_gateway_backoff(current_backoff)
-        }
-    }
+        Err(error) => RecordedAttempt::Failed(GatewayProcessAttempt::Failed {
+            message: error.to_string(),
+        }),
+    };
+
+    record_attempt(
+        last_attempt,
+        consecutive_failures,
+        recorded,
+        BackoffSchedule {
+            interval,
+            cap: Duration::from_secs(30),
+        },
+        current_backoff,
+    )
 }
 
 fn gateway_attempt_from_tick(tick: GatewayRuntimeTick) -> GatewayProcessAttempt {
@@ -556,12 +566,6 @@ fn gateway_observation_from_attempt(
             route_count: 0,
         },
     }
-}
-
-fn next_gateway_backoff(current_backoff: Duration) -> Duration {
-    current_backoff
-        .saturating_mul(2)
-        .min(Duration::from_secs(30))
 }
 
 async fn serve_gateway_http(
@@ -654,15 +658,11 @@ pub async fn run_gateway_until_shutdown(
     config: &GatewayProcessConfig,
 ) -> Result<(), GatewayProcessRuntimeError> {
     let runtime = start_gateway_process_runtime(config).await?;
-    wait_for_shutdown_signal()
+    shutdown_signal()
         .await
         .map_err(GatewayProcessRuntimeError::ShutdownSignal)?;
     runtime.shutdown().await;
     Ok(())
-}
-
-async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
-    tokio::signal::ctrl_c().await
 }
 
 #[derive(Debug)]

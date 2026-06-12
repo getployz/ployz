@@ -25,7 +25,7 @@ pub(super) struct DeployExecutionFailure {
 }
 
 impl DeployExecutionFailure {
-    fn new(
+    pub(super) fn new(
         command: &DeployExecutionCommand,
         source: DeployExecutionError,
         deploy_containers: &[DeployContainer],
@@ -33,7 +33,7 @@ impl DeployExecutionFailure {
         Self::with_stop_targets(command, source, deploy_containers, deploy_containers)
     }
 
-    fn with_stop_targets(
+    pub(super) fn with_stop_targets(
         command: &DeployExecutionCommand,
         source: DeployExecutionError,
         deploy_containers: &[DeployContainer],
@@ -58,28 +58,6 @@ impl DeployExecutionFailure {
         }
         add_retained_artifacts(&mut self.operation_failure, artifacts);
     }
-}
-
-pub(super) fn failure(
-    command: &DeployExecutionCommand,
-    source: DeployExecutionError,
-    deploy_containers: &[DeployContainer],
-) -> DeployExecutionFailure {
-    DeployExecutionFailure::new(command, source, deploy_containers)
-}
-
-pub(super) fn failure_with_stop_targets(
-    command: &DeployExecutionCommand,
-    source: DeployExecutionError,
-    deploy_containers: &[DeployContainer],
-    retained_stop_targets: &[DeployContainer],
-) -> DeployExecutionFailure {
-    DeployExecutionFailure::with_stop_targets(
-        command,
-        source,
-        deploy_containers,
-        retained_stop_targets,
-    )
 }
 
 pub(super) async fn fail_deploy<R>(
