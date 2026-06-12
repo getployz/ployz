@@ -33,7 +33,9 @@ fn machine_add_prints_bootstrap_command_without_nats_credentials() {
     assert!(output.contains("node node_2"));
     assert!(output.contains("join-token join_once_123"));
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
-    assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64="));
+    assert!(output.contains(
+        " | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64="
+    ));
     assert!(output.contains(&format!(
         "PLOYZ_JOIN_NKEY_SEED='{}' sh -s -- ",
         TEST_JOIN_SEED
@@ -57,7 +59,9 @@ fn machine_add_prints_runtime_nats_url_from_accepted_response() {
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh'"));
     assert!(output.contains("join-token join_once_123"));
-    assert!(output.contains(" | PLOYZ_NATS_URL='nats://127.0.0.1:7423' PLOYZ_NATS_CA_B64="));
+    assert!(output.contains(
+        " | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7423' PLOYZ_NATS_CA_B64="
+    ));
     assert!(output.contains("--join-token 'join_once_123'"));
 }
 
@@ -94,6 +98,7 @@ fn machine_add_shell_quotes_join_material() {
     .render();
 
     assert!(output.contains("curl -fsSL -- 'https://get.ployz.sh/bootstrap?x='\\''quoted'\\'''"));
+    assert!(output.contains("PLOYZ_VERSION='0.1.0'"));
     assert!(output.contains("PLOYZ_NATS_URL='nats://127.0.0.1:7422'"));
     assert!(output.contains("--join-token 'join'\\''quoted'\\'''"));
 }

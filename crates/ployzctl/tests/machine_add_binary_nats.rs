@@ -101,7 +101,7 @@ async fn binary_machine_add_calls_nats_service() {
     assert_eq!(
         stdout(&output),
         format!(
-            "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh -s -- --join-token 'join_once_123'\n",
+            "operation op_machine\nnode node_2\njoin-token join_once_123\ninstall curl -fsSL -- 'https://get.ployz.sh' | PLOYZ_VERSION='0.1.0' PLOYZ_NATS_URL='nats://127.0.0.1:7422' PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh -s -- --join-token 'join_once_123'\n",
             shell_quote(&test_ca_b64()),
             shell_quote(server.server.join_seed().secret())
         )

@@ -43,16 +43,21 @@ use ployz_test_support::keeper::{
 use std::sync::OnceLock;
 
 #[test]
-fn bootstrap_script_file_installs_only_keeper() {
+fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     let script = fs::read_to_string(bootstrap_script_path()).expect("script is readable");
 
     assert!(script.contains("PLOYZ_KEEPER_URL"));
+    assert!(script.contains("PLOYZCTL_URL"));
+    assert!(script.contains("PLOYZ_VERSION"));
+    assert!(script.contains("PLOYZ_RELEASE_MANIFEST_URL"));
     assert!(script.contains("PLOYZ_NATS_URL"));
     assert!(script.contains("PLOYZ_JOIN_TOKEN"));
     assert!(script.contains("join-token"));
+    assert!(script.contains("installed $ployzctl_bin"));
     assert!(script.contains("\"$keeper_bin\" --join-token-file \"$join_token_file\""));
     assert!(script.contains("not both"));
     assert!(script.contains("--join-token <token>"));
+    assert!(script.contains("--version <version>"));
     assert!(script.contains("unknown ployz installer argument"));
     assert!(script.contains("install -d -m 0700"));
     assert!(script.contains("umask 077"));
@@ -67,6 +72,63 @@ fn bootstrap_script_file_installs_only_keeper() {
     assert!(!script.contains("ExecStart=${keeper_bin}${keeper_args}"));
     assert!(!script.contains("ployzd"));
     assert!(!script.contains("NATS_CREDS"));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_installs_ployzctl_by_default_from_manifest() {
+    let root = temp_dir("ployz-bootstrap-script-ployzctl");
+    let ployzctl_source = root.join("ployzctl-source");
+    let manifest = root.join("ployz-release-linux-amd64.env");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(&ployzctl_source, "#!/bin/sh\nexit 0\n")
+        .expect("fake ployzctl source can be written");
+    fs::write(
+        &manifest,
+        format!(
+            "PLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            ployzctl_source.display(),
+            KEEPER_DIGEST
+        ),
+    )
+    .expect("manifest can be written");
+    write_executable(&fake_bin.join("curl"), fake_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env(
+            "PLOYZ_RELEASE_MANIFEST_URL",
+            format!("file://{}", manifest.display()),
+        )
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(install_dir.join("ployzctl").exists());
+    assert!(!install_dir.join("ployz-keeper").exists());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&format!(
+        "installed {}",
+        install_dir.join("ployzctl").display()
+    )));
 }
 
 #[cfg(unix)]
@@ -88,7 +150,7 @@ fn bootstrap_script_runs_join_directly_and_does_not_start_noop_service() {
     .expect("fake keeper source can be written");
     write_executable(&fake_bin.join("curl"), fake_curl_script());
     write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
-    write_executable(&fake_bin.join("uname"), "#!/bin/sh\nprintf 'Linux\\n'\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
     write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
 
     let output = Command::new("sh")
@@ -107,6 +169,7 @@ fn bootstrap_script_runs_join_directly_and_does_not_start_noop_service() {
             format!("file://{}", keeper_source.display()),
         )
         .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_VERSION", "0.0.1-alpha.1")
         .env("PLOYZ_NATS_URL", "nats://127.0.0.1:4222")
         .env("PLOYZ_TEST_KEEPER_ARGS_LOG", &keeper_args_log)
         .env("PLOYZ_TEST_KEEPER_TOKEN_LOG", &keeper_token_log)
@@ -143,7 +206,7 @@ fn bootstrap_script_join_failure_is_not_masked_by_service_start() {
     fs::write(&keeper_source, "#!/bin/sh\nexit 42\n").expect("fake keeper source can be written");
     write_executable(&fake_bin.join("curl"), fake_curl_script());
     write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
-    write_executable(&fake_bin.join("uname"), "#!/bin/sh\nprintf 'Linux\\n'\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
     write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
 
     let output = Command::new("sh")
@@ -162,6 +225,7 @@ fn bootstrap_script_join_failure_is_not_masked_by_service_start() {
             format!("file://{}", keeper_source.display()),
         )
         .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_NATS_URL", "nats://127.0.0.1:4222")
         .output()
         .expect("bootstrap script can run");
 
@@ -1291,6 +1355,10 @@ fn write_executable(path: &std::path::Path, contents: &str) {
 
 fn fake_curl_script() -> &'static str {
     "#!/bin/sh\nurl=\ndest=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o)\n      dest=\"$2\"\n      shift 2\n      ;;\n    -*)\n      shift\n      ;;\n    *)\n      url=\"$1\"\n      shift\n      ;;\n  esac\ndone\ncase \"$url\" in\n  file://*) cp \"${url#file://}\" \"$dest\" ;;\n  *) exit 2 ;;\nesac\n"
+}
+
+fn fake_uname_script() -> &'static str {
+    "#!/bin/sh\ncase \"${1:-}\" in\n  -m) printf 'x86_64\\n' ;;\n  *) printf 'Linux\\n' ;;\nesac\n"
 }
 
 fn bootstrap_script_path() -> PathBuf {

@@ -75,7 +75,8 @@ impl MachineAddOutput {
             self.join_token.as_str(),
             shell_quote(self.bootstrap_url.as_str()),
             format_args!(
-                "PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh",
+                "PLOYZ_VERSION={} PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={} sh",
+                shell_quote(self.join_bundle.material.ployzd.version.as_str()),
                 shell_quote(self.runtime_nats_url().as_str()),
                 shell_quote(&self.trusted_ca_b64()),
                 shell_quote(self.join_seed.secret())
