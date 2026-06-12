@@ -7,7 +7,9 @@
 
 pub mod artifacts;
 pub mod cli;
+pub mod command;
 pub mod executor;
+pub mod fsx;
 pub mod join;
 pub mod join_executor;
 pub mod local;

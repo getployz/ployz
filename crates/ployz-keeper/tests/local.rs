@@ -7,9 +7,9 @@ use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
 use ployz_keeper::artifacts::{
-    ArtifactSource, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget,
-    NatsServerArtifactTarget, PloyzdArtifactTarget,
+    ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
 };
+use ployz_keeper::command::KeeperCommandRunner;
 use ployz_keeper::executor::{
     KeeperPlanFailure, KeeperPlanTerminal, KeeperStepEffects, KeeperStepEvent, KeeperStepRecorder,
     execute_keeper_plan,
@@ -21,7 +21,7 @@ use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
     execute_keeper_join,
 };
-use ployz_keeper::local::{KeeperCommandRunner, KeeperLocalConfig, KeeperLocalEffects};
+use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
@@ -885,7 +885,7 @@ fn edge_runtime_role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
 
 fn first_node_plan_with_ployzd(
     root: &Path,
-    ployzd: PloyzdArtifactTarget,
+    ployzd: ArtifactTarget,
 ) -> ployz_keeper::steps::KeeperStepPlan {
     let nats_source = root.join("nats-server-source");
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
@@ -904,8 +904,9 @@ fn first_node_plan_with_ployzd(
     )
 }
 
-fn remote_ployzd_artifact(url: &str, install_path: &Path) -> PloyzdArtifactTarget {
-    PloyzdArtifactTarget::new(
+fn remote_ployzd_artifact(url: &str, install_path: &Path) -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         version("0.1.0"),
         ArtifactSource::try_new(url).expect("valid remote source"),
         digest(PLOYZ_NEWLINE_SHA256),
@@ -914,8 +915,9 @@ fn remote_ployzd_artifact(url: &str, install_path: &Path) -> PloyzdArtifactTarge
     .expect("valid ployzd artifact")
 }
 
-fn ployzd_artifact(source: &Path, install_path: &Path) -> PloyzdArtifactTarget {
-    PloyzdArtifactTarget::new(
+fn ployzd_artifact(source: &Path, install_path: &Path) -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         version("0.1.0"),
         artifact_source(source),
         digest(PLOYZ_NEWLINE_SHA256),
@@ -924,8 +926,9 @@ fn ployzd_artifact(source: &Path, install_path: &Path) -> PloyzdArtifactTarget {
     .expect("valid ployzd artifact")
 }
 
-fn nats_server_artifact(source: &Path, install_path: &Path) -> NatsServerArtifactTarget {
-    NatsServerArtifactTarget::new(
+fn nats_server_artifact(source: &Path, install_path: &Path) -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::NatsServer,
         version("2.12.0"),
         artifact_source(source),
         digest(PLOYZ_NEWLINE_SHA256),
@@ -934,10 +937,11 @@ fn nats_server_artifact(source: &Path, install_path: &Path) -> NatsServerArtifac
     .expect("valid nats-server artifact")
 }
 
-fn ebpf_bytecode_artifact(root: &Path) -> EbpfBytecodeArtifactTarget {
+fn ebpf_bytecode_artifact(root: &Path) -> ArtifactTarget {
     let source = root.join("ployz-ebpf-tc-source");
     fs::write(&source, "ployz\n").expect("eBPF bytecode source can be written");
-    EbpfBytecodeArtifactTarget::new(
+    ArtifactTarget::new(
+        ArtifactKind::EbpfBytecode,
         version("0.1.0"),
         artifact_source(&source),
         digest(PLOYZ_NEWLINE_SHA256),
@@ -946,10 +950,11 @@ fn ebpf_bytecode_artifact(root: &Path) -> EbpfBytecodeArtifactTarget {
     .expect("valid eBPF bytecode artifact")
 }
 
-fn ebpf_ctl_artifact(root: &Path) -> EbpfCtlArtifactTarget {
+fn ebpf_ctl_artifact(root: &Path) -> ArtifactTarget {
     let source = root.join("ployz-ebpf-ctl-source");
     fs::write(&source, "ployz\n").expect("eBPF ctl source can be written");
-    EbpfCtlArtifactTarget::new(
+    ArtifactTarget::new(
+        ArtifactKind::EbpfCtl,
         version("0.1.0"),
         artifact_source(&source),
         digest(PLOYZ_NEWLINE_SHA256),

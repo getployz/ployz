@@ -6,18 +6,16 @@ use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::joined_node_process_set;
 use ployz_core::security::NatsPrincipal;
-use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, DataplaneArtifactTargets, EbpfBytecodeArtifactTarget,
-    EbpfCtlArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
-};
+use ployz_keeper::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use ployz_keeper::cli::{KeeperCommand, load_command};
+use ployz_keeper::command::SystemKeeperCommandRunner;
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::join::JOIN_MATERIAL_DIR;
 use ployz_keeper::join_executor::{
     KeeperJoinRedeemer, KeeperJoinReporter, KeeperJoinTokenConsumer, RedeemedKeeperJoin,
     execute_keeper_join,
 };
-use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects, SystemKeeperCommandRunner};
+use ployz_keeper::local::{KeeperLocalConfig, KeeperLocalEffects};
 use ployz_keeper::report::KeeperTextRecorder;
 use ployz_keeper::steps::{
     FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget, NonEmptyRoleSet,
@@ -390,41 +388,17 @@ fn keeper_join_target_with_public_ip(
         &redeemed.secret_delivery,
     )
     .map_err(|error| failure_message(&format!("invalid join material: {error:?}")))?;
-    let ployzd_artifact = PloyzdArtifactTarget::new(
-        ArtifactVersion::try_new(redeemed.join_bundle.material.ployzd.version.as_str())
-            .map_err(|error| failure_message(&format!("invalid ployzd version: {error}")))?,
-        ArtifactSource::try_new(redeemed.join_bundle.material.ployzd.source.as_str())
-            .map_err(|error| failure_message(&format!("invalid ployzd source: {error}")))?,
-        Sha256Digest::try_new(redeemed.join_bundle.material.ployzd.sha256.as_str())
-            .map_err(|error| failure_message(&format!("invalid ployzd digest: {error}")))?,
-        PathBuf::from(redeemed.join_bundle.material.ployzd.install_path.as_str()),
-    )
-    .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
-    let ebpf_bytecode_artifact = EbpfBytecodeArtifactTarget::new(
-        ArtifactVersion::try_new(redeemed.join_bundle.material.ebpf_bytecode.version.as_str())
-            .map_err(|error| failure_message(&format!("invalid eBPF bytecode version: {error}")))?,
-        ArtifactSource::try_new(redeemed.join_bundle.material.ebpf_bytecode.source.as_str())
-            .map_err(|error| failure_message(&format!("invalid eBPF bytecode source: {error}")))?,
-        Sha256Digest::try_new(redeemed.join_bundle.material.ebpf_bytecode.sha256.as_str())
-            .map_err(|error| failure_message(&format!("invalid eBPF bytecode digest: {error}")))?,
-        PathBuf::from(
-            redeemed
-                .join_bundle
-                .material
-                .ebpf_bytecode
-                .install_path
-                .as_str(),
-        ),
+    let ployzd_artifact =
+        artifact_target(ArtifactKind::Ployzd, &redeemed.join_bundle.material.ployzd)
+            .map_err(|error| failure_message(&format!("invalid ployzd install target: {error}")))?;
+    let ebpf_bytecode_artifact = artifact_target(
+        ArtifactKind::EbpfBytecode,
+        &redeemed.join_bundle.material.ebpf_bytecode,
     )
     .map_err(|error| failure_message(&format!("invalid eBPF bytecode install target: {error}")))?;
-    let ebpf_ctl_artifact = EbpfCtlArtifactTarget::new(
-        ArtifactVersion::try_new(redeemed.join_bundle.material.ebpf_ctl.version.as_str())
-            .map_err(|error| failure_message(&format!("invalid eBPF ctl version: {error}")))?,
-        ArtifactSource::try_new(redeemed.join_bundle.material.ebpf_ctl.source.as_str())
-            .map_err(|error| failure_message(&format!("invalid eBPF ctl source: {error}")))?,
-        Sha256Digest::try_new(redeemed.join_bundle.material.ebpf_ctl.sha256.as_str())
-            .map_err(|error| failure_message(&format!("invalid eBPF ctl digest: {error}")))?,
-        PathBuf::from(redeemed.join_bundle.material.ebpf_ctl.install_path.as_str()),
+    let ebpf_ctl_artifact = artifact_target(
+        ArtifactKind::EbpfCtl,
+        &redeemed.join_bundle.material.ebpf_ctl,
     )
     .map_err(|error| failure_message(&format!("invalid eBPF ctl install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(

@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::artifacts::PloyzdArtifactTarget;
+use crate::artifacts::ArtifactTarget;
 use ployz_core::roles::DaemonProcessRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub enum SupervisorUnitSpec {
     NatsServer(NatsServerUnitTarget),
     PloyzdRole {
         role: DaemonProcessRole,
-        artifact: PloyzdArtifactTarget,
+        artifact: ArtifactTarget,
         environment_file: PloyzdRoleEnvironmentFile,
     },
 }
@@ -177,7 +177,7 @@ pub struct PloyzdRoleUnit {
 impl PloyzdRoleUnit {
     pub fn new(
         role: DaemonProcessRole,
-        artifact: &PloyzdArtifactTarget,
+        artifact: &ArtifactTarget,
         environment_file: &PloyzdRoleEnvironmentFile,
     ) -> Result<Self, SupervisorUnitFileError> {
         let exec_start = render_exec_start(artifact.install_path(), role.argv())?;

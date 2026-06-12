@@ -2,10 +2,13 @@
 
 use sha2::{Digest, Sha256};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use ployz_core::install::InstallArtifactSpec;
+
+use crate::fsx::{FileMode, StagedFile, StagedFileError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
@@ -102,21 +105,24 @@ impl ArtifactSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PloyzdArtifactTarget {
+pub struct ArtifactTarget {
+    pub kind: ArtifactKind,
     pub version: ArtifactVersion,
     pub source: ArtifactSource,
     pub digest: Sha256Digest,
     install_path: PathBuf,
 }
 
-impl PloyzdArtifactTarget {
+impl ArtifactTarget {
     pub fn new(
+        kind: ArtifactKind,
         version: ArtifactVersion,
         source: ArtifactSource,
         digest: Sha256Digest,
         install_path: PathBuf,
     ) -> Result<Self, ArtifactTargetError> {
         Ok(Self {
+            kind,
             version,
             source,
             digest,
@@ -130,183 +136,34 @@ impl PloyzdArtifactTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsServerArtifactTarget {
-    pub version: ArtifactVersion,
-    pub source: ArtifactSource,
-    pub digest: Sha256Digest,
-    install_path: PathBuf,
-}
-
-impl NatsServerArtifactTarget {
-    pub fn new(
-        version: ArtifactVersion,
-        source: ArtifactSource,
-        digest: Sha256Digest,
-        install_path: PathBuf,
-    ) -> Result<Self, ArtifactTargetError> {
-        Ok(Self {
-            version,
-            source,
-            digest,
-            install_path: validate_install_path(install_path)?,
-        })
-    }
-
-    #[must_use]
-    pub fn install_path(&self) -> &Path {
-        &self.install_path
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EbpfBytecodeArtifactTarget {
-    pub version: ArtifactVersion,
-    pub source: ArtifactSource,
-    pub digest: Sha256Digest,
-    install_path: PathBuf,
-}
-
-impl EbpfBytecodeArtifactTarget {
-    pub fn new(
-        version: ArtifactVersion,
-        source: ArtifactSource,
-        digest: Sha256Digest,
-        install_path: PathBuf,
-    ) -> Result<Self, ArtifactTargetError> {
-        Ok(Self {
-            version,
-            source,
-            digest,
-            install_path: validate_install_path(install_path)?,
-        })
-    }
-
-    #[must_use]
-    pub fn install_path(&self) -> &Path {
-        &self.install_path
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EbpfCtlArtifactTarget {
-    pub version: ArtifactVersion,
-    pub source: ArtifactSource,
-    pub digest: Sha256Digest,
-    install_path: PathBuf,
-}
-
-impl EbpfCtlArtifactTarget {
-    pub fn new(
-        version: ArtifactVersion,
-        source: ArtifactSource,
-        digest: Sha256Digest,
-        install_path: PathBuf,
-    ) -> Result<Self, ArtifactTargetError> {
-        Ok(Self {
-            version,
-            source,
-            digest,
-            install_path: validate_install_path(install_path)?,
-        })
-    }
-
-    #[must_use]
-    pub fn install_path(&self) -> &Path {
-        &self.install_path
-    }
+/// Converts one wire-level install artifact spec into a validated keeper
+/// install target of the given kind.
+pub fn artifact_target(
+    kind: ArtifactKind,
+    spec: &InstallArtifactSpec,
+) -> Result<ArtifactTarget, ArtifactTargetError> {
+    ArtifactTarget::new(
+        kind,
+        ArtifactVersion::try_new(spec.version.as_str())?,
+        ArtifactSource::try_new(spec.source.as_str())?,
+        Sha256Digest::try_new(spec.sha256.as_str())?,
+        PathBuf::from(spec.install_path.as_str()),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataplaneArtifactTargets {
-    pub ebpf_bytecode: EbpfBytecodeArtifactTarget,
-    pub ebpf_ctl: EbpfCtlArtifactTarget,
+    pub ebpf_bytecode: ArtifactTarget,
+    pub ebpf_ctl: ArtifactTarget,
 }
 
 impl DataplaneArtifactTargets {
     #[must_use]
-    pub const fn new(
-        ebpf_bytecode: EbpfBytecodeArtifactTarget,
-        ebpf_ctl: EbpfCtlArtifactTarget,
-    ) -> Self {
+    pub const fn new(ebpf_bytecode: ArtifactTarget, ebpf_ctl: ArtifactTarget) -> Self {
         Self {
             ebpf_bytecode,
             ebpf_ctl,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ArtifactTarget {
-    EbpfBytecode(EbpfBytecodeArtifactTarget),
-    EbpfCtl(EbpfCtlArtifactTarget),
-    NatsServer(NatsServerArtifactTarget),
-    Ployzd(PloyzdArtifactTarget),
-}
-
-impl ArtifactTarget {
-    #[must_use]
-    pub const fn kind(&self) -> ArtifactKind {
-        match self {
-            Self::EbpfBytecode(_) => ArtifactKind::EbpfBytecode,
-            Self::EbpfCtl(_) => ArtifactKind::EbpfCtl,
-            Self::NatsServer(_) => ArtifactKind::NatsServer,
-            Self::Ployzd(_) => ArtifactKind::Ployzd,
-        }
-    }
-
-    #[must_use]
-    pub const fn digest(&self) -> &Sha256Digest {
-        match self {
-            Self::EbpfBytecode(target) => &target.digest,
-            Self::EbpfCtl(target) => &target.digest,
-            Self::NatsServer(target) => &target.digest,
-            Self::Ployzd(target) => &target.digest,
-        }
-    }
-
-    #[must_use]
-    pub const fn source(&self) -> &ArtifactSource {
-        match self {
-            Self::EbpfBytecode(target) => &target.source,
-            Self::EbpfCtl(target) => &target.source,
-            Self::NatsServer(target) => &target.source,
-            Self::Ployzd(target) => &target.source,
-        }
-    }
-
-    #[must_use]
-    pub fn install_path(&self) -> &Path {
-        match self {
-            Self::EbpfBytecode(target) => target.install_path(),
-            Self::EbpfCtl(target) => target.install_path(),
-            Self::NatsServer(target) => target.install_path(),
-            Self::Ployzd(target) => target.install_path(),
-        }
-    }
-}
-
-impl From<EbpfBytecodeArtifactTarget> for ArtifactTarget {
-    fn from(value: EbpfBytecodeArtifactTarget) -> Self {
-        Self::EbpfBytecode(value)
-    }
-}
-
-impl From<EbpfCtlArtifactTarget> for ArtifactTarget {
-    fn from(value: EbpfCtlArtifactTarget) -> Self {
-        Self::EbpfCtl(value)
-    }
-}
-
-impl From<PloyzdArtifactTarget> for ArtifactTarget {
-    fn from(value: PloyzdArtifactTarget) -> Self {
-        Self::Ployzd(value)
-    }
-}
-
-impl From<NatsServerArtifactTarget> for ArtifactTarget {
-    fn from(value: NatsServerArtifactTarget) -> Self {
-        Self::NatsServer(value)
     }
 }
 
@@ -468,10 +325,10 @@ pub fn install_verified_artifact(
     verified: &VerifiedArtifactFile,
     target: &ArtifactTarget,
 ) -> Result<InstalledArtifactFile, ArtifactInstallError> {
-    if verified.digest != *target.digest() {
+    if verified.digest != target.digest {
         return Err(ArtifactInstallError::VerifiedDigestMismatch {
             install_path: target.install_path().to_path_buf(),
-            expected: target.digest().clone(),
+            expected: target.digest.clone(),
             verified: verified.digest.clone(),
         });
     }
@@ -488,13 +345,13 @@ pub fn install_verified_artifact(
         message: error.to_string(),
     })?;
     let mut staged_artifact = create_staged_artifact(&verified.path, parent, file_name)?;
-    let staged = match verify_artifact_file(&staged_artifact.path, target.digest()) {
+    let staged = match verify_artifact_file(staged_artifact.path(), &target.digest) {
         Ok(staged) => staged,
         Err(error) => {
             return Err(ArtifactInstallError::VerificationFailed(error));
         }
     };
-    let durability = staged_artifact.commit_to(install_path)?;
+    let durability = commit_staged_artifact(&mut staged_artifact, install_path)?;
 
     Ok(InstalledArtifactFile {
         source_path: verified.path.clone(),
@@ -523,34 +380,27 @@ fn create_staged_artifact(
     source_path: &Path,
     parent: &Path,
     file_name: &std::ffi::OsStr,
-) -> Result<StagedArtifact, ArtifactInstallError> {
-    for attempt in 0..16 {
-        let staged_path = unique_staged_install_path(parent, file_name, attempt)?;
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged_path)
-        {
-            Ok(mut staged_file) => {
-                let staged = StagedArtifact::new(staged_path);
-                let copy_result = copy_file_to_writer(source_path, &staged.path, &mut staged_file);
-                drop(staged_file);
-                copy_result?;
-                return Ok(staged);
+) -> Result<StagedFile, ArtifactInstallError> {
+    let file_name = file_name.to_string_lossy();
+    let mut staged = StagedFile::create(parent, &file_name, "ployz-install", FileMode::Plain)
+        .map_err(|error| match error {
+            StagedFileError::ClockWentBackwards { message } => {
+                ArtifactInstallError::ClockWentBackwards { message }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(ArtifactInstallError::CreateStagedFailed {
-                    staged_path,
-                    message: error.to_string(),
-                });
+            StagedFileError::CreateFailed {
+                staged_path,
+                message,
+            } => ArtifactInstallError::CreateStagedFailed {
+                staged_path,
+                message,
+            },
+            StagedFileError::Exhausted { directory } => {
+                ArtifactInstallError::CreateStagedExhausted { parent: directory }
             }
-        }
-    }
-
-    Err(ArtifactInstallError::CreateStagedExhausted {
-        parent: parent.to_path_buf(),
-    })
+        })?;
+    let staged_path = staged.path().to_path_buf();
+    copy_file_to_writer(source_path, &staged_path, staged.file())?;
+    Ok(staged)
 }
 
 fn copy_file_to_writer(
@@ -574,51 +424,28 @@ fn copy_file_to_writer(
         })
 }
 
-struct StagedArtifact {
-    path: PathBuf,
-    committed: bool,
-}
-
-impl StagedArtifact {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            committed: false,
-        }
-    }
-
-    fn commit_to(
-        &mut self,
-        install_path: &Path,
-    ) -> Result<ArtifactInstallDurability, ArtifactInstallError> {
-        make_executable(&self.path).map_err(|error| ArtifactInstallError::SetExecutableFailed {
-            staged_path: self.path.clone(),
+fn commit_staged_artifact(
+    staged: &mut StagedFile,
+    install_path: &Path,
+) -> Result<ArtifactInstallDurability, ArtifactInstallError> {
+    make_executable(staged.path()).map_err(|error| ArtifactInstallError::SetExecutableFailed {
+        staged_path: staged.path().to_path_buf(),
+        message: error.to_string(),
+    })?;
+    sync_staged_file(staged.path())?;
+    staged
+        .commit_to(install_path)
+        .map_err(|error| ArtifactInstallError::CommitFailed {
+            staged_path: staged.path().to_path_buf(),
+            install_path: install_path.to_path_buf(),
             message: error.to_string(),
         })?;
-        sync_staged_file(&self.path)?;
-        fs::rename(&self.path, install_path).map_err(|error| {
-            ArtifactInstallError::CommitFailed {
-                staged_path: self.path.clone(),
-                install_path: install_path.to_path_buf(),
-                message: error.to_string(),
-            }
-        })?;
-        self.committed = true;
-        if let Err(error) = sync_parent_directory(install_path) {
-            return Ok(ArtifactInstallDurability::Unconfirmed {
-                message: error.to_string(),
-            });
-        }
-        Ok(ArtifactInstallDurability::Confirmed)
+    if let Err(error) = sync_parent_directory(install_path) {
+        return Ok(ArtifactInstallDurability::Unconfirmed {
+            message: error.to_string(),
+        });
     }
-}
-
-impl Drop for StagedArtifact {
-    fn drop(&mut self) {
-        if !self.committed {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
+    Ok(ArtifactInstallDurability::Confirmed)
 }
 
 fn sync_staged_file(staged_path: &Path) -> Result<(), ArtifactInstallError> {
@@ -631,25 +458,6 @@ fn sync_staged_file(staged_path: &Path) -> Result<(), ArtifactInstallError> {
             staged_path: staged_path.to_path_buf(),
             message: error.to_string(),
         })
-}
-
-fn unique_staged_install_path(
-    parent: &Path,
-    file_name: &std::ffi::OsStr,
-    attempt: u8,
-) -> Result<PathBuf, ArtifactInstallError> {
-    let entropy = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| ArtifactInstallError::ClockWentBackwards {
-            message: error.to_string(),
-        })?
-        .as_nanos();
-    let staged_name = format!(
-        ".{}.ployz-install-{}-{entropy}-{attempt}",
-        file_name.to_string_lossy(),
-        std::process::id()
-    );
-    Ok(parent.join(staged_name))
 }
 
 #[cfg(unix)]

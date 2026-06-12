@@ -17,9 +17,7 @@ use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_
 use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
-use crate::artifacts::{
-    ArtifactTarget, DataplaneArtifactTargets, NatsServerArtifactTarget, PloyzdArtifactTarget,
-};
+use crate::artifacts::{ArtifactTarget, DataplaneArtifactTargets};
 use crate::nats_identity::ClusterNatsIdentity;
 use crate::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
@@ -231,9 +229,11 @@ impl RedactedJoinMaterial {
         cluster_name: impl Into<String>,
         trusted_nats_ca_sha256: impl Into<String>,
     ) -> Result<Self, JoinMaterialError> {
-        let cluster_name = line_value("cluster name", cluster_name.into())?;
-        let trusted_nats_ca_sha256 =
-            line_value("trusted NATS CA digest", trusted_nats_ca_sha256.into())?;
+        let cluster_name = line_value(JoinMaterialField::ClusterName, cluster_name.into())?;
+        let trusted_nats_ca_sha256 = line_value(
+            JoinMaterialField::TrustedNatsCaDigest,
+            trusted_nats_ca_sha256.into(),
+        )?;
 
         Ok(Self {
             node_id,
@@ -251,16 +251,39 @@ pub enum JoinMaterialError {
     InvalidJoinMaterialValue { label: &'static str, value: String },
 }
 
-fn line_value(label: &'static str, value: String) -> Result<String, JoinMaterialError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinMaterialField {
+    ClusterName,
+    TrustedNatsCaDigest,
+}
+
+impl JoinMaterialField {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ClusterName => "cluster name",
+            Self::TrustedNatsCaDigest => "trusted NATS CA digest",
+        }
+    }
+
+    const fn empty_error(self) -> JoinMaterialError {
+        match self {
+            Self::ClusterName => JoinMaterialError::EmptyClusterName,
+            Self::TrustedNatsCaDigest => JoinMaterialError::EmptyJoinMaterialValue {
+                label: Self::TrustedNatsCaDigest.label(),
+            },
+        }
+    }
+}
+
+fn line_value(field: JoinMaterialField, value: String) -> Result<String, JoinMaterialError> {
     if value.is_empty() {
-        return if label == "cluster name" {
-            Err(JoinMaterialError::EmptyClusterName)
-        } else {
-            Err(JoinMaterialError::EmptyJoinMaterialValue { label })
-        };
+        return Err(field.empty_error());
     }
     if value.contains(['\n', '\r', '=']) {
-        return Err(JoinMaterialError::InvalidJoinMaterialValue { label, value });
+        return Err(JoinMaterialError::InvalidJoinMaterialValue {
+            label: field.label(),
+            value,
+        });
     }
     Ok(value)
 }
@@ -268,7 +291,7 @@ fn line_value(label: &'static str, value: String) -> Result<String, JoinMaterial
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperJoinTarget {
     pub material: KeeperJoinMaterial,
-    pub ployzd_artifact: PloyzdArtifactTarget,
+    pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
@@ -278,7 +301,7 @@ impl KeeperJoinTarget {
     #[must_use]
     pub fn new(
         material: KeeperJoinMaterial,
-        ployzd_artifact: PloyzdArtifactTarget,
+        ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
         roles: NonEmptyRoleSet,
         role_environment: PloyzdRoleEnvironmentTarget,
@@ -304,9 +327,9 @@ impl KeeperJoinTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstNodeInstallTarget {
     pub node_id: NodeId,
-    pub ployzd_artifact: PloyzdArtifactTarget,
+    pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
-    pub nats_server_artifact: NatsServerArtifactTarget,
+    pub nats_server_artifact: ArtifactTarget,
     pub gateway: FirstNodeGateway,
     pub nats_identity: ClusterNatsIdentity,
     pub nats_material: NatsMachineMaterialPaths,
@@ -319,9 +342,9 @@ impl FirstNodeInstallTarget {
     #[must_use]
     pub fn new(
         node_id: NodeId,
-        ployzd_artifact: PloyzdArtifactTarget,
+        ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
-        nats_server_artifact: NatsServerArtifactTarget,
+        nats_server_artifact: ArtifactTarget,
         gateway: FirstNodeGateway,
         nats_identity: ClusterNatsIdentity,
     ) -> Self {
@@ -647,14 +670,12 @@ fn keeper_join_material_steps(target: &KeeperJoinTarget) -> Vec<KeeperStep> {
 }
 
 fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
-    let mut steps = vec![KeeperStep::InstallArtifact(
-        target.ployzd_artifact.clone().into(),
-    )];
+    let mut steps = vec![KeeperStep::InstallArtifact(target.ployzd_artifact.clone())];
     steps.push(KeeperStep::InstallArtifact(
-        target.dataplane_artifacts.ebpf_bytecode.clone().into(),
+        target.dataplane_artifacts.ebpf_bytecode.clone(),
     ));
     steps.push(KeeperStep::InstallArtifact(
-        target.dataplane_artifacts.ebpf_ctl.clone().into(),
+        target.dataplane_artifacts.ebpf_ctl.clone(),
     ));
 
     for role in target.roles.roles {
@@ -689,10 +710,10 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
     );
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-        KeeperStep::InstallArtifact(target.ployzd_artifact.clone().into()),
-        KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone().into()),
-        KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone().into()),
-        KeeperStep::InstallArtifact(target.nats_server_artifact.clone().into()),
+        KeeperStep::InstallArtifact(target.ployzd_artifact.clone()),
+        KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone()),
+        KeeperStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
+        KeeperStep::InstallArtifact(target.nats_server_artifact.clone()),
         KeeperStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
             &target.nats_identity,

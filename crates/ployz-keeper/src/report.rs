@@ -87,7 +87,7 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
 }
 
 fn render_artifact_target(target: &ArtifactTarget) -> String {
-    let kind = match target.kind() {
+    let kind = match target.kind {
         ArtifactKind::EbpfBytecode => "ebpf-bytecode",
         ArtifactKind::EbpfCtl => "ebpf-ctl",
         ArtifactKind::NatsServer => "nats-server",

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ployz_core::roles::DaemonProcessRole;
-use ployz_keeper::artifacts::PloyzdArtifactTarget;
+use ployz_keeper::artifacts::{ArtifactKind, ArtifactTarget};
 use ployz_keeper::systemd::{
     NatsServerUnit, NatsServerUnitTarget, PloyzdRoleEnvironmentFile, PloyzdRoleUnit,
     SupervisorUnitFileError, role_unit_name,
@@ -90,21 +90,24 @@ fn role_units_render_the_supervised_ployzd_commands() {
 
 #[test]
 fn role_units_quote_paths_that_need_systemd_escaping() {
-    let spaced_path_artifact = PloyzdArtifactTarget::new(
+    let spaced_path_artifact = ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         version("0.1.0"),
         source("https://example.invalid/ployzd"),
         digest(PLOYZD_DIGEST),
         PathBuf::from("/opt/Ployz Tools/ployzd"),
     )
     .expect("valid artifact install path");
-    let percent_path_artifact = PloyzdArtifactTarget::new(
+    let percent_path_artifact = ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         version("0.1.0"),
         source("https://example.invalid/ployzd"),
         digest(PLOYZD_DIGEST),
         PathBuf::from("/opt/ployz%tools/ployzd"),
     )
     .expect("valid artifact install path");
-    let dollar_path_artifact = PloyzdArtifactTarget::new(
+    let dollar_path_artifact = ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         version("0.1.0"),
         source("https://example.invalid/ployzd"),
         digest(PLOYZD_DIGEST),

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use ployz_keeper::artifacts::{
-    ArtifactSource, ArtifactVersion, NatsServerArtifactTarget, PloyzdArtifactTarget, Sha256Digest,
+    ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactVersion, Sha256Digest,
 };
 
 /// A syntactically valid sha256 hex digest for ployzd artifact fixtures.
@@ -28,8 +28,9 @@ pub fn sha256_digest(value: &str) -> Sha256Digest {
 
 /// The canonical remote ployzd artifact target installed by plan fixtures.
 #[must_use]
-pub fn ployzd_artifact() -> PloyzdArtifactTarget {
-    PloyzdArtifactTarget::new(
+pub fn ployzd_artifact() -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         artifact_version("0.1.0"),
         artifact_source("https://example.invalid/ployzd"),
         sha256_digest(TEST_PLOYZD_DIGEST),
@@ -41,8 +42,9 @@ pub fn ployzd_artifact() -> PloyzdArtifactTarget {
 /// The canonical remote nats-server artifact target installed by plan
 /// fixtures.
 #[must_use]
-pub fn nats_server_artifact() -> NatsServerArtifactTarget {
-    NatsServerArtifactTarget::new(
+pub fn nats_server_artifact() -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::NatsServer,
         artifact_version("2.12.0"),
         artifact_source("https://example.invalid/nats-server"),
         sha256_digest(TEST_PLOYZD_DIGEST),

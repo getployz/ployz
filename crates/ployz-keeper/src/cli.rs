@@ -7,14 +7,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use ployz_core::install::{
-    AbsoluteInstallPath, FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSource,
-    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
+    FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSpec, NatsServerInstallSpec,
 };
 
 use crate::artifacts::{
-    ArtifactSource, ArtifactTargetError, ArtifactVersion, DataplaneArtifactTargets,
-    EbpfBytecodeArtifactTarget, EbpfCtlArtifactTarget, NatsServerArtifactTarget,
-    PloyzdArtifactTarget, Sha256Digest,
+    ArtifactKind, ArtifactTargetError, DataplaneArtifactTargets, artifact_target,
 };
 use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
@@ -160,24 +157,9 @@ fn first_node_install_target(
                 nats_server,
             },
     } = install;
-    let InstallArtifactSpec {
-        version: ployzd_version,
-        source: ployzd_source,
-        sha256: ployzd_sha256,
-        install_path: ployzd_install_path,
-    } = ployzd;
-    let InstallArtifactSpec {
-        version: ebpf_bytecode_version,
-        source: ebpf_bytecode_source,
-        sha256: ebpf_bytecode_sha256,
-        install_path: ebpf_bytecode_install_path,
-    } = ebpf_bytecode;
-    let InstallArtifactSpec {
-        version: ebpf_ctl_version,
-        source: ebpf_ctl_source,
-        sha256: ebpf_ctl_sha256,
-        install_path: ebpf_ctl_install_path,
-    } = ebpf_ctl;
+    let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
+    let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
+    let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
     let NatsServerInstallSpec {
         version: nats_version,
         source: nats_source,
@@ -185,33 +167,18 @@ fn first_node_install_target(
         binary: nats_binary,
         config: nats_config,
     } = nats_server;
-    let ployzd_artifact = PloyzdArtifactTarget::new(
-        artifact_version(&ployzd_version)?,
-        artifact_source(&ployzd_source)?,
-        sha256_digest(&ployzd_sha256)?,
-        install_path(&ployzd_install_path),
-    )?;
-    let ebpf_bytecode_artifact = EbpfBytecodeArtifactTarget::new(
-        artifact_version(&ebpf_bytecode_version)?,
-        artifact_source(&ebpf_bytecode_source)?,
-        sha256_digest(&ebpf_bytecode_sha256)?,
-        install_path(&ebpf_bytecode_install_path),
-    )?;
-    let ebpf_ctl_artifact = EbpfCtlArtifactTarget::new(
-        artifact_version(&ebpf_ctl_version)?,
-        artifact_source(&ebpf_ctl_source)?,
-        sha256_digest(&ebpf_ctl_sha256)?,
-        install_path(&ebpf_ctl_install_path),
-    )?;
-    let nats_server_artifact = NatsServerArtifactTarget::new(
-        artifact_version(&nats_version)?,
-        artifact_source(&nats_source)?,
-        sha256_digest(&nats_sha256)?,
-        install_path(&nats_binary),
+    let nats_server_artifact = artifact_target(
+        ArtifactKind::NatsServer,
+        &InstallArtifactSpec {
+            version: nats_version,
+            source: nats_source,
+            sha256: nats_sha256,
+            install_path: nats_binary,
+        },
     )?;
     let nats_server_unit = NatsServerUnitTarget::new(
         nats_server_artifact.install_path().to_path_buf(),
-        install_path(&nats_config),
+        PathBuf::from(nats_config.as_str()),
     )?;
     let certificate_sans = ServerCertificateSans::try_new(node_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
@@ -235,24 +202,6 @@ fn first_node_install_target(
         target = target.with_node_public_ip(public_ip);
     }
     Ok(target)
-}
-
-fn artifact_version(
-    value: &InstallArtifactVersion,
-) -> Result<ArtifactVersion, ArtifactTargetError> {
-    ArtifactVersion::try_new(value.as_str().to_owned())
-}
-
-fn artifact_source(value: &InstallArtifactSource) -> Result<ArtifactSource, ArtifactTargetError> {
-    ArtifactSource::try_new(value.as_str().to_owned())
-}
-
-fn sha256_digest(value: &InstallSha256Digest) -> Result<Sha256Digest, ArtifactTargetError> {
-    Sha256Digest::try_new(value.as_str().to_owned())
-}
-
-fn install_path(value: &AbsoluteInstallPath) -> PathBuf {
-    PathBuf::from(value.as_str())
 }
 
 #[derive(Debug)]

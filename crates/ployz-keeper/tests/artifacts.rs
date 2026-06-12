@@ -2,9 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use ployz_keeper::artifacts::{
-    ArtifactInstallDurability, ArtifactInstallError, ArtifactSource, ArtifactTarget,
-    ArtifactVerificationError, ArtifactVersion, PloyzdArtifactTarget, Sha256Digest,
-    install_verified_artifact, verify_artifact_file,
+    ArtifactInstallDurability, ArtifactInstallError, ArtifactKind, ArtifactSource, ArtifactTarget,
+    ArtifactVerificationError, ArtifactVersion, Sha256Digest, install_verified_artifact,
+    verify_artifact_file,
 };
 
 #[test]
@@ -50,9 +50,8 @@ fn verified_artifact_installs_to_target_path() {
     let staged = temp_artifact("ployz-artifact-install-source");
     let install_path = temp_artifact("ployz-artifact-install-target").join("bin/ployzd");
     fs::write(&staged, "ployz\n").expect("artifact can be written");
-    let target = ArtifactTarget::Ployzd(ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256));
-    let verified =
-        verify_artifact_file(&staged, target.digest()).expect("staged artifact verifies");
+    let target = ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256);
+    let verified = verify_artifact_file(&staged, &target.digest).expect("staged artifact verifies");
 
     let installed =
         install_verified_artifact(&verified, &target).expect("verified artifact installs");
@@ -82,9 +81,8 @@ fn installed_artifact_is_executable_on_unix() {
     let staged = temp_artifact("ployz-artifact-executable-source");
     let install_path = temp_artifact("ployz-artifact-executable-target").join("bin/ployzd");
     fs::write(&staged, "ployz\n").expect("artifact can be written");
-    let target = ArtifactTarget::Ployzd(ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256));
-    let verified =
-        verify_artifact_file(&staged, target.digest()).expect("staged artifact verifies");
+    let target = ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256);
+    let verified = verify_artifact_file(&staged, &target.digest).expect("staged artifact verifies");
 
     let installed =
         install_verified_artifact(&verified, &target).expect("verified artifact installs");
@@ -104,7 +102,7 @@ fn install_rejects_verified_digest_for_another_target() {
     fs::write(&staged, "ployz\n").expect("artifact can be written");
     let verified = verify_artifact_file(&staged, &digest(PLOYZ_NEWLINE_SHA256))
         .expect("staged artifact verifies");
-    let target = ArtifactTarget::Ployzd(ployzd_target(&install_path, ALL_A_SHA256));
+    let target = ployzd_target(&install_path, ALL_A_SHA256);
 
     assert_eq!(
         install_verified_artifact(&verified, &target),
@@ -121,9 +119,8 @@ fn install_rechecks_staged_artifact_before_copying() {
     let staged = temp_artifact("ployz-artifact-mutated-source");
     let install_path = temp_artifact("ployz-artifact-mutated-target").join("bin/ployzd");
     fs::write(&staged, "ployz\n").expect("artifact can be written");
-    let target = ArtifactTarget::Ployzd(ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256));
-    let verified =
-        verify_artifact_file(&staged, target.digest()).expect("staged artifact verifies");
+    let target = ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256);
+    let verified = verify_artifact_file(&staged, &target.digest).expect("staged artifact verifies");
     fs::write(&staged, "changed\n").expect("artifact can be mutated");
 
     assert!(matches!(
@@ -141,9 +138,8 @@ fn install_commit_failure_preserves_existing_target() {
     let install_path = temp_artifact("ployz-artifact-commit-failure-target").join("bin/ployzd");
     fs::write(&staged, "ployz\n").expect("artifact can be written");
     fs::create_dir_all(&install_path).expect("existing target directory can be created");
-    let target = ArtifactTarget::Ployzd(ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256));
-    let verified =
-        verify_artifact_file(&staged, target.digest()).expect("staged artifact verifies");
+    let target = ployzd_target(&install_path, PLOYZ_NEWLINE_SHA256);
+    let verified = verify_artifact_file(&staged, &target.digest).expect("staged artifact verifies");
 
     assert!(matches!(
         install_verified_artifact(&verified, &target),
@@ -160,8 +156,9 @@ fn digest(value: &str) -> Sha256Digest {
     Sha256Digest::try_new(value).expect("valid artifact digest")
 }
 
-fn ployzd_target(install_path: &std::path::Path, digest: &str) -> PloyzdArtifactTarget {
-    PloyzdArtifactTarget::new(
+fn ployzd_target(install_path: &std::path::Path, digest: &str) -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::Ployzd,
         ArtifactVersion::try_new("0.1.0").expect("valid version"),
         ArtifactSource::try_new("https://example.invalid/ployzd").expect("valid source"),
         Sha256Digest::try_new(digest).expect("valid digest"),
