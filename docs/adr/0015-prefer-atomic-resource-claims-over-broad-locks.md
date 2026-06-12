@@ -1,0 +1,3 @@
+# Prefer Atomic Resource Claims Over Broad Locks
+
+When a contested resource has a natural key, Ployz should prefer NATS JetStream KV atomic `create` and revisioned `update` operations over broad locks. Endpoint subnet assignment is the motivating case: each subnet can be claimed by creating a durable subnet claim, retried from `pending`, advanced to `assigned`, and released when the current machine is removed; a global machine allocation lock is unnecessary. Use broader locks only when an operation must fence a multi-step mutation that cannot be represented as ownership of one or more explicit resource claims.

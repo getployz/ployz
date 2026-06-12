@@ -1,0 +1,52 @@
+//! Convert current cluster facts into a deploy execution command.
+
+use ployz_core::dataplane::WireGuardPeerEndpoint;
+use ployz_core::deploy::{
+    DeployPreparationError, DeployPreparationInput, DeployRequest, prepare_deploy,
+};
+use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::node::NodeContainerObservationSnapshot;
+use ployz_core::state::{ActiveRouteState, ActiveServiceState};
+use std::time::Duration;
+
+use super::DeployExecutionCommand;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployExecutionFacts {
+    pub active_service: Option<ActiveServiceState>,
+    pub active_route: Option<ActiveRouteState>,
+    pub eligible_nodes: Vec<NodeId>,
+    pub dataplane_nodes: Vec<NodeId>,
+    pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
+    pub wireguard_peer_endpoints: Vec<WireGuardPeerEndpoint>,
+    pub step_timeout: Duration,
+}
+
+pub fn prepare_deploy_execution_command(
+    operation_id: OperationId,
+    request: DeployRequest,
+    facts: DeployExecutionFacts,
+) -> Result<DeployExecutionCommand, DeployCommandPreparationError> {
+    let prepared = prepare_deploy(DeployPreparationInput {
+        request,
+        active_service: facts.active_service,
+        active_route: facts.active_route,
+        eligible_nodes: facts.eligible_nodes,
+        observed_nodes: facts.observed_nodes,
+    })?;
+
+    Ok(DeployExecutionCommand {
+        operation_id,
+        request: prepared.request,
+        expected_active: prepared.expected_active,
+        route_commit: prepared.route_commit,
+        eligible_nodes: prepared.eligible_nodes,
+        existing_replicas: prepared.existing_replicas,
+        cleanup_candidates: prepared.cleanup_candidates,
+        dataplane_nodes: facts.dataplane_nodes,
+        wireguard_peer_endpoints: facts.wireguard_peer_endpoints,
+        step_timeout: facts.step_timeout,
+    })
+}
+
+pub type DeployCommandPreparationError = DeployPreparationError;

@@ -1,13 +1,16 @@
 [workspace]
 members = [
-    "crates/polis",
-    "crates/ployz",
+    "crates/ployz-core",
+    "crates/ployz-nats",
+    "crates/ployz-transport",
+    "crates/ployz-ebpf-common",
+    "crates/ployz-ebpf-ctl",
+    "crates/ployz-keeper",
+    "crates/ployz-test-support",
     "crates/ployz-e2e",
-]
-default-members = [
-    "crates/polis",
-    "crates/ployz",
-    "crates/ployz-e2e",
+    "crates/ployzd",
+    "crates/ployzctl",
+    "crates/ployz-sdk-types",
 ]
 resolver = "3"
 
@@ -18,20 +21,19 @@ rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
-corro-api-types = { git = "https://github.com/superfly/corrosion", tag = "v1.0.0" }
-corro-client = { git = "https://github.com/superfly/corrosion", tag = "v1.0.0" }
+clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
-iroh = { version = "=1.0.0-rc.0", default-features = false }
-iroh-tickets = "=1.0.0-rc.0"
-irpc = "0.15.0"
-irpc-iroh = "0.15.0"
-polis = { path = "crates/polis" }
-rusqlite = "0.38"
+ployz-core = { path = "crates/ployz-core" }
+ployz-nats = { path = "crates/ployz-nats" }
+ployz-transport = { path = "crates/ployz-transport" }
+ployz-sdk-types = { path = "crates/ployz-sdk-types" }
+ployz-test-support = { path = "crates/ployz-test-support" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-thiserror = "2"
+nuid = "0.5"
 tokio = "1"
+ts-rs = { version = "12", features = ["no-serde-warnings"] }
 
 [workspace.lints.clippy]
 indexing_slicing = "warn"

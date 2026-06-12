@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${1:-${PLOYZ_EBPF_REPO:-getployz/ployz}}"
+TARGET_DIR="${PLOYZ_EBPF_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/ployz-rust-ebpf-target}}"
 
 download() {
   local url=$1
@@ -20,13 +21,13 @@ download() {
 }
 
 checksum_file() {
-  local file_path=$1
+  local path=$1
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "${file_path}" | awk '{print $1}'
+    sha256sum "${path}" | awk '{print $1}'
     return
   fi
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "${file_path}" | awk '{print $1}'
+    shasum -a 256 "${path}" | awk '{print $1}'
     return
   fi
   echo "sha256sum or shasum is required" >&2
@@ -44,14 +45,17 @@ if [[ -z "${version}" ]]; then
   exit 1
 fi
 
-dest_dir="${ROOT_DIR}/ebpf/target/bpfel-unknown-none/release"
+dest_dir="${TARGET_DIR}/bpfel-unknown-none/release"
 dest_file="${dest_dir}/ployz-ebpf-tc"
 stamp="${dest_dir}/.ebpf-release-version"
-
-if [[ -f "${dest_file}" && -f "${stamp}" ]]; then
+checksum_stamp="${dest_dir}/.ebpf-release-sha256"
+if [[ -f "${dest_file}" && -f "${stamp}" && -f "${checksum_stamp}" ]]; then
   installed="$(tr -d '[:space:]' < "${stamp}")"
-  if [[ "${installed}" == "${version}" ]]; then
-    echo "eBPF bytecode ${version} already present; skipping"
+  expected_cached="$(tr -d '[:space:]' < "${checksum_stamp}")"
+  actual_cached="$(checksum_file "${dest_file}")"
+  if [[ "${installed}" == "${version}" && "${expected_cached}" == "${actual_cached}" ]]; then
+    echo "eBPF bytecode ${version} already present"
+    echo "${dest_file}"
     exit 0
   fi
 fi
@@ -77,4 +81,6 @@ fi
 mkdir -p "${dest_dir}"
 cp "${tmp_dir}/ployz-ebpf-tc" "${dest_file}"
 printf '%s\n' "${version}" > "${stamp}"
+printf '%s\n' "${actual}" > "${checksum_stamp}"
 echo "installed eBPF bytecode ${version}"
+echo "${dest_file}"

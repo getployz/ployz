@@ -1,9 +1,4 @@
-# ployz
+# Ployz
 
-Minimal npm package for the `ployz` CLI entrypoint.
-
-## Usage
-
-```bash
-npx ployz
-```
+Ployz is a small-cluster orchestration core built around explicit operations
+and a NATS-native control plane.
