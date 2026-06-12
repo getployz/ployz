@@ -199,93 +199,77 @@ pub fn render_first_node_credential_paths() -> String {
 }
 
 pub(crate) fn init_command(parsed: InitCli) -> Result<FirstNodeInitCommand, PloyzctlCliError> {
-    let keeper_install_mode = match (parsed.emit_keeper_install, parsed.run_keeper_install) {
-        (false, false) => ParsedKeeperInstallMode::None,
-        (true, false) => ParsedKeeperInstallMode::Emit,
-        (false, true) => ParsedKeeperInstallMode::Run,
-        (true, true) => {
-            return Err(cli_error(
-                "--emit-keeper-install and --run-keeper-install cannot be used together",
-            ));
-        }
-    };
-
-    match keeper_install_mode {
-        ParsedKeeperInstallMode::None => {
-            if parsed.install_spec.is_some() || parsed.keeper_binary.is_some() {
-                return Err(cli_error(
-                    "--install-spec and --keeper-binary require --emit-keeper-install or --run-keeper-install",
-                ));
-            }
-            let node_id =
-                NodeId::try_new(parsed.node.ok_or_else(|| cli_error("--node is required"))?)
-                    .map_err(|error| invalid_value("--node", error))?;
+    let InitCli {
+        node,
+        gateway,
+        emit_keeper_install,
+        run_keeper_install,
+        install_spec,
+        keeper_binary,
+    } = parsed;
+    // clap enforces the flag combinations: the keeper-install modes conflict
+    // with each other and with --node/--gateway, both modes require
+    // --install-spec, and --keeper-binary requires --run-keeper-install.
+    match (emit_keeper_install, run_keeper_install) {
+        (false, false) => {
+            let node_id = NodeId::try_new(node.ok_or_else(|| cli_error("--node is required"))?)
+                .map_err(|error| invalid_value("--node", error))?;
             Ok(FirstNodeInitCommand::summary(
                 node_id,
-                if parsed.gateway {
+                if gateway {
                     FirstNodeGateway::Install
                 } else {
                     FirstNodeGateway::Skip
                 },
             ))
         }
-        ParsedKeeperInstallMode::Emit | ParsedKeeperInstallMode::Run => {
-            if parsed.node.is_some() {
-                return Err(cli_error(
-                    "--node cannot be used with --emit-keeper-install or --run-keeper-install",
-                ));
-            }
-            if parsed.gateway {
-                return Err(cli_error(
-                    "--gateway cannot be used with --emit-keeper-install or --run-keeper-install",
-                ));
-            }
+        (true, _) => Ok(FirstNodeInitCommand::keeper_install(
+            read_first_node_install_spec(
+                install_spec.ok_or_else(|| cli_error("--install-spec is required"))?,
+            )?,
+        )),
+        (false, true) => {
             let keeper_install = read_first_node_install_spec(
-                parsed
-                    .install_spec
-                    .ok_or_else(|| cli_error("--install-spec is required"))?,
+                install_spec.ok_or_else(|| cli_error("--install-spec is required"))?,
             )?;
-            match keeper_install_mode {
-                ParsedKeeperInstallMode::None => unreachable!("handled above"),
-                ParsedKeeperInstallMode::Emit => {
-                    if parsed.keeper_binary.is_some() {
-                        return Err(cli_error("--keeper-binary requires --run-keeper-install"));
-                    }
-                    Ok(FirstNodeInitCommand::keeper_install(keeper_install))
-                }
-                ParsedKeeperInstallMode::Run => {
-                    let keeper_binary = parsed
-                        .keeper_binary
-                        .unwrap_or_else(|| "ployz-keeper".to_owned());
-                    if keeper_binary.is_empty() {
-                        return Err(PloyzctlCliError::InvalidValue {
-                            flag: "--keeper-binary",
-                            message: "keeper binary is empty".to_owned(),
-                        });
-                    }
-                    Ok(FirstNodeInitCommand::run_keeper_install(
-                        keeper_install,
-                        keeper_binary,
-                    ))
-                }
+            let keeper_binary = keeper_binary.unwrap_or_else(|| "ployz-keeper".to_owned());
+            if keeper_binary.is_empty() {
+                return Err(PloyzctlCliError::InvalidValue {
+                    flag: "--keeper-binary",
+                    message: "keeper binary is empty".to_owned(),
+                });
             }
+            Ok(FirstNodeInitCommand::run_keeper_install(
+                keeper_install,
+                keeper_binary,
+            ))
         }
     }
 }
 
 #[derive(Debug, Args)]
+#[command(group = clap::ArgGroup::new("keeper_install_mode")
+    .args(["emit_keeper_install", "run_keeper_install"])
+    .multiple(false))]
 pub(crate) struct InitCli {
-    #[arg(long, conflicts_with_all = ["emit_keeper_install", "run_keeper_install"])]
+    #[arg(long, conflicts_with = "keeper_install_mode")]
     node: Option<String>,
-    #[arg(long, conflicts_with_all = ["emit_keeper_install", "run_keeper_install"])]
+    #[arg(long, conflicts_with = "keeper_install_mode")]
     gateway: bool,
-    #[arg(long, conflicts_with = "run_keeper_install")]
+    #[arg(long, requires = "install_spec")]
     emit_keeper_install: bool,
-    #[arg(long)]
+    #[arg(long, requires = "install_spec")]
     run_keeper_install: bool,
-    #[arg(long)]
+    #[arg(long, requires = "keeper_install_mode")]
     install_spec: Option<String>,
-    #[arg(long, requires = "run_keeper_install")]
+    // `requires` must point at the group: a bare flag's false default would
+    // satisfy `requires = "run_keeper_install"`, while group presence needs
+    // explicit usage. The conflict pins it to the run mode.
+    #[arg(
+        long,
+        requires = "keeper_install_mode",
+        conflicts_with = "emit_keeper_install"
+    )]
     keeper_binary: Option<String>,
 }
 
@@ -309,25 +293,6 @@ pub(crate) struct FirstNodeActivateCli {
     node: String,
     #[arg(long)]
     gateway: bool,
-}
-
-impl InitCli {
-    #[must_use]
-    pub(crate) fn has_values(&self) -> bool {
-        self.node.is_some()
-            || self.gateway
-            || self.emit_keeper_install
-            || self.run_keeper_install
-            || self.install_spec.is_some()
-            || self.keeper_binary.is_some()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParsedKeeperInstallMode {
-    None,
-    Emit,
-    Run,
 }
 
 fn read_first_node_install_spec(path: String) -> Result<FirstNodeInstallSpec, PloyzctlCliError> {

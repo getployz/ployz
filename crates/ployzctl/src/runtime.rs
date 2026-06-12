@@ -1,20 +1,17 @@
 //! Runtime execution for parsed CLI commands.
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::PloyzctlCommand;
 use crate::commands::init::{
     FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeInitMode,
 };
+use crate::keeper_install::{LocalKeeperInstallError, run_keeper_first_node_install};
 use ployz_core::ids::OperationId;
-use ployz_core::install::FirstNodeInstallSpec;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
     EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, ReplayedOperationEvent,
@@ -24,11 +21,7 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::{
-    BackupCreateError, DeploySubmitError, InitFirstNodeActivateError, LogsTailError,
-    MachineAddError, MachineInspectError, MachineListError, OpsStatusError, OpsStatusRequest,
-    OpsWatchError, ServiceInspectError, ServiceListError,
-};
+use ployz_sdk_types::{InitFirstNodeActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -39,7 +32,6 @@ pub const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_KEEPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_OPS_WATCH_TIMEOUT: Duration = Duration::from_secs(600);
 pub const DEFAULT_OPS_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const MAX_KEEPER_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PloyzctlRuntimeConfig {
@@ -131,30 +123,25 @@ pub async fn execute_command(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     match command {
-        PloyzctlCommand::Help(help) => Ok(PloyzctlExecutionOutput::stdout(help)),
         PloyzctlCommand::Deploy(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let accepted = api
-                .deploy_submit(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::DeploySubmitApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::deploy::DetachedDeployOutput::from_accepted(accepted).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.deploy_submit(&command.into_request()).await,
+                |accepted| {
+                    crate::commands::deploy::DetachedDeployOutput::from_accepted(accepted).render()
+                },
+            )
+            .await
         }
         PloyzctlCommand::BackupCreate(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let accepted = api
-                .backup_create(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::BackupCreateApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::backup::BackupCreateOutput::from_accepted(accepted).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.backup_create(&command.into_request()).await,
+                |accepted| {
+                    crate::commands::backup::BackupCreateOutput::from_accepted(accepted).render()
+                },
+            )
+            .await
         }
         PloyzctlCommand::BackupRestorePlan(_) => Ok(PloyzctlExecutionOutput::stdout(
             crate::commands::backup::BackupRestorePlanOutput::single_core().render(),
@@ -168,8 +155,12 @@ pub async fn execute_command(
                     keeper_binary,
                     keeper_install,
                     config.keeper_install_timeout(),
-                )?;
-                Ok(output)
+                )
+                .map_err(|source| PloyzctlExecutionError::KeeperFirstNodeInstall { source })?;
+                Ok(PloyzctlExecutionOutput {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                })
             }
             FirstNodeInitMode::Summary { .. } | FirstNodeInitMode::EmitKeeperInstall(_) => {
                 Ok(PloyzctlExecutionOutput::stdout(command.render()))
@@ -189,11 +180,10 @@ pub async fn execute_command(
             // a missing seed fails fast without creating an operation.
             let join_seed = read_join_seed(config)?;
             let api = operation_api_client_with_connect(config, nats_connect).await?;
-            let request = command.into_request();
             let accepted = api
-                .machine_add(&request)
+                .machine_add(&command.into_request())
                 .await
-                .map_err(|source| PloyzctlExecutionError::MachineAddApi { source })?;
+                .map_err(api_error)?;
 
             Ok(PloyzctlExecutionOutput::stdout(
                 crate::commands::machine::MachineAddOutput::from_accepted(accepted, join_seed)
@@ -201,76 +191,52 @@ pub async fn execute_command(
             ))
         }
         PloyzctlCommand::MachineList(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let result = api
-                .machine_list(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::MachineListApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::machine::MachineListOutput::from_result(result).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.machine_list(&command.into_request()).await,
+                |result| crate::commands::machine::MachineListOutput::from_result(result).render(),
+            )
+            .await
         }
         PloyzctlCommand::MachineInspect(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let machine = api
-                .machine_inspect(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::MachineInspectApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::machine::MachineInspectOutput::new(machine).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.machine_inspect(&command.into_request()).await,
+                |machine| crate::commands::machine::MachineInspectOutput::new(machine).render(),
+            )
+            .await
         }
         PloyzctlCommand::ServiceList(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let result = api
-                .service_list(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::ServiceListApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::service::ServiceListOutput::from_result(result).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.service_list(&command.into_request()).await,
+                |result| crate::commands::service::ServiceListOutput::from_result(result).render(),
+            )
+            .await
         }
         PloyzctlCommand::ServiceInspect(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let service = api
-                .service_inspect(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::ServiceInspectApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::service::ServiceInspectOutput::new(service).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.service_inspect(&command.into_request()).await,
+                |service| crate::commands::service::ServiceInspectOutput::new(service).render(),
+            )
+            .await
         }
         PloyzctlCommand::LogsTail(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let result = api
-                .logs_tail(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::LogsTailApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::logs::LogsTailOutput::new(result).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.logs_tail(&command.into_request()).await,
+                |result| crate::commands::logs::LogsTailOutput::new(result).render(),
+            )
+            .await
         }
         PloyzctlCommand::OpsStatus(command) => {
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let snapshot = api
-                .ops_status(&request)
-                .await
-                .map_err(|source| PloyzctlExecutionError::OpsStatusApi { source })?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::ops::StatusOutput::new(snapshot).render(),
-            ))
+            render_api_call(
+                config,
+                async |api| api.ops_status(&command.into_request()).await,
+                |snapshot| crate::commands::ops::StatusOutput::new(snapshot).render(),
+            )
+            .await
         }
         PloyzctlCommand::OpsWatch(command) => {
             let api = operation_api_client(config).await?;
@@ -291,6 +257,32 @@ pub async fn execute_command(
     }
 }
 
+/// Connects, issues one operation API request, and renders the success value
+/// to stdout; API failures arrive as one rendered execution error.
+async fn render_api_call<T, E>(
+    config: &PloyzctlRuntimeConfig,
+    call: impl AsyncFnOnce(OperationApiClient) -> Result<T, OperationApiClientError<E>>,
+    render: impl FnOnce(T) -> String,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError>
+where
+    E: fmt::Debug,
+{
+    let api = operation_api_client(config).await?;
+    let value = call(api).await.map_err(api_error)?;
+    Ok(PloyzctlExecutionOutput::stdout(render(value)))
+}
+
+/// Operation API failures are terminal for the CLI, so carry the rendered
+/// message instead of one error variant per endpoint.
+fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecutionError
+where
+    E: fmt::Debug,
+{
+    PloyzctlExecutionError::OperationApi {
+        message: source.to_string(),
+    }
+}
+
 async fn watch_operation_until_terminal(
     api: &OperationApiClient,
     mut request: OperationEventReplayRequest,
@@ -302,10 +294,7 @@ async fn watch_operation_until_terminal(
     let mut events = Vec::new();
 
     loop {
-        let page = api
-            .ops_watch(&request)
-            .await
-            .map_err(|source| PloyzctlExecutionError::OpsWatchApi { source })?;
+        let page = api.ops_watch(&request).await.map_err(api_error)?;
 
         let cursor = page.cursor;
         if let Some(last_event) = page.events.last()
@@ -331,7 +320,7 @@ async fn watch_operation_until_terminal(
                 operation_id: operation_id.clone(),
             })
             .await
-            .map_err(|source| PloyzctlExecutionError::OpsWatchStatusApi { source })?;
+            .map_err(api_error)?;
 
         if snapshot.status.is_terminal() {
             return Ok(events);
@@ -401,313 +390,6 @@ async fn activate_first_node_machine_once(
         operation_id: activated.operation_id,
         node_id: activated.node_id,
     })
-}
-
-fn run_keeper_first_node_install(
-    keeper_binary: &str,
-    keeper_install: &FirstNodeInstallSpec,
-    timeout: Duration,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let args = vec![
-        "first-node-install".to_owned(),
-        "--spec".to_owned(),
-        "-".to_owned(),
-    ];
-    let spec = serde_json::to_vec(keeper_install).expect("first-node install spec serializes");
-    let mut capture =
-        OutputCapture::new().map_err(|message| PloyzctlExecutionError::KeeperFirstNodeInstall {
-            source: Box::new(LocalKeeperInstallError::CaptureSetup {
-                command: render_command(keeper_binary, &args),
-                message,
-            }),
-        })?;
-    let mut child = Command::new(keeper_binary)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(capture.stdout_stdio().map_err(|message| {
-            PloyzctlExecutionError::KeeperFirstNodeInstall {
-                source: Box::new(LocalKeeperInstallError::CaptureSetup {
-                    command: render_command(keeper_binary, &args),
-                    message,
-                }),
-            }
-        })?)
-        .stderr(capture.stderr_stdio().map_err(|message| {
-            PloyzctlExecutionError::KeeperFirstNodeInstall {
-                source: Box::new(LocalKeeperInstallError::CaptureSetup {
-                    command: render_command(keeper_binary, &args),
-                    message,
-                }),
-            }
-        })?)
-        .spawn()
-        .map_err(|error| PloyzctlExecutionError::KeeperFirstNodeInstall {
-            source: Box::new(LocalKeeperInstallError::Spawn {
-                command: render_command(keeper_binary, &args),
-                message: error.to_string(),
-            }),
-        })?;
-    let Some(mut stdin) = child.stdin.take() else {
-        return Err(PloyzctlExecutionError::KeeperFirstNodeInstall {
-            source: Box::new(LocalKeeperInstallError::Stdin {
-                command: render_command(keeper_binary, &args),
-                message: "keeper stdin was not piped".to_owned(),
-            }),
-        });
-    };
-    stdin
-        .write_all(&spec)
-        .map_err(|error| PloyzctlExecutionError::KeeperFirstNodeInstall {
-            source: Box::new(LocalKeeperInstallError::Stdin {
-                command: render_command(keeper_binary, &args),
-                message: error.to_string(),
-            }),
-        })?;
-    drop(stdin);
-    let started_at = Instant::now();
-
-    let status = loop {
-        match child
-            .try_wait()
-            .map_err(|error| PloyzctlExecutionError::KeeperFirstNodeInstall {
-                source: Box::new(LocalKeeperInstallError::Wait {
-                    command: render_command(keeper_binary, &args),
-                    message: error.to_string(),
-                }),
-            })? {
-            Some(status) => break status,
-            None if started_at.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(PloyzctlExecutionError::KeeperFirstNodeInstall {
-                    source: Box::new(LocalKeeperInstallError::Timeout {
-                        command: render_command(keeper_binary, &args),
-                        timeout,
-                        stdout: capture.stdout_output(),
-                        stderr: capture.stderr_output(),
-                    }),
-                });
-            }
-            None => thread::sleep(Duration::from_millis(50)),
-        }
-    };
-
-    let stdout = capture.stdout_output();
-    let stderr = capture.stderr_output();
-    if status.success() {
-        if stdout.read_error.is_some() || stderr.read_error.is_some() {
-            return Err(PloyzctlExecutionError::KeeperFirstNodeInstall {
-                source: Box::new(LocalKeeperInstallError::CaptureIncomplete {
-                    command: render_command(keeper_binary, &args),
-                    stdout,
-                    stderr,
-                }),
-            });
-        }
-        Ok(PloyzctlExecutionOutput {
-            stdout: stdout.text,
-            stderr: stderr.text,
-        })
-    } else {
-        Err(PloyzctlExecutionError::KeeperFirstNodeInstall {
-            source: Box::new(LocalKeeperInstallError::Failed {
-                command: render_command(keeper_binary, &args),
-                status,
-                stdout,
-                stderr,
-            }),
-        })
-    }
-}
-
-struct OutputCapture {
-    stdout: CapturedFile,
-    stderr: CapturedFile,
-}
-
-impl OutputCapture {
-    fn new() -> Result<Self, String> {
-        Ok(Self {
-            stdout: CapturedFile::new("stdout")?,
-            stderr: CapturedFile::new("stderr")?,
-        })
-    }
-
-    fn stdout_stdio(&self) -> Result<Stdio, String> {
-        self.stdout.stdio()
-    }
-
-    fn stderr_stdio(&self) -> Result<Stdio, String> {
-        self.stderr.stdio()
-    }
-
-    fn stdout_output(&mut self) -> LimitedOutput {
-        self.stdout.output()
-    }
-
-    fn stderr_output(&mut self) -> LimitedOutput {
-        self.stderr.output()
-    }
-}
-
-struct CapturedFile {
-    path: PathBuf,
-    file: File,
-}
-
-impl CapturedFile {
-    fn new(label: &str) -> Result<Self, String> {
-        for attempt in 0..16 {
-            let path = capture_path(label, attempt)?;
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => return Ok(Self { path, file }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(format!(
-                        "failed to create keeper {label} capture file {}: {error}",
-                        path.display()
-                    ));
-                }
-            }
-        }
-
-        Err(format!(
-            "failed to create unique keeper {label} capture file"
-        ))
-    }
-
-    fn stdio(&self) -> Result<Stdio, String> {
-        self.file.try_clone().map(Stdio::from).map_err(|error| {
-            format!(
-                "failed to clone capture file {}: {error}",
-                self.path.display()
-            )
-        })
-    }
-
-    fn output(&mut self) -> LimitedOutput {
-        let mut output = Vec::new();
-        let mut truncated = false;
-        let mut buffer = [0; 8192];
-
-        if let Err(error) = self.file.seek(SeekFrom::Start(0)) {
-            return LimitedOutput {
-                text: String::new(),
-                truncated: false,
-                read_error: Some(format!(
-                    "failed to seek capture file {}: {error}",
-                    self.path.display()
-                )),
-            };
-        }
-
-        loop {
-            match self.file.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    let remaining = MAX_KEEPER_OUTPUT_BYTES.saturating_sub(output.len());
-                    if remaining > 0 {
-                        let keep = read.min(remaining);
-                        let Some(bytes) = buffer.get(..keep) else {
-                            return LimitedOutput {
-                                text: String::from_utf8_lossy(&output).into_owned(),
-                                truncated,
-                                read_error: Some("output slice exceeded read buffer".to_owned()),
-                            };
-                        };
-                        output.extend_from_slice(bytes);
-                    }
-                    if read > remaining {
-                        truncated = true;
-                    }
-                }
-                Err(error) => {
-                    return LimitedOutput {
-                        text: String::from_utf8_lossy(&output).into_owned(),
-                        truncated,
-                        read_error: Some(format!(
-                            "failed to read capture file {}: {error}",
-                            self.path.display()
-                        )),
-                    };
-                }
-            }
-        }
-
-        LimitedOutput {
-            text: String::from_utf8_lossy(&output).into_owned(),
-            truncated,
-            read_error: None,
-        }
-    }
-}
-
-impl Drop for CapturedFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-fn capture_path(label: &str, attempt: u8) -> Result<PathBuf, String> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("system clock is before unix epoch: {error}"))?
-        .as_nanos();
-    Ok(std::env::temp_dir().join(format!(
-        "ployzctl-keeper-{}-{nanos}-{attempt}-{label}.log",
-        std::process::id()
-    )))
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LimitedOutput {
-    text: String,
-    truncated: bool,
-    read_error: Option<String>,
-}
-
-impl LimitedOutput {
-    fn summary(&self, label: &str) -> Option<String> {
-        let mut summary = String::new();
-        let trimmed = self.text.trim();
-        if !trimmed.is_empty() {
-            summary.push_str(label);
-            summary.push_str(": ");
-            summary.push_str(trimmed);
-        }
-        if self.truncated {
-            if !summary.is_empty() {
-                summary.push_str("; ");
-            }
-            summary.push_str(label);
-            summary.push_str(" truncated");
-        }
-        if let Some(read_error) = &self.read_error {
-            if !summary.is_empty() {
-                summary.push_str("; ");
-            }
-            summary.push_str(label);
-            summary.push_str(" read failed: ");
-            summary.push_str(read_error);
-        }
-        if summary.is_empty() {
-            None
-        } else {
-            Some(summary)
-        }
-    }
-}
-
-fn render_command(program: &str, args: &[String]) -> String {
-    std::iter::once(program.to_owned())
-        .chain(args.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Reads the cluster-static Join seed for the `machine add` install line.
@@ -799,41 +481,11 @@ pub enum PloyzctlExecutionError {
     KeeperFirstNodeInstall {
         source: Box<LocalKeeperInstallError>,
     },
-    DeploySubmitApi {
-        source: OperationApiClientError<DeploySubmitError>,
-    },
-    BackupCreateApi {
-        source: OperationApiClientError<BackupCreateError>,
-    },
-    MachineAddApi {
-        source: OperationApiClientError<MachineAddError>,
+    OperationApi {
+        message: String,
     },
     FirstNodeActivateApi {
         source: OperationApiClientError<InitFirstNodeActivateError>,
-    },
-    MachineListApi {
-        source: OperationApiClientError<MachineListError>,
-    },
-    MachineInspectApi {
-        source: OperationApiClientError<MachineInspectError>,
-    },
-    ServiceListApi {
-        source: OperationApiClientError<ServiceListError>,
-    },
-    ServiceInspectApi {
-        source: OperationApiClientError<ServiceInspectError>,
-    },
-    LogsTailApi {
-        source: OperationApiClientError<LogsTailError>,
-    },
-    OpsStatusApi {
-        source: OperationApiClientError<OpsStatusError>,
-    },
-    OpsWatchStatusApi {
-        source: OperationApiClientError<OpsStatusError>,
-    },
-    OpsWatchApi {
-        source: OperationApiClientError<OpsWatchError>,
     },
     OpsWatchTimedOut {
         operation_id: OperationId,
@@ -842,43 +494,21 @@ pub enum PloyzctlExecutionError {
 }
 
 impl PloyzctlExecutionError {
+    /// Only a first-node activation reply dropped by the mint's
+    /// authorization reload is retryable; every other failure is final.
     fn is_first_node_activation_retryable(&self) -> bool {
-        match self {
-            Self::FirstNodeActivateApi { source } => retryable_operation_api_error(source),
-            Self::MissingNatsUrl
-            | Self::InvalidNatsUrl(_)
-            | Self::MissingNatsCaFile
-            | Self::MissingNatsSeedFile
-            | Self::ReadNatsSeedFile { .. }
-            | Self::InvalidNatsSeedFile { .. }
-            | Self::ReadJoinSeedFile { .. }
-            | Self::InvalidJoinSeedFile { .. }
-            | Self::NatsConnect(_)
-            | Self::KeeperFirstNodeInstall { .. }
-            | Self::DeploySubmitApi { .. }
-            | Self::BackupCreateApi { .. }
-            | Self::MachineAddApi { .. }
-            | Self::MachineListApi { .. }
-            | Self::MachineInspectApi { .. }
-            | Self::ServiceListApi { .. }
-            | Self::ServiceInspectApi { .. }
-            | Self::LogsTailApi { .. }
-            | Self::OpsStatusApi { .. }
-            | Self::OpsWatchStatusApi { .. }
-            | Self::OpsWatchApi { .. }
-            | Self::OpsWatchTimedOut { .. } => false,
-        }
+        let Self::FirstNodeActivateApi { source } = self else {
+            return false;
+        };
+        matches!(
+            source,
+            OperationApiClientError::Request {
+                failure: NatsServiceRequestFailure::NoResponders
+                    | NatsServiceRequestFailure::TimedOut,
+                ..
+            }
+        )
     }
-}
-
-fn retryable_operation_api_error<E>(error: &OperationApiClientError<E>) -> bool {
-    matches!(
-        error,
-        OperationApiClientError::Request {
-            failure: NatsServiceRequestFailure::NoResponders | NatsServiceRequestFailure::TimedOut,
-            ..
-        }
-    )
 }
 
 impl fmt::Display for PloyzctlExecutionError {
@@ -919,20 +549,10 @@ impl fmt::Display for PloyzctlExecutionError {
             ),
             Self::NatsConnect(error) => write!(formatter, "{error}"),
             Self::KeeperFirstNodeInstall { source } => write!(formatter, "{source}"),
-            Self::DeploySubmitApi { source } => write!(formatter, "{source}"),
-            Self::BackupCreateApi { source } => write!(formatter, "{source}"),
-            Self::MachineAddApi { source } => write!(formatter, "{source}"),
+            Self::OperationApi { message } => formatter.write_str(message),
             Self::FirstNodeActivateApi { source } => {
                 write!(formatter, "first node activation failed: {source}")
             }
-            Self::MachineListApi { source } => write!(formatter, "{source}"),
-            Self::MachineInspectApi { source } => write!(formatter, "{source}"),
-            Self::ServiceListApi { source } => write!(formatter, "{source}"),
-            Self::ServiceInspectApi { source } => write!(formatter, "{source}"),
-            Self::LogsTailApi { source } => write!(formatter, "{source}"),
-            Self::OpsStatusApi { source } => write!(formatter, "{source}"),
-            Self::OpsWatchStatusApi { source } => write!(formatter, "{source}"),
-            Self::OpsWatchApi { source } => write!(formatter, "{source}"),
             Self::OpsWatchTimedOut {
                 operation_id,
                 timeout,
@@ -947,108 +567,6 @@ impl fmt::Display for PloyzctlExecutionError {
 }
 
 impl std::error::Error for PloyzctlExecutionError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalKeeperInstallError {
-    CaptureSetup {
-        command: String,
-        message: String,
-    },
-    Spawn {
-        command: String,
-        message: String,
-    },
-    Stdin {
-        command: String,
-        message: String,
-    },
-    Wait {
-        command: String,
-        message: String,
-    },
-    Timeout {
-        command: String,
-        timeout: Duration,
-        stdout: LimitedOutput,
-        stderr: LimitedOutput,
-    },
-    CaptureIncomplete {
-        command: String,
-        stdout: LimitedOutput,
-        stderr: LimitedOutput,
-    },
-    Failed {
-        command: String,
-        status: ExitStatus,
-        stdout: LimitedOutput,
-        stderr: LimitedOutput,
-    },
-}
-
-impl fmt::Display for LocalKeeperInstallError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CaptureSetup { command, message } => {
-                write!(formatter, "{command} output capture failed: {message}")
-            }
-            Self::Spawn { command, message } => {
-                write!(formatter, "{command} failed to start: {message}")
-            }
-            Self::Stdin { command, message } => {
-                write!(formatter, "{command} failed while writing stdin: {message}")
-            }
-            Self::Wait { command, message } => {
-                write!(formatter, "{command} failed while waiting: {message}")
-            }
-            Self::Timeout {
-                command,
-                timeout,
-                stdout,
-                stderr,
-            } => {
-                write!(
-                    formatter,
-                    "{command} timed out after {}s",
-                    timeout.as_secs()
-                )?;
-                write_output_summary(formatter, stdout, stderr)
-            }
-            Self::CaptureIncomplete {
-                command,
-                stdout,
-                stderr,
-            } => {
-                write!(formatter, "{command} output capture was incomplete")?;
-                write_output_summary(formatter, stdout, stderr)
-            }
-            Self::Failed {
-                command,
-                status,
-                stdout,
-                stderr,
-            } => {
-                write!(formatter, "{command} exited with status {status}")?;
-                write_output_summary(formatter, stdout, stderr)
-            }
-        }
-    }
-}
-
-impl std::error::Error for LocalKeeperInstallError {}
-
-fn write_output_summary(
-    formatter: &mut fmt::Formatter<'_>,
-    stdout: &LimitedOutput,
-    stderr: &LimitedOutput,
-) -> fmt::Result {
-    for summary in [stdout.summary("stdout"), stderr.summary("stderr")]
-        .into_iter()
-        .flatten()
-    {
-        write!(formatter, "; {summary}")?;
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

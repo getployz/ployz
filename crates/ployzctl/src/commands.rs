@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 pub mod backup;
 pub mod deploy;
@@ -34,32 +34,30 @@ pub enum PloyzctlCommand {
     LogsTail(logs::LogsTailCommand),
     OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
-    Help(String),
 }
 
 pub fn parse_invocation(
     args: impl IntoIterator<Item = String>,
 ) -> Result<PloyzctlInvocation, PloyzctlCliError> {
-    let parsed =
-        match InvocationCli::try_parse_from(std::iter::once("ployzctl".to_owned()).chain(args)) {
-            Ok(parsed) => parsed,
-            Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {
-                return Ok(PloyzctlInvocation {
-                    nats_url: None,
-                    command: PloyzctlCommand::Help(error.to_string()),
-                });
-            }
-            Err(error) => return Err(clap_error(error)),
-        };
+    let parsed = InvocationCli::try_parse_from(std::iter::once("ployzctl".to_owned()).chain(args))
+        .map_err(PloyzctlCliError::Clap)?;
+    let Some(command) = parsed.command else {
+        return Err(PloyzctlCliError::Clap(no_subcommand_help()));
+    };
 
     Ok(PloyzctlInvocation {
         nats_url: parsed.nats,
-        command: parsed
-            .command
-            .map(command_from_cli)
-            .transpose()?
-            .unwrap_or_else(|| PloyzctlCommand::Help(help_text())),
+        command: command_from_cli(command)?,
     })
+}
+
+/// Bare `ployzctl` renders help and exits successfully, exactly like
+/// `ployzctl --help`. A missing nested subcommand (`ployzctl service`)
+/// stays a usage error, so this cannot be `arg_required_else_help` — that
+/// error kind is shared with the nested case.
+fn no_subcommand_help() -> clap::Error {
+    InvocationCli::try_parse_from(["ployzctl", "--help"])
+        .expect_err("--help always parses as a DisplayHelp error")
 }
 
 #[derive(Debug, Parser)]
@@ -107,6 +105,7 @@ enum BackupCli {
 }
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 struct InitRootCli {
     #[command(flatten)]
     init: init::InitCli,
@@ -186,29 +185,16 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
 
 fn init_command_from_cli(command: InitRootCli) -> Result<PloyzctlCommand, PloyzctlCliError> {
     match command.command {
-        Some(subcommand) => {
-            if command.init.has_values() {
-                return Err(cli_error(
-                    "init command options cannot be combined with init subcommands",
-                ));
-            }
-            match subcommand {
-                InitCli::ActivateFirstNode(command) => init::first_node_activate_command(command)
-                    .map(PloyzctlCommand::InitFirstNodeActivate),
-                InitCli::JoinTemplate(command) => {
-                    init::join_template::machine_join_template_command(command)
-                        .map(PloyzctlCommand::InitJoinTemplate)
-                }
-            }
+        Some(InitCli::ActivateFirstNode(subcommand)) => {
+            init::first_node_activate_command(subcommand)
+                .map(PloyzctlCommand::InitFirstNodeActivate)
+        }
+        Some(InitCli::JoinTemplate(subcommand)) => {
+            init::join_template::machine_join_template_command(subcommand)
+                .map(PloyzctlCommand::InitJoinTemplate)
         }
         None => init::init_command(command.init).map(PloyzctlCommand::Init),
     }
-}
-
-#[must_use]
-pub fn help_text() -> String {
-    let mut command = InvocationCli::command();
-    command.render_help().to_string()
 }
 
 pub(crate) fn invalid_value(flag: &'static str, error: impl fmt::Display) -> PloyzctlCliError {
@@ -219,21 +205,28 @@ pub(crate) fn invalid_value(flag: &'static str, error: impl fmt::Display) -> Plo
 }
 
 pub(crate) fn cli_error(message: impl Into<String>) -> PloyzctlCliError {
-    PloyzctlCliError::Clap {
+    PloyzctlCliError::Usage {
         message: message.into(),
     }
 }
 
-pub(crate) fn clap_error(error: clap::Error) -> PloyzctlCliError {
-    PloyzctlCliError::Clap {
-        message: error.to_string(),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum PloyzctlCliError {
     InvalidValue { flag: &'static str, message: String },
-    Clap { message: String },
+    Usage { message: String },
+    Clap(clap::Error),
+}
+
+impl PloyzctlCliError {
+    /// Help requests parse as errors so the binary can route the rendered
+    /// help to stdout and exit successfully.
+    #[must_use]
+    pub fn is_help_requested(&self) -> bool {
+        match self {
+            Self::Clap(error) => error.kind() == clap::error::ErrorKind::DisplayHelp,
+            Self::InvalidValue { .. } | Self::Usage { .. } => false,
+        }
+    }
 }
 
 impl fmt::Display for PloyzctlCliError {
@@ -242,7 +235,8 @@ impl fmt::Display for PloyzctlCliError {
             Self::InvalidValue { flag, message } => {
                 write!(formatter, "{flag} has an invalid value: {message}")
             }
-            Self::Clap { message } => formatter.write_str(message),
+            Self::Usage { message } => formatter.write_str(message),
+            Self::Clap(error) => write!(formatter, "{error}"),
         }
     }
 }

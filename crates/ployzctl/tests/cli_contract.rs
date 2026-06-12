@@ -166,12 +166,9 @@ fn cli_rejects_option_like_init_node_values() {
 
 #[test]
 fn cli_renders_help_for_no_args() {
-    let PloyzctlCommand::Help(help) =
-        parse_command(std::iter::empty::<String>()).expect("no args renders help")
-    else {
-        panic!("expected help command");
-    };
-    assert!(help.contains("Usage: ployzctl"));
+    let error = parse_command(std::iter::empty::<String>()).expect_err("no args requests help");
+    assert!(error.is_help_requested());
+    assert!(error.to_string().contains("Usage: ployzctl"));
 }
 
 #[test]
