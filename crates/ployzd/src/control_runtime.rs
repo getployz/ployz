@@ -12,6 +12,7 @@ use crate::nats_authorization::{
 };
 use crate::node::client::NatsNodeLogsTailer;
 use crate::operation_api::OperationApiHandlers;
+use crate::process_support::shutdown_signal;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
@@ -170,17 +171,13 @@ pub async fn run_control_until_shutdown(
     config: &ControlProcessConfig,
 ) -> Result<(), ControlRuntimeError> {
     let runtime = start_control_runtime(config).await?;
-    wait_for_shutdown_signal()
+    shutdown_signal()
         .await
         .map_err(ControlRuntimeError::ShutdownSignal)?;
     runtime
         .shutdown()
         .await
         .map_err(ControlRuntimeError::ShutdownOperationApi)
-}
-
-async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
-    tokio::signal::ctrl_c().await
 }
 
 #[derive(Debug)]

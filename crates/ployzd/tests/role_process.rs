@@ -274,16 +274,16 @@ fn nats_client_roles_load_the_keeper_written_nats_url() {
         }
     );
     assert_eq!(
-        config.ebpf_bytecode_path,
+        config.artifacts.ebpf_bytecode_path,
         std::path::PathBuf::from("/tmp/ployz-ebpf")
     );
     assert_eq!(
-        config.ebpf_ctl_path,
+        config.artifacts.ebpf_ctl_path,
         std::path::PathBuf::from("/tmp/ployz-ebpf-ctl")
     );
-    assert_eq!(config.dataplane_bridge_ifname, "br-ployz");
-    assert_eq!(config.dataplane_wg_ifname, "wg-ployz");
-    assert_eq!(config.dataplane_endpoint_subnet, "10.77.2.0/24");
+    assert_eq!(config.dataplane.bridge_ifname, "br-ployz");
+    assert_eq!(config.dataplane.wg_ifname, "wg-ployz");
+    assert_eq!(config.dataplane.endpoint_subnet, "10.77.2.0/24");
     assert_eq!(
         config.public_ip,
         Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
@@ -307,7 +307,7 @@ fn node_role_derives_endpoint_subnet_from_node_id() {
     let DaemonProcessConfig::Node(config) = config else {
         panic!("node role should produce node config");
     };
-    assert_eq!(config.dataplane_endpoint_subnet, "10.42.2.0/24");
+    assert_eq!(config.dataplane.endpoint_subnet, "10.42.2.0/24");
 }
 
 #[test]

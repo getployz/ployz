@@ -5,7 +5,7 @@ use ployz_core::dataplane::{
 };
 use ployz_test_support::ids::{node_id, operation_id};
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
-use ployzd::dataplane_runtime::HostWireGuardEbpfPreparer;
+use ployzd::dataplane_runtime::{HostDataplaneConfig, HostWireGuardEbpfPreparer};
 use ployzd::deploy_worker::{NodeContainerRuntime, WireGuardEbpfPreparer};
 use ployzd::docker::runner::DockerManagedContainerRunner;
 use ployzd::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
@@ -56,13 +56,13 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
     );
 
     let peer_key = generated_wireguard_public_key();
-    let preparer = HostWireGuardEbpfPreparer::new(
+    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
         node_id("core_1"),
         ebpf_bytecode.clone(),
         ebpf_ctl.clone(),
         DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
         DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-    )
+    ))
     .with_command_timeout(Duration::from_secs(20));
 
     let ready = preparer
@@ -102,13 +102,13 @@ async fn local_privileged_node_service_prepares_real_docker_dataplane() {
         DEFAULT_DATAPLANE_BRIDGE_IFNAME,
     )
     .expect("connect to local Docker daemon");
-    let preparer = HostWireGuardEbpfPreparer::new(
+    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
         node_id.clone(),
         ebpf_bytecode,
         ebpf_ctl.clone(),
         DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
         DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-    )
+    ))
     .with_command_timeout(Duration::from_secs(20));
     let _service = start_node_runtime_service(
         nats.node_client.clone(),
@@ -169,13 +169,13 @@ async fn local_privileged_dataplane_reports_missing_bridge_as_domain_failure() {
     cleanup_dataplane();
     let ebpf_ctl = required_path_env(EBPF_CTL_ENV);
     let ebpf_bytecode = required_path_env(EBPF_BYTECODE_ENV);
-    let preparer = HostWireGuardEbpfPreparer::new(
+    let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
         node_id("core_1"),
         ebpf_bytecode,
         ebpf_ctl,
         "missing-ployz".to_owned(),
         DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-    )
+    ))
     .with_command_timeout(Duration::from_secs(20));
 
     let error = preparer

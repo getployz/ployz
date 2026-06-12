@@ -121,6 +121,11 @@ pub fn load_daemon_process_config(
     }
 }
 
+/// Reads `key` from the environment, treating empty values as unset.
+fn env_value(env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+    env(key).filter(|value| !value.is_empty())
+}
+
 /// Everything a role needs to make its authenticated NATS connection,
 /// before the seed file is read. A configured-but-absent seed **file** is
 /// not a config error: node and gateway enter the bounded
@@ -203,12 +208,10 @@ pub fn load_nats_connect_config(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<RoleNatsConnect, DaemonProcessConfigError> {
     let url = load_nats_url(role, env)?;
-    let ca_file = env(PLOYZ_NATS_CA_FILE_ENV)
-        .filter(|value| !value.is_empty())
+    let ca_file = env_value(env, PLOYZ_NATS_CA_FILE_ENV)
         .map(PathBuf::from)
         .ok_or_else(|| DaemonProcessConfigError::MissingNatsCaFile { role: role.clone() })?;
-    let seed_file = env(PLOYZ_NATS_NKEY_SEED_FILE_ENV)
-        .filter(|value| !value.is_empty())
+    let seed_file = env_value(env, PLOYZ_NATS_NKEY_SEED_FILE_ENV)
         .map(PathBuf::from)
         .ok_or_else(|| DaemonProcessConfigError::MissingNatsSeedFile { role: role.clone() })?;
     let principal = match role {
@@ -251,12 +254,10 @@ fn load_control_nats_authorization(
 ) -> ControlNatsAuthorizationConfig {
     let defaults = ControlNatsAuthorizationConfig::in_default_paths();
     ControlNatsAuthorizationConfig {
-        authorized_users_file: env(PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV)
-            .filter(|value| !value.is_empty())
+        authorized_users_file: env_value(env, PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.authorized_users_file),
-        node_seed_file: env(PLOYZ_NATS_NODE_SEED_FILE_ENV)
-            .filter(|value| !value.is_empty())
+        node_seed_file: env_value(env, PLOYZ_NATS_NODE_SEED_FILE_ENV)
             .map(PathBuf::from)
             .unwrap_or(defaults.node_seed_file),
     }
@@ -281,28 +282,24 @@ impl ControlNatsAuthorizationConfig {
 }
 
 fn load_ebpf_bytecode_path(env: &impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
-    env(PLOYZ_EBPF_BYTECODE_ENV)
-        .filter(|value| !value.is_empty())
+    env_value(env, PLOYZ_EBPF_BYTECODE_ENV)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_BYTECODE_PATH))
 }
 
 fn load_ebpf_ctl_path(env: &impl Fn(&str) -> Option<String>) -> std::path::PathBuf {
-    env(PLOYZ_EBPF_CTL_ENV)
-        .filter(|value| !value.is_empty())
+    env_value(env, PLOYZ_EBPF_CTL_ENV)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_EBPF_CTL_PATH))
 }
 
 fn load_dataplane_bridge_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
-    env(PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV)
-        .filter(|value| !value.is_empty())
+    env_value(env, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV)
         .unwrap_or_else(|| DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned())
 }
 
 fn load_dataplane_wg_ifname(env: &impl Fn(&str) -> Option<String>) -> String {
-    env(PLOYZ_DATAPLANE_WG_IFNAME_ENV)
-        .filter(|value| !value.is_empty())
+    env_value(env, PLOYZ_DATAPLANE_WG_IFNAME_ENV)
         .unwrap_or_else(|| DEFAULT_DATAPLANE_WG_IFNAME.to_owned())
 }
 
@@ -310,15 +307,14 @@ fn load_dataplane_endpoint_subnet(
     env: &impl Fn(&str) -> Option<String>,
     node_id: &NodeId,
 ) -> String {
-    env(PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV)
-        .filter(|value| !value.is_empty())
+    env_value(env, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV)
         .unwrap_or_else(|| default_endpoint_subnet(node_id))
 }
 
 fn load_node_public_ip(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<IpAddr>, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_NODE_PUBLIC_IP_ENV).filter(|value| !value.is_empty()) else {
+    let Some(value) = env_value(env, PLOYZ_NODE_PUBLIC_IP_ENV) else {
         return Ok(None);
     };
 
@@ -379,7 +375,7 @@ fn load_deploy_nodes(
 fn load_machine_bootstrap_url(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<MachineBootstrapUrl, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_MACHINE_BOOTSTRAP_URL_ENV).filter(|value| !value.is_empty()) else {
+    let Some(value) = env_value(env, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV) else {
         return Ok(default_machine_bootstrap_url());
     };
     MachineBootstrapUrl::try_new(value.clone())
@@ -399,8 +395,7 @@ fn load_machine_bootstrap(
 fn load_machine_join_template(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<Option<MachineJoinTemplate>, DaemonProcessConfigError> {
-    let Some(path) = env(PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV).filter(|value| !value.is_empty())
-    else {
+    let Some(path) = env_value(env, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV) else {
         return Ok(None);
     };
     let json = fs::read_to_string(&path).map_err(|source| {
@@ -420,7 +415,7 @@ fn load_machine_join_template(
 fn load_gateway_listen_addr(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<SocketAddr, DaemonProcessConfigError> {
-    let Some(value) = env(PLOYZ_GATEWAY_LISTEN_ADDR_ENV).filter(|value| !value.is_empty()) else {
+    let Some(value) = env_value(env, PLOYZ_GATEWAY_LISTEN_ADDR_ENV) else {
         return Ok(default_gateway_listen_addr());
     };
     value
@@ -646,11 +641,8 @@ impl ControlProcessConfig {
 pub struct NodeProcessConfig {
     pub node_id: NodeId,
     pub nats: RoleNatsConnect,
-    pub ebpf_bytecode_path: std::path::PathBuf,
-    pub ebpf_ctl_path: std::path::PathBuf,
-    pub dataplane_bridge_ifname: String,
-    pub dataplane_wg_ifname: String,
-    pub dataplane_endpoint_subnet: String,
+    pub artifacts: NodeProcessArtifacts,
+    pub dataplane: NodeDataplaneConfig,
     pub public_ip: Option<IpAddr>,
 }
 
@@ -700,11 +692,8 @@ impl NodeProcessConfig {
         Self {
             node_id,
             nats,
-            ebpf_bytecode_path: artifacts.ebpf_bytecode_path,
-            ebpf_ctl_path: artifacts.ebpf_ctl_path,
-            dataplane_bridge_ifname: dataplane.bridge_ifname,
-            dataplane_wg_ifname: dataplane.wg_ifname,
-            dataplane_endpoint_subnet: dataplane.endpoint_subnet,
+            artifacts,
+            dataplane,
             public_ip,
         }
     }

@@ -5,7 +5,7 @@ use ployz_core::ids::NodeId;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
-use super::{HostDataplaneRequirement, ebpf_ctl_args, unavailable};
+use super::{HostCommandPlan, ebpf_ctl_args, unavailable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HostDataplaneRouteProgramming {
@@ -16,11 +16,11 @@ pub(super) struct HostDataplaneRouteProgramming {
 }
 
 impl HostDataplaneRouteProgramming {
-    pub(super) fn requirements_for(
+    pub(super) fn plans_for(
         &self,
         node_id: &NodeId,
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
-    ) -> Result<Vec<HostDataplaneRequirement>, WireGuardEbpfPrepareError> {
+    ) -> Result<Vec<HostCommandPlan>, WireGuardEbpfPrepareError> {
         let local_route = endpoint_routes
             .iter()
             .find(|route| route.node_id == *node_id)
@@ -39,7 +39,7 @@ impl HostDataplaneRouteProgramming {
             .0
             .to_owned();
         let mut requirements = vec![
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "ip",
                 [
@@ -50,22 +50,22 @@ impl HostDataplaneRouteProgramming {
                     self.wg_ifname.clone(),
                 ],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sysctl",
                 ["-w", "net.ipv4.ip_forward=1"],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sysctl",
                 ["-w", "net.ipv4.conf.all.rp_filter=0"],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sysctl",
                 ["-w", "net.ipv4.conf.default.rp_filter=0"],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sysctl",
                 [
@@ -73,7 +73,7 @@ impl HostDataplaneRouteProgramming {
                     format!("net.ipv4.conf.{}.rp_filter=0", self.wg_ifname),
                 ],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sh",
                 [
@@ -83,7 +83,7 @@ impl HostDataplaneRouteProgramming {
                     self.bridge_ifname.clone(),
                 ],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sh",
                 [
@@ -94,7 +94,7 @@ impl HostDataplaneRouteProgramming {
                     local_route.endpoint_subnet.clone(),
                 ],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sh",
                 [
@@ -105,7 +105,7 @@ impl HostDataplaneRouteProgramming {
                     self.bridge_ifname.clone(),
                 ],
             ),
-            HostDataplaneRequirement::command_succeeds(
+            HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "sh",
                 [
@@ -123,7 +123,7 @@ impl HostDataplaneRouteProgramming {
                 .filter(|route| route.node_id != *node_id)
                 .flat_map(|route| {
                     [
-                        HostDataplaneRequirement::command_succeeds(
+                        HostCommandPlan::provisioning_command(
                             WireGuardEbpfComponent::WireGuard,
                             "ip",
                             [
@@ -136,7 +136,7 @@ impl HostDataplaneRouteProgramming {
                                 local_host_ip.clone(),
                             ],
                         ),
-                        HostDataplaneRequirement::command_succeeds(
+                        HostCommandPlan::provisioning_command(
                             WireGuardEbpfComponent::EbpfForwarding,
                             self.ebpf_ctl_program.clone(),
                             ebpf_ctl_args(
@@ -183,6 +183,7 @@ fn wireguard_host_cidr(endpoint_subnet: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataplane_runtime::HostCommandAction;
 
     #[test]
     fn route_programming_adds_only_peer_endpoint_subnets() {
@@ -193,7 +194,7 @@ mod tests {
             ebpf_pin_path: None,
         };
         let requirements = route_programming
-            .requirements_for(
+            .plans_for(
                 &node_id("node_a"),
                 &[
                     WireGuardEbpfEndpointRoute {
@@ -209,14 +210,14 @@ mod tests {
             .expect("route requirements are generated");
 
         assert!(
-            requirements.contains(&HostDataplaneRequirement::command_succeeds(
+            requirements.contains(&HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "ip",
                 ["addr", "replace", "10.42.1.254/32", "dev", "ployz-wg0"]
             ))
         );
         assert!(
-            requirements.contains(&HostDataplaneRequirement::command_succeeds(
+            requirements.contains(&HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::WireGuard,
                 "ip",
                 [
@@ -230,7 +231,7 @@ mod tests {
                 ]
             ))
         );
-        assert!(requirements.contains(&HostDataplaneRequirement::command_succeeds(
+        assert!(requirements.contains(&HostCommandPlan::provisioning_command(
             WireGuardEbpfComponent::WireGuard,
             "sh",
             [
@@ -241,7 +242,7 @@ mod tests {
                 "10.42.1.0/24"
             ]
         )));
-        assert!(requirements.contains(&HostDataplaneRequirement::command_succeeds(
+        assert!(requirements.contains(&HostCommandPlan::provisioning_command(
             WireGuardEbpfComponent::WireGuard,
             "sh",
             [
@@ -252,7 +253,7 @@ mod tests {
                 "br-ployz"
             ]
         )));
-        assert!(requirements.contains(&HostDataplaneRequirement::command_succeeds(
+        assert!(requirements.contains(&HostCommandPlan::provisioning_command(
             WireGuardEbpfComponent::WireGuard,
             "sh",
             [
@@ -264,16 +265,16 @@ mod tests {
             ]
         )));
         assert!(
-            requirements.contains(&HostDataplaneRequirement::command_succeeds(
+            requirements.contains(&HostCommandPlan::provisioning_command(
                 WireGuardEbpfComponent::EbpfForwarding,
                 "/usr/local/bin/ployz-ebpf-ctl",
                 ["route", "add-ifname", "10.42.2.0/24", "ployz-wg0"]
             ))
         );
-        assert!(!requirements.iter().any(|requirement| {
+        assert!(!requirements.iter().any(|plan| {
             matches!(
-                requirement,
-                HostDataplaneRequirement::CommandSucceeds {
+                &plan.action,
+                HostCommandAction::CommandSucceeds {
                     component: WireGuardEbpfComponent::EbpfForwarding,
                     args,
                     ..
@@ -292,7 +293,7 @@ mod tests {
         };
 
         let error = route_programming
-            .requirements_for(
+            .plans_for(
                 &node_id("node_a"),
                 &[WireGuardEbpfEndpointRoute {
                     node_id: node_id("node_b"),

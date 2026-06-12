@@ -31,6 +31,7 @@ pub mod node;
 pub mod node_credentials;
 pub mod operation_api;
 pub mod operation_lease;
+pub mod process_support;
 pub mod projection;
 pub mod role;
 pub mod services;
