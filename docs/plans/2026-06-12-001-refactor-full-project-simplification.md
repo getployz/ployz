@@ -1,7 +1,7 @@
 ---
 title: "refactor: Full-project simplification pass"
 type: refactor
-status: planned
+status: implemented
 date: 2026-06-12
 origin:
   - whole-project thermonuclear audit (6 parallel reviewers + synthesis)
