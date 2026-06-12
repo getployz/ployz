@@ -1,0 +1,566 @@
+//! Operation state, events, and status models.
+
+use serde::{Deserialize, Serialize};
+
+use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
+use crate::dataplane::{WireGuardEbpfComponent, WireGuardEbpfPrepareReport};
+use crate::deploy::{DeployCleanupContainer, DeployPlan};
+use crate::ids::{
+    CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectToken,
+    SubjectTokenError,
+};
+use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
+use crate::roles::FirstNodeGateway;
+use crate::state::ExpectedActiveService;
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
+
+mod accessors;
+mod backup;
+mod classification;
+mod events;
+mod lease;
+mod projection;
+mod replay;
+mod routes;
+mod text;
+
+pub use backup::{
+    BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
+};
+pub use classification::OperationSubjectRef;
+pub use events::{OperationEvent, OperationSubject};
+pub use lease::{
+    OperationLeaseDurationError, OperationLeaseDurationSeconds, OperationLeaseExpiresAt,
+    OperationLeaseExpiresAtError, OperationOwnerLease, OperationOwnershipStatus,
+};
+pub use projection::{
+    OperationProjection, ProjectionOperationState, StatusProjectionError, project_cert_transition,
+    project_deploy_transition, project_operation_event, validate_cert_transition,
+    validate_deploy_transition, validate_fresh_deploy_evidence,
+};
+pub use replay::{
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
+    OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
+};
+pub use routes::{RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RouteTarget};
+pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
+
+pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployRunningStage {
+    #[serde(rename = "preparing_wireguard_ebpf")]
+    PreparingWireGuardEbpf,
+    StartingContainers,
+    WaitingForHealth,
+    RouteCutover,
+    ActiveServiceCommit,
+    RemovingSupersededContainers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployCompletionOutcome {
+    Completed,
+    CompletedWithWarnings,
+    PartiallyCompleted,
+    PartiallyCompletedWithWarnings,
+}
+
+impl DeployCompletionOutcome {
+    #[must_use]
+    pub const fn as_subject(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::CompletedWithWarnings => "completed_with_warnings",
+            Self::PartiallyCompleted => "partially_completed",
+            Self::PartiallyCompletedWithWarnings => "partially_completed_with_warnings",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum CertRunningStage {
+    ChallengePublished,
+    ValidationStarted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Deploy,
+    Cert,
+    MachineAdd,
+    Backup,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployOperationState {
+    Accepted,
+    Planning,
+    Running { stage: DeployRunningStage },
+    Completed { outcome: DeployCompletionOutcome },
+    Failed { failure: DeployOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl DeployOperationState {
+    #[must_use]
+    pub const fn completed() -> Self {
+        Self::Completed {
+            outcome: DeployCompletionOutcome::Completed,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        match self {
+            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Accepted | Self::Planning | Self::Running { .. } => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertOperationState {
+    Accepted,
+    Running { stage: CertRunningStage },
+    Completed,
+    Failed { failure: CertOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl CertOperationState {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        match self {
+            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Accepted | Self::Running { .. } => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployOperationFailure {
+    PlanningFailed {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        message: FailureMessage,
+    },
+    ArtifactUnavailable {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        reason: ArtifactUnavailableReason,
+    },
+    #[serde(rename = "wireguard_ebpf_unavailable")]
+    WireGuardEbpfUnavailable {
+        node_id: NodeId,
+        component: WireGuardEbpfComponent,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    #[serde(rename = "wireguard_ebpf_preparation_timed_out")]
+    WireGuardEbpfPreparationTimedOut {
+        nodes: Vec<NodeId>,
+        timeout_seconds: u32,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    #[serde(rename = "wireguard_ebpf_invalid_report")]
+    WireGuardEbpfInvalidReport {
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    RuntimeUnavailable {
+        node_id: NodeId,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    HealthCheckFailed {
+        health_check: HealthCheckFailure,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    ControlPlaneCommitFailed {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        message: FailureMessage,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    ActiveServiceCommitRejected {
+        service_id: ServiceId,
+        revision_id: RevisionId,
+        reason: ActiveServiceCommitFailure,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    RouteCutoverFailed {
+        route: RouteTarget,
+        reason: RouteCutoverFailureReason,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertOperationFailure {
+    ChallengePublishFailed {
+        cert_id: CertId,
+        message: FailureMessage,
+    },
+    AcmeValidationFailed {
+        cert_id: CertId,
+        message: FailureMessage,
+        retained_active_cert: Option<ActiveCertState>,
+    },
+    ActiveCertCommitFailed {
+        cert_id: CertId,
+        bundle_ref: CertBundleRef,
+        validity: CertValidityWindow,
+        message: FailureMessage,
+        retained_active_cert: Option<ActiveCertState>,
+    },
+}
+
+impl CertOperationFailure {
+    #[must_use]
+    pub const fn cert_id(&self) -> &CertId {
+        match self {
+            Self::ChallengePublishFailed { cert_id, .. }
+            | Self::AcmeValidationFailed { cert_id, .. }
+            | Self::ActiveCertCommitFailed { cert_id, .. } => cert_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ActiveServiceCommitFailure {
+    ActiveServiceChanged {
+        expected_current: ExpectedActiveService,
+        current_revision: Option<RevisionId>,
+        attempted_revision: RevisionId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArtifactUnavailableReason {
+    BundleMissing,
+    BundleUnreadable { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HealthCheckFailure {
+    ProbeFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    TimedOut {
+        timeout_seconds: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RouteCutoverFailureReason {
+    GatewayUnavailable { node_id: NodeId },
+    RouteRejected { message: FailureMessage },
+    StateStoreFailed { message: FailureMessage },
+    TimedOut { timeout_seconds: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RetainedArtifact {
+    CreatedContainer {
+        node_id: NodeId,
+        container_id: ContainerId,
+        inspect_hint: OperatorHint,
+    },
+    StartedContainer {
+        node_id: NodeId,
+        container_id: ContainerId,
+        log_hint: OperatorHint,
+    },
+    ContainerStopFailed {
+        node_id: NodeId,
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OperationStatus {
+    Deploy {
+        id: OperationId,
+        service_id: ServiceId,
+        state: DeployOperationState,
+        last_event_sequence: EventSequence,
+    },
+    Cert {
+        id: OperationId,
+        cert_id: CertId,
+        state: CertOperationState,
+        last_event_sequence: EventSequence,
+    },
+    MachineAdd {
+        id: OperationId,
+        node_id: NodeId,
+        name: MachineName,
+        gateway: FirstNodeGateway,
+        state: MachineAddOperationState,
+        last_event_sequence: EventSequence,
+    },
+    Backup {
+        id: OperationId,
+        state: BackupOperationState,
+        last_event_sequence: EventSequence,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct OperationStatusSnapshot {
+    pub status: OperationStatus,
+    pub ownership: OperationOwnershipStatus,
+}
+
+impl OperationStatusSnapshot {
+    #[must_use]
+    pub fn new(status: OperationStatus, ownership: OperationOwnershipStatus) -> Self {
+        Self { status, ownership }
+    }
+}
+
+impl OperationStatus {
+    #[must_use]
+    pub fn deploy_accepted(
+        id: OperationId,
+        service_id: ServiceId,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::Deploy {
+            id,
+            service_id,
+            state: DeployOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn cert_accepted(id: OperationId, cert_id: CertId, event_sequence: EventSequence) -> Self {
+        Self::Cert {
+            id,
+            cert_id,
+            state: CertOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn machine_add_pending(
+        id: OperationId,
+        node_id: NodeId,
+        name: MachineName,
+        gateway: FirstNodeGateway,
+        join_token: IssuedJoinToken,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::MachineAdd {
+            id,
+            node_id,
+            name,
+            gateway,
+            state: MachineAddOperationState::Pending { join_token },
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn backup_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
+        Self::Backup {
+            id,
+            state: BackupOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        match self {
+            Self::Deploy { state, .. } => state.is_terminal(),
+            Self::Cert { state, .. } => state.is_terminal(),
+            Self::MachineAdd { state, .. } => state.is_terminal(),
+            Self::Backup { state, .. } => state.is_terminal(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployTransition {
+    Planning,
+    Running { stage: DeployRunningStage },
+    Completed { outcome: DeployCompletionOutcome },
+    Failed { failure: DeployOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployEvidence {
+    PlanCreated {
+        plan: DeployPlan,
+    },
+    WireGuardEbpfPrepared {
+        report: WireGuardEbpfPrepareReport,
+    },
+    ContainerStarted {
+        node_id: NodeId,
+        container_id: ContainerId,
+    },
+    HealthCheckStarted,
+    CleanupFinished {
+        removed: Vec<DeployCleanupContainer>,
+        failed: Vec<DeployCleanupFailure>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployCleanupFailure {
+    pub target: DeployCleanupContainer,
+    pub message: FailureMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertTransition {
+    Running { stage: CertRunningStage },
+    Completed,
+    Failed { failure: CertOperationFailure },
+    Cancelled { reason: CancellationReason },
+}
+
+impl CertTransition {
+    #[must_use]
+    pub fn state(&self) -> CertOperationState {
+        match self {
+            Self::Running { stage } => CertOperationState::Running { stage: *stage },
+            Self::Completed => CertOperationState::Completed,
+            Self::Failed { failure } => CertOperationState::Failed {
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => CertOperationState::Cancelled {
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
+impl DeployEvidence {
+    #[must_use]
+    pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
+        match self {
+            Self::PlanCreated { plan } => OperationEvent::DeployPlanCreated {
+                operation_id: operation_id.clone(),
+                plan: plan.clone(),
+            },
+            Self::WireGuardEbpfPrepared { report } => OperationEvent::DeployWireGuardEbpfPrepared {
+                operation_id: operation_id.clone(),
+                report: report.clone(),
+            },
+            Self::ContainerStarted {
+                node_id,
+                container_id,
+            } => OperationEvent::DeployContainerStarted {
+                operation_id: operation_id.clone(),
+                node_id: node_id.clone(),
+                container_id: container_id.clone(),
+            },
+            Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {
+                operation_id: operation_id.clone(),
+            },
+            Self::CleanupFinished { removed, failed } => OperationEvent::DeployCleanupFinished {
+                operation_id: operation_id.clone(),
+                removed: removed.clone(),
+                failed: failed.clone(),
+            },
+        }
+    }
+}
+
+impl DeployTransition {
+    #[must_use]
+    pub const fn completed() -> Self {
+        Self::Completed {
+            outcome: DeployCompletionOutcome::Completed,
+        }
+    }
+
+    #[must_use]
+    pub fn state(&self) -> DeployOperationState {
+        match self {
+            Self::Planning => DeployOperationState::Planning,
+            Self::Running { stage } => DeployOperationState::Running { stage: *stage },
+            Self::Completed { outcome } => DeployOperationState::Completed { outcome: *outcome },
+            Self::Failed { failure } => DeployOperationState::Failed {
+                failure: failure.clone(),
+            },
+            Self::Cancelled { reason } => DeployOperationState::Cancelled {
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"OperationIdempotencyKey\">")
+)]
+#[serde(transparent)]
+pub struct OperationIdempotencyKey(SubjectToken);
+
+impl OperationIdempotencyKey {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
+        Ok(Self(SubjectToken::try_new(value)?))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+positive_u64_wire_newtype! {
+    pub struct EventSequence;
+    ts_brand: "Brand<string, \"EventSequence\">";
+    accessor: get;
+    error: EventSequenceError;
+}
+
+positive_u64_wire_error! {
+    pub enum EventSequenceError;
+    noun: "event sequence";
+}
