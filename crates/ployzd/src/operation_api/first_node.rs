@@ -41,7 +41,7 @@ pub async fn init_first_node_activate(
             idempotency_key: plan.idempotency_key,
             node_id: request.node_id,
             name: plan.name,
-            gateway: request.gateway,
+            roles: request.roles,
         },
     )
     .await

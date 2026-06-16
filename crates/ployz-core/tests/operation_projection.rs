@@ -9,7 +9,7 @@ use ployz_core::ops::{
     OperationStatus, ProjectionOperationState, StatusProjectionError, project_deploy_transition,
     project_operation_event,
 };
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{
     container_id, event_sequence, machine_name, node_id, operation_id, service_id,
 };
@@ -507,7 +507,7 @@ fn machine_add_submitted_event_is_satisfied_by_accepted_status() {
         operation_id("op_machine"),
         node_id("node_2"),
         machine_name("edge_2"),
-        FirstNodeGateway::Skip,
+        InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
         event_sequence(7),
     );
@@ -528,7 +528,7 @@ fn machine_add_rejects_submitted_event_for_another_node() {
         operation_id("op_machine"),
         node_id("node_2"),
         machine_name("edge_2"),
-        FirstNodeGateway::Skip,
+        InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
         event_sequence(7),
     );
@@ -553,7 +553,7 @@ fn machine_add_cancel_records_terminal_status() {
         operation_id("op_machine"),
         node_id("node_2"),
         machine_name("edge_2"),
-        FirstNodeGateway::Skip,
+        InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
         event_sequence(7),
     );
@@ -574,7 +574,7 @@ fn machine_add_cancel_records_terminal_status() {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
                 name: machine_name("edge_2"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Cancelled { reason },
                 last_event_sequence: event_sequence(8),
             }),
@@ -611,7 +611,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
             id: operation_id("op_machine"),
             node_id: node_id("node_2"),
             name: machine_name("edge_2"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             state: MachineAddOperationState::Joining { joined_at },
             last_event_sequence: event_sequence(8),
         }
@@ -631,7 +631,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
                 name: machine_name("edge_2"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Completed,
                 last_event_sequence: event_sequence(9),
             }),
@@ -647,7 +647,7 @@ fn machine_add_join_token_failure_after_join_is_rejected() {
         id: operation_id("op_machine"),
         node_id: node_id("node_2"),
         name: machine_name("edge_2"),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         state: MachineAddOperationState::Joining { joined_at },
         last_event_sequence: event_sequence(8),
     };
@@ -688,7 +688,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
         id: operation_id("op_machine"),
         node_id: node_id("node_2"),
         name: machine_name("edge_2"),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         state: MachineAddOperationState::Joining { joined_at },
         last_event_sequence: event_sequence(8),
     };
@@ -711,7 +711,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
                 name: machine_name("edge_2"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Failed { failure },
                 last_event_sequence: event_sequence(9),
             }),
@@ -727,7 +727,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
         id: operation_id("op_machine"),
         node_id: node_id("node_2"),
         name: machine_name("edge_2"),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         state: MachineAddOperationState::Joining { joined_at },
         last_event_sequence: event_sequence(8),
     };
@@ -750,7 +750,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
                 id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
                 name: machine_name("edge_2"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Failed { failure },
                 last_event_sequence: event_sequence(9),
             }),
@@ -886,7 +886,7 @@ fn machine_add_pending_status() -> OperationStatus {
         operation_id("op_machine"),
         node_id("node_2"),
         machine_name("edge_2"),
-        FirstNodeGateway::Skip,
+        InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
         event_sequence(7),
     )
@@ -927,7 +927,7 @@ fn machine_add_submitted_event(node_id: &str) -> OperationEvent {
         operation_id: operation_id("op_machine"),
         node_id: self::node_id(node_id),
         name: machine_name("edge_2"),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         join_token: issued_join_token(),
     }
 }

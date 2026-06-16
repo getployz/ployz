@@ -184,7 +184,6 @@ async fn load_existing_stream(
         storage_from_nats(config.storage)?,
         observed_replicas(config.num_replicas)?,
         discard_from_nats(config.discard)?,
-        config.allow_message_schedules,
     )))
 }
 
@@ -195,10 +194,8 @@ fn observed_stream(
     storage: StorageBackend,
     replicas: ResourceReplicas,
     discard: DiscardPolicy,
-    allow_message_schedules: bool,
 ) -> StreamSpec {
-    let mut spec = StreamSpec::new(name, subjects, retention, storage, discard)
-        .with_message_schedules(allow_message_schedules);
+    let mut spec = StreamSpec::new(name, subjects, retention, storage, discard);
     spec = spec.with_observed_replicas(replicas);
     spec
 }
@@ -328,7 +325,6 @@ async fn create_stream(
             storage: nats_storage(stream.storage),
             num_replicas: stream.replicas().as_usize(),
             discard: nats_discard(stream.discard),
-            allow_message_schedules: stream.allow_message_schedules,
             ..Default::default()
         }),
     )

@@ -4,10 +4,6 @@ use crate::ids::{CertId, ContainerId, NodeId, OperationId};
 use crate::ops::DeployRunningStage;
 
 pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
-pub const JOBS_STREAM_SUBJECT: &str = "plz.v1.job.>";
-pub const AUDIT_STREAM_SUBJECT: &str = "plz.v1.audit.>";
-pub const OBS_TRANSITION_STREAM_SUBJECT: &str = "plz.v1.obs.node.>";
-pub const SCHEDULE_STREAM_SUBJECT: &str = "plz.v1.sched.>";
 
 pub const API_SERVICE_SCOPE: &str = "plz.v1.svc.api.>";
 pub const NODE_SERVICE_SCOPE: &str = "plz.v1.svc.node.>";

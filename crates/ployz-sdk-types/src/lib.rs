@@ -65,7 +65,7 @@ pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, DeployCleanupFailure,
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployRunningStage,
 };
-pub use ployz_core::roles::FirstNodeGateway;
+pub use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 pub use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ExpectedActiveService,
     GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
@@ -97,7 +97,7 @@ pub struct MachineAddRequest {
     pub idempotency_key: OperationIdempotencyKey,
     pub node_id: NodeId,
     pub name: MachineName,
-    pub gateway: MachineAddGateway,
+    pub roles: InstallRolePolicy,
 }
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
@@ -109,7 +109,7 @@ pub type InitFirstNodeActivateResponse =
 #[serde(deny_unknown_fields)]
 pub struct InitFirstNodeActivateRequest {
     pub node_id: NodeId,
-    pub gateway: MachineAddGateway,
+    pub roles: InstallRolePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -134,13 +134,6 @@ pub type MachineJoinRedeemResponse =
 
 pub type MachineJoinReportResponse =
     OperationApiResponse<MachineJoinReported, MachineJoinReportError>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum MachineAddGateway {
-    Install,
-    Skip,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -389,7 +382,7 @@ pub struct MachineJoinRedeemed {
     pub operation_id: OperationId,
     pub node_id: NodeId,
     pub name: MachineName,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

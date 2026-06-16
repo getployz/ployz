@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::joined_node_process_set;
+use ployz_core::roles::plan_joined_node_process_set;
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use ployz_keeper::cli::{KeeperCommand, load_command};
@@ -402,7 +402,7 @@ fn keeper_join_target_with_public_ip(
     )
     .map_err(|error| failure_message(&format!("invalid eBPF ctl install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(
-        joined_node_process_set(&node_id, redeemed.gateway)
+        plan_joined_node_process_set(&node_id, redeemed.roles)
             .roles()
             .to_vec(),
     )
@@ -460,7 +460,7 @@ mod tests {
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-    use ployz_core::roles::FirstNodeGateway;
+    use ployz_core::roles::InstallRolePolicy;
     use ployz_sdk_types::{MachineJoinRedeemResult, MachineJoinRedeemed};
 
     #[test]
@@ -469,7 +469,7 @@ mod tests {
             operation_id: OperationId::try_new("op_machine").expect("valid operation id"),
             node_id: NodeId::try_new("node_2").expect("valid node id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
@@ -498,7 +498,7 @@ mod tests {
             operation_id: OperationId::try_new("op_machine").expect("valid operation id"),
             node_id: NodeId::try_new("node_2").expect("valid node id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),

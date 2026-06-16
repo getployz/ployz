@@ -16,9 +16,11 @@ use ployz_core::ops::{
     ReplayedOperationEvent,
 };
 use ployz_core::state::ActiveServiceState;
-use ployz_sdk_types::{LogsTailLines, MachineAddGateway, ServiceSnapshot};
+use ployz_sdk_types::{LogsTailLines, ServiceSnapshot};
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
-use ployzctl::commands::init::{FirstNodeGateway, FirstNodeInitOutput, first_node_process_set};
+use ployzctl::commands::init::{
+    FirstNodeInitOutput, InstallRolePolicy, plan_first_node_process_set,
+};
 use ployzctl::commands::machine::MachineName;
 use ployzctl::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployzctl::commands::service::{ServiceInspectOutput, ServiceListOutput};
@@ -27,30 +29,47 @@ use ployzctl::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse
 #[test]
 fn init_first_node_reports_supervised_product_roles() {
     let node_id = NodeId::try_new("node_1").expect("valid node id");
-    let output = FirstNodeInitOutput::summary(node_id.clone(), FirstNodeGateway::Skip).render();
+    let roles = InstallRolePolicy::install_all().without_gateway();
+    let output = FirstNodeInitOutput::summary(node_id.clone(), roles).render();
 
     assert_eq!(
         output,
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node dns\n"
     );
     assert_eq!(
-        first_node_process_set(&node_id, FirstNodeGateway::Skip).roles(),
+        plan_first_node_process_set(&node_id, roles).roles(),
         &[
             ployz_core::roles::DaemonProcessRole::Control,
             ployz_core::roles::DaemonProcessRole::Node(node_id),
+            ployz_core::roles::DaemonProcessRole::Dns,
         ]
     );
 }
 
 #[test]
 fn cli_init_activate_first_node_is_explicit_subcommand() {
+    let command =
+        parse_command(["init", "activate-first-node", "--node", "node_1"].map(str::to_owned))
+            .expect("activation-only init command parses");
+
+    let PloyzctlCommand::InitFirstNodeActivate(command) = command else {
+        panic!("expected first-node activation command");
+    };
+
+    assert_eq!(command.node_id, node_id("node_1"));
+    assert_eq!(command.roles, InstallRolePolicy::install_all());
+}
+
+#[test]
+fn cli_init_activate_first_node_accepts_role_opt_outs() {
     let command = parse_command(
         [
             "init",
             "activate-first-node",
             "--node",
             "node_1",
-            "--gateway",
+            "--no-gateway",
+            "--no-dns",
         ]
         .map(str::to_owned),
     )
@@ -60,8 +79,12 @@ fn cli_init_activate_first_node_is_explicit_subcommand() {
         panic!("expected first-node activation command");
     };
 
-    assert_eq!(command.node_id, node_id("node_1"));
-    assert_eq!(command.gateway, FirstNodeGateway::Install);
+    assert_eq!(
+        command.roles,
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns()
+    );
 }
 
 #[test]
@@ -73,7 +96,7 @@ fn cli_init_can_emit_keeper_first_node_install_command() {
     };
 
     assert_eq!(command.node_id(), &node_id("node_1"));
-    assert_eq!(command.gateway(), FirstNodeGateway::Install);
+    assert_eq!(command.roles(), InstallRolePolicy::install_all());
     let rendered = command.render();
     assert!(rendered.contains("install ployz-keeper first-node-install --spec -\n"));
     assert!(rendered.contains(r#""node_id": "node_1""#));
@@ -141,7 +164,7 @@ fn cli_init_validates_keeper_install_inputs_before_rendering() {
 
 #[test]
 fn cli_dispatches_init_first_node() {
-    let command = parse_command(["init", "--gateway", "--node", "node_1"].map(str::to_owned))
+    let command = parse_command(["init", "--node", "node_1"].map(str::to_owned))
         .expect("init command parses");
 
     let PloyzctlCommand::Init(command) = command else {
@@ -149,7 +172,7 @@ fn cli_dispatches_init_first_node() {
     };
     assert_eq!(
         command.render(),
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
     );
 }
 
@@ -160,7 +183,7 @@ fn cli_rejects_init_without_node() {
 
 #[test]
 fn cli_rejects_option_like_init_node_values() {
-    assert!(parse_command(["init", "--node", "--gateway"].map(str::to_owned)).is_err());
+    assert!(parse_command(["init", "--node", "--no-gateway"].map(str::to_owned)).is_err());
     assert!(parse_command(["init", "--node", "--help"].map(str::to_owned)).is_err());
 }
 
@@ -272,7 +295,7 @@ fn cli_requires_backup_restore_plan_flag() {
 #[test]
 fn cli_dispatches_machine_add_request() {
     let command =
-        parse_command(machine_add_args_with_gateway()).expect("machine add command parses");
+        parse_command(machine_add_args_with_default_roles()).expect("machine add command parses");
 
     let PloyzctlCommand::MachineAdd(command) = command else {
         panic!("expected machine add command");
@@ -287,7 +310,7 @@ fn cli_dispatches_machine_add_request() {
         command.name,
         MachineName::try_new("edge_2").expect("valid machine name")
     );
-    assert_eq!(command.gateway, MachineAddGateway::Install);
+    assert_eq!(command.roles, InstallRolePolicy::install_all());
 }
 
 #[test]
@@ -426,7 +449,7 @@ fn binary_help_only_advertises_implemented_commands() {
 
 #[test]
 fn binary_dispatches_init_first_node() {
-    let output = run_ployzctl(&["init", "--node", "node_1", "--gateway"]);
+    let output = run_ployzctl(&["init", "--node", "node_1"]);
 
     assert!(
         output.status.success(),
@@ -436,7 +459,7 @@ fn binary_dispatches_init_first_node() {
     );
     assert_eq!(
         stdout(&output),
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
     );
     assert_eq!(stderr(&output), "");
 }
@@ -610,78 +633,153 @@ fn binary_rejects_unimplemented_commands() {
 fn binary_machine_add_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .args(machine_add_arg_refs())
         .output()
         .expect("ployzctl binary runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
 }
 
 #[test]
 fn binary_ops_watch_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .args(["ops", "watch", "op_deploy"])
         .output()
         .expect("ployzctl binary runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
 }
 
 #[test]
 fn binary_ops_status_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .args(["ops", "status", "op_deploy"])
         .output()
         .expect("ployzctl binary runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
 }
 
 #[test]
 fn binary_machine_list_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .args(["machine", "list"])
         .output()
         .expect("ployzctl binary runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
+}
+
+/// U2: a corrupt context file is a loud error, not a silent fallback to the
+/// missing-context message — otherwise a recorded cluster would be ignored.
+#[test]
+fn binary_rejects_corrupt_cluster_context_file() {
+    let config_home = temp_dir("ployzctl-corrupt-context");
+    let context_dir = config_home.join("ployz");
+    fs::create_dir_all(&context_dir).expect("context dir can be created");
+    fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args(["machine", "list"])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(stderr(&output).contains("cluster context file"));
+    assert!(stderr(&output).contains("context.json"));
+}
+
+#[test]
+fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
+    let config_home = temp_dir("ployzctl-corrupt-context-local-init");
+    let context_dir = config_home.join("ployz");
+    fs::create_dir_all(&context_dir).expect("context dir can be created");
+    fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("HOME")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args(["init", "--node", "node_1"])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(
+        stdout(&output),
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
+    );
+    assert_eq!(stderr(&output), "");
 }
 
 #[test]
 fn binary_machine_inspect_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .args(["machine", "inspect", "node_2"])
         .output()
         .expect("ployzctl binary runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
 }
 
 #[test]
 fn init_first_node_can_include_gateway_role() {
     let output = FirstNodeInitOutput::summary(
         NodeId::try_new("node_1").expect("valid node id"),
-        FirstNodeGateway::Install,
+        InstallRolePolicy::install_all(),
     )
     .render();
 
     assert_eq!(
         output,
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway\n"
+        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
     );
 }
 
@@ -859,7 +957,7 @@ fn ops_status_renders_unclaimed_machine_add() {
             id: operation_id("op_machine"),
             node_id: node_id("node_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             state: ployz_core::machine::MachineAddOperationState::Completed,
             last_event_sequence: event_sequence(9),
         },
@@ -869,7 +967,7 @@ fn ops_status_renders_unclaimed_machine_add() {
 
     assert_eq!(
         output,
-        "operation op_machine\nkind machine-add\nnode node_2 name edge_2 gateway skip\nstate completed\nlast-event 9\nownership unclaimed\n"
+        "operation op_machine\nkind machine-add\nnode node_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\nownership unclaimed\n"
     );
 }
 
@@ -932,10 +1030,8 @@ fn deploy_request() -> DeployRequest {
     }
 }
 
-fn machine_add_args_with_gateway() -> impl Iterator<Item = String> {
-    machine_add_arg_refs()
-        .into_iter()
-        .chain(["--gateway".to_owned()])
+fn machine_add_args_with_default_roles() -> impl Iterator<Item = String> {
+    machine_add_arg_refs().into_iter()
 }
 
 fn machine_add_args_without(flag: &str) -> Vec<String> {

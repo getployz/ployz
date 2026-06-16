@@ -15,7 +15,7 @@ use ployz_core::ops::{
     BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
     FailureMessage, OperationStatus,
 };
-use ployz_nats::kv::{KV_CORE_BUCKET, KV_LOCKS_BUCKET};
+use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::KV_OBS_BUCKET;
 use ployz_nats::operations::{
@@ -23,12 +23,8 @@ use ployz_nats::operations::{
 };
 use std::fmt;
 
-pub(crate) const CONTROL_PLANE_KV_BUCKETS: [&str; 4] = [
-    KV_CORE_BUCKET,
-    KV_OPS_BUCKET,
-    KV_OBS_BUCKET,
-    KV_LOCKS_BUCKET,
-];
+pub(crate) const CONTROL_PLANE_KV_BUCKETS: [&str; 3] =
+    [KV_CORE_BUCKET, KV_OPS_BUCKET, KV_OBS_BUCKET];
 
 #[derive(Clone)]
 pub struct BackupOperationRuntime {

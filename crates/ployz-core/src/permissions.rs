@@ -14,13 +14,12 @@ use crate::ids::NodeId;
 use crate::security::NatsPrincipal;
 use crate::state::{
     ACTIVE_MACHINE_STATE_PREFIX, ACTIVE_ROUTE_STATE_PREFIX, ACTIVE_SERVICE_STATE_PREFIX,
-    GatewayStatusObservationKey, KV_CORE_BUCKET, KV_LOCKS_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
+    GatewayStatusObservationKey, KV_CORE_BUCKET, KV_OBS_BUCKET, KV_OPS_BUCKET,
     NATS_AUTHORIZED_USER_PREFIX, NodeContainerObservationKey, NodePublicIpObservationKey,
 };
 use crate::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT,
-    JOBS_STREAM_SUBJECT, NODE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, node_observation_scope,
-    node_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, NODE_SERVICE_SCOPE,
+    OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
 };
 
 const CORE_KV_WRITES: &str = "$KV.KV_CORE.>";
@@ -77,11 +76,6 @@ pub fn nats_authorized_user_kv_write_scope() -> String {
 #[must_use]
 pub fn operation_status_kv_write_scope() -> String {
     format!("$KV.{KV_OPS_BUCKET}.>")
-}
-
-#[must_use]
-pub fn lock_kv_write_scope() -> String {
-    format!("$KV.{KV_LOCKS_BUCKET}.>")
 }
 
 /// A node's observation writes in `KV_OBS`, fenced to its own keys.
@@ -162,8 +156,6 @@ impl NatsPermissionProfile {
                 publish: SubjectPermissions::allowing([
                     NODE_SERVICE_SCOPE.to_owned(),
                     OPS_STREAM_SUBJECT.to_owned(),
-                    JOBS_STREAM_SUBJECT.to_owned(),
-                    AUDIT_STREAM_SUBJECT.to_owned(),
                     JETSTREAM_API_SCOPE.to_owned(),
                     JETSTREAM_ACK_SCOPE.to_owned(),
                     BACKUP_OBJECT_SCOPE.to_owned(),
@@ -172,12 +164,10 @@ impl NatsPermissionProfile {
                     active_machine_state_kv_write_scope(),
                     nats_authorized_user_kv_write_scope(),
                     operation_status_kv_write_scope(),
-                    lock_kv_write_scope(),
                 ]),
                 // Control serves the user-facing command API, so it
                 // subscribes the API service scope and answers requests.
                 subscribe: SubjectPermissions::allowing([
-                    JOBS_STREAM_SUBJECT.to_owned(),
                     API_SERVICE_SCOPE.to_owned(),
                     inbox_scope,
                 ]),

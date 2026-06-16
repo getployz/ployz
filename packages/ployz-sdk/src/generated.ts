@@ -76,7 +76,7 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, ownership: OperationOwnershipStatus, };
 
@@ -94,7 +94,11 @@ export type MachineReadinessEvidence = { nats_connection: MachineReadinessCheck,
 
 export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
 
-export type FirstNodeGateway = "install" | "skip";
+export type GatewayRole = "install" | "skip";
+
+export type DnsRole = "install" | "skip";
+
+export type InstallRolePolicy = { gateway: GatewayRole, dns: DnsRole, };
 
 export type DeployOperationState = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, } | { "state": "completed", outcome: DeployCompletionOutcome, } | { "state": "failed", failure: DeployOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -110,7 +114,7 @@ export type BackupOperationState = { "state": "accepted" } | { "state": "running
 
 export type BackupRunningStage = { "stage": "snapshotting_control_plane" } | { "stage": "writing_manifest", artifact: BackupArtifact, };
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_wireguard_ebpf_prepared", operation_id: OperationId, report: WireGuardEbpfPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, node_id: NodeId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_wireguard_ebpf_prepared", operation_id: OperationId, report: WireGuardEbpfPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, node_id: NodeId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -214,7 +218,7 @@ export type GatewayStatusObservation = { node_id: NodeId, listen_addr: string, s
 
 export type MachineSnapshot = { active: ActiveMachineState, public_ip: NodePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
 
-export type InitFirstNodeActivateRequest = { node_id: NodeId, gateway: MachineAddGateway, };
+export type InitFirstNodeActivateRequest = { node_id: NodeId, roles: InstallRolePolicy, };
 
 export type InitFirstNodeActivated = { operation_id: OperationId, node_id: NodeId, };
 
@@ -224,9 +228,7 @@ export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: 
 
 export type BackupCreateRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, };
 
-export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, gateway: MachineAddGateway, };
-
-export type MachineAddGateway = "install" | "skip";
+export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, };
 
 export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_bundle: MachineJoinBundle, join_token: MachineJoinToken, };
 
@@ -296,7 +298,7 @@ export type MachineJoinBundle = { material: MachineJoinMaterial, };
 
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 
-export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, gateway: FirstNodeGateway, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
 export type MachineJoinRedeemResult = "joined" | "already_joined";
 

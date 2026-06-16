@@ -58,6 +58,55 @@ fn install_line_env(line: &str, name: &str) -> String {
         .to_owned()
 }
 
+/// Where [`write_installer_wrapper`] leaves the wrapped installer inside a
+/// machine; product commands run it via `--installer-script`.
+pub const INSTALLER_WRAPPER_PATH: &str = "/tmp/ployz-install.sh";
+
+/// Writes the real `scripts/ployz.sh` into the machine plus a wrapper that
+/// pins the keeper artifact to the baked `file://` source, so the product
+/// `machine init`/`machine add` commands can run the real installer without
+/// fetching a release from the network.
+pub async fn write_installer_wrapper(docker: &ployz_e2e::bollard::Docker, machine: &DindMachine) {
+    let ployz_sh = std::fs::read_to_string(repo_path("scripts/ployz.sh"))
+        .expect("read scripts/ployz.sh from the repo");
+    write_file_in_container(
+        docker,
+        &machine.container_id,
+        "/tmp/ployz.sh",
+        &ployz_sh,
+        "0755",
+    )
+    .await
+    .expect("write ployz.sh into machine");
+
+    let keeper_sha = {
+        let outcome = ployz_e2e::dind::exec_in_container(
+            docker,
+            &machine.container_id,
+            &["sha256sum", &format!("{ARTIFACTS_MOUNT_PATH}/ployz-keeper")],
+        )
+        .await
+        .expect("exec sha256sum for keeper");
+        assert!(outcome.success(), "keeper sha256sum failed: {outcome:?}");
+        let Some(digest) = outcome.stdout.split_whitespace().next() else {
+            panic!("empty keeper sha256sum output");
+        };
+        digest.to_owned()
+    };
+    let wrapper = format!(
+        "#!/bin/sh\nexport PLOYZ_KEEPER_URL=file://{ARTIFACTS_MOUNT_PATH}/ployz-keeper\nexport PLOYZ_KEEPER_SHA256={keeper_sha}\nexec sh /tmp/ployz.sh \"$@\"\n"
+    );
+    write_file_in_container(
+        docker,
+        &machine.container_id,
+        INSTALLER_WRAPPER_PATH,
+        &wrapper,
+        "0755",
+    )
+    .await
+    .expect("write installer wrapper into machine");
+}
+
 /// Runs the real `scripts/ployz.sh` join flow on the edge machine with
 /// exactly the material the product printed.
 pub async fn run_edge_join(core: &CoreContext, edge: &DindMachine, install: &InstallLine) {

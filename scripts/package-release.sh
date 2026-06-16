@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build and stage GitHub release assets for the current Docker host platform.
+# Build and stage GitHub release assets for one platform.
 # The public installer reads the generated ployz-release-<platform>.env file.
+#
+# Linux platforms (linux/amd64, linux/arm64) stage the full machine artifact
+# set built by scripts/build-dind-machine-image.sh through Docker. macOS
+# platforms (darwin/amd64, darwin/arm64) stage only the local operator CLI
+# (ployzctl) built with the host cargo toolchain; machine bootstrap stays
+# Linux-only. Select the platform with PLOYZ_RELEASE_PLATFORM, e.g.:
+#
+#   PLOYZ_RELEASE_PLATFORM=darwin/arm64 scripts/package-release.sh
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -28,23 +36,58 @@ case "${release_tag}" in
 esac
 
 platform="$(docker_platform "${PLOYZ_RELEASE_PLATFORM:-}")"
+platform_os="${platform%%/*}"
+platform_arch="${platform##*/}"
 platform_slug="${platform//\//-}"
 target_dir="${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}"
-artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${target_dir}/release}"
 dist_dir="${PLOYZ_RELEASE_DIST_DIR:-${ROOT_DIR}/dist/releases/${release_tag}}"
 asset_base_url="${PLOYZ_RELEASE_ASSET_BASE_URL:-https://github.com/getployz/ployz/releases/download/${release_tag}}"
 
-if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
-  bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh"
-fi
-
-required_artifacts=(
-  ployzd
-  ployzctl
-  ployz-keeper
-  ployz-ebpf-ctl
-  ployz-ebpf-tc
-)
+case "${platform_os}" in
+  linux)
+    artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${target_dir}/release}"
+    required_artifacts=(
+      ployzd
+      ployzctl
+      ployz-keeper
+      ployz-ebpf-ctl
+      ployz-ebpf-tc
+    )
+    if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
+      bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh"
+    fi
+    ;;
+  darwin)
+    case "${platform_arch}" in
+      amd64)
+        darwin_triple="x86_64-apple-darwin"
+        ;;
+      arm64)
+        darwin_triple="aarch64-apple-darwin"
+        ;;
+      *)
+        echo "unsupported darwin release architecture: ${platform_arch} (supported: amd64, arm64)" >&2
+        exit 1
+        ;;
+    esac
+    artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${ROOT_DIR}/target/${darwin_triple}/release}"
+    required_artifacts=(
+      ployzctl
+    )
+    if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
+      if [ "$(uname -s)" != "Darwin" ]; then
+        echo "darwin release artifacts must be built on macOS (host is $(uname -s))" >&2
+        exit 1
+      fi
+      rustup target add "${darwin_triple}"
+      cargo build --release --package ployzctl --target "${darwin_triple}"
+    fi
+    ;;
+  *)
+    echo "unsupported release platform: ${platform} (supported: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64)" >&2
+    exit 1
+    ;;
+esac
 
 for artifact in "${required_artifacts[@]}"; do
   if [ ! -f "${artifact_dir}/${artifact}" ]; then
@@ -64,11 +107,6 @@ copy_asset() {
   printf '%s\n' "${asset}"
 }
 
-ployzd_asset="$(copy_asset ployzd 0755)"
-ployzctl_asset="$(copy_asset ployzctl 0755)"
-keeper_asset="$(copy_asset ployz-keeper 0755)"
-ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
-ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
 manifest_asset="ployz-release-${platform_slug}.env"
 manifest_path="${dist_dir}/${manifest_asset}"
 
@@ -81,24 +119,41 @@ write_manifest_pair() {
   printf '%s_SHA256=%s\n' "${key}" "$(sha256_of "${path}")"
 }
 
+staged_assets=("${manifest_asset}")
+
+ployzctl_asset="$(copy_asset ployzctl 0755)"
+staged_assets+=("${ployzctl_asset}")
+
+if [ "${platform_os}" = "linux" ]; then
+  ployzd_asset="$(copy_asset ployzd 0755)"
+  keeper_asset="$(copy_asset ployz-keeper 0755)"
+  ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
+  ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
+  staged_assets+=(
+    "${keeper_asset}"
+    "${ployzd_asset}"
+    "${ebpf_ctl_asset}"
+    "${ebpf_tc_asset}"
+  )
+fi
+
 {
   printf 'PLOYZ_VERSION=%s\n' "${semver}"
   printf 'PLOYZ_RELEASE_TAG=%s\n' "${release_tag}"
   printf 'PLOYZ_RELEASE_PLATFORM=%s\n' "${platform_slug}"
   write_manifest_pair PLOYZCTL "${ployzctl_asset}"
-  write_manifest_pair PLOYZ_KEEPER "${keeper_asset}"
-  write_manifest_pair PLOYZD "${ployzd_asset}"
-  write_manifest_pair PLOYZ_EBPF_CTL "${ebpf_ctl_asset}"
-  write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"
+  # Machine bootstrap artifacts are Linux-only; darwin manifests carry just
+  # the operator CLI, and the installer's machine modes are Linux-gated.
+  if [ "${platform_os}" = "linux" ]; then
+    write_manifest_pair PLOYZ_KEEPER "${keeper_asset}"
+    write_manifest_pair PLOYZD "${ployzd_asset}"
+    write_manifest_pair PLOYZ_EBPF_CTL "${ebpf_ctl_asset}"
+    write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"
+  fi
 } > "${manifest_path}"
 
-cat <<EOF
-Release assets staged in ${dist_dir}
-Upload these files to ${release_tag}:
-  ${manifest_asset}
-  ${ployzctl_asset}
-  ${keeper_asset}
-  ${ployzd_asset}
-  ${ebpf_ctl_asset}
-  ${ebpf_tc_asset}
-EOF
+echo "Release assets staged in ${dist_dir}"
+echo "Upload these files to ${release_tag}:"
+for asset in "${staged_assets[@]}"; do
+  echo "  ${asset}"
+done

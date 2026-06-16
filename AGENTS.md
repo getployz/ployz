@@ -3,6 +3,8 @@
 ## Read First
 
 - Read `VISION.md` before product or architecture work.
+- Read `CONTEXT.md` before product, architecture, or domain-model work. Use
+  its preferred terms in code, docs, tests, CLI copy, and operation/state names.
 - Treat the current repository as a greenfield reset with an empty Rust
   workspace. Build the new shape deliberately.
 

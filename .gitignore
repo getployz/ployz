@@ -19,6 +19,7 @@ legacy/ebpf/target/
 .lab/
 .e2e-artifacts/
 e2e-artifacts/
+.workflow/
 .payload-cache/
 packaging/e2e/preloaded-images/*
 !packaging/e2e/preloaded-images/.gitkeep

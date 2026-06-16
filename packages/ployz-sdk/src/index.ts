@@ -80,9 +80,9 @@ import type {
   LogsTailResult,
   MachineAddAccepted,
   MachineAddError,
-  MachineAddGateway,
   MachineAddRequest,
   MachineAddResponse,
+  InstallRolePolicy,
   MachineJoinBundle,
   MachineJoinSecretDelivery,
   MachineJoinRedeemError,
@@ -170,12 +170,12 @@ export interface PloyzMachineAddInput {
   idempotencyKey: string;
   nodeId: string;
   name: string;
-  gateway: MachineAddGateway;
+  roles: InstallRolePolicy;
 }
 
 export interface PloyzFirstNodeActivateInput {
   nodeId: string;
-  gateway: MachineAddGateway;
+  roles: InstallRolePolicy;
 }
 
 export interface PloyzMachineJoinRedeemInput {
@@ -353,7 +353,7 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     node_id: nodeId(input.nodeId),
     name: machineName(input.name),
-    gateway: input.gateway,
+    roles: input.roles,
   };
 }
 
@@ -362,7 +362,7 @@ export function initFirstNodeActivateRequest(
 ): InitFirstNodeActivateRequest {
   return {
     node_id: nodeId(input.nodeId),
-    gateway: input.gateway,
+    roles: input.roles,
   };
 }
 

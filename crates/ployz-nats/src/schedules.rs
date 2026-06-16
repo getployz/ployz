@@ -1,4 +1,4 @@
-//! Message schedule capability detection and helpers.
+//! NATS server version parsing for bootstrap checks.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NatsServerVersion {
@@ -69,34 +69,4 @@ fn parse_version_part(part: &str, full_value: &str) -> Result<u16, NatsServerVer
         .map_err(|_| NatsServerVersionParseError::InvalidPart {
             value: full_value.to_owned(),
         })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScheduleCapability {
-    Unsupported,
-    MessageSchedules,
-    ExtendedControls,
-}
-
-impl ScheduleCapability {
-    #[must_use]
-    pub fn from_server_version(version: NatsServerVersion) -> Self {
-        if version >= NatsServerVersion::new(2, 14, 0) {
-            Self::ExtendedControls
-        } else if version >= NatsServerVersion::new(2, 12, 0) {
-            Self::MessageSchedules
-        } else {
-            Self::Unsupported
-        }
-    }
-
-    #[must_use]
-    pub const fn message_schedules_available(self) -> bool {
-        matches!(self, Self::MessageSchedules | Self::ExtendedControls)
-    }
-
-    #[must_use]
-    pub const fn extended_schedule_controls_available(self) -> bool {
-        matches!(self, Self::ExtendedControls)
-    }
 }

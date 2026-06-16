@@ -1,3 +1,5 @@
+use std::fs;
+
 use ployz_core::ids::{NodeId, OperationOwnerId};
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
@@ -6,15 +8,23 @@ use ployz_core::install::{
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease};
+use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
 };
 use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
+use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzctl::commands::machine::{
-    MachineAddOutput, MachineBootstrapUrl, MachineInspectOutput, MachineJoinRuntimeNatsUrl,
-    MachineJoinToken, MachineListOutput, MachineName,
+    MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
+    MachineIdentityError, MachineInspectOutput, MachineJoinRuntimeNatsUrl, MachineJoinToken,
+    MachineListOutput, MachineName, derive_machine_identity,
 };
+use ployzctl::commands::{PloyzctlCommand, parse_command};
+use ployzctl::remote_bootstrap::{
+    self, MachineInstallerSource, RemoteBootstrapError, parse_release_manifest,
+};
+use ployzctl::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
 
 #[test]
 fn machine_add_prints_bootstrap_command_without_nats_credentials() {
@@ -258,4 +268,639 @@ fn digest(value: &str) -> InstallSha256Digest {
 
 fn absolute_path(value: &str) -> AbsoluteInstallPath {
     AbsoluteInstallPath::try_new(value).expect("valid absolute path")
+}
+
+// --- SSH target parsing (U3) ---
+
+#[test]
+fn ssh_target_parses_user_at_ip() {
+    let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
+
+    assert_eq!(target.user(), "root");
+    assert_eq!(target.host(), "203.0.113.10");
+    assert_eq!(target.destination(), "root@203.0.113.10");
+}
+
+#[test]
+fn ssh_target_parses_user_at_dns_name() {
+    let target = SshTarget::parse("deploy@sg-core-1.example.com").expect("target parses");
+
+    assert_eq!(target.user(), "deploy");
+    assert_eq!(target.host(), "sg-core-1.example.com");
+}
+
+#[test]
+fn ssh_target_requires_user_at_host_shape() {
+    let error = SshTarget::parse("203.0.113.10").expect_err("missing user fails");
+
+    assert_eq!(
+        error,
+        SshTargetParseError::MissingUser {
+            target: "203.0.113.10".to_owned(),
+        }
+    );
+    assert!(error.to_string().contains("user@host"));
+    assert!(error.to_string().contains("root@203.0.113.10"));
+}
+
+#[test]
+fn ssh_target_rejects_empty_user_and_empty_host() {
+    assert_eq!(
+        SshTarget::parse("@203.0.113.10").expect_err("empty user fails"),
+        SshTargetParseError::EmptyUser {
+            target: "@203.0.113.10".to_owned(),
+        }
+    );
+    assert_eq!(
+        SshTarget::parse("root@").expect_err("empty host fails"),
+        SshTargetParseError::EmptyHost {
+            target: "root@".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn ssh_target_rejects_values_ssh_could_parse_as_options() {
+    assert_eq!(
+        SshTarget::parse("-oProxyCommand=evil@host").expect_err("option-shaped user fails"),
+        SshTargetParseError::InvalidUser {
+            target: "-oProxyCommand=evil@host".to_owned(),
+        }
+    );
+    assert_eq!(
+        SshTarget::parse("root@-evil.example.com").expect_err("option-shaped host fails"),
+        SshTargetParseError::InvalidHost {
+            target: "root@-evil.example.com".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn ssh_target_rejects_whitespace_and_extra_separators() {
+    assert!(matches!(
+        SshTarget::parse("ro ot@host"),
+        Err(SshTargetParseError::InvalidUser { .. })
+    ));
+    assert!(matches!(
+        SshTarget::parse("root@host one"),
+        Err(SshTargetParseError::InvalidHost { .. })
+    ));
+    assert!(matches!(
+        SshTarget::parse("a@b@c"),
+        Err(SshTargetParseError::InvalidHost { .. })
+    ));
+}
+
+// --- Hostname-derived machine identity (U3) ---
+
+#[test]
+fn valid_hostname_derives_matching_node_id_and_machine_name() {
+    let identity = MachineIdentity::from_remote_hostname("sg-core-1").expect("hostname is valid");
+
+    assert_eq!(identity.node_id, node_id("sg-core-1"));
+    assert_eq!(
+        identity.name,
+        MachineName::try_new("sg-core-1").expect("valid machine name")
+    );
+    assert_eq!(identity.node_id.as_str(), identity.name.as_str());
+}
+
+#[test]
+fn invalid_hostname_fails_with_name_escape_hatch() {
+    let error =
+        MachineIdentity::from_remote_hostname("sg.core.1").expect_err("dotted hostname fails");
+
+    let MachineIdentityError::InvalidHostname { hostname, .. } = &error else {
+        panic!("expected invalid hostname error, got {error:?}");
+    };
+    assert_eq!(hostname, "sg.core.1");
+    let rendered = error.to_string();
+    assert!(rendered.contains("sg.core.1"));
+    assert!(rendered.contains("not a valid Ployz machine identity"));
+    assert!(rendered.contains("--name"));
+}
+
+#[test]
+fn name_override_wins_over_remote_hostname() {
+    let identity = derive_machine_identity("sg.core.1", Some("edge-1")).expect("override is valid");
+
+    assert_eq!(identity.node_id, node_id("edge-1"));
+    assert_eq!(identity.name.as_str(), "edge-1");
+}
+
+#[test]
+fn hostname_is_used_when_no_name_override_is_given() {
+    let identity = derive_machine_identity("sg-core-1", None).expect("hostname is valid");
+
+    assert_eq!(identity.node_id, node_id("sg-core-1"));
+}
+
+#[test]
+fn invalid_name_override_reports_the_flag() {
+    let error = derive_machine_identity("sg-core-1", Some("bad name")).expect_err("override fails");
+
+    assert!(matches!(
+        error,
+        MachineIdentityError::InvalidNameOverride { .. }
+    ));
+    let rendered = error.to_string();
+    assert!(rendered.contains("--name"));
+    assert!(rendered.contains("bad name"));
+}
+
+// --- Bounded SSH execution against a stand-in ssh program (U3) ---
+
+fn fake_ssh(script_body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let script = dir.path().join("fake-ssh");
+    fs::write(&script, format!("#!/bin/sh\n{script_body}")).expect("fake ssh writes");
+    make_executable(&script);
+    (dir, script)
+}
+
+fn ssh_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(5)
+}
+
+#[cfg(unix)]
+#[test]
+fn read_remote_hostname_returns_trimmed_first_line() {
+    let (_dir, script) = fake_ssh("echo 'sg-core-1'\n");
+    let client = SshClient::with_program(script, ssh_timeout());
+    let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
+
+    let hostname = client
+        .read_remote_hostname(&target)
+        .expect("hostname reads");
+
+    assert_eq!(hostname, "sg-core-1");
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_commands_pass_destination_and_remote_command() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let args_file = dir.path().join("args");
+    let script = dir.path().join("fake-ssh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho sg-core-1\n",
+            args_file.display()
+        ),
+    )
+    .expect("fake ssh writes");
+    make_executable(&script);
+    let client = SshClient::with_program(script, ssh_timeout());
+    let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
+
+    client
+        .read_remote_hostname(&target)
+        .expect("hostname reads");
+
+    let args = fs::read_to_string(&args_file).expect("args file reads");
+    let lines: Vec<&str> = args.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "root@203.0.113.10",
+            "hostname",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_failures_carry_phase_and_stderr() {
+    let (_dir, script) = fake_ssh("echo 'Connection refused' >&2\nexit 255\n");
+    let client = SshClient::with_program(script, ssh_timeout());
+    let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
+
+    let error = client
+        .read_remote_hostname(&target)
+        .expect_err("refused connection fails");
+
+    let SshCommandError::Failed { phase, .. } = error.as_ref() else {
+        panic!("expected failed command error, got {error:?}");
+    };
+    assert_eq!(*phase, SshPhase::ReadHostname);
+    let rendered = error.to_string();
+    assert!(rendered.contains("read-hostname"));
+    assert!(rendered.contains("root@203.0.113.10"));
+    assert!(rendered.contains("stderr: Connection refused"));
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_commands_time_out_with_phase_evidence() {
+    let (_dir, script) = fake_ssh("exec sleep 5\n");
+    let client = SshClient::with_program(script, std::time::Duration::from_millis(200));
+    let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
+
+    let error = client
+        .read_remote_hostname(&target)
+        .expect_err("slow command times out");
+
+    assert!(matches!(error.as_ref(), SshCommandError::Timeout { .. }));
+    let rendered = error.to_string();
+    assert!(rendered.contains("read-hostname"));
+    assert!(rendered.contains("timed out"));
+}
+
+// --- `machine init` CLI shape (U4) ---
+
+fn parse(args: &[&str]) -> PloyzctlCommand {
+    parse_command(args.iter().map(|arg| (*arg).to_owned())).expect("command parses")
+}
+
+#[test]
+fn machine_init_parses_target_with_default_roles_and_release() {
+    let PloyzctlCommand::MachineInit(command) = parse(&["machine", "init", "root@203.0.113.10"])
+    else {
+        panic!("expected machine init command");
+    };
+
+    assert_eq!(command.target.destination(), "root@203.0.113.10");
+    assert_eq!(command.identity_override, None);
+    assert_eq!(command.roles, InstallRolePolicy::install_all());
+    assert_eq!(command.version, remote_bootstrap::DEFAULT_RELEASE_VERSION);
+    assert_eq!(command.release_manifest_url, None);
+    assert_eq!(
+        command.bootstrap_url.as_str(),
+        remote_bootstrap::DEFAULT_BOOTSTRAP_URL
+    );
+    assert_eq!(command.cluster_name.as_str(), "ployz");
+    assert_eq!(command.installer_script, None);
+    assert_eq!(
+        command.installer_source(),
+        MachineInstallerSource::BootstrapUrl(
+            MachineBootstrapUrl::try_new(remote_bootstrap::DEFAULT_BOOTSTRAP_URL)
+                .expect("default bootstrap url is valid")
+        )
+    );
+}
+
+#[test]
+fn machine_init_role_opt_outs_skip_only_the_requested_roles() {
+    let PloyzctlCommand::MachineInit(command) =
+        parse(&["machine", "init", "root@203.0.113.10", "--no-gateway"])
+    else {
+        panic!("expected machine init command");
+    };
+    assert_eq!(command.roles.gateway, GatewayRole::Skip);
+    assert_eq!(command.roles.dns, DnsRole::Install);
+
+    let PloyzctlCommand::MachineInit(command) =
+        parse(&["machine", "init", "root@203.0.113.10", "--no-dns"])
+    else {
+        panic!("expected machine init command");
+    };
+    assert_eq!(command.roles.gateway, GatewayRole::Install);
+    assert_eq!(command.roles.dns, DnsRole::Skip);
+
+    let PloyzctlCommand::MachineInit(command) = parse(&[
+        "machine",
+        "init",
+        "root@203.0.113.10",
+        "--no-gateway",
+        "--no-dns",
+    ]) else {
+        panic!("expected machine init command");
+    };
+    assert_eq!(
+        command.roles,
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns()
+    );
+}
+
+#[test]
+fn machine_init_name_override_is_validated_at_parse_time() {
+    let PloyzctlCommand::MachineInit(command) = parse(&[
+        "machine",
+        "init",
+        "root@203.0.113.10",
+        "--name",
+        "sg-core-1",
+    ]) else {
+        panic!("expected machine init command");
+    };
+    let Some(identity) = command.identity_override else {
+        panic!("expected an identity override");
+    };
+    assert_eq!(identity.node_id, node_id("sg-core-1"));
+
+    let error = parse_command(
+        [
+            "machine",
+            "init",
+            "root@203.0.113.10",
+            "--name",
+            "sg.core.1",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("dotted name override fails");
+    assert!(error.to_string().contains("--name"));
+}
+
+#[test]
+fn machine_init_rejects_invalid_ssh_targets() {
+    let error = parse_command(["machine", "init", "203.0.113.10"].map(str::to_owned))
+        .expect_err("target without user fails");
+    assert!(error.to_string().contains("user@host"));
+}
+
+#[test]
+fn machine_init_accepts_expert_release_overrides() {
+    let PloyzctlCommand::MachineInit(command) = parse(&[
+        "machine",
+        "init",
+        "root@203.0.113.10",
+        "--release-manifest",
+        "file:///tmp/manifest.env",
+        "--installer-script",
+        "/tmp/ployz-install.sh",
+        "--cluster-name",
+        "dind-e2e",
+    ]) else {
+        panic!("expected machine init command");
+    };
+    assert_eq!(
+        command.release_manifest_url.as_deref(),
+        Some("file:///tmp/manifest.env")
+    );
+    assert_eq!(
+        command.installer_source(),
+        MachineInstallerSource::RemoteScript("/tmp/ployz-install.sh".to_owned())
+    );
+    assert_eq!(command.cluster_name.as_str(), "dind-e2e");
+}
+
+// --- `machine add USER@HOST` CLI shape (U6) ---
+
+#[test]
+fn machine_add_remote_target_defaults_gateway_install() {
+    let PloyzctlCommand::MachineAddRemote(command) =
+        parse(&["machine", "add", "root@203.0.113.11"])
+    else {
+        panic!("expected remote machine add command");
+    };
+    assert_eq!(command.target.destination(), "root@203.0.113.11");
+    assert_eq!(command.identity_override, None);
+    assert_eq!(command.roles, InstallRolePolicy::install_all());
+    assert_eq!(
+        command.installer(),
+        MachineAddInstaller::FromAcceptedBootstrapUrl
+    );
+}
+
+#[test]
+fn machine_add_remote_accepts_name_and_gateway_opt_out() {
+    let PloyzctlCommand::MachineAddRemote(command) = parse(&[
+        "machine",
+        "add",
+        "root@203.0.113.11",
+        "--name",
+        "sg-edge-1",
+        "--no-gateway",
+        "--installer-script",
+        "/tmp/ployz-install.sh",
+    ]) else {
+        panic!("expected remote machine add command");
+    };
+    let Some(identity) = &command.identity_override else {
+        panic!("expected an identity override");
+    };
+    assert_eq!(identity.node_id, node_id("sg-edge-1"));
+    assert_eq!(
+        command.roles,
+        InstallRolePolicy::install_all().without_gateway()
+    );
+    assert_eq!(
+        command.installer(),
+        MachineAddInstaller::RemoteScript("/tmp/ployz-install.sh".to_owned())
+    );
+}
+
+#[test]
+fn machine_add_accepts_dns_and_combined_role_opt_outs() {
+    let PloyzctlCommand::MachineAddRemote(command) =
+        parse(&["machine", "add", "root@203.0.113.11", "--no-dns"])
+    else {
+        panic!("expected remote machine add command");
+    };
+    assert_eq!(
+        command.roles,
+        InstallRolePolicy::install_all().without_dns()
+    );
+
+    let PloyzctlCommand::MachineAdd(command) = parse(&[
+        "machine",
+        "add",
+        "--node",
+        "edge_2",
+        "--name",
+        "edge_2",
+        "--operation",
+        "op_machine",
+        "--idempotency-key",
+        "idem_machine",
+        "--no-gateway",
+        "--no-dns",
+    ]) else {
+        panic!("expected explicit machine add command");
+    };
+    assert_eq!(
+        command.roles,
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns()
+    );
+}
+
+#[test]
+fn machine_add_explicit_flags_conflict_with_a_remote_target() {
+    assert!(
+        parse_command(
+            ["machine", "add", "root@203.0.113.11", "--node", "edge_2"].map(str::to_owned)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn machine_add_without_target_still_requires_explicit_flags() {
+    let error = parse_command(
+        ["machine", "add", "--name", "edge_2", "--node", "edge_2"].map(str::to_owned),
+    )
+    .expect_err("missing operation id fails");
+    let rendered = error.to_string();
+    assert!(rendered.contains("--operation"));
+    assert!(rendered.contains("USER@HOST"));
+}
+
+// --- Release manifest parsing (U4) ---
+
+const MANIFEST_URL: &str = "https://example.invalid/ployz-release-linux-amd64.env";
+const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn manifest_text() -> String {
+    format!(
+        "PLOYZ_VERSION=0.0.1\nPLOYZD_URL=https://example.invalid/ployzd\nPLOYZD_SHA256={TEST_SHA}\nPLOYZ_EBPF_TC_URL=/opt/ployz/artifacts/ployz-ebpf-tc\nPLOYZ_EBPF_TC_SHA256={TEST_SHA}\nPLOYZ_EBPF_CTL_URL=https://example.invalid/ployz-ebpf-ctl\nPLOYZ_EBPF_CTL_SHA256={TEST_SHA}\n"
+    )
+}
+
+#[test]
+fn release_manifest_parses_urls_and_local_paths() {
+    let manifest = parse_release_manifest(&manifest_text(), MANIFEST_URL).expect("manifest parses");
+
+    assert_eq!(manifest.version.as_str(), "0.0.1");
+    assert_eq!(
+        manifest.ployzd.source.as_str(),
+        "https://example.invalid/ployzd"
+    );
+    assert_eq!(
+        manifest.ebpf_bytecode.source.as_str(),
+        "/opt/ployz/artifacts/ployz-ebpf-tc"
+    );
+    assert_eq!(manifest.ployzd.sha256.as_str(), TEST_SHA);
+}
+
+#[test]
+fn release_manifest_missing_key_names_key_and_url() {
+    let text = manifest_text().replace("PLOYZD_SHA256", "IGNORED");
+
+    let error = parse_release_manifest(&text, MANIFEST_URL).expect_err("missing key fails");
+
+    assert_eq!(
+        error,
+        RemoteBootstrapError::ManifestMissingKey {
+            key: "PLOYZD_SHA256".to_owned(),
+            manifest_url: MANIFEST_URL.to_owned(),
+        }
+    );
+    let rendered = error.to_string();
+    assert!(rendered.contains("PLOYZD_SHA256"));
+    assert!(rendered.contains(MANIFEST_URL));
+}
+
+#[test]
+fn default_release_manifest_url_matches_the_installer_shape() {
+    assert_eq!(
+        remote_bootstrap::default_release_manifest_url("v0.0.1-alpha.1", "arm64"),
+        "https://github.com/getployz/ployz/releases/download/v0.0.1-alpha.1/ployz-release-linux-arm64.env"
+    );
+    assert_eq!(
+        remote_bootstrap::default_release_manifest_url("0.0.1-alpha.1", "amd64"),
+        "https://github.com/getployz/ployz/releases/download/v0.0.1-alpha.1/ployz-release-linux-amd64.env"
+    );
+}
+
+// --- Generated first-node install spec (U4) ---
+
+#[test]
+fn generated_install_spec_carries_identity_roles_release_and_nats_server() {
+    let manifest = parse_release_manifest(&manifest_text(), MANIFEST_URL).expect("manifest parses");
+    let spec = remote_bootstrap::build_first_node_install_spec(
+        node_id("sg-core-1"),
+        InstallRolePolicy::install_all(),
+        Some("203.0.113.10".parse().expect("valid ip")),
+        MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
+        &manifest,
+        InstallSha256Digest::try_new(TEST_SHA).expect("valid digest"),
+    );
+
+    let json = serde_json::to_string_pretty(&spec).expect("spec serializes");
+    for expected in [
+        r#""node_id": "sg-core-1""#,
+        r#""gateway": "install""#,
+        r#""dns": "install""#,
+        r#""node_public_ip": "203.0.113.10""#,
+        r#""machine_bootstrap_url": "https://ployz.sh""#,
+        r#""machine_join_template_file": "/etc/ployz/machine-join-template.json""#,
+        r#""source": "https://example.invalid/ployzd""#,
+        r#""install_path": "/usr/local/bin/ployzd""#,
+        r#""binary": "/usr/local/bin/nats-server""#,
+    ] {
+        assert!(json.contains(expected), "spec missing {expected}: {json}");
+    }
+    assert!(
+        json.contains(&format!(r#""sha256": "{TEST_SHA}""#)),
+        "spec missing nats-server sha: {json}"
+    );
+}
+
+#[test]
+fn generated_install_spec_respects_role_opt_outs() {
+    let manifest = parse_release_manifest(&manifest_text(), MANIFEST_URL).expect("manifest parses");
+    let spec = remote_bootstrap::build_first_node_install_spec(
+        node_id("sg-core-1"),
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+        None,
+        MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
+        &manifest,
+        InstallSha256Digest::try_new(TEST_SHA).expect("valid digest"),
+    );
+
+    let json = serde_json::to_string_pretty(&spec).expect("spec serializes");
+    assert!(json.contains(r#""gateway": "skip""#), "{json}");
+    assert!(json.contains(r#""dns": "skip""#), "{json}");
+}
+
+// --- Remote install command rendering (U6) ---
+
+#[test]
+fn remote_join_install_command_matches_the_printed_install_line() {
+    let output = MachineAddOutput {
+        node_id: NodeId::try_new("node_2").expect("valid node id"),
+        accepted: accepted_operation("op_machine"),
+        bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+            .expect("valid bootstrap url"),
+        join_bundle: machine_join_bundle("nats://127.0.0.1:7422"),
+        join_token: MachineJoinToken::try_new("join_once_123").expect("valid join token"),
+        join_seed: test_join_seed(),
+    };
+
+    let rendered = output.render();
+    let command = output.install_command(&MachineAddInstaller::FromAcceptedBootstrapUrl, None);
+    assert!(rendered.contains(&format!("install {command}\n")));
+
+    let with_ip = output.install_command(
+        &MachineAddInstaller::FromAcceptedBootstrapUrl,
+        Some("203.0.113.11".parse().expect("valid ip")),
+    );
+    assert!(with_ip.contains("| PLOYZ_NODE_PUBLIC_IP='203.0.113.11' PLOYZ_VERSION="));
+
+    let scripted = output.install_command(
+        &MachineAddInstaller::RemoteScript("/tmp/ployz-install.sh".to_owned()),
+        None,
+    );
+    assert!(scripted.contains("sh '/tmp/ployz-install.sh' --join-token 'join_once_123'"));
+    assert!(!scripted.contains("curl"));
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_remote_hostname_is_an_explicit_error() {
+    let (_dir, script) = fake_ssh("exit 0\n");
+    let client = SshClient::with_program(script, ssh_timeout());
+    let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
+
+    let error = client
+        .read_remote_hostname(&target)
+        .expect_err("empty hostname fails");
+
+    assert!(matches!(
+        error.as_ref(),
+        SshCommandError::EmptyRemoteHostname { .. }
+    ));
+    assert!(error.to_string().contains("empty hostname"));
 }

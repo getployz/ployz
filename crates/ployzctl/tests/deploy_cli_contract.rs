@@ -58,8 +58,10 @@ fn cli_requires_endpoint_port_when_deploy_route_is_set() {
     assert!(parse_command(args).is_err());
 }
 
+/// `--detach` is no longer required: deploy always submits and returns
+/// (the flag stays accepted for existing automation).
 #[test]
-fn cli_requires_detached_deploy_mode() {
+fn cli_accepts_deploy_without_detach_flag() {
     let args = [
         "deploy",
         "--service",
@@ -77,11 +79,15 @@ fn cli_requires_detached_deploy_mode() {
     ]
     .map(str::to_owned);
 
-    assert!(parse_command(args).is_err());
+    let command = parse_command(args).expect("deploy without --detach parses");
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    assert_eq!(command, detached_deploy_command());
 }
 
 #[test]
-fn cli_requires_deploy_idempotency_key() {
+fn cli_derives_deploy_idempotency_key_when_absent() {
     let args = [
         "deploy",
         "--detach",
@@ -98,20 +104,371 @@ fn cli_requires_deploy_idempotency_key() {
     ]
     .map(str::to_owned);
 
+    let command = parse_command(args).expect("deploy without idempotency key parses");
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    assert!(
+        command
+            .idempotency_key
+            .as_str()
+            .starts_with("idem_deploy_svc_api_"),
+        "derived idempotency key carries the command intent: {}",
+        command.idempotency_key.as_str()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Quick-start deploy shorthand (U7)
+// ---------------------------------------------------------------------------
+
+/// AE4: `deploy --image ghcr.io/acme/web:latest --route app.example.com:8000`
+/// is sufficient — one replica, route `app.example.com` on public HTTP port
+/// 80 to container endpoint port 8000, ids derived from the command intent.
+#[test]
+fn cli_deploy_shorthand_derives_full_request() {
+    let command = parse_command(quick_start_deploy_args()).expect("shorthand deploy parses");
+
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    assert_eq!(
+        command.service_id,
+        ServiceId::try_new("web").expect("valid service id")
+    );
+    assert_eq!(
+        command.image,
+        ImageReference::try_new("ghcr.io/acme/web:latest").expect("valid image")
+    );
+    assert_eq!(
+        command.replicas,
+        ReplicaCount::try_new(1).expect("valid replicas")
+    );
+    assert_eq!(
+        command.route,
+        Some(DeployRoute {
+            target: RouteTarget {
+                hostname: RouteHostname::try_new("app.example.com").expect("valid route hostname"),
+                port: RoutePort::try_new(80).expect("valid route port"),
+            },
+            endpoint_port: RoutePort::try_new(8000).expect("valid endpoint port"),
+        })
+    );
+    assert!(
+        command.revision_id.as_str().starts_with("rev_latest_"),
+        "derived revision id carries the image tag: {}",
+        command.revision_id.as_str()
+    );
+    assert!(
+        command.operation_id.as_str().starts_with("op_deploy_web_"),
+        "derived operation id carries the command intent: {}",
+        command.operation_id.as_str()
+    );
+    assert!(
+        command
+            .idempotency_key
+            .as_str()
+            .starts_with("idem_deploy_web_"),
+        "derived idempotency key carries the command intent: {}",
+        command.idempotency_key.as_str()
+    );
+}
+
+/// KTD9: two identical shorthand invocations must not collide on generated
+/// operation or idempotency ids.
+#[test]
+fn cli_deploy_shorthand_generates_collision_resistant_ids() {
+    let first = shorthand_deploy_command(quick_start_deploy_args());
+    let second = shorthand_deploy_command(quick_start_deploy_args());
+
+    assert_ne!(first.operation_id, second.operation_id);
+    assert_ne!(first.idempotency_key, second.idempotency_key);
+    assert_ne!(first.revision_id, second.revision_id);
+}
+
+/// R12: explicit expert flags override every derived value.
+#[test]
+fn cli_explicit_flags_override_shorthand_derivations() {
+    let args = quick_start_deploy_args().chain(
+        [
+            "--service",
+            "svc_custom",
+            "--revision",
+            "rev_pinned",
+            "--operation",
+            "op_pinned",
+            "--idempotency-key",
+            "idem_pinned",
+            "--replicas",
+            "3",
+        ]
+        .map(str::to_owned),
+    );
+
+    let command = shorthand_deploy_command(args);
+
+    assert_eq!(
+        command.service_id,
+        ServiceId::try_new("svc_custom").expect("valid service id")
+    );
+    assert_eq!(
+        command.revision_id,
+        RevisionId::try_new("rev_pinned").expect("valid revision id")
+    );
+    assert_eq!(command.operation_id, operation_id("op_pinned"));
+    assert_eq!(
+        command.idempotency_key,
+        OperationIdempotencyKey::try_new("idem_pinned").expect("valid idempotency key")
+    );
+    assert_eq!(
+        command.replicas,
+        ReplicaCount::try_new(3).expect("valid replicas")
+    );
+}
+
+#[test]
+fn cli_deploy_shorthand_route_conflicts_with_explicit_route_flags() {
+    let args = quick_start_deploy_args()
+        .chain(
+            [
+                "--route-hostname",
+                "api.example.com",
+                "--route-port",
+                "443",
+                "--endpoint-port",
+                "8080",
+            ]
+            .map(str::to_owned),
+        )
+        .collect::<Vec<_>>();
+
     assert!(parse_command(args).is_err());
+}
+
+#[test]
+fn cli_deploy_route_without_port_fails_clearly() {
+    let error = parse_command(
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/acme/web:latest",
+            "--route",
+            "app.example.com",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("route without port is rejected");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("--route") && message.contains("HOST:PORT"),
+        "error names the flag and the expected shape: {message}"
+    );
+}
+
+#[test]
+fn cli_deploy_route_with_non_numeric_port_fails_clearly() {
+    let error = parse_command(
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/acme/web:latest",
+            "--route",
+            "app.example.com:http",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("non-numeric endpoint port is rejected");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("--route") && message.contains("\"http\""),
+        "error names the flag and the bad port: {message}"
+    );
+}
+
+#[test]
+fn cli_deploy_route_with_zero_port_fails_clearly() {
+    let error = parse_command(
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/acme/web:latest",
+            "--route",
+            "app.example.com:0",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("zero endpoint port is rejected");
+
+    assert!(error.to_string().contains("--route"));
+}
+
+#[test]
+fn cli_deploy_route_with_invalid_hostname_fails_clearly() {
+    let error = parse_command(
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/acme/web:latest",
+            "--route",
+            "app_example:8000",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("invalid route hostname is rejected");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("--route") && message.contains("hostname"),
+        "error names the flag and the hostname problem: {message}"
+    );
+}
+
+/// Image references with registry ports and bare official images still
+/// derive the repository leaf as the service id.
+#[test]
+fn cli_deploy_shorthand_derives_service_from_image_shapes() {
+    let cases = [
+        ("ghcr.io/acme/web:latest", "web"),
+        ("localhost:5000/web", "web"),
+        ("redis:7", "redis"),
+        ("nginx", "nginx"),
+        (
+            "ghcr.io/acme/web@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "web",
+        ),
+    ];
+
+    for (image, expected_service) in cases {
+        let command = shorthand_deploy_command(["deploy", "--image", image].map(str::to_owned));
+        assert_eq!(
+            command.service_id,
+            ServiceId::try_new(expected_service).expect("valid service id"),
+            "image {image} derives service {expected_service}"
+        );
+    }
+}
+
+/// Untagged images still derive a generated revision id.
+#[test]
+fn cli_deploy_shorthand_derives_revision_for_untagged_image() {
+    let command =
+        shorthand_deploy_command(["deploy", "--image", "ghcr.io/acme/web"].map(str::to_owned));
+
+    assert!(
+        command.revision_id.as_str().starts_with("rev_"),
+        "derived revision id is rev-prefixed: {}",
+        command.revision_id.as_str()
+    );
+}
+
+/// Image tags with dots (semver) are sanitized into the generated revision
+/// id rather than failing the deploy.
+#[test]
+fn cli_deploy_shorthand_sanitizes_dotted_tag_into_revision() {
+    let command = shorthand_deploy_command(
+        ["deploy", "--image", "ghcr.io/acme/web:1.2.3"].map(str::to_owned),
+    );
+
+    assert!(
+        command.revision_id.as_str().starts_with("rev_1-2-3_"),
+        "dotted tag is sanitized: {}",
+        command.revision_id.as_str()
+    );
+}
+
+/// A repository leaf that is not a valid service id fails with the
+/// `--service` escape hatch instead of installing a rewritten name.
+#[test]
+fn cli_deploy_shorthand_with_dotted_leaf_suggests_service_flag() {
+    let error = parse_command(["deploy", "--image", "ghcr.io/acme/my.app:1"].map(str::to_owned))
+        .expect_err("dotted repository leaf cannot derive a service id");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("my.app") && message.contains("--service"),
+        "error names the leaf and the escape hatch: {message}"
+    );
+
+    let command = shorthand_deploy_command(
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/acme/my.app:1",
+            "--service",
+            "my-app",
+        ]
+        .map(str::to_owned),
+    );
+    assert_eq!(
+        command.service_id,
+        ServiceId::try_new("my-app").expect("valid service id")
+    );
+}
+
+/// The quick-start deploy without any cluster context tells the operator to
+/// run `machine init` (R10 failure path).
+#[test]
+fn binary_quick_start_deploy_without_context_points_at_machine_init() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
+        .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .args([
+            "deploy",
+            "--image",
+            "ghcr.io/acme/web:latest",
+            "--route",
+            "app.example.com:8000",
+        ])
+        .output()
+        .expect("ployzctl binary runs");
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
+}
+
+fn quick_start_deploy_args() -> impl Iterator<Item = String> {
+    [
+        "deploy",
+        "--image",
+        "ghcr.io/acme/web:latest",
+        "--route",
+        "app.example.com:8000",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+}
+
+fn shorthand_deploy_command(args: impl IntoIterator<Item = String>) -> DetachedDeployCommand {
+    let command = parse_command(args).expect("deploy command parses");
+    let PloyzctlCommand::Deploy(command) = command else {
+        panic!("expected deploy command");
+    };
+    command
 }
 
 #[test]
 fn binary_deploy_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("PLOYZ_NATS_URL")
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .args(detached_deploy_arg_refs())
         .output()
         .expect("ployzctl binary runs");
 
     assert!(!output.status.success());
     assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "--nats or PLOYZ_NATS_URL is required\n");
+    assert_eq!(
+        stderr(&output),
+        "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set PLOYZ_NATS_URL\n"
+    );
 }
 
 #[test]

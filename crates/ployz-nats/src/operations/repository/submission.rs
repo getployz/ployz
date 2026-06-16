@@ -5,7 +5,7 @@ use ployz_core::ops::{
     EventSequence, OperationEvent, OperationIdempotencyKey, OperationLeaseExpiresAt,
     OperationOwnerLease, OperationStatus,
 };
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 
 use super::AsyncNatsOperationRepository;
 use crate::operations::events::{OperationEventAppend, OperationEventLogError};
@@ -391,7 +391,7 @@ impl AsyncNatsOperationRepository {
             start_sequence: None,
             node_id: submission.node_id,
             name: submission.name,
-            gateway: submission.gateway,
+            roles: submission.roles,
             join_bundle: submission.join_bundle,
             join_token: submission.join_token,
             raw_join_token: submission.raw_join_token,
@@ -417,7 +417,7 @@ impl AsyncNatsOperationRepository {
                 start_sequence,
                 node_id: submitted.node_id,
                 name: submitted.name,
-                gateway: submitted.gateway,
+                roles: submitted.roles,
                 join_bundle: submitted.join_bundle,
                 join_token: submitted.join_token,
                 raw_join_token: submitted.raw_join_token,
@@ -431,7 +431,7 @@ impl AsyncNatsOperationRepository {
                 submitted.operation_id.clone(),
                 submitted.node_id.clone(),
                 submitted.name.clone(),
-                submitted.gateway,
+                submitted.roles,
                 submitted.join_token.clone(),
                 &idempotency_key,
             ))
@@ -447,7 +447,7 @@ impl AsyncNatsOperationRepository {
                 operation_id,
                 node_id,
                 name,
-                gateway,
+                roles,
                 join_token,
             } = original
             else {
@@ -455,7 +455,7 @@ impl AsyncNatsOperationRepository {
             };
             if node_id != submitted.node_id
                 || name != submitted.name
-                || gateway != submitted.gateway
+                || roles != submitted.roles
                 || join_token != submitted.join_token
             {
                 return Err(submit_machine_add_duplicate_mismatch(stored.sequence));
@@ -468,7 +468,7 @@ impl AsyncNatsOperationRepository {
             operation_id.clone(),
             submitted.node_id.clone(),
             submitted.name.clone(),
-            submitted.gateway,
+            submitted.roles,
             submitted.join_token.clone(),
             stored.sequence,
         );
@@ -494,7 +494,7 @@ impl AsyncNatsOperationRepository {
             start_sequence: stored.sequence,
             node_id: submitted.node_id,
             name: submitted.name,
-            gateway: submitted.gateway,
+            roles: submitted.roles,
             join_bundle: submitted.join_bundle,
             join_token: submitted.join_token,
             raw_join_token: submitted.raw_join_token,
@@ -591,7 +591,7 @@ fn ensure_machine_add_retry_matches(
     if existing.idempotency_key == candidate.idempotency_key
         && existing.node_id == candidate.node_id
         && existing.name == candidate.name
-        && existing.gateway == candidate.gateway
+        && existing.roles == candidate.roles
         && existing.join_bundle == candidate.join_bundle
         && existing.join_token == candidate.join_token
         && existing.raw_join_token == candidate.raw_join_token
@@ -626,7 +626,7 @@ pub struct MachineAddOperationSubmission {
     pub operation_id: OperationId,
     pub node_id: NodeId,
     pub name: MachineName,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
@@ -723,7 +723,7 @@ pub struct AcceptedMachineAddSubmission {
     pub start_sequence: EventSequence,
     pub node_id: NodeId,
     pub name: MachineName,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,

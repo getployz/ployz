@@ -9,11 +9,11 @@
 use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
 use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
 use ployz_core::ops::OperationStatus;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest,
+    MachineAddAccepted, MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
 };
 use std::time::Duration;
 
@@ -62,7 +62,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
             idempotency_key: idempotency_key("idem_machine"),
             node_id: node_id("node_2"),
             name: ployz_sdk_types::MachineName::try_new("node_2").expect("valid machine name"),
-            gateway: MachineAddGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
         })
         .await
         .expect("machine add retry succeeds");
@@ -348,7 +348,7 @@ async fn machine_add(
         idempotency_key: idempotency_key(idempotency),
         node_id: node_id(node),
         name: ployz_sdk_types::MachineName::try_new(node).expect("valid machine name"),
-        gateway: MachineAddGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
     })
     .await
     .expect("machine add accepts")

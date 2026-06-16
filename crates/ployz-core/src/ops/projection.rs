@@ -8,7 +8,7 @@ use super::{
     EventSequence, NodeId, OperationEvent, OperationId, OperationKind, OperationStatus, ServiceId,
 };
 use crate::machine::{MachineAddOperationState, MachineName};
-use crate::roles::FirstNodeGateway;
+use crate::roles::InstallRolePolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationProjection {
@@ -291,7 +291,7 @@ pub fn project_operation_event(
                 id,
                 node_id,
                 name,
-                gateway,
+                roles,
                 state,
                 ..
             } = current
@@ -302,7 +302,7 @@ pub fn project_operation_event(
                 id,
                 node_id,
                 name,
-                gateway: *gateway,
+                roles: *roles,
                 state,
             };
             project_machine_add_event(fields, subject, event, event_sequence)
@@ -342,7 +342,7 @@ pub fn project_operation_event(
                 id,
                 node_id,
                 name,
-                gateway,
+                roles,
                 state,
                 ..
             } => project_machine_add_state(
@@ -350,7 +350,7 @@ pub fn project_operation_event(
                     id,
                     node_id,
                     name,
-                    gateway: *gateway,
+                    roles: *roles,
                     state,
                 },
                 MachineAddOperationState::Cancelled { reason },
@@ -383,7 +383,7 @@ struct MachineAddFields<'status> {
     id: &'status OperationId,
     node_id: &'status NodeId,
     name: &'status MachineName,
-    gateway: FirstNodeGateway,
+    roles: InstallRolePolicy,
     state: &'status MachineAddOperationState,
 }
 
@@ -397,7 +397,7 @@ impl MachineAddFields<'_> {
             id: self.id.clone(),
             node_id: self.node_id.clone(),
             name: self.name.clone(),
-            gateway: self.gateway,
+            roles: self.roles,
             state,
             last_event_sequence: event_sequence,
         }

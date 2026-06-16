@@ -12,6 +12,7 @@ use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationStatus, RouteTarget,
 };
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
@@ -21,9 +22,8 @@ use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_sdk_types::{
-    DeploySubmitRequest, MachineAddGateway, MachineAddRequest, MachineInspectRequest,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, ServiceInspectRequest,
-    ServiceListRequest,
+    DeploySubmitRequest, MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome,
+    MachineJoinReportRequest, MachineListRequest, ServiceInspectRequest, ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
@@ -78,9 +78,9 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .expect("control runtime created PLZ_OPS");
     nats.connected
         .jetstream
-        .get_object_store("PLZ_BUNDLES")
+        .get_object_store("PLZ_BACKUPS")
         .await
-        .expect("control runtime created PLZ_BUNDLES");
+        .expect("control runtime created PLZ_BACKUPS");
 
     runtime
         .shutdown()
@@ -130,7 +130,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             idempotency_key: idempotency_key("idem_machine"),
             node_id: node_id("node_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: MachineAddGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
         })
         .await
         .expect("machine add succeeds");
@@ -145,7 +145,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             idempotency_key: idempotency_key("idem_machine"),
             node_id: node_id("node_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: MachineAddGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
         })
         .await
         .expect("machine add retry succeeds");

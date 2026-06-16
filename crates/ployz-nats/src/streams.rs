@@ -10,7 +10,6 @@ pub struct StreamSpec {
     pub storage: StorageBackend,
     pub(crate) replicas: ResourceReplicas,
     pub discard: DiscardPolicy,
-    pub allow_message_schedules: bool,
 }
 
 impl StreamSpec {
@@ -29,7 +28,6 @@ impl StreamSpec {
             storage,
             replicas: ResourceReplicas::SINGLE_CORE,
             discard,
-            allow_message_schedules: false,
         }
     }
 
@@ -41,12 +39,6 @@ impl StreamSpec {
     #[must_use]
     pub(crate) const fn with_observed_replicas(mut self, replicas: ResourceReplicas) -> Self {
         self.replicas = replicas;
-        self
-    }
-
-    #[must_use]
-    pub const fn with_message_schedules(mut self, allow_message_schedules: bool) -> Self {
-        self.allow_message_schedules = allow_message_schedules;
         self
     }
 }

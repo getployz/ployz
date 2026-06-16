@@ -470,6 +470,26 @@ fn binary_gateway_role_enters_real_runtime_and_fails_when_nats_is_unreachable() 
 }
 
 #[test]
+fn binary_dns_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
+    let seed_file = temp_seed_file("binary-dns.seed");
+    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .args(["dns"])
+        .env(PLOYZ_NODE_ID_ENV, "node_7")
+        .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
+        .env(PLOYZ_NATS_CA_FILE_ENV, "/tmp/ployz-test-ca.pem")
+        .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, &seed_file)
+        .output()
+        .expect("ployzd binary runs");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("failed to connect to NATS"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn nats_client_roles_fail_when_nats_url_is_missing_or_invalid() {
     assert_eq!(
         load_daemon_process_config(DaemonProcessRole::Gateway, |_| None),

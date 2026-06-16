@@ -9,7 +9,8 @@ use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingS
 use crate::gateway_source::load_gateway_projection_update_from_nats;
 use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
-    BackoffSchedule, LazyHandle, RecordedAttempt, record_attempt, shutdown_signal,
+    BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
+    record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
 use futures_util::StreamExt;
 use ployz_core::ids::NodeId;
@@ -136,7 +137,7 @@ pub async fn start_gateway_process_runtime_with_client(
         let mut refresh_wake_rx = refresh_wake_rx;
 
         loop {
-            while refresh_wake_rx.try_recv().is_ok() {}
+            drain_refresh_wakes(&mut refresh_wake_rx);
             let attempt = source.refresh_with_timeout(&task_runtime).await;
             let observed = gateway_observation_from_attempt(&node_id, listen_addr, &attempt);
             backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
@@ -145,14 +146,10 @@ pub async fn start_gateway_process_runtime_with_client(
                 source.replace_gateway_status(&observed).await,
             );
 
-            tokio::select! {
-                () = tokio::time::sleep(backoff) => {}
-                wake = refresh_wake_rx.recv() => {
-                    if wake.is_none() {
-                        break;
-                    }
-                }
-                _ = refresh_shutdown.recv() => break,
+            match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
+            {
+                RefreshDelay::Elapsed | RefreshDelay::Woken => {}
+                RefreshDelay::WakeClosed | RefreshDelay::Shutdown => break,
             }
         }
     });
@@ -301,13 +298,21 @@ async fn open_gateway_process_stores(
     client: NatsClient,
 ) -> Result<GatewayProcessStores, GatewayProcessRuntimeError> {
     let jetstream = async_nats::jetstream::new(client);
+    let open_core_state = async {
+        AsyncNatsCoreStateStore::from_jetstream(&jetstream)
+            .await
+            .map_err(GatewayProcessRuntimeError::OpenCoreState)
+    };
+    let open_observations = async {
+        AsyncNatsObservationStore::from_jetstream(&jetstream)
+            .await
+            .map_err(GatewayProcessRuntimeError::OpenObservations)
+    };
+    let (core_state, observations) = tokio::try_join!(open_core_state, open_observations)?;
+
     Ok(GatewayProcessStores {
-        core_state: AsyncNatsCoreStateStore::from_jetstream(&jetstream)
-            .await
-            .map_err(GatewayProcessRuntimeError::OpenCoreState)?,
-        observations: AsyncNatsObservationStore::from_jetstream(&jetstream)
-            .await
-            .map_err(GatewayProcessRuntimeError::OpenObservations)?,
+        core_state,
+        observations,
     })
 }
 
@@ -464,13 +469,6 @@ fn record_gateway_status_publish_result(
             });
             health.consecutive_status_publish_failures += 1;
         }
-    }
-}
-
-async fn sleep_or_shutdown(duration: Duration, shutdown: &mut broadcast::Receiver<()>) -> bool {
-    tokio::select! {
-        () = tokio::time::sleep(duration) => false,
-        _ = shutdown.recv() => true,
     }
 }
 

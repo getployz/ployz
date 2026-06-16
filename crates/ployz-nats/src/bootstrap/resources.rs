@@ -210,7 +210,6 @@ fn compare_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> Resou
         storage: expected_storage,
         replicas: expected_replicas,
         discard: expected_discard,
-        allow_message_schedules: expected_allow_message_schedules,
     } = expected;
     let StreamSpec {
         name: observed_name,
@@ -219,7 +218,6 @@ fn compare_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> Resou
         storage: observed_storage,
         replicas: observed_replicas,
         discard: observed_discard,
-        allow_message_schedules: observed_allow_message_schedules,
     } = observed;
 
     if expected_name != observed_name {
@@ -255,14 +253,6 @@ fn compare_stream(expected: &StreamSpec, observed: Option<&StreamSpec>) -> Resou
             "discard",
             &format!("{expected_discard:?}"),
             &format!("{observed_discard:?}"),
-        );
-    }
-
-    if expected_allow_message_schedules != observed_allow_message_schedules {
-        return shape_drift(
-            "allow_message_schedules",
-            &expected_allow_message_schedules.to_string(),
-            &observed_allow_message_schedules.to_string(),
         );
     }
 

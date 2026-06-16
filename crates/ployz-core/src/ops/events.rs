@@ -11,7 +11,7 @@ use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
     MachineName,
 };
-use crate::roles::FirstNodeGateway;
+use crate::roles::InstallRolePolicy;
 
 use super::backup::{BackupOperationFailure, BackupRunningStage};
 use super::text::CancellationReason;
@@ -100,7 +100,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         node_id: NodeId,
         name: MachineName,
-        gateway: FirstNodeGateway,
+        roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
     },
     MachineAddJoined {

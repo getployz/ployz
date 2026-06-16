@@ -2,11 +2,49 @@
 //! failure backoff, attempt recording, and lazily opened handles.
 
 use std::time::Duration;
+use tokio::sync::{broadcast, mpsc};
 
 /// Resolves when the process receives a shutdown signal (Ctrl-C/SIGTERM
 /// delivered as SIGINT by the supervisor).
 pub async fn shutdown_signal() -> Result<(), std::io::Error> {
     tokio::signal::ctrl_c().await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshDelay {
+    Elapsed,
+    Woken,
+    WakeClosed,
+    Shutdown,
+}
+
+pub fn drain_refresh_wakes(receiver: &mut mpsc::Receiver<()>) {
+    while receiver.try_recv().is_ok() {}
+}
+
+pub async fn wait_for_refresh_delay(
+    duration: Duration,
+    wake: &mut mpsc::Receiver<()>,
+    shutdown: &mut broadcast::Receiver<()>,
+) -> RefreshDelay {
+    tokio::select! {
+        () = tokio::time::sleep(duration) => RefreshDelay::Elapsed,
+        wake = wake.recv() => {
+            if wake.is_some() {
+                RefreshDelay::Woken
+            } else {
+                RefreshDelay::WakeClosed
+            }
+        }
+        _ = shutdown.recv() => RefreshDelay::Shutdown,
+    }
+}
+
+pub async fn sleep_or_shutdown(duration: Duration, shutdown: &mut broadcast::Receiver<()>) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(duration) => false,
+        _ = shutdown.recv() => true,
+    }
 }
 
 /// The steady polling interval plus the cap for exponential failure backoff.
@@ -136,6 +174,32 @@ mod tests {
         assert_eq!(next, Duration::from_secs(1));
         assert_eq!(last_attempt, Some("last-known-good"));
         assert_eq!(consecutive_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_delay_reports_wake_and_shutdown() {
+        let (wake_tx, mut wake_rx) = mpsc::channel(1);
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+
+        wake_tx.send(()).await.expect("wake sends");
+        assert_eq!(
+            wait_for_refresh_delay(Duration::from_secs(30), &mut wake_rx, &mut shutdown_rx).await,
+            RefreshDelay::Woken
+        );
+
+        shutdown_tx.send(()).expect("shutdown sends");
+        assert_eq!(
+            wait_for_refresh_delay(Duration::from_secs(30), &mut wake_rx, &mut shutdown_rx).await,
+            RefreshDelay::Shutdown
+        );
+    }
+
+    #[tokio::test]
+    async fn sleep_or_shutdown_returns_true_on_shutdown() {
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+        shutdown_tx.send(()).expect("shutdown sends");
+
+        assert!(sleep_or_shutdown(Duration::from_secs(30), &mut shutdown_rx).await);
     }
 
     #[tokio::test]

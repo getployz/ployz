@@ -6,7 +6,7 @@ use ployz_core::ops::{
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
     OperationLeaseExpiresAt, OperationOwnerLease,
 };
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceState, GatewayServingStatus, GatewayStatusObservation,
     NodePublicIpObservation,
@@ -20,13 +20,12 @@ use ployz_nats::services::{
 };
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
-    MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineInspectRequest, MachineInspectResponse, MachineJoinBundle,
-    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
-    MachineJoinRedeemed, MachineJoinToken, MachineListResponse, MachineListResult, MachineName,
-    MachineSnapshot, OperationApiResponse, OpsStatusError, OpsStatusResponse,
-    ServiceInspectRequest, ServiceInspectResponse, ServiceListResponse, ServiceListResult,
-    ServiceSnapshot,
+    MachineAddAccepted, MachineAddRequest, MachineAddResponse, MachineBootstrapUrl,
+    MachineInspectRequest, MachineInspectResponse, MachineJoinBundle, MachineJoinRedeemRequest,
+    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
+    MachineListResponse, MachineListResult, MachineName, MachineSnapshot, OperationApiResponse,
+    OpsStatusError, OpsStatusResponse, ServiceInspectRequest, ServiceInspectResponse,
+    ServiceListResponse, ServiceListResult, ServiceSnapshot,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineListApi,
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
@@ -166,7 +165,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
                     operation_id: operation_id("op_machine"),
                     node_id: node_id("node_2"),
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
-                    gateway: FirstNodeGateway::Skip,
+                    roles: InstallRolePolicy::install_all().without_gateway(),
                     join_bundle: machine_join_bundle(),
                     secret_delivery: machine_join_secret_delivery(),
                     joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),
@@ -564,7 +563,7 @@ fn machine_add_request() -> MachineAddRequest {
             .expect("valid idempotency key"),
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
-        gateway: MachineAddGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
     }
 }
 

@@ -7,7 +7,7 @@ use ployz_core::ops::{
     OperationEvent, OperationEventReplayLimit, OperationEventReplayRequest,
     OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::{DnsRole, GatewayRole};
 use ployz_sdk_types::OpsStatusRequest;
 
 use crate::commands::PloyzctlCliError;
@@ -176,13 +176,14 @@ fn operation_subject(status: &OperationStatus) -> String {
         OperationStatus::MachineAdd {
             node_id,
             name,
-            gateway,
+            roles,
             ..
         } => format!(
-            "node {} name {} gateway {}",
+            "node {} name {} gateway {} dns {}",
             node_id.as_str(),
             name.as_str(),
-            first_node_gateway(*gateway)
+            gateway_role(roles.gateway),
+            dns_role(roles.dns)
         ),
         OperationStatus::Backup { .. } => "backup control-plane".to_owned(),
     }
@@ -234,10 +235,17 @@ fn ownership_status(ownership: &OperationOwnershipStatus) -> String {
     }
 }
 
-const fn first_node_gateway(gateway: FirstNodeGateway) -> &'static str {
+const fn gateway_role(gateway: GatewayRole) -> &'static str {
     match gateway {
-        FirstNodeGateway::Install => "install",
-        FirstNodeGateway::Skip => "skip",
+        GatewayRole::Install => "install",
+        GatewayRole::Skip => "skip",
+    }
+}
+
+const fn dns_role(dns: DnsRole) -> &'static str {
+    match dns {
+        DnsRole::Install => "install",
+        DnsRole::Skip => "skip",
     }
 }
 

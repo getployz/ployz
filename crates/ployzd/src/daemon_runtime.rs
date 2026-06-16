@@ -2,9 +2,9 @@
 
 use crate::config::DaemonProcessConfig;
 use crate::control_runtime::{ControlRuntimeError, run_control_until_shutdown};
+use crate::dns_process_runtime::{DnsProcessRuntimeError, run_dns_until_shutdown};
 use crate::gateway_process_runtime::{GatewayProcessRuntimeError, run_gateway_until_shutdown};
 use crate::node::process::{NodeProcessRuntimeError, run_node_until_shutdown};
-use crate::role::DaemonProcessRole;
 use std::fmt;
 
 pub async fn run_daemon_process_until_shutdown(
@@ -20,9 +20,9 @@ pub async fn run_daemon_process_until_shutdown(
         DaemonProcessConfig::Gateway(config) => run_gateway_until_shutdown(config)
             .await
             .map_err(DaemonRuntimeError::Gateway),
-        DaemonProcessConfig::Dns(_) => Err(DaemonRuntimeError::RoleRuntimePending {
-            role: config.role(),
-        }),
+        DaemonProcessConfig::Dns(config) => run_dns_until_shutdown(config)
+            .await
+            .map_err(DaemonRuntimeError::Dns),
     }
 }
 
@@ -31,7 +31,7 @@ pub enum DaemonRuntimeError {
     Control(ControlRuntimeError),
     Node(NodeProcessRuntimeError),
     Gateway(GatewayProcessRuntimeError),
-    RoleRuntimePending { role: DaemonProcessRole },
+    Dns(DnsProcessRuntimeError),
 }
 
 impl fmt::Display for DaemonRuntimeError {
@@ -40,11 +40,7 @@ impl fmt::Display for DaemonRuntimeError {
             Self::Control(error) => write!(formatter, "{error}"),
             Self::Node(error) => write!(formatter, "{error}"),
             Self::Gateway(error) => write!(formatter, "{error}"),
-            Self::RoleRuntimePending { role } => write!(
-                formatter,
-                "ployzd {} runtime is not implemented yet",
-                role.process_name()
-            ),
+            Self::Dns(error) => write!(formatter, "{error}"),
         }
     }
 }

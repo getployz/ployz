@@ -8,7 +8,6 @@ use crate::controllers::{
 use crate::nats_authorization::MintRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationOwnerLease};
-use ployz_core::roles::FirstNodeGateway;
 use ployz_core::subjects::op_watch;
 use ployz_sdk_types::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, BootstrapMaterialFailure,
@@ -120,7 +119,7 @@ pub async fn machine_add(
         idempotency_key: request.idempotency_key,
         node_id: request.node_id,
         name: request.name,
-        gateway: first_node_gateway(request.gateway),
+        roles: request.roles,
         join_bundle: material.join_bundle,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,
@@ -173,11 +172,4 @@ async fn machine_add_bootstrap_material(
         bootstrap_url: controllers.machine_bootstrap_url().clone(),
         join_bundle: existing.join_bundle,
     })
-}
-
-fn first_node_gateway(gateway: ployz_sdk_types::MachineAddGateway) -> FirstNodeGateway {
-    match gateway {
-        ployz_sdk_types::MachineAddGateway::Install => FirstNodeGateway::Install,
-        ployz_sdk_types::MachineAddGateway::Skip => FirstNodeGateway::Skip,
-    }
 }

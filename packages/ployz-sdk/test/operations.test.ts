@@ -137,7 +137,7 @@ test("backup create returns a normal operation handle", async () => {
 test("first-node activation returns a status-capable operation reference", async () => {
   const transport = new RecordingTransport(defaultFixture());
   const client = new PloyzClient(transport);
-  const input = { nodeId: "core_1", gateway: "skip" as const };
+  const input = { nodeId: "core_1", roles: gatewaySkippedRoles() };
   const request = initFirstNodeActivateRequest(input);
 
   const handle = await client.initFirstNodeActivate(input);
@@ -360,7 +360,7 @@ test("sdk maps raw machine add input to the wire request", () => {
     idempotency_key: "idem_machine",
     node_id: "node_2",
     name: "edge_2",
-    gateway: "skip",
+    roles: gatewaySkippedRoles(),
   });
   assert.throws(
     () => machineAddRequest({ ...machineAddInput(), name: "edge.2" }),
@@ -407,12 +407,12 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
 });
 
 test("sdk maps raw first-node activation input to the wire request", () => {
-  assert.deepEqual(initFirstNodeActivateRequest({ nodeId: "core_1", gateway: "install" }), {
+  assert.deepEqual(initFirstNodeActivateRequest({ nodeId: "core_1", roles: installAllRoles() }), {
     node_id: "core_1",
-    gateway: "install",
+    roles: installAllRoles(),
   });
   assert.throws(
-    () => initFirstNodeActivateRequest({ nodeId: "core.1", gateway: "skip" }),
+    () => initFirstNodeActivateRequest({ nodeId: "core.1", roles: gatewaySkippedRoles() }),
     /node id/,
   );
 });
@@ -771,7 +771,7 @@ function defaultFixture(): OperationFixture {
         operation_id: operationId("op_machine"),
         node_id: nodeId("node_2"),
         name: machineName("edge_2"),
-        gateway: "skip",
+        roles: gatewaySkippedRoles(),
         join_bundle: machineJoinBundle(),
         secret_delivery: machineJoinSecretDelivery(),
         joined_at: "60" as MachineJoinRedeemed["joined_at"],
@@ -828,8 +828,16 @@ function machineAddInput() {
     idempotencyKey: "idem_machine",
     nodeId: "node_2",
     name: "edge_2",
-    gateway: "skip" as const,
+    roles: gatewaySkippedRoles(),
   };
+}
+
+function installAllRoles() {
+  return { gateway: "install" as const, dns: "install" as const };
+}
+
+function gatewaySkippedRoles() {
+  return { gateway: "skip" as const, dns: "install" as const };
 }
 
 function machineJoinBundle(): MachineJoinBundle {
