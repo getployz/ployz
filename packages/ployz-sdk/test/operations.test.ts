@@ -125,7 +125,7 @@ test("machine add returns an operation handle with bootstrap material", async ()
 test("backup create returns a normal operation handle", async () => {
   const transport = new RecordingTransport(defaultFixture());
   const client = new PloyzClient(transport);
-  const input = { operationId: "op_backup", idempotencyKey: "idem_backup" };
+  const input = backupCreateInput();
   const request = backupCreateRequest(input);
 
   const handle = await client.backupCreate(input);
@@ -373,9 +373,17 @@ test("sdk maps raw machine add input to the wire request", () => {
 });
 
 test("sdk maps raw backup and current-state query inputs to wire requests", () => {
-  assert.deepEqual(backupCreateRequest({ operationId: "op_backup", idempotencyKey: "idem_backup" }), {
+  assert.deepEqual(backupCreateRequest(backupCreateInput()), {
     operation_id: "op_backup",
     idempotency_key: "idem_backup",
+    target: {
+      kind: "s3",
+      bucket: "ployz-backups",
+      key_prefix: "clusters/dev",
+      region: "us-east-1",
+      endpoint_url: null,
+      addressing_style: "virtual_hosted",
+    },
   });
   assert.deepEqual(machineListRequest(), {});
   assert.deepEqual(machineInspectRequest({ nodeId: "node_2" }), { node_id: "node_2" });
@@ -397,7 +405,7 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
     },
   );
   assert.throws(
-    () => backupCreateRequest({ operationId: "op.backup", idempotencyKey: "idem_backup" }),
+    () => backupCreateRequest(backupCreateInput({ operationId: "op.backup" })),
     /operation id/,
   );
   assert.throws(() => machineInspectRequest("node.2"), /node id/);
@@ -829,6 +837,24 @@ function machineAddInput() {
     nodeId: "node_2",
     name: "edge_2",
     roles: gatewaySkippedRoles(),
+  };
+}
+
+function backupCreateInput(overrides: Partial<ReturnType<typeof backupCreateInputBase>> = {}) {
+  return { ...backupCreateInputBase(), ...overrides };
+}
+
+function backupCreateInputBase() {
+  return {
+    operationId: "op_backup",
+    idempotencyKey: "idem_backup",
+    target: {
+      kind: "s3" as const,
+      bucket: "ployz-backups",
+      keyPrefix: "clusters/dev",
+      region: "us-east-1",
+      addressingStyle: "virtual_hosted" as const,
+    },
   };
 }
 

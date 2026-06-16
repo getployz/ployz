@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::backup::BackupManifest;
+use crate::backup::{BackupManifest, BackupTarget};
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::WireGuardEbpfPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
@@ -124,6 +124,7 @@ pub enum OperationEvent {
     },
     BackupCreateSubmitted {
         operation_id: OperationId,
+        target: BackupTarget,
     },
     BackupRunning {
         operation_id: OperationId,

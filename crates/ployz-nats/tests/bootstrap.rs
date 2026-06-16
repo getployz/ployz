@@ -47,11 +47,7 @@ fn single_core_bootstrap_contains_required_resources() {
         "missing stream {stream}"
     );
 
-    let bucket = "PLZ_BACKUPS";
-    assert!(
-        plan.object_buckets.iter().any(|spec| spec.name == bucket),
-        "missing object bucket {bucket}"
-    );
+    assert!(plan.object_buckets.is_empty());
 }
 
 #[test]

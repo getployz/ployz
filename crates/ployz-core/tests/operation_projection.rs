@@ -862,11 +862,16 @@ fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
 
 fn backup_artifact() -> ployz_core::backup::BackupArtifact {
     ployz_core::backup::BackupArtifact::new(
-        "PLZ_BACKUPS",
-        "backups/op_backup/control-plane-bundle.json",
+        ployz_core::backup::BackupArtifactLocation::s3(
+            "ployz-backups",
+            "backups/op_backup/control-plane-bundle.json",
+            "us-east-1",
+            None,
+            ployz_core::backup::S3AddressingStyle::VirtualHosted,
+        ),
         ployz_core::backup::BackupArtifactKind::ControlPlaneBundle,
         128,
-        "sha-256=test",
+        "0123456789abcdef",
     )
 }
 

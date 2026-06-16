@@ -1,5 +1,6 @@
 use ployz_core::backup::{
-    BackupArtifactKind, BackupBundle, BackupManifest, ControlPlaneKvSnapshot,
+    BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupManifest, BackupRestoreSource,
+    BackupTarget, ControlPlaneKvSnapshot, S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
 };
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
@@ -9,10 +10,6 @@ use ployz_core::ops::{
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::objects::{
-    AsyncNatsBackupObjectStore, BackupObjectStoreError, PLZ_BACKUPS_BUCKET,
-    control_plane_bundle_object_name,
-};
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
@@ -21,6 +18,7 @@ use ployz_test_support::ids::{
     revision_id, service_id,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
+use ployzd::backup_adapters::{BackupAdapterError, InMemoryBackupAdapter, backup_object_key};
 use ployzd::backup_restore::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
 use ployzd::config::{ControlProcessConfig, DEFAULT_MACHINE_BOOTSTRAP_URL};
 use ployzd::controllers::{BackupCreateCommand, MachineAddBootstrapConfig, OperationControllers};
@@ -30,16 +28,22 @@ use std::time::Duration;
 #[tokio::test]
 async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
     let nats = TestNats::start().await;
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config())
-            .await
-            .expect("control runtime starts");
+    let backups = InMemoryBackupAdapter::default();
+    let runtime = ployzd::control_runtime::start_control_runtime_with_client_and_backup_adapters(
+        nats.client.clone(),
+        &config(),
+        backups.registry(),
+    )
+    .await
+    .expect("control runtime starts");
     let api = OperationApiClient::new(nats.user_client.clone());
+    let target = backup_target("clusters/dev");
 
     let accepted = api
         .backup_create(&BackupCreateRequest {
             operation_id: operation_id("op_backup"),
             idempotency_key: idempotency_key("idem_backup"),
+            target: target.clone(),
         })
         .await
         .expect("backup create is accepted");
@@ -64,8 +68,15 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
     let [artifact] = manifest.artifacts.as_slice() else {
         panic!("expected one backup artifact");
     };
-    assert_backup_artifact_exists(&nats, artifact).await;
-    let bundle = read_backup_bundle(&nats, artifact).await;
+    assert_backup_artifact_exists(&backups, artifact);
+    assert_eq!(
+        backups.writes(),
+        vec![
+            "clusters/dev/op_backup/control-plane-bundle.json".to_owned(),
+            "clusters/dev/op_backup/manifest.json".to_owned(),
+        ]
+    );
+    let bundle = read_backup_bundle(&backups, artifact).await;
     assert_snapshot_contains_control_buckets(&bundle.control_plane);
     assert_eq!(status.last_event_sequence(), event_sequence(4));
 
@@ -84,6 +95,7 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
         submitted.event,
         OperationEvent::BackupCreateSubmitted {
             operation_id: operation_id("op_backup"),
+            target,
         }
     );
     assert!(matches!(
@@ -110,18 +122,23 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
 async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command() {
     let nats = TestNats::start().await;
     assure_control_resources(&nats).await;
+    let backups = InMemoryBackupAdapter::default();
     let seed = seed_controllers(&nats).await;
     seed.submit_backup(BackupCreateCommand {
         operation_id: operation_id("op_recovered_backup"),
         idempotency_key: idempotency_key("idem_recovered_backup"),
+        target: backup_target("clusters/dev"),
     })
     .await
     .expect("accepted backup is seeded");
 
-    let runtime =
-        ployzd::control_runtime::start_control_runtime_with_client(nats.client.clone(), &config())
-            .await
-            .expect("control runtime starts");
+    let runtime = ployzd::control_runtime::start_control_runtime_with_client_and_backup_adapters(
+        nats.client.clone(),
+        &config(),
+        backups.registry(),
+    )
+    .await
+    .expect("control runtime starts");
     let api = OperationApiClient::new(nats.user_client.clone());
 
     let status = api
@@ -138,7 +155,7 @@ async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command
             ..
         }
     ));
-    assert_backup_artifact_absent(&nats, "op_recovered_backup").await;
+    assert!(backups.writes().is_empty());
 
     runtime
         .shutdown()
@@ -149,9 +166,11 @@ async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command
 #[tokio::test]
 async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     let source = TestNats::start().await;
-    let runtime = ployzd::control_runtime::start_control_runtime_with_client(
+    let backups = InMemoryBackupAdapter::default();
+    let runtime = ployzd::control_runtime::start_control_runtime_with_client_and_backup_adapters(
         source.client.clone(),
         &config(),
+        backups.registry(),
     )
     .await
     .expect("control runtime starts");
@@ -170,6 +189,7 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     api.backup_create(&BackupCreateRequest {
         operation_id: operation_id("op_backup_restore"),
         idempotency_key: idempotency_key("idem_backup_restore"),
+        target: backup_target("clusters/dev"),
     })
     .await
     .expect("backup create is accepted");
@@ -183,8 +203,7 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     let [artifact] = source_manifest.artifacts.as_slice() else {
         panic!("expected one backup artifact");
     };
-    assert_backup_artifact_digest_mismatch_rejected(&source, artifact).await;
-    let bundle = read_backup_bundle(&source, artifact).await;
+    assert_backup_artifact_digest_mismatch_rejected(&backups, artifact).await;
     runtime
         .shutdown()
         .await
@@ -192,17 +211,14 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
 
     let target = TestNats::start().await;
     assure_control_resources(&target).await;
-    let backups = AsyncNatsBackupObjectStore::from_jetstream(&target.jetstream)
-        .await
-        .expect("target backup store opens");
-    let restore = BackupRestoreRuntime::new(target.jetstream.clone(), backups);
+    let restore = BackupRestoreRuntime::new(target.jetstream.clone(), backups.registry());
 
     let report = restore
-        .restore_bundle(&bundle)
+        .restore_source(&backup_restore_source("clusters/dev", "op_backup_restore"))
         .await
-        .expect("control-plane bundle restores");
+        .expect("control-plane source restores");
 
-    assert_eq!(report.buckets.len(), 3);
+    assert_eq!(report.buckets.len(), 1);
     assert!(matches!(
         report.observations,
         RestoreObservationState::RebuildableAfterNodeReconnect { .. }
@@ -220,24 +236,18 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
         revision_id("rev_2")
     );
     let target_controllers = seed_controllers(&target).await;
-    assert!(matches!(
+    assert!(
         target_controllers
             .repository()
             .records()
             .get(&operation_id("op_backup_restore"))
             .await
             .expect("restored backup status reads")
-            .expect("restored backup status exists"),
-        OperationStatus::Backup {
-            state: BackupOperationState::Running {
-                stage: ployz_core::ops::BackupRunningStage::SnapshottingControlPlane,
-            },
-            ..
-        }
-    ));
+            .is_none()
+    );
 
     let duplicate_restore = restore
-        .restore_bundle(&bundle)
+        .restore_source(&backup_restore_source("clusters/dev", "op_backup_restore"))
         .await
         .expect_err("restore refuses a non-empty target");
     assert!(matches!(
@@ -334,63 +344,36 @@ fn completed_backup_manifest(status: &OperationStatus, expected_id: &str) -> Bac
     manifest.clone()
 }
 
-async fn assert_backup_artifact_exists(
-    nats: &TestNats,
+fn assert_backup_artifact_exists(
+    backups: &InMemoryBackupAdapter,
     artifact: &ployz_core::backup::BackupArtifact,
 ) {
-    let bucket = nats
-        .jetstream
-        .get_object_store(&artifact.bucket)
-        .await
-        .expect("backup object bucket exists");
-    let info = bucket
-        .info(&artifact.object_name)
-        .await
-        .expect("backup artifact object exists");
-
-    assert_eq!(info.name, artifact.object_name);
-    assert_eq!(info.bucket, artifact.bucket);
+    let BackupArtifactLocation::S3 { key, .. } = &artifact.location;
+    let payload = backups.object(key).expect("backup artifact object exists");
     assert_eq!(artifact.kind, BackupArtifactKind::ControlPlaneBundle);
-    assert_eq!(info.size as u64, artifact.byte_count);
-    assert_eq!(info.digest.as_deref(), Some(artifact.digest.as_str()));
-}
-
-async fn assert_backup_artifact_absent(nats: &TestNats, operation_id_value: &str) {
-    let bucket = nats
-        .jetstream
-        .get_object_store(PLZ_BACKUPS_BUCKET)
-        .await
-        .expect("backup object bucket exists");
-    let object_name = control_plane_bundle_object_name(&operation_id(operation_id_value));
-
-    assert!(bucket.info(&object_name).await.is_err());
+    assert_eq!(payload.len() as u64, artifact.byte_count);
 }
 
 async fn assert_backup_artifact_digest_mismatch_rejected(
-    nats: &TestNats,
+    backups: &InMemoryBackupAdapter,
     artifact: &ployz_core::backup::BackupArtifact,
 ) {
-    let backups = AsyncNatsBackupObjectStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("backup object store opens");
     let mut mismatched = artifact.clone();
-    mismatched.digest = "SHA-256=not-the-recorded-digest".to_owned();
+    mismatched.sha256_digest = "not-the-recorded-digest".to_owned();
 
     assert!(matches!(
-        backups.read_control_plane_bundle(&mismatched).await,
-        Err(BackupObjectStoreError::ArtifactMismatch { .. })
+        backups.registry().read_artifact(&mismatched).await,
+        Err(BackupAdapterError::ArtifactMismatch { .. })
     ));
 }
 
 async fn read_backup_bundle(
-    nats: &TestNats,
+    backups: &InMemoryBackupAdapter,
     artifact: &ployz_core::backup::BackupArtifact,
 ) -> BackupBundle {
-    let backups = AsyncNatsBackupObjectStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("backup object store opens");
     let payload = backups
-        .read_control_plane_bundle(artifact)
+        .registry()
+        .read_artifact(artifact)
         .await
         .expect("backup artifact body is readable");
 
@@ -404,11 +387,25 @@ fn assert_snapshot_contains_control_buckets(snapshot: &ControlPlaneKvSnapshot) {
         .map(|bucket| bucket.name.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(bucket_names, vec!["KV_CORE", "KV_OPS", "KV_OBS"]);
-    assert!(
-        snapshot
-            .buckets
-            .iter()
-            .any(|bucket| bucket.name == "KV_OPS" && !bucket.entries.is_empty())
-    );
+    assert_eq!(bucket_names, vec!["KV_CORE"]);
+}
+
+fn backup_target(prefix: &str) -> BackupTarget {
+    BackupTarget::s3(S3BackupTarget::new(
+        "ployz-backups",
+        prefix,
+        "us-east-1",
+        None,
+        S3AddressingStyle::VirtualHosted,
+    ))
+}
+
+fn backup_restore_source(prefix: &str, operation: &str) -> BackupRestoreSource {
+    BackupRestoreSource::s3(S3BackupRestoreSource::new(
+        "ployz-backups",
+        backup_object_key(prefix, &operation_id(operation), "manifest.json"),
+        "us-east-1",
+        None,
+        S3AddressingStyle::VirtualHosted,
+    ))
 }

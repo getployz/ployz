@@ -8,6 +8,7 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Once;
 use std::time::Duration;
 
 use ployz_core::nats_config::NatsUserSeed;
@@ -142,6 +143,7 @@ pub struct NatsConnectConfig {
 /// exact option set the product connects with.
 #[must_use]
 pub fn authenticated_connect_options(config: &NatsConnectConfig) -> async_nats::ConnectOptions {
+    install_rustls_crypto_provider();
     let NatsConnectConfig {
         url: _,
         auth,
@@ -187,6 +189,7 @@ pub async fn connect_with_timeout(
     nats_url: &NatsClientUrl,
     timeout: Duration,
 ) -> Result<async_nats::Client, NatsConnectError> {
+    install_rustls_crypto_provider();
     match tokio::time::timeout(timeout, async_nats::connect(nats_url.as_str())).await {
         Ok(Ok(client)) => Ok(client),
         Ok(Err(error)) => Err(NatsConnectError::Connect {
@@ -198,6 +201,13 @@ pub async fn connect_with_timeout(
             timeout,
         }),
     }
+}
+
+fn install_rustls_crypto_provider() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _already_installed = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
