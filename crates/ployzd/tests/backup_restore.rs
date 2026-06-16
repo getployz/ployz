@@ -1,6 +1,7 @@
 use ployz_core::backup::{
     BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupManifest, BackupRestoreSource,
-    BackupTarget, ControlPlaneKvSnapshot, S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
+    BackupTarget, BackupTargetValidationFailure, BackupTargetValidationField,
+    ControlPlaneKvSnapshot, S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
 };
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
@@ -8,11 +9,12 @@ use ployz_core::ops::{
     OperationEventReplayRequest, OperationStatus,
 };
 use ployz_core::state::{ActiveServiceCommitRequest, ExpectedActiveService};
+use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
-use ployz_nats::operation_api_client::OperationApiClient;
+use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
-use ployz_sdk_types::{BackupCreateRequest, OpsStatusRequest};
+use ployz_sdk_types::{BackupCreateError, BackupCreateRequest, OpsStatusError, OpsStatusRequest};
 use ployz_test_support::ids::{
     event_sequence, idempotency_key, node_id, operation_id, owner_id as operation_owner_id,
     revision_id, service_id,
@@ -111,6 +113,67 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
         OperationEvent::BackupCompleted { .. }
     ));
     assert_eq!(events.cursor, OperationEventReplayCursor::Terminal);
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn backup_create_rejects_empty_s3_target_before_recording_operation() {
+    let nats = TestNats::start().await;
+    let backups = InMemoryBackupAdapter::default();
+    let runtime = ployzd::control_runtime::start_control_runtime_with_client_and_backup_adapters(
+        nats.client.clone(),
+        &config(),
+        backups.registry(),
+    )
+    .await
+    .expect("control runtime starts");
+    let api = OperationApiClient::new(nats.user_client.clone());
+    let operation_id = operation_id("op_bad_backup");
+
+    let error = api
+        .backup_create(&BackupCreateRequest {
+            operation_id: operation_id.clone(),
+            idempotency_key: idempotency_key("idem_bad_backup"),
+            target: BackupTarget::s3(S3BackupTarget::new(
+                "",
+                "clusters/dev",
+                "us-east-1",
+                None,
+                S3AddressingStyle::VirtualHosted,
+            )),
+        })
+        .await
+        .expect_err("empty bucket is rejected");
+
+    assert_eq!(
+        error,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::BackupCreate,
+            error: BackupCreateError::InvalidTarget {
+                operation_id: operation_id.clone(),
+                field: BackupTargetValidationField::Bucket,
+                failure: BackupTargetValidationFailure::Empty,
+            },
+        }
+    );
+    assert!(backups.writes().is_empty());
+    let status_error = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: operation_id.clone(),
+        })
+        .await
+        .expect_err("invalid request leaves no operation status");
+    assert!(matches!(
+        status_error,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::OpsStatus,
+            error: OpsStatusError::NoSuchOperation { operation_id: missing },
+        } if missing == operation_id
+    ));
 
     runtime
         .shutdown()

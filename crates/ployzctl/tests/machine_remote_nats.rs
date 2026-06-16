@@ -37,7 +37,9 @@ use ployz_sdk_types::{
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployz_test_support::nats::TestNats;
-use ployzctl::bootstrap_command::{DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_VERSION};
+use ployzctl::bootstrap_command::{
+    BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL,
+};
 use ployzctl::commands::PloyzctlCommand;
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
 use ployzctl::config::{ClusterContext, load_cluster_context, save_cluster_context};
@@ -153,7 +155,7 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
         target: SshTarget::parse(target).expect("target parses"),
         identity_override: None,
         roles: InstallRolePolicy::install_all(),
-        version: DEFAULT_RELEASE_VERSION.to_owned(),
+        release: BootstrapRelease::Channel(DEFAULT_RELEASE_CHANNEL.to_owned()),
         release_manifest_url: None,
         bootstrap_url: MachineBootstrapUrl::try_new(DEFAULT_BOOTSTRAP_URL)
             .expect("default bootstrap url is valid"),
@@ -371,6 +373,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     for expected in [
         "curl -fsSL -- 'https://ployz.sh'",
         "PLOYZ_NODE_ID='sg-core-1'",
+        "PLOYZ_CHANNEL='alpha'",
         "PLOYZ_GATEWAY='install'",
         "PLOYZ_DNS='install'",
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",

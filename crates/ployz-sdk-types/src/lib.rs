@@ -16,8 +16,9 @@ pub mod typescript;
 pub use ployz_core::backup::{
     BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupItem,
     BackupManifest, BackupManifestVersion, BackupPolicy, BackupRestoreSource, BackupScopeEntry,
-    BackupTarget, ControlPlaneKvSnapshot, KvBucketSnapshot, KvEntrySnapshot, RestoreStep,
-    S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
+    BackupTarget, BackupTargetValidationFailure, BackupTargetValidationField,
+    ControlPlaneKvSnapshot, KvBucketSnapshot, KvEntrySnapshot, RestoreStep, S3AddressingStyle,
+    S3BackupRestoreSource, S3BackupTarget,
 };
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
@@ -631,6 +632,11 @@ pub enum DeploySubmitError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BackupCreateError {
+    InvalidTarget {
+        operation_id: OperationId,
+        field: BackupTargetValidationField,
+        failure: BackupTargetValidationFailure,
+    },
     Unavailable {
         operation_id: OperationId,
         source: OperationSubmitUnavailableSource,

@@ -261,7 +261,7 @@ pub(crate) async fn execute_machine_init(
     let node_public_ip: Option<IpAddr> = target.host().parse().ok();
     let install_command = FounderBootstrapCommand {
         installer: command.installer(),
-        version: command.version.clone(),
+        release: command.release.clone(),
         release_manifest_url: command.release_manifest_url.clone(),
         node_id: identity.node_id.clone(),
         roles: command.roles,

@@ -11,10 +11,14 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   package-linux:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +37,10 @@ jobs:
           PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
         run: bash scripts/package-release.sh
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/releases/${{ github.ref_name }}/*
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.slug }}
@@ -40,6 +48,10 @@ jobs:
           if-no-files-found: error
 
   package-macos:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +68,10 @@ jobs:
           PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
         run: bash scripts/package-release.sh
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/releases/${{ github.ref_name }}/*
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.slug }}
@@ -63,6 +79,8 @@ jobs:
           if-no-files-found: error
 
   publish:
+    permissions:
+      contents: write
     needs:
       - package-linux
       - package-macos

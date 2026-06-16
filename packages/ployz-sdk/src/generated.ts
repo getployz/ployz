@@ -168,6 +168,10 @@ export type BackupPolicy = "included" | "excluded";
 
 export type BackupScopeEntry = { item: BackupItem, policy: BackupPolicy, };
 
+export type BackupTargetValidationField = "bucket" | "key_prefix" | "region" | "endpoint_url";
+
+export type BackupTargetValidationFailure = "empty";
+
 export type S3AddressingStyle = "virtual_hosted" | "path";
 
 export type S3BackupTarget = { bucket: string, key_prefix: string, region: string, endpoint_url: string | null, addressing_style: S3AddressingStyle, };
@@ -340,7 +344,7 @@ export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "stat
 
 export type DeploySubmitError = { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type BackupCreateError = { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type BackupCreateError = { "error": "invalid_target", operation_id: OperationId, field: BackupTargetValidationField, failure: BackupTargetValidationFailure, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type OperationSubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
 

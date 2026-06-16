@@ -11,6 +11,7 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(script.contains("PLOYZ_KEEPER_URL"));
     assert!(script.contains("PLOYZCTL_URL"));
     assert!(script.contains("PLOYZ_VERSION"));
+    assert!(script.contains("PLOYZ_CHANNEL"));
     assert!(script.contains("PLOYZ_RELEASE_MANIFEST_URL"));
     assert!(script.contains("PLOYZ_NATS_URL"));
     assert!(script.contains("PLOYZD_URL"));
@@ -24,6 +25,7 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(script.contains("--join-token <token>"));
     assert!(script.contains("--first-node"));
     assert!(script.contains("--version <version>"));
+    assert!(script.contains("--channel <channel>"));
     assert!(script.contains("Darwin"));
     assert!(script.contains("shasum"));
     assert!(script.contains("ployz machine bootstrap requires Linux"));
@@ -41,31 +43,80 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(!script.contains("systemctl restart ployz-keeper.service"));
     assert!(!script.contains("ExecStart=${keeper_bin}${keeper_args}"));
     assert!(!script.contains("NATS_CREDS"));
+    assert!(!script.contains("default_version="));
 }
 
 #[cfg(unix)]
 #[test]
-fn bootstrap_script_installs_ployzctl_by_default_from_manifest() {
+fn ployz_sh_site_staging_copies_installer_and_channels() {
+    let root = temp_dir("ployz-sh-site-stage");
+    let out_dir = root.join("site-out");
+
+    let output = Command::new("bash")
+        .arg(repo_path("scripts/stage-ployz-sh-site.sh"))
+        .env("PLOYZ_SH_SITE_DIR", &out_dir)
+        .output()
+        .expect("site staging script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let source_installer =
+        fs::read_to_string(repo_path("scripts/ployz.sh")).expect("installer is readable");
+    assert_eq!(
+        fs::read_to_string(out_dir.join("index.html")).expect("root installer is staged"),
+        source_installer
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir.join("install.sh")).expect("named installer is staged"),
+        source_installer
+    );
+    assert!(out_dir.join(".nojekyll").exists());
+    assert_eq!(
+        fs::read_to_string(out_dir.join("channels/alpha.env")).expect("channel is staged"),
+        fs::read_to_string(repo_path("site/channels/alpha.env")).expect("channel is readable")
+    );
+
+    let workflow = fs::read_to_string(repo_path(".github/workflows/ployz-sh.yml"))
+        .expect("ployz.sh workflow is readable");
+    assert!(workflow.contains("actions/deploy-pages"));
+    assert!(workflow.contains("scripts/stage-ployz-sh-site.sh"));
+    assert!(!workflow.contains("tags:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_installs_ployzctl_by_default_from_alpha_channel() {
     let root = temp_dir("ployz-bootstrap-script-ployzctl");
     let ployzctl_source = root.join("ployzctl-source");
+    let channel = root.join("alpha.env");
     let manifest = root.join("ployz-release-linux-amd64.env");
     let install_dir = root.join("bin");
     let state_dir = root.join("state");
     let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
     let fake_bin = root.join("fake-bin");
+    let curl_log = root.join("curl.log");
     fs::create_dir_all(&fake_bin).expect("fake bin can be created");
     fs::write(&ployzctl_source, "#!/bin/sh\nexit 0\n")
         .expect("fake ployzctl source can be written");
     fs::write(
+        &channel,
+        "PLOYZ_CHANNEL=alpha\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_BASE_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1\n",
+    )
+    .expect("channel can be written");
+    fs::write(
         &manifest,
         format!(
-            "PLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
             ployzctl_source.display(),
             KEEPER_DIGEST
         ),
     )
     .expect("manifest can be written");
-    write_executable(&fake_bin.join("curl"), fake_curl_script());
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
     write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
     write_executable(&fake_bin.join("uname"), fake_uname_script());
     write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
@@ -80,10 +131,12 @@ fn bootstrap_script_installs_ployzctl_by_default_from_manifest() {
                 env::var("PATH").unwrap_or_default()
             ),
         )
-        .env(
-            "PLOYZ_RELEASE_MANIFEST_URL",
-            format!("file://{}", manifest.display()),
-        )
+        .env("PLOYZ_TEST_ALPHA_CHANNEL", &channel)
+        .env("PLOYZ_TEST_RELEASE_MANIFEST", &manifest)
+        .env("PLOYZ_TEST_CURL_LOG", &curl_log)
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_VERSION")
+        .env_remove("PLOYZ_CHANNEL")
         .output()
         .expect("bootstrap script can run");
 
@@ -94,10 +147,201 @@ fn bootstrap_script_installs_ployzctl_by_default_from_manifest() {
     );
     assert!(install_dir.join("ployzctl").exists());
     assert!(!install_dir.join("ployz-keeper").exists());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(&format!(
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("resolved ployz channel alpha -> v0.0.2-alpha.1"));
+    assert!(stdout.contains(&format!(
         "installed {}",
         install_dir.join("ployzctl").display()
     )));
+    let curl_log = fs::read_to_string(&curl_log).expect("curl log is recorded");
+    assert!(curl_log.contains("https://ployz.sh/channels/alpha.env"));
+    assert!(curl_log.contains(
+        "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/ployz-release-linux-amd64.env"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_exact_version_bypasses_channel_lookup() {
+    let root = temp_dir("ployz-bootstrap-script-exact-version");
+    let ployzctl_source = root.join("ployzctl-source");
+    let manifest = root.join("ployz-release-linux-amd64.env");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    let curl_log = root.join("curl.log");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(&ployzctl_source, "#!/bin/sh\nexit 0\n")
+        .expect("fake ployzctl source can be written");
+    fs::write(
+        &manifest,
+        format!(
+            "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            ployzctl_source.display(),
+            KEEPER_DIGEST
+        ),
+    )
+    .expect("manifest can be written");
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--version", "v0.0.2-alpha.1"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("PLOYZ_TEST_RELEASE_MANIFEST", &manifest)
+        .env("PLOYZ_TEST_CURL_LOG", &curl_log)
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_CHANNEL")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(install_dir.join("ployzctl").exists());
+    let curl_log = fs::read_to_string(&curl_log).expect("curl log is recorded");
+    assert!(!curl_log.contains("/channels/"));
+    assert!(curl_log.contains(
+        "https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/ployz-release-linux-amd64.env"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_named_channel_selects_channel_file() {
+    let root = temp_dir("ployz-bootstrap-script-beta-channel");
+    let ployzctl_source = root.join("ployzctl-source");
+    let channel = root.join("beta.env");
+    let manifest = root.join("ployz-release-linux-amd64.env");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    let curl_log = root.join("curl.log");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(&ployzctl_source, "#!/bin/sh\nexit 0\n")
+        .expect("fake ployzctl source can be written");
+    fs::write(
+        &channel,
+        "PLOYZ_CHANNEL=beta\nPLOYZ_RELEASE_TAG=v0.0.3-beta.1\nPLOYZ_VERSION=0.0.3-beta.1\nPLOYZ_RELEASE_BASE_URL=https://github.com/getployz/ployz/releases/download/v0.0.3-beta.1\n",
+    )
+    .expect("channel can be written");
+    fs::write(
+        &manifest,
+        format!(
+            "PLOYZ_VERSION=0.0.3-beta.1\nPLOYZ_RELEASE_TAG=v0.0.3-beta.1\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            ployzctl_source.display(),
+            KEEPER_DIGEST
+        ),
+    )
+    .expect("manifest can be written");
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--channel", "beta"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("PLOYZ_TEST_BETA_CHANNEL", &channel)
+        .env("PLOYZ_TEST_RELEASE_MANIFEST", &manifest)
+        .env("PLOYZ_TEST_CURL_LOG", &curl_log)
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_VERSION")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("resolved ployz channel beta -> v0.0.3-beta.1"));
+    let curl_log = fs::read_to_string(&curl_log).expect("curl log is recorded");
+    assert!(curl_log.contains("https://ployz.sh/channels/beta.env"));
+    assert!(curl_log.contains(
+        "https://github.com/getployz/ployz/releases/download/v0.0.3-beta.1/ployz-release-linux-amd64.env"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_manifest_override_bypasses_channel_resolution() {
+    let root = temp_dir("ployz-bootstrap-script-manifest-override");
+    let ployzctl_source = root.join("ployzctl-source");
+    let manifest = root.join("ployz-release-linux-amd64.env");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    let curl_log = root.join("curl.log");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(&ployzctl_source, "#!/bin/sh\nexit 0\n")
+        .expect("fake ployzctl source can be written");
+    fs::write(
+        &manifest,
+        format!(
+            "PLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            ployzctl_source.display(),
+            KEEPER_DIGEST
+        ),
+    )
+    .expect("manifest can be written");
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("PLOYZ_CHANNEL", "beta")
+        .env(
+            "PLOYZ_RELEASE_MANIFEST_URL",
+            format!("file://{}", manifest.display()),
+        )
+        .env("PLOYZ_TEST_CURL_LOG", &curl_log)
+        .env_remove("PLOYZ_VERSION")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let curl_log = fs::read_to_string(&curl_log).expect("curl log is recorded");
+    assert!(!curl_log.contains("/channels/"));
+    assert!(install_dir.join("ployzctl").exists());
 }
 
 #[cfg(unix)]
@@ -218,6 +462,17 @@ fn bootstrap_script_rejects_unknown_join_token_flag() {
 }
 
 #[test]
+fn bootstrap_script_rejects_channel_and_version_together() {
+    let output = run_bootstrap_script(&["--channel", "alpha", "--version", "v0.0.2-alpha.1"], None);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "pass either --version/PLOYZ_VERSION or --channel/PLOYZ_CHANNEL, not both",
+    );
+}
+
+#[test]
 fn bootstrap_script_rejects_join_token_from_flag_and_env() {
     let output = run_bootstrap_script(&["--join-token", "join_once"], Some("join_env"));
 
@@ -245,6 +500,48 @@ fn bootstrap_script_first_node_requires_node_id() {
 
     assert!(!output.status.success());
     assert_stderr_contains(&output, "set PLOYZ_NODE_ID when bootstrapping a first node");
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_reports_missing_channel_key_and_url() {
+    let root = temp_dir("ployz-bootstrap-script-missing-channel-key");
+    let channel = root.join("alpha.env");
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(
+        &channel,
+        "PLOYZ_CHANNEL=alpha\nPLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_BASE_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1\n",
+    )
+    .expect("channel can be written");
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(bootstrap_script_path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("PLOYZ_TEST_ALPHA_CHANNEL", &channel)
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_VERSION")
+        .env_remove("PLOYZ_CHANNEL")
+        .env_remove("PLOYZ_JOIN_TOKEN")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "release channel https://ployz.sh/channels/alpha.env is missing PLOYZ_RELEASE_TAG",
+    );
 }
 
 #[cfg(unix)]
@@ -329,6 +626,7 @@ fn bootstrap_script_local_install_resolves_platform_named_manifest() {
 
     let output = Command::new("sh")
         .arg(bootstrap_script_path())
+        .args(["--version", "v0.0.2-alpha.1"])
         .env(
             "PATH",
             format!(
@@ -554,6 +852,7 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
             format!("file://{}", keeper_source.display()),
         )
         .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_VERSION", "0.0.2-alpha.1")
         .env("PLOYZ_NODE_ID", "node_1")
         .env("PLOYZ_MACHINE_JOIN_NATS_URL", "tls://203.0.113.10:4222")
         .env("PLOYZD_URL", "https://example.invalid/ployzd")
@@ -617,6 +916,10 @@ fn fake_curl_script() -> &'static str {
     "#!/bin/sh\nurl=\ndest=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o)\n      dest=\"$2\"\n      shift 2\n      ;;\n    -*)\n      shift\n      ;;\n    *)\n      url=\"$1\"\n      shift\n      ;;\n  esac\ndone\ncase \"$url\" in\n  file://*) cp \"${url#file://}\" \"$dest\" ;;\n  *) exit 2 ;;\nesac\n"
 }
 
+fn fake_release_curl_script() -> &'static str {
+    "#!/bin/sh\nurl=\ndest=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o)\n      dest=\"$2\"\n      shift 2\n      ;;\n    -*)\n      shift\n      ;;\n    *)\n      url=\"$1\"\n      shift\n      ;;\n  esac\ndone\nif [ -n \"${PLOYZ_TEST_CURL_LOG:-}\" ]; then\n  printf '%s\\n' \"$url\" >> \"$PLOYZ_TEST_CURL_LOG\"\nfi\ncase \"$url\" in\n  file://*) cp \"${url#file://}\" \"$dest\" ;;\n  https://ployz.sh/channels/alpha.env) cp \"$PLOYZ_TEST_ALPHA_CHANNEL\" \"$dest\" ;;\n  https://ployz.sh/channels/beta.env) cp \"$PLOYZ_TEST_BETA_CHANNEL\" \"$dest\" ;;\n  https://github.com/getployz/ployz/releases/download/*/ployz-release-*.env) cp \"$PLOYZ_TEST_RELEASE_MANIFEST\" \"$dest\" ;;\n  *) exit 2 ;;\nesac\n"
+}
+
 fn fake_uname_script() -> &'static str {
     "#!/bin/sh\ncase \"${1:-}\" in\n  -m) printf 'x86_64\\n' ;;\n  *) printf 'Linux\\n' ;;\nesac\n"
 }
@@ -628,10 +931,13 @@ fn fake_uname_script_for(os: &str, arch: &str) -> String {
 }
 
 fn bootstrap_script_path() -> PathBuf {
+    repo_path("scripts/ployz.sh")
+}
+
+fn repo_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("scripts")
-        .join("ployz.sh")
+        .join(relative)
 }
 
 fn test_bootstrap_script_path(

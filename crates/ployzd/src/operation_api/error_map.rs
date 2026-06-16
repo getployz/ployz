@@ -2,7 +2,8 @@
 //! operation API error types. Pure functions; no I/O.
 
 use crate::controllers::{
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommandError, SubmitCommandError,
+    BackupSubmitCommandError, MachineAddBootstrapMaterialError, MachineAddSubmitCommandError,
+    SubmitCommandError,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, ProjectionOperationState, StatusProjectionError};
@@ -70,9 +71,19 @@ pub(super) fn deploy_submit_error_from_submit_error(
 
 pub(super) fn backup_create_error_from_submit_error(
     operation_id: OperationId,
-    error: SubmitCommandError,
+    error: BackupSubmitCommandError,
 ) -> BackupCreateError {
-    match submit_failure(error) {
+    let submit = match error {
+        BackupSubmitCommandError::InvalidTarget(error) => {
+            return BackupCreateError::InvalidTarget {
+                operation_id,
+                field: error.field,
+                failure: error.failure,
+            };
+        }
+        BackupSubmitCommandError::Submit(error) => error,
+    };
+    match submit_failure(submit) {
         SubmitFailure::Unavailable(source) => BackupCreateError::Unavailable {
             operation_id,
             source,

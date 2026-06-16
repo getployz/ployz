@@ -341,13 +341,23 @@ function backupTarget(input: PloyzBackupTargetInput): BackupCreateRequest["targe
     case "s3":
       return {
         kind: "s3",
-        bucket: input.bucket,
-        key_prefix: input.keyPrefix,
-        region: input.region,
-        endpoint_url: input.endpointUrl ?? null,
+        bucket: nonEmptyBackupTargetText("backup S3 bucket", input.bucket),
+        key_prefix: nonEmptyBackupTargetText("backup S3 key prefix", input.keyPrefix),
+        region: nonEmptyBackupTargetText("backup S3 region", input.region),
+        endpoint_url:
+          input.endpointUrl == null
+            ? null
+            : nonEmptyBackupTargetText("backup S3 endpoint URL", input.endpointUrl),
         addressing_style: input.addressingStyle,
       };
   }
+}
+
+function nonEmptyBackupTargetText(field: string, value: string): string {
+  if (value.trim() === "") {
+    throw new RangeError(`${field} must not be empty`);
+  }
+  return value;
 }
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {

@@ -20,8 +20,8 @@ pub use ployz_sdk_types::{
 };
 
 use crate::bootstrap_command::{
-    BootstrapInstaller, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME, DEFAULT_RELEASE_VERSION,
-    JoinBootstrapCommand,
+    BootstrapInstaller, BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME,
+    DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
 use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
@@ -113,8 +113,9 @@ pub struct MachineInitCommand {
     /// Gateway and DNS default to install (R8); `--no-gateway`/`--no-dns`
     /// are the explicit opt-outs.
     pub roles: InstallRolePolicy,
-    /// Release version used for default manifest resolution.
-    pub version: String,
+    /// Release selection used by bootstrap delivery. Defaults to the alpha
+    /// channel; exact versions are explicit.
+    pub release: BootstrapRelease,
     /// `--release-manifest` override; `None` derives the URL from the
     /// version and the remote machine architecture.
     pub release_manifest_url: Option<String>,
@@ -476,6 +477,7 @@ pub(crate) fn machine_init_command(
         name,
         roles,
         version,
+        channel,
         release_manifest,
         bootstrap_url,
         cluster_name,
@@ -489,12 +491,22 @@ pub(crate) fn machine_init_command(
         .transpose()
         .map_err(|error| invalid_value("--name", error))?;
     let roles = roles.into_policy();
-    let version = match version {
-        Some(version) if version.trim().is_empty() => {
+    let release = match (version, channel) {
+        (Some(version), _) if version.trim().is_empty() => {
             return Err(invalid_value("--version", "version is empty"));
         }
-        Some(version) => version,
-        None => DEFAULT_RELEASE_VERSION.to_owned(),
+        (_, Some(channel)) if channel.trim().is_empty() => {
+            return Err(invalid_value("--channel", "channel is empty"));
+        }
+        (Some(_), Some(_)) => {
+            return Err(invalid_value(
+                "--channel",
+                "pass either --version or --channel, not both",
+            ));
+        }
+        (Some(version), None) => BootstrapRelease::Version(version),
+        (None, Some(channel)) => BootstrapRelease::Channel(channel),
+        (None, None) => BootstrapRelease::Channel(DEFAULT_RELEASE_CHANNEL.to_owned()),
     };
     let release_manifest_url = match release_manifest {
         Some(url) if url.trim().is_empty() => {
@@ -515,7 +527,7 @@ pub(crate) fn machine_init_command(
         target,
         identity_override,
         roles,
-        version,
+        release,
         release_manifest_url,
         bootstrap_url,
         cluster_name,
@@ -546,6 +558,8 @@ pub(crate) struct MachineInitCli {
     roles: RolePolicyCli,
     #[arg(long)]
     version: Option<String>,
+    #[arg(long, conflicts_with = "version")]
+    channel: Option<String>,
     #[arg(long)]
     release_manifest: Option<String>,
     #[arg(long)]

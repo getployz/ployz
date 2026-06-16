@@ -68,6 +68,7 @@ import type {
   OpsStatusRequest,
   OpsWatchResponse,
   OpsWatchRequest,
+  PloyzBackupCreateInput,
   PloyzOperationTransport,
   ServiceInspectResponse,
   ServiceInspectRequest,
@@ -385,6 +386,54 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
       addressing_style: "virtual_hosted",
     },
   });
+  assert.throws(
+    () =>
+      backupCreateRequest(
+        backupCreateInput({
+          target: {
+            ...backupCreateInput().target,
+            bucket: " ",
+          },
+        }),
+      ),
+    /backup S3 bucket/,
+  );
+  assert.throws(
+    () =>
+      backupCreateRequest(
+        backupCreateInput({
+          target: {
+            ...backupCreateInput().target,
+            keyPrefix: "",
+          },
+        }),
+      ),
+    /backup S3 key prefix/,
+  );
+  assert.throws(
+    () =>
+      backupCreateRequest(
+        backupCreateInput({
+          target: {
+            ...backupCreateInput().target,
+            region: "\t",
+          },
+        }),
+      ),
+    /backup S3 region/,
+  );
+  assert.throws(
+    () =>
+      backupCreateRequest(
+        backupCreateInput({
+          target: {
+            ...backupCreateInput().target,
+            endpointUrl: "\n",
+          },
+        }),
+      ),
+    /backup S3 endpoint URL/,
+  );
   assert.deepEqual(machineListRequest(), {});
   assert.deepEqual(machineInspectRequest({ nodeId: "node_2" }), { node_id: "node_2" });
   assert.deepEqual(machineInspectRequest("node_2"), { node_id: "node_2" });
@@ -840,11 +889,11 @@ function machineAddInput() {
   };
 }
 
-function backupCreateInput(overrides: Partial<ReturnType<typeof backupCreateInputBase>> = {}) {
+function backupCreateInput(overrides: Partial<PloyzBackupCreateInput> = {}) {
   return { ...backupCreateInputBase(), ...overrides };
 }
 
-function backupCreateInputBase() {
+function backupCreateInputBase(): PloyzBackupCreateInput {
   return {
     operationId: "op_backup",
     idempotencyKey: "idem_backup",

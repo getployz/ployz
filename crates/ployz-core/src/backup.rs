@@ -1,6 +1,7 @@
 //! Product-level control-plane backup scope.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -171,6 +172,18 @@ impl BackupTarget {
             addressing_style,
         }
     }
+
+    pub fn validate_create(&self) -> Result<(), BackupTargetValidationError> {
+        match self {
+            Self::S3 {
+                bucket,
+                key_prefix,
+                region,
+                endpoint_url,
+                ..
+            } => validate_s3_backup_target(bucket, key_prefix, region, endpoint_url.as_deref()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +212,102 @@ impl S3BackupTarget {
             region: region.into(),
             endpoint_url,
             addressing_style,
+        }
+    }
+
+    pub fn validate_create(&self) -> Result<(), BackupTargetValidationError> {
+        validate_s3_backup_target(
+            &self.bucket,
+            &self.key_prefix,
+            &self.region,
+            self.endpoint_url.as_deref(),
+        )
+    }
+}
+
+fn validate_s3_backup_target(
+    bucket: &str,
+    key_prefix: &str,
+    region: &str,
+    endpoint_url: Option<&str>,
+) -> Result<(), BackupTargetValidationError> {
+    validate_backup_target_text(BackupTargetValidationField::Bucket, bucket)?;
+    validate_backup_target_text(BackupTargetValidationField::KeyPrefix, key_prefix)?;
+    validate_backup_target_text(BackupTargetValidationField::Region, region)?;
+    if let Some(endpoint_url) = endpoint_url {
+        validate_backup_target_text(BackupTargetValidationField::EndpointUrl, endpoint_url)?;
+    }
+    Ok(())
+}
+
+fn validate_backup_target_text(
+    field: BackupTargetValidationField,
+    value: &str,
+) -> Result<(), BackupTargetValidationError> {
+    if value.trim().is_empty() {
+        return Err(BackupTargetValidationError {
+            field,
+            failure: BackupTargetValidationFailure::Empty,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct BackupTargetValidationError {
+    pub field: BackupTargetValidationField,
+    pub failure: BackupTargetValidationFailure,
+}
+
+impl fmt::Display for BackupTargetValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} {}",
+            self.field.wire_name(),
+            self.failure.message()
+        )
+    }
+}
+
+impl std::error::Error for BackupTargetValidationError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BackupTargetValidationField {
+    Bucket,
+    KeyPrefix,
+    Region,
+    EndpointUrl,
+}
+
+impl BackupTargetValidationField {
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Bucket => "bucket",
+            Self::KeyPrefix => "key_prefix",
+            Self::Region => "region",
+            Self::EndpointUrl => "endpoint_url",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BackupTargetValidationFailure {
+    Empty,
+}
+
+impl BackupTargetValidationFailure {
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Empty => "must not be empty",
         }
     }
 }
