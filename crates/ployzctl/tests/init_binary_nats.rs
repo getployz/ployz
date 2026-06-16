@@ -196,6 +196,7 @@ fn write_cluster_context(
             nats_ca_file: server.server.ca_path().to_owned(),
             operator_seed_file: env.user_seed_path().to_owned(),
             join_seed_file: None,
+            machines: Vec::new(),
         },
     )
     .expect("cluster context saves");

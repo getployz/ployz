@@ -31,6 +31,8 @@ fn first_node_install_spec_wire_shape_is_grouped_json() {
             "node_public_ip": "203.0.113.10",
             "machine_bootstrap_url": "https://example.test/ployz.sh",
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
+            "machine_join_cluster_name": "ployz",
+            "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
             "artifacts": {
                 "ployzd": {
                     "version": "0.1.0",
@@ -67,9 +69,12 @@ fn first_node_install_spec_parses_from_grouped_json() {
     let spec = serde_json::from_value::<FirstNodeInstallSpec>(serde_json::json!({
         "node_id": "node_1",
         "gateway": "skip",
+        "dns": "install",
         "node_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
+        "machine_join_cluster_name": "ployz",
+        "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
         "artifacts": {
             "ployzd": {
                 "version": "0.1.0",
@@ -100,7 +105,6 @@ fn first_node_install_spec_parses_from_grouped_json() {
     }))
     .expect("spec parses");
 
-    // A spec without a `dns` field defaults the DNS role to install.
     assert_eq!(
         spec,
         first_node_install_spec(GatewayRole::Skip, DnsRole::Install)
@@ -248,6 +252,12 @@ fn first_node_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstNodeInsta
         node_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,
+        machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
+            .expect("valid cluster name"),
+        machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(
+            "tls://203.0.113.10:4222",
+        )
+        .expect("valid runtime nats url"),
         artifacts: FirstNodeInstallArtifacts {
             ployzd: install_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: install_artifact(

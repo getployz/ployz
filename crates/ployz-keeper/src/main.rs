@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ployz_core::ids::NodeId;
+use ployz_core::install::{MachineJoinRuntimeNatsUrl, NatsMachineMaterialPaths};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::plan_joined_node_process_set;
@@ -41,6 +43,8 @@ const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REDEEM_MATERIAL_ATTEMPTS: u32 = 150;
 const REDEEM_MATERIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 const KEEPER_STATE_DIR: &str = "/var/lib/ployz";
+const FIRST_NODE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-node-bootstrap-result begin";
+const FIRST_NODE_BOOTSTRAP_RESULT_END: &str = "ployz-first-node-bootstrap-result end";
 
 fn main() -> ExitCode {
     match load_command(std::env::args_os().skip(1)) {
@@ -62,19 +66,26 @@ fn main() -> ExitCode {
             }
         }
         Ok(KeeperCommand::FirstNodeInstall(target)) => {
+            let node_id = target.node_id.clone();
             let nats_material = target.nats_material.clone();
+            let runtime_nats_url = target.machine_join_runtime_nats_url().clone();
             let stdout = std::io::stdout();
             let mut recorder = KeeperTextRecorder::new(stdout.lock());
             let execution = run_first_node_install(*target, &mut recorder);
             match execution.terminal {
                 KeeperPlanTerminal::Completed => {
                     drop(recorder);
-                    println!(
-                        "operator seed {}",
-                        nats_material.operator_seed_file().display()
-                    );
-                    println!("cluster ca {}", nats_material.ca_file().display());
-                    ExitCode::SUCCESS
+                    match print_first_node_bootstrap_result(
+                        &node_id,
+                        &runtime_nats_url,
+                        &nats_material,
+                    ) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(message) => {
+                            eprintln!("{message}");
+                            ExitCode::FAILURE
+                        }
+                    }
                 }
                 KeeperPlanTerminal::Failed(failure) => {
                     eprintln!(
@@ -94,6 +105,39 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn print_first_node_bootstrap_result(
+    node_id: &NodeId,
+    runtime_nats_url: &MachineJoinRuntimeNatsUrl,
+    material: &NatsMachineMaterialPaths,
+) -> Result<(), String> {
+    let ca_pem = read_result_file(&material.ca_file(), "cluster CA")?;
+    let operator_seed = read_result_file(&material.operator_seed_file(), "operator seed")?;
+    let join_seed = read_result_file(&material.join_seed_file(), "Join seed")?;
+    let result = serde_json::json!({
+        "node_id": node_id.as_str(),
+        "nats_url": runtime_nats_url.as_str(),
+        "ca_pem": ca_pem,
+        "operator_seed": operator_seed.trim(),
+        "join_seed": join_seed.trim(),
+    });
+    println!("{FIRST_NODE_BOOTSTRAP_RESULT_BEGIN}");
+    println!(
+        "{}",
+        serde_json::to_string(&result).expect("bootstrap result json serializes")
+    );
+    println!("{FIRST_NODE_BOOTSTRAP_RESULT_END}");
+    Ok(())
+}
+
+fn read_result_file(path: &std::path::Path, label: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "failed to read first-node bootstrap {label} {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn run_join(

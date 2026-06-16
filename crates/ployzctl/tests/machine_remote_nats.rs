@@ -37,10 +37,10 @@ use ployz_sdk_types::{
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployz_test_support::nats::TestNats;
+use ployzctl::bootstrap_command::{DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_VERSION};
 use ployzctl::commands::PloyzctlCommand;
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
-use ployzctl::config::load_cluster_context;
-use ployzctl::remote_bootstrap::{DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_VERSION};
+use ployzctl::config::{ClusterContext, load_cluster_context, save_cluster_context};
 use ployzctl::remote_machine_runtime::RemoteMachineExecutionError;
 use ployzctl::runtime::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
 use ployzctl::ssh::SshTarget;
@@ -48,6 +48,8 @@ use ployzctl::ssh::SshTarget;
 const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_SEED: &str = "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----";
+const FIRST_NODE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-node-bootstrap-result begin";
+const FIRST_NODE_BOOTSTRAP_RESULT_END: &str = "ployz-first-node-bootstrap-result end";
 
 /// One stand-in `ssh` that answers the machine-init phase commands and logs
 /// every remote command it received.
@@ -59,7 +61,7 @@ struct FakeSshMachine {
 
 impl FakeSshMachine {
     /// `hostname` is the reported remote hostname; `installer_exit` shapes
-    /// the `--first-node-spec` / `--join-token` phase outcome.
+    /// the `--first-node` / `--join-token` phase outcome.
     fn new(hostname: &str, installer_body: &str) -> Self {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let log = dir.path().join("commands.log");
@@ -78,7 +80,7 @@ case "$cmd" in
   'mkdir -p '*)
     :
     ;;
-  *'--first-node-spec'* | *'--join-token'*)
+  *'--first-node'* | *'--join-token'*)
     {installer_body}
     ;;
   'curl -fsSL -- '*)
@@ -99,9 +101,6 @@ case "$cmd" in
     ;;
   'cat '*'.seed'*)
     echo '{seed}'
-    ;;
-  'systemctl restart ployzd-control')
-    :
     ;;
   *)
     echo "unexpected remote command: $cmd" >&2
@@ -131,6 +130,22 @@ esac
             .filter(|entry| !entry.trim().is_empty())
             .collect()
     }
+}
+
+fn first_node_installer_success_body(node_id: &str) -> String {
+    let result = serde_json::json!({
+        "node_id": node_id,
+        "nats_url": "tls://203.0.113.10:4222",
+        "ca_pem": TEST_CA,
+        "operator_seed": TEST_SEED,
+        "join_seed": TEST_SEED,
+    });
+    format!(
+        "printf '%s\\n' 'keeper install ok' '{}' '{}' '{}'",
+        FIRST_NODE_BOOTSTRAP_RESULT_BEGIN,
+        serde_json::to_string(&result).expect("test bootstrap result serializes"),
+        FIRST_NODE_BOOTSTRAP_RESULT_END,
+    )
 }
 
 fn machine_init_command(target: &str) -> MachineInitCommand {
@@ -302,11 +317,11 @@ async fn machine_init_installs_activates_and_writes_local_context() {
         .expect("endpoint binds");
     client.flush().await.expect("service flushes");
 
-    let ssh = FakeSshMachine::new("sg-core-1", "echo 'keeper install ok'");
+    let first_node_success = first_node_installer_success_body("sg-core-1");
+    let ssh = FakeSshMachine::new("sg-core-1", &first_node_success);
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
     let config = test_config(&server, &ssh, &context, seed_dir.path());
-
     let output = execute_command(
         PloyzctlCommand::MachineInit(machine_init_command("root@203.0.113.10")),
         &config,
@@ -336,39 +351,54 @@ async fn machine_init_installs_activates_and_writes_local_context() {
             .trim(),
         TEST_SEED
     );
+    let [machine] = loaded.machines.as_slice() else {
+        panic!("expected one recorded machine");
+    };
+    assert_eq!(machine.node_id, node_id("sg-core-1"));
+    assert_eq!(
+        machine.ssh.as_ref().map(|target| target.destination()),
+        Some("root@203.0.113.10".to_owned())
+    );
 
-    // The internally generated install spec carried the hostname-derived
-    // identity, default roles, bootstrap URL, release artifacts, and the
-    // NATS server descriptor.
+    // Founder bootstrap is one rendered command delivered over SSH. The
+    // script/keeper side owns release resolution, local artifacts, and the
+    // first-node spec.
     let commands = ssh.commands();
-    let spec_write = commands
+    let install = commands
         .iter()
-        .find(|command| command.contains("first-node-install.json") && command.starts_with("mkdir"))
-        .expect("install spec written remotely");
+        .find(|command| command.contains("--first-node"))
+        .expect("founder installer ran remotely");
     for expected in [
-        r#""node_id": "sg-core-1""#,
-        r#""gateway": "install""#,
-        r#""dns": "install""#,
-        r#""machine_bootstrap_url": "https://ployz.sh""#,
-        r#""source": "https://example.invalid/ployzd""#,
-        r#""binary": "/usr/local/bin/nats-server""#,
+        "curl -fsSL -- 'https://ployz.sh'",
+        "PLOYZ_NODE_ID='sg-core-1'",
+        "PLOYZ_GATEWAY='install'",
+        "PLOYZ_DNS='install'",
+        "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
+        "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
+        "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
+        "PLOYZ_NODE_PUBLIC_IP='203.0.113.10'",
+        "--first-node",
     ] {
         assert!(
-            spec_write.contains(expected),
-            "spec write missing {expected}: {spec_write}"
+            install.contains(expected),
+            "install missing {expected}: {install}"
         );
     }
-    // Join template was written twice: placeholder CA first, the collected
-    // CA after the installer, then control restarted.
-    let template_writes = commands
-        .iter()
-        .filter(|command| command.ends_with("> '/etc/ployz/machine-join-template.json'"))
-        .count();
-    assert_eq!(template_writes, 2, "template writes: {commands:?}");
     assert!(
         commands
             .iter()
-            .any(|command| command == "systemctl restart ployzd-control")
+            .all(|command| !command.contains("first-node-install.json"))
+    );
+    assert!(
+        commands
+            .iter()
+            .all(|command| !command.contains("machine-join-template.json"))
+    );
+    assert!(commands.iter().all(|command| !command.starts_with("cat ")));
+    assert!(
+        commands
+            .iter()
+            .all(|command| command != "systemctl restart ployzd-control")
     );
 }
 
@@ -537,6 +567,20 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
     let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: Vec::new(),
+        },
+    )
+    .expect("cluster context saves");
 
     let output = execute_command(
         PloyzctlCommand::MachineAddRemote(MachineAddRemoteCommand {
@@ -553,6 +597,17 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     assert!(output.stdout.contains("operation op_add_sg-edge-1_"));
     assert!(output.stdout.contains("node sg-edge-1"));
     assert!(output.stdout.contains("machine-add completed"));
+    let loaded = load_cluster_context(&context.context_path)
+        .expect("context loads")
+        .expect("context exists");
+    let [machine] = loaded.machines.as_slice() else {
+        panic!("expected one recorded machine");
+    };
+    assert_eq!(machine.node_id, node_id("sg-edge-1"));
+    assert_eq!(
+        machine.ssh.as_ref().map(|target| target.destination()),
+        Some("root@203.0.113.11".to_owned())
+    );
 
     // The remote machine ran the join-mode installer with the join bundle
     // material and its own public IP.
