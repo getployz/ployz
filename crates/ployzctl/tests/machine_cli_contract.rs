@@ -15,15 +15,15 @@ use ployz_core::state::{
 use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployzctl::bootstrap_command::{
+    BootstrapInstaller, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_VERSION, FounderBootstrapCommand,
+};
 use ployzctl::commands::machine::{
     MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
     MachineIdentityError, MachineInspectOutput, MachineJoinRuntimeNatsUrl, MachineJoinToken,
     MachineListOutput, MachineName, derive_machine_identity,
 };
 use ployzctl::commands::{PloyzctlCommand, parse_command};
-use ployzctl::remote_bootstrap::{
-    self, MachineInstallerSource, RemoteBootstrapError, parse_release_manifest,
-};
 use ployzctl::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
 
 #[test]
@@ -527,18 +527,15 @@ fn machine_init_parses_target_with_default_roles_and_release() {
     assert_eq!(command.target.destination(), "root@203.0.113.10");
     assert_eq!(command.identity_override, None);
     assert_eq!(command.roles, InstallRolePolicy::install_all());
-    assert_eq!(command.version, remote_bootstrap::DEFAULT_RELEASE_VERSION);
+    assert_eq!(command.version, DEFAULT_RELEASE_VERSION);
     assert_eq!(command.release_manifest_url, None);
-    assert_eq!(
-        command.bootstrap_url.as_str(),
-        remote_bootstrap::DEFAULT_BOOTSTRAP_URL
-    );
+    assert_eq!(command.bootstrap_url.as_str(), DEFAULT_BOOTSTRAP_URL);
     assert_eq!(command.cluster_name.as_str(), "ployz");
     assert_eq!(command.installer_script, None);
     assert_eq!(
-        command.installer_source(),
-        MachineInstallerSource::BootstrapUrl(
-            MachineBootstrapUrl::try_new(remote_bootstrap::DEFAULT_BOOTSTRAP_URL)
+        command.installer(),
+        BootstrapInstaller::BootstrapUrl(
+            MachineBootstrapUrl::try_new(DEFAULT_BOOTSTRAP_URL)
                 .expect("default bootstrap url is valid")
         )
     );
@@ -636,8 +633,8 @@ fn machine_init_accepts_expert_release_overrides() {
         Some("file:///tmp/manifest.env")
     );
     assert_eq!(
-        command.installer_source(),
-        MachineInstallerSource::RemoteScript("/tmp/ployz-install.sh".to_owned())
+        command.installer(),
+        BootstrapInstaller::RemoteScript("/tmp/ployz-install.sh".to_owned())
     );
     assert_eq!(command.cluster_name.as_str(), "dind-e2e");
 }
@@ -745,114 +742,49 @@ fn machine_add_without_target_still_requires_explicit_flags() {
     assert!(rendered.contains("USER@HOST"));
 }
 
-// --- Release manifest parsing (U4) ---
-
-const MANIFEST_URL: &str = "https://example.invalid/ployz-release-linux-amd64.env";
-const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-fn manifest_text() -> String {
-    format!(
-        "PLOYZ_VERSION=0.0.1\nPLOYZD_URL=https://example.invalid/ployzd\nPLOYZD_SHA256={TEST_SHA}\nPLOYZ_EBPF_TC_URL=/opt/ployz/artifacts/ployz-ebpf-tc\nPLOYZ_EBPF_TC_SHA256={TEST_SHA}\nPLOYZ_EBPF_CTL_URL=https://example.invalid/ployz-ebpf-ctl\nPLOYZ_EBPF_CTL_SHA256={TEST_SHA}\n"
-    )
-}
+// --- Founder install command rendering (U4) ---
 
 #[test]
-fn release_manifest_parses_urls_and_local_paths() {
-    let manifest = parse_release_manifest(&manifest_text(), MANIFEST_URL).expect("manifest parses");
-
-    assert_eq!(manifest.version.as_str(), "0.0.1");
-    assert_eq!(
-        manifest.ployzd.source.as_str(),
-        "https://example.invalid/ployzd"
-    );
-    assert_eq!(
-        manifest.ebpf_bytecode.source.as_str(),
-        "/opt/ployz/artifacts/ployz-ebpf-tc"
-    );
-    assert_eq!(manifest.ployzd.sha256.as_str(), TEST_SHA);
-}
-
-#[test]
-fn release_manifest_missing_key_names_key_and_url() {
-    let text = manifest_text().replace("PLOYZD_SHA256", "IGNORED");
-
-    let error = parse_release_manifest(&text, MANIFEST_URL).expect_err("missing key fails");
-
-    assert_eq!(
-        error,
-        RemoteBootstrapError::ManifestMissingKey {
-            key: "PLOYZD_SHA256".to_owned(),
-            manifest_url: MANIFEST_URL.to_owned(),
-        }
-    );
-    let rendered = error.to_string();
-    assert!(rendered.contains("PLOYZD_SHA256"));
-    assert!(rendered.contains(MANIFEST_URL));
-}
-
-#[test]
-fn default_release_manifest_url_matches_the_installer_shape() {
-    assert_eq!(
-        remote_bootstrap::default_release_manifest_url("v0.0.1-alpha.1", "arm64"),
-        "https://github.com/getployz/ployz/releases/download/v0.0.1-alpha.1/ployz-release-linux-arm64.env"
-    );
-    assert_eq!(
-        remote_bootstrap::default_release_manifest_url("0.0.1-alpha.1", "amd64"),
-        "https://github.com/getployz/ployz/releases/download/v0.0.1-alpha.1/ployz-release-linux-amd64.env"
-    );
-}
-
-// --- Generated first-node install spec (U4) ---
-
-#[test]
-fn generated_install_spec_carries_identity_roles_release_and_nats_server() {
-    let manifest = parse_release_manifest(&manifest_text(), MANIFEST_URL).expect("manifest parses");
-    let spec = remote_bootstrap::build_first_node_install_spec(
-        node_id("sg-core-1"),
-        InstallRolePolicy::install_all(),
-        Some("203.0.113.10".parse().expect("valid ip")),
-        MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
-        &manifest,
-        InstallSha256Digest::try_new(TEST_SHA).expect("valid digest"),
-    );
-
-    let json = serde_json::to_string_pretty(&spec).expect("spec serializes");
-    for expected in [
-        r#""node_id": "sg-core-1""#,
-        r#""gateway": "install""#,
-        r#""dns": "install""#,
-        r#""node_public_ip": "203.0.113.10""#,
-        r#""machine_bootstrap_url": "https://ployz.sh""#,
-        r#""machine_join_template_file": "/etc/ployz/machine-join-template.json""#,
-        r#""source": "https://example.invalid/ployzd""#,
-        r#""install_path": "/usr/local/bin/ployzd""#,
-        r#""binary": "/usr/local/bin/nats-server""#,
-    ] {
-        assert!(json.contains(expected), "spec missing {expected}: {json}");
-    }
-    assert!(
-        json.contains(&format!(r#""sha256": "{TEST_SHA}""#)),
-        "spec missing nats-server sha: {json}"
-    );
-}
-
-#[test]
-fn generated_install_spec_respects_role_opt_outs() {
-    let manifest = parse_release_manifest(&manifest_text(), MANIFEST_URL).expect("manifest parses");
-    let spec = remote_bootstrap::build_first_node_install_spec(
-        node_id("sg-core-1"),
-        InstallRolePolicy::install_all()
+fn founder_bootstrap_command_carries_minimal_first_node_inputs() {
+    let command = FounderBootstrapCommand {
+        installer: BootstrapInstaller::BootstrapUrl(
+            MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
+        ),
+        version: "v0.0.1-alpha.1".to_owned(),
+        release_manifest_url: Some("file:///tmp/manifest.env".to_owned()),
+        node_id: node_id("sg-core-1"),
+        roles: InstallRolePolicy::install_all()
             .without_gateway()
             .without_dns(),
-        None,
-        MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
-        &manifest,
-        InstallSha256Digest::try_new(TEST_SHA).expect("valid digest"),
-    );
+        bootstrap_url: MachineBootstrapUrl::try_new("https://ployz.sh")
+            .expect("valid bootstrap url"),
+        cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
+        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
+            .expect("valid runtime nats URL"),
+        node_public_ip: Some("203.0.113.10".parse().expect("valid IP")),
+    };
 
-    let json = serde_json::to_string_pretty(&spec).expect("spec serializes");
-    assert!(json.contains(r#""gateway": "skip""#), "{json}");
-    assert!(json.contains(r#""dns": "skip""#), "{json}");
+    let rendered = command.render();
+
+    for expected in [
+        "curl -fsSL -- 'https://ployz.sh'",
+        "PLOYZ_VERSION='v0.0.1-alpha.1'",
+        "PLOYZ_RELEASE_MANIFEST_URL='file:///tmp/manifest.env'",
+        "PLOYZ_NODE_PUBLIC_IP='203.0.113.10'",
+        "PLOYZ_NODE_ID='sg-core-1'",
+        "PLOYZ_GATEWAY='skip'",
+        "PLOYZ_DNS='skip'",
+        "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
+        "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
+        "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
+        "sh -s -- --first-node",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "rendered command missing {expected}: {rendered}"
+        );
+    }
+    assert!(!rendered.contains("first-node-spec"));
 }
 
 // --- Remote install command rendering (U6) ---

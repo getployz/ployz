@@ -13,13 +13,12 @@ use serde::{Deserialize, Serialize};
 pub struct FirstNodeInstallSpec {
     pub node_id: NodeId,
     pub gateway: GatewayRole,
-    /// DNS defaults on for the alpha machine shape; specs written before
-    /// the DNS role existed parse as `install`.
-    #[serde(default = "default_first_node_dns")]
     pub dns: DnsRole,
     pub node_public_ip: Option<IpAddr>,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub machine_join_template_file: Option<AbsoluteInstallPath>,
+    pub machine_join_cluster_name: MachineJoinClusterName,
+    pub machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
     pub artifacts: FirstNodeInstallArtifacts,
 }
 
@@ -32,10 +31,6 @@ impl FirstNodeInstallSpec {
             dns: self.dns,
         }
     }
-}
-
-const fn default_first_node_dns() -> DnsRole {
-    DnsRole::Install
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

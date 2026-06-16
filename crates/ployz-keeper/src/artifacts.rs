@@ -6,7 +6,10 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use ployz_core::install::InstallArtifactSpec;
+use ployz_core::install::{
+    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
+    InstallSha256Digest,
+};
 
 use crate::fsx::{FileMode, StagedFile, StagedFileError};
 
@@ -102,6 +105,14 @@ impl ArtifactSource {
             ArtifactSourceKind::RemoteUrl(url) => ArtifactSourceView::RemoteUrl(url),
         }
     }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.0 {
+            ArtifactSourceKind::LocalPath(path) => path.display().to_string(),
+            ArtifactSourceKind::RemoteUrl(url) => url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +144,20 @@ impl ArtifactTarget {
     #[must_use]
     pub fn install_path(&self) -> &Path {
         &self.install_path
+    }
+
+    #[must_use]
+    pub fn install_spec(&self) -> InstallArtifactSpec {
+        InstallArtifactSpec {
+            version: InstallArtifactVersion::try_new(self.version.as_str())
+                .expect("validated artifact target version stays valid"),
+            source: InstallArtifactSource::try_new(self.source.render())
+                .expect("validated artifact target source stays valid"),
+            sha256: InstallSha256Digest::try_new(self.digest.as_str())
+                .expect("validated artifact target digest stays valid"),
+            install_path: AbsoluteInstallPath::try_new(self.install_path.display().to_string())
+                .expect("validated artifact target install path stays valid"),
+        }
     }
 }
 

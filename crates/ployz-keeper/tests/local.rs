@@ -215,11 +215,10 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     )
     .with_nats_server_unit(nats_unit(&root))
     .with_nats_material_paths(nats_material(&root))
-    .with_role_environment(
-        role_env(&root).with_machine_join_template_file(
-            ployz_core::install::AbsoluteInstallPath::try_new(template_path.display().to_string())
-                .expect("valid template path"),
-        ),
+    .with_role_environment(role_env(&root))
+    .with_machine_join_template_file(
+        ployz_core::install::AbsoluteInstallPath::try_new(template_path.display().to_string())
+            .expect("valid template path"),
     );
     let plan = first_node_install_plan(target);
     let mut effects = KeeperLocalEffects::new(local_config(&root, &systemd_dir), runner);
@@ -237,6 +236,14 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
+    );
+    let template: ployz_core::install::MachineJoinTemplate =
+        serde_json::from_str(&fs::read_to_string(&template_path).expect("join template writes"))
+            .expect("join template parses");
+    assert_eq!(template.join_bundle.material.cluster_name.as_str(), "ployz");
+    assert_eq!(
+        template.join_bundle.material.runtime_nats_url.as_str(),
+        "tls://127.0.0.1:4222"
     );
 }
 
