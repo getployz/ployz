@@ -6,7 +6,7 @@ mod assurance;
 mod resources;
 
 use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
-use crate::objects::{ObjectBucketSpec, PLZ_BACKUPS_BUCKET};
+use crate::objects::ObjectBucketSpec;
 use crate::observations::KV_OBS_BUCKET;
 use crate::operations::{KV_OPS_BUCKET, PLZ_OPS_STREAM};
 use crate::schedules::{NatsServerVersion, NatsServerVersionParseError};
@@ -115,7 +115,7 @@ impl BootstrapPlan {
                 StorageBackend::File,
                 DiscardPolicy::Old,
             )],
-            object_buckets: vec![ObjectBucketSpec::new(PLZ_BACKUPS_BUCKET)],
+            object_buckets: Vec::new(),
         }
     }
 

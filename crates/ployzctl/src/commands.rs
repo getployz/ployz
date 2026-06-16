@@ -149,9 +149,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             BackupCli::Create(command) => {
                 backup::backup_create_command(command).map(PloyzctlCommand::BackupCreate)
             }
-            BackupCli::Restore(command) => Ok(PloyzctlCommand::BackupRestorePlan(
-                backup::backup_restore_command(command),
-            )),
+            BackupCli::Restore(command) => {
+                backup::backup_restore_command(command).map(PloyzctlCommand::BackupRestorePlan)
+            }
         },
         CommandCli::Init(command) => init_command_from_cli(command),
         CommandCli::Machine { command } => match command {

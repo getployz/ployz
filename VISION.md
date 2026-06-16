@@ -64,8 +64,8 @@ The control plane uses NATS primitives directly:
 - JetStream KV for current state.
 - JetStream streams for operation history and job triggers.
 - Durable consumers and queue groups for workers.
-- Object Store for deploy bundles, diagnostics, rendered specs, cert material,
-  and backup manifests.
+- Object Store for deploy bundles, diagnostics, rendered specs, and cert
+  material.
 - Message schedules for delayed or recurring work where available.
 - Subject permissions for authority.
 

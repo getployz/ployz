@@ -1,25 +1,46 @@
 //! Control-plane restore from backup bundles.
 
+use crate::backup_adapters::{BackupAdapterError, BackupAdapterRegistry};
 use crate::backup_runtime::CONTROL_PLANE_KV_BUCKETS;
-use ployz_core::backup::{BackupArtifact, BackupBundle, ControlPlaneKvSnapshot, KvBucketSnapshot};
-use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
-use ployz_nats::observations::KV_OBS_BUCKET;
+use ployz_core::backup::{
+    BackupArtifact, BackupBundle, BackupRestoreSource, ControlPlaneKvSnapshot, KvBucketSnapshot,
+};
 use std::collections::BTreeSet;
 use std::fmt;
 
 #[derive(Clone)]
 pub struct BackupRestoreRuntime {
     jetstream: async_nats::jetstream::Context,
-    backups: AsyncNatsBackupObjectStore,
+    adapters: BackupAdapterRegistry,
 }
 
 impl BackupRestoreRuntime {
     #[must_use]
-    pub const fn new(
-        jetstream: async_nats::jetstream::Context,
-        backups: AsyncNatsBackupObjectStore,
-    ) -> Self {
-        Self { jetstream, backups }
+    pub fn new(jetstream: async_nats::jetstream::Context, adapters: BackupAdapterRegistry) -> Self {
+        Self {
+            jetstream,
+            adapters,
+        }
+    }
+
+    pub async fn restore_source(
+        &self,
+        source: &BackupRestoreSource,
+    ) -> Result<ControlPlaneRestoreReport, BackupRestoreError> {
+        let manifest = self
+            .adapters
+            .read_manifest(source)
+            .await
+            .map_err(BackupRestoreError::ReadArtifact)?;
+        let [artifact] = manifest.artifacts.as_slice() else {
+            return Err(BackupRestoreError::InvalidManifest {
+                message: format!(
+                    "expected exactly one control-plane bundle artifact, got {}",
+                    manifest.artifacts.len()
+                ),
+            });
+        };
+        self.restore_artifact(artifact).await
     }
 
     pub async fn restore_artifact(
@@ -27,13 +48,12 @@ impl BackupRestoreRuntime {
         artifact: &BackupArtifact,
     ) -> Result<ControlPlaneRestoreReport, BackupRestoreError> {
         let payload = self
-            .backups
-            .read_control_plane_bundle(artifact)
+            .adapters
+            .read_artifact(artifact)
             .await
             .map_err(BackupRestoreError::ReadArtifact)?;
         let bundle = serde_json::from_slice::<BackupBundle>(&payload).map_err(|error| {
             BackupRestoreError::DecodeArtifact {
-                object_name: artifact.object_name.clone(),
                 message: error.to_string(),
             }
         })?;
@@ -53,16 +73,10 @@ impl BackupRestoreRuntime {
         for snapshot in &bundle.control_plane.buckets {
             buckets.push(self.restore_bucket(snapshot).await?);
         }
-        let restored_observation_entries = buckets
-            .iter()
-            .find(|bucket| bucket.name == KV_OBS_BUCKET)
-            .map(|bucket| bucket.entries_restored)
-            .unwrap_or(0);
-
         Ok(ControlPlaneRestoreReport {
             buckets,
             observations: RestoreObservationState::RebuildableAfterNodeReconnect {
-                restored_entries: restored_observation_entries,
+                restored_entries: 0,
             },
         })
     }
@@ -201,9 +215,11 @@ pub enum RestoreObservationState {
 
 #[derive(Debug)]
 pub enum BackupRestoreError {
-    ReadArtifact(BackupObjectStoreError),
+    ReadArtifact(BackupAdapterError),
     DecodeArtifact {
-        object_name: String,
+        message: String,
+    },
+    InvalidManifest {
         message: String,
     },
     MissingBucket {
@@ -243,15 +259,14 @@ impl fmt::Display for BackupRestoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReadArtifact(error) => {
-                write!(formatter, "backup artifact could not be read: {error:?}")
+                write!(formatter, "backup artifact could not be read: {error}")
             }
-            Self::DecodeArtifact {
-                object_name,
-                message,
-            } => write!(
-                formatter,
-                "backup artifact {object_name} could not be decoded: {message}"
-            ),
+            Self::DecodeArtifact { message } => {
+                write!(formatter, "backup artifact could not be decoded: {message}")
+            }
+            Self::InvalidManifest { message } => {
+                write!(formatter, "invalid backup manifest: {message}")
+            }
             Self::MissingBucket { bucket } => {
                 write!(formatter, "backup bundle is missing KV bucket {bucket}")
             }

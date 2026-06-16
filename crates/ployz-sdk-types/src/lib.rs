@@ -14,9 +14,10 @@ pub mod operation_api;
 pub mod typescript;
 
 pub use ployz_core::backup::{
-    BackupArtifact, BackupArtifactKind, BackupBundle, BackupItem, BackupManifest,
-    BackupManifestVersion, BackupPolicy, BackupScopeEntry, ControlPlaneKvSnapshot,
-    KvBucketSnapshot, KvEntrySnapshot, RestoreStep,
+    BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupItem,
+    BackupManifest, BackupManifestVersion, BackupPolicy, BackupRestoreSource, BackupScopeEntry,
+    BackupTarget, ControlPlaneKvSnapshot, KvBucketSnapshot, KvEntrySnapshot, RestoreStep,
+    S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
 };
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
@@ -44,8 +45,9 @@ pub use ployz_core::install::{
 };
 pub use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
-    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
-    MachineReadinessCheck, MachineReadinessEvidence,
+    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName,
+    MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
+    MachineReadinessEvidence,
 };
 pub use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 pub use ployz_core::node::ManagedContainerKind;
@@ -86,6 +88,7 @@ pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySu
 pub struct BackupCreateRequest {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
+    pub target: BackupTarget,
 }
 
 pub type BackupCreateResponse = OperationApiResponse<AcceptedOperation, BackupCreateError>;

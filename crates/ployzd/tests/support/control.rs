@@ -97,6 +97,7 @@ impl TestNats {
             self.connected.controller.clone(),
             config,
             reload,
+            ployzd::backup_adapters::BackupAdapterRegistry::s3_default(),
         )
         .await
         .expect("control runtime starts")

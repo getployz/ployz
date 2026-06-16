@@ -218,7 +218,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 subject: OperationSubjectRef::MachineAdd(node_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Failed { failure }),
             },
-            OperationEvent::BackupCreateSubmitted { operation_id } => Self::Backup {
+            OperationEvent::BackupCreateSubmitted { operation_id, .. } => Self::Backup {
                 operation_id,
                 event: BackupEvent::Submitted,
             },

@@ -76,11 +76,13 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .get_stream("PLZ_OPS")
         .await
         .expect("control runtime created PLZ_OPS");
-    nats.connected
-        .jetstream
-        .get_object_store("PLZ_BACKUPS")
-        .await
-        .expect("control runtime created PLZ_BACKUPS");
+    assert!(
+        nats.connected
+            .jetstream
+            .get_object_store("PLZ_BACKUPS")
+            .await
+            .is_err()
+    );
 
     runtime
         .shutdown()
@@ -286,6 +288,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
         nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
+        ployzd::backup_adapters::BackupAdapterRegistry::s3_default(),
     )
     .await;
 
@@ -546,6 +549,7 @@ async fn control_runtime_refuses_bootstrap_resource_drift() {
         nats.connected.controller.clone(),
         &config,
         nats.reload_runner(),
+        ployzd::backup_adapters::BackupAdapterRegistry::s3_default(),
     )
     .await
     {
