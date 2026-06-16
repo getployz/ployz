@@ -68,12 +68,10 @@ impl BackupItem {
     #[must_use]
     pub const fn current_bundle_policy(self) -> BackupPolicy {
         match self {
-            Self::CoreStateKv
-            | Self::OperationStateKv
+            Self::CoreStateKv | Self::LockStateKv | Self::BackupManifest => BackupPolicy::Included,
+            Self::OperationStateKv
             | Self::ObservationStateKv
-            | Self::LockStateKv
-            | Self::BackupManifest => BackupPolicy::Included,
-            Self::NatsCredentials
+            | Self::NatsCredentials
             | Self::NatsServerConfig
             | Self::PloyzDomainConfig
             | Self::OperationEventStreams
@@ -144,6 +142,140 @@ pub fn single_core_restore_contract() -> impl Iterator<Item = RestoreStep> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupTarget {
+    S3 {
+        bucket: String,
+        key_prefix: String,
+        region: String,
+        endpoint_url: Option<String>,
+        addressing_style: S3AddressingStyle,
+    },
+}
+
+impl BackupTarget {
+    #[must_use]
+    pub fn s3(target: S3BackupTarget) -> Self {
+        let S3BackupTarget {
+            bucket,
+            key_prefix,
+            region,
+            endpoint_url,
+            addressing_style,
+        } = target;
+        Self::S3 {
+            bucket,
+            key_prefix,
+            region,
+            endpoint_url,
+            addressing_style,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct S3BackupTarget {
+    pub bucket: String,
+    pub key_prefix: String,
+    pub region: String,
+    pub endpoint_url: Option<String>,
+    pub addressing_style: S3AddressingStyle,
+}
+
+impl S3BackupTarget {
+    #[must_use]
+    pub fn new(
+        bucket: impl Into<String>,
+        key_prefix: impl Into<String>,
+        region: impl Into<String>,
+        endpoint_url: Option<String>,
+        addressing_style: S3AddressingStyle,
+    ) -> Self {
+        Self {
+            bucket: bucket.into(),
+            key_prefix: key_prefix.into(),
+            region: region.into(),
+            endpoint_url,
+            addressing_style,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupRestoreSource {
+    S3 {
+        bucket: String,
+        manifest_key: String,
+        region: String,
+        endpoint_url: Option<String>,
+        addressing_style: S3AddressingStyle,
+    },
+}
+
+impl BackupRestoreSource {
+    #[must_use]
+    pub fn s3(source: S3BackupRestoreSource) -> Self {
+        let S3BackupRestoreSource {
+            bucket,
+            manifest_key,
+            region,
+            endpoint_url,
+            addressing_style,
+        } = source;
+        Self::S3 {
+            bucket,
+            manifest_key,
+            region,
+            endpoint_url,
+            addressing_style,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct S3BackupRestoreSource {
+    pub bucket: String,
+    pub manifest_key: String,
+    pub region: String,
+    pub endpoint_url: Option<String>,
+    pub addressing_style: S3AddressingStyle,
+}
+
+impl S3BackupRestoreSource {
+    #[must_use]
+    pub fn new(
+        bucket: impl Into<String>,
+        manifest_key: impl Into<String>,
+        region: impl Into<String>,
+        endpoint_url: Option<String>,
+        addressing_style: S3AddressingStyle,
+    ) -> Self {
+        Self {
+            bucket: bucket.into(),
+            manifest_key: manifest_key.into(),
+            region: region.into(),
+            endpoint_url,
+            addressing_style,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum S3AddressingStyle {
+    VirtualHosted,
+    Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BackupManifest {
     pub format_version: BackupManifestVersion,
@@ -184,28 +316,57 @@ impl BackupManifest {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct BackupArtifact {
-    pub bucket: String,
-    pub object_name: String,
+    pub location: BackupArtifactLocation,
     pub kind: BackupArtifactKind,
     pub byte_count: u64,
-    pub digest: String,
+    pub sha256_digest: String,
 }
 
 impl BackupArtifact {
     #[must_use]
     pub fn new(
-        bucket: impl Into<String>,
-        object_name: impl Into<String>,
+        location: BackupArtifactLocation,
         kind: BackupArtifactKind,
         byte_count: u64,
-        digest: impl Into<String>,
+        sha256_digest: impl Into<String>,
     ) -> Self {
         Self {
-            bucket: bucket.into(),
-            object_name: object_name.into(),
+            location,
             kind,
             byte_count,
-            digest: digest.into(),
+            sha256_digest: sha256_digest.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupArtifactLocation {
+    S3 {
+        bucket: String,
+        key: String,
+        region: String,
+        endpoint_url: Option<String>,
+        addressing_style: S3AddressingStyle,
+    },
+}
+
+impl BackupArtifactLocation {
+    #[must_use]
+    pub fn s3(
+        bucket: impl Into<String>,
+        key: impl Into<String>,
+        region: impl Into<String>,
+        endpoint_url: Option<String>,
+        addressing_style: S3AddressingStyle,
+    ) -> Self {
+        Self::S3 {
+            bucket: bucket.into(),
+            key: key.into(),
+            region: region.into(),
+            endpoint_url,
+            addressing_style,
         }
     }
 }

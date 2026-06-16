@@ -185,6 +185,18 @@ export interface PloyzMachineJoinRedeemInput {
 export interface PloyzBackupCreateInput {
   operationId: string;
   idempotencyKey: string;
+  target: PloyzBackupTargetInput;
+}
+
+export type PloyzBackupTargetInput = PloyzS3BackupTargetInput;
+
+export interface PloyzS3BackupTargetInput {
+  kind: "s3";
+  bucket: string;
+  keyPrefix: string;
+  region: string;
+  endpointUrl?: string;
+  addressingStyle: "virtual_hosted" | "path";
 }
 
 export interface PloyzMachineInspectInput {
@@ -320,7 +332,22 @@ export function backupCreateRequest(input: PloyzBackupCreateInput): BackupCreate
   return {
     operation_id: operationId(input.operationId),
     idempotency_key: operationIdempotencyKey(input.idempotencyKey),
+    target: backupTarget(input.target),
   };
+}
+
+function backupTarget(input: PloyzBackupTargetInput): BackupCreateRequest["target"] {
+  switch (input.kind) {
+    case "s3":
+      return {
+        kind: "s3",
+        bucket: input.bucket,
+        key_prefix: input.keyPrefix,
+        region: input.region,
+        endpoint_url: input.endpointUrl ?? null,
+        addressing_style: input.addressingStyle,
+      };
+  }
 }
 
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {

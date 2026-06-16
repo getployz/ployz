@@ -1,6 +1,7 @@
 //! Runtime wiring for the control role.
 
 use crate::api_runtime::{ApiServiceRuntimeError, start_operation_api_service_with_handlers};
+use crate::backup_adapters::BackupAdapterRegistry;
 use crate::backup_runtime::BackupOperationRuntime;
 use crate::config::ControlProcessConfig;
 use crate::controllers::OperationControllers;
@@ -18,7 +19,6 @@ use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
-use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
@@ -53,20 +53,47 @@ pub async fn start_control_runtime(
     let client = connect_authenticated(&config.nats_connect, CONTROL_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(ControlRuntimeError::ConnectNats)?;
-    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+    start_control_runtime_with_client_and_reload(
+        client,
+        config,
+        SystemctlNatsReloadRunner,
+        BackupAdapterRegistry::s3_default(),
+    )
+    .await
 }
 
 pub async fn start_control_runtime_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
-    start_control_runtime_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+    start_control_runtime_with_client_and_reload(
+        client,
+        config,
+        SystemctlNatsReloadRunner,
+        BackupAdapterRegistry::s3_default(),
+    )
+    .await
+}
+
+pub async fn start_control_runtime_with_client_and_backup_adapters(
+    client: NatsClient,
+    config: &ControlProcessConfig,
+    backup_adapters: BackupAdapterRegistry,
+) -> Result<RunningControlRuntime, ControlRuntimeError> {
+    start_control_runtime_with_client_and_reload(
+        client,
+        config,
+        SystemctlNatsReloadRunner,
+        backup_adapters,
+    )
+    .await
 }
 
 pub async fn start_control_runtime_with_client_and_reload(
     client: NatsClient,
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
+    backup_adapters: BackupAdapterRegistry,
 ) -> Result<RunningControlRuntime, ControlRuntimeError> {
     if config.machine_bootstrap.join_template.is_none() {
         return Err(ControlRuntimeError::MissingMachineJoinTemplate);
@@ -88,9 +115,6 @@ pub async fn start_control_runtime_with_client_and_reload(
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
-    let backups = AsyncNatsBackupObjectStore::from_jetstream(&jetstream)
-        .await
-        .map_err(ControlRuntimeError::OpenBackupObjects)?;
     let owner_id = OperationOwnerId::try_new(CONTROL_OPERATION_OWNER_ID)
         .expect("control owner id is static and valid");
     let controllers = OperationControllers::with_owner(
@@ -140,7 +164,7 @@ pub async fn start_control_runtime_with_client_and_reload(
     let backup_runtime = BackupOperationRuntime::new(
         jetstream,
         controllers.clone(),
-        backups,
+        backup_adapters,
         backup_tasks.clone(),
     );
     let operation_api = start_operation_api_service_with_handlers(
@@ -189,7 +213,6 @@ pub enum ControlRuntimeError {
     OpenCoreState(CoreStateStoreError),
     OpenObservations(ObservationStoreError),
     OpenOperationStatus(ployz_nats::operations::OperationStatusStoreError),
-    OpenBackupObjects(BackupObjectStoreError),
     StartNatsAuthorization(NatsAuthorizationStartError),
     ResumeMachineAddMints(MintResumeError),
     StartOperationApi(ApiServiceRuntimeError),
@@ -217,9 +240,6 @@ impl fmt::Display for ControlRuntimeError {
                     formatter,
                     "failed to open operation status store: {error:?}"
                 )
-            }
-            Self::OpenBackupObjects(error) => {
-                write!(formatter, "failed to open backup object store: {error:?}")
             }
             Self::StartNatsAuthorization(error) => {
                 write!(formatter, "failed to start NATS authorization: {error}")

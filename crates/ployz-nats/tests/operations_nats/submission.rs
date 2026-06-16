@@ -58,7 +58,7 @@ async fn operation_repository_backup_submit_is_durable_and_idempotent() {
         .expect("first backup accepted");
     let second = repository
         .submit_backup(
-            backup_submission("op_other", "idem_backup"),
+            backup_submission_with_prefix("op_other", "idem_backup", "clusters/other"),
             default_lease_claim(),
         )
         .await
@@ -69,6 +69,7 @@ async fn operation_repository_backup_submit_is_durable_and_idempotent() {
     assert_eq!(first.operation_id, operation_id("op_backup"));
     assert_eq!(first.operation_id, second.operation_id);
     assert_eq!(first.start_sequence, second.start_sequence);
+    assert_eq!(first.target, second.target);
     assert_eq!(first.lease, second.lease);
     assert_eq!(
         repository
@@ -98,6 +99,7 @@ async fn operation_repository_backup_submit_is_durable_and_idempotent() {
         event.event,
         OperationEvent::BackupCreateSubmitted {
             operation_id: operation_id("op_backup"),
+            target: first.target,
         }
     );
 }

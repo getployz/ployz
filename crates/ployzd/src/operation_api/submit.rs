@@ -51,6 +51,7 @@ impl From<BackupCreateRequest> for BackupCreateCommand {
         Self {
             operation_id: value.operation_id,
             idempotency_key: value.idempotency_key,
+            target: value.target,
         }
     }
 }

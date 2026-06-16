@@ -1,5 +1,7 @@
 use ployz_core::backup::{
-    BackupItem, BackupManifest, BackupPolicy, RestoreStep, control_plane_backup_scope,
+    BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupItem, BackupManifest,
+    BackupPolicy, BackupRestoreSource, BackupTarget, RestoreStep, S3AddressingStyle,
+    S3BackupRestoreSource, S3BackupTarget, control_plane_backup_scope,
     current_control_plane_bundle_scope, single_core_restore_contract,
 };
 
@@ -40,8 +42,6 @@ fn current_backup_bundle_scope_is_honest_about_captured_artifacts() {
         current_bundle_items_with_policy(BackupPolicy::Included),
         vec![
             BackupItem::CoreStateKv,
-            BackupItem::OperationStateKv,
-            BackupItem::ObservationStateKv,
             BackupItem::LockStateKv,
             BackupItem::BackupManifest,
         ]
@@ -49,6 +49,8 @@ fn current_backup_bundle_scope_is_honest_about_captured_artifacts() {
     assert_eq!(
         current_bundle_items_with_policy(BackupPolicy::Excluded),
         vec![
+            BackupItem::OperationStateKv,
+            BackupItem::ObservationStateKv,
             BackupItem::NatsCredentials,
             BackupItem::NatsServerConfig,
             BackupItem::PloyzDomainConfig,
@@ -63,6 +65,59 @@ fn current_backup_bundle_scope_is_honest_about_captured_artifacts() {
         BackupManifest::current_control_plane_kv_only().scope,
         current_control_plane_bundle_scope().collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn backup_target_artifact_and_restore_source_have_stable_s3_wire_shape() {
+    let target = BackupTarget::s3(S3BackupTarget::new(
+        "ployz-backups",
+        "clusters/dev",
+        "us-east-1",
+        None,
+        S3AddressingStyle::VirtualHosted,
+    ));
+    let source = BackupRestoreSource::s3(S3BackupRestoreSource::new(
+        "ployz-backups",
+        "clusters/dev/op_backup/manifest.json",
+        "us-east-1",
+        Some("https://s3.example.test".to_owned()),
+        S3AddressingStyle::Path,
+    ));
+    let artifact = BackupArtifact::new(
+        BackupArtifactLocation::s3(
+            "ployz-backups",
+            "clusters/dev/op_backup/control-plane-bundle.json",
+            "us-east-1",
+            None,
+            S3AddressingStyle::VirtualHosted,
+        ),
+        BackupArtifactKind::ControlPlaneBundle,
+        128,
+        "0123456789abcdef",
+    );
+
+    assert_eq!(
+        serde_json::to_string(&target).expect("target serializes"),
+        r#"{"kind":"s3","bucket":"ployz-backups","key_prefix":"clusters/dev","region":"us-east-1","endpoint_url":null,"addressing_style":"virtual_hosted"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&source).expect("restore source serializes"),
+        r#"{"kind":"s3","bucket":"ployz-backups","manifest_key":"clusters/dev/op_backup/manifest.json","region":"us-east-1","endpoint_url":"https://s3.example.test","addressing_style":"path"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&artifact).expect("artifact serializes"),
+        r#"{"location":{"kind":"s3","bucket":"ployz-backups","key":"clusters/dev/op_backup/control-plane-bundle.json","region":"us-east-1","endpoint_url":null,"addressing_style":"virtual_hosted"},"kind":"control_plane_bundle","byte_count":128,"sha256_digest":"0123456789abcdef"}"#
+    );
+
+    let combined = format!(
+        "{}{}{}",
+        serde_json::to_string(&target).expect("target serializes"),
+        serde_json::to_string(&source).expect("source serializes"),
+        serde_json::to_string(&artifact).expect("artifact serializes")
+    );
+    assert!(!combined.contains("access_key"));
+    assert!(!combined.contains("secret"));
+    assert!(!combined.contains("token"));
 }
 
 #[test]

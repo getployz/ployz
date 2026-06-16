@@ -8,6 +8,7 @@
 
 pub mod api_runtime;
 pub mod app;
+pub mod backup_adapters;
 pub mod backup_restore;
 pub mod backup_runtime;
 pub mod config;

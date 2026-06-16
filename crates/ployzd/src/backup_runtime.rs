@@ -1,5 +1,6 @@
 //! Owned backup operation execution.
 
+use crate::backup_adapters::{BackupAdapterError, BackupAdapterRegistry};
 use crate::controllers::OperationControllers;
 use crate::operation_lease::{
     OwnerLeaseError, renew_verified_owner_lease, with_advisory_operation_lease,
@@ -16,20 +17,17 @@ use ployz_core::ops::{
     FailureMessage, OperationStatus,
 };
 use ployz_nats::kv::KV_CORE_BUCKET;
-use ployz_nats::objects::{AsyncNatsBackupObjectStore, BackupObjectStoreError};
-use ployz_nats::observations::KV_OBS_BUCKET;
 use ployz_nats::operations::{
-    AcceptedBackupSubmission, KV_OPS_BUCKET, OperationStatusReadError, RecordBackupEventError,
+    AcceptedBackupSubmission, OperationStatusReadError, RecordBackupEventError,
 };
 use std::fmt;
 
-pub(crate) const CONTROL_PLANE_KV_BUCKETS: [&str; 3] =
-    [KV_CORE_BUCKET, KV_OPS_BUCKET, KV_OBS_BUCKET];
+pub(crate) const CONTROL_PLANE_KV_BUCKETS: [&str; 1] = [KV_CORE_BUCKET];
 
 #[derive(Clone)]
 pub struct BackupOperationRuntime {
     controllers: OperationControllers,
-    backups: AsyncNatsBackupObjectStore,
+    adapters: BackupAdapterRegistry,
     snapshot_source: ControlPlaneSnapshotSource,
     task_registry: TaskRegistry,
 }
@@ -39,12 +37,12 @@ impl BackupOperationRuntime {
     pub fn new(
         jetstream: async_nats::jetstream::Context,
         controllers: OperationControllers,
-        backups: AsyncNatsBackupObjectStore,
+        adapters: BackupAdapterRegistry,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
             controllers,
-            backups,
+            adapters,
             snapshot_source: ControlPlaneSnapshotSource::new(jetstream),
             task_registry,
         }
@@ -74,6 +72,7 @@ impl BackupOperationRuntime {
         let lease_policy = self.controllers.lease_policy();
         let lease_renewer = self.controllers.clone();
         let operation_id = accepted.operation_id.clone();
+        let target = accepted.target.clone();
 
         with_advisory_operation_lease(
             operation_id.clone(),
@@ -82,9 +81,10 @@ impl BackupOperationRuntime {
             async move {
                 run_backup_create(
                     &self.controllers,
-                    &self.backups,
+                    &self.adapters,
                     &self.snapshot_source,
                     &operation_id,
+                    &target,
                 )
                 .await
             },
@@ -124,9 +124,10 @@ impl BackupOperationRuntime {
 
 async fn run_backup_create(
     controllers: &OperationControllers,
-    backups: &AsyncNatsBackupObjectStore,
+    adapters: &BackupAdapterRegistry,
     snapshot_source: &ControlPlaneSnapshotSource,
     operation_id: &OperationId,
+    target: &ployz_core::backup::BackupTarget,
 ) -> Result<(), BackupExecutionError> {
     match backup_state(controllers, operation_id).await? {
         BackupOperationState::Accepted => {
@@ -139,14 +140,30 @@ async fn run_backup_create(
                 },
             )
             .await?;
-            write_artifact_and_complete(controllers, backups, snapshot_source, operation_id).await
+            write_artifact_and_complete(
+                controllers,
+                adapters,
+                snapshot_source,
+                operation_id,
+                target,
+            )
+            .await
         }
         BackupOperationState::Running {
             stage: BackupRunningStage::SnapshottingControlPlane,
-        } => write_artifact_and_complete(controllers, backups, snapshot_source, operation_id).await,
+        } => {
+            write_artifact_and_complete(
+                controllers,
+                adapters,
+                snapshot_source,
+                operation_id,
+                target,
+            )
+            .await
+        }
         BackupOperationState::Running {
             stage: BackupRunningStage::WritingManifest { artifact },
-        } => complete_from_artifact(controllers, operation_id, artifact).await,
+        } => complete_from_artifact(controllers, adapters, operation_id, target, artifact).await,
         BackupOperationState::Completed { .. }
         | BackupOperationState::Failed { .. }
         | BackupOperationState::Cancelled { .. } => Ok(()),
@@ -193,9 +210,10 @@ async fn record_transition(
 
 async fn write_artifact_and_complete(
     controllers: &OperationControllers,
-    backups: &AsyncNatsBackupObjectStore,
+    adapters: &BackupAdapterRegistry,
     snapshot_source: &ControlPlaneSnapshotSource,
     operation_id: &OperationId,
+    target: &ployz_core::backup::BackupTarget,
 ) -> Result<(), BackupExecutionError> {
     let snapshot = snapshot_source
         .snapshot()
@@ -206,8 +224,8 @@ async fn write_artifact_and_complete(
         serde_json::to_vec(&bundle).map_err(|error| BackupExecutionError::EncodeSnapshot {
             message: error.to_string(),
         })?;
-    let artifact = backups
-        .write_control_plane_bundle(operation_id, &payload)
+    let artifact = adapters
+        .write_control_plane_bundle(operation_id, target, &payload)
         .await
         .map_err(BackupExecutionError::WriteArtifact)?;
 
@@ -222,15 +240,21 @@ async fn write_artifact_and_complete(
         },
     )
     .await?;
-    complete_from_artifact(controllers, operation_id, artifact).await
+    complete_from_artifact(controllers, adapters, operation_id, target, artifact).await
 }
 
 async fn complete_from_artifact(
     controllers: &OperationControllers,
+    adapters: &BackupAdapterRegistry,
     operation_id: &OperationId,
+    target: &ployz_core::backup::BackupTarget,
     artifact: BackupArtifact,
 ) -> Result<(), BackupExecutionError> {
     let manifest = BackupManifest::current_control_plane_kv_only().with_artifact(artifact);
+    adapters
+        .write_manifest(operation_id, target, &manifest)
+        .await
+        .map_err(BackupExecutionError::WriteArtifact)?;
 
     record_transition(
         controllers,
@@ -372,7 +396,7 @@ pub enum BackupExecutionError {
     EncodeSnapshot {
         message: String,
     },
-    WriteArtifact(BackupObjectStoreError),
+    WriteArtifact(BackupAdapterError),
     RecordTransition {
         stage: BackupFailureStage,
         error: RecordBackupEventError,
@@ -395,9 +419,7 @@ fn backup_execution_failure(error: &BackupExecutionError) -> BackupOperationFail
         }
         BackupExecutionError::WriteArtifact(source) => {
             BackupOperationFailure::ManifestWriteFailed {
-                message: backup_failure_message(format!(
-                    "backup artifact write failed: {source:?}"
-                )),
+                message: backup_failure_message(format!("backup artifact write failed: {source}")),
             }
         }
         BackupExecutionError::RecordTransition { stage, error } => {
@@ -454,10 +476,7 @@ impl fmt::Display for BackupExecutionError {
                 )
             }
             Self::WriteArtifact(source) => {
-                write!(
-                    formatter,
-                    "backup artifact could not be written: {source:?}"
-                )
+                write!(formatter, "backup artifact could not be written: {source}")
             }
             Self::RecordTransition { stage: _, error } => {
                 write!(

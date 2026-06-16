@@ -2,6 +2,7 @@ use async_nats::jetstream;
 use async_nats::jetstream::message::PublishMessage;
 use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
+use ployz_core::backup::BackupTarget;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
@@ -207,11 +208,15 @@ impl OperationEventAppend {
     #[must_use]
     pub fn backup_submitted(
         operation_id: OperationId,
+        target: BackupTarget,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Self {
         Self::from_event(
             MessageId::new(format!("backup.create.{}", idempotency_key.as_str())),
-            OperationEvent::BackupCreateSubmitted { operation_id },
+            OperationEvent::BackupCreateSubmitted {
+                operation_id,
+                target,
+            },
         )
     }
 
@@ -572,7 +577,9 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         OperationEvent::MachineAddFailed { operation_id, .. } => {
             op_machine_add_failed(operation_id)
         }
-        OperationEvent::BackupCreateSubmitted { operation_id } => op_backup_submitted(operation_id),
+        OperationEvent::BackupCreateSubmitted { operation_id, .. } => {
+            op_backup_submitted(operation_id)
+        }
         OperationEvent::BackupRunning {
             operation_id,
             stage,

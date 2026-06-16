@@ -27,9 +27,6 @@ const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
 const JETSTREAM_API_SCOPE: &str = "$JS.API.>";
 const JETSTREAM_ACK_SCOPE: &str = "$JS.ACK.>";
-/// Backup artifacts live in the `PLZ_BACKUPS` object store; its chunk and
-/// meta writes publish under this subject space.
-const BACKUP_OBJECT_SCOPE: &str = "$O.PLZ_BACKUPS.>";
 
 /// The request-reply inbox prefix a principal connects with.
 ///
@@ -158,7 +155,6 @@ impl NatsPermissionProfile {
                     OPS_STREAM_SUBJECT.to_owned(),
                     JETSTREAM_API_SCOPE.to_owned(),
                     JETSTREAM_ACK_SCOPE.to_owned(),
-                    BACKUP_OBJECT_SCOPE.to_owned(),
                     active_service_state_kv_write_scope(),
                     active_route_state_kv_write_scope(),
                     active_machine_state_kv_write_scope(),
