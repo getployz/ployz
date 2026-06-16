@@ -10,7 +10,11 @@ use crate::commands::PloyzctlCommand;
 use crate::commands::init::{
     FirstNodeActivateCommand, FirstNodeActivationOutput, FirstNodeInitMode,
 };
+use crate::config::{ClusterContext, ClusterContextError, load_cluster_context};
 use crate::keeper_install::{LocalKeeperInstallError, run_keeper_first_node_install};
+use crate::remote_machine_runtime::{
+    RemoteMachineExecutionError, execute_machine_add_remote, execute_machine_init,
+};
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
@@ -28,10 +32,16 @@ pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
 pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
 pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
+/// Stand-in for the system `ssh` (test/automation seam for the remote
+/// machine bootstrap commands).
+pub const PLOYZ_SSH_PROGRAM_ENV: &str = "PLOYZ_SSH_PROGRAM";
 pub const DEFAULT_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_KEEPER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_OPS_WATCH_TIMEOUT: Duration = Duration::from_secs(600);
 pub const DEFAULT_OPS_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Budget for the remote installer phase (artifact downloads plus the keeper
+/// install); much longer than the per-command probe timeout.
+pub const DEFAULT_SSH_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PloyzctlRuntimeConfig {
@@ -43,6 +53,13 @@ pub struct PloyzctlRuntimeConfig {
     pub keeper_install_timeout: Option<Duration>,
     pub ops_watch_timeout: Option<Duration>,
     pub ops_watch_poll_interval: Option<Duration>,
+    /// Program to run instead of the system `ssh` (test seam).
+    pub ssh_program: Option<PathBuf>,
+    /// Per-command budget for the remote installer phase.
+    pub ssh_install_timeout: Option<Duration>,
+    /// Where `machine init` records the local cluster context (test seam;
+    /// defaults to the user config directory).
+    pub cluster_context_path: Option<PathBuf>,
 }
 
 impl PloyzctlRuntimeConfig {
@@ -68,6 +85,12 @@ impl PloyzctlRuntimeConfig {
             keeper_install_timeout: None,
             ops_watch_timeout: None,
             ops_watch_poll_interval: None,
+            ssh_program: std::env::var(PLOYZ_SSH_PROGRAM_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+            ssh_install_timeout: None,
+            cluster_context_path: None,
         }
     }
 
@@ -77,6 +100,58 @@ impl PloyzctlRuntimeConfig {
             self.nats_url = nats_url;
         }
         self
+    }
+
+    /// Fills connection fields from the local cluster context without
+    /// overriding `--nats` or environment variables: apply this after
+    /// [`Self::from_env`] and before [`Self::with_nats_url`].
+    #[must_use]
+    pub fn with_cluster_context(mut self, context: Option<ClusterContext>) -> Self {
+        let Some(context) = context else {
+            return self;
+        };
+        let ClusterContext {
+            nats_url,
+            nats_ca_file,
+            operator_seed_file,
+            join_seed_file,
+        } = context;
+        if self.nats_url.is_none() {
+            self.nats_url = Some(nats_url.as_str().to_owned());
+        }
+        if self.nats_ca_file.is_none() {
+            self.nats_ca_file = Some(nats_ca_file);
+        }
+        if self.nats_seed_file.is_none() {
+            self.nats_seed_file = Some(operator_seed_file);
+        }
+        if self.join_seed_file.is_none() {
+            self.join_seed_file = join_seed_file;
+        }
+        self
+    }
+
+    pub(crate) fn with_cluster_context_from_disk(self) -> Result<Self, PloyzctlExecutionError> {
+        if !self.needs_cluster_context_from_disk() {
+            return Ok(self);
+        }
+        let Some(path) = self
+            .cluster_context_path
+            .clone()
+            .or_else(crate::config::default_cluster_context_path)
+        else {
+            return Ok(self);
+        };
+        let context = load_cluster_context(&path)
+            .map_err(|source| PloyzctlExecutionError::ClusterContext { source })?;
+        Ok(self.with_cluster_context(context))
+    }
+
+    fn needs_cluster_context_from_disk(&self) -> bool {
+        self.nats_url.is_none()
+            || self.nats_ca_file.is_none()
+            || self.nats_seed_file.is_none()
+            || self.join_seed_file.is_none()
     }
 
     #[must_use]
@@ -94,6 +169,12 @@ impl PloyzctlRuntimeConfig {
     #[must_use]
     pub fn ops_watch_timeout(&self) -> Duration {
         self.ops_watch_timeout.unwrap_or(DEFAULT_OPS_WATCH_TIMEOUT)
+    }
+
+    #[must_use]
+    pub fn ssh_install_timeout(&self) -> Duration {
+        self.ssh_install_timeout
+            .unwrap_or(DEFAULT_SSH_INSTALL_TIMEOUT)
     }
 
     /// Retry budget for `init activate-first-node`.
@@ -173,13 +254,18 @@ pub async fn execute_command(
         PloyzctlCommand::InitJoinTemplate(command) => {
             Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
         }
+        PloyzctlCommand::MachineInit(command) => execute_machine_init(command, config).await,
+        PloyzctlCommand::MachineAddRemote(command) => {
+            execute_machine_add_remote(command, config).await
+        }
         PloyzctlCommand::MachineAdd(command) => {
-            let nats_connect = nats_connect_config(config)?;
+            let config = config.clone().with_cluster_context_from_disk()?;
+            let nats_connect = nats_connect_config(&config)?;
             // The install line embeds the cluster-static Join seed
             // (deliberately low-privilege) — read it before submitting so
             // a missing seed fails fast without creating an operation.
-            let join_seed = read_join_seed(config)?;
-            let api = operation_api_client_with_connect(config, nats_connect).await?;
+            let join_seed = read_join_seed(&config)?;
+            let api = operation_api_client_with_connect(&config, nats_connect).await?;
             let accepted = api
                 .machine_add(&command.into_request())
                 .await
@@ -274,7 +360,7 @@ where
 
 /// Operation API failures are terminal for the CLI, so carry the rendered
 /// message instead of one error variant per endpoint.
-fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecutionError
+pub(crate) fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecutionError
 where
     E: fmt::Debug,
 {
@@ -283,7 +369,7 @@ where
     }
 }
 
-async fn watch_operation_until_terminal(
+pub(crate) async fn watch_operation_until_terminal(
     api: &OperationApiClient,
     mut request: OperationEventReplayRequest,
     timeout: Duration,
@@ -358,7 +444,7 @@ impl PloyzctlExecutionOutput {
     }
 }
 
-async fn activate_first_node_machine(
+pub(crate) async fn activate_first_node_machine(
     command: &FirstNodeActivateCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<FirstNodeActivationOutput, PloyzctlExecutionError> {
@@ -393,10 +479,12 @@ async fn activate_first_node_machine_once(
 }
 
 /// Reads the cluster-static Join seed for the `machine add` install line.
-fn read_join_seed(config: &PloyzctlRuntimeConfig) -> Result<NatsUserSeed, PloyzctlExecutionError> {
-    let path = config.join_seed_file.clone().unwrap_or_else(|| {
-        ployz_core::install::NatsMachineMaterialPaths::in_default_state_dir().join_seed_file()
-    });
+pub(crate) fn read_join_seed(
+    config: &PloyzctlRuntimeConfig,
+) -> Result<NatsUserSeed, PloyzctlExecutionError> {
+    let Some(path) = config.join_seed_file.clone() else {
+        return Err(PloyzctlExecutionError::MissingJoinSeedFile);
+    };
     let raw =
         fs::read_to_string(&path).map_err(|error| PloyzctlExecutionError::ReadJoinSeedFile {
             path: path.clone(),
@@ -406,11 +494,12 @@ fn read_join_seed(config: &PloyzctlRuntimeConfig) -> Result<NatsUserSeed, Ployzc
         .map_err(|_| PloyzctlExecutionError::InvalidJoinSeedFile { path })
 }
 
-async fn operation_api_client(
+pub(crate) async fn operation_api_client(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<OperationApiClient, PloyzctlExecutionError> {
-    let connect = nats_connect_config(config)?;
-    operation_api_client_with_connect(config, connect).await
+    let config = config.clone().with_cluster_context_from_disk()?;
+    let connect = nats_connect_config(&config)?;
+    operation_api_client_with_connect(&config, connect).await
 }
 
 async fn operation_api_client_with_connect(
@@ -470,6 +559,7 @@ pub enum PloyzctlExecutionError {
     InvalidNatsSeedFile {
         path: PathBuf,
     },
+    MissingJoinSeedFile,
     ReadJoinSeedFile {
         path: PathBuf,
         message: String,
@@ -480,6 +570,12 @@ pub enum PloyzctlExecutionError {
     NatsConnect(NatsConnectError),
     KeeperFirstNodeInstall {
         source: Box<LocalKeeperInstallError>,
+    },
+    ClusterContext {
+        source: ClusterContextError,
+    },
+    RemoteMachine {
+        source: Box<RemoteMachineExecutionError>,
     },
     OperationApi {
         message: String,
@@ -514,7 +610,10 @@ impl PloyzctlExecutionError {
 impl fmt::Display for PloyzctlExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingNatsUrl => write!(formatter, "--nats or {PLOYZ_NATS_URL_ENV} is required"),
+            Self::MissingNatsUrl => write!(
+                formatter,
+                "no cluster context: run `ployzctl machine init USER@HOST` to create one, pass --nats, or set {PLOYZ_NATS_URL_ENV}"
+            ),
             Self::InvalidNatsUrl(error) => {
                 write!(
                     formatter,
@@ -537,6 +636,10 @@ impl fmt::Display for PloyzctlExecutionError {
                 "{PLOYZ_NATS_NKEY_SEED_FILE_ENV} file {} does not contain an SU-prefixed user seed",
                 path.display()
             ),
+            Self::MissingJoinSeedFile => write!(
+                formatter,
+                "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployzctl machine init USER@HOST` with the current CLI to refresh the context"
+            ),
             Self::ReadJoinSeedFile { path, message } => write!(
                 formatter,
                 "join seed file {} is unreadable (set {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}): {message}",
@@ -549,6 +652,8 @@ impl fmt::Display for PloyzctlExecutionError {
             ),
             Self::NatsConnect(error) => write!(formatter, "{error}"),
             Self::KeeperFirstNodeInstall { source } => write!(formatter, "{source}"),
+            Self::ClusterContext { source } => write!(formatter, "{source}"),
+            Self::RemoteMachine { source } => write!(formatter, "{source}"),
             Self::OperationApi { message } => formatter.write_str(message),
             Self::FirstNodeActivateApi { source } => {
                 write!(formatter, "first node activation failed: {source}")
@@ -571,6 +676,83 @@ impl std::error::Error for PloyzctlExecutionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cluster_context() -> ClusterContext {
+        ClusterContext {
+            nats_url: ployz_nats::connect::NatsClientUrl::try_new("tls://203.0.113.10:4222")
+                .expect("test NATS URL is valid"),
+            nats_ca_file: PathBuf::from("/context/ca.pem"),
+            operator_seed_file: PathBuf::from("/context/operator.seed"),
+            join_seed_file: Some(PathBuf::from("/context/join.seed")),
+        }
+    }
+
+    #[test]
+    fn cluster_context_fills_missing_connection_fields() {
+        let config = PloyzctlRuntimeConfig::default().with_cluster_context(Some(cluster_context()));
+
+        assert_eq!(config.nats_url.as_deref(), Some("tls://203.0.113.10:4222"));
+        assert_eq!(config.nats_ca_file, Some(PathBuf::from("/context/ca.pem")));
+        assert_eq!(
+            config.nats_seed_file,
+            Some(PathBuf::from("/context/operator.seed"))
+        );
+        assert_eq!(
+            config.join_seed_file,
+            Some(PathBuf::from("/context/join.seed"))
+        );
+    }
+
+    #[test]
+    fn environment_values_win_over_cluster_context() {
+        let env_config = PloyzctlRuntimeConfig {
+            nats_url: Some("tls://env.example:4222".to_owned()),
+            nats_ca_file: Some(PathBuf::from("/env/ca.pem")),
+            nats_seed_file: Some(PathBuf::from("/env/operator.seed")),
+            join_seed_file: Some(PathBuf::from("/env/join.seed")),
+            nats_connect_timeout: None,
+            keeper_install_timeout: None,
+            ops_watch_timeout: None,
+            ops_watch_poll_interval: None,
+            ssh_program: None,
+            ssh_install_timeout: None,
+            cluster_context_path: None,
+        };
+
+        let config = env_config.with_cluster_context(Some(cluster_context()));
+
+        assert_eq!(config.nats_url.as_deref(), Some("tls://env.example:4222"));
+        assert_eq!(config.nats_ca_file, Some(PathBuf::from("/env/ca.pem")));
+        assert_eq!(
+            config.nats_seed_file,
+            Some(PathBuf::from("/env/operator.seed"))
+        );
+        assert_eq!(config.join_seed_file, Some(PathBuf::from("/env/join.seed")));
+    }
+
+    #[test]
+    fn nats_flag_wins_over_cluster_context() {
+        let config = PloyzctlRuntimeConfig::default()
+            .with_cluster_context(Some(cluster_context()))
+            .with_nats_url(Some("tls://flag.example:4222".to_owned()));
+
+        assert_eq!(config.nats_url.as_deref(), Some("tls://flag.example:4222"));
+    }
+
+    #[test]
+    fn missing_cluster_context_changes_nothing() {
+        let config = PloyzctlRuntimeConfig::default().with_cluster_context(None);
+
+        assert_eq!(config, PloyzctlRuntimeConfig::default());
+    }
+
+    #[test]
+    fn machine_add_join_seed_requires_context_or_explicit_seed_path() {
+        assert_eq!(
+            read_join_seed(&PloyzctlRuntimeConfig::default()),
+            Err(PloyzctlExecutionError::MissingJoinSeedFile)
+        );
+    }
 
     /// Regression: the activate-first-node retry budget was the NATS
     /// connect timeout, which a single timed-out request (its reply dropped

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ids::NodeId;
 use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
-use crate::roles::{DaemonProcessRole, FirstNodeGateway};
+use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,11 +12,30 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct FirstNodeInstallSpec {
     pub node_id: NodeId,
-    pub gateway: FirstNodeGateway,
+    pub gateway: GatewayRole,
+    /// DNS defaults on for the alpha machine shape; specs written before
+    /// the DNS role existed parse as `install`.
+    #[serde(default = "default_first_node_dns")]
+    pub dns: DnsRole,
     pub node_public_ip: Option<IpAddr>,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub machine_join_template_file: Option<AbsoluteInstallPath>,
     pub artifacts: FirstNodeInstallArtifacts,
+}
+
+impl FirstNodeInstallSpec {
+    /// The optional-role policy carried by this spec.
+    #[must_use]
+    pub const fn role_policy(&self) -> InstallRolePolicy {
+        InstallRolePolicy {
+            gateway: self.gateway,
+            dns: self.dns,
+        }
+    }
+}
+
+const fn default_first_node_dns() -> DnsRole {
+    DnsRole::Install
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

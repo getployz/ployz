@@ -202,7 +202,7 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
         .await
         .expect("control-plane bundle restores");
 
-    assert_eq!(report.buckets.len(), 4);
+    assert_eq!(report.buckets.len(), 3);
     assert!(matches!(
         report.observations,
         RestoreObservationState::RebuildableAfterNodeReconnect { .. }
@@ -404,10 +404,7 @@ fn assert_snapshot_contains_control_buckets(snapshot: &ControlPlaneKvSnapshot) {
         .map(|bucket| bucket.name.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        bucket_names,
-        vec!["KV_CORE", "KV_OPS", "KV_OBS", "KV_LOCKS"]
-    );
+    assert_eq!(bucket_names, vec!["KV_CORE", "KV_OPS", "KV_OBS"]);
     assert!(
         snapshot
             .buckets

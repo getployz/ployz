@@ -3,7 +3,7 @@ use ployz_core::machine::{
     MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineName,
 };
 use ployz_core::ops::{OperationEvent, OperationEventReplayRequest, OperationStatus};
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     MachineAddOperationSubmission, MachineJoinRedemption, OperationEventAppend,
@@ -37,7 +37,7 @@ async fn operation_repository_records_machine_add_joined_transition() {
             id: operation_id("op_machine"),
             node_id: node_id("node_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             state: ployz_core::machine::MachineAddOperationState::Joining {
                 joined_at: joined_at(50),
             },
@@ -88,7 +88,7 @@ async fn operation_repository_redeems_machine_join_token_once() {
     assert_eq!(joined.operation_id, accepted.operation_id);
     assert_eq!(joined.node_id, accepted.node_id);
     assert_eq!(joined.name, accepted.name);
-    assert_eq!(joined.gateway, accepted.gateway);
+    assert_eq!(joined.roles, accepted.roles);
     assert_eq!(joined.joined_at, joined_at(50));
     assert_eq!(joined.last_event_sequence, event_sequence(2));
     assert_eq!(
@@ -101,7 +101,7 @@ async fn operation_repository_redeems_machine_join_token_once() {
             id: accepted.operation_id.clone(),
             node_id: accepted.node_id.clone(),
             name: accepted.name.clone(),
-            gateway: accepted.gateway,
+            roles: accepted.roles,
             state: MachineAddOperationState::Joining {
                 joined_at: joined_at(50),
             },
@@ -141,7 +141,7 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
             id: accepted.operation_id,
             node_id: accepted.node_id,
             name: accepted.name,
-            gateway: accepted.gateway,
+            roles: accepted.roles,
             state: MachineAddOperationState::Completed,
             last_event_sequence: event_sequence(3),
         })
@@ -175,7 +175,7 @@ async fn operation_repository_repeated_machine_join_token_returns_joined_facts()
             operation_id: accepted.operation_id,
             node_id: accepted.node_id,
             name: accepted.name,
-            gateway: accepted.gateway,
+            roles: accepted.roles,
             join_bundle: accepted.join_bundle,
             secret_delivery: machine_join_secret_delivery(),
             joined_at: joined_at(50),
@@ -219,7 +219,7 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
             operation_id: accepted.operation_id,
             node_id: accepted.node_id,
             name: accepted.name,
-            gateway: accepted.gateway,
+            roles: accepted.roles,
             join_bundle: accepted.join_bundle,
             secret_delivery: machine_join_secret_delivery(),
             joined_at: joined_at(50),
@@ -280,7 +280,7 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
                 operation_id: operation_id("op_machine"),
                 node_id: node_id("node_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 join_bundle: machine_join_bundle(),
                 raw_join_token: raw_join_token("short_lived_join_token"),
                 join_token: issued_join_token_for_raw_with_expiry("short_lived_join_token", 40),
@@ -310,7 +310,7 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
             id: accepted.operation_id,
             node_id: accepted.node_id,
             name: accepted.name,
-            gateway: accepted.gateway,
+            roles: accepted.roles,
             state: MachineAddOperationState::Failed {
                 failure: MachineAddFailure::JoinTokenExpired {
                     expired_at: expires_at(40),
@@ -359,7 +359,7 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
             id: accepted.operation_id,
             node_id: accepted.node_id,
             name: accepted.name,
-            gateway: accepted.gateway,
+            roles: accepted.roles,
             state: MachineAddOperationState::Joining {
                 joined_at: joined_at(50),
             },

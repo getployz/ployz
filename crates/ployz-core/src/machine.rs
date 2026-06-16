@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::ids::{NodeId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{FailureMessage, OperationIdempotencyKey};
-use crate::roles::{FirstNodeGateway, JoinedNodeProcessSet, joined_node_process_set};
+use crate::roles::{InstallRolePolicy, JoinedNodeProcessSet, plan_joined_node_process_set};
 use crate::state::ActiveMachineState;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -132,7 +132,7 @@ pub struct MachineAddCommand {
     pub node_id: NodeId,
     pub name: MachineName,
     pub join_token: IssuedJoinToken,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +173,7 @@ pub fn plan_machine_add(command: MachineAddCommand) -> MachineAddPlan {
         operation: MachineAddOperationState::Pending {
             join_token: command.join_token,
         },
-        process_set: joined_node_process_set(&command.node_id, command.gateway),
+        process_set: plan_joined_node_process_set(&command.node_id, command.roles),
     }
 }
 

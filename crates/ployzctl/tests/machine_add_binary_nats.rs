@@ -9,14 +9,15 @@ use ployz_core::install::{
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::{OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease};
+use ployz_core::roles::GatewayRole;
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, MachineAddAccepted, MachineAddGateway, MachineAddRequest,
-    MachineAddResponse, MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
+    AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineAddResponse,
+    MachineBootstrapUrl, MachineJoinToken, MachineName, OperationApiResponse,
     operation_api::{MachineAddApi, OperationApiContract},
 };
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
@@ -52,7 +53,7 @@ async fn binary_machine_add_calls_nats_service() {
                 request.name,
                 MachineName::try_new("edge_2").expect("valid machine name")
             );
-            assert_eq!(request.gateway, MachineAddGateway::Skip);
+            assert_eq!(request.roles.gateway, GatewayRole::Skip);
 
             let response: MachineAddResponse = OperationApiResponse::Ok {
                 value: MachineAddAccepted {
@@ -88,6 +89,7 @@ async fn binary_machine_add_calls_nats_service() {
             "op_machine",
             "--idempotency-key",
             "idem_machine",
+            "--no-gateway",
         ])
         .output()
         .expect("ployzctl binary runs");

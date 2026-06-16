@@ -5,7 +5,7 @@ use ployz_core::cert::{
 use ployz_core::deploy::{DeployPlan, DeployPlanStep, ReplicaSlot};
 use ployz_core::machine::IssuedJoinToken;
 use ployz_core::ops::{DeployOperationFailure, DeployRunningStage};
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission,
@@ -83,7 +83,7 @@ pub(super) fn machine_add_submission(
         operation_id: self::operation_id(operation_id),
         node_id: self::node_id(node_id),
         name: self::machine_name(machine_name),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
         raw_join_token: raw_join_token("join_token"),
         join_token: issued_join_token_for_raw("join_token"),

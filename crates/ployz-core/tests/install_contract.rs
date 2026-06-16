@@ -6,11 +6,11 @@ use ployz_core::install::{
     MachineJoinSecretDelivery, MachineJoinTrustedNats, NatsServerInstallSpec,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 
 #[test]
 fn first_node_install_spec_wire_shape_is_grouped_json() {
-    let mut install = first_node_install_spec(FirstNodeGateway::Install);
+    let mut install = first_node_install_spec(GatewayRole::Install, DnsRole::Install);
     install.machine_bootstrap_url = Some(
         MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
     );
@@ -27,6 +27,7 @@ fn first_node_install_spec_wire_shape_is_grouped_json() {
         serde_json::json!({
             "node_id": "node_1",
             "gateway": "install",
+            "dns": "install",
             "node_public_ip": "203.0.113.10",
             "machine_bootstrap_url": "https://example.test/ployz.sh",
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
@@ -99,7 +100,29 @@ fn first_node_install_spec_parses_from_grouped_json() {
     }))
     .expect("spec parses");
 
-    assert_eq!(spec, first_node_install_spec(FirstNodeGateway::Skip));
+    // A spec without a `dns` field defaults the DNS role to install.
+    assert_eq!(
+        spec,
+        first_node_install_spec(GatewayRole::Skip, DnsRole::Install)
+    );
+    assert_eq!(
+        spec.role_policy(),
+        InstallRolePolicy::install_all().without_gateway()
+    );
+}
+
+#[test]
+fn first_node_install_spec_parses_explicit_dns_opt_out() {
+    let with_dns_skip =
+        serde_json::to_value(first_node_install_spec(GatewayRole::Install, DnsRole::Skip))
+            .expect("spec serializes");
+    let spec =
+        serde_json::from_value::<FirstNodeInstallSpec>(with_dns_skip).expect("spec parses back");
+
+    assert_eq!(
+        spec.role_policy(),
+        InstallRolePolicy::install_all().without_dns()
+    );
 }
 
 #[test]
@@ -217,10 +240,11 @@ fn machine_join_bundle_debug_redacts_secrets() {
     assert!(!rendered.contains("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
 }
 
-fn first_node_install_spec(gateway: FirstNodeGateway) -> FirstNodeInstallSpec {
+fn first_node_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstNodeInstallSpec {
     FirstNodeInstallSpec {
         node_id: NodeId::try_new("node_1").expect("valid node id"),
         gateway,
+        dns,
         node_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,

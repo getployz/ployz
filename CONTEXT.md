@@ -332,6 +332,18 @@ _Avoid_: Machine liveness, observation freshness, substrate presence, tombstone-
 The first installation and join of Ployz substrate on a machine. It makes a machine capable of running its assigned Ployz role processes and reporting bootstrap progress.
 _Avoid_: Install, provisioning, node bootstrap
 
+**Founder Bootstrap**:
+The first-machine bootstrap that forms a new cluster control plane and then activates that same machine as the first accepted machine. Founder bootstrap exists only before there is an existing control-plane operation surface for the cluster.
+_Avoid_: Machine add, joiner bootstrap, remote init
+
+**Joiner Bootstrap**:
+A machine bootstrap that uses an existing cluster's machine-add operation and join material to add another machine to that cluster.
+_Avoid_: Founder bootstrap, cluster init, provisioning
+
+**Bootstrap Delivery**:
+The out-of-band act of carrying a founder or joiner bootstrap command to a target machine. Bootstrap delivery does not decide machine identity, acceptance, placement, or cluster truth.
+_Avoid_: SSH control plane, daemon transport, provisioning authority
+
 **Substrate Update**:
 An explicit operation that changes already-installed non-keeper Ployz substrate on one machine to one requested Ployz version. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, not workload service containers or keeper.
 _Avoid_: Update, upgrade, rollout, in-place update

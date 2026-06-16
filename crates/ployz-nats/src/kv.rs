@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::bootstrap::ResourceReplicas;
 
-pub use ployz_core::state::{KV_CORE_BUCKET, KV_LOCKS_BUCKET};
+pub use ployz_core::state::KV_CORE_BUCKET;
 
 pub(crate) const NATS_IO_TIMEOUT: Duration = Duration::from_secs(10);
 

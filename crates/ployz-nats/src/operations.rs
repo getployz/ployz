@@ -36,5 +36,4 @@ pub use status_store::{
 };
 
 pub const PLZ_OPS_STREAM: &str = "PLZ_OPS";
-pub const PLZ_JOBS_STREAM: &str = "PLZ_JOBS";
 pub use ployz_core::state::KV_OPS_BUCKET;

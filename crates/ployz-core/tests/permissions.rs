@@ -1,15 +1,13 @@
 use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
     active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
-    inbox_subscribe_scope, kv_read_js_api_subjects, lock_kv_write_scope,
-    nats_authorized_user_kv_write_scope, node_observation_kv_write_subjects,
-    operation_status_kv_write_scope,
+    inbox_subscribe_scope, kv_read_js_api_subjects, nats_authorized_user_kv_write_scope,
+    node_observation_kv_write_subjects, operation_status_kv_write_scope,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, AUDIT_STREAM_SUBJECT,
-    JOBS_STREAM_SUBJECT, NODE_SERVICE_SCOPE, OPS_STREAM_SUBJECT, node_observation_scope,
-    node_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, NODE_SERVICE_SCOPE,
+    OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
 };
 use ployz_test_support::ids::node_id;
 
@@ -77,8 +75,6 @@ fn controller_credential_renders_owner_node_service_and_jetstream_scopes() {
         &[
             NODE_SERVICE_SCOPE.to_owned(),
             OPS_STREAM_SUBJECT.to_owned(),
-            JOBS_STREAM_SUBJECT.to_owned(),
-            AUDIT_STREAM_SUBJECT.to_owned(),
             "$JS.API.>".to_owned(),
             "$JS.ACK.>".to_owned(),
             "$O.PLZ_BACKUPS.>".to_owned(),
@@ -87,16 +83,11 @@ fn controller_credential_renders_owner_node_service_and_jetstream_scopes() {
             active_machine_state_kv_write_scope(),
             nats_authorized_user_kv_write_scope(),
             operation_status_kv_write_scope(),
-            lock_kv_write_scope(),
         ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
-        &[
-            JOBS_STREAM_SUBJECT.to_owned(),
-            API_SERVICE_SCOPE.to_owned(),
-            "_INBOX_ctl.>".to_owned()
-        ]
+        &[API_SERVICE_SCOPE.to_owned(), "_INBOX_ctl.>".to_owned()]
     );
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
 }

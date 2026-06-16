@@ -5,7 +5,7 @@ use ployz_core::machine::{
     MachineAddOperationStateName, MachineName, RawJoinToken, redeem_pending_join_token,
 };
 use ployz_core::ops::{EventSequence, OperationStatus};
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 
 use super::{
     AsyncNatsOperationRepository, OperationStatusReadError, OperationStatusStoreError,
@@ -50,7 +50,7 @@ impl AsyncNatsOperationRepository {
             id,
             node_id,
             name,
-            gateway,
+            roles,
             state,
             last_event_sequence,
         } = status
@@ -83,7 +83,7 @@ impl AsyncNatsOperationRepository {
                     operation_id: id,
                     node_id,
                     name,
-                    gateway,
+                    roles,
                     join_bundle: submission.join_bundle,
                     secret_delivery,
                     joined_at,
@@ -269,7 +269,7 @@ impl AsyncNatsOperationRepository {
             id,
             node_id,
             name,
-            gateway,
+            roles,
             state,
             last_event_sequence,
         } = status
@@ -289,7 +289,7 @@ impl AsyncNatsOperationRepository {
             operation_id: id,
             node_id,
             name,
-            gateway,
+            roles,
             join_bundle,
             secret_delivery,
             joined_at,
@@ -317,7 +317,7 @@ pub struct RedeemedMachineJoin {
     pub operation_id: OperationId,
     pub node_id: NodeId,
     pub name: MachineName,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

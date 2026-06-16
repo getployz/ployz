@@ -5,17 +5,14 @@ mod assurance;
 #[path = "bootstrap/resources.rs"]
 mod resources;
 
-use crate::kv::{KV_CORE_BUCKET, KV_LOCKS_BUCKET, KvBucketSpec};
+use crate::kv::{KV_CORE_BUCKET, KvBucketSpec};
 use crate::objects::{ObjectBucketSpec, PLZ_BACKUPS_BUCKET};
 use crate::observations::KV_OBS_BUCKET;
-use crate::operations::{KV_OPS_BUCKET, PLZ_JOBS_STREAM, PLZ_OPS_STREAM};
-use crate::schedules::{NatsServerVersion, NatsServerVersionParseError, ScheduleCapability};
+use crate::operations::{KV_OPS_BUCKET, PLZ_OPS_STREAM};
+use crate::schedules::{NatsServerVersion, NatsServerVersionParseError};
 use crate::streams::{DiscardPolicy, RetentionPolicy, StorageBackend, StreamSpec};
 pub use assurance::{BootstrapAssuranceError, assure_nats_resources};
-use ployz_core::subjects::{
-    AUDIT_STREAM_SUBJECT, JOBS_STREAM_SUBJECT, OBS_TRANSITION_STREAM_SUBJECT, OPS_STREAM_SUBJECT,
-    SCHEDULE_STREAM_SUBJECT,
-};
+use ployz_core::subjects::OPS_STREAM_SUBJECT;
 pub use resources::{
     BootstrapResourceAction, BootstrapResourceDecision, BootstrapResourceKind,
     BootstrapResourceRef, BootstrapResourceRefusal,
@@ -66,7 +63,6 @@ pub struct BootstrapPlan {
     pub kv_buckets: Vec<KvBucketSpec>,
     pub streams: Vec<StreamSpec>,
     pub object_buckets: Vec<ObjectBucketSpec>,
-    pub schedule_capability: ScheduleCapability,
 }
 
 impl BootstrapPlan {
@@ -85,7 +81,7 @@ impl BootstrapPlan {
 
     pub fn for_single_core(capabilities: NatsServerCapabilities) -> Result<Self, BootstrapRefusal> {
         Self::validate_single_server(&capabilities)?;
-        Ok(Self::manifest(capabilities.version))
+        Ok(Self::manifest())
     }
 
     fn validate_single_server(
@@ -105,61 +101,21 @@ impl BootstrapPlan {
         Ok(())
     }
 
-    fn manifest(server_version: NatsServerVersion) -> Self {
-        let schedule_capability = ScheduleCapability::from_server_version(server_version);
-
+    fn manifest() -> Self {
         Self {
             kv_buckets: vec![
                 KvBucketSpec::new(KV_CORE_BUCKET),
                 KvBucketSpec::new(KV_OPS_BUCKET),
                 KvBucketSpec::new(KV_OBS_BUCKET),
-                KvBucketSpec::new(KV_LOCKS_BUCKET),
             ],
-            streams: vec![
-                StreamSpec::new(
-                    PLZ_OPS_STREAM,
-                    vec![OPS_STREAM_SUBJECT.to_owned()],
-                    RetentionPolicy::Limits,
-                    StorageBackend::File,
-                    DiscardPolicy::Old,
-                ),
-                StreamSpec::new(
-                    PLZ_JOBS_STREAM,
-                    vec![JOBS_STREAM_SUBJECT.to_owned()],
-                    RetentionPolicy::Limits,
-                    StorageBackend::File,
-                    DiscardPolicy::Old,
-                ),
-                StreamSpec::new(
-                    "PLZ_AUDIT",
-                    vec![AUDIT_STREAM_SUBJECT.to_owned()],
-                    RetentionPolicy::Limits,
-                    StorageBackend::File,
-                    DiscardPolicy::Old,
-                ),
-                StreamSpec::new(
-                    "PLZ_OBS_TRANSITIONS",
-                    vec![OBS_TRANSITION_STREAM_SUBJECT.to_owned()],
-                    RetentionPolicy::Limits,
-                    StorageBackend::File,
-                    DiscardPolicy::Old,
-                ),
-                StreamSpec::new(
-                    "PLZ_SCHEDULES",
-                    vec![SCHEDULE_STREAM_SUBJECT.to_owned()],
-                    RetentionPolicy::Limits,
-                    StorageBackend::File,
-                    DiscardPolicy::Old,
-                )
-                .with_message_schedules(schedule_capability.message_schedules_available()),
-            ],
-            object_buckets: vec![
-                ObjectBucketSpec::new("PLZ_BUNDLES"),
-                ObjectBucketSpec::new("PLZ_DIAGNOSTICS"),
-                ObjectBucketSpec::new("PLZ_CERTS"),
-                ObjectBucketSpec::new(PLZ_BACKUPS_BUCKET),
-            ],
-            schedule_capability,
+            streams: vec![StreamSpec::new(
+                PLZ_OPS_STREAM,
+                vec![OPS_STREAM_SUBJECT.to_owned()],
+                RetentionPolicy::Limits,
+                StorageBackend::File,
+                DiscardPolicy::Old,
+            )],
+            object_buckets: vec![ObjectBucketSpec::new(PLZ_BACKUPS_BUCKET)],
         }
     }
 

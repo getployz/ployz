@@ -56,7 +56,10 @@
   },
   "init_first_node_activate_request": {
     "node_id": "core_1",
-    "gateway": "skip"
+    "roles": {
+      "gateway": "skip",
+      "dns": "install"
+    }
   },
   "init_first_node_activate_response": {
     "status": "ok",
@@ -70,7 +73,10 @@
     "idempotency_key": "idem_machine",
     "node_id": "node_2",
     "name": "edge_2",
-    "gateway": "skip"
+    "roles": {
+      "gateway": "skip",
+      "dns": "install"
+    }
   },
   "machine_add_response": {
     "status": "ok",
@@ -126,7 +132,10 @@
       "operation_id": "op_machine",
       "node_id": "node_2",
       "name": "edge_2",
-      "gateway": "skip",
+      "roles": {
+        "gateway": "skip",
+        "dns": "install"
+      },
       "join_bundle": {
         "material": {
           "cluster_name": "prod",

@@ -6,13 +6,15 @@
 //! support. `PLOYZ_DIND_KEEP=1` keeps the cluster running for debugging;
 //! `scripts/dind-clean.sh` sweeps leftovers.
 //!
-//! The cluster-formation scenarios drive the same product path the proven
-//! `scripts/local-dataplane-proof.sh` recipe drives: keeper first-node
-//! install through `ployzctl init --run-keeper-install` (join template
-//! written with a placeholder CA first, re-rendered with the keeper-minted
-//! cluster CA afterwards — the documented join-template/CA ordering), then
-//! `ployzctl init activate-first-node`, then machine-add + the
-//! `scripts/ployz.sh` join flow on an edge machine.
+//! Scenario 1 drives the proof-level formation flow (keeper first-node
+//! install through `ployzctl init --run-keeper-install`, join template
+//! written with a placeholder CA first and re-rendered with the
+//! keeper-minted cluster CA afterwards, then `ployzctl init
+//! activate-first-node`) because its subject is the seam between install
+//! and activation. The other scenarios form the core through the product
+//! quick-start command `ployzctl machine init root@core` (driven over a
+//! docker-exec-backed stand-in ssh), and scenarios 3–5 join the edge
+//! through the product `ployzctl machine add root@edge`.
 //!
 //! Every scenario body runs inside [`support::dind::with_evidence`], so any
 //! failed assertion captures whole-cluster evidence before the panic
@@ -61,7 +63,7 @@ use support::dind::assert::{
 };
 use support::dind::formation::{
     CoreContext, activate_first_node, add_and_join_edge, connect_core_client, finish,
-    host_client_config, install_core_cluster, submit_machine_add,
+    host_client_config, init_core_cluster, install_core_cluster, submit_machine_add,
 };
 use support::dind::join::{parse_install_line, run_edge_join};
 use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, with_evidence};
@@ -288,10 +290,11 @@ async fn scenario_machine_add_via_join_bundle() {
         return;
     }
     let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = install_core_cluster(&docker, 1).await;
+    // Product machine init forms and activates the core; this scenario owns
+    // the machine-add/join details through the explicit low-level path.
+    let core = init_core_cluster(&docker, 1).await;
     with_evidence(&core.cluster, async {
         let cluster = &core.cluster;
-        activate_first_node(&core).await;
 
         let add_operation = operation_id("op_add_edge_2");
         let accepted = submit_machine_add(&core).await;
@@ -435,10 +438,11 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         return;
     }
     let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = install_core_cluster(&docker, 1).await;
+    // The product quick-start path: machine init forms and activates the
+    // core, machine add joins the edge.
+    let core = init_core_cluster(&docker, 1).await;
     with_evidence(&core.cluster, async {
         let cluster = &core.cluster;
-        activate_first_node(&core).await;
         let [edge] = cluster.edges() else {
             panic!("scenario requires exactly one edge machine");
         };
@@ -812,13 +816,13 @@ async fn assert_bootstrap_resources_exist(core: &CoreContext) {
     .await
     .expect("controller principal connects");
     let jetstream = async_nats::jetstream::new(client);
-    for bucket in ["KV_CORE", "KV_OPS"] {
+    for bucket in ["KV_CORE", "KV_OPS", "KV_OBS"] {
         jetstream
             .get_key_value(bucket)
             .await
             .unwrap_or_else(|error| panic!("bootstrap KV bucket {bucket} missing: {error}"));
     }
-    for stream in ["PLZ_OPS", "PLZ_JOBS"] {
+    for stream in ["PLZ_OPS"] {
         jetstream
             .get_stream(stream)
             .await

@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ployz_core::ids::OperationId;
-use ployz_core::machine::MachineAddOperationState;
+use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::OperationStatus;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_e2e::bollard::Docker;
 use ployz_e2e::dind::{
@@ -21,13 +21,15 @@ use ployz_nats::connect::{
     connect_authenticated,
 };
 use ployz_nats::operation_api_client::OperationApiClient;
-use ployz_sdk_types::{
-    MachineAddAccepted, MachineAddGateway, MachineAddRequest, MachineListRequest,
-};
+use ployz_sdk_types::{MachineAddAccepted, MachineAddRequest, MachineListRequest};
+use ployzctl::commands::PloyzctlCommand;
+use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
+use ployzctl::runtime::{PloyzctlRuntimeConfig, execute_command};
+use ployzctl::ssh::SshTarget;
 
-use super::assert::operation_status;
-use super::join::{parse_install_line, run_edge_join};
+use super::join::{INSTALLER_WRAPPER_PATH, write_installer_wrapper};
 use super::{CONNECT_TIMEOUT, NATS_MATERIAL_DIR, with_evidence};
+use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::machine_name;
 use ployz_test_support::ids::{idempotency_key, node_id, operation_id};
 
@@ -71,6 +73,9 @@ pub struct ClusterMaterial {
     pub operator_seed: String,
     pub controller_seed: String,
     pub join_seed: String,
+    /// File forms of the seeds for product CLI runs from the host.
+    pub operator_seed_file: PathBuf,
+    pub join_seed_file: PathBuf,
 }
 
 /// Provisions the machines and forms the secured core exactly the way the
@@ -79,7 +84,37 @@ pub struct ClusterMaterial {
 /// keeper-minted CA and restart the (disposable) control role → wait for
 /// the control API over the published TLS port. Formation failures capture
 /// whole-cluster evidence.
+///
+/// Scenario 1 keeps using this proof-level flow because its subject is the
+/// seam between install and activation; the product quick-start path lives
+/// in [`init_core_cluster`].
 pub async fn install_core_cluster(docker: &Docker, edge_count: usize) -> CoreContext {
+    let cluster = provision_cluster(docker, edge_count).await;
+    let (material, api) = with_evidence(&cluster, form_core(docker, &cluster)).await;
+    CoreContext {
+        docker: docker.clone(),
+        material,
+        api,
+        cluster,
+    }
+}
+
+/// Provisions the machines and forms the secured core through the product
+/// `ployzctl machine init root@core` command, driven in-process from the
+/// host over a docker-exec-backed stand-in `ssh`. Includes first-node
+/// activation, so callers must not activate again.
+pub async fn init_core_cluster(docker: &Docker, edge_count: usize) -> CoreContext {
+    let cluster = provision_cluster(docker, edge_count).await;
+    let (material, api) = with_evidence(&cluster, product_init_core(docker, &cluster)).await;
+    CoreContext {
+        docker: docker.clone(),
+        material,
+        api,
+        cluster,
+    }
+}
+
+async fn provision_cluster(docker: &Docker, edge_count: usize) -> DindCluster {
     let mut machines = vec![MachineSpec {
         role: DindMachineRole::Core,
         image: dind::machine_image(),
@@ -90,7 +125,7 @@ pub async fn install_core_cluster(docker: &Docker, edge_count: usize) -> CoreCon
             image: dind::machine_image(),
         });
     }
-    let cluster = DindCluster::provision(
+    DindCluster::provision(
         docker,
         DindClusterSpec {
             artifact_dir: dind::artifact_dir(),
@@ -98,28 +133,12 @@ pub async fn install_core_cluster(docker: &Docker, edge_count: usize) -> CoreCon
         },
     )
     .await
-    .expect("provision DinD cluster");
-
-    let (material, api) = with_evidence(&cluster, form_core(docker, &cluster)).await;
-    CoreContext {
-        docker: docker.clone(),
-        material,
-        api,
-        cluster,
-    }
+    .expect("provision DinD cluster")
 }
 
-/// The formation work between provisioning and the ready operator API.
-async fn form_core(
-    docker: &Docker,
-    cluster: &DindCluster,
-) -> (ClusterMaterial, OperationApiClient) {
-    let core = cluster.core().clone();
-    let core_ip = core.bridge_ip;
-    let core_nats_url = format!("tls://{core_ip}:{MACHINE_NATS_PORT}");
-
-    // The dataplane mounts bpffs on every machine (proof-script recipe).
-    for machine in std::iter::once(&core).chain(cluster.edges()) {
+/// The dataplane mounts bpffs on every machine (proof-script recipe).
+async fn mount_bpf(docker: &Docker, cluster: &DindCluster) {
+    for machine in std::iter::once(cluster.core()).chain(cluster.edges()) {
         let mounted = exec_in_container(
             docker,
             &machine.container_id,
@@ -133,6 +152,18 @@ async fn form_core(
         .expect("exec bpf mount");
         assert!(mounted.success(), "bpf mount failed: {mounted:?}");
     }
+}
+
+/// The formation work between provisioning and the ready operator API.
+async fn form_core(
+    docker: &Docker,
+    cluster: &DindCluster,
+) -> (ClusterMaterial, OperationApiClient) {
+    let core = cluster.core().clone();
+    let core_ip = core.bridge_ip;
+    let core_nats_url = format!("tls://{core_ip}:{MACHINE_NATS_PORT}");
+
+    mount_bpf(docker, cluster).await;
 
     let shas = ArtifactShas::read(docker, &core).await;
 
@@ -216,8 +247,25 @@ async fn form_core(
     .expect("restart ployzd-control");
     assert!(restart.success(), "control restart failed: {restart:?}");
 
-    // Copy the host-side material out of the core container.
+    let material = collect_cluster_material(docker, &core).await;
+
+    // Authenticated host-side operator client through the published
+    // 127.0.0.1 port (127.0.0.1 is in the server-cert SANs).
+    let api = wait_for_operator_api(cluster, &material).await;
+    (material, api)
+}
+
+/// Copies the host-side material out of the core container (CA plus the
+/// three install-time seeds), both as strings and as host files.
+async fn collect_cluster_material(docker: &Docker, core: &DindMachine) -> ClusterMaterial {
     let dir = tempfile::TempDir::new().expect("create host material dir");
+    let ca_pem = read_file_from_container(
+        docker,
+        &core.container_id,
+        &format!("{NATS_MATERIAL_DIR}/ca.pem"),
+    )
+    .await
+    .expect("read cluster CA");
     let ca_file = dir.path().join("ca.pem");
     std::fs::write(&ca_file, &ca_pem).expect("write host CA file");
     let mut seeds = Vec::with_capacity(3);
@@ -232,17 +280,150 @@ async fn form_core(
         seeds.push(contents.trim().to_owned());
     }
     let [operator_seed, controller_seed, join_seed] = seeds.try_into().expect("three seeds read");
-    let material = ClusterMaterial {
+    let operator_seed_file = dir.path().join("operator.seed");
+    std::fs::write(&operator_seed_file, &operator_seed).expect("write host operator seed");
+    let join_seed_file = dir.path().join("join.seed");
+    std::fs::write(&join_seed_file, &join_seed).expect("write host join seed");
+    ClusterMaterial {
         _dir: dir,
         ca_file,
         ca_pem,
         operator_seed,
         controller_seed,
         join_seed,
-    };
+        operator_seed_file,
+        join_seed_file,
+    }
+}
 
-    // Authenticated host-side operator client through the published
-    // 127.0.0.1 port (127.0.0.1 is in the server-cert SANs).
+// ---------------------------------------------------------------------------
+// Product quick-start path (machine init / machine add over stand-in ssh)
+// ---------------------------------------------------------------------------
+
+/// Where the harness writes the local release manifest inside a machine.
+const RELEASE_MANIFEST_PATH: &str = "/tmp/ployz-release.env";
+
+/// Host-side plumbing for one product CLI run against one machine: a
+/// docker-exec-backed stand-in `ssh` plus an isolated cluster context path.
+struct HostCliHarness {
+    _dir: tempfile::TempDir,
+    ssh_program: PathBuf,
+    context_path: PathBuf,
+}
+
+impl HostCliHarness {
+    fn new(machine: &DindMachine) -> Self {
+        let dir = tempfile::TempDir::new().expect("create host cli harness dir");
+        let ssh_program = dir.path().join("fake-ssh");
+        // The product runs `ssh -o BatchMode=yes -o ConnectTimeout=10
+        // <dest> <command>`; the stand-in routes the command into the
+        // machine container.
+        let script = format!(
+            "#!/bin/sh\nexec docker exec -i {} sh -c \"$6\"\n",
+            machine.container_id
+        );
+        std::fs::write(&ssh_program, script).expect("write stand-in ssh");
+        make_executable(&ssh_program);
+        Self {
+            context_path: dir.path().join("ployz").join("context.json"),
+            ssh_program,
+            _dir: dir,
+        }
+    }
+
+    /// Runtime config for the product CLI: published NATS port (bridge IPs
+    /// are not reachable from every host), stand-in ssh, isolated context.
+    /// `material` carries the credential files once the cluster exists.
+    fn runtime_config(
+        &self,
+        cluster: &DindCluster,
+        material: Option<&ClusterMaterial>,
+    ) -> PloyzctlRuntimeConfig {
+        let published = cluster.core().published.nats;
+        PloyzctlRuntimeConfig {
+            nats_url: Some(format!("tls://{published}")),
+            nats_ca_file: material.map(|material| material.ca_file.clone()),
+            nats_seed_file: material.map(|material| material.operator_seed_file.clone()),
+            join_seed_file: material.map(|material| material.join_seed_file.clone()),
+            nats_connect_timeout: None,
+            keeper_install_timeout: None,
+            ops_watch_timeout: None,
+            ops_watch_poll_interval: None,
+            ssh_program: Some(self.ssh_program.clone()),
+            ssh_install_timeout: None,
+            cluster_context_path: Some(self.context_path.clone()),
+        }
+    }
+}
+
+/// Writes the release manifest the product `machine init` resolves artifacts
+/// from: the baked artifact mount as absolute-path sources with pinned shas.
+async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &ArtifactShas) {
+    let manifest = format!(
+        "PLOYZ_VERSION=local\n\
+         PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
+         PLOYZD_SHA256={}\n\
+         PLOYZ_EBPF_TC_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc\n\
+         PLOYZ_EBPF_TC_SHA256={}\n\
+         PLOYZ_EBPF_CTL_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl\n\
+         PLOYZ_EBPF_CTL_SHA256={}\n",
+        shas.ployzd, shas.ebpf_bytecode, shas.ebpf_ctl,
+    );
+    write_file_in_container(
+        docker,
+        &core.container_id,
+        RELEASE_MANIFEST_PATH,
+        &manifest,
+        "0644",
+    )
+    .await
+    .expect("write release manifest");
+}
+
+/// Forms the core through the product `ployzctl machine init` command: the
+/// CLI builds the install spec internally, runs the wrapped installer in
+/// first-node mode over the stand-in ssh, writes the join template/CA
+/// ordering itself, records a local cluster context, and activates the
+/// first node.
+async fn product_init_core(
+    docker: &Docker,
+    cluster: &DindCluster,
+) -> (ClusterMaterial, OperationApiClient) {
+    let core = cluster.core().clone();
+    mount_bpf(docker, cluster).await;
+
+    let shas = ArtifactShas::read(docker, &core).await;
+    write_release_manifest(docker, &core, &shas).await;
+    write_installer_wrapper(docker, &core).await;
+
+    let harness = HostCliHarness::new(&core);
+    let config = harness.runtime_config(cluster, None);
+    let command = MachineInitCommand {
+        target: SshTarget::parse(&format!("root@{}", core.bridge_ip))
+            .expect("core bridge ip parses as ssh target"),
+        // Container hostnames are not stable identities; the scenarios pin
+        // the documented core name through the product `--name` override.
+        identity_override: Some(
+            MachineIdentity::from_name_override("core_1").expect("core name is a valid identity"),
+        ),
+        roles: InstallRolePolicy::install_all(),
+        version: "local".to_owned(),
+        release_manifest_url: Some(format!("file://{RELEASE_MANIFEST_PATH}")),
+        bootstrap_url: MachineBootstrapUrl::try_new("https://local.invalid/ployz.sh")
+            .expect("valid bootstrap url"),
+        cluster_name: MachineJoinClusterName::try_new("dind-e2e").expect("valid cluster name"),
+        installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
+    };
+    let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
+        .await
+        .unwrap_or_else(|error| panic!("product machine init failed: {error}"));
+    assert!(
+        output.stdout.contains("first-node core_1 active"),
+        "machine init output: {}",
+        output.stdout
+    );
+
+    let material = collect_cluster_material(docker, &core).await;
     let api = wait_for_operator_api(cluster, &material).await;
     (material, api)
 }
@@ -439,30 +620,36 @@ pub async fn submit_machine_add(core: &CoreContext) -> MachineAddAccepted {
             idempotency_key: idempotency_key("idem_add_edge_2"),
             node_id: node_id("edge_2"),
             name: machine_name("edge-2"),
-            gateway: MachineAddGateway::Install,
+            roles: InstallRolePolicy::install_all(),
         })
         .await
         .expect("machine add submits")
 }
 
-/// Adds the edge machine through the host-side API and runs the
-/// `scripts/ployz.sh` join flow on it; scenarios 3–5 use this as plumbing
-/// (scenario 2 owns the detailed join assertions).
+/// Adds the edge machine through the product `ployzctl machine add
+/// root@edge` command (submit + remote installer join + watch to
+/// completion); scenarios 3–5 use this as plumbing (scenario 2 owns the
+/// detailed join assertions through the explicit low-level path).
 pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
-    let accepted = submit_machine_add(core).await;
-    let add_operation = accepted.accepted.operation_id.clone();
-    let install = parse_install_line(core, accepted);
-    run_edge_join(core, edge, &install).await;
-    let status = operation_status(core, &add_operation).await;
-    assert!(
-        matches!(
-            &status,
-            OperationStatus::MachineAdd {
-                state: MachineAddOperationState::Completed,
-                ..
-            }
+    write_installer_wrapper(&core.docker, edge).await;
+    let harness = HostCliHarness::new(edge);
+    let config = harness.runtime_config(&core.cluster, Some(&core.material));
+    let command = MachineAddRemoteCommand {
+        target: SshTarget::parse(&format!("root@{}", edge.bridge_ip))
+            .expect("edge bridge ip parses as ssh target"),
+        identity_override: Some(
+            MachineIdentity::from_name_override("edge_2").expect("edge name is a valid identity"),
         ),
-        "machine add did not complete: {status:?}"
+        roles: InstallRolePolicy::install_all(),
+        installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
+    };
+    let output = execute_command(PloyzctlCommand::MachineAddRemote(command), &config)
+        .await
+        .unwrap_or_else(|error| panic!("product machine add failed: {error}"));
+    assert!(
+        output.stdout.contains("machine-add completed"),
+        "machine add output: {}",
+        output.stdout
     );
 }
 

@@ -13,7 +13,7 @@ use ployz_core::install::{
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway, first_node_process_set};
+use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_node_process_set};
 use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
@@ -341,7 +341,7 @@ pub struct FirstNodeInstallTarget {
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub nats_server_artifact: ArtifactTarget,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub nats_identity: ClusterNatsIdentity,
     pub nats_material: NatsMachineMaterialPaths,
     pub node_public_ip: Option<IpAddr>,
@@ -356,7 +356,7 @@ impl FirstNodeInstallTarget {
         ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
         nats_server_artifact: ArtifactTarget,
-        gateway: FirstNodeGateway,
+        roles: InstallRolePolicy,
         nats_identity: ClusterNatsIdentity,
     ) -> Self {
         let nats_server_unit = NatsServerUnitTarget::new(
@@ -384,7 +384,7 @@ impl FirstNodeInstallTarget {
             ployzd_artifact,
             dataplane_artifacts,
             nats_server_artifact,
-            gateway,
+            roles,
             nats_identity,
             nats_material,
             node_public_ip: None,
@@ -716,7 +716,7 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
 
 #[must_use]
 pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan {
-    let process_set = first_node_process_set(&target.node_id, target.gateway);
+    let process_set = plan_first_node_process_set(&target.node_id, target.roles);
     let nats_server_config = NatsServerConfigTarget::for_first_node(
         target.node_id.clone(),
         &target.nats_server_unit,

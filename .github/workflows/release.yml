@@ -1,0 +1,85 @@
+name: release
+
+# Packages release assets for every alpha platform when a version tag is
+# pushed, then uploads them to a draft GitHub release. The public installer
+# (scripts/ployz.sh) resolves ployz-release-<os>-<arch>.env manifests from
+# the published release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            slug: linux-amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            slug: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package release assets
+        env:
+          PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
+          PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.slug }}
+          path: dist/releases/${{ github.ref_name }}/*
+          if-no-files-found: error
+
+  package-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin/arm64
+            slug: darwin-arm64
+          - platform: darwin/amd64
+            slug: darwin-amd64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package release assets
+        env:
+          PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
+          PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.slug }}
+          path: dist/releases/${{ github.ref_name }}/*
+          if-no-files-found: error
+
+  publish:
+    needs:
+      - package-linux
+      - package-macos
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/assets
+          merge-multiple: true
+      - name: Upload assets to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            gh release create "${tag}" --draft --verify-tag --title "${tag}" --notes "Ployz ${tag}"
+          fi
+          gh release upload "${tag}" dist/assets/* --clobber

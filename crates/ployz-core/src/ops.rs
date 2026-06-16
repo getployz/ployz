@@ -10,7 +10,7 @@ use crate::ids::{
     SubjectTokenError,
 };
 use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
-use crate::roles::FirstNodeGateway;
+use crate::roles::InstallRolePolicy;
 use crate::state::ExpectedActiveService;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -327,7 +327,7 @@ pub enum OperationStatus {
         id: OperationId,
         node_id: NodeId,
         name: MachineName,
-        gateway: FirstNodeGateway,
+        roles: InstallRolePolicy,
         state: MachineAddOperationState,
         last_event_sequence: EventSequence,
     },
@@ -383,7 +383,7 @@ impl OperationStatus {
         id: OperationId,
         node_id: NodeId,
         name: MachineName,
-        gateway: FirstNodeGateway,
+        roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
         event_sequence: EventSequence,
     ) -> Self {
@@ -391,7 +391,7 @@ impl OperationStatus {
             id,
             node_id,
             name,
-            gateway,
+            roles,
             state: MachineAddOperationState::Pending { join_token },
             last_event_sequence: event_sequence,
         }

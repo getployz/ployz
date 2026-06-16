@@ -7,7 +7,7 @@ use ployz_core::ops::{
     EventSequence, OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease,
     OperationOwnershipStatus, OperationStatus,
 };
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,7 @@ pub struct StoredMachineAddSubmission {
     pub start_sequence: Option<EventSequence>,
     pub node_id: ployz_core::ids::NodeId,
     pub name: MachineName,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,

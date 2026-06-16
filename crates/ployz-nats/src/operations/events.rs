@@ -11,7 +11,7 @@ use ployz_core::ops::{
     OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
     ReplayedOperationEvent,
 };
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_core::subjects::{
     op_backup_completed, op_backup_failed, op_backup_running, op_backup_submitted, op_cancelled,
     op_cert_challenge_published, op_cert_completed, op_cert_failed, op_cert_submitted,
@@ -125,7 +125,7 @@ impl OperationEventAppend {
         operation_id: OperationId,
         node_id: NodeId,
         name: MachineName,
-        gateway: FirstNodeGateway,
+        roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
         idempotency_key: &OperationIdempotencyKey,
     ) -> Self {
@@ -135,7 +135,7 @@ impl OperationEventAppend {
                 operation_id,
                 node_id,
                 name,
-                gateway,
+                roles,
                 join_token,
             },
         )

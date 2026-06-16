@@ -200,7 +200,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         operation_id: joined.operation_id,
         node_id: joined.node_id,
         name: joined.name,
-        gateway: joined.gateway,
+        roles: joined.roles,
         join_bundle: joined.join_bundle,
         secret_delivery: joined.secret_delivery,
         joined_at: joined.joined_at,

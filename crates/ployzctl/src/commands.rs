@@ -10,6 +10,7 @@ pub mod init;
 pub mod logs;
 pub mod machine;
 pub mod ops;
+pub mod role_policy;
 pub mod service;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +27,9 @@ pub enum PloyzctlCommand {
     Init(init::FirstNodeInitCommand),
     InitFirstNodeActivate(init::FirstNodeActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
+    MachineInit(machine::MachineInitCommand),
     MachineAdd(machine::MachineAddCommand),
+    MachineAddRemote(machine::MachineAddRemoteCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
     ServiceList(service::ServiceListCommand),
@@ -121,6 +124,7 @@ enum InitCli {
 
 #[derive(Debug, Subcommand)]
 enum MachineCli {
+    Init(machine::MachineInitCli),
     Add(machine::MachineAddCli),
     List(machine::EmptyCli),
     Inspect(machine::MachineInspectCli),
@@ -151,8 +155,18 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
         },
         CommandCli::Init(command) => init_command_from_cli(command),
         CommandCli::Machine { command } => match command {
+            MachineCli::Init(command) => {
+                machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
+            }
             MachineCli::Add(command) => {
-                machine::machine_add_command(command).map(PloyzctlCommand::MachineAdd)
+                machine::machine_add_command(command).map(|parsed| match parsed {
+                    machine::ParsedMachineAdd::Explicit(command) => {
+                        PloyzctlCommand::MachineAdd(command)
+                    }
+                    machine::ParsedMachineAdd::Remote(command) => {
+                        PloyzctlCommand::MachineAddRemote(command)
+                    }
+                })
             }
             MachineCli::List(command) => Ok(PloyzctlCommand::MachineList(
                 machine::machine_list_command(command),

@@ -1,7 +1,7 @@
 use super::fixtures::*;
 use ployz_core::machine::MachineName;
 use ployz_core::ops::{OperationEvent, OperationEventReplayRequest, OperationStatus};
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     MachineAddOperationSubmission, OperationEventAppend, RedeemMachineJoinTokenError,
@@ -45,7 +45,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
             id: operation_id("op_machine"),
             node_id: node_id("node_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             state: ployz_core::machine::MachineAddOperationState::Pending {
                 join_token: issued_join_token_for_raw("join_token"),
             },
@@ -71,7 +71,7 @@ async fn operation_repository_machine_add_submit_is_durable_and_idempotent() {
             operation_id: operation_id("op_machine"),
             node_id: node_id("node_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
-            gateway: FirstNodeGateway::Skip,
+            roles: InstallRolePolicy::install_all().without_gateway(),
             join_token: issued_join_token_for_raw("join_token"),
         }
     );
@@ -116,7 +116,7 @@ async fn machine_add_partial_submission_does_not_expose_join_token_before_accept
         start_sequence: None,
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
         raw_join_token: raw_join_token("original_raw_join_token"),
         join_token: issued_join_token_for_raw("original_raw_join_token"),
@@ -140,7 +140,7 @@ async fn machine_add_partial_submission_does_not_expose_join_token_before_accept
                 operation_id: operation_id("op_other"),
                 node_id: original.node_id.clone(),
                 name: original.name.clone(),
-                gateway: original.gateway,
+                roles: original.roles,
                 join_bundle: machine_join_bundle(),
                 raw_join_token: original.raw_join_token.clone(),
                 join_token: original.join_token.clone(),
@@ -174,7 +174,7 @@ async fn machine_add_join_token_index_rejects_unaccepted_submission() {
                 start_sequence: None,
                 node_id: node_id("node_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 join_bundle: machine_join_bundle(),
                 raw_join_token: raw_join_token.clone(),
                 join_token: issued_join_token_for_raw("original_raw_join_token"),
@@ -220,7 +220,7 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
                 start_sequence: None,
                 node_id: node_id("node_existing"),
                 name: MachineName::try_new("edge_existing").expect("valid machine name"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 join_bundle: machine_join_bundle(),
                 raw_join_token: raw_join_token.clone(),
                 join_token: issued_join_token_for_raw("shared_raw_join_token"),
@@ -252,7 +252,7 @@ async fn machine_add_join_token_fingerprint_conflict_fails_before_operation_stat
                     operation_id: operation_id("op_machine"),
                     node_id: node_id("node_2"),
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
-                    gateway: FirstNodeGateway::Skip,
+                    roles: InstallRolePolicy::install_all().without_gateway(),
                     join_bundle: machine_join_bundle(),
                     raw_join_token,
                     join_token: issued_join_token_for_raw("shared_raw_join_token"),
@@ -286,7 +286,7 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
         start_sequence: None,
         node_id: node_id("node_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
-        gateway: FirstNodeGateway::Skip,
+        roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
         raw_join_token: raw_join_token("original_raw_join_token"),
         join_token: issued_join_token_for_raw("original_raw_join_token"),
@@ -300,7 +300,7 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
             original.operation_id.clone(),
             original.node_id.clone(),
             original.name.clone(),
-            original.gateway,
+            original.roles,
             original.join_token.clone(),
             &idempotency_key,
         ))
@@ -314,7 +314,7 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
                 operation_id: operation_id("op_other"),
                 node_id: original.node_id.clone(),
                 name: original.name.clone(),
-                gateway: original.gateway,
+                roles: original.roles,
                 join_bundle: machine_join_bundle(),
                 raw_join_token: original.raw_join_token.clone(),
                 join_token: original.join_token.clone(),
@@ -329,7 +329,7 @@ async fn machine_add_retry_recovers_original_join_material_after_partial_submit(
     assert_eq!(accepted.start_sequence, stored.sequence);
     assert_eq!(accepted.node_id, original.node_id);
     assert_eq!(accepted.name, original.name);
-    assert_eq!(accepted.gateway, original.gateway);
+    assert_eq!(accepted.roles, original.roles);
     assert_eq!(accepted.join_token, original.join_token);
     assert_eq!(accepted.raw_join_token, original.raw_join_token);
 }
@@ -346,7 +346,7 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
             operation_id("op_machine"),
             node_id("node_2"),
             MachineName::try_new("edge_2").expect("valid machine name"),
-            FirstNodeGateway::Skip,
+            InstallRolePolicy::install_all().without_gateway(),
             issued_join_token_for_raw("original_raw_join_token"),
             &idempotency_key,
         ))
@@ -361,7 +361,7 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
                 start_sequence: Some(original_event.sequence),
                 node_id: node_id("node_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 join_bundle: machine_join_bundle(),
                 raw_join_token: raw_join_token("original_raw_join_token"),
                 join_token: issued_join_token_for_raw("original_raw_join_token"),
@@ -374,7 +374,7 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
             operation_id("op_machine"),
             node_id("node_2"),
             MachineName::try_new("edge_2").expect("valid machine name"),
-            FirstNodeGateway::Skip,
+            InstallRolePolicy::install_all().without_gateway(),
             issued_join_token_for_raw("original_raw_join_token"),
             original_event.sequence,
         ))
@@ -388,7 +388,7 @@ async fn machine_add_retry_with_recorded_sequence_does_not_append_again() {
                 operation_id: operation_id("op_other"),
                 node_id: node_id("node_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
-                gateway: FirstNodeGateway::Skip,
+                roles: InstallRolePolicy::install_all().without_gateway(),
                 join_bundle: machine_join_bundle(),
                 raw_join_token: raw_join_token("original_raw_join_token"),
                 join_token: issued_join_token_for_raw("original_raw_join_token"),

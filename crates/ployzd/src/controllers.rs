@@ -9,7 +9,7 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
 };
 use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease, OperationStatusSnapshot};
-use ployz_core::roles::FirstNodeGateway;
+use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AcceptedBackupSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
@@ -38,7 +38,7 @@ pub struct MachineAddSubmitCommand {
     pub idempotency_key: IdempotencyKey,
     pub node_id: ployz_core::ids::NodeId,
     pub name: MachineName,
-    pub gateway: FirstNodeGateway,
+    pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
@@ -176,7 +176,7 @@ impl OperationControllers {
                     operation_id: command.operation_id,
                     node_id: command.node_id,
                     name: command.name,
-                    gateway: command.gateway,
+                    roles: command.roles,
                     join_bundle: command.join_bundle,
                     join_token: command.join_token,
                     raw_join_token: command.raw_join_token,

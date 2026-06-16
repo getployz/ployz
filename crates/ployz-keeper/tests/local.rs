@@ -5,7 +5,7 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
+use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
 };
@@ -58,7 +58,9 @@ fn local_effects_install_first_node_process_units() {
             ployzd_artifact,
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
-            FirstNodeGateway::Skip,
+            InstallRolePolicy::install_all()
+                .without_gateway()
+                .without_dns(),
             test_identity().clone(),
         )
         .with_nats_server_unit(nats_unit(&root))
@@ -159,7 +161,9 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
         dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
-        FirstNodeGateway::Skip,
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
         test_identity().clone(),
     )
     .with_nats_server_unit(nats_unit(&root))
@@ -204,7 +208,9 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
         dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
-        FirstNodeGateway::Skip,
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
         test_identity().clone(),
     )
     .with_nats_server_unit(nats_unit(&root))
@@ -565,7 +571,9 @@ fn local_effects_write_nats_config_before_nats_unit() {
             ployzd_artifact,
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
-            FirstNodeGateway::Skip,
+            InstallRolePolicy::install_all()
+                .without_gateway()
+                .without_dns(),
             test_identity().clone(),
         )
         .with_nats_server_unit(nats_unit(&root))
@@ -632,7 +640,9 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
             ployzd_artifact(&source, &install_path),
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
-            FirstNodeGateway::Skip,
+            InstallRolePolicy::install_all()
+                .without_gateway()
+                .without_dns(),
             test_identity().clone(),
         )
         .with_nats_server_unit(nats_unit(&root))
@@ -1101,7 +1111,9 @@ fn first_node_plan_with_ployzd(
             ployzd,
             dataplane_artifacts(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
-            FirstNodeGateway::Skip,
+            InstallRolePolicy::install_all()
+                .without_gateway()
+                .without_dns(),
             test_identity().clone(),
         )
         .with_nats_server_unit(nats_unit(root))

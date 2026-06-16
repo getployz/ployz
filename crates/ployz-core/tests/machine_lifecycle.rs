@@ -6,12 +6,16 @@ use ployz_core::machine::{
     redeem_join_token,
 };
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::{DaemonProcessRole, FirstNodeGateway};
+use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::{machine_name, node_id, operation_id};
 
 #[test]
 fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
-    let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Skip));
+    let plan = plan_machine_add(machine_add_command(
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+    ));
 
     assert_eq!(
         plan.operation,
@@ -26,14 +30,15 @@ fn machine_add_reserves_name_but_does_not_make_machine_schedulable() {
 }
 
 #[test]
-fn machine_add_plan_can_include_gateway_on_joining_node() {
-    let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Install));
+fn machine_add_plan_defaults_gateway_and_dns_on_joining_node() {
+    let plan = plan_machine_add(machine_add_command(InstallRolePolicy::install_all()));
 
     assert_eq!(
         plan.process_set.roles(),
         &[
             DaemonProcessRole::Node(node_id("node_2")),
             DaemonProcessRole::Gateway,
+            DaemonProcessRole::Dns,
         ]
     );
 }
@@ -49,7 +54,11 @@ fn issued_join_token_serializes_only_the_fingerprint() {
 
 #[test]
 fn join_token_reuse_is_rejected_without_erasing_current_operation_state() {
-    let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Skip));
+    let plan = plan_machine_add(machine_add_command(
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+    ));
     let MachineJoinOutcome::Redeemed(joining) =
         redeem_join_token(plan.operation, &fingerprint("join_hash"), redeemed_at(50))
     else {
@@ -73,7 +82,11 @@ fn join_token_reuse_is_rejected_without_erasing_current_operation_state() {
 
 #[test]
 fn expired_join_token_fails_the_operation_not_machine_truth() {
-    let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Skip));
+    let plan = plan_machine_add(machine_add_command(
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+    ));
 
     assert_eq!(
         redeem_join_token(plan.operation, &fingerprint("join_hash"), redeemed_at(120)),
@@ -87,7 +100,11 @@ fn expired_join_token_fails_the_operation_not_machine_truth() {
 
 #[test]
 fn missing_readiness_check_fails_without_activating_machine() {
-    let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Skip));
+    let plan = plan_machine_add(machine_add_command(
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+    ));
     let MachineJoinOutcome::Redeemed(joining) =
         redeem_join_token(plan.operation, &fingerprint("join_hash"), redeemed_at(50))
     else {
@@ -111,7 +128,11 @@ fn missing_readiness_check_fails_without_activating_machine() {
 
 #[test]
 fn confirmed_readiness_activates_machine_truth() {
-    let plan = plan_machine_add(machine_add_command(FirstNodeGateway::Skip));
+    let plan = plan_machine_add(machine_add_command(
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+    ));
     let MachineJoinOutcome::Redeemed(joining) =
         redeem_join_token(plan.operation, &fingerprint("join_hash"), redeemed_at(50))
     else {
@@ -135,13 +156,13 @@ fn confirmed_readiness_activates_machine_truth() {
     assert_eq!(active_machine.activated_by, operation_id("op_machine"));
 }
 
-fn machine_add_command(gateway: FirstNodeGateway) -> MachineAddCommand {
+fn machine_add_command(roles: InstallRolePolicy) -> MachineAddCommand {
     MachineAddCommand {
         operation_id: operation_id("op_machine"),
         node_id: node_id("node_2"),
         name: machine_name("edge_2"),
         join_token: issued_token(),
-        gateway,
+        roles,
     }
 }
 

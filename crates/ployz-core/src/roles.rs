@@ -46,9 +46,54 @@ impl DaemonProcessRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
-pub enum FirstNodeGateway {
+pub enum GatewayRole {
     Install,
     Skip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DnsRole {
+    Install,
+    Skip,
+}
+
+/// Which optional roles an installed machine runs next to its required
+/// processes. The alpha default installs everything (`install_all`);
+/// skipping a role is an explicit opt-out (`--no-gateway` / `--no-dns`
+/// shaped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct InstallRolePolicy {
+    pub gateway: GatewayRole,
+    pub dns: DnsRole,
+}
+
+impl InstallRolePolicy {
+    /// The default alpha machine shape: gateway and DNS roles installed.
+    #[must_use]
+    pub const fn install_all() -> Self {
+        Self {
+            gateway: GatewayRole::Install,
+            dns: DnsRole::Install,
+        }
+    }
+
+    /// Explicit `--no-gateway` opt-out.
+    #[must_use]
+    pub const fn without_gateway(mut self) -> Self {
+        self.gateway = GatewayRole::Skip;
+        self
+    }
+
+    /// Explicit `--no-dns` opt-out.
+    #[must_use]
+    pub const fn without_dns(mut self) -> Self {
+        self.dns = DnsRole::Skip;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,74 +136,160 @@ impl FirstNodeNatsServer {
 }
 
 #[must_use]
-pub fn first_node_process_set(node_id: &NodeId, gateway: FirstNodeGateway) -> FirstNodeProcessSet {
-    let mut roles = vec![
+pub fn plan_first_node_process_set(
+    node_id: &NodeId,
+    roles: InstallRolePolicy,
+) -> FirstNodeProcessSet {
+    let mut planned = vec![
         DaemonProcessRole::Control,
         DaemonProcessRole::Node(node_id.clone()),
     ];
-    if gateway == FirstNodeGateway::Install {
-        roles.push(DaemonProcessRole::Gateway);
-    }
+    planned.extend(optional_roles(roles));
     FirstNodeProcessSet {
         nats_server: FirstNodeNatsServer::Supervised,
-        roles,
+        roles: planned,
     }
 }
 
 #[must_use]
-pub fn joined_node_process_set(
+pub fn plan_joined_node_process_set(
     node_id: &NodeId,
-    gateway: FirstNodeGateway,
+    roles: InstallRolePolicy,
 ) -> JoinedNodeProcessSet {
-    let mut roles = vec![DaemonProcessRole::Node(node_id.clone())];
-    if gateway == FirstNodeGateway::Install {
-        roles.push(DaemonProcessRole::Gateway);
+    let mut planned = vec![DaemonProcessRole::Node(node_id.clone())];
+    planned.extend(optional_roles(roles));
+    JoinedNodeProcessSet { roles: planned }
+}
+
+fn optional_roles(roles: InstallRolePolicy) -> Vec<DaemonProcessRole> {
+    let InstallRolePolicy { gateway, dns } = roles;
+    let mut planned = Vec::new();
+    match gateway {
+        GatewayRole::Install => planned.push(DaemonProcessRole::Gateway),
+        GatewayRole::Skip => {}
     }
-    JoinedNodeProcessSet { roles }
+    match dns {
+        DnsRole::Install => planned.push(DaemonProcessRole::Dns),
+        DnsRole::Skip => {}
+    }
+    planned
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonProcessRole, FirstNodeGateway, FirstNodeNatsServer, first_node_process_set,
-        joined_node_process_set,
+        DaemonProcessRole, FirstNodeNatsServer, InstallRolePolicy, plan_first_node_process_set,
+        plan_joined_node_process_set,
     };
     use crate::ids::NodeId;
 
     #[test]
-    fn first_node_roles_are_the_product_install_shape() {
-        let without_gateway = first_node_process_set(&node_id("node_1"), FirstNodeGateway::Skip);
-        assert_eq!(without_gateway.nats_server, FirstNodeNatsServer::Supervised);
+    fn first_node_default_roles_include_gateway_and_dns() {
+        let process_set =
+            plan_first_node_process_set(&node_id("node_1"), InstallRolePolicy::install_all());
+        assert_eq!(process_set.nats_server, FirstNodeNatsServer::Supervised);
         assert_eq!(
-            without_gateway.roles(),
+            process_set.roles(),
             &[
                 DaemonProcessRole::Control,
                 DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Gateway,
+                DaemonProcessRole::Dns,
             ]
         );
-        let with_gateway = first_node_process_set(&node_id("node_1"), FirstNodeGateway::Install);
+    }
+
+    #[test]
+    fn joined_node_default_roles_include_gateway_and_dns() {
         assert_eq!(
-            with_gateway.roles(),
+            plan_joined_node_process_set(&node_id("node_2"), InstallRolePolicy::install_all())
+                .roles(),
+            &[
+                DaemonProcessRole::Node(node_id("node_2")),
+                DaemonProcessRole::Gateway,
+                DaemonProcessRole::Dns,
+            ]
+        );
+    }
+
+    #[test]
+    fn no_gateway_opt_out_skips_only_the_gateway_role() {
+        assert_eq!(
+            plan_first_node_process_set(
+                &node_id("node_1"),
+                InstallRolePolicy::install_all().without_gateway()
+            )
+            .roles(),
             &[
                 DaemonProcessRole::Control,
                 DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Dns,
+            ]
+        );
+        assert_eq!(
+            plan_joined_node_process_set(
+                &node_id("node_2"),
+                InstallRolePolicy::install_all().without_gateway()
+            )
+            .roles(),
+            &[
+                DaemonProcessRole::Node(node_id("node_2")),
+                DaemonProcessRole::Dns,
+            ]
+        );
+    }
+
+    #[test]
+    fn no_dns_opt_out_skips_only_the_dns_role() {
+        assert_eq!(
+            plan_first_node_process_set(
+                &node_id("node_1"),
+                InstallRolePolicy::install_all().without_dns()
+            )
+            .roles(),
+            &[
+                DaemonProcessRole::Control,
+                DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Gateway,
+            ]
+        );
+        assert_eq!(
+            plan_joined_node_process_set(
+                &node_id("node_2"),
+                InstallRolePolicy::install_all().without_dns()
+            )
+            .roles(),
+            &[
+                DaemonProcessRole::Node(node_id("node_2")),
                 DaemonProcessRole::Gateway,
             ]
         );
     }
 
     #[test]
-    fn joined_node_roles_are_the_machine_add_shape() {
+    fn both_opt_outs_leave_the_required_roles() {
         assert_eq!(
-            joined_node_process_set(&node_id("node_2"), FirstNodeGateway::Skip).roles(),
-            &[DaemonProcessRole::Node(node_id("node_2"))]
+            plan_first_node_process_set(
+                &node_id("node_1"),
+                InstallRolePolicy::install_all()
+                    .without_gateway()
+                    .without_dns()
+            )
+            .roles(),
+            &[
+                DaemonProcessRole::Control,
+                DaemonProcessRole::Node(node_id("node_1")),
+            ]
         );
         assert_eq!(
-            joined_node_process_set(&node_id("node_2"), FirstNodeGateway::Install).roles(),
-            &[
-                DaemonProcessRole::Node(node_id("node_2")),
-                DaemonProcessRole::Gateway,
-            ]
+            plan_joined_node_process_set(
+                &node_id("node_2"),
+                InstallRolePolicy::install_all()
+                    .without_gateway()
+                    .without_dns()
+            )
+            .roles(),
+            &[DaemonProcessRole::Node(node_id("node_2"))]
         );
     }
 

@@ -143,9 +143,11 @@ fn machine_hostname() -> Option<String> {
 fn first_node_install_target(
     install: FirstNodeInstallSpec,
 ) -> Result<FirstNodeInstallTarget, KeeperCliError> {
+    let roles = install.role_policy();
     let FirstNodeInstallSpec {
         node_id,
-        gateway,
+        gateway: _,
+        dns: _,
         node_public_ip,
         machine_bootstrap_url,
         machine_join_template_file,
@@ -188,7 +190,7 @@ fn first_node_install_target(
         ployzd_artifact,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
         nats_server_artifact,
-        gateway,
+        roles,
         nats_identity,
     )
     .with_nats_server_unit(nats_server_unit);
@@ -356,7 +358,26 @@ mod tests {
             panic!("expected first-node install command");
         };
         assert_eq!(target.node_id.as_str(), "node_1");
-        assert_eq!(target.gateway, ployz_core::roles::FirstNodeGateway::Install);
+        // The spec carries no `dns` field: DNS defaults to install.
+        assert_eq!(
+            target.roles,
+            ployz_core::roles::InstallRolePolicy::install_all()
+        );
+    }
+
+    #[test]
+    fn parser_honors_explicit_dns_opt_out_in_spec() {
+        let path = write_temp_spec_with(FIRST_NODE_INSTALL_SPEC_NO_DNS, "no-dns");
+        let command = load_command(["first-node-install".into(), "--spec".into(), path.into()])
+            .expect("first-node install command loads");
+
+        let KeeperCommand::FirstNodeInstall(target) = command else {
+            panic!("expected first-node install command");
+        };
+        assert_eq!(
+            target.roles,
+            ployz_core::roles::InstallRolePolicy::install_all().without_dns()
+        );
     }
 
     #[test]
@@ -383,13 +404,53 @@ mod tests {
     }
 
     fn write_temp_spec() -> PathBuf {
+        write_temp_spec_with(FIRST_NODE_INSTALL_SPEC, "default")
+    }
+
+    fn write_temp_spec_with(spec: &str, label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "ployz-first-node-install-{}.json",
+            "ployz-first-node-install-{label}-{}.json",
             std::process::id()
         ));
-        fs::write(&path, FIRST_NODE_INSTALL_SPEC).expect("write spec");
+        fs::write(&path, spec).expect("write spec");
         path
     }
+
+    const FIRST_NODE_INSTALL_SPEC_NO_DNS: &str = r#"{
+        "node_id": "node_1",
+        "gateway": "install",
+        "dns": "skip",
+        "node_public_ip": null,
+        "machine_bootstrap_url": null,
+        "machine_join_template_file": null,
+        "artifacts": {
+            "ployzd": {
+                "version": "0.1.0",
+                "source": "/tmp/ployzd",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/bin/ployzd"
+            },
+            "ebpf_bytecode": {
+                "version": "0.1.0",
+                "source": "/tmp/ployz-ebpf-tc",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+            },
+            "ebpf_ctl": {
+                "version": "0.1.0",
+                "source": "/tmp/ployz-ebpf-ctl",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+            },
+            "nats_server": {
+                "version": "2.12.0",
+                "source": "/tmp/nats-server",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "binary": "/usr/local/bin/nats-server",
+                "config": "/etc/nats/nats-server.conf"
+            }
+        }
+    }"#;
 
     const FIRST_NODE_INSTALL_SPEC: &str = r#"{
         "node_id": "node_1",

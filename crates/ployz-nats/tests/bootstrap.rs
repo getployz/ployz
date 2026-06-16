@@ -34,32 +34,24 @@ fn all_resources_are_adopted(plan: &BootstrapPlan) -> bool {
 fn single_core_bootstrap_contains_required_resources() {
     let plan = supported_single_core_plan();
 
-    for bucket in ["KV_CORE", "KV_OPS", "KV_OBS", "KV_LOCKS"] {
+    for bucket in ["KV_CORE", "KV_OPS", "KV_OBS"] {
         assert!(
             plan.kv_buckets.iter().any(|spec| spec.name == bucket),
             "missing KV bucket {bucket}"
         );
     }
 
-    for stream in [
-        "PLZ_OPS",
-        "PLZ_JOBS",
-        "PLZ_AUDIT",
-        "PLZ_OBS_TRANSITIONS",
-        "PLZ_SCHEDULES",
-    ] {
-        assert!(
-            plan.streams.iter().any(|spec| spec.name == stream),
-            "missing stream {stream}"
-        );
-    }
+    let stream = "PLZ_OPS";
+    assert!(
+        plan.streams.iter().any(|spec| spec.name == stream),
+        "missing stream {stream}"
+    );
 
-    for bucket in ["PLZ_BUNDLES", "PLZ_DIAGNOSTICS", "PLZ_CERTS", "PLZ_BACKUPS"] {
-        assert!(
-            plan.object_buckets.iter().any(|spec| spec.name == bucket),
-            "missing object bucket {bucket}"
-        );
-    }
+    let bucket = "PLZ_BACKUPS";
+    assert!(
+        plan.object_buckets.iter().any(|spec| spec.name == bucket),
+        "missing object bucket {bucket}"
+    );
 }
 
 #[test]
@@ -94,34 +86,6 @@ fn operation_stream_is_retained_history_not_work_queue() {
 
     assert_eq!(ops.retention, RetentionPolicy::Limits);
     assert_eq!(ops.subjects, vec!["plz.v1.op.>"]);
-}
-
-#[test]
-fn jobs_stream_is_separate_from_operation_history() {
-    let plan = supported_single_core_plan();
-    let jobs = plan
-        .streams
-        .iter()
-        .find(|stream| stream.name == "PLZ_JOBS")
-        .expect("PLZ_JOBS stream exists");
-
-    assert_eq!(jobs.retention, RetentionPolicy::Limits);
-    assert_eq!(jobs.subjects, vec!["plz.v1.job.>"]);
-}
-
-#[test]
-fn schedule_stream_tracks_server_capability() {
-    let plan =
-        BootstrapPlan::for_single_core(single_capabilities(NatsServerVersion::new(2, 12, 0), true))
-            .expect("minimum supported nats-server can be bootstrapped");
-    let schedule_stream = plan
-        .streams
-        .iter()
-        .find(|stream| stream.name == "PLZ_SCHEDULES")
-        .expect("schedule stream exists");
-
-    assert!(schedule_stream.allow_message_schedules);
-    assert_eq!(schedule_stream.discard, DiscardPolicy::Old);
 }
 
 #[test]
@@ -186,20 +150,18 @@ fn bootstrap_refuses_existing_stream_shape_drift() {
 fn bootstrap_refuses_existing_resource_policy_drift() {
     let plan = supported_single_core_plan();
     let mut existing = existing_from_plan(&plan);
-    let schedules = existing
+    let ops = existing
         .streams
         .iter_mut()
-        .find(|stream| stream.name == "PLZ_SCHEDULES")
-        .expect("observed PLZ_SCHEDULES stream exists");
-    schedules.discard = DiscardPolicy::New;
+        .find(|stream| stream.name == "PLZ_OPS")
+        .expect("observed PLZ_OPS stream exists");
+    ops.discard = DiscardPolicy::New;
 
     let diff = plan.diff_against(&existing);
-    let schedules = diff
-        .stream("PLZ_SCHEDULES")
-        .expect("PLZ_SCHEDULES diff exists");
+    let ops = diff.stream("PLZ_OPS").expect("PLZ_OPS diff exists");
 
     assert_eq!(
-        schedules.action,
+        ops.action,
         BootstrapResourceAction::Refuse {
             reason: BootstrapResourceRefusal::ConfigurationDrift {
                 field: "discard",
