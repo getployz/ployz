@@ -13,13 +13,16 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(script.contains("PLOYZ_VERSION"));
     assert!(script.contains("PLOYZ_RELEASE_MANIFEST_URL"));
     assert!(script.contains("PLOYZ_NATS_URL"));
+    assert!(script.contains("PLOYZD_URL"));
+    assert!(script.contains("PLOYZ_EBPF_TC_URL"));
+    assert!(script.contains("PLOYZ_MACHINE_JOIN_NATS_URL"));
     assert!(script.contains("PLOYZ_JOIN_TOKEN"));
     assert!(script.contains("join-token"));
     assert!(script.contains("installed $ployzctl_bin"));
     assert!(script.contains("\"$keeper_bin\" --join-token-file \"$join_token_file\""));
     assert!(script.contains("not both"));
     assert!(script.contains("--join-token <token>"));
-    assert!(script.contains("--first-node-spec <path>"));
+    assert!(script.contains("--first-node"));
     assert!(script.contains("--version <version>"));
     assert!(script.contains("Darwin"));
     assert!(script.contains("shasum"));
@@ -37,7 +40,6 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(!script.contains("systemctl enable ployz-keeper.service"));
     assert!(!script.contains("systemctl restart ployz-keeper.service"));
     assert!(!script.contains("ExecStart=${keeper_bin}${keeper_args}"));
-    assert!(!script.contains("ployzd"));
     assert!(!script.contains("NATS_CREDS"));
 }
 
@@ -227,39 +229,22 @@ fn bootstrap_script_rejects_join_token_from_flag_and_env() {
 }
 
 #[test]
-fn bootstrap_script_rejects_join_token_and_first_node_spec_together() {
-    let output = run_bootstrap_script(
-        &[
-            "--join-token",
-            "join_once",
-            "--first-node-spec",
-            "/tmp/spec",
-        ],
-        None,
-    );
+fn bootstrap_script_rejects_join_token_and_first_node_together() {
+    let output = run_bootstrap_script(&["--join-token", "join_once", "--first-node"], None);
 
     assert!(!output.status.success());
     assert_stderr_contains(
         &output,
-        "pass either --join-token or --first-node-spec, not both",
+        "pass either --join-token or --first-node, not both",
     );
 }
 
 #[test]
-fn bootstrap_script_first_node_requires_existing_spec_file() {
-    let output = run_bootstrap_script(
-        &[
-            "--first-node-spec",
-            "/nonexistent/ployz-first-node-spec.json",
-        ],
-        None,
-    );
+fn bootstrap_script_first_node_requires_node_id() {
+    let output = run_bootstrap_script(&["--first-node"], None);
 
     assert!(!output.status.success());
-    assert_stderr_contains(
-        &output,
-        "first-node spec file not found: /nonexistent/ployz-first-node-spec.json",
-    );
+    assert_stderr_contains(&output, "set PLOYZ_NODE_ID when bootstrapping a first node");
 }
 
 #[cfg(unix)]
@@ -532,14 +517,17 @@ fn bootstrap_script_reports_missing_manifest_key_and_url() {
 fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
     let root = temp_dir("ployz-bootstrap-script-first-node");
     let keeper_source = root.join("ployz-keeper-source");
-    let spec_path = root.join("first-node-spec.json");
+    let nats_server = root.join("bin/nats-server");
     let install_dir = root.join("bin");
     let state_dir = root.join("state");
     let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
     let fake_bin = root.join("fake-bin");
     let keeper_args_log = root.join("keeper-args.log");
     fs::create_dir_all(&fake_bin).expect("fake bin can be created");
-    fs::write(&spec_path, "{}\n").expect("spec file can be written");
+    fs::create_dir_all(nats_server.parent().expect("nats server has a parent"))
+        .expect("nats dir exists");
+    fs::write(&nats_server, "#!/bin/sh\nexit 0\n").expect("fake nats-server writes");
+    write_executable(&nats_server, "#!/bin/sh\nexit 0\n");
     fs::write(
         &keeper_source,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PLOYZ_TEST_KEEPER_ARGS_LOG\"\nexit 0\n",
@@ -552,7 +540,7 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
 
     let output = Command::new("sh")
         .arg(script_path)
-        .args(["--first-node-spec", &spec_path.display().to_string()])
+        .args(["--first-node"])
         .env(
             "PATH",
             format!(
@@ -566,6 +554,17 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
             format!("file://{}", keeper_source.display()),
         )
         .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_NODE_ID", "node_1")
+        .env("PLOYZ_MACHINE_JOIN_NATS_URL", "tls://203.0.113.10:4222")
+        .env("PLOYZD_URL", "https://example.invalid/ployzd")
+        .env("PLOYZD_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_EBPF_TC_URL", "https://example.invalid/ployz-ebpf-tc")
+        .env("PLOYZ_EBPF_TC_SHA256", KEEPER_DIGEST)
+        .env(
+            "PLOYZ_EBPF_CTL_URL",
+            "https://example.invalid/ployz-ebpf-ctl",
+        )
+        .env("PLOYZ_EBPF_CTL_SHA256", KEEPER_DIGEST)
         .env("PLOYZ_TEST_KEEPER_ARGS_LOG", &keeper_args_log)
         .env_remove("PLOYZ_JOIN_TOKEN")
         .env_remove("PLOYZ_NATS_URL")
@@ -579,9 +578,10 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
     );
     assert!(install_dir.join("ployz-keeper").exists());
     assert!(!install_dir.join("ployzctl").exists());
-    assert_eq!(
-        fs::read_to_string(&keeper_args_log).expect("keeper args are recorded"),
-        format!("first-node-install --spec {}\n", spec_path.display())
+    let keeper_args = fs::read_to_string(&keeper_args_log).expect("keeper args are recorded");
+    assert!(
+        keeper_args.starts_with("first-node-install --spec "),
+        "{keeper_args}"
     );
 }
 
@@ -648,6 +648,13 @@ fn test_bootstrap_script_path(
         .replace(
             "state_dir=\"/var/lib/ployz/keeper\"",
             &format!("state_dir=\"{}\"", state_dir.display()),
+        )
+        .replace(
+            "nats_binary=\"/usr/local/bin/nats-server\"",
+            &format!(
+                "nats_binary=\"{}\"",
+                install_dir.join("nats-server").display()
+            ),
         );
     let path = root.join("ployz.sh");
     fs::write(&path, rewritten).expect("test bootstrap script can be written");

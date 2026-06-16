@@ -24,7 +24,7 @@ pub enum PloyzctlCommand {
     Deploy(deploy::DetachedDeployCommand),
     BackupCreate(backup::BackupCreateCommand),
     BackupRestorePlan(backup::BackupRestorePlanCommand),
-    Init(init::FirstNodeInitCommand),
+    Init(Box<init::FirstNodeInitCommand>),
     InitFirstNodeActivate(init::FirstNodeActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineInit(machine::MachineInitCommand),
@@ -207,7 +207,9 @@ fn init_command_from_cli(command: InitRootCli) -> Result<PloyzctlCommand, Ployzc
             init::join_template::machine_join_template_command(subcommand)
                 .map(PloyzctlCommand::InitJoinTemplate)
         }
-        None => init::init_command(command.init).map(PloyzctlCommand::Init),
+        None => {
+            init::init_command(command.init).map(|command| PloyzctlCommand::Init(Box::new(command)))
+        }
     }
 }
 

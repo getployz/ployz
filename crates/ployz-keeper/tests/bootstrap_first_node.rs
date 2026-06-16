@@ -158,6 +158,7 @@ fn first_node_public_ip_flips_the_listener_external_in_the_secured_config() {
             | KeeperStep::WriteNatsTlsMaterial(_)
             | KeeperStep::WriteNatsAuthorizedUsers(_)
             | KeeperStep::WriteNatsClientCredentials(_)
+            | KeeperStep::WriteMachineJoinTemplate(_)
             | KeeperStep::WriteSupervisorUnit(_)
             | KeeperStep::StartSupervisorUnit(_)
             | KeeperStep::RestartSupervisorUnit(_)

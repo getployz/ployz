@@ -140,11 +140,7 @@ impl std::error::Error for SshTargetParseError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SshPhase {
     ReadHostname,
-    ResolveRelease,
-    PrepareMachine,
     RunInstaller,
-    RestartControl,
-    CollectOperatorMaterial,
 }
 
 impl SshPhase {
@@ -152,11 +148,7 @@ impl SshPhase {
     pub const fn label(self) -> &'static str {
         match self {
             Self::ReadHostname => "read-hostname",
-            Self::ResolveRelease => "resolve-release",
-            Self::PrepareMachine => "prepare-machine",
             Self::RunInstaller => "run-installer",
-            Self::RestartControl => "restart-control",
-            Self::CollectOperatorMaterial => "collect-operator-material",
         }
     }
 }
