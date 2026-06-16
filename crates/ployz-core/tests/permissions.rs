@@ -77,7 +77,6 @@ fn controller_credential_renders_owner_node_service_and_jetstream_scopes() {
             OPS_STREAM_SUBJECT.to_owned(),
             "$JS.API.>".to_owned(),
             "$JS.ACK.>".to_owned(),
-            "$O.PLZ_BACKUPS.>".to_owned(),
             active_service_state_kv_write_scope(),
             active_route_state_kv_write_scope(),
             active_machine_state_kv_write_scope(),

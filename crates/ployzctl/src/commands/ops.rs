@@ -1,4 +1,5 @@
 use clap::Args;
+use ployz_core::backup::BackupArtifactLocation;
 use ployz_core::ids::OperationId;
 use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
@@ -331,8 +332,17 @@ fn backup_running_stage(stage: &BackupRunningStage) -> String {
             "running:snapshotting-control-plane".to_owned()
         }
         BackupRunningStage::WritingManifest { artifact } => {
-            format!("running:writing-manifest:{}", artifact.object_name)
+            format!(
+                "running:writing-manifest:{}",
+                backup_artifact_location(&artifact.location)
+            )
         }
+    }
+}
+
+fn backup_artifact_location(location: &BackupArtifactLocation) -> String {
+    match location {
+        BackupArtifactLocation::S3 { bucket, key, .. } => format!("s3://{bucket}/{key}"),
     }
 }
 

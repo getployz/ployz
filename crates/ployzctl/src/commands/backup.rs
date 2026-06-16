@@ -1,5 +1,8 @@
-use clap::{ArgAction, Args};
-use ployz_core::backup::{RestoreStep, single_core_restore_contract};
+use clap::{ArgAction, Args, ValueEnum};
+use ployz_core::backup::{
+    BackupRestoreSource, BackupTarget, RestoreStep, S3AddressingStyle, S3BackupRestoreSource,
+    S3BackupTarget, single_core_restore_contract,
+};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{AcceptedOperation, BackupCreateRequest};
@@ -10,6 +13,7 @@ use crate::commands::{PloyzctlCliError, invalid_value};
 pub struct BackupCreateCommand {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
+    pub target: BackupTarget,
 }
 
 impl BackupCreateCommand {
@@ -18,6 +22,7 @@ impl BackupCreateCommand {
         BackupCreateRequest {
             operation_id: self.operation_id,
             idempotency_key: self.idempotency_key,
+            target: self.target,
         }
     }
 }
@@ -43,8 +48,10 @@ impl BackupCreateOutput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BackupRestorePlanCommand;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupRestorePlanCommand {
+    pub source: BackupRestoreSource,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupRestorePlanOutput {
@@ -82,6 +89,13 @@ pub(crate) fn backup_create_command(
             .map_err(|error| invalid_value("--operation", error))?,
         idempotency_key: OperationIdempotencyKey::try_new(parsed.idempotency_key)
             .map_err(|error| invalid_value("--idempotency-key", error))?,
+        target: BackupTarget::s3(S3BackupTarget::new(
+            non_empty_string("--s3-bucket", parsed.s3_bucket)?,
+            non_empty_string("--s3-prefix", parsed.s3_prefix)?,
+            non_empty_string("--s3-region", parsed.s3_region)?,
+            optional_non_empty_string("--s3-endpoint-url", parsed.s3_endpoint_url)?,
+            parsed.s3_addressing_style.into(),
+        )),
     })
 }
 
@@ -91,16 +105,75 @@ pub(crate) struct BackupCreateCli {
     operation: String,
     #[arg(long)]
     idempotency_key: String,
+    #[arg(long)]
+    s3_bucket: String,
+    #[arg(long)]
+    s3_prefix: String,
+    #[arg(long)]
+    s3_region: String,
+    #[arg(long)]
+    s3_endpoint_url: Option<String>,
+    #[arg(long, value_enum, default_value_t = BackupS3AddressingStyleCli::VirtualHosted)]
+    s3_addressing_style: BackupS3AddressingStyleCli,
 }
 
-pub(crate) fn backup_restore_command(_: BackupRestoreCli) -> BackupRestorePlanCommand {
-    BackupRestorePlanCommand
+pub(crate) fn backup_restore_command(
+    parsed: BackupRestoreCli,
+) -> Result<BackupRestorePlanCommand, PloyzctlCliError> {
+    Ok(BackupRestorePlanCommand {
+        source: BackupRestoreSource::s3(S3BackupRestoreSource::new(
+            non_empty_string("--s3-bucket", parsed.s3_bucket)?,
+            non_empty_string("--s3-manifest-key", parsed.s3_manifest_key)?,
+            non_empty_string("--s3-region", parsed.s3_region)?,
+            optional_non_empty_string("--s3-endpoint-url", parsed.s3_endpoint_url)?,
+            parsed.s3_addressing_style.into(),
+        )),
+    })
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct BackupRestoreCli {
     #[arg(long, action = ArgAction::SetTrue, required = true)]
     plan: bool,
+    #[arg(long)]
+    s3_bucket: String,
+    #[arg(long)]
+    s3_manifest_key: String,
+    #[arg(long)]
+    s3_region: String,
+    #[arg(long)]
+    s3_endpoint_url: Option<String>,
+    #[arg(long, value_enum, default_value_t = BackupS3AddressingStyleCli::VirtualHosted)]
+    s3_addressing_style: BackupS3AddressingStyleCli,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum BackupS3AddressingStyleCli {
+    VirtualHosted,
+    Path,
+}
+
+impl From<BackupS3AddressingStyleCli> for S3AddressingStyle {
+    fn from(value: BackupS3AddressingStyleCli) -> Self {
+        match value {
+            BackupS3AddressingStyleCli::VirtualHosted => Self::VirtualHosted,
+            BackupS3AddressingStyleCli::Path => Self::Path,
+        }
+    }
+}
+
+fn non_empty_string(flag: &'static str, value: String) -> Result<String, PloyzctlCliError> {
+    if value.trim().is_empty() {
+        return Err(invalid_value(flag, "must not be empty"));
+    }
+    Ok(value)
+}
+
+fn optional_non_empty_string(
+    flag: &'static str,
+    value: Option<String>,
+) -> Result<Option<String>, PloyzctlCliError> {
+    value.map(|value| non_empty_string(flag, value)).transpose()
 }
 
 const fn restore_step_name(step: RestoreStep) -> &'static str {

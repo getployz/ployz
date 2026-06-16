@@ -39,7 +39,15 @@
   },
   "backup_create_request": {
     "operation_id": "op_backup",
-    "idempotency_key": "idem_backup"
+    "idempotency_key": "idem_backup",
+    "target": {
+      "kind": "s3",
+      "bucket": "ployz-backups",
+      "key_prefix": "clusters/dev",
+      "region": "us-east-1",
+      "endpoint_url": null,
+      "addressing_style": "virtual_hosted"
+    }
   },
   "backup_create_response": {
     "status": "ok",
