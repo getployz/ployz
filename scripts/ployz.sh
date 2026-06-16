@@ -4,12 +4,12 @@ set -eu
 default_version="v0.0.1-alpha.1"
 
 usage() {
-  echo "usage: [PLOYZ_VERSION=v0.0.1-alpha.1] sh ployz.sh [--version <version>] [--join-token <token>] [--first-node-spec <path>]" >&2
+  echo "usage: [PLOYZ_VERSION=v0.0.1-alpha.1] sh ployz.sh [--version <version>] [--join-token <token>] [--first-node]" >&2
   echo "" >&2
   echo "modes:" >&2
   echo "  (default)                install the local ployzctl CLI (macOS or Linux, no root needed)" >&2
   echo "  --join-token <token>     machine bootstrap: join this Linux machine to a cluster (root)" >&2
-  echo "  --first-node-spec <path> machine bootstrap: form a first node on this Linux machine (root)" >&2
+  echo "  --first-node             machine bootstrap: form a first node on this Linux machine (root)" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -26,13 +26,9 @@ while [ "$#" -gt 0 ]; do
       PLOYZ_JOIN_TOKEN="$2"
       shift 2
       ;;
-    --first-node-spec)
-      if [ "$#" -lt 2 ]; then
-        usage
-        exit 1
-      fi
-      PLOYZ_FIRST_NODE_SPEC="$2"
-      shift 2
+    --first-node)
+      PLOYZ_FIRST_NODE=1
+      shift
       ;;
     --version)
       if [ "$#" -lt 2 ]; then
@@ -77,15 +73,15 @@ esac
 
 # One install mode per invocation: the default installs the local operator
 # CLI; the machine modes bootstrap a cluster machine through the keeper.
-if [ "${PLOYZ_JOIN_TOKEN:-}" ] && [ "${PLOYZ_FIRST_NODE_SPEC:-}" ]; then
-  echo "pass either --join-token or --first-node-spec, not both" >&2
+if [ "${PLOYZ_JOIN_TOKEN:-}" ] && [ "${PLOYZ_FIRST_NODE:-}" ]; then
+  echo "pass either --join-token or --first-node, not both" >&2
   exit 1
 fi
 
 install_mode="local"
 if [ "${PLOYZ_JOIN_TOKEN:-}" ]; then
   install_mode="join"
-elif [ "${PLOYZ_FIRST_NODE_SPEC:-}" ]; then
+elif [ "${PLOYZ_FIRST_NODE:-}" ]; then
   install_mode="first-node"
 fi
 
@@ -94,8 +90,13 @@ if [ "$install_mode" = "join" ] && [ -z "${PLOYZ_NATS_URL:-}" ]; then
   exit 1
 fi
 
-if [ "$install_mode" = "first-node" ] && [ ! -f "$PLOYZ_FIRST_NODE_SPEC" ]; then
-  echo "first-node spec file not found: $PLOYZ_FIRST_NODE_SPEC" >&2
+if [ "$install_mode" = "first-node" ] && [ -z "${PLOYZ_NODE_ID:-}" ]; then
+  echo "set PLOYZ_NODE_ID when bootstrapping a first node" >&2
+  exit 1
+fi
+
+if [ "$install_mode" = "first-node" ] && [ -z "${PLOYZ_MACHINE_JOIN_NATS_URL:-}" ]; then
+  echo "set PLOYZ_MACHINE_JOIN_NATS_URL when bootstrapping a first node" >&2
   exit 1
 fi
 
@@ -164,16 +165,21 @@ if [ "$install_mode" = "local" ] && [ "$(id -u)" -ne 0 ]; then
 fi
 state_dir="/var/lib/ployz/keeper"
 nats_dir="/var/lib/ployz/nats"
+nats_version="2.14.2"
+nats_binary="/usr/local/bin/nats-server"
+nats_config="/etc/nats/nats-server.conf"
+machine_join_template_file="/etc/ployz/machine-join-template.json"
 keeper_bin="${install_dir}/ployz-keeper"
 ployzctl_bin="${install_dir}/ployzctl"
 join_token_file="${state_dir}/join-token"
 ca_file="${nats_dir}/ca.pem"
 manifest_file="$(mktemp)"
 tmp_file="$(mktemp)"
+first_node_spec_file="$(mktemp)"
 manifest_loaded=0
 
 cleanup() {
-  rm -f "$manifest_file" "$tmp_file"
+  rm -f "$manifest_file" "$tmp_file" "$first_node_spec_file"
 }
 trap cleanup EXIT
 
@@ -224,6 +230,131 @@ download_verified() {
   esac
 }
 
+sha256_file() {
+  case "$sha256_tool" in
+    sha256sum)
+      sha256sum "$1" | awk '{ print $1 }'
+      ;;
+    shasum)
+      shasum -a 256 "$1" | awk '{ print $1 }'
+      ;;
+  esac
+}
+
+json_string() {
+  value="$1"
+  case "$value" in
+    *\"* | *\\*)
+      echo "first-node value contains unsupported JSON characters: $value" >&2
+      exit 1
+      ;;
+  esac
+  printf '"%s"' "$value"
+}
+
+json_optional_string() {
+  value="${1:-}"
+  if [ -z "$value" ]; then
+    printf 'null'
+  else
+    json_string "$value"
+  fi
+}
+
+validate_role_value() {
+  case "$2" in
+    install | skip)
+      ;;
+    *)
+      echo "$1 must be install or skip" >&2
+      exit 1
+      ;;
+  esac
+}
+
+ensure_nats_server() {
+  if [ ! -x "$nats_binary" ]; then
+    case "$arch_slug" in
+      amd64 | arm64)
+        ;;
+      *)
+        echo "unsupported architecture for nats-server: $arch_slug" >&2
+        exit 1
+        ;;
+    esac
+    curl -fsSL -o /tmp/ployz-nats-server.tar.gz "https://github.com/nats-io/nats-server/releases/download/v${nats_version}/nats-server-v${nats_version}-linux-${arch_slug}.tar.gz"
+    tar -xzf /tmp/ployz-nats-server.tar.gz -C /tmp
+    install -m 0755 "/tmp/nats-server-v${nats_version}-linux-${arch_slug}/nats-server" "$nats_binary"
+    rm -rf /tmp/ployz-nats-server.tar.gz "/tmp/nats-server-v${nats_version}-linux-${arch_slug}"
+  fi
+  sha256_file "$nats_binary"
+}
+
+write_first_node_spec() {
+  if [ -z "${PLOYZ_NODE_ID:-}" ]; then
+    echo "set PLOYZ_NODE_ID when bootstrapping a first node" >&2
+    exit 1
+  fi
+  if [ -z "${PLOYZ_MACHINE_JOIN_NATS_URL:-}" ]; then
+    echo "set PLOYZ_MACHINE_JOIN_NATS_URL when bootstrapping a first node" >&2
+    exit 1
+  fi
+  PLOYZ_GATEWAY="${PLOYZ_GATEWAY:-install}"
+  PLOYZ_DNS="${PLOYZ_DNS:-install}"
+  PLOYZ_MACHINE_BOOTSTRAP_URL="${PLOYZ_MACHINE_BOOTSTRAP_URL:-https://ployz.sh}"
+  PLOYZ_MACHINE_JOIN_CLUSTER_NAME="${PLOYZ_MACHINE_JOIN_CLUSTER_NAME:-ployz}"
+  validate_role_value PLOYZ_GATEWAY "$PLOYZ_GATEWAY"
+  validate_role_value PLOYZ_DNS "$PLOYZ_DNS"
+
+  PLOYZD_URL="$(resolve_release_value PLOYZD_URL "${PLOYZD_URL:-}")"
+  PLOYZD_SHA256="$(resolve_release_value PLOYZD_SHA256 "${PLOYZD_SHA256:-}")"
+  PLOYZ_EBPF_TC_URL="$(resolve_release_value PLOYZ_EBPF_TC_URL "${PLOYZ_EBPF_TC_URL:-}")"
+  PLOYZ_EBPF_TC_SHA256="$(resolve_release_value PLOYZ_EBPF_TC_SHA256 "${PLOYZ_EBPF_TC_SHA256:-}")"
+  PLOYZ_EBPF_CTL_URL="$(resolve_release_value PLOYZ_EBPF_CTL_URL "${PLOYZ_EBPF_CTL_URL:-}")"
+  PLOYZ_EBPF_CTL_SHA256="$(resolve_release_value PLOYZ_EBPF_CTL_SHA256 "${PLOYZ_EBPF_CTL_SHA256:-}")"
+  NATS_SERVER_SHA256="$(ensure_nats_server)"
+
+  cat > "$first_node_spec_file" <<EOF
+{
+  "node_id": $(json_string "$PLOYZ_NODE_ID"),
+  "gateway": $(json_string "$PLOYZ_GATEWAY"),
+  "dns": $(json_string "$PLOYZ_DNS"),
+  "node_public_ip": $(json_optional_string "${PLOYZ_NODE_PUBLIC_IP:-}"),
+  "machine_bootstrap_url": $(json_string "$PLOYZ_MACHINE_BOOTSTRAP_URL"),
+  "machine_join_template_file": $(json_string "$machine_join_template_file"),
+  "machine_join_cluster_name": $(json_string "$PLOYZ_MACHINE_JOIN_CLUSTER_NAME"),
+  "machine_join_runtime_nats_url": $(json_string "$PLOYZ_MACHINE_JOIN_NATS_URL"),
+  "artifacts": {
+    "ployzd": {
+      "version": $(json_string "$PLOYZ_VERSION"),
+      "source": $(json_string "$PLOYZD_URL"),
+      "sha256": $(json_string "$PLOYZD_SHA256"),
+      "install_path": "/usr/local/bin/ployzd"
+    },
+    "ebpf_bytecode": {
+      "version": $(json_string "$PLOYZ_VERSION"),
+      "source": $(json_string "$PLOYZ_EBPF_TC_URL"),
+      "sha256": $(json_string "$PLOYZ_EBPF_TC_SHA256"),
+      "install_path": "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"
+    },
+    "ebpf_ctl": {
+      "version": $(json_string "$PLOYZ_VERSION"),
+      "source": $(json_string "$PLOYZ_EBPF_CTL_URL"),
+      "sha256": $(json_string "$PLOYZ_EBPF_CTL_SHA256"),
+      "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+    },
+    "nats_server": {
+      "version": $(json_string "$nats_version"),
+      "source": $(json_string "$nats_binary"),
+      "sha256": $(json_string "$NATS_SERVER_SHA256"),
+      "binary": $(json_string "$nats_binary"),
+      "config": $(json_string "$nats_config")
+    }
+  }
+}
+EOF
+}
+
 install -d -m 0755 "$install_dir"
 
 # Local mode installs only the operator CLI: no root, no keeper material,
@@ -250,7 +381,8 @@ install -d -m 0700 "$state_dir"
 install -m 0755 "$tmp_file" "$keeper_bin"
 
 if [ "$install_mode" = "first-node" ]; then
-  "$keeper_bin" first-node-install --spec "$PLOYZ_FIRST_NODE_SPEC"
+  write_first_node_spec
+  "$keeper_bin" first-node-install --spec "$first_node_spec_file"
   exit 0
 fi
 

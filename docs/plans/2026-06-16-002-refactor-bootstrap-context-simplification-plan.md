@@ -29,7 +29,7 @@ That is too much ownership for the client. The desired shape is closer to the us
 - R1. `ployzctl` commands that need a cluster must continue to load NATS URL, CA, operator seed, and Join seed from local context when flags and environment variables are absent.
 - R2. Local context must support optional machine connection handles, starting with SSH destinations, without making SSH part of the product authority boundary.
 - R3. Existing precedence must remain intact: `--nats` and environment variables override context values, and a corrupt context remains a loud error for cluster commands.
-- R4. Context changes must be backward-compatible with current `context.json` files that only contain cluster material.
+- R4. Context files use the current explicit shape; alpha migration/backward compatibility is out of scope.
 
 **Bootstrap primitives**
 
@@ -45,9 +45,9 @@ That is too much ownership for the client. The desired shape is closer to the us
 - R11. Bootstrap failures must still preserve useful evidence: the rendered command path, optional SSH phase output, operation ID when one exists, and keeper/bootstrap terminal output.
 - R12. Bootstrap result handling must not echo operator seeds or Join seeds in normal user-facing output.
 
-**Compatibility and escape hatches**
+**Future escape hatches**
 
-- R13. Existing low-level operation commands and first-node proof commands must remain available until the replacement path has equivalent tests.
+- R13. Existing explicit operation commands can remain as current expert surfaces, but the old remote bootstrap/spec-preparation path does not need compatibility branches.
 - R14. The shape must remain compatible with a future dashboard/cloud-init bootstrap-token envelope, but this plan does not implement dashboard workflows.
 
 ---
@@ -175,8 +175,8 @@ sequenceDiagram
 - **Goal:** Extend local context so it remains the cluster connection record and can also remember how to deliver bootstrap commands to known machines.
 - **Requirements:** R1, R2, R3, R4
 - **Files:** `crates/ployzctl/src/config.rs`, `crates/ployzctl/src/runtime.rs`, `crates/ployzctl/src/ssh.rs`, `crates/ployzctl/tests/init_binary_nats.rs`, `crates/ployzctl/tests/cli_contract.rs`.
-- **Approach:** Add a version-tolerant serde shape with current cluster material plus optional machine records keyed by machine ID or name. Each record starts with an optional SSH destination string and can be absent for dashboard/cloud-init/manual bootstraps. Keep `ClusterContext` validation for NATS URL and path fields, and add narrow parsing for SSH handles at the edge.
-- **Test scenarios:** Current context files load unchanged; context files with SSH handles round-trip; env and `--nats` still override context; corrupt context still errors for cluster commands; commands that do not need cluster context still ignore corrupt context where they do today.
+- **Approach:** Add a strict current serde shape with cluster material plus optional machine records keyed by machine ID or name. Each record starts with an optional SSH destination string and can be absent for dashboard/cloud-init/manual bootstraps. Keep `ClusterContext` validation for NATS URL and path fields, and add narrow parsing for SSH handles at the edge.
+- **Test scenarios:** Current-shape context files with SSH handles round-trip; env and `--nats` still override context; corrupt context still errors for cluster commands; commands that do not need cluster context still ignore corrupt context where they do today.
 
 ### U2. Bootstrap command renderer module
 
@@ -202,20 +202,20 @@ sequenceDiagram
 - **Approach:** Introduce a typed founder bootstrap output shape for NATS URL, CA, operator seed, optional Join seed, and machine identity. Prefer structured JSON emitted by the machine-local bootstrap boundary over `cat`-ing fixed keeper paths through SSH. `ployzctl` records local context only after parsing and validating that result, then calls the explicit first-machine activation API through the new context.
 - **Test scenarios:** Successful founder SSH delivery writes context from parsed bootstrap output; failed founder delivery writes no context; malformed CA or seed material fails before context publish; normal stdout does not print seeds; missing config root remains explicit; `MachineInitOutput` still reports operation ID, context path, and next command.
 
-### U5. Delete or shrink `remote_bootstrap.rs` to pure rendering compatibility
+### U5. Delete `remote_bootstrap.rs`
 
 - **Goal:** Remove the CLI-owned installer substeps that conflict with the new boundary.
 - **Requirements:** R8, R9, R10, R13
 - **Files:** `crates/ployzctl/src/remote_bootstrap.rs`, `crates/ployzctl/src/remote_machine_runtime.rs`, `crates/ployzctl/src/lib.rs`, `crates/ployzctl/tests/machine_cli_contract.rs`, `crates/ployzctl/tests/machine_remote_nats.rs`.
-- **Approach:** After U2-U4 land, delete release-manifest parsing, default manifest URL construction for remote SSH phases, first-node spec construction, join-template construction, remote file write/read helpers, `ensure_nats_server_command`, and control restart helpers from `ployzctl`. Keep only constants or small types that are still part of CLI rendering, or move them to keeper/script-owned modules.
+- **Approach:** After U2-U4 land, delete release-manifest parsing, default manifest URL construction for remote SSH phases, first-node spec construction, join-template construction, remote file write/read helpers, `ensure_nats_server_command`, and control restart helpers from `ployzctl`. Move still-current constants and renderers to the bootstrap command module.
 - **Test scenarios:** `rg "ensure_nats_server_command|write_remote_file_command|read_remote_file_command|CollectOperatorMaterial|RestartControl" crates/ployzctl/src` returns no product path references; remaining tests assert rendered bootstrap commands and result parsing rather than remote file surgery.
 
-### U6. Preserve low-level proof and operation commands during migration
+### U6. Keep current explicit operation commands
 
-- **Goal:** Avoid breaking tests and automation while replacing the product-facing bootstrap path.
+- **Goal:** Keep explicit NATS operation commands available while replacing the product-facing bootstrap path.
 - **Requirements:** R13
 - **Files:** `crates/ployzctl/src/commands/init.rs`, `crates/ployzctl/tests/cli_contract.rs`, `crates/ployzctl/tests/init_binary_nats.rs`, `crates/ployz-e2e/tests/dind_cluster.rs`.
-- **Approach:** Keep `ployzctl init --emit-keeper-install`, `ployzctl init --run-keeper-install`, `init activate-first-node`, and explicit `machine add --node ...` until the new founder and joiner paths cover their use cases. Reclassify them as proof/expert commands in help or docs only after the new tests pass.
+- **Approach:** Keep `ployzctl init --emit-keeper-install`, `ployzctl init --run-keeper-install`, `init activate-first-node`, and explicit `machine add --node ...` as explicit expert/NATS-facing commands. Do not preserve deleted remote SSH bootstrap compatibility.
 - **Test scenarios:** Existing binary NATS tests continue to pass; low-level commands still parse; missing context messages point users at the new product path; e2e can move one scenario at a time.
 
 ### U7. Documentation and e2e proof
@@ -240,7 +240,7 @@ sequenceDiagram
 
 ## System-Wide Impact
 
-This plan tightens the authority boundary. NATS remains the cluster control plane, `ployz-keeper` remains the machine-local bootstrap actor, and `ployzctl` stops preparing machine internals over SSH. The local context file becomes more important because it carries both cluster credentials and optional delivery metadata, so its compatibility and permissions remain part of the product contract.
+This plan tightens the authority boundary. NATS remains the cluster control plane, `ployz-keeper` remains the machine-local bootstrap actor, and `ployzctl` stops preparing machine internals over SSH. The local context file becomes more important because it carries both cluster credentials and optional delivery metadata, so its current shape and permissions remain part of the product contract.
 
 The largest behavioral change is founder bootstrap. Joiner bootstrap is already close to the target shape, while founder bootstrap needs a result boundary before the old remote seed collection can disappear.
 
@@ -248,9 +248,9 @@ The largest behavioral change is founder bootstrap. Joiner bootstrap is already 
 
 ## Risks & Dependencies
 
-- Founder bootstrap may need a small keeper/script output contract before `remote_bootstrap.rs` can be deleted. Implement that before removing the old path.
+- Founder bootstrap needs a small keeper/script output contract before `remote_bootstrap.rs` can be deleted. Implement that before removing the old path.
 - Embedding the low-privilege Join seed in rendered commands is already the current model; renderer tests must keep quoting and output redaction decisions explicit.
-- Context v2 can grow into a context-management product too early. Keep this pass to active context plus optional machine handles.
+- Context can grow into a context-management product too early. Keep this pass to active context plus optional machine handles.
 - Dashboard/cloud-init compatibility can tempt a token service into this refactor. Keep the Rust shape compatible, but leave dashboard workflows to a later plan.
 
 ---

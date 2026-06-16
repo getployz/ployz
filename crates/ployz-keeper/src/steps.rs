@@ -8,8 +8,9 @@ use std::path::PathBuf;
 
 use ployz_core::ids::NodeId;
 use ployz_core::install::{
-    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinSecretDelivery,
-    NatsMachineMaterialPaths,
+    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinTrustedNats, NatsMachineMaterialPaths,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
@@ -60,6 +61,7 @@ pub enum KeeperStep {
     WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget),
     WriteNatsClientCredentials(NatsClientCredentialsTarget),
     WriteNatsServerConfig(NatsServerConfigTarget),
+    WriteMachineJoinTemplate(MachineJoinTemplateTarget),
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
@@ -77,6 +79,7 @@ pub enum KeeperStepLabel {
     WriteNatsAuthorizedUsers { path: PathBuf },
     WriteNatsClientCredentials { state_dir: PathBuf },
     WriteNatsServerConfig(NatsServerConfigTarget),
+    WriteMachineJoinTemplate { path: PathBuf },
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
     RestartSupervisorUnit(SupervisorUnitTarget),
@@ -109,6 +112,9 @@ impl KeeperStepLabel {
             KeeperStep::WriteNatsServerConfig(target) => {
                 Self::WriteNatsServerConfig(target.clone())
             }
+            KeeperStep::WriteMachineJoinTemplate(target) => Self::WriteMachineJoinTemplate {
+                path: target.path(),
+            },
             KeeperStep::WriteSupervisorUnit(spec) => Self::WriteSupervisorUnit(spec.target()),
             KeeperStep::StartSupervisorUnit(target) => Self::StartSupervisorUnit(target.clone()),
             KeeperStep::RestartSupervisorUnit(target) => {
@@ -347,6 +353,9 @@ pub struct FirstNodeInstallTarget {
     pub node_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
+    machine_join_template_file: Option<AbsoluteInstallPath>,
+    machine_join_cluster_name: MachineJoinClusterName,
+    machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
 }
 
 impl FirstNodeInstallTarget {
@@ -390,6 +399,13 @@ impl FirstNodeInstallTarget {
             node_public_ip: None,
             nats_server_unit,
             role_environment,
+            machine_join_template_file: None,
+            machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
+                .expect("default cluster name is valid"),
+            machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(format!(
+                "tls://127.0.0.1:{DEFAULT_NATS_PORT}"
+            ))
+            .expect("default runtime NATS URL is valid"),
         }
     }
 
@@ -436,8 +452,29 @@ impl FirstNodeInstallTarget {
 
     #[must_use]
     pub fn with_machine_join_template_file(mut self, path: AbsoluteInstallPath) -> Self {
+        self.machine_join_template_file = Some(path.clone());
         self.role_environment = self.role_environment.with_machine_join_template_file(path);
         self
+    }
+
+    #[must_use]
+    pub fn with_machine_join_cluster_name(mut self, cluster_name: MachineJoinClusterName) -> Self {
+        self.machine_join_cluster_name = cluster_name;
+        self
+    }
+
+    #[must_use]
+    pub fn with_machine_join_runtime_nats_url(
+        mut self,
+        runtime_nats_url: MachineJoinRuntimeNatsUrl,
+    ) -> Self {
+        self.machine_join_runtime_nats_url = runtime_nats_url;
+        self
+    }
+
+    #[must_use]
+    pub const fn machine_join_runtime_nats_url(&self) -> &MachineJoinRuntimeNatsUrl {
+        &self.machine_join_runtime_nats_url
     }
 
     #[must_use]
@@ -445,6 +482,29 @@ impl FirstNodeInstallTarget {
         self.node_public_ip = Some(public_ip);
         self.role_environment = self.role_environment.with_node_public_ip(public_ip);
         self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineJoinTemplateTarget {
+    path: AbsoluteInstallPath,
+    template: MachineJoinTemplate,
+}
+
+impl MachineJoinTemplateTarget {
+    #[must_use]
+    pub const fn new(path: AbsoluteInstallPath, template: MachineJoinTemplate) -> Self {
+        Self { path, template }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from(self.path.as_str())
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        serde_json::to_string_pretty(&self.template).expect("machine join template serializes")
     }
 }
 
@@ -748,6 +808,26 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
         KeeperStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
     ];
 
+    if let Some(template_file) = target.machine_join_template_file.clone() {
+        let template = MachineJoinTemplate {
+            join_bundle: MachineJoinBundle {
+                material: MachineJoinMaterial {
+                    cluster_name: target.machine_join_cluster_name.clone(),
+                    runtime_nats_url: target.machine_join_runtime_nats_url.clone(),
+                    trusted_nats: MachineJoinTrustedNats {
+                        ca_pem: target.nats_identity.ca.clone(),
+                    },
+                    ployzd: target.ployzd_artifact.install_spec(),
+                    ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
+                    ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
+                },
+            },
+        };
+        steps.push(KeeperStep::WriteMachineJoinTemplate(
+            MachineJoinTemplateTarget::new(template_file, template),
+        ));
+    }
+
     for role in process_set.roles() {
         let unit = SupervisorUnitTarget::PloyzdRole(role.clone());
         steps.push(KeeperStep::WritePloyzdRoleEnvironment(
@@ -845,6 +925,7 @@ pub enum KeeperStepFailureReason {
     NatsTlsMaterialWriteFailed,
     NatsAuthorizedUsersWriteFailed,
     NatsClientCredentialsWriteFailed,
+    MachineJoinTemplateWriteFailed,
     RoleEnvironmentWriteFailed,
     SupervisorWriteFailed,
     SupervisorStartFailed,
@@ -870,6 +951,7 @@ impl KeeperStepFailureReason {
             KeeperStep::WriteNatsAuthorizedUsers(_) => Self::NatsAuthorizedUsersWriteFailed,
             KeeperStep::WriteNatsClientCredentials(_) => Self::NatsClientCredentialsWriteFailed,
             KeeperStep::WriteNatsServerConfig(_) => Self::NatsConfigWriteFailed,
+            KeeperStep::WriteMachineJoinTemplate(_) => Self::MachineJoinTemplateWriteFailed,
             KeeperStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             KeeperStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
             KeeperStep::RestartSupervisorUnit(_) => Self::SupervisorRestartFailed,

@@ -1159,9 +1159,12 @@ fn first_node_install_spec_json(ployzd_source: &str, node_public_ip: Option<&str
         r#"{{
             "node_id": "node_1",
             "gateway": "install",
+            "dns": "install",
             "node_public_ip": {node_public_ip},
             "machine_bootstrap_url": null,
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
+            "machine_join_cluster_name": "ployz",
+            "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
             "artifacts": {{
                 "ployzd": {{
                     "version": "0.1.0",

@@ -21,8 +21,9 @@ use crate::join::{
 };
 use crate::steps::{
     ContainerRuntime, HostPrerequisite, KeeperJoinMaterial, KeeperStep, KeeperStepEffectError,
-    KeeperStepFailureReason, NatsAuthorizedUsersTarget, NatsClientCredentialsTarget,
-    NatsServerConfigTarget, NatsTlsMaterialTarget, PloyzdRoleEnvironmentStep,
+    KeeperStepFailureReason, MachineJoinTemplateTarget, NatsAuthorizedUsersTarget,
+    NatsClientCredentialsTarget, NatsServerConfigTarget, NatsTlsMaterialTarget,
+    PloyzdRoleEnvironmentStep,
 };
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
@@ -76,6 +77,9 @@ impl<R: KeeperCommandRunner> KeeperStepEffects for KeeperLocalEffects<R> {
                 .map_err(Into::into),
             KeeperStep::WriteNatsServerConfig(target) => {
                 self.write_nats_server_config(target).map_err(Into::into)
+            }
+            KeeperStep::WriteMachineJoinTemplate(target) => {
+                self.write_machine_join_template(target).map_err(Into::into)
             }
             KeeperStep::WriteSupervisorUnit(target) => {
                 self.write_supervisor_unit(target).map_err(Into::into)
@@ -211,6 +215,34 @@ impl<R: KeeperCommandRunner> KeeperLocalEffects<R> {
             "ployz-role-env",
             FileMode::Plain,
             step.render().as_bytes(),
+        )
+    }
+
+    fn write_machine_join_template(
+        &self,
+        target: &MachineJoinTemplateTarget,
+    ) -> Result<(), FailureMessage> {
+        let path = target.path();
+        let directory = path
+            .parent()
+            .expect("validated machine join template path has a directory")
+            .to_path_buf();
+        let file_name = path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .expect("validated machine join template path has a UTF-8 file name");
+        fs::create_dir_all(&directory).map_err(|error| {
+            failure_message(format!(
+                "failed to create machine join template directory {}: {error}",
+                directory.display()
+            ))
+        })?;
+        write_durable_file(
+            &directory,
+            file_name,
+            "ployz-machine-join-template",
+            FileMode::Plain,
+            target.render().as_bytes(),
         )
     }
 

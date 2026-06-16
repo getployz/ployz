@@ -158,6 +158,8 @@ fn first_node_install_target(
                 ebpf_ctl,
                 nats_server,
             },
+        machine_join_cluster_name,
+        machine_join_runtime_nats_url,
     } = install;
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
@@ -200,6 +202,9 @@ fn first_node_install_target(
     if let Some(path) = machine_join_template_file {
         target = target.with_machine_join_template_file(path);
     }
+    target = target
+        .with_machine_join_cluster_name(machine_join_cluster_name)
+        .with_machine_join_runtime_nats_url(machine_join_runtime_nats_url);
     if let Some(public_ip) = node_public_ip {
         target = target.with_node_public_ip(public_ip);
     }
@@ -423,6 +428,8 @@ mod tests {
         "node_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
+        "machine_join_cluster_name": "ployz",
+        "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
         "artifacts": {
             "ployzd": {
                 "version": "0.1.0",
@@ -455,9 +462,12 @@ mod tests {
     const FIRST_NODE_INSTALL_SPEC: &str = r#"{
         "node_id": "node_1",
         "gateway": "install",
+        "dns": "install",
         "node_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
+        "machine_join_cluster_name": "ployz",
+        "machine_join_runtime_nats_url": "tls://203.0.113.10:4222",
         "artifacts": {
             "ployzd": {
                 "version": "0.1.0",

@@ -8,6 +8,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
 use crate::client_ids::{ClientOperationKind, generate_client_operation_ids};
 use crate::commands::init::FirstNodeActivateCommand;
 use crate::commands::machine::{
@@ -16,24 +17,28 @@ use crate::commands::machine::{
 };
 use crate::config::{
     ClusterContextError, ClusterContextMaterial, default_cluster_context_path,
-    publish_cluster_context,
+    publish_cluster_context, save_cluster_context, save_cluster_context_machine_ssh,
 };
-use crate::remote_bootstrap::{self, ReleaseArtifactManifest, RemoteBootstrapError};
 use crate::runtime::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig,
     activate_first_node_machine, api_error, operation_api_client, read_join_seed,
     watch_operation_until_terminal,
 };
 use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::machine::MachineAddOperationState;
-use ployz_core::nats_config::NatsUserSeed;
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationEventReplayRequest, OperationStatus,
 };
-use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
+use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::{MachineAddRequest, OpsStatusRequest};
+use serde::Deserialize;
+
+const FIRST_NODE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-node-bootstrap-result begin";
+const FIRST_NODE_BOOTSTRAP_RESULT_END: &str = "ployz-first-node-bootstrap-result end";
 
 fn remote_machine_error(source: RemoteMachineExecutionError) -> PloyzctlExecutionError {
     PloyzctlExecutionError::RemoteMachine {
@@ -43,10 +48,6 @@ fn remote_machine_error(source: RemoteMachineExecutionError) -> PloyzctlExecutio
 
 fn ssh_error(source: Box<SshCommandError>) -> PloyzctlExecutionError {
     remote_machine_error(RemoteMachineExecutionError::Ssh { source })
-}
-
-fn remote_error(source: RemoteBootstrapError) -> PloyzctlExecutionError {
-    remote_machine_error(RemoteMachineExecutionError::RemoteBootstrap { source })
 }
 
 fn client_generated_ids_error(source: impl fmt::Display) -> PloyzctlExecutionError {
@@ -78,96 +79,6 @@ fn derive_remote_identity(
     })
 }
 
-/// Resolves the release manifest for the remote machine: an explicit
-/// `--release-manifest` URL, or the default Linux manifest for the remote
-/// architecture. The manifest is fetched on the remote machine.
-fn resolve_release_manifest(
-    client: &SshClient,
-    target: &SshTarget,
-    command: &MachineInitCommand,
-) -> Result<(String, ReleaseArtifactManifest), PloyzctlExecutionError> {
-    let manifest_url = match &command.release_manifest_url {
-        Some(url) => url.clone(),
-        None => {
-            let arch = client
-                .run(
-                    target,
-                    SshPhase::ResolveRelease,
-                    remote_bootstrap::READ_ARCH_COMMAND,
-                )
-                .map_err(ssh_error)?;
-            let slug =
-                remote_bootstrap::release_arch_slug(&arch.stdout.text).map_err(remote_error)?;
-            remote_bootstrap::default_release_manifest_url(&command.version, slug)
-        }
-    };
-    let fetched = client
-        .run(
-            target,
-            SshPhase::ResolveRelease,
-            &remote_bootstrap::fetch_manifest_command(&manifest_url),
-        )
-        .map_err(ssh_error)?;
-    let manifest = remote_bootstrap::parse_release_manifest(&fetched.stdout.text, &manifest_url)
-        .map_err(remote_error)?;
-    Ok((manifest_url, manifest))
-}
-
-/// Reads one small remote file completely (CA, seeds); truncation is an
-/// explicit error rather than silent corruption.
-fn read_remote_text(
-    client: &SshClient,
-    target: &SshTarget,
-    path: &str,
-) -> Result<String, PloyzctlExecutionError> {
-    let output = client
-        .run(
-            target,
-            SshPhase::CollectOperatorMaterial,
-            &remote_bootstrap::read_remote_file_command(path),
-        )
-        .map_err(ssh_error)?;
-    if output.stdout.truncated {
-        return Err(remote_machine_error(
-            RemoteMachineExecutionError::CollectedRemoteFileTruncated {
-                path: path.to_owned(),
-            },
-        ));
-    }
-    Ok(output.stdout.text)
-}
-
-/// Renders the machine-join template and writes it on the remote machine.
-fn write_join_template_over_ssh(
-    client: &SshClient,
-    target: &SshTarget,
-    command: &MachineInitCommand,
-    ca_pem: &str,
-    manifest: &ReleaseArtifactManifest,
-) -> Result<(), PloyzctlExecutionError> {
-    let runtime_nats_url =
-        remote_bootstrap::runtime_nats_url(target.host()).map_err(remote_error)?;
-    let template = remote_bootstrap::build_machine_join_template(
-        command.cluster_name.clone(),
-        runtime_nats_url,
-        ca_pem,
-        manifest,
-    )
-    .map_err(remote_error)?;
-    let json = serde_json::to_string_pretty(&template).expect("machine join template serializes");
-    client
-        .run(
-            target,
-            SshPhase::PrepareMachine,
-            &remote_bootstrap::write_remote_file_command(
-                remote_bootstrap::REMOTE_JOIN_TEMPLATE_PATH,
-                &json,
-            ),
-        )
-        .map_err(ssh_error)?;
-    Ok(())
-}
-
 /// Where `machine init` records the local cluster context.
 fn cluster_context_path(config: &PloyzctlRuntimeConfig) -> Result<PathBuf, PloyzctlExecutionError> {
     config
@@ -177,28 +88,167 @@ fn cluster_context_path(config: &PloyzctlRuntimeConfig) -> Result<PathBuf, Ployz
         .ok_or_else(|| remote_machine_error(RemoteMachineExecutionError::NoConfigDirectory))
 }
 
+fn optional_cluster_context_path(config: &PloyzctlRuntimeConfig) -> Option<PathBuf> {
+    config
+        .cluster_context_path
+        .clone()
+        .or_else(default_cluster_context_path)
+}
+
+fn record_machine_ssh_if_context_exists(
+    config: &PloyzctlRuntimeConfig,
+    node_id: ployz_core::ids::NodeId,
+    target: SshTarget,
+) -> Result<(), PloyzctlExecutionError> {
+    let Some(path) = optional_cluster_context_path(config) else {
+        return Ok(());
+    };
+    save_cluster_context_machine_ssh(&path, node_id, target).map_err(|source| {
+        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
+    })?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FirstNodeBootstrapResult {
+    node_id: NodeId,
+    nats_url: NatsClientUrl,
+    ca_pem: String,
+    operator_seed: String,
+    join_seed: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FirstNodeBootstrapResultFile {
+    node_id: String,
+    nats_url: String,
+    ca_pem: String,
+    operator_seed: String,
+    join_seed: String,
+}
+
+fn parse_first_node_bootstrap_result(
+    stdout: &str,
+    stdout_truncated: bool,
+) -> Result<FirstNodeBootstrapResult, PloyzctlExecutionError> {
+    if stdout_truncated {
+        return Err(remote_machine_error(
+            RemoteMachineExecutionError::FirstNodeBootstrapOutputTruncated,
+        ));
+    }
+
+    let mut lines = stdout.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != FIRST_NODE_BOOTSTRAP_RESULT_BEGIN {
+            continue;
+        }
+
+        let Some(json_line) = lines.next() else {
+            return Err(invalid_first_node_bootstrap_result(
+                "bootstrap result marker was not followed by JSON",
+            ));
+        };
+        let Some(end_line) = lines.next() else {
+            return Err(invalid_first_node_bootstrap_result(
+                "bootstrap result JSON was not followed by an end marker",
+            ));
+        };
+        if end_line.trim() != FIRST_NODE_BOOTSTRAP_RESULT_END {
+            return Err(invalid_first_node_bootstrap_result(
+                "bootstrap result end marker was missing",
+            ));
+        }
+
+        let file: FirstNodeBootstrapResultFile =
+            serde_json::from_str(json_line).map_err(|error| {
+                remote_machine_error(
+                    RemoteMachineExecutionError::InvalidFirstNodeBootstrapResult {
+                        message: error.to_string(),
+                    },
+                )
+            })?;
+        return first_node_bootstrap_result_from_file(file);
+    }
+
+    Err(remote_machine_error(
+        RemoteMachineExecutionError::MissingFirstNodeBootstrapResult,
+    ))
+}
+
+fn first_node_bootstrap_result_from_file(
+    file: FirstNodeBootstrapResultFile,
+) -> Result<FirstNodeBootstrapResult, PloyzctlExecutionError> {
+    let node_id = NodeId::try_new(file.node_id).map_err(|error| {
+        remote_machine_error(
+            RemoteMachineExecutionError::InvalidFirstNodeBootstrapResult {
+                message: format!("invalid node_id: {error}"),
+            },
+        )
+    })?;
+    let nats_url = NatsClientUrl::try_new(file.nats_url).map_err(|error| {
+        remote_machine_error(
+            RemoteMachineExecutionError::InvalidFirstNodeBootstrapResult {
+                message: format!("invalid nats_url: {error:?}"),
+            },
+        )
+    })?;
+    NatsCaCertificatePem::try_new(file.ca_pem.as_str()).map_err(|error| {
+        remote_machine_error(
+            RemoteMachineExecutionError::InvalidFirstNodeBootstrapResult {
+                message: format!("invalid ca_pem: {error}"),
+            },
+        )
+    })?;
+    Ok(FirstNodeBootstrapResult {
+        node_id,
+        nats_url,
+        ca_pem: file.ca_pem,
+        operator_seed: normalize_bootstrap_seed("operator_seed", &file.operator_seed)?,
+        join_seed: normalize_bootstrap_seed("join_seed", &file.join_seed)?,
+    })
+}
+
+fn invalid_first_node_bootstrap_result(message: &str) -> PloyzctlExecutionError {
+    remote_machine_error(
+        RemoteMachineExecutionError::InvalidFirstNodeBootstrapResult {
+            message: message.to_owned(),
+        },
+    )
+}
+
 /// Validates and normalizes a collected seed before it is published in the
 /// local context material generation.
-fn normalize_collected_seed(
-    remote_path: &str,
-    raw: &str,
-) -> Result<String, PloyzctlExecutionError> {
+fn normalize_bootstrap_seed(field: &str, raw: &str) -> Result<String, PloyzctlExecutionError> {
     let trimmed = raw.trim();
     let Ok(_) = NatsUserSeed::try_new(trimmed) else {
         return Err(remote_machine_error(
-            RemoteMachineExecutionError::CollectedSeedInvalid {
-                remote_path: remote_path.to_owned(),
+            RemoteMachineExecutionError::BootstrapSeedInvalid {
+                field: field.to_owned(),
             },
         ));
     };
     Ok(format!("{trimmed}\n"))
 }
 
-/// `ployzctl machine init USER@HOST`: read the remote identity, build the
-/// existing first-node install spec internally, run the installer in
-/// first-node mode over SSH, collect the operator NATS material, record
-/// the local cluster context, and activate the first node through the
-/// existing API.
+fn runtime_nats_url_for_target(
+    target: &SshTarget,
+) -> Result<MachineJoinRuntimeNatsUrl, PloyzctlExecutionError> {
+    let url = format!("tls://{}:{MACHINE_NATS_PORT}", target.host());
+    MachineJoinRuntimeNatsUrl::try_new(url).map_err(|error| {
+        remote_machine_error(
+            RemoteMachineExecutionError::InvalidBootstrapRuntimeNatsUrl {
+                host: target.host().to_owned(),
+                message: error.to_string(),
+            },
+        )
+    })
+}
+
+/// `ployzctl machine init USER@HOST`: derive the remote identity, render
+/// the founder bootstrap command, deliver it over SSH, parse the machine
+/// local bootstrap result, record local context, and activate the first
+/// machine through NATS.
 pub(crate) async fn execute_machine_init(
     command: MachineInitCommand,
     config: &PloyzctlRuntimeConfig,
@@ -208,105 +258,50 @@ pub(crate) async fn execute_machine_init(
     let target = command.target.clone();
 
     let identity = derive_remote_identity(&probe, &target, command.identity_override.clone())?;
-    let (manifest_url, manifest) = resolve_release_manifest(&probe, &target, &command)?;
-
-    let nats_output = installer
-        .run(
-            &target,
-            SshPhase::PrepareMachine,
-            &remote_bootstrap::ensure_nats_server_command(),
-        )
-        .map_err(ssh_error)?;
-    let nats_server_sha256 =
-        remote_bootstrap::parse_sha256_output(&nats_output.stdout.text).map_err(remote_error)?;
-
     let node_public_ip: Option<IpAddr> = target.host().parse().ok();
-    let spec = remote_bootstrap::build_first_node_install_spec(
-        identity.node_id.clone(),
-        command.roles,
+    let install_command = FounderBootstrapCommand {
+        installer: command.installer(),
+        version: command.version.clone(),
+        release_manifest_url: command.release_manifest_url.clone(),
+        node_id: identity.node_id.clone(),
+        roles: command.roles,
+        bootstrap_url: command.bootstrap_url.clone(),
+        cluster_name: command.cluster_name.clone(),
+        runtime_nats_url: runtime_nats_url_for_target(&target)?,
         node_public_ip,
-        command.bootstrap_url.clone(),
-        &manifest,
-        nats_server_sha256,
-    );
-    let spec_json =
-        serde_json::to_string_pretty(&spec).expect("first-node install spec serializes");
-    probe
-        .run(
-            &target,
-            SshPhase::PrepareMachine,
-            &remote_bootstrap::write_remote_file_command(
-                remote_bootstrap::REMOTE_FIRST_NODE_SPEC_PATH,
-                &spec_json,
-            ),
-        )
+    }
+    .render();
+    let install_output = installer
+        .run(&target, SshPhase::RunInstaller, &install_command)
         .map_err(ssh_error)?;
-
-    write_join_template_over_ssh(
-        &probe,
-        &target,
-        &command,
-        remote_bootstrap::PLACEHOLDER_CA_PEM,
-        &manifest,
+    let bootstrap_result = parse_first_node_bootstrap_result(
+        &install_output.stdout.text,
+        install_output.stdout.truncated,
     )?;
-
-    installer
-        .run(
-            &target,
-            SshPhase::RunInstaller,
-            &remote_bootstrap::first_node_installer_command(
-                &command.installer_source(),
-                &manifest_url,
-                &command.version,
-            ),
-        )
-        .map_err(ssh_error)?;
-
-    let material_paths = remote_bootstrap::remote_material_paths();
-    let remote_ca_path = material_paths.ca_file();
-    let remote_ca_path = remote_ca_path.to_string_lossy();
-    let ca_pem = read_remote_text(&probe, &target, &remote_ca_path)?;
-    write_join_template_over_ssh(&probe, &target, &command, &ca_pem, &manifest)?;
-    probe
-        .run(
-            &target,
-            SshPhase::RestartControl,
-            remote_bootstrap::RESTART_CONTROL_COMMAND,
-        )
-        .map_err(ssh_error)?;
-
-    let remote_operator_seed_path = material_paths.operator_seed_file();
-    let remote_operator_seed_path = remote_operator_seed_path.to_string_lossy();
-    let remote_join_seed_path = material_paths.join_seed_file();
-    let remote_join_seed_path = remote_join_seed_path.to_string_lossy();
-    let operator_seed = read_remote_text(&probe, &target, &remote_operator_seed_path)?;
-    let join_seed = read_remote_text(&probe, &target, &remote_join_seed_path)?;
+    if bootstrap_result.node_id != identity.node_id {
+        return Err(remote_machine_error(
+            RemoteMachineExecutionError::FirstNodeBootstrapIdentityMismatch {
+                expected: identity.node_id,
+                actual: bootstrap_result.node_id,
+            },
+        ));
+    }
 
     let context_path = cluster_context_path(config)?;
-    let operator_seed = normalize_collected_seed(&remote_operator_seed_path, &operator_seed)?;
-    let join_seed = normalize_collected_seed(&remote_join_seed_path, &join_seed)?;
-
-    let context_nats_url = format!(
-        "tls://{}:{}",
-        target.host(),
-        remote_bootstrap::MACHINE_NATS_PORT
-    );
-    let nats_url = NatsClientUrl::try_new(context_nats_url.clone()).map_err(|error| {
-        remote_machine_error(RemoteMachineExecutionError::InvalidClusterContextUrl {
-            url: context_nats_url,
-            error,
-        })
-    })?;
-    let context = publish_cluster_context(
+    let mut context = publish_cluster_context(
         &context_path,
-        nats_url,
+        bootstrap_result.nats_url,
         ClusterContextMaterial {
-            ca_pem: &ca_pem,
-            operator_seed: &operator_seed,
-            join_seed: Some(&join_seed),
+            ca_pem: &bootstrap_result.ca_pem,
+            operator_seed: &bootstrap_result.operator_seed,
+            join_seed: Some(&bootstrap_result.join_seed),
         },
     )
     .map_err(|source| {
+        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
+    })?;
+    context = context.with_machine_ssh(identity.node_id.clone(), target.clone());
+    save_cluster_context(&context_path, &context).map_err(|source| {
         remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
     })?;
 
@@ -360,6 +355,7 @@ pub(crate) async fn execute_machine_add_remote(
         .await
         .map_err(api_error)?;
     let output = MachineAddOutput::from_accepted(accepted, join_seed);
+    record_machine_ssh_if_context_exists(&config, identity.node_id.clone(), target.clone())?;
 
     let node_public_ip: Option<IpAddr> = target.host().parse().ok();
     let install_command = output.install_command(&command.installer(), node_public_ip);
@@ -427,22 +423,25 @@ pub enum RemoteMachineExecutionError {
     MachineIdentity {
         source: MachineIdentityError,
     },
-    RemoteBootstrap {
-        source: RemoteBootstrapError,
+    FirstNodeBootstrapOutputTruncated,
+    MissingFirstNodeBootstrapResult,
+    InvalidFirstNodeBootstrapResult {
+        message: String,
     },
-    CollectedRemoteFileTruncated {
-        path: String,
+    FirstNodeBootstrapIdentityMismatch {
+        expected: NodeId,
+        actual: NodeId,
     },
-    CollectedSeedInvalid {
-        remote_path: String,
+    BootstrapSeedInvalid {
+        field: String,
     },
     ClusterContext {
         source: ClusterContextError,
     },
     NoConfigDirectory,
-    InvalidClusterContextUrl {
-        url: String,
-        error: NatsClientUrlError,
+    InvalidBootstrapRuntimeNatsUrl {
+        host: String,
+        message: String,
     },
     ClientGeneratedIds {
         message: String,
@@ -465,23 +464,38 @@ impl fmt::Display for RemoteMachineExecutionError {
         match self {
             Self::Ssh { source } => write!(formatter, "{source}"),
             Self::MachineIdentity { source } => write!(formatter, "{source}"),
-            Self::RemoteBootstrap { source } => write!(formatter, "{source}"),
-            Self::CollectedRemoteFileTruncated { path } => write!(
+            Self::FirstNodeBootstrapOutputTruncated => write!(
                 formatter,
-                "remote file {path} was truncated while collecting operator material"
+                "first-node bootstrap output was truncated before the result could be collected"
             ),
-            Self::CollectedSeedInvalid { remote_path } => write!(
+            Self::MissingFirstNodeBootstrapResult => write!(
                 formatter,
-                "collected seed file {remote_path} does not contain an SU-prefixed user seed"
+                "first-node bootstrap output did not contain a structured result"
+            ),
+            Self::InvalidFirstNodeBootstrapResult { message } => {
+                write!(
+                    formatter,
+                    "first-node bootstrap result is invalid: {message}"
+                )
+            }
+            Self::FirstNodeBootstrapIdentityMismatch { expected, actual } => write!(
+                formatter,
+                "first-node bootstrap result reported machine {} but {} was requested",
+                actual.as_str(),
+                expected.as_str()
+            ),
+            Self::BootstrapSeedInvalid { field } => write!(
+                formatter,
+                "first-node bootstrap result field {field} does not contain an SU-prefixed user seed"
             ),
             Self::ClusterContext { source } => write!(formatter, "{source}"),
             Self::NoConfigDirectory => write!(
                 formatter,
                 "cannot determine the config directory for the cluster context (set HOME or XDG_CONFIG_HOME)"
             ),
-            Self::InvalidClusterContextUrl { url, error } => write!(
+            Self::InvalidBootstrapRuntimeNatsUrl { host, message } => write!(
                 formatter,
-                "cannot record cluster context NATS URL {url}: {error:?}"
+                "cannot build founder bootstrap runtime NATS URL from host {host:?}: {message}"
             ),
             Self::ClientGeneratedIds { message } => {
                 write!(

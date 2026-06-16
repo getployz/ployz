@@ -19,12 +19,12 @@ pub use ployz_sdk_types::{
     BootstrapCommandError, MachineBootstrapUrl, MachineJoinRuntimeNatsUrl, MachineJoinToken,
 };
 
+use crate::bootstrap_command::{
+    BootstrapInstaller, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME, DEFAULT_RELEASE_VERSION,
+    JoinBootstrapCommand,
+};
 use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
-use crate::remote_bootstrap::{
-    DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME, DEFAULT_RELEASE_VERSION, MachineInstallerSource,
-};
-use crate::shell::shell_quote;
 use crate::ssh::SshTarget;
 
 /// Quick-start machine identity: the node ID and machine name are the same
@@ -130,10 +130,10 @@ pub struct MachineInitCommand {
 impl MachineInitCommand {
     /// How the remote machine obtains and runs the installer.
     #[must_use]
-    pub fn installer_source(&self) -> MachineInstallerSource {
+    pub fn installer(&self) -> BootstrapInstaller {
         match &self.installer_script {
-            Some(path) => MachineInstallerSource::RemoteScript(path.clone()),
-            None => MachineInstallerSource::BootstrapUrl(self.bootstrap_url.clone()),
+            Some(path) => BootstrapInstaller::RemoteScript(path.clone()),
+            None => BootstrapInstaller::BootstrapUrl(self.bootstrap_url.clone()),
         }
     }
 }
@@ -280,31 +280,31 @@ impl MachineAddOutput {
         installer: &MachineAddInstaller,
         node_public_ip: Option<IpAddr>,
     ) -> String {
-        let mut env = String::new();
-        if let Some(public_ip) = node_public_ip {
-            env.push_str(&format!(
-                "PLOYZ_NODE_PUBLIC_IP={} ",
-                shell_quote(&public_ip.to_string())
-            ));
-        }
-        env.push_str(&format!(
-            "PLOYZ_VERSION={} PLOYZ_NATS_URL={} PLOYZ_NATS_CA_B64={} PLOYZ_JOIN_NKEY_SEED={}",
-            shell_quote(self.join_bundle.material.ployzd.version.as_str()),
-            shell_quote(self.runtime_nats_url().as_str()),
-            shell_quote(&self.trusted_ca_b64()),
-            shell_quote(self.join_seed.secret()),
-        ));
-        match installer {
-            MachineAddInstaller::FromAcceptedBootstrapUrl => format!(
-                "curl -fsSL -- {} | {env} sh -s -- --join-token {}",
-                shell_quote(self.bootstrap_url.as_str()),
-                shell_quote(self.join_token.as_str()),
-            ),
-            MachineAddInstaller::RemoteScript(path) => format!(
-                "{env} sh {} --join-token {}",
-                shell_quote(path),
-                shell_quote(self.join_token.as_str()),
-            ),
+        self.join_bootstrap_command(installer, node_public_ip)
+            .render()
+    }
+
+    #[must_use]
+    pub fn join_bootstrap_command(
+        &self,
+        installer: &MachineAddInstaller,
+        node_public_ip: Option<IpAddr>,
+    ) -> JoinBootstrapCommand {
+        JoinBootstrapCommand {
+            installer: match installer {
+                MachineAddInstaller::FromAcceptedBootstrapUrl => {
+                    BootstrapInstaller::BootstrapUrl(self.bootstrap_url.clone())
+                }
+                MachineAddInstaller::RemoteScript(path) => {
+                    BootstrapInstaller::RemoteScript(path.clone())
+                }
+            },
+            version: self.join_bundle.material.ployzd.version.as_str().to_owned(),
+            runtime_nats_url: self.runtime_nats_url().clone(),
+            trusted_ca_b64: self.trusted_ca_b64(),
+            join_seed: self.join_seed.clone(),
+            join_token: self.join_token.clone(),
+            node_public_ip,
         }
     }
 
