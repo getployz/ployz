@@ -5,8 +5,8 @@ use ployz_core::machine::MachineAddOperationState;
 use ployz_core::ops::{
     BackupOperationState, BackupRunningStage, CertOperationState, CertRunningStage,
     DeployOperationState, DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    OperationEvent, OperationEventReplayLimit, OperationEventReplayRequest,
-    OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    OperationEvent, OperationEventReplayLimit, OperationEventReplayRequest, OperationStatus,
+    OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::roles::{DnsRole, GatewayRole};
 use ployz_sdk_types::OpsStatusRequest;
@@ -105,13 +105,12 @@ impl StatusOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "operation {}\nkind {}\n{}\nstate {}\nlast-event {}\nownership {}\n",
+            "operation {}\nkind {}\n{}\nstate {}\nlast-event {}\n",
             operation_id(&self.snapshot.status).as_str(),
             operation_kind(&self.snapshot.status),
             operation_subject(&self.snapshot.status),
             operation_state(&self.snapshot.status),
             last_event_sequence(&self.snapshot.status).get(),
-            ownership_status(&self.snapshot.ownership),
         )
     }
 }
@@ -217,22 +216,6 @@ const fn last_event_sequence(status: &OperationStatus) -> EventSequence {
             last_event_sequence,
             ..
         } => *last_event_sequence,
-    }
-}
-
-fn ownership_status(ownership: &OperationOwnershipStatus) -> String {
-    match ownership {
-        OperationOwnershipStatus::Unclaimed => "unclaimed".to_owned(),
-        OperationOwnershipStatus::Owned { lease } => format!(
-            "owned {} expires-at {}",
-            lease.owner_id.as_str(),
-            lease.expires_at.unix_seconds()
-        ),
-        OperationOwnershipStatus::Expired { lease } => format!(
-            "expired {} expired-at {}",
-            lease.owner_id.as_str(),
-            lease.expires_at.unix_seconds()
-        ),
     }
 }
 

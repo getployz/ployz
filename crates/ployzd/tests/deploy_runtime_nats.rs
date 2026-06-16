@@ -8,18 +8,14 @@ use futures_util::StreamExt;
 use ployz_core::deploy::{DeployRequest, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
-    OperationLeaseDurationSeconds, OperationStatus,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
 use ployz_core::subjects::{NodeServiceEndpoint, node_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
-use ployz_test_support::ids::owner_id as operation_owner_id;
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
-use ployzd::controllers::{
-    DeploySubmitCommand, IdempotencyKey, MachineAddBootstrapConfig, OperationControllers,
-};
+use ployzd::controllers::{DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers};
 use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
@@ -28,7 +24,6 @@ use ployzd::node::client::NatsNodeContainerRuntime;
 use ployzd::node::protocol::{
     NodeEnsureEndpointNetworkRpcOk, NodeEnsureEndpointNetworkRpcResponse,
 };
-use ployzd::operation_lease::OperationLeasePolicy;
 use std::time::Duration;
 
 #[tokio::test]
@@ -380,117 +375,6 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
     ));
 }
 
-#[tokio::test]
-async fn duplicate_submit_without_ownership_does_not_run_runtime_side_effects() {
-    let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observations");
-    let owner_a = operation_controllers_with_owner(&nats.jetstream, "control_a").await;
-    let owner_b = operation_controllers_with_owner(&nats.jetstream, "control_b").await;
-    let deploy_request = deploy_request(1);
-    let first = owner_a
-        .submit_deploy(deploy_submit_command(deploy_request.clone()))
-        .await
-        .expect("first deploy operation accepted");
-    let duplicate = owner_b
-        .submit_deploy(deploy_submit_command(deploy_request))
-        .await
-        .expect("duplicate deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::healthy();
-
-    let error = run_deploy_operation(
-        duplicate,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployOperationStores {
-            core_state,
-            observations,
-            controllers: owner_b,
-        },
-        DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
-            health_checker: &mut health,
-        },
-        Duration::from_secs(5),
-    )
-    .await
-    .expect_err("non-owner cannot run");
-
-    assert!(matches!(
-        error,
-        DeployOperationRunError::LeaseNotHeld(
-            ployzd::operation_lease::OwnerLeaseError::NoCurrentLease {
-                operation_id: current_operation_id,
-                expected_owner,
-            }
-        ) if current_operation_id == operation_id("op_123")
-            && expected_owner == operation_owner_id("control_b")
-    ));
-    assert_eq!(first.operation_id, operation_id("op_123"));
-    assert!(runtime.requests.is_empty());
-}
-
-#[tokio::test]
-async fn expired_accepted_lease_does_not_run_runtime_side_effects() {
-    let nats = test_nats().await;
-    let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
-        .await
-        .expect("open observations");
-    let controllers = operation_controllers_with_policy(
-        &nats.jetstream,
-        "control_a",
-        OperationLeasePolicy::try_new(
-            OperationLeaseDurationSeconds::try_new(1).expect("valid lease duration"),
-            Duration::from_millis(100),
-        )
-        .expect("valid lease policy"),
-    )
-    .await;
-    let accepted = controllers
-        .submit_deploy(deploy_submit_command(deploy_request(1)))
-        .await
-        .expect("deploy operation accepted");
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::healthy();
-
-    let error = run_deploy_operation(
-        accepted,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
-        DeployOperationStores {
-            core_state,
-            observations,
-            controllers,
-        },
-        DeployOperationPorts {
-            wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
-            health_checker: &mut health,
-        },
-        Duration::from_secs(5),
-    )
-    .await
-    .expect_err("expired accepted lease cannot run");
-
-    assert!(matches!(
-        error,
-        DeployOperationRunError::LeaseNotHeld(
-            ployzd::operation_lease::OwnerLeaseError::NoCurrentLease { .. }
-        )
-    ));
-    assert!(runtime.requests.is_empty());
-}
-
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-runtime side.
@@ -567,41 +451,21 @@ async fn start_endpoint_network_subscription(
 }
 
 async fn operation_controllers(jetstream: &jetstream::Context) -> OperationControllers {
-    operation_controllers_with_owner(jetstream, "control_a").await
-}
-
-async fn operation_controllers_with_owner(
-    jetstream: &jetstream::Context,
-    owner_id: &str,
-) -> OperationControllers {
-    operation_controllers_with_policy(jetstream, owner_id, OperationLeasePolicy::default_policy())
-        .await
-}
-
-async fn operation_controllers_with_policy(
-    jetstream: &jetstream::Context,
-    owner_id: &str,
-    lease_policy: OperationLeasePolicy,
-) -> OperationControllers {
-    OperationControllers::with_owner_and_lease_policy(
+    OperationControllers::new(
         AsyncNatsOperationEventLog::new(jetstream.clone()),
         AsyncNatsOperationStatusStore::from_jetstream(jetstream)
             .await
             .expect("open operation status store"),
-        operation_owner_id(owner_id),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),
         ),
-        lease_policy,
     )
 }
 
 fn deploy_submit_command(target: DeployRequest) -> DeploySubmitCommand {
     DeploySubmitCommand {
         operation_id: operation_id("op_123"),
-        idempotency_key: IdempotencyKey::try_new("deploy_svc_api_rev_2")
-            .expect("valid idempotency key"),
         target,
     }
 }

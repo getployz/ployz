@@ -19,7 +19,7 @@ use ployz_sdk_types::{
 };
 use std::collections::BTreeMap;
 
-use super::error_map::{ops_watch_error_from_replay_error, status_store_read_failure};
+use super::error_map::{ops_watch_error_from_replay_error, status_read_failure};
 
 #[derive(Clone)]
 pub struct MachineQueryRuntime {
@@ -384,7 +384,7 @@ pub async fn ops_status(
         Err(error) => Err(OpsStatusError::Unavailable {
             operation_id,
             source: OpsStatusUnavailableSource::StatusStore {
-                failure: status_store_read_failure(&error),
+                failure: status_read_failure(&error),
             },
         }),
     }

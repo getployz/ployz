@@ -30,11 +30,6 @@ enum SubmitFailure {
 
 fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
     match error {
-        SubmitCommandError::Clock { .. } => {
-            SubmitFailure::Unavailable(OperationSubmitUnavailableSource::Clock {
-                failure: OperationSubmitClockFailure::BeforeUnixEpoch,
-            })
-        }
         SubmitCommandError::Submit(SubmitOperationError::AppendEvent(source)) => {
             SubmitFailure::Unavailable(OperationSubmitUnavailableSource::EventLog {
                 failure: operation_submit_event_failure(&source),
@@ -110,6 +105,9 @@ pub(super) fn machine_add_error_from_submit_error(
                 },
             };
         }
+        MachineAddSubmitCommandError::DuplicateIdempotencyKey => {
+            return MachineAddError::DuplicateIdempotencyKey { operation_id };
+        }
         MachineAddSubmitCommandError::Submit(error) => error,
     };
     match submit_failure(submit) {
@@ -131,8 +129,7 @@ pub(super) fn bootstrap_material_failure(
 ) -> BootstrapMaterialFailure {
     match error {
         MachineAddBootstrapMaterialError::Clock { .. }
-        | MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial
-        | MachineAddBootstrapMaterialError::StatusRead { .. } => {
+        | MachineAddBootstrapMaterialError::InvalidJoinTokenMaterial => {
             BootstrapMaterialFailure::IssueJoinToken
         }
         MachineAddBootstrapMaterialError::MissingJoinTemplate => {
@@ -286,11 +283,9 @@ fn operation_submit_status_failure(
         OperationStatusStoreError::DecodeSubmission(_) => {
             OperationSubmitStatusFailure::DecodeSubmission
         }
-        OperationStatusStoreError::EncodeLease(_) => OperationSubmitStatusFailure::EncodeLease,
-        OperationStatusStoreError::DecodeLease(_) => OperationSubmitStatusFailure::DecodeLease,
         OperationStatusStoreError::CasConflict { .. } => OperationSubmitStatusFailure::CasConflict,
+        OperationStatusStoreError::RecordExists { .. } => OperationSubmitStatusFailure::CasConflict,
         OperationStatusStoreError::GetStatus { .. } => OperationSubmitStatusFailure::GetStatus,
-        OperationStatusStoreError::Clock { .. } => OperationSubmitStatusFailure::Clock,
         OperationStatusStoreError::Timeout { .. } => OperationSubmitStatusFailure::Timeout,
     }
 }
@@ -392,22 +387,6 @@ pub(super) fn status_read_failure(error: &OperationStatusReadError) -> StatusRea
         OperationStatusReadError::DecodeStatus(_) => StatusReadFailure::DecodeStatus,
         OperationStatusReadError::GetStatus { .. } => StatusReadFailure::GetStatus,
         OperationStatusReadError::Timeout { .. } => StatusReadFailure::Timeout,
-    }
-}
-
-pub(super) fn status_store_read_failure(error: &OperationStatusStoreError) -> StatusReadFailure {
-    match error {
-        OperationStatusStoreError::DecodeStatus(_) => StatusReadFailure::DecodeStatus,
-        OperationStatusStoreError::DecodeLease(_) => StatusReadFailure::DecodeLease,
-        OperationStatusStoreError::GetStatus { .. } => StatusReadFailure::GetStatus,
-        OperationStatusStoreError::Clock { .. } => StatusReadFailure::Clock,
-        OperationStatusStoreError::Timeout { .. } => StatusReadFailure::Timeout,
-        OperationStatusStoreError::OpenBucket { .. }
-        | OperationStatusStoreError::EncodeStatus(_)
-        | OperationStatusStoreError::EncodeSubmission(_)
-        | OperationStatusStoreError::DecodeSubmission(_)
-        | OperationStatusStoreError::EncodeLease(_)
-        | OperationStatusStoreError::CasConflict { .. } => StatusReadFailure::GetStatus,
     }
 }
 

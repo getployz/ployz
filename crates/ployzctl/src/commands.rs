@@ -21,7 +21,7 @@ pub struct PloyzctlInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
-    Deploy(deploy::DetachedDeployCommand),
+    Deploy(deploy::DeployCommand),
     BackupCreate(backup::BackupCreateCommand),
     BackupRestorePlan(backup::BackupRestorePlanCommand),
     Init(Box<init::FirstNodeInitCommand>),

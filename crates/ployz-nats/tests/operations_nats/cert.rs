@@ -10,10 +10,7 @@ async fn operation_repository_records_cert_lifecycle_against_real_nats() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_cert(
-            cert_submission("op_cert", "idem_cert", "cert_api"),
-            default_lease_claim(),
-        )
+        .submit_cert(cert_submission("op_cert", "cert_api"))
         .await
         .expect("cert submit accepted");
 
@@ -56,34 +53,22 @@ async fn operation_repository_records_cert_lifecycle_against_real_nats() {
 }
 
 #[tokio::test]
-async fn operation_repository_duplicate_cert_submit_returns_original_operation() {
+async fn operation_repository_duplicate_cert_operation_id_recovers_submit() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
 
     let first = repository
-        .submit_cert(
-            cert_submission("op_cert", "idem_cert", "cert_api"),
-            default_lease_claim(),
-        )
+        .submit_cert(cert_submission("op_cert", "cert_api"))
         .await
         .expect("first submit accepted");
-    let second = repository
-        .submit_cert(
-            cert_submission("op_other", "idem_cert", "cert_other"),
-            default_lease_claim(),
-        )
+    let duplicate = repository
+        .submit_cert(cert_submission("op_cert", "cert_api"))
         .await
-        .expect("duplicate submit accepted");
+        .expect("duplicate operation id recovers");
 
-    assert_eq!(first, second);
-    assert!(
-        repository
-            .records()
-            .get(&operation_id("op_other"))
-            .await
-            .expect("status lookup succeeds")
-            .is_none()
-    );
+    assert_eq!(duplicate.operation_id, operation_id("op_cert"));
+    assert_eq!(duplicate.start_sequence, first.start_sequence);
+    assert_eq!(duplicate.cert_id, cert_id("cert_api"));
 }
 
 #[tokio::test]
@@ -91,10 +76,7 @@ async fn operation_repository_rejects_cert_event_for_another_cert() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_cert(
-            cert_submission("op_cert", "idem_cert", "cert_api"),
-            default_lease_claim(),
-        )
+        .submit_cert(cert_submission("op_cert", "cert_api"))
         .await
         .expect("cert submit accepted");
 
@@ -134,10 +116,7 @@ async fn operation_repository_rejects_cert_validation_for_another_cert() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_cert(
-            cert_submission("op_cert", "idem_cert", "cert_api"),
-            default_lease_claim(),
-        )
+        .submit_cert(cert_submission("op_cert", "cert_api"))
         .await
         .expect("cert submit accepted");
     repository

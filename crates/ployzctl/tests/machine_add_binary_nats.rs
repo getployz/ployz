@@ -1,14 +1,13 @@
 use std::process::{Command, Output};
 
 use base64::Engine as _;
-use ployz_core::ids::OperationOwnerId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::{OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease};
+use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::roles::GatewayRole;
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -173,11 +172,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
         operation_id: self::operation_id(operation_id),
         watch_subject: format!("plz.v1.op.{operation_id}.>"),
         start_sequence: event_sequence(1),
-        owner_lease: OperationOwnerLease::new(
-            self::operation_id(operation_id),
-            OperationOwnerId::try_new("control").expect("valid owner id"),
-            OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
-        ),
     }
 }
 

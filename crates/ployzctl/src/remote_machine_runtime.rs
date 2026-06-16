@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
-use crate::client_ids::{ClientOperationKind, generate_client_operation_ids};
+use crate::client_ids::generate_client_machine_add_ids;
 use crate::commands::init::FirstNodeActivateCommand;
 use crate::commands::machine::{
     MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteOutput, MachineIdentity,
@@ -339,10 +339,8 @@ pub(crate) async fn execute_machine_add_remote(
     let join_seed = read_join_seed(&config)?;
     let api = operation_api_client(&config).await?;
 
-    let generated_ids = generate_client_operation_ids(ClientOperationKind::MachineAdd {
-        node_id: &identity.node_id,
-    })
-    .map_err(client_generated_ids_error)?;
+    let generated_ids =
+        generate_client_machine_add_ids(&identity.node_id).map_err(client_generated_ids_error)?;
     let operation_id = generated_ids.operation_id;
     let accepted = api
         .machine_add(&MachineAddRequest {

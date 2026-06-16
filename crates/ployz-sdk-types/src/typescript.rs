@@ -36,7 +36,6 @@ use crate::{
     MachineSnapshot, ManagedContainerKind, NodeId, NodePublicIpObservation, OperationApiResponse,
     OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayPage, OperationEventReplayRequest, OperationId, OperationIdempotencyKey,
-    OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease, OperationOwnershipStatus,
     OperationStatus, OperationStatusSnapshot, OperationSubject, OperationSubmitClockFailure,
     OperationSubmitEventFailure, OperationSubmitStatusFailure, OperationSubmitUnavailableSource,
     OperatorHint, OpsStatusError, OpsStatusRequest, OpsStatusUnavailableSource, OpsWatchError,
@@ -78,7 +77,6 @@ macro_rules! exported_types {
     ($macro:ident) => {
         $macro!(
             OperationId,
-            OperationOwnerId,
             OperationIdempotencyKey,
             EventSequence,
             ServiceId,
@@ -104,8 +102,6 @@ macro_rules! exported_types {
             DeployCleanupFailure,
             ManagedContainerKind,
             DeployPlanStep,
-            OperationLeaseExpiresAt,
-            OperationOwnerLease,
             OperationEventReplayLimit,
             OperationEventReplayRequest,
             OperationEventReplayPage,
@@ -113,7 +109,6 @@ macro_rules! exported_types {
             ReplayedOperationEvent,
             OperationStatus,
             OperationStatusSnapshot,
-            OperationOwnershipStatus,
             OperationSubject,
             MachineAddOperationState,
             MachineAddOperationStateName,

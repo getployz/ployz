@@ -11,9 +11,11 @@ use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_
 use ployz_core::ops::OperationStatus;
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
+use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    MachineAddAccepted, MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest,
 };
 use std::time::Duration;
 
@@ -54,9 +56,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
     );
     assert!(!reload.outcomes().is_empty(), "reload runner was invoked");
 
-    // Idempotent replay returns the already-issued token and the
-    // already-minted material — it never mints twice.
-    let retry = api
+    let retry_error = api
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_machine_retry"),
             idempotency_key: idempotency_key("idem_machine"),
@@ -65,8 +65,16 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
             roles: InstallRolePolicy::install_all().without_gateway(),
         })
         .await
-        .expect("machine add retry succeeds");
-    assert_eq!(retry.join_token, accepted.join_token);
+        .expect_err("duplicate machine add idempotency key is rejected");
+    assert_eq!(
+        retry_error,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_machine_retry"),
+            },
+        }
+    );
     let replayed = redeem_when_ready(&api, &accepted.join_token).await;
     assert_eq!(
         replayed.secret_delivery.nats_credentials.secret(),

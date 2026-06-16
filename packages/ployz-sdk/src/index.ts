@@ -31,8 +31,6 @@ export {
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
-  operationLeaseExpiresAt,
-  operationOwnerId,
   operatorHint,
   replicaCount,
   revisionId,
@@ -153,7 +151,6 @@ export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
 
 export interface PloyzDeployInput {
   operationId: string;
-  idempotencyKey: string;
   serviceId: string;
   targetRevision: string;
   image: string;
@@ -184,7 +181,6 @@ export interface PloyzMachineJoinRedeemInput {
 
 export interface PloyzBackupCreateInput {
   operationId: string;
-  idempotencyKey: string;
   target: PloyzBackupTargetInput;
 }
 
@@ -331,7 +327,6 @@ export async function connectPloyzNats(
 export function backupCreateRequest(input: PloyzBackupCreateInput): BackupCreateRequest {
   return {
     operation_id: operationId(input.operationId),
-    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     target: backupTarget(input.target),
   };
 }
@@ -363,7 +358,6 @@ function nonEmptyBackupTargetText(field: string, value: string): string {
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
   return {
     operation_id: operationId(input.operationId),
-    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     target: {
       service_id: serviceId(input.serviceId),
       target_revision: revisionId(input.targetRevision),

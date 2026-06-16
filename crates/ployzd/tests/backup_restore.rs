@@ -15,10 +15,7 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateError, BackupCreateRequest, OpsStatusError, OpsStatusRequest};
-use ployz_test_support::ids::{
-    event_sequence, idempotency_key, node_id, operation_id, owner_id as operation_owner_id,
-    revision_id, service_id,
-};
+use ployz_test_support::ids::{event_sequence, node_id, operation_id, revision_id, service_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::backup_adapters::{BackupAdapterError, InMemoryBackupAdapter, backup_object_key};
 use ployzd::backup_restore::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
@@ -44,7 +41,6 @@ async fn backup_create_is_a_durable_operation_against_real_control_runtime() {
     let accepted = api
         .backup_create(&BackupCreateRequest {
             operation_id: operation_id("op_backup"),
-            idempotency_key: idempotency_key("idem_backup"),
             target: target.clone(),
         })
         .await
@@ -137,7 +133,6 @@ async fn backup_create_rejects_empty_s3_target_before_recording_operation() {
     let error = api
         .backup_create(&BackupCreateRequest {
             operation_id: operation_id.clone(),
-            idempotency_key: idempotency_key("idem_bad_backup"),
             target: BackupTarget::s3(S3BackupTarget::new(
                 "",
                 "clusters/dev",
@@ -189,7 +184,6 @@ async fn control_runtime_does_not_resume_seeded_backup_without_accepting_command
     let seed = seed_controllers(&nats).await;
     seed.submit_backup(BackupCreateCommand {
         operation_id: operation_id("op_recovered_backup"),
-        idempotency_key: idempotency_key("idem_recovered_backup"),
         target: backup_target("clusters/dev"),
     })
     .await
@@ -251,7 +245,6 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     let api = OperationApiClient::new(source.user_client.clone());
     api.backup_create(&BackupCreateRequest {
         operation_id: operation_id("op_backup_restore"),
-        idempotency_key: idempotency_key("idem_backup_restore"),
         target: backup_target("clusters/dev"),
     })
     .await
@@ -382,10 +375,9 @@ async fn seed_controllers(nats: &TestNats) -> OperationControllers {
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&nats.jetstream)
         .await
         .expect("status store opens");
-    OperationControllers::with_owner(
+    OperationControllers::new(
         event_log,
         status_store,
-        operation_owner_id("control"),
         MachineAddBootstrapConfig::new(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
                 .expect("default bootstrap URL is valid"),

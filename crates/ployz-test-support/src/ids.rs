@@ -1,13 +1,11 @@
 //! Typed-id constructors for test literals: panic loudly when a test
 //! literal does not satisfy the id's invariants.
 
-use ployz_core::ids::{
-    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, StepId,
-};
+use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
 use ployz_core::ops::{
     CancellationReason, EventSequence, FailureMessage, OperationEventReplayLimit,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, RouteHostname, RoutePort,
+    OperationIdempotencyKey, RouteHostname, RoutePort,
 };
 
 #[must_use]
@@ -18,11 +16,6 @@ pub fn node_id(value: &str) -> NodeId {
 #[must_use]
 pub fn operation_id(value: &str) -> OperationId {
     OperationId::try_new(value).expect("valid operation id")
-}
-
-#[must_use]
-pub fn owner_id(value: &str) -> OperationOwnerId {
-    OperationOwnerId::try_new(value).expect("valid operation owner id")
 }
 
 #[must_use]
@@ -93,11 +86,6 @@ pub fn event_sequence(value: u64) -> EventSequence {
 #[must_use]
 pub fn event_replay_limit(value: u16) -> OperationEventReplayLimit {
     OperationEventReplayLimit::try_new(value).expect("valid event replay limit")
-}
-
-#[must_use]
-pub fn lease_time(value: u64) -> OperationLeaseExpiresAt {
-    OperationLeaseExpiresAt::try_new(value).expect("valid lease time")
 }
 
 #[must_use]

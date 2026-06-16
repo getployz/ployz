@@ -3,7 +3,7 @@ use ployz_core::ops::{DeployTransition, OperationEvent, OperationEventReplayCurs
 use ployz_nats::operations::{AsyncNatsOperationEventLog, OperationEventAppend};
 
 #[tokio::test]
-async fn operation_event_log_deduplicates_submits_by_message_id() {
+async fn operation_event_log_deduplicates_submits_by_operation_id() {
     let nats = test_nats().await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
 
@@ -11,18 +11,51 @@ async fn operation_event_log_deduplicates_submits_by_message_id() {
         .append(OperationEventAppend::deploy_submitted(
             operation_id("op_123"),
             deploy_target("svc_api"),
-            &idempotency_key("idem_1"),
         ))
         .await
         .expect("first submit event stores");
     let second = event_log
         .append(OperationEventAppend::deploy_submitted(
-            operation_id("op_456"),
-            deploy_target("svc_other"),
-            &idempotency_key("idem_1"),
+            operation_id("op_123"),
+            deploy_target("svc_api"),
         ))
         .await
         .expect("duplicate submit event is acknowledged");
+
+    assert!(!first.duplicate);
+    assert!(second.duplicate);
+    assert_eq!(second.sequence, first.sequence);
+    assert_eq!(
+        event_log
+            .event_at_sequence(second.sequence)
+            .await
+            .expect("original event can be loaded"),
+        OperationEvent::DeploySubmitted {
+            operation_id: operation_id("op_123"),
+            target: deploy_target("svc_api"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn operation_event_log_deduplicates_submits_across_operation_kinds() {
+    let nats = test_nats().await;
+    let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
+
+    let first = event_log
+        .append(OperationEventAppend::deploy_submitted(
+            operation_id("op_123"),
+            deploy_target("svc_api"),
+        ))
+        .await
+        .expect("first submit event stores");
+    let second = event_log
+        .append(OperationEventAppend::backup_submitted(
+            operation_id("op_123"),
+            backup_target("clusters/dev"),
+        ))
+        .await
+        .expect("cross-kind duplicate submit is acknowledged");
 
     assert!(!first.duplicate);
     assert!(second.duplicate);
@@ -50,7 +83,6 @@ async fn operation_event_log_replays_only_the_requested_operation() {
         .append(OperationEventAppend::deploy_submitted(
             requested.clone(),
             deploy_target("svc_api"),
-            &idempotency_key("idem_1"),
         ))
         .await
         .expect("requested submit event stores");
@@ -58,7 +90,6 @@ async fn operation_event_log_replays_only_the_requested_operation() {
         .append(OperationEventAppend::deploy_submitted(
             other.clone(),
             deploy_target("svc_other"),
-            &idempotency_key("idem_2"),
         ))
         .await
         .expect("other submit event stores");
@@ -108,7 +139,6 @@ async fn operation_event_log_replay_respects_start_sequence_and_limit() {
         .append(OperationEventAppend::deploy_submitted(
             operation_id.clone(),
             deploy_target("svc_api"),
-            &idempotency_key("idem_1"),
         ))
         .await
         .expect("submit event stores");

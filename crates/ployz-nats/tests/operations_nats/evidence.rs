@@ -9,10 +9,7 @@ async fn operation_repository_records_container_started_without_state_change() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository
@@ -82,10 +79,7 @@ async fn operation_repository_records_health_check_started_without_state_change(
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository
@@ -153,10 +147,7 @@ async fn operation_repository_records_plan_created_without_state_change() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository
@@ -205,10 +196,7 @@ async fn operation_repository_rejects_plan_retry_with_different_steps() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository

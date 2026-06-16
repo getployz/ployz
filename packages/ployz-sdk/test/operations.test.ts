@@ -25,8 +25,6 @@ import {
   OPERATION_API_CONTRACTS,
   operationId,
   operationEventReplayLimit,
-  operationLeaseExpiresAt,
-  operationOwnerId,
   PloyzApiError,
   PloyzClient,
   revisionId,
@@ -266,11 +264,6 @@ test("accepted operation uses Rust wire field names", () => {
     operation_id: "op_123",
     watch_subject: "plz.v1.op.op_123.>",
     start_sequence: "11",
-    owner_lease: {
-      operation_id: "op_123",
-      owner_id: "control",
-      expires_at: "120",
-    },
   });
 });
 
@@ -314,7 +307,6 @@ test("sdk does not expose node service calls", () => {
 test("sdk maps raw deploy input to the wire request", () => {
   assert.deepEqual(deploySubmitRequest(deployInput()), {
     operation_id: "op_123",
-    idempotency_key: "idem_123",
     target: {
       service_id: "svc_api",
       target_revision: "rev_2",
@@ -329,7 +321,6 @@ test("sdk maps raw deploy input to the wire request", () => {
     }),
     {
       operation_id: "op_123",
-      idempotency_key: "idem_123",
       target: {
         service_id: "svc_api",
         target_revision: "rev_2",
@@ -376,7 +367,6 @@ test("sdk maps raw machine add input to the wire request", () => {
 test("sdk maps raw backup and current-state query inputs to wire requests", () => {
   assert.deepEqual(backupCreateRequest(backupCreateInput()), {
     operation_id: "op_backup",
-    idempotency_key: "idem_backup",
     target: {
       kind: "s3",
       bucket: "ployz-backups",
@@ -851,15 +841,7 @@ function defaultFixture(): OperationFixture {
         service_id: serviceId("svc_api"),
         state: { state: "accepted" },
         last_event_sequence: eventSequence(11),
-      },
-      ownership: {
-        state: "owned",
-        lease: {
-          operation_id: operationId("op_123"),
-          owner_id: operationOwnerId("control"),
-          expires_at: operationLeaseExpiresAt(120),
-        },
-      },
+      }
     },
     operation_event_replay_page: {
       events: [],
@@ -871,7 +853,6 @@ function defaultFixture(): OperationFixture {
 function deployInput() {
   return {
     operationId: "op_123",
-    idempotencyKey: "idem_123",
     serviceId: "svc_api",
     targetRevision: "rev_2",
     image: "ghcr.io/acme/api:rev-2",
@@ -896,7 +877,6 @@ function backupCreateInput(overrides: Partial<PloyzBackupCreateInput> = {}) {
 function backupCreateInputBase(): PloyzBackupCreateInput {
   return {
     operationId: "op_backup",
-    idempotencyKey: "idem_backup",
     target: {
       kind: "s3" as const,
       bucket: "ployz-backups",
@@ -959,10 +939,5 @@ function acceptedOperation(operationIdValue: string): AcceptedOperation {
     operation_id: operationId(operationIdValue),
     watch_subject: `plz.v1.op.${operationIdValue}.>`,
     start_sequence: eventSequence(11),
-    owner_lease: {
-      operation_id: operationId(operationIdValue),
-      owner_id: operationOwnerId("control"),
-      expires_at: operationLeaseExpiresAt(120),
-    },
   };
 }

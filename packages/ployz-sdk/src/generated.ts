@@ -10,8 +10,6 @@ export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
 export type OperationId = Brand<string, "OperationId">;
 
-export type OperationOwnerId = Brand<string, "OperationOwnerId">;
-
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
 
 export type EventSequence = Brand<string, "EventSequence">;
@@ -62,10 +60,6 @@ export type ManagedContainerKind = "service" | "predeploy" | "job";
 
 export type DeployPlanStep = { "step": "use_existing_container", node_id: NodeId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", node_id: NodeId, slot: ReplicaSlot, };
 
-export type OperationLeaseExpiresAt = Brand<string, "OperationLeaseExpiresAt">;
-
-export type OperationOwnerLease = { operation_id: OperationId, owner_id: OperationOwnerId, expires_at: OperationLeaseExpiresAt, };
-
 export type OperationEventReplayLimit = SafeInteger<"OperationEventReplayLimit">;
 
 export type OperationEventReplayRequest = { operation_id: OperationId, start_sequence: EventSequence, limit: OperationEventReplayLimit, };
@@ -78,9 +72,7 @@ export type ReplayedOperationEvent = { sequence: EventSequence, event: Operation
 
 export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
 
-export type OperationStatusSnapshot = { status: OperationStatus, ownership: OperationOwnershipStatus, };
-
-export type OperationOwnershipStatus = { "state": "unclaimed" } | { "state": "owned", lease: OperationOwnerLease, } | { "state": "expired", lease: OperationOwnerLease, };
+export type OperationStatusSnapshot = { status: OperationStatus, };
 
 export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "backup" };
 
@@ -242,9 +234,9 @@ export type InitFirstNodeActivated = { operation_id: OperationId, node_id: NodeI
 
 export type InitFirstNodeActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "node_seed_write", message: FailureMessage, };
 
-export type DeploySubmitRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: DeployRequest, };
+export type DeploySubmitRequest = { operation_id: OperationId, target: DeployRequest, };
 
-export type BackupCreateRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, target: BackupTarget, };
+export type BackupCreateRequest = { operation_id: OperationId, target: BackupTarget, };
 
 export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, };
 
@@ -338,7 +330,7 @@ export type MachineJoinReportUnavailableSource = { "source": "core_state" } | { 
 
 export type OpsStatusRequest = { operation_id: OperationId, };
 
-export type AcceptedOperation = { operation_id: OperationId, watch_subject: string, start_sequence: EventSequence, owner_lease: OperationOwnerLease, };
+export type AcceptedOperation = { operation_id: OperationId, watch_subject: string, start_sequence: EventSequence, };
 
 export type OperationApiResponse<T, E> = { "status": "ok", value: T, } | { "status": "domain_error", error: E, };
 
@@ -346,17 +338,17 @@ export type DeploySubmitError = { "error": "unavailable", operation_id: Operatio
 
 export type BackupCreateError = { "error": "invalid_target", operation_id: OperationId, field: BackupTargetValidationField, failure: BackupTargetValidationFailure, } | { "error": "unavailable", operation_id: OperationId, source: OperationSubmitUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type OperationSubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, };
+export type OperationSubmitUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, };
 
-export type OperationSubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "encode_lease" | "decode_lease" | "cas_conflict" | "get_status" | "clock" | "timeout";
+export type OperationSubmitStatusFailure = "open_bucket" | "encode_status" | "decode_status" | "encode_submission" | "decode_submission" | "cas_conflict" | "get_status" | "timeout";
 
 export type OperationSubmitEventFailure = "encode_event" | "decode_event" | "publish_request" | "publish_ack" | "read_event" | "timeout" | "invalid_ack_sequence";
 
 export type OperationSubmitClockFailure = "before_unix_epoch";
 
-export type MachineAddError = { "error": "unavailable", operation_id: OperationId, source: MachineAddUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type MachineAddError = { "error": "unavailable", operation_id: OperationId, source: MachineAddUnavailableSource, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, } | { "error": "duplicate_idempotency_key", operation_id: OperationId, };
 
-export type MachineAddUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "clock", failure: OperationSubmitClockFailure, } | { "source": "bootstrap_material", failure: BootstrapMaterialFailure, };
+export type MachineAddUnavailableSource = { "source": "status_store", failure: OperationSubmitStatusFailure, } | { "source": "event_log", failure: OperationSubmitEventFailure, } | { "source": "bootstrap_material", failure: BootstrapMaterialFailure, };
 
 export type BootstrapMaterialFailure = "encode_join_bundle" | "issue_join_token" | "missing_join_template";
 
@@ -364,7 +356,7 @@ export type OpsStatusError = { "error": "no_such_operation", operation_id: Opera
 
 export type OpsStatusUnavailableSource = { "source": "status_store", failure: StatusReadFailure, };
 
-export type StatusReadFailure = "decode_status" | "decode_lease" | "get_status" | "clock" | "timeout";
+export type StatusReadFailure = "decode_status" | "get_status" | "timeout";
 
 export type OpsWatchError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, source: OpsWatchUnavailableSource, };
 

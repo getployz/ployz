@@ -15,10 +15,12 @@ async fn operation_repository_records_machine_add_joined_transition() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
 
@@ -69,10 +71,12 @@ async fn operation_repository_redeems_machine_join_token_once() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
@@ -114,10 +118,12 @@ async fn operation_repository_machine_join_can_complete_after_local_install() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
@@ -152,10 +158,12 @@ async fn operation_repository_repeated_machine_join_token_returns_joined_facts()
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
@@ -192,10 +200,12 @@ async fn operation_repository_duplicate_join_event_returns_original_joined_facts
         .expect("open status store");
     let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store);
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
@@ -232,10 +242,12 @@ async fn operation_repository_completed_machine_join_redeem_does_not_need_secret
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
@@ -275,19 +287,16 @@ async fn operation_repository_expired_machine_join_token_records_failure() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            MachineAddOperationSubmission {
-                operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
-                name: MachineName::try_new("edge_2").expect("valid machine name"),
-                roles: InstallRolePolicy::install_all().without_gateway(),
-                join_bundle: machine_join_bundle(),
-                raw_join_token: raw_join_token("short_lived_join_token"),
-                join_token: issued_join_token_for_raw_with_expiry("short_lived_join_token", 40),
-                idempotency_key: idempotency_key("idem_machine"),
-            },
-            default_lease_claim(),
-        )
+        .submit_machine_add(MachineAddOperationSubmission {
+            operation_id: operation_id("op_machine"),
+            node_id: node_id("node_2"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            join_bundle: machine_join_bundle(),
+            raw_join_token: raw_join_token("short_lived_join_token"),
+            join_token: issued_join_token_for_raw_with_expiry("short_lived_join_token", 40),
+            idempotency_key: idempotency_key("idem_machine"),
+        })
         .await
         .expect("machine add accepted");
 
@@ -325,10 +334,12 @@ async fn operation_repository_late_expired_join_token_cannot_fail_joined_machine
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_machine_add(
-            machine_add_submission("op_machine", "idem_machine", "node_2", "edge_2"),
-            default_lease_claim(),
-        )
+        .submit_machine_add(machine_add_submission(
+            "op_machine",
+            "idem_machine",
+            "node_2",
+            "edge_2",
+        ))
         .await
         .expect("machine add accepted");
     store_minted_secret(&repository, "op_machine", "idem_machine").await;
