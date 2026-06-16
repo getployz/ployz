@@ -177,9 +177,12 @@ async fn form_core(
     let install_spec = serde_json::json!({
         "node_id": "core_1",
         "gateway": "install",
+        "dns": "install",
         "node_public_ip": core_ip.to_string(),
         "machine_bootstrap_url": "https://local.invalid/ployz.sh",
         "machine_join_template_file": "/etc/ployz/machine-join-template.json",
+        "machine_join_cluster_name": "ployz",
+        "machine_join_runtime_nats_url": core_nats_url,
         "artifacts": {
             "ployzd": shas.ployzd_descriptor(),
             "ebpf_bytecode": shas.ebpf_bytecode_descriptor(),

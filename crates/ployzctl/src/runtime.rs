@@ -115,6 +115,7 @@ impl PloyzctlRuntimeConfig {
             nats_ca_file,
             operator_seed_file,
             join_seed_file,
+            machines: _,
         } = context;
         if self.nats_url.is_none() {
             self.nats_url = Some(nats_url.as_str().to_owned());
@@ -684,6 +685,7 @@ mod tests {
             nats_ca_file: PathBuf::from("/context/ca.pem"),
             operator_seed_file: PathBuf::from("/context/operator.seed"),
             join_seed_file: Some(PathBuf::from("/context/join.seed")),
+            machines: Vec::new(),
         }
     }
 

@@ -62,6 +62,9 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::WriteNatsServerConfig(target) => {
             format!("write-nats-config {}", target.display_path().display())
         }
+        KeeperStepLabel::WriteMachineJoinTemplate { path } => {
+            format!("write-machine-join-template {}", path.display())
+        }
         KeeperStepLabel::WriteNatsTlsMaterial { state_dir } => {
             format!("write-nats-tls-material {}", state_dir.display())
         }
@@ -115,6 +118,9 @@ fn render_failure_reason(reason: KeeperStepFailureReason) -> &'static str {
         }
         KeeperStepFailureReason::NatsClientCredentialsWriteFailed => {
             "nats-client-credentials-write-failed"
+        }
+        KeeperStepFailureReason::MachineJoinTemplateWriteFailed => {
+            "machine-join-template-write-failed"
         }
         KeeperStepFailureReason::RoleEnvironmentWriteFailed => "role-environment-write-failed",
         KeeperStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
