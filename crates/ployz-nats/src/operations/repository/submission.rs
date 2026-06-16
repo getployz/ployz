@@ -1,3 +1,4 @@
+use ployz_core::backup::BackupTarget;
 use ployz_core::ids::{CertId, NodeId, OperationId, OperationOwnerId};
 use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
@@ -164,7 +165,7 @@ impl SubmitKind for CertOperationSubmission {
 }
 
 impl SubmitKind for BackupOperationSubmission {
-    type Payload = ();
+    type Payload = BackupTarget;
 
     async fn submission(
         store: &AsyncNatsOperationStatusStore,
@@ -185,35 +186,29 @@ impl SubmitKind for BackupOperationSubmission {
 
     fn submitted_event(
         operation_id: OperationId,
-        (): Self::Payload,
+        target: Self::Payload,
         idempotency_key: &OperationIdempotencyKey,
     ) -> OperationEventAppend {
-        OperationEventAppend::backup_submitted(operation_id, idempotency_key)
+        OperationEventAppend::backup_submitted(operation_id, target, idempotency_key)
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::BackupCreateSubmitted { operation_id } = event else {
+        let OperationEvent::BackupCreateSubmitted {
+            operation_id,
+            target,
+        } = event
+        else {
             return None;
         };
-        Some((operation_id, ()))
+        Some((operation_id, target))
     }
 
     fn accepted_status(
         operation_id: OperationId,
-        (): &Self::Payload,
+        _target: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
         OperationStatus::backup_accepted(operation_id, sequence)
-    }
-
-    /// Backup submissions carry no payload beyond the operation id, so
-    /// there is nothing to re-read from the stored event.
-    async fn stored_payload(
-        _repository: &AsyncNatsOperationRepository,
-        _expected_operation_id: &OperationId,
-        _sequence: EventSequence,
-    ) -> Result<Self::Payload, SubmitOperationError> {
-        Ok(())
     }
 }
 
@@ -280,15 +275,22 @@ impl AsyncNatsOperationRepository {
     ) -> Result<AcceptedBackupSubmission, SubmitOperationError> {
         let BackupOperationSubmission {
             operation_id,
+            target,
             idempotency_key,
         } = submission;
         let submitted = self
-            .submit_operation::<BackupOperationSubmission>(operation_id, (), idempotency_key, owner)
+            .submit_operation::<BackupOperationSubmission>(
+                operation_id,
+                target,
+                idempotency_key,
+                owner,
+            )
             .await?;
 
         Ok(AcceptedBackupSubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
+            target: submitted.payload,
             lease: submitted.lease,
             should_start_execution: submitted.should_start_execution,
         })
@@ -636,6 +638,7 @@ pub struct MachineAddOperationSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupOperationSubmission {
     pub operation_id: OperationId,
+    pub target: BackupTarget,
     pub idempotency_key: OperationIdempotencyKey,
 }
 
@@ -734,6 +737,7 @@ pub struct AcceptedMachineAddSubmission {
 pub struct AcceptedBackupSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
+    pub target: BackupTarget,
     pub lease: OperationOwnerLease,
     pub should_start_execution: bool,
 }

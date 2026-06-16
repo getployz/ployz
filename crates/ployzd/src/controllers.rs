@@ -2,6 +2,7 @@
 
 pub mod cert;
 
+use ployz_core::backup::BackupTarget;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{OperationId, OperationOwnerId};
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
@@ -48,6 +49,7 @@ pub struct MachineAddSubmitCommand {
 pub struct BackupCreateCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
+    pub target: BackupTarget,
 }
 
 /// Non-secret material available at submit time: the install line needs
@@ -218,6 +220,7 @@ impl OperationControllers {
             .submit_backup(
                 BackupOperationSubmission {
                     operation_id: command.operation_id,
+                    target: command.target,
                     idempotency_key: command.idempotency_key,
                 },
                 self.lease_claim()?,

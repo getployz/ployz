@@ -1,3 +1,4 @@
+use ployz_core::backup::{BackupTarget, S3AddressingStyle, S3BackupTarget};
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
@@ -69,8 +70,31 @@ pub(super) fn backup_submission(
 ) -> BackupOperationSubmission {
     BackupOperationSubmission {
         operation_id: self::operation_id(operation_id),
+        target: backup_target("clusters/dev"),
         idempotency_key: self::idempotency_key(idempotency_key),
     }
+}
+
+pub(super) fn backup_submission_with_prefix(
+    operation_id: &str,
+    idempotency_key: &str,
+    key_prefix: &str,
+) -> BackupOperationSubmission {
+    BackupOperationSubmission {
+        operation_id: self::operation_id(operation_id),
+        target: backup_target(key_prefix),
+        idempotency_key: self::idempotency_key(idempotency_key),
+    }
+}
+
+pub(super) fn backup_target(key_prefix: &str) -> BackupTarget {
+    BackupTarget::s3(S3BackupTarget::new(
+        "ployz-backups",
+        key_prefix,
+        "us-east-1",
+        None,
+        S3AddressingStyle::VirtualHosted,
+    ))
 }
 
 pub(super) fn machine_add_submission(

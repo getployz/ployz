@@ -262,6 +262,12 @@ fn cli_dispatches_backup_create_request() {
             "op_backup",
             "--idempotency-key",
             "idem_backup",
+            "--s3-bucket",
+            "ployz-backups",
+            "--s3-prefix",
+            "clusters/dev",
+            "--s3-region",
+            "us-east-1",
         ]
         .map(str::to_owned),
     )
@@ -277,14 +283,44 @@ fn cli_dispatches_backup_create_request() {
         request.idempotency_key,
         OperationIdempotencyKey::try_new("idem_backup").expect("valid idempotency key")
     );
+    assert_eq!(request.target, backup_target("clusters/dev"));
 }
 
 #[test]
 fn cli_dispatches_backup_restore_plan() {
-    let command = parse_command(["backup", "restore", "--plan"].map(str::to_owned))
-        .expect("backup restore plan parses");
+    let command = parse_command(
+        [
+            "backup",
+            "restore",
+            "--plan",
+            "--s3-bucket",
+            "ployz-backups",
+            "--s3-manifest-key",
+            "clusters/dev/op_backup/manifest.json",
+            "--s3-region",
+            "us-east-1",
+            "--s3-addressing-style",
+            "path",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("backup restore plan parses");
 
-    assert!(matches!(command, PloyzctlCommand::BackupRestorePlan(_)));
+    let PloyzctlCommand::BackupRestorePlan(command) = command else {
+        panic!("expected backup restore plan command");
+    };
+    assert_eq!(
+        command.source,
+        ployz_core::backup::BackupRestoreSource::s3(
+            ployz_core::backup::S3BackupRestoreSource::new(
+                "ployz-backups",
+                "clusters/dev/op_backup/manifest.json",
+                "us-east-1",
+                None,
+                ployz_core::backup::S3AddressingStyle::Path,
+            ),
+        )
+    );
 }
 
 #[test]
@@ -1170,6 +1206,16 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn backup_target(key_prefix: &str) -> ployz_core::backup::BackupTarget {
+    ployz_core::backup::BackupTarget::s3(ployz_core::backup::S3BackupTarget::new(
+        "ployz-backups",
+        key_prefix,
+        "us-east-1",
+        None,
+        ployz_core::backup::S3AddressingStyle::VirtualHosted,
+    ))
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
