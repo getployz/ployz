@@ -8,11 +8,10 @@ use ployz_core::dataplane::{
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, NodeId, OperationOwnerId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, NodeId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    OperationEventReplayLimit, OperationIdempotencyKey, OperationLeaseExpiresAt,
-    OperationOwnerLease, OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
+    OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
     ReplayedOperationEvent,
 };
 use ployz_core::state::ActiveServiceState;
@@ -260,8 +259,6 @@ fn cli_dispatches_backup_create_request() {
             "create",
             "--operation",
             "op_backup",
-            "--idempotency-key",
-            "idem_backup",
             "--s3-bucket",
             "ployz-backups",
             "--s3-prefix",
@@ -279,10 +276,6 @@ fn cli_dispatches_backup_create_request() {
     let request = command.into_request();
 
     assert_eq!(request.operation_id, operation_id("op_backup"));
-    assert_eq!(
-        request.idempotency_key,
-        OperationIdempotencyKey::try_new("idem_backup").expect("valid idempotency key")
-    );
     assert_eq!(request.target, backup_target("clusters/dev"));
 }
 
@@ -960,50 +953,38 @@ fn ops_watch_renders_no_output_when_no_events_are_replayed() {
 }
 
 #[test]
-fn ops_status_renders_operation_state_and_owner_lease() {
-    let output = StatusOutput::new(OperationStatusSnapshot::new(
-        OperationStatus::Deploy {
-            id: operation_id("op_deploy"),
-            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
-            state: DeployOperationState::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            },
-            last_event_sequence: event_sequence(7),
+fn ops_status_renders_operation_state() {
+    let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::Deploy {
+        id: operation_id("op_deploy"),
+        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+        state: DeployOperationState::Running {
+            stage: DeployRunningStage::WaitingForHealth,
         },
-        OperationOwnershipStatus::Owned {
-            lease: OperationOwnerLease::new(
-                operation_id("op_deploy"),
-                OperationOwnerId::try_new("control").expect("valid owner id"),
-                OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
-            ),
-        },
-    ))
+        last_event_sequence: event_sequence(7),
+    }))
     .render();
 
     assert_eq!(
         output,
-        "operation op_deploy\nkind deploy\nservice svc_api\nstate running:waiting-for-health\nlast-event 7\nownership owned control expires-at 120\n"
+        "operation op_deploy\nkind deploy\nservice svc_api\nstate running:waiting-for-health\nlast-event 7\n"
     );
 }
 
 #[test]
 fn ops_status_renders_unclaimed_machine_add() {
-    let output = StatusOutput::new(OperationStatusSnapshot::new(
-        OperationStatus::MachineAdd {
-            id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
-            name: MachineName::try_new("edge_2").expect("valid machine name"),
-            roles: InstallRolePolicy::install_all().without_gateway(),
-            state: ployz_core::machine::MachineAddOperationState::Completed,
-            last_event_sequence: event_sequence(9),
-        },
-        OperationOwnershipStatus::Unclaimed,
-    ))
+    let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::MachineAdd {
+        id: operation_id("op_machine"),
+        node_id: node_id("node_2"),
+        name: MachineName::try_new("edge_2").expect("valid machine name"),
+        roles: InstallRolePolicy::install_all().without_gateway(),
+        state: ployz_core::machine::MachineAddOperationState::Completed,
+        last_event_sequence: event_sequence(9),
+    }))
     .render();
 
     assert_eq!(
         output,
-        "operation op_machine\nkind machine-add\nnode node_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\nownership unclaimed\n"
+        "operation op_machine\nkind machine-add\nnode node_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\n"
     );
 }
 

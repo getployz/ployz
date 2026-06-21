@@ -2,9 +2,6 @@
 
 use crate::backup_adapters::{BackupAdapterError, BackupAdapterRegistry};
 use crate::controllers::OperationControllers;
-use crate::operation_lease::{
-    OwnerLeaseError, renew_verified_owner_lease, with_advisory_operation_lease,
-};
 use crate::tasks::TaskRegistry;
 use futures_util::TryStreamExt;
 use ployz_core::backup::{
@@ -13,12 +10,13 @@ use ployz_core::backup::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
-    BackupOperationFailure, BackupOperationState, BackupRunningStage, BackupTransition,
-    FailureMessage, OperationStatus,
+    BackupOperationFailure, BackupRunningStage, BackupTransition, FailureMessage, OperationStatus,
+    StatusProjectionError,
 };
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::operations::{
-    AcceptedBackupSubmission, OperationStatusReadError, RecordBackupEventError,
+    AcceptedBackupSubmission, OperationStatusWrite, RecordBackupEventError,
+    RecordOperationEventError,
 };
 use std::fmt;
 
@@ -66,28 +64,15 @@ impl BackupOperationRuntime {
     }
 
     pub async fn run(self, accepted: AcceptedBackupSubmission) -> Result<(), BackupExecutionError> {
-        renew_verified_owner_lease(&self.controllers, &accepted.lease, &accepted.operation_id)
-            .await
-            .map_err(BackupExecutionError::Lease)?;
-        let lease_policy = self.controllers.lease_policy();
-        let lease_renewer = self.controllers.clone();
         let operation_id = accepted.operation_id.clone();
         let target = accepted.target.clone();
 
-        with_advisory_operation_lease(
-            operation_id.clone(),
-            lease_policy,
-            lease_renewer,
-            async move {
-                run_backup_create(
-                    &self.controllers,
-                    &self.adapters,
-                    &self.snapshot_source,
-                    &operation_id,
-                    &target,
-                )
-                .await
-            },
+        run_backup_create(
+            &self.controllers,
+            &self.adapters,
+            &self.snapshot_source,
+            &operation_id,
+            &target,
         )
         .await
     }
@@ -129,69 +114,39 @@ async fn run_backup_create(
     operation_id: &OperationId,
     target: &ployz_core::backup::BackupTarget,
 ) -> Result<(), BackupExecutionError> {
-    match backup_state(controllers, operation_id).await? {
-        BackupOperationState::Accepted => {
-            record_transition(
-                controllers,
-                operation_id,
-                BackupFailureStage::Snapshot,
-                BackupTransition::Running {
-                    stage: BackupRunningStage::SnapshottingControlPlane,
-                },
-            )
-            .await?;
-            write_artifact_and_complete(
-                controllers,
-                adapters,
-                snapshot_source,
-                operation_id,
-                target,
-            )
-            .await
-        }
-        BackupOperationState::Running {
-            stage: BackupRunningStage::SnapshottingControlPlane,
-        } => {
-            write_artifact_and_complete(
-                controllers,
-                adapters,
-                snapshot_source,
-                operation_id,
-                target,
-            )
-            .await
-        }
-        BackupOperationState::Running {
-            stage: BackupRunningStage::WritingManifest { artifact },
-        } => complete_from_artifact(controllers, adapters, operation_id, target, artifact).await,
-        BackupOperationState::Completed { .. }
-        | BackupOperationState::Failed { .. }
-        | BackupOperationState::Cancelled { .. } => Ok(()),
+    if !claim_backup_execution(controllers, operation_id).await? {
+        return Ok(());
     }
+    write_artifact_and_complete(controllers, adapters, snapshot_source, operation_id, target).await
 }
 
-async fn backup_state(
+async fn claim_backup_execution(
     controllers: &OperationControllers,
     operation_id: &OperationId,
-) -> Result<BackupOperationState, BackupExecutionError> {
-    let Some(status) = controllers
+) -> Result<bool, BackupExecutionError> {
+    match controllers
         .repository()
-        .records()
-        .get(operation_id)
+        .record_backup_transition(
+            operation_id,
+            BackupTransition::Running {
+                stage: BackupRunningStage::SnapshottingControlPlane,
+            },
+        )
         .await
-        .map_err(BackupExecutionError::ReadStatus)?
-    else {
-        return Err(BackupExecutionError::MissingStatus {
-            operation_id: operation_id.clone(),
-        });
-    };
-    let OperationStatus::Backup { state, .. } = status else {
-        return Err(BackupExecutionError::WrongOperationKind {
-            operation_id: operation_id.clone(),
-        });
-    };
-
-    Ok(state)
+    {
+        Ok(OperationStatusWrite::Stored { .. }) => Ok(true),
+        Ok(OperationStatusWrite::AlreadySatisfied { .. } | OperationStatusWrite::Stale { .. }) => {
+            Ok(false)
+        }
+        Err(RecordOperationEventError::ProjectStatus(
+            StatusProjectionError::InvalidTransition { .. }
+            | StatusProjectionError::TerminalState { .. },
+        )) => Ok(false),
+        Err(error) => Err(BackupExecutionError::RecordTransition {
+            stage: BackupFailureStage::Snapshot,
+            error,
+        }),
+    }
 }
 
 async fn record_transition(
@@ -199,12 +154,11 @@ async fn record_transition(
     operation_id: &OperationId,
     stage: BackupFailureStage,
     transition: BackupTransition,
-) -> Result<(), BackupExecutionError> {
+) -> Result<OperationStatusWrite, BackupExecutionError> {
     controllers
         .repository()
         .record_backup_transition(operation_id, transition)
         .await
-        .map(|_| ())
         .map_err(|error| BackupExecutionError::RecordTransition { stage, error })
 }
 
@@ -262,7 +216,8 @@ async fn complete_from_artifact(
         BackupFailureStage::Manifest,
         BackupTransition::Completed { manifest },
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -384,14 +339,6 @@ pub enum BackupFailureStage {
 
 #[derive(Debug)]
 pub enum BackupExecutionError {
-    Lease(OwnerLeaseError),
-    ReadStatus(OperationStatusReadError),
-    MissingStatus {
-        operation_id: OperationId,
-    },
-    WrongOperationKind {
-        operation_id: OperationId,
-    },
     SnapshotControlPlane(BackupSnapshotError),
     EncodeSnapshot {
         message: String,
@@ -432,14 +379,6 @@ fn backup_execution_failure(error: &BackupExecutionError) -> BackupOperationFail
                 }
             }
         }
-        BackupExecutionError::Lease(_)
-        | BackupExecutionError::ReadStatus(_)
-        | BackupExecutionError::MissingStatus { .. }
-        | BackupExecutionError::WrongOperationKind { .. } => {
-            BackupOperationFailure::SnapshotFailed {
-                message: backup_failure_message(format!("backup execution failed: {error}")),
-            }
-        }
     }
 }
 
@@ -450,22 +389,6 @@ fn backup_failure_message(message: String) -> FailureMessage {
 impl fmt::Display for BackupExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Lease(error) => write!(formatter, "{error}"),
-            Self::ReadStatus(error) => {
-                write!(formatter, "backup status could not be read: {error:?}")
-            }
-            Self::MissingStatus { operation_id } => {
-                write!(
-                    formatter,
-                    "backup operation {} has no status",
-                    operation_id.as_str()
-                )
-            }
-            Self::WrongOperationKind { operation_id } => write!(
-                formatter,
-                "operation {} is not a backup operation",
-                operation_id.as_str()
-            ),
             Self::SnapshotControlPlane(source) => {
                 write!(formatter, "control-plane snapshot failed: {source}")
             }

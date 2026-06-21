@@ -14,9 +14,9 @@ use ployz_sdk_types::MachineJoinToken;
 
 use crate::shell::shell_quote;
 
-/// Release version the quick start installs when `--version` is not given.
-/// Must match the `default_version` in `scripts/ployz.sh`.
-pub const DEFAULT_RELEASE_VERSION: &str = "v0.0.1-alpha.1";
+/// Release channel the quick start resolves when `--version` is not given.
+/// Must match the `default_channel` in `scripts/ployz.sh`.
+pub const DEFAULT_RELEASE_CHANNEL: &str = "alpha";
 /// The default installer the remote machine pipes through `sh`.
 pub const DEFAULT_BOOTSTRAP_URL: &str = "https://ployz.sh";
 /// Default cluster name recorded in the machine-join template.
@@ -28,6 +28,22 @@ pub const MACHINE_NATS_PORT: u16 = 4222;
 pub enum BootstrapInstaller {
     BootstrapUrl(MachineBootstrapUrl),
     RemoteScript(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootstrapRelease {
+    Channel(String),
+    Version(String),
+}
+
+impl BootstrapRelease {
+    #[must_use]
+    fn env_pair(&self) -> (&'static str, &str) {
+        match self {
+            Self::Channel(channel) => ("PLOYZ_CHANNEL", channel.as_str()),
+            Self::Version(version) => ("PLOYZ_VERSION", version.as_str()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,7 +93,7 @@ impl JoinBootstrapCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FounderBootstrapCommand {
     pub installer: BootstrapInstaller,
-    pub version: String,
+    pub release: BootstrapRelease,
     pub release_manifest_url: Option<String>,
     pub node_id: NodeId,
     pub roles: InstallRolePolicy,
@@ -90,7 +106,8 @@ pub struct FounderBootstrapCommand {
 impl FounderBootstrapCommand {
     #[must_use]
     pub fn render(&self) -> String {
-        let mut env = format!("PLOYZ_VERSION={}", shell_quote(&self.version));
+        let (release_key, release_value) = self.release.env_pair();
+        let mut env = format!("{release_key}={}", shell_quote(release_value));
         if let Some(url) = &self.release_manifest_url {
             env.push_str(&format!(" PLOYZ_RELEASE_MANIFEST_URL={}", shell_quote(url)));
         }

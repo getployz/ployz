@@ -4,11 +4,11 @@ use ployz_core::ids::StepId;
 use ployz_core::node::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationState,
-    DeployRunningStage, DeployTransition, OperationStatus,
+    DeployRunningStage, DeployTransition, OperationStatus, StatusProjectionError,
 };
 use ployz_nats::operations::{
-    AsyncNatsOperationEventLog, OperationEventAppend, OperationStatusWrite,
-    RecordDeployTransitionError,
+    AsyncNatsOperationEventLog, AsyncNatsOperationRepository, OperationEventAppend,
+    OperationStatusWrite, RecordDeployTransitionError,
 };
 
 #[tokio::test]
@@ -16,10 +16,7 @@ async fn operation_repository_records_transition_status_against_real_nats() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
 
@@ -58,10 +55,7 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository
@@ -156,15 +150,62 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
 }
 
 #[tokio::test]
+async fn operation_repository_rejects_terminal_rewrite_against_real_nats() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    repository
+        .submit_deploy(deploy_submission("op_terminal", "svc_api"))
+        .await
+        .expect("submit accepted");
+    record_deploy_running(&repository, "op_terminal").await;
+
+    repository
+        .record_deploy_transition(
+            &operation_id("op_terminal"),
+            DeployTransition::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
+        )
+        .await
+        .expect("completion records");
+    let rewrite = repository
+        .record_deploy_transition(
+            &operation_id("op_terminal"),
+            DeployTransition::Completed {
+                outcome: DeployCompletionOutcome::CompletedWithWarnings,
+            },
+        )
+        .await
+        .expect_err("different terminal result is rejected");
+
+    assert!(matches!(
+        rewrite,
+        RecordDeployTransitionError::ProjectStatus(StatusProjectionError::TerminalState { .. })
+    ));
+    assert_eq!(
+        repository
+            .records()
+            .get(&operation_id("op_terminal"))
+            .await
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::Deploy {
+            id: operation_id("op_terminal"),
+            service_id: service_id("svc_api"),
+            state: DeployOperationState::Completed {
+                outcome: DeployCompletionOutcome::Completed,
+            },
+            last_event_sequence: event_sequence(7),
+        })
+    );
+}
+
+#[tokio::test]
 async fn operation_repository_rejects_duplicate_failed_transition_payload_mismatch() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     event_log
@@ -193,16 +234,40 @@ async fn operation_repository_rejects_duplicate_failed_transition_payload_mismat
     ));
 }
 
+async fn record_deploy_running(
+    repository: &AsyncNatsOperationRepository,
+    operation_id_value: &str,
+) {
+    repository
+        .record_deploy_transition(
+            &operation_id(operation_id_value),
+            DeployTransition::Planning,
+        )
+        .await
+        .expect("planning records");
+    for stage in [
+        DeployRunningStage::PreparingWireGuardEbpf,
+        DeployRunningStage::StartingContainers,
+        DeployRunningStage::WaitingForHealth,
+        DeployRunningStage::ActiveServiceCommit,
+    ] {
+        repository
+            .record_deploy_transition(
+                &operation_id(operation_id_value),
+                DeployTransition::Running { stage },
+            )
+            .await
+            .expect("running stage records");
+    }
+}
+
 #[tokio::test]
 async fn operation_repository_rejects_duplicate_cancelled_transition_payload_mismatch() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     event_log

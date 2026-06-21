@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
-use crate::client_ids::{ClientOperationKind, generate_client_operation_ids};
+use crate::client_ids::generate_client_machine_add_ids;
 use crate::commands::init::FirstNodeActivateCommand;
 use crate::commands::machine::{
     MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteOutput, MachineIdentity,
@@ -99,14 +99,24 @@ fn record_machine_ssh_if_context_exists(
     config: &PloyzctlRuntimeConfig,
     node_id: ployz_core::ids::NodeId,
     target: SshTarget,
-) -> Result<(), PloyzctlExecutionError> {
+) -> Result<(), ClusterContextError> {
     let Some(path) = optional_cluster_context_path(config) else {
         return Ok(());
     };
-    save_cluster_context_machine_ssh(&path, node_id, target).map_err(|source| {
-        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
-    })?;
+    save_cluster_context_machine_ssh(&path, node_id, target)?;
     Ok(())
+}
+
+fn machine_ssh_context_warning(
+    node_id: &NodeId,
+    target: &SshTarget,
+    source: &ClusterContextError,
+) -> String {
+    format!(
+        "warning: remote machine operation completed, but local SSH mapping for {} at {} was not saved: {source}\n",
+        node_id.as_str(),
+        target.destination()
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,7 +271,7 @@ pub(crate) async fn execute_machine_init(
     let node_public_ip: Option<IpAddr> = target.host().parse().ok();
     let install_command = FounderBootstrapCommand {
         installer: command.installer(),
-        version: command.version.clone(),
+        release: command.release.clone(),
         release_manifest_url: command.release_manifest_url.clone(),
         node_id: identity.node_id.clone(),
         roles: command.roles,
@@ -288,7 +298,7 @@ pub(crate) async fn execute_machine_init(
     }
 
     let context_path = cluster_context_path(config)?;
-    let mut context = publish_cluster_context(
+    let context = publish_cluster_context(
         &context_path,
         bootstrap_result.nats_url,
         ClusterContextMaterial {
@@ -300,26 +310,27 @@ pub(crate) async fn execute_machine_init(
     .map_err(|source| {
         remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
     })?;
-    context = context.with_machine_ssh(identity.node_id.clone(), target.clone());
-    save_cluster_context(&context_path, &context).map_err(|source| {
-        remote_machine_error(RemoteMachineExecutionError::ClusterContext { source })
-    })?;
 
-    let activate_config = config.clone().with_cluster_context(Some(context));
+    let activate_config = config.clone().with_cluster_context(Some(context.clone()));
     let activation = activate_first_node_machine(
         &FirstNodeActivateCommand::new(identity.node_id.clone(), command.roles),
         &activate_config,
     )
     .await?;
-
-    Ok(PloyzctlExecutionOutput::stdout(
+    let context = context.with_machine_ssh(identity.node_id.clone(), target.clone());
+    let mut output = PloyzctlExecutionOutput::stdout(
         MachineInitOutput {
             operation_id: activation.operation_id,
             node_id: activation.node_id,
-            context_path,
+            context_path: context_path.clone(),
         }
         .render(),
-    ))
+    );
+    if let Err(source) = save_cluster_context(&context_path, &context) {
+        output.stderr = machine_ssh_context_warning(&identity.node_id, &target, &source);
+    }
+
+    Ok(output)
 }
 
 /// `ployzctl machine add USER@HOST`: derive the identity from the remote
@@ -339,10 +350,8 @@ pub(crate) async fn execute_machine_add_remote(
     let join_seed = read_join_seed(&config)?;
     let api = operation_api_client(&config).await?;
 
-    let generated_ids = generate_client_operation_ids(ClientOperationKind::MachineAdd {
-        node_id: &identity.node_id,
-    })
-    .map_err(client_generated_ids_error)?;
+    let generated_ids =
+        generate_client_machine_add_ids(&identity.node_id).map_err(client_generated_ids_error)?;
     let operation_id = generated_ids.operation_id;
     let accepted = api
         .machine_add(&MachineAddRequest {
@@ -355,7 +364,6 @@ pub(crate) async fn execute_machine_add_remote(
         .await
         .map_err(api_error)?;
     let output = MachineAddOutput::from_accepted(accepted, join_seed);
-    record_machine_ssh_if_context_exists(&config, identity.node_id.clone(), target.clone())?;
 
     let node_public_ip: Option<IpAddr> = target.host().parse().ok();
     let install_command = output.install_command(&command.installer(), node_public_ip);
@@ -395,13 +403,23 @@ pub(crate) async fn execute_machine_add_remote(
         ));
     };
     match state {
-        MachineAddOperationState::Completed => Ok(PloyzctlExecutionOutput::stdout(
-            MachineAddRemoteOutput {
-                operation_id,
-                node_id: identity.node_id,
+        MachineAddOperationState::Completed => {
+            let mut output = PloyzctlExecutionOutput::stdout(
+                MachineAddRemoteOutput {
+                    operation_id,
+                    node_id: identity.node_id.clone(),
+                }
+                .render(),
+            );
+            if let Err(source) = record_machine_ssh_if_context_exists(
+                &config,
+                identity.node_id.clone(),
+                target.clone(),
+            ) {
+                output.stderr = machine_ssh_context_warning(&identity.node_id, &target, &source);
             }
-            .render(),
-        )),
+            Ok(output)
+        }
         MachineAddOperationState::Pending { .. }
         | MachineAddOperationState::Joining { .. }
         | MachineAddOperationState::Failed { .. }

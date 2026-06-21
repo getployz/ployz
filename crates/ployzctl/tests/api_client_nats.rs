@@ -1,10 +1,9 @@
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationId, OperationOwnerId, RevisionId};
+use ployz_core::ids::RevisionId;
 use ployz_core::install::InstallArtifactSpec;
 use ployz_core::machine::JoinTokenRedeemedAt;
 use ployz_core::ops::{
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
-    OperationLeaseExpiresAt, OperationOwnerLease,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
@@ -81,7 +80,6 @@ async fn operation_api_client_decodes_successful_envelope() {
                     operation_id: operation_id("op_123"),
                     watch_subject: "plz.v1.op.op_123.>".to_owned(),
                     start_sequence: event_sequence(1),
-                    owner_lease: operation_lease("op_123", "control", 120),
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -101,7 +99,6 @@ async fn operation_api_client_decodes_successful_envelope() {
             operation_id: operation_id("op_123"),
             watch_subject: "plz.v1.op.op_123.>".to_owned(),
             start_sequence: event_sequence(1),
-            owner_lease: operation_lease("op_123", "control", 120),
         }
     );
 }
@@ -124,7 +121,6 @@ async fn operation_api_client_routes_machine_add_success() {
                         operation_id: operation_id("op_machine"),
                         watch_subject: "plz.v1.op.op_machine.>".to_owned(),
                         start_sequence: event_sequence(2),
-                        owner_lease: operation_lease("op_machine", "control", 120),
                     },
                     node_id: node_id("node_2"),
                     bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
@@ -551,7 +547,6 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
 fn deploy_submit_request() -> DeploySubmitRequest {
     DeploySubmitRequest {
         operation_id: operation_id("op_123"),
-        idempotency_key: OperationIdempotencyKey::try_new("idem_1").expect("valid idempotency key"),
         target: deploy_target("svc_api"),
     }
 }
@@ -682,14 +677,6 @@ fn service_snapshot(service_id: &str, revision_id: &str) -> ServiceSnapshot {
             active_revision: RevisionId::try_new(revision_id).expect("valid revision id"),
         },
     }
-}
-
-fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
-    OperationOwnerLease::new(
-        OperationId::try_new(operation_id).expect("valid operation id"),
-        OperationOwnerId::try_new(owner_id).expect("valid owner id"),
-        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
-    )
 }
 
 fn ops_watch_request() -> OperationEventReplayRequest {

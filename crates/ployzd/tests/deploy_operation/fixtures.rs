@@ -34,9 +34,7 @@ use ployzd::node::protocol::{
     NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest, NodeContainerStopRpcRequest,
     NodeEnsureEndpointNetworkRpcRequest, NodeRunContainerOutcome,
 };
-use ployzd::operation_lease::OperationLeaseRenewer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -395,42 +393,6 @@ impl DeployHealthChecker for HangingHealth {
     ) -> Result<(), DeployHealthCheckError> {
         tokio::time::sleep(Duration::from_secs(60)).await;
         Ok(())
-    }
-}
-
-#[derive(Clone, Default)]
-pub(super) struct RecordingLeaseRenewer {
-    renewals: Arc<Mutex<Vec<OperationId>>>,
-}
-
-impl RecordingLeaseRenewer {
-    pub(super) fn lost() -> Self {
-        Self {
-            renewals: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub(super) fn renewals(&self) -> Vec<OperationId> {
-        self.renewals
-            .lock()
-            .expect("renewals lock is not poisoned")
-            .clone()
-    }
-}
-
-impl OperationLeaseRenewer for RecordingLeaseRenewer {
-    async fn renew_operation_lease(
-        &mut self,
-        operation_id: &OperationId,
-    ) -> Result<
-        Option<ployz_core::ops::OperationOwnerLease>,
-        ployz_nats::operations::OperationStatusStoreError,
-    > {
-        self.renewals
-            .lock()
-            .expect("renewals lock is not poisoned")
-            .push(operation_id.clone());
-        Ok(None)
     }
 }
 

@@ -18,12 +18,15 @@ use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ExpectedActiveService, GatewayServingStatus,
     GatewayStatusObservation, NodePublicIpObservation,
 };
+use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
+use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_sdk_types::{
-    DeploySubmitRequest, MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome,
-    MachineJoinReportRequest, MachineListRequest, ServiceInspectRequest, ServiceListRequest,
+    DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, ServiceInspectRequest,
+    ServiceListRequest,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::controllers::MachineAddBootstrapConfig;
@@ -54,7 +57,6 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
         .deploy_submit(&DeploySubmitRequest {
             operation_id: operation_id("op_control_runtime"),
             target: deploy_target("svc_api"),
-            idempotency_key: idempotency_key("idem_control_runtime"),
         })
         .await
         .expect("operation API accepts deploy");
@@ -141,7 +143,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         accepted.bootstrap_url.as_str(),
         "https://example.test/ployz.sh"
     );
-    let retry = api
+    let retry_error = api
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_machine_retry"),
             idempotency_key: idempotency_key("idem_machine"),
@@ -150,9 +152,16 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             roles: InstallRolePolicy::install_all().without_gateway(),
         })
         .await
-        .expect("machine add retry succeeds");
-    assert_eq!(retry.accepted.operation_id, operation_id("op_machine"));
-    assert_eq!(retry.join_token, accepted.join_token);
+        .expect_err("duplicate machine add idempotency key is rejected");
+    assert_eq!(
+        retry_error,
+        OperationApiClientError::Domain {
+            endpoint: OperationApiEndpoint::MachineAdd,
+            error: MachineAddError::DuplicateIdempotencyKey {
+                operation_id: operation_id("op_machine_retry"),
+            },
+        }
+    );
 
     let redeemed = redeem_when_ready(&api, &accepted.join_token).await;
     assert_eq!(redeemed.node_id, node_id("node_2"));
@@ -339,7 +348,6 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_run"),
         target: deploy_target("svc_api"),
-        idempotency_key: idempotency_key("idem_run"),
     };
 
     let accepted = api
@@ -457,7 +465,6 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
                 gateway.listen_addr().port(),
                 upstream.port(),
             ),
-            idempotency_key: idempotency_key("idem_routed"),
         })
         .await
         .expect("operation API accepts routed deploy");

@@ -10,17 +10,16 @@ pub use machine_join::{
 pub use submission::{
     AcceptedBackupSubmission, AcceptedCertSubmission, AcceptedDeploySubmission,
     AcceptedMachineAddSubmission, BackupOperationSubmission, CertOperationSubmission,
-    DeployOperationSubmission, MachineAddOperationSubmission, OperationLeaseClaim,
-    OperationLeaseClaimError, SubmitMachineAddError, SubmitOperationError,
+    DeployOperationSubmission, MachineAddOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError,
 };
 
 use ployz_core::ids::{CertId, NodeId, OperationId};
 use ployz_core::ops::{
     BackupTransition, CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
     OperationEvent, OperationEventReplayCursor, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationLeaseExpiresAt, OperationProjection, OperationStatus,
-    OperationStatusSnapshot, StatusProjectionError, project_operation_event,
-    validate_fresh_deploy_evidence,
+    OperationEventReplayRequest, OperationProjection, OperationStatusSnapshot,
+    StatusProjectionError, project_operation_event, validate_fresh_deploy_evidence,
 };
 
 use super::events::{
@@ -28,8 +27,8 @@ use super::events::{
     OperationEventReplayReadError, StoredOperationEvent,
 };
 use super::status_store::{
-    AsyncNatsOperationStatusStore, OperationStatusReadError, OperationStatusStoreError,
-    OperationStatusWrite,
+    AsyncNatsOperationStatusStore, KvRevision, OperationStatusReadError, OperationStatusStoreError,
+    StatusStoreWrite,
 };
 
 #[derive(Debug, Clone)]
@@ -50,8 +49,8 @@ impl AsyncNatsOperationRepository {
         }
     }
 
-    /// Direct access to the underlying record store for status reads,
-    /// submission records, and owner leases that need no event projection.
+    /// Direct access to the underlying operation-memory records for status
+    /// reads and machine-add join material that need no event projection.
     #[must_use]
     pub fn records(&self) -> &AsyncNatsOperationStatusStore {
         &self.status_store
@@ -207,21 +206,11 @@ impl AsyncNatsOperationRepository {
     pub async fn operation_status_snapshot(
         &self,
         operation_id: &OperationId,
-        now: OperationLeaseExpiresAt,
-    ) -> Result<Option<OperationStatusSnapshot>, OperationStatusStoreError> {
-        let Some(status) = self
-            .status_store
-            .get(operation_id)
-            .await
-            .map_err(OperationStatusStoreError::from_status_read)?
-        else {
+    ) -> Result<Option<OperationStatusSnapshot>, OperationStatusReadError> {
+        let Some(status) = self.status_store.get(operation_id).await? else {
             return Ok(None);
         };
-        let ownership = self
-            .status_store
-            .operation_ownership(operation_id, now)
-            .await?;
-        Ok(Some(OperationStatusSnapshot::new(status, ownership)))
+        Ok(Some(OperationStatusSnapshot::new(status)))
     }
 
     pub async fn replay_operation_events(
@@ -256,35 +245,70 @@ impl AsyncNatsOperationRepository {
         }
     }
 
-    async fn put_projected_status(
+    async fn project_recorded_operation_event(
         &self,
-        status: &OperationStatus,
-    ) -> Result<OperationStatusWrite, RecordOperationEventError> {
+        operation_id: &OperationId,
+        event: OperationEvent,
+        stored: StoredOperationEvent,
+    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
         const MAX_STATUS_PROJECTION_ATTEMPTS: usize = 3;
 
         for _ in 0..MAX_STATUS_PROJECTION_ATTEMPTS {
+            let Some(current) = self
+                .status_store
+                .get(operation_id)
+                .await
+                .map_err(RecordOperationEventError::LoadStatus)?
+            else {
+                return Err(RecordOperationEventError::MissingOperation {
+                    operation_id: operation_id.clone(),
+                });
+            };
+
+            if current.is_terminal()
+                && stored.sequence > current.last_event_sequence()
+                && let Some(evidence) = deploy_evidence_from_event(&event)
+            {
+                validate_fresh_deploy_evidence(&current, &evidence)
+                    .map_err(RecordOperationEventError::ProjectStatus)?;
+            }
+
+            let projection = project_operation_event(&current, event.clone(), stored.sequence)
+                .map_err(RecordOperationEventError::ProjectStatus)?;
+            let OperationProjection::StatusChanged { status } = projection else {
+                return Ok(RecordOperationEventOutcome::Stored {
+                    stored,
+                    status_write: OperationStatusWrite::AlreadySatisfied {
+                        current_sequence: current.last_event_sequence(),
+                    },
+                });
+            };
+
             match self
                 .status_store
-                .put_if_newer(status)
+                .put_if_newer(&status)
                 .await
                 .map_err(RecordOperationEventError::StoreStatus)?
             {
-                OperationStatusWrite::Stored { revision } => {
-                    return Ok(OperationStatusWrite::Stored { revision });
+                StatusStoreWrite::Stored { revision } => {
+                    return Ok(RecordOperationEventOutcome::Stored {
+                        stored,
+                        status_write: OperationStatusWrite::Stored { revision },
+                    });
                 }
-                OperationStatusWrite::AlreadySatisfied { current_sequence } => {
-                    return Ok(OperationStatusWrite::AlreadySatisfied { current_sequence });
-                }
-                OperationStatusWrite::Stale {
+                StatusStoreWrite::Stale {
                     current_sequence,
                     attempted_sequence,
                 } if current_sequence >= attempted_sequence => {
-                    return Ok(OperationStatusWrite::Stale {
-                        current_sequence,
-                        attempted_sequence,
+                    return Ok(RecordOperationEventOutcome::Stored {
+                        stored,
+                        status_write: OperationStatusWrite::Stale {
+                            current_sequence,
+                            attempted_sequence,
+                        },
                     });
                 }
-                OperationStatusWrite::Stale { .. } | OperationStatusWrite::Contended { .. } => {
+                StatusStoreWrite::Stale { .. } | StatusStoreWrite::Contended { .. } => {
                     continue;
                 }
             }
@@ -357,7 +381,7 @@ impl AsyncNatsOperationRepository {
             {
                 validate_stored(operation_id, &attempted_event, &event, stored.sequence)?;
                 return self
-                    .project_recorded_operation_event(event, stored, current)
+                    .project_recorded_operation_event(operation_id, event, stored)
                     .await;
             }
 
@@ -400,47 +424,8 @@ impl AsyncNatsOperationRepository {
         };
         validate_stored(operation_id, &attempted_event, &event, stored.sequence)?;
 
-        let current = self
-            .status_store
-            .get(operation_id)
+        self.project_recorded_operation_event(operation_id, event, stored)
             .await
-            .map_err(RecordOperationEventError::LoadStatus)?
-            .unwrap_or(current);
-        self.project_recorded_operation_event(event, stored, current)
-            .await
-    }
-
-    async fn project_recorded_operation_event(
-        &self,
-        event: OperationEvent,
-        stored: StoredOperationEvent,
-        current: OperationStatus,
-    ) -> Result<RecordOperationEventOutcome, RecordOperationEventError> {
-        if current.is_terminal()
-            && stored.sequence > current.last_event_sequence()
-            && let Some(evidence) = deploy_evidence_from_event(&event)
-        {
-            validate_fresh_deploy_evidence(&current, &evidence)
-                .map_err(RecordOperationEventError::ProjectStatus)?;
-        }
-
-        let projection = project_operation_event(&current, event, stored.sequence)
-            .map_err(RecordOperationEventError::ProjectStatus)?;
-        match projection {
-            OperationProjection::StatusChanged { status } => {
-                let status_write = self.put_projected_status(&status).await?;
-                Ok(RecordOperationEventOutcome::Stored {
-                    stored,
-                    status_write,
-                })
-            }
-            OperationProjection::AlreadySatisfied => Ok(RecordOperationEventOutcome::Stored {
-                stored,
-                status_write: OperationStatusWrite::AlreadySatisfied {
-                    current_sequence: current.last_event_sequence(),
-                },
-            }),
-        }
     }
 }
 
@@ -449,6 +434,20 @@ impl AsyncNatsOperationRepository {
 enum PreCheck {
     None,
     DeployEvidence(Option<DeployEvidence>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatusWrite {
+    Stored {
+        revision: KvRevision,
+    },
+    AlreadySatisfied {
+        current_sequence: EventSequence,
+    },
+    Stale {
+        current_sequence: EventSequence,
+        attempted_sequence: EventSequence,
+    },
 }
 
 enum RecordOperationEventOutcome {

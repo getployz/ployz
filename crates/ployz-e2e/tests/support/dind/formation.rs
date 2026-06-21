@@ -22,6 +22,7 @@ use ployz_nats::connect::{
 };
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{MachineAddAccepted, MachineAddRequest, MachineListRequest};
+use ployzctl::bootstrap_command::BootstrapRelease;
 use ployzctl::commands::PloyzctlCommand;
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
 use ployzctl::runtime::{PloyzctlRuntimeConfig, execute_command};
@@ -410,7 +411,7 @@ async fn product_init_core(
             MachineIdentity::from_name_override("core_1").expect("core name is a valid identity"),
         ),
         roles: InstallRolePolicy::install_all(),
-        version: "local".to_owned(),
+        release: BootstrapRelease::Version("local".to_owned()),
         release_manifest_url: Some(format!("file://{RELEASE_MANIFEST_PATH}")),
         bootstrap_url: MachineBootstrapUrl::try_new("https://local.invalid/ployz.sh")
             .expect("valid bootstrap url"),

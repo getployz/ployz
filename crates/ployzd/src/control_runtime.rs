@@ -15,7 +15,6 @@ use crate::node::client::NatsNodeLogsTailer;
 use crate::operation_api::OperationApiHandlers;
 use crate::process_support::shutdown_signal;
 use crate::tasks::TaskRegistry;
-use ployz_core::ids::OperationOwnerId;
 use ployz_nats::bootstrap::{BootstrapAssuranceError, BootstrapPlan, BootstrapRefusal};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::core_state::{AsyncNatsCoreStateStore, CoreStateStoreError};
@@ -26,7 +25,6 @@ use std::fmt;
 use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const CONTROL_OPERATION_OWNER_ID: &str = "control";
 
 pub struct RunningControlRuntime {
     operation_api: RunningNatsService,
@@ -115,14 +113,8 @@ pub async fn start_control_runtime_with_client_and_reload(
     let status_store = AsyncNatsOperationStatusStore::from_jetstream(&jetstream)
         .await
         .map_err(ControlRuntimeError::OpenOperationStatus)?;
-    let owner_id = OperationOwnerId::try_new(CONTROL_OPERATION_OWNER_ID)
-        .expect("control owner id is static and valid");
-    let controllers = OperationControllers::with_owner(
-        event_log,
-        status_store,
-        owner_id,
-        config.machine_bootstrap.clone(),
-    );
+    let controllers =
+        OperationControllers::new(event_log, status_store, config.machine_bootstrap.clone());
     // Adopt-on-start happens here, before any render: the on-disk
     // authorized-users file is the authority set's recovery evidence.
     let authorization = NatsAuthorizationRuntime::start(

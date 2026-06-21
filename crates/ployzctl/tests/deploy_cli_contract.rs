@@ -1,29 +1,26 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{DeployRoute, ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::ops::{
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease, RouteHostname,
-    RoutePort, RouteTarget,
-};
+use ployz_core::ids::{RevisionId, ServiceId};
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
-use ployzctl::commands::deploy::{DetachedDeployCommand, DetachedDeployOutput};
+use ployzctl::commands::deploy::{DeployCommand, DeployOutput};
 use ployzctl::commands::{PloyzctlCommand, parse_command};
 
 #[test]
-fn cli_dispatches_detached_deploy_request() {
-    let command = parse_command(detached_deploy_args()).expect("deploy command parses");
+fn cli_dispatches_deploy_request() {
+    let command = parse_command(deploy_args()).expect("deploy command parses");
 
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
     };
-    assert_eq!(command, detached_deploy_command());
+    assert_eq!(command, deploy_command_fixture());
 }
 
 #[test]
-fn cli_dispatches_detached_deploy_request_with_route() {
-    let command = parse_command(detached_deploy_args_with_route()).expect("deploy command parses");
+fn cli_dispatches_deploy_request_with_route() {
+    let command = parse_command(deploy_args_with_route()).expect("deploy command parses");
 
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
@@ -42,7 +39,7 @@ fn cli_dispatches_detached_deploy_request_with_route() {
 
 #[test]
 fn cli_requires_route_port_when_deploy_route_hostname_is_set() {
-    let args = detached_deploy_arg_refs()
+    let args = deploy_arg_refs()
         .chain(["--route-hostname", "api.example.com"])
         .map(str::to_owned);
 
@@ -51,46 +48,17 @@ fn cli_requires_route_port_when_deploy_route_hostname_is_set() {
 
 #[test]
 fn cli_requires_endpoint_port_when_deploy_route_is_set() {
-    let args = detached_deploy_arg_refs()
+    let args = deploy_arg_refs()
         .chain(["--route-hostname", "api.example.com", "--route-port", "443"])
         .map(str::to_owned);
 
     assert!(parse_command(args).is_err());
 }
 
-/// `--detach` is no longer required: deploy always submits and returns
-/// (the flag stays accepted for existing automation).
 #[test]
-fn cli_accepts_deploy_without_detach_flag() {
+fn cli_accepts_deploy_submit_request() {
     let args = [
         "deploy",
-        "--service",
-        "svc_api",
-        "--revision",
-        "rev_2",
-        "--image",
-        "ghcr.io/acme/api:rev-2",
-        "--replicas",
-        "1",
-        "--operation",
-        "op_deploy",
-        "--idempotency-key",
-        "idem_deploy",
-    ]
-    .map(str::to_owned);
-
-    let command = parse_command(args).expect("deploy without --detach parses");
-    let PloyzctlCommand::Deploy(command) = command else {
-        panic!("expected deploy command");
-    };
-    assert_eq!(command, detached_deploy_command());
-}
-
-#[test]
-fn cli_derives_deploy_idempotency_key_when_absent() {
-    let args = [
-        "deploy",
-        "--detach",
         "--service",
         "svc_api",
         "--revision",
@@ -104,18 +72,11 @@ fn cli_derives_deploy_idempotency_key_when_absent() {
     ]
     .map(str::to_owned);
 
-    let command = parse_command(args).expect("deploy without idempotency key parses");
+    let command = parse_command(args).expect("deploy parses");
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
     };
-    assert!(
-        command
-            .idempotency_key
-            .as_str()
-            .starts_with("idem_deploy_svc_api_"),
-        "derived idempotency key carries the command intent: {}",
-        command.idempotency_key.as_str()
-    );
+    assert_eq!(command, deploy_command_fixture());
 }
 
 // ---------------------------------------------------------------------------
@@ -164,25 +125,15 @@ fn cli_deploy_shorthand_derives_full_request() {
         "derived operation id carries the command intent: {}",
         command.operation_id.as_str()
     );
-    assert!(
-        command
-            .idempotency_key
-            .as_str()
-            .starts_with("idem_deploy_web_"),
-        "derived idempotency key carries the command intent: {}",
-        command.idempotency_key.as_str()
-    );
 }
 
-/// KTD9: two identical shorthand invocations must not collide on generated
-/// operation or idempotency ids.
+/// KTD9: two identical shorthand invocations must not collide on generated ids.
 #[test]
 fn cli_deploy_shorthand_generates_collision_resistant_ids() {
     let first = shorthand_deploy_command(quick_start_deploy_args());
     let second = shorthand_deploy_command(quick_start_deploy_args());
 
     assert_ne!(first.operation_id, second.operation_id);
-    assert_ne!(first.idempotency_key, second.idempotency_key);
     assert_ne!(first.revision_id, second.revision_id);
 }
 
@@ -197,8 +148,6 @@ fn cli_explicit_flags_override_shorthand_derivations() {
             "rev_pinned",
             "--operation",
             "op_pinned",
-            "--idempotency-key",
-            "idem_pinned",
             "--replicas",
             "3",
         ]
@@ -216,10 +165,6 @@ fn cli_explicit_flags_override_shorthand_derivations() {
         RevisionId::try_new("rev_pinned").expect("valid revision id")
     );
     assert_eq!(command.operation_id, operation_id("op_pinned"));
-    assert_eq!(
-        command.idempotency_key,
-        OperationIdempotencyKey::try_new("idem_pinned").expect("valid idempotency key")
-    );
     assert_eq!(
         command.replicas,
         ReplicaCount::try_new(3).expect("valid replicas")
@@ -445,7 +390,7 @@ fn quick_start_deploy_args() -> impl Iterator<Item = String> {
     .map(str::to_owned)
 }
 
-fn shorthand_deploy_command(args: impl IntoIterator<Item = String>) -> DetachedDeployCommand {
+fn shorthand_deploy_command(args: impl IntoIterator<Item = String>) -> DeployCommand {
     let command = parse_command(args).expect("deploy command parses");
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
@@ -459,7 +404,7 @@ fn binary_deploy_requires_nats_url() {
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
-        .args(detached_deploy_arg_refs())
+        .args(deploy_arg_refs())
         .output()
         .expect("ployzctl binary runs");
 
@@ -472,8 +417,8 @@ fn binary_deploy_requires_nats_url() {
 }
 
 #[test]
-fn deploy_detach_prints_operation_id_without_runtime_details() {
-    let output = DetachedDeployOutput {
+fn deploy_prints_operation_id_without_runtime_details() {
+    let output = DeployOutput {
         accepted: accepted_operation("op_deploy"),
     }
     .render();
@@ -484,11 +429,9 @@ fn deploy_detach_prints_operation_id_without_runtime_details() {
     );
 }
 
-fn detached_deploy_command() -> DetachedDeployCommand {
-    DetachedDeployCommand {
+fn deploy_command_fixture() -> DeployCommand {
+    DeployCommand {
         operation_id: operation_id("op_deploy"),
-        idempotency_key: OperationIdempotencyKey::try_new("idem_deploy")
-            .expect("valid idempotency key"),
         service_id: ServiceId::try_new("svc_api").expect("valid service id"),
         revision_id: RevisionId::try_new("rev_2").expect("valid revision id"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
@@ -497,12 +440,12 @@ fn detached_deploy_command() -> DetachedDeployCommand {
     }
 }
 
-fn detached_deploy_args() -> impl Iterator<Item = String> {
-    detached_deploy_arg_refs().map(str::to_owned)
+fn deploy_args() -> impl Iterator<Item = String> {
+    deploy_arg_refs().map(str::to_owned)
 }
 
-fn detached_deploy_args_with_route() -> impl Iterator<Item = String> {
-    detached_deploy_arg_refs()
+fn deploy_args_with_route() -> impl Iterator<Item = String> {
+    deploy_arg_refs()
         .chain([
             "--route-hostname",
             "api.example.com",
@@ -514,10 +457,9 @@ fn detached_deploy_args_with_route() -> impl Iterator<Item = String> {
         .map(str::to_owned)
 }
 
-fn detached_deploy_arg_refs() -> impl Iterator<Item = &'static str> {
+fn deploy_arg_refs() -> impl Iterator<Item = &'static str> {
     [
         "deploy",
-        "--detach",
         "--service",
         "svc_api",
         "--revision",
@@ -528,8 +470,6 @@ fn detached_deploy_arg_refs() -> impl Iterator<Item = &'static str> {
         "1",
         "--operation",
         "op_deploy",
-        "--idempotency-key",
-        "idem_deploy",
     ]
     .into_iter()
 }
@@ -539,11 +479,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
         operation_id: self::operation_id(operation_id),
         watch_subject: format!("plz.v1.op.{operation_id}.>"),
         start_sequence: event_sequence(1),
-        owner_lease: OperationOwnerLease::new(
-            self::operation_id(operation_id),
-            OperationOwnerId::try_new("control").expect("valid owner id"),
-            OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
-        ),
     }
 }
 

@@ -34,6 +34,29 @@ case "${release_tag}" in
     exit 1
     ;;
 esac
+if [ -z "${semver}" ]; then
+  echo "release version must include a version after v: ${version}" >&2
+  exit 1
+fi
+version_core="${semver%%-*}"
+major="${version_core%%.*}"
+minor_patch="${version_core#*.}"
+if [ "${minor_patch}" = "${version_core}" ]; then
+  echo "release version must look like vX.Y.Z or vX.Y.Z-suffix: ${version}" >&2
+  exit 1
+fi
+minor="${minor_patch%%.*}"
+patch="${minor_patch#*.}"
+if [ "${patch}" = "${minor_patch}" ]; then
+  echo "release version must look like vX.Y.Z or vX.Y.Z-suffix: ${version}" >&2
+  exit 1
+fi
+case "${major}:${minor}:${patch}" in
+  *[!0-9:]* | :* | *::*)
+    echo "release version must look like vX.Y.Z or vX.Y.Z-suffix: ${version}" >&2
+    exit 1
+    ;;
+esac
 
 platform="$(docker_platform "${PLOYZ_RELEASE_PLATFORM:-}")"
 platform_os="${platform%%/*}"

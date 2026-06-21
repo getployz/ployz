@@ -1,0 +1,36 @@
+name: ployz.sh
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/ployz.sh
+      - scripts/stage-ployz-sh-site.sh
+      - site/**
+      - .github/workflows/ployz-sh.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ployz-sh-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: cloudflare-pages
+      url: https://ployz.sh
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage ployz.sh site
+        run: bash scripts/stage-ployz-sh-site.sh
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist/ployz-sh-site --project-name=ployz-sh --branch=main

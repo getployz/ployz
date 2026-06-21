@@ -9,7 +9,7 @@ use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, Oper
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
 use ployz_test_support::ids::{
-    cert_id, container_id, idempotency_key, node_id, operation_id, revision_id, service_id, step_id,
+    cert_id, container_id, node_id, operation_id, revision_id, service_id, step_id,
 };
 
 #[test]
@@ -143,14 +143,10 @@ fn deploy_plan_created_append_uses_stable_message_id() {
 
 #[test]
 fn cert_submitted_append_uses_stable_message_id() {
-    let append = OperationEventAppend::cert_submitted(
-        operation_id("op_cert"),
-        cert_id("cert_api"),
-        &idempotency_key("idem_cert"),
-    );
+    let append = OperationEventAppend::cert_submitted(operation_id("op_cert"), cert_id("cert_api"));
 
     assert_eq!(append.subject(), "plz.v1.op.op_cert.cert.submitted");
-    assert_eq!(append.message_id().as_str(), "cert.submit.idem_cert");
+    assert_eq!(append.message_id().as_str(), "operation.submit.op_cert");
     assert_eq!(
         append.payload(),
         &OperationEvent::CertRenewalSubmitted {

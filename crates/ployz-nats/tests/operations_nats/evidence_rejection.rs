@@ -29,10 +29,7 @@ async fn operation_repository_rejects_container_started_for_non_running_operatio
     ));
 
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     let accepted = repository
@@ -154,10 +151,7 @@ async fn operation_repository_rejects_health_check_started_for_non_running_opera
     ));
 
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     let accepted = repository
@@ -252,10 +246,7 @@ async fn operation_repository_rejects_plan_created_after_planning() {
     ));
 
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     let accepted = repository
@@ -413,10 +404,7 @@ async fn operation_repository_rejects_durable_evidence_after_terminal_cursor() {
 
 async fn submit_deploy(repository: &AsyncNatsOperationRepository, operation: &str) {
     repository
-        .submit_deploy(
-            deploy_submission(operation, &format!("idem_{operation}"), "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission(operation, "svc_api"))
         .await
         .expect("submit accepted");
 }

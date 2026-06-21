@@ -21,7 +21,6 @@ use ployzd::deploy_worker::{
 use ployzd::docker::labels::ManagedContainerIdentity;
 use ployzd::node::protocol::NodeEnsureEndpointNetworkRpcRequest;
 use ployzd::node::runner::managed_container_labels;
-use ployzd::operation_lease::{OperationLeasePolicy, with_advisory_operation_lease};
 use std::time::Duration;
 
 fn assert_deploy_event_order(
@@ -71,33 +70,6 @@ where
     A: ActiveServiceCommitter,
 {
     execute_deploy_operation(command, ports).await
-}
-
-#[tokio::test(start_paused = true)]
-async fn advisory_lease_renews_without_controlling_work_result() {
-    let lease_renewer = RecordingLeaseRenewer::lost();
-    let policy = OperationLeasePolicy::try_new(
-        ployz_core::ops::OperationLeaseDurationSeconds::try_new(60).expect("valid lease duration"),
-        Duration::from_secs(5),
-    )
-    .expect("valid renewal interval");
-
-    let outcome = with_advisory_operation_lease(
-        operation_id("op_123"),
-        policy,
-        lease_renewer.clone(),
-        async {
-            tokio::time::sleep(Duration::from_secs(12)).await;
-            "done"
-        },
-    )
-    .await;
-
-    assert_eq!(outcome, "done");
-    assert_eq!(
-        lease_renewer.renewals(),
-        vec![operation_id("op_123"), operation_id("op_123")]
-    );
 }
 
 #[tokio::test]

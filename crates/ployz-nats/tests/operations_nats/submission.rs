@@ -1,76 +1,107 @@
 use super::fixtures::*;
 use ployz_core::ops::{
     DeployRunningStage, DeployTransition, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayRequest, OperationOwnershipStatus, OperationStatus,
+    OperationEventReplayRequest, OperationStatus,
 };
-use ployz_nats::operations::{
-    OperationLeaseClaim, OperationLeaseClaimError, ReplayOperationEventsError,
-};
+use ployz_nats::operations::{ReplayOperationEventsError, SubmitOperationError};
 
 #[tokio::test]
-async fn operation_repository_duplicate_submit_returns_original_operation() {
+async fn operation_repository_duplicate_operation_id_recovers_submit() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
 
     let first = repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("first submit accepted");
-    let second = repository
-        .submit_deploy(
-            deploy_submission("op_456", "idem_1", "svc_other"),
-            default_lease_claim(),
-        )
+    let duplicate = repository
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
-        .expect("duplicate submit accepted");
+        .expect("duplicate operation id recovers");
 
     assert!(first.should_start_execution);
-    assert!(!second.should_start_execution);
-    assert_eq!(first.operation_id, second.operation_id);
-    assert_eq!(first.start_sequence, second.start_sequence);
-    assert_eq!(first.target, second.target);
-    assert_eq!(first.lease, second.lease);
+    assert!(duplicate.should_start_execution);
     assert_eq!(first.operation_id, operation_id("op_123"));
-    assert_eq!(first.lease.owner_id, owner_id("control_a"));
-    assert!(
+    assert_eq!(duplicate.operation_id, operation_id("op_123"));
+    assert_eq!(duplicate.start_sequence, first.start_sequence);
+    assert_eq!(duplicate.target, first.target);
+}
+
+#[tokio::test]
+async fn operation_repository_duplicate_operation_id_after_progress_does_not_restart() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+
+    repository
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
+        .await
+        .expect("submit accepted");
+    repository
+        .record_deploy_transition(&operation_id("op_123"), DeployTransition::Planning)
+        .await
+        .expect("planning records");
+    let duplicate = repository
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
+        .await
+        .expect("duplicate operation id recovers");
+
+    assert!(!duplicate.should_start_execution);
+}
+
+#[tokio::test]
+async fn operation_repository_rejects_operation_id_reuse_across_kinds() {
+    let nats = test_nats().await;
+    let repository = operation_repository(&nats.jetstream).await;
+    let first = repository
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
+        .await
+        .expect("deploy submit accepted");
+
+    let rejected = repository
+        .submit_backup(backup_submission("op_123"))
+        .await
+        .expect_err("operation id reuse across kinds is rejected");
+
+    assert!(matches!(
+        rejected,
+        SubmitOperationError::DuplicateSequenceMismatch { sequence }
+            if sequence == first.start_sequence
+    ));
+    assert_eq!(
         repository
             .records()
-            .get(&operation_id("op_456"))
+            .get(&operation_id("op_123"))
             .await
-            .expect("status lookup succeeds")
-            .is_none()
+            .expect("status lookup succeeds"),
+        Some(OperationStatus::deploy_accepted(
+            operation_id("op_123"),
+            service_id("svc_api"),
+            first.start_sequence,
+        ))
     );
+    let page = repository
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id: operation_id("op_123"),
+            start_sequence: first.start_sequence,
+            limit: event_replay_limit(10),
+        })
+        .await
+        .expect("deploy replay succeeds");
+    assert_eq!(page.events.len(), 1);
 }
+
 #[tokio::test]
-async fn operation_repository_backup_submit_is_durable_and_idempotent() {
+async fn operation_repository_backup_submit_is_durable() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
 
     let first = repository
-        .submit_backup(
-            backup_submission("op_backup", "idem_backup"),
-            default_lease_claim(),
-        )
+        .submit_backup(backup_submission("op_backup"))
         .await
         .expect("first backup accepted");
-    let second = repository
-        .submit_backup(
-            backup_submission_with_prefix("op_other", "idem_backup", "clusters/other"),
-            default_lease_claim(),
-        )
-        .await
-        .expect("duplicate backup accepted");
 
     assert!(first.should_start_execution);
-    assert!(!second.should_start_execution);
     assert_eq!(first.operation_id, operation_id("op_backup"));
-    assert_eq!(first.operation_id, second.operation_id);
-    assert_eq!(first.start_sequence, second.start_sequence);
-    assert_eq!(first.target, second.target);
-    assert_eq!(first.lease, second.lease);
     assert_eq!(
         repository
             .records()
@@ -103,65 +134,7 @@ async fn operation_repository_backup_submit_is_durable_and_idempotent() {
         }
     );
 }
-#[test]
-fn operation_lease_claim_rejects_expired_window() {
-    assert_eq!(
-        OperationLeaseClaim::try_new(owner_id("control_a"), lease_time(100), lease_time(100)),
-        Err(OperationLeaseClaimError::AlreadyExpired {
-            now: lease_time(100),
-            expires_at: lease_time(100),
-        })
-    );
-}
-#[tokio::test]
-async fn operation_repository_duplicate_submit_returns_active_stored_owner_lease() {
-    let nats = test_nats().await;
-    let repository = operation_repository(&nats.jetstream).await;
 
-    let first = repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            lease_claim("control_a", 100, 160),
-        )
-        .await
-        .expect("first submit accepted");
-    let second = repository
-        .submit_deploy(
-            deploy_submission("op_456", "idem_1", "svc_other"),
-            lease_claim("control_b", 120, 180),
-        )
-        .await
-        .expect("duplicate submit accepted");
-
-    assert_eq!(second.operation_id, first.operation_id);
-    assert_eq!(second.start_sequence, first.start_sequence);
-    assert_eq!(second.lease, first.lease);
-}
-#[tokio::test]
-async fn operation_repository_status_snapshot_reports_expired_owner_lease() {
-    let nats = test_nats().await;
-    let repository = operation_repository(&nats.jetstream).await;
-    let accepted = repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            lease_claim("control_a", 100, 160),
-        )
-        .await
-        .expect("submit accepted");
-
-    let snapshot = repository
-        .operation_status_snapshot(&operation_id("op_123"), lease_time(161))
-        .await
-        .expect("status snapshot succeeds")
-        .expect("operation exists");
-
-    assert_eq!(
-        snapshot.ownership,
-        OperationOwnershipStatus::Expired {
-            lease: accepted.lease
-        }
-    );
-}
 #[tokio::test]
 async fn operation_repository_replay_rejects_missing_operation() {
     let nats = test_nats().await;
@@ -187,10 +160,7 @@ async fn operation_repository_replay_marks_terminal_operation_caught_up_as_termi
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     let accepted = repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository

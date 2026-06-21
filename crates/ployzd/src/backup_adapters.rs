@@ -163,6 +163,7 @@ impl BackupTargetAdapter for S3BackupAdapter {
         payload: &'a [u8],
     ) -> BoxFuture<'a, Result<BackupArtifact, BackupAdapterError>> {
         Box::pin(async move {
+            validate_backup_target(target)?;
             let S3TargetParts {
                 bucket,
                 key_prefix,
@@ -170,7 +171,6 @@ impl BackupTargetAdapter for S3BackupAdapter {
                 endpoint_url,
                 addressing_style,
             } = s3_target_parts(target)?;
-            validate_s3_target(bucket, key_prefix, region)?;
             let key = backup_object_key(key_prefix, operation_id, CONTROL_PLANE_BUNDLE_FILE);
             let client = self
                 .client(region, endpoint_url.as_deref(), *addressing_style)
@@ -199,6 +199,7 @@ impl BackupTargetAdapter for S3BackupAdapter {
         manifest: &'a BackupManifest,
     ) -> BoxFuture<'a, Result<(), BackupAdapterError>> {
         Box::pin(async move {
+            validate_backup_target(target)?;
             let S3TargetParts {
                 bucket,
                 key_prefix,
@@ -206,7 +207,6 @@ impl BackupTargetAdapter for S3BackupAdapter {
                 endpoint_url,
                 addressing_style,
             } = s3_target_parts(target)?;
-            validate_s3_target(bucket, key_prefix, region)?;
             let key = backup_object_key(key_prefix, operation_id, MANIFEST_FILE);
             let payload = serde_json::to_vec(manifest).map_err(|error| {
                 BackupAdapterError::EncodeManifest {
@@ -333,6 +333,7 @@ impl BackupTargetAdapter for InMemoryBackupAdapter {
         payload: &'a [u8],
     ) -> BoxFuture<'a, Result<BackupArtifact, BackupAdapterError>> {
         Box::pin(async move {
+            validate_backup_target(target)?;
             let S3TargetParts {
                 bucket,
                 key_prefix,
@@ -340,7 +341,6 @@ impl BackupTargetAdapter for InMemoryBackupAdapter {
                 endpoint_url,
                 addressing_style,
             } = s3_target_parts(target)?;
-            validate_s3_target(bucket, key_prefix, region)?;
             let key = backup_object_key(key_prefix, operation_id, CONTROL_PLANE_BUNDLE_FILE);
             self.put_object(key.clone(), payload.to_vec())?;
             Ok(BackupArtifact::new(
@@ -365,13 +365,8 @@ impl BackupTargetAdapter for InMemoryBackupAdapter {
         manifest: &'a BackupManifest,
     ) -> BoxFuture<'a, Result<(), BackupAdapterError>> {
         Box::pin(async move {
-            let S3TargetParts {
-                bucket,
-                key_prefix,
-                region,
-                ..
-            } = s3_target_parts(target)?;
-            validate_s3_target(bucket, key_prefix, region)?;
+            validate_backup_target(target)?;
+            let S3TargetParts { key_prefix, .. } = s3_target_parts(target)?;
             let key = backup_object_key(key_prefix, operation_id, MANIFEST_FILE);
             let payload = serde_json::to_vec(manifest).map_err(|error| {
                 BackupAdapterError::EncodeManifest {
@@ -444,14 +439,13 @@ fn s3_target_parts(target: &BackupTarget) -> Result<S3TargetParts<'_>, BackupAda
     })
 }
 
-fn validate_s3_target(
-    bucket: &str,
-    key_prefix: &str,
-    region: &str,
-) -> Result<(), BackupAdapterError> {
-    validate_non_empty("bucket", bucket)?;
-    validate_non_empty("key_prefix", key_prefix)?;
-    validate_non_empty("region", region)
+fn validate_backup_target(target: &BackupTarget) -> Result<(), BackupAdapterError> {
+    target
+        .validate_create()
+        .map_err(|error| BackupAdapterError::InvalidTarget {
+            field: error.field.wire_name(),
+            message: error.failure.message().to_owned(),
+        })
 }
 
 fn validate_s3_restore_source(

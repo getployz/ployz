@@ -1,7 +1,6 @@
 {
   "deploy_submit_request": {
     "operation_id": "op_123",
-    "idempotency_key": "idem_123",
     "target": {
       "service_id": "svc_api",
       "target_revision": "rev_2",
@@ -17,29 +16,18 @@
   "accepted_operation": {
     "operation_id": "op_123",
     "watch_subject": "plz.v1.op.op_123.>",
-    "start_sequence": "1",
-    "owner_lease": {
-      "operation_id": "op_123",
-      "owner_id": "control",
-      "expires_at": "120"
-    }
+    "start_sequence": "1"
   },
   "deploy_submit_response": {
     "status": "ok",
     "value": {
       "operation_id": "op_123",
       "watch_subject": "plz.v1.op.op_123.>",
-      "start_sequence": "1",
-      "owner_lease": {
-        "operation_id": "op_123",
-        "owner_id": "control",
-        "expires_at": "120"
-      }
+      "start_sequence": "1"
     }
   },
   "backup_create_request": {
     "operation_id": "op_backup",
-    "idempotency_key": "idem_backup",
     "target": {
       "kind": "s3",
       "bucket": "ployz-backups",
@@ -54,12 +42,7 @@
     "value": {
       "operation_id": "op_backup",
       "watch_subject": "plz.v1.op.op_backup.>",
-      "start_sequence": "3",
-      "owner_lease": {
-        "operation_id": "op_backup",
-        "owner_id": "control",
-        "expires_at": "120"
-      }
+      "start_sequence": "3"
     }
   },
   "init_first_node_activate_request": {
@@ -92,12 +75,7 @@
       "accepted": {
         "operation_id": "op_machine",
         "watch_subject": "plz.v1.op.op_machine.>",
-        "start_sequence": "7",
-        "owner_lease": {
-          "operation_id": "op_machine",
-          "owner_id": "control",
-          "expires_at": "120"
-        }
+        "start_sequence": "7"
       },
       "node_id": "node_2",
       "bootstrap_url": "https://get.ployz.sh",
@@ -188,14 +166,6 @@
         "state": "accepted"
       },
       "last_event_sequence": "1"
-    },
-    "ownership": {
-      "state": "owned",
-      "lease": {
-        "operation_id": "op_123",
-        "owner_id": "control",
-        "expires_at": "120"
-      }
     }
   },
   "ops_status_response": {
@@ -209,14 +179,6 @@
           "state": "accepted"
         },
         "last_event_sequence": "1"
-      },
-      "ownership": {
-        "state": "owned",
-        "lease": {
-          "operation_id": "op_123",
-          "owner_id": "control",
-          "expires_at": "120"
-        }
       }
     }
   },

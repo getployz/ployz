@@ -1,10 +1,10 @@
-use clap::{ArgAction, Args};
+use clap::Args;
 use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
 use ployz_core::ids::{OperationId, RevisionId, ServiceId};
-use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
-use crate::client_ids::{ClientOperationKind, generate_client_operation_ids};
+use crate::client_ids::generate_client_deploy_id;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
@@ -14,9 +14,8 @@ const ROUTE_SHORTHAND_PUBLIC_HTTP_PORT: u16 = 80;
 const DEFAULT_REPLICA_COUNT: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetachedDeployCommand {
+pub struct DeployCommand {
     pub operation_id: OperationId,
-    pub idempotency_key: OperationIdempotencyKey,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
     pub image: ImageReference,
@@ -24,12 +23,11 @@ pub struct DetachedDeployCommand {
     pub route: Option<DeployRoute>,
 }
 
-impl DetachedDeployCommand {
+impl DeployCommand {
     #[must_use]
     pub fn into_request(self) -> DeploySubmitRequest {
         DeploySubmitRequest {
             operation_id: self.operation_id,
-            idempotency_key: self.idempotency_key,
             target: DeployRequest {
                 service_id: self.service_id,
                 target_revision: self.revision_id,
@@ -42,11 +40,11 @@ impl DetachedDeployCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetachedDeployOutput {
+pub struct DeployOutput {
     pub accepted: AcceptedOperation,
 }
 
-impl DetachedDeployOutput {
+impl DeployOutput {
     #[must_use]
     pub const fn from_accepted(accepted: AcceptedOperation) -> Self {
         Self { accepted }
@@ -66,11 +64,9 @@ impl DetachedDeployOutput {
 /// `deploy --image IMAGE --route HOST:PORT` (R10): every internal field the
 /// expert flags expose is derived from the image reference and command
 /// intent (R11), and explicit flags override the derived values (R12).
-pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DetachedDeployCommand, PloyzctlCliError> {
+pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCliError> {
     let DeployCli {
-        detach: _,
         operation,
-        idempotency_key,
         service,
         revision,
         image,
@@ -88,10 +84,8 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DetachedDeployCommand,
         }
         None => derive_service_id(&image)?,
     };
-    let generated_ids = generate_client_operation_ids(ClientOperationKind::Deploy {
-        service_id: &service_id,
-    })
-    .map_err(|error| cli_error(format!("could not generate client operation ids: {error}")))?;
+    let generated_ids = generate_client_deploy_id(&service_id)
+        .map_err(|error| cli_error(format!("could not generate client operation ids: {error}")))?;
     let revision_id = match revision {
         Some(value) => {
             RevisionId::try_new(value).map_err(|error| invalid_value("--revision", error))?
@@ -103,11 +97,6 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DetachedDeployCommand,
             OperationId::try_new(value).map_err(|error| invalid_value("--operation", error))?
         }
         None => generated_ids.operation_id,
-    };
-    let idempotency_key = match idempotency_key {
-        Some(value) => OperationIdempotencyKey::try_new(value)
-            .map_err(|error| invalid_value("--idempotency-key", error))?,
-        None => generated_ids.idempotency_key,
     };
     let replicas = match replicas {
         Some(value) => parse_replicas(value)?,
@@ -130,9 +119,8 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DetachedDeployCommand,
         )?,
     };
 
-    Ok(DetachedDeployCommand {
+    Ok(DeployCommand {
         operation_id,
-        idempotency_key,
         service_id,
         revision_id,
         image,
@@ -143,14 +131,8 @@ pub(crate) fn deploy_command(parsed: DeployCli) -> Result<DetachedDeployCommand,
 
 #[derive(Debug, Args)]
 pub(crate) struct DeployCli {
-    /// Deploy always submits the operation and returns immediately;
-    /// accepted for compatibility with existing automation.
-    #[arg(long, action = ArgAction::SetTrue)]
-    detach: bool,
     #[arg(long)]
     operation: Option<String>,
-    #[arg(long)]
-    idempotency_key: Option<String>,
     #[arg(long)]
     service: Option<String>,
     #[arg(long)]

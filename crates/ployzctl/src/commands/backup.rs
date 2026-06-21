@@ -4,7 +4,6 @@ use ployz_core::backup::{
     S3BackupTarget, single_core_restore_contract,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{AcceptedOperation, BackupCreateRequest};
 
 use crate::commands::{PloyzctlCliError, invalid_value};
@@ -12,7 +11,6 @@ use crate::commands::{PloyzctlCliError, invalid_value};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupCreateCommand {
     pub operation_id: OperationId,
-    pub idempotency_key: OperationIdempotencyKey,
     pub target: BackupTarget,
 }
 
@@ -21,7 +19,6 @@ impl BackupCreateCommand {
     pub fn into_request(self) -> BackupCreateRequest {
         BackupCreateRequest {
             operation_id: self.operation_id,
-            idempotency_key: self.idempotency_key,
             target: self.target,
         }
     }
@@ -87,8 +84,6 @@ pub(crate) fn backup_create_command(
     Ok(BackupCreateCommand {
         operation_id: OperationId::try_new(parsed.operation)
             .map_err(|error| invalid_value("--operation", error))?,
-        idempotency_key: OperationIdempotencyKey::try_new(parsed.idempotency_key)
-            .map_err(|error| invalid_value("--idempotency-key", error))?,
         target: BackupTarget::s3(S3BackupTarget::new(
             non_empty_string("--s3-bucket", parsed.s3_bucket)?,
             non_empty_string("--s3-prefix", parsed.s3_prefix)?,
@@ -103,8 +98,6 @@ pub(crate) fn backup_create_command(
 pub(crate) struct BackupCreateCli {
     #[arg(long)]
     operation: String,
-    #[arg(long)]
-    idempotency_key: String,
     #[arg(long)]
     s3_bucket: String,
     #[arg(long)]

@@ -1,8 +1,9 @@
 use ployz_core::backup::{
     BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupItem, BackupManifest,
-    BackupPolicy, BackupRestoreSource, BackupTarget, RestoreStep, S3AddressingStyle,
-    S3BackupRestoreSource, S3BackupTarget, control_plane_backup_scope,
-    current_control_plane_bundle_scope, single_core_restore_contract,
+    BackupPolicy, BackupRestoreSource, BackupTarget, BackupTargetValidationFailure,
+    BackupTargetValidationField, RestoreStep, S3AddressingStyle, S3BackupRestoreSource,
+    S3BackupTarget, control_plane_backup_scope, current_control_plane_bundle_scope,
+    single_core_restore_contract,
 };
 
 #[test]
@@ -118,6 +119,62 @@ fn backup_target_artifact_and_restore_source_have_stable_s3_wire_shape() {
     assert!(!combined.contains("access_key"));
     assert!(!combined.contains("secret"));
     assert!(!combined.contains("token"));
+}
+
+#[test]
+fn backup_target_rejects_empty_s3_create_preconditions() {
+    let cases = [
+        (
+            BackupTarget::s3(S3BackupTarget::new(
+                " ",
+                "clusters/dev",
+                "us-east-1",
+                None,
+                S3AddressingStyle::VirtualHosted,
+            )),
+            BackupTargetValidationField::Bucket,
+        ),
+        (
+            BackupTarget::s3(S3BackupTarget::new(
+                "ployz-backups",
+                "\t",
+                "us-east-1",
+                None,
+                S3AddressingStyle::VirtualHosted,
+            )),
+            BackupTargetValidationField::KeyPrefix,
+        ),
+        (
+            BackupTarget::s3(S3BackupTarget::new(
+                "ployz-backups",
+                "clusters/dev",
+                "",
+                None,
+                S3AddressingStyle::VirtualHosted,
+            )),
+            BackupTargetValidationField::Region,
+        ),
+        (
+            BackupTarget::s3(S3BackupTarget::new(
+                "ployz-backups",
+                "clusters/dev",
+                "us-east-1",
+                Some("\n".to_owned()),
+                S3AddressingStyle::VirtualHosted,
+            )),
+            BackupTargetValidationField::EndpointUrl,
+        ),
+    ];
+
+    for (target, field) in cases {
+        assert_eq!(
+            target.validate_create().expect_err("target is invalid"),
+            ployz_core::backup::BackupTargetValidationError {
+                field,
+                failure: BackupTargetValidationFailure::Empty,
+            }
+        );
+    }
 }
 
 #[test]
