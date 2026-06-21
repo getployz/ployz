@@ -7,17 +7,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz_core::ids::OperationOwnerId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats,
 };
-use ployz_core::machine::MachineAddOperationState;
+use ployz_core::machine::{MachineAddFailure, MachineAddOperationState};
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::ops::{
-    OperationEventReplayPage, OperationLeaseExpiresAt, OperationOwnerLease,
-    OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
+    FailureMessage, OperationEventReplayPage, OperationStatus, OperationStatusSnapshot,
 };
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
@@ -26,10 +24,10 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, InitFirstNodeActivateRequest, InitFirstNodeActivateResponse,
-    InitFirstNodeActivated, MachineAddAccepted, MachineAddRequest, MachineAddResponse,
-    MachineJoinToken, MachineName, OperationApiResponse, OpsStatusRequest, OpsStatusResponse,
-    OpsWatchResponse,
+    AcceptedOperation, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
+    InitFirstNodeActivateResponse, InitFirstNodeActivated, MachineAddAccepted, MachineAddRequest,
+    MachineAddResponse, MachineJoinToken, MachineName, OperationApiResponse, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse,
     operation_api::{
         InitFirstNodeActivateApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
@@ -37,7 +35,9 @@ use ployz_sdk_types::{
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployz_test_support::nats::TestNats;
-use ployzctl::bootstrap_command::{DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_VERSION};
+use ployzctl::bootstrap_command::{
+    BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL,
+};
 use ployzctl::commands::PloyzctlCommand;
 use ployzctl::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
 use ployzctl::config::{ClusterContext, load_cluster_context, save_cluster_context};
@@ -153,7 +153,7 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
         target: SshTarget::parse(target).expect("target parses"),
         identity_override: None,
         roles: InstallRolePolicy::install_all(),
-        version: DEFAULT_RELEASE_VERSION.to_owned(),
+        release: BootstrapRelease::Channel(DEFAULT_RELEASE_CHANNEL.to_owned()),
         release_manifest_url: None,
         bootstrap_url: MachineBootstrapUrl::try_new(DEFAULT_BOOTSTRAP_URL)
             .expect("default bootstrap url is valid"),
@@ -245,11 +245,6 @@ fn accepted_operation(operation_id: &ployz_core::ids::OperationId) -> AcceptedOp
         operation_id: operation_id.clone(),
         watch_subject: format!("plz.v1.op.{}.>", operation_id.as_str()),
         start_sequence: event_sequence(1),
-        owner_lease: OperationOwnerLease::new(
-            operation_id.clone(),
-            OperationOwnerId::try_new("control").expect("valid owner id"),
-            OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
-        ),
     }
 }
 
@@ -371,6 +366,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     for expected in [
         "curl -fsSL -- 'https://ployz.sh'",
         "PLOYZ_NODE_ID='sg-core-1'",
+        "PLOYZ_CHANNEL='alpha'",
         "PLOYZ_GATEWAY='install'",
         "PLOYZ_DNS='install'",
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
@@ -425,6 +421,48 @@ async fn machine_init_installer_failure_names_phase_and_output() {
     assert!(
         !context.context_path.exists(),
         "no cluster context may be recorded for a failed init"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_init_activation_failure_does_not_record_machine_ssh() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let spec = test_api_service(&[InitFirstNodeActivateApi::ENDPOINT]);
+    let activate_endpoint = endpoint(&spec, InitFirstNodeActivateApi::ENDPOINT);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    runtime
+        .bind_endpoint(&activate_endpoint, |_request| async move {
+            let response: InitFirstNodeActivateResponse = OperationApiResponse::DomainError {
+                error: InitFirstNodeActivateError::InvalidPlan,
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    client.flush().await.expect("service flushes");
+
+    let first_node_success = first_node_installer_success_body("sg-core-1");
+    let ssh = FakeSshMachine::new("sg-core-1", &first_node_success);
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+
+    execute_command(
+        PloyzctlCommand::MachineInit(machine_init_command("root@203.0.113.10")),
+        &config,
+    )
+    .await
+    .expect_err("activation failure fails machine init");
+
+    let loaded = load_cluster_context(&context.context_path)
+        .expect("context loads")
+        .expect("context exists");
+    assert!(
+        loaded.machines.is_empty(),
+        "machine ssh mapping is saved only after activation succeeds"
     );
 }
 
@@ -544,17 +582,14 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
                 let request: OpsStatusRequest =
                     serde_json::from_slice(&request.payload).expect("status request decodes");
                 let response: OpsStatusResponse = OperationApiResponse::Ok {
-                    value: OperationStatusSnapshot::new(
-                        OperationStatus::MachineAdd {
-                            id: request.operation_id,
-                            node_id: node_id("sg-edge-1"),
-                            name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
-                            roles: InstallRolePolicy::install_all(),
-                            state: MachineAddOperationState::Completed,
-                            last_event_sequence: event_sequence(5),
-                        },
-                        OperationOwnershipStatus::Unclaimed,
-                    ),
+                    value: OperationStatusSnapshot::new(OperationStatus::MachineAdd {
+                        id: request.operation_id,
+                        node_id: node_id("sg-edge-1"),
+                        name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
+                        roles: InstallRolePolicy::install_all(),
+                        state: MachineAddOperationState::Completed,
+                        last_event_sequence: event_sequence(5),
+                    }),
                 };
                 NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             },
@@ -669,6 +704,20 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
     let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: Vec::new(),
+        },
+    )
+    .expect("cluster context saves");
 
     let error = execute_command(
         PloyzctlCommand::MachineAddRemote(MachineAddRemoteCommand {
@@ -696,4 +745,129 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
     );
     assert!(rendered.contains("run-installer"), "{rendered}");
     assert!(rendered.contains("keeper join exploded"), "{rendered}");
+    let loaded = load_cluster_context(&context.context_path)
+        .expect("context loads")
+        .expect("context exists");
+    assert!(
+        loaded.machines.is_empty(),
+        "failed remote join must not persist machine ssh context"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let spec = test_api_service(&[
+        MachineAddApi::ENDPOINT,
+        OpsWatchApi::ENDPOINT,
+        OpsStatusApi::ENDPOINT,
+    ]);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            |request| async move {
+                let request: MachineAddRequest =
+                    serde_json::from_slice(&request.payload).expect("machine add request decodes");
+                let response: MachineAddResponse = OperationApiResponse::Ok {
+                    value: MachineAddAccepted {
+                        accepted: accepted_operation(&request.operation_id),
+                        node_id: request.node_id,
+                        bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+                            .expect("valid bootstrap url"),
+                        join_bundle: machine_join_bundle(),
+                        join_token: MachineJoinToken::try_new("join_once_123")
+                            .expect("valid join token"),
+                    },
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("machine add endpoint binds");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            |_request| async move {
+                let response: OpsWatchResponse = OperationApiResponse::Ok {
+                    value: OperationEventReplayPage::terminal(Vec::new()),
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("ops watch endpoint binds");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            |request| async move {
+                let request: OpsStatusRequest =
+                    serde_json::from_slice(&request.payload).expect("status request decodes");
+                let response: OpsStatusResponse = OperationApiResponse::Ok {
+                    value: OperationStatusSnapshot::new(OperationStatus::MachineAdd {
+                        id: request.operation_id,
+                        node_id: node_id("sg-edge-1"),
+                        name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
+                        roles: InstallRolePolicy::install_all(),
+                        state: MachineAddOperationState::Failed {
+                            failure: MachineAddFailure::BootstrapFailed {
+                                message: FailureMessage::try_new("join failed")
+                                    .expect("valid failure message"),
+                            },
+                        },
+                        last_event_sequence: event_sequence(5),
+                    }),
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("ops status endpoint binds");
+    client.flush().await.expect("service flushes");
+
+    let ssh = FakeSshMachine::new("sg-edge-1", "echo 'join ok'");
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: Vec::new(),
+        },
+    )
+    .expect("cluster context saves");
+
+    let error = execute_command(
+        PloyzctlCommand::MachineAddRemote(MachineAddRemoteCommand {
+            target: SshTarget::parse("root@203.0.113.11").expect("target parses"),
+            identity_override: None,
+            roles: InstallRolePolicy::install_all(),
+            installer_script: None,
+        }),
+        &config,
+    )
+    .await
+    .expect_err("failed terminal status fails remote machine add");
+
+    let rendered = error.to_string();
+    assert!(rendered.contains("machine add operation op_add_sg-edge-1_"));
+    assert!(rendered.contains("Failed"), "{rendered}");
+    let loaded = load_cluster_context(&context.context_path)
+        .expect("context loads")
+        .expect("context exists");
+    assert!(
+        loaded.machines.is_empty(),
+        "failed terminal operation must not persist machine ssh context"
+    );
 }

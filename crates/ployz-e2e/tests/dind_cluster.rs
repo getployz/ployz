@@ -46,7 +46,7 @@ use ployz_sdk_types::{
     MachineSnapshot,
 };
 use ployz_test_support::ids::{
-    idempotency_key, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    node_id, operation_id, revision_id, route_hostname, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
@@ -473,7 +473,6 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
         .api
         .deploy_submit(&DeploySubmitRequest {
             operation_id: deploy_operation.clone(),
-            idempotency_key: idempotency_key("idem_dind_deploy"),
             target: smoke_deploy_target(),
         })
         .await

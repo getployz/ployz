@@ -1,13 +1,12 @@
 use std::fs;
 
-use ployz_core::ids::{NodeId, OperationOwnerId};
+use ployz_core::ids::NodeId;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation,
@@ -16,7 +15,8 @@ use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, node_id, operation_id};
 use ployzctl::bootstrap_command::{
-    BootstrapInstaller, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_VERSION, FounderBootstrapCommand,
+    BootstrapInstaller, BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL,
+    FounderBootstrapCommand,
 };
 use ployzctl::commands::machine::{
     MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
@@ -184,11 +184,6 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
         operation_id: self::operation_id(operation_id),
         watch_subject: format!("plz.v1.op.{operation_id}.>"),
         start_sequence: event_sequence(1),
-        owner_lease: OperationOwnerLease::new(
-            self::operation_id(operation_id),
-            OperationOwnerId::try_new("control").expect("valid owner id"),
-            OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
-        ),
     }
 }
 
@@ -527,7 +522,10 @@ fn machine_init_parses_target_with_default_roles_and_release() {
     assert_eq!(command.target.destination(), "root@203.0.113.10");
     assert_eq!(command.identity_override, None);
     assert_eq!(command.roles, InstallRolePolicy::install_all());
-    assert_eq!(command.version, DEFAULT_RELEASE_VERSION);
+    assert_eq!(
+        command.release,
+        BootstrapRelease::Channel(DEFAULT_RELEASE_CHANNEL.to_owned())
+    );
     assert_eq!(command.release_manifest_url, None);
     assert_eq!(command.bootstrap_url.as_str(), DEFAULT_BOOTSTRAP_URL);
     assert_eq!(command.cluster_name.as_str(), "ployz");
@@ -637,6 +635,48 @@ fn machine_init_accepts_expert_release_overrides() {
         BootstrapInstaller::RemoteScript("/tmp/ployz-install.sh".to_owned())
     );
     assert_eq!(command.cluster_name.as_str(), "dind-e2e");
+}
+
+#[test]
+fn machine_init_accepts_explicit_version_and_channel_selection() {
+    let PloyzctlCommand::MachineInit(command) = parse(&[
+        "machine",
+        "init",
+        "root@203.0.113.10",
+        "--version",
+        "v0.0.2-alpha.1",
+    ]) else {
+        panic!("expected machine init command");
+    };
+    assert_eq!(
+        command.release,
+        BootstrapRelease::Version("v0.0.2-alpha.1".to_owned())
+    );
+
+    let PloyzctlCommand::MachineInit(command) =
+        parse(&["machine", "init", "root@203.0.113.10", "--channel", "alpha"])
+    else {
+        panic!("expected machine init command");
+    };
+    assert_eq!(
+        command.release,
+        BootstrapRelease::Channel("alpha".to_owned())
+    );
+
+    let error = parse_command(
+        [
+            "machine",
+            "init",
+            "root@203.0.113.10",
+            "--channel",
+            "alpha",
+            "--version",
+            "v0.0.2-alpha.1",
+        ]
+        .map(str::to_owned),
+    )
+    .expect_err("channel and version conflict");
+    assert!(error.to_string().contains("--channel"));
 }
 
 // --- `machine add USER@HOST` CLI shape (U6) ---
@@ -750,7 +790,7 @@ fn founder_bootstrap_command_carries_minimal_first_node_inputs() {
         installer: BootstrapInstaller::BootstrapUrl(
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
-        version: "v0.0.1-alpha.1".to_owned(),
+        release: BootstrapRelease::Version("v0.0.1-alpha.1".to_owned()),
         release_manifest_url: Some("file:///tmp/manifest.env".to_owned()),
         node_id: node_id("sg-core-1"),
         roles: InstallRolePolicy::install_all()
@@ -785,6 +825,31 @@ fn founder_bootstrap_command_carries_minimal_first_node_inputs() {
         );
     }
     assert!(!rendered.contains("first-node-spec"));
+}
+
+#[test]
+fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
+    let command = FounderBootstrapCommand {
+        installer: BootstrapInstaller::BootstrapUrl(
+            MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
+        ),
+        release: BootstrapRelease::Channel("alpha".to_owned()),
+        release_manifest_url: None,
+        node_id: node_id("sg-core-1"),
+        roles: InstallRolePolicy::install_all(),
+        bootstrap_url: MachineBootstrapUrl::try_new("https://ployz.sh")
+            .expect("valid bootstrap url"),
+        cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
+        runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
+            .expect("valid runtime nats URL"),
+        node_public_ip: None,
+    };
+
+    let rendered = command.render();
+
+    assert!(rendered.contains("PLOYZ_CHANNEL='alpha'"));
+    assert!(!rendered.contains("PLOYZ_VERSION="));
+    assert!(rendered.contains("sh -s -- --first-node"));
 }
 
 // --- Remote install command rendering (U6) ---

@@ -7,10 +7,9 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 use ployz_core::ops::{
-    BackupOperationFailure, BackupTransition, CertOperationFailure, DeployCompletionOutcome,
-    DeployEvidence, DeployTransition, EventSequence, EventSequenceError, OperationEvent,
-    OperationEventReplayLimit, OperationEventReplayPage, OperationIdempotencyKey,
-    ReplayedOperationEvent,
+    BackupTransition, CertOperationFailure, DeployCompletionOutcome, DeployEvidence,
+    DeployTransition, EventSequence, EventSequenceError, OperationEvent, OperationEventReplayLimit,
+    OperationEventReplayPage, ReplayedOperationEvent,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::subjects::{
@@ -47,13 +46,10 @@ impl OperationEventAppend {
     }
 
     #[must_use]
-    pub fn deploy_submitted(
-        operation_id: OperationId,
-        target: DeployRequest,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Self {
+    pub fn deploy_submitted(operation_id: OperationId, target: DeployRequest) -> Self {
+        let message_operation_id = operation_id.clone();
         Self::from_event(
-            MessageId::new(format!("deploy.submit.{}", idempotency_key.as_str())),
+            submitted_message_id(&message_operation_id),
             OperationEvent::DeploySubmitted {
                 operation_id,
                 target,
@@ -107,13 +103,10 @@ impl OperationEventAppend {
     }
 
     #[must_use]
-    pub fn cert_submitted(
-        operation_id: OperationId,
-        cert_id: CertId,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Self {
+    pub fn cert_submitted(operation_id: OperationId, cert_id: CertId) -> Self {
+        let message_operation_id = operation_id.clone();
         Self::from_event(
-            MessageId::new(format!("cert.submit.{}", idempotency_key.as_str())),
+            submitted_message_id(&message_operation_id),
             OperationEvent::CertRenewalSubmitted {
                 operation_id,
                 cert_id,
@@ -128,10 +121,10 @@ impl OperationEventAppend {
         name: MachineName,
         roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
-        idempotency_key: &OperationIdempotencyKey,
     ) -> Self {
+        let message_operation_id = operation_id.clone();
         Self::from_event(
-            MessageId::new(format!("machine.add.submit.{}", idempotency_key.as_str())),
+            submitted_message_id(&message_operation_id),
             OperationEvent::MachineAddSubmitted {
                 operation_id,
                 node_id,
@@ -181,7 +174,7 @@ impl OperationEventAppend {
     #[must_use]
     pub fn machine_add_completed(operation_id: &OperationId, node_id: &NodeId) -> Self {
         Self::from_event(
-            MessageId::new(format!("machine.add.completed.{}", operation_id.as_str())),
+            MessageId::new(format!("machine.add.terminal.{}", operation_id.as_str())),
             OperationEvent::MachineAddCompleted {
                 operation_id: operation_id.clone(),
                 node_id: node_id.clone(),
@@ -196,7 +189,7 @@ impl OperationEventAppend {
         failure: MachineAddFailure,
     ) -> Self {
         Self::from_event(
-            MessageId::new(format!("machine.add.failed.{}", operation_id.as_str())),
+            MessageId::new(format!("machine.add.terminal.{}", operation_id.as_str())),
             OperationEvent::MachineAddFailed {
                 operation_id: operation_id.clone(),
                 node_id: node_id.clone(),
@@ -206,13 +199,10 @@ impl OperationEventAppend {
     }
 
     #[must_use]
-    pub fn backup_submitted(
-        operation_id: OperationId,
-        target: BackupTarget,
-        idempotency_key: &OperationIdempotencyKey,
-    ) -> Self {
+    pub fn backup_submitted(operation_id: OperationId, target: BackupTarget) -> Self {
+        let message_operation_id = operation_id.clone();
         Self::from_event(
-            MessageId::new(format!("backup.create.{}", idempotency_key.as_str())),
+            submitted_message_id(&message_operation_id),
             OperationEvent::BackupCreateSubmitted {
                 operation_id,
                 target,
@@ -265,7 +255,7 @@ impl OperationEventAppend {
         active_cert: ployz_core::cert::ActiveCertState,
     ) -> Self {
         Self::from_event(
-            MessageId::new(format!("cert.completed.{}", operation_id.as_str())),
+            MessageId::new(format!("cert.terminal.{}", operation_id.as_str())),
             OperationEvent::CertCompleted {
                 operation_id: operation_id.clone(),
                 active_cert,
@@ -276,7 +266,7 @@ impl OperationEventAppend {
     #[must_use]
     pub fn cert_failed(operation_id: &OperationId, failure: CertOperationFailure) -> Self {
         Self::from_event(
-            MessageId::new(format!("cert.failed.{}", operation_id.as_str())),
+            MessageId::new(format!("cert.terminal.{}", operation_id.as_str())),
             OperationEvent::CertFailed {
                 operation_id: operation_id.clone(),
                 failure,
@@ -624,6 +614,10 @@ fn replayed_event_from_replay_message(
     Ok(ReplayedOperationEvent { sequence, event })
 }
 
+fn submitted_message_id(operation_id: &OperationId) -> MessageId {
+    MessageId::new(format!("operation.submit.{}", operation_id.as_str()))
+}
+
 fn event_sequence_from_replay_u64(
     sequence: u64,
 ) -> Result<EventSequence, OperationEventReplayReadError> {
@@ -632,6 +626,10 @@ fn event_sequence_from_replay_u64(
 }
 
 fn transition_message_id(operation_id: &OperationId, transition: &DeployTransition) -> MessageId {
+    if deploy_transition_is_terminal(transition) {
+        return MessageId::new(format!("deploy.terminal.{}", operation_id.as_str()));
+    }
+
     MessageId::new(format!(
         "deploy.event.{}.{}",
         operation_id.as_str(),
@@ -721,21 +719,36 @@ fn backup_transition_message_id(
     operation_id: &OperationId,
     transition: &BackupTransition,
 ) -> MessageId {
+    if backup_transition_is_terminal(transition) {
+        return MessageId::new(format!("backup.terminal.{}", operation_id.as_str()));
+    }
+
     let suffix = match transition {
         BackupTransition::Running { stage } => stage.as_subject(),
-        BackupTransition::Completed { .. } => "completed",
-        BackupTransition::Failed { failure } => backup_failure_subject(failure),
-        BackupTransition::Cancelled { .. } => "cancelled",
+        BackupTransition::Completed { .. }
+        | BackupTransition::Failed { .. }
+        | BackupTransition::Cancelled { .. } => "terminal",
     };
 
     MessageId::new(format!("backup.{suffix}.{}", operation_id.as_str()))
 }
 
-const fn backup_failure_subject(failure: &BackupOperationFailure) -> &'static str {
-    match failure {
-        BackupOperationFailure::SnapshotFailed { .. } => "snapshot_failed",
-        BackupOperationFailure::ManifestWriteFailed { .. } => "manifest_write_failed",
-    }
+const fn deploy_transition_is_terminal(transition: &DeployTransition) -> bool {
+    matches!(
+        transition,
+        DeployTransition::Completed { .. }
+            | DeployTransition::Failed { .. }
+            | DeployTransition::Cancelled { .. }
+    )
+}
+
+const fn backup_transition_is_terminal(transition: &BackupTransition) -> bool {
+    matches!(
+        transition,
+        BackupTransition::Completed { .. }
+            | BackupTransition::Failed { .. }
+            | BackupTransition::Cancelled { .. }
+    )
 }
 
 fn deploy_transition_token(transition: &DeployTransition) -> String {

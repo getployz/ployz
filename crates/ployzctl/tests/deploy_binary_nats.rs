@@ -1,8 +1,7 @@
 use std::process::{Command, Output};
 
 use ployz_core::deploy::{ImageReference, ReplicaCount};
-use ployz_core::ids::{OperationOwnerId, RevisionId, ServiceId};
-use ployz_core::ops::{OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerLease};
+use ployz_core::ids::{RevisionId, ServiceId};
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
@@ -17,7 +16,7 @@ use ployz_test_support::nats::{SecuredTestNats, TestNats};
 use ployzctl::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn binary_deploy_detach_calls_nats_service() {
+async fn binary_deploy_calls_nats_service() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
@@ -33,10 +32,6 @@ async fn binary_deploy_detach_calls_nats_service() {
             let request: DeploySubmitRequest =
                 serde_json::from_slice(&request.payload).expect("deploy request decodes");
             assert_eq!(request.operation_id, operation_id("op_deploy"));
-            assert_eq!(
-                request.idempotency_key,
-                OperationIdempotencyKey::try_new("idem_deploy").expect("valid idempotency key")
-            );
             assert_eq!(
                 request.target.service_id,
                 ServiceId::try_new("svc_api").expect("valid service id")
@@ -68,7 +63,7 @@ async fn binary_deploy_detach_calls_nats_service() {
         .arg(server.server.client_url().as_str())
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
-        .args(detached_deploy_args())
+        .args(deploy_args())
         .output()
         .expect("ployzctl binary runs");
 
@@ -134,18 +129,12 @@ fn accepted_operation(operation_id: &str) -> AcceptedOperation {
         operation_id: self::operation_id(operation_id),
         watch_subject: format!("plz.v1.op.{operation_id}.>"),
         start_sequence: event_sequence(1),
-        owner_lease: OperationOwnerLease::new(
-            self::operation_id(operation_id),
-            OperationOwnerId::try_new("control").expect("valid owner id"),
-            OperationLeaseExpiresAt::try_new(120).expect("valid lease expiry"),
-        ),
     }
 }
 
-fn detached_deploy_args() -> [&'static str; 14] {
+fn deploy_args() -> [&'static str; 11] {
     [
         "deploy",
-        "--detach",
         "--service",
         "svc_api",
         "--revision",
@@ -156,8 +145,6 @@ fn detached_deploy_args() -> [&'static str; 14] {
         "1",
         "--operation",
         "op_deploy",
-        "--idempotency-key",
-        "idem_deploy",
     ]
 }
 

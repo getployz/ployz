@@ -1,5 +1,3 @@
-use ployz_core::ids::{OperationId, OperationOwnerId};
-use ployz_core::ops::{OperationLeaseExpiresAt, OperationOwnerLease};
 use ployz_core::subjects::{
     API_BACKUP_CREATE, API_DEPLOY_PLAN, API_DEPLOY_SUBMIT, API_MACHINE_ADD, API_MACHINE_INSPECT,
     API_MACHINE_JOIN_REPORT, API_MACHINE_LIST, API_OPS_STATUS, API_OPS_WATCH, API_SERVICE_INSPECT,
@@ -187,21 +185,12 @@ fn ops_status_returns_typed_missing_operation_error() {
 }
 
 #[test]
-fn mutating_service_acceptance_is_owned_not_inline_work() {
-    let lease = operation_lease("op_123", "control", 120);
-    let accepted = owned_operation(operation_id("op_123"), event_sequence(11), lease.clone());
+fn mutating_service_acceptance_returns_operation_pointer() {
+    let accepted = owned_operation(operation_id("op_123"), event_sequence(11));
 
-    assert_eq!(accepted.owner_lease, lease);
+    assert_eq!(accepted.operation_id, operation_id("op_123"));
     assert_eq!(accepted.watch_subject, "plz.v1.op.op_123.>".to_owned());
     assert_eq!(accepted.start_sequence, event_sequence(11));
-}
-
-fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
-    OperationOwnerLease::new(
-        OperationId::try_new(operation_id).expect("valid operation id"),
-        OperationOwnerId::try_new(owner_id).expect("valid owner id"),
-        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
-    )
 }
 
 fn service_names(catalog: &DaemonServiceCatalog) -> Vec<&str> {

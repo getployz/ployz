@@ -8,14 +8,16 @@ use crate::deploy_worker::{
     load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
 };
 use crate::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
-use crate::operation_lease::{
-    OwnerLeaseError, renew_verified_owner_lease, with_advisory_operation_lease,
-};
 use crate::tasks::TaskRegistry;
-use ployz_core::ops::{DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint};
+use ployz_core::ops::{
+    DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
+};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
-use ployz_nats::operations::{AcceptedDeploySubmission, RecordDeployTransitionError};
+use ployz_nats::operations::{
+    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
+    RecordOperationEventError,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -44,78 +46,66 @@ where
         node_runtime,
         health_checker,
     } = ports;
-    renew_verified_owner_lease(&controllers, &accepted.lease, &accepted.operation_id)
-        .await
-        .map_err(DeployOperationRunError::LeaseNotHeld)?;
-    let lease_policy = controllers.lease_policy();
-    let lease_renewer = controllers.clone();
-    let operation_id = accepted.operation_id.clone();
     let request = accepted.target.clone();
 
-    with_advisory_operation_lease(operation_id, lease_policy, lease_renewer, async move {
-        let facts = match load_deploy_execution_facts_from_nats(
-            &request,
-            node_scope,
-            &core_state,
-            &observations,
-            step_timeout,
-        )
-        .await
-        {
-            Ok(facts) => facts,
-            Err(source) => {
-                let failure_record_error = record_operation_failure(
-                    &controllers,
-                    &accepted,
-                    fact_load_failure(&request, &source),
-                )
-                .await
-                .err();
-                return Err(DeployOperationRunError::LoadFacts {
-                    source,
-                    failure_record_error,
-                });
-            }
-        };
-        let command = match prepare_deploy_execution_command(
-            accepted.operation_id.clone(),
-            request.clone(),
-            facts,
-        ) {
-            Ok(command) => command,
-            Err(source) => {
-                let failure_record_error = record_operation_failure(
-                    &controllers,
-                    &accepted,
-                    preparation_failure(&request),
-                )
-                .await
-                .err();
-                return Err(DeployOperationRunError::PrepareCommand {
-                    source,
-                    failure_record_error,
-                });
-            }
-        };
-        let mut recorder = controllers;
-        let mut route_state = core_state.clone();
-        let mut active_state = core_state;
-
-        execute_deploy_operation(
-            command,
-            DeployExecutionPorts {
-                recorder: &mut recorder,
-                wireguard_ebpf,
-                node_runtime,
-                health_checker,
-                route_state: &mut route_state,
-                active_state: &mut active_state,
-            },
-        )
-        .await
-        .map_err(DeployOperationRunError::Execute)
-    })
+    let facts = match load_deploy_execution_facts_from_nats(
+        &request,
+        node_scope,
+        &core_state,
+        &observations,
+        step_timeout,
+    )
     .await
+    {
+        Ok(facts) => facts,
+        Err(source) => {
+            let failure_record_error = record_operation_failure(
+                &controllers,
+                &accepted,
+                fact_load_failure(&request, &source),
+            )
+            .await
+            .err();
+            return Err(DeployOperationRunError::LoadFacts {
+                source,
+                failure_record_error,
+            });
+        }
+    };
+    let command = match prepare_deploy_execution_command(
+        accepted.operation_id.clone(),
+        request.clone(),
+        facts,
+    ) {
+        Ok(command) => command,
+        Err(source) => {
+            let failure_record_error =
+                record_operation_failure(&controllers, &accepted, preparation_failure(&request))
+                    .await
+                    .err();
+            return Err(DeployOperationRunError::PrepareCommand {
+                source,
+                failure_record_error,
+            });
+        }
+    };
+    let mut recorder = controllers;
+    let mut route_state = core_state.clone();
+    let mut active_state = core_state;
+
+    execute_deploy_operation(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            wireguard_ebpf,
+            node_runtime,
+            health_checker,
+            route_state: &mut route_state,
+            active_state: &mut active_state,
+        },
+    )
+    .await
+    .map_err(DeployOperationRunError::Execute)
 }
 
 async fn record_operation_failure(
@@ -166,7 +156,8 @@ pub struct DeployOperationPorts<'a, D, N, H> {
 
 #[derive(Debug)]
 pub enum DeployOperationRunError {
-    LeaseNotHeld(OwnerLeaseError),
+    AlreadyStarted,
+    ClaimStart(RecordDeployTransitionError),
     LoadFacts {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
@@ -212,6 +203,10 @@ impl DeployOperationRuntime {
     }
 
     pub fn start(&self, accepted: AcceptedDeploySubmission) {
+        if !accepted.should_start_execution {
+            return;
+        }
+
         let runtime = self.clone();
         self.task_registry.spawn(async move {
             let _outcome = runtime.run(accepted).await;
@@ -222,6 +217,10 @@ impl DeployOperationRuntime {
         self,
         accepted: AcceptedDeploySubmission,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
+        if !claim_deploy_execution(&self.controllers, &accepted.operation_id).await? {
+            return Err(DeployOperationRunError::AlreadyStarted);
+        }
+
         let mut wireguard_ebpf = NatsNodeWireGuardEbpfPreparer::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
         let mut node_runtime = NatsNodeContainerRuntime::new(self.client.clone())
@@ -245,6 +244,27 @@ impl DeployOperationRuntime {
             self.step_timeout,
         )
         .await
+    }
+}
+
+async fn claim_deploy_execution(
+    controllers: &OperationControllers,
+    operation_id: &ployz_core::ids::OperationId,
+) -> Result<bool, DeployOperationRunError> {
+    match controllers
+        .repository()
+        .record_deploy_transition(operation_id, DeployTransition::Planning)
+        .await
+    {
+        Ok(OperationStatusWrite::Stored { .. }) => Ok(true),
+        Ok(OperationStatusWrite::AlreadySatisfied { .. } | OperationStatusWrite::Stale { .. }) => {
+            Ok(false)
+        }
+        Err(RecordOperationEventError::ProjectStatus(
+            StatusProjectionError::InvalidTransition { .. }
+            | StatusProjectionError::TerminalState { .. },
+        )) => Ok(false),
+        Err(error) => Err(DeployOperationRunError::ClaimStart(error)),
     }
 }
 

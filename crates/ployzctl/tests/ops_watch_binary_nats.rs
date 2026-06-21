@@ -6,8 +6,7 @@ use ployz_core::deploy::{ImageReference, ReplicaCount};
 use ployz_core::ids::RevisionId;
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, OperationEvent, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationOwnershipStatus, OperationStatus,
-    OperationStatusSnapshot, ReplayedOperationEvent,
+    OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -87,17 +86,14 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
             assert_eq!(request.operation_id, operation_id("op_deploy"));
 
             let response: OpsStatusResponse = OperationApiResponse::Ok {
-                value: OperationStatusSnapshot::new(
-                    OperationStatus::Deploy {
-                        id: operation_id("op_deploy"),
-                        service_id: service_id("svc_api"),
-                        state: DeployOperationState::Running {
-                            stage: DeployRunningStage::WaitingForHealth,
-                        },
-                        last_event_sequence: event_sequence(1),
+                value: OperationStatusSnapshot::new(OperationStatus::Deploy {
+                    id: operation_id("op_deploy"),
+                    service_id: service_id("svc_api"),
+                    state: DeployOperationState::Running {
+                        stage: DeployRunningStage::WaitingForHealth,
                     },
-                    OperationOwnershipStatus::Unclaimed,
-                ),
+                    last_event_sequence: event_sequence(1),
+                }),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })

@@ -9,10 +9,7 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
     let nats = test_nats().await;
     let repository = operation_repository(&nats.jetstream).await;
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository
@@ -102,10 +99,7 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository
@@ -175,10 +169,7 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
     let repository = operation_repository(&nats.jetstream).await;
     let event_log = AsyncNatsOperationEventLog::new(nats.jetstream.clone());
     repository
-        .submit_deploy(
-            deploy_submission("op_123", "idem_1", "svc_api"),
-            default_lease_claim(),
-        )
+        .submit_deploy(deploy_submission("op_123", "svc_api"))
         .await
         .expect("submit accepted");
     repository

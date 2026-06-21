@@ -18,7 +18,6 @@ mod accessors;
 mod backup;
 mod classification;
 mod events;
-mod lease;
 mod projection;
 mod replay;
 mod routes;
@@ -29,10 +28,6 @@ pub use backup::{
 };
 pub use classification::OperationSubjectRef;
 pub use events::{OperationEvent, OperationSubject};
-pub use lease::{
-    OperationLeaseDurationError, OperationLeaseDurationSeconds, OperationLeaseExpiresAt,
-    OperationLeaseExpiresAtError, OperationOwnerLease, OperationOwnershipStatus,
-};
 pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_cert_transition,
     project_deploy_transition, project_operation_event, validate_cert_transition,
@@ -343,13 +338,12 @@ pub enum OperationStatus {
 #[serde(deny_unknown_fields)]
 pub struct OperationStatusSnapshot {
     pub status: OperationStatus,
-    pub ownership: OperationOwnershipStatus,
 }
 
 impl OperationStatusSnapshot {
     #[must_use]
-    pub fn new(status: OperationStatus, ownership: OperationOwnershipStatus) -> Self {
-        Self { status, ownership }
+    pub fn new(status: OperationStatus) -> Self {
+        Self { status }
     }
 }
 

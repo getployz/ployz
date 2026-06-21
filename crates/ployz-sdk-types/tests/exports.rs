@@ -18,12 +18,11 @@ use ployz_sdk_types::{
     MachineSnapshot, NatsCaCertificatePem, NatsUserSeed, NonEmptyTextError, OperationApiResponse,
     OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationOwnerId, OperationOwnerLease,
-    OperationStatus, OperationStatusSnapshot, OperationSubject, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RevisionId,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, ServiceId, ServiceInspectError,
-    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
-    ServiceSnapshot, SubjectTokenError,
+    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
+    OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount,
+    ReplicaCountError, RevisionId, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
         BackupCreateApi, DeploySubmitApi, InitFirstNodeActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
@@ -130,7 +129,6 @@ fn sdk_exports_operation_api_wire_types() {
     let operation_id = ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id");
     let request = DeploySubmitRequest {
         operation_id: operation_id.clone(),
-        idempotency_key: OperationIdempotencyKey::try_new("idem_1").expect("valid idempotency key"),
         target: DeployRequest {
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             target_revision: RevisionId::try_new("rev_1").expect("valid revision id"),
@@ -144,17 +142,16 @@ fn sdk_exports_operation_api_wire_types() {
             operation_id: operation_id.clone(),
             watch_subject: "plz.v1.op.op_123.>".to_owned(),
             start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
-            owner_lease: operation_lease("op_123", "control", 120),
         },
     };
 
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
-        r#"{"operation_id":"op_123","idempotency_key":"idem_1","target":{"service_id":"svc_api","target_revision":"rev_1","image":"ghcr.io/acme/api:rev-1","replicas":1}}"#
+        r#"{"operation_id":"op_123","target":{"service_id":"svc_api","target_revision":"rev_1","image":"ghcr.io/acme/api:rev-1","replicas":1}}"#
     );
     assert_eq!(
         serde_json::to_string(&response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.op.op_123.>","start_sequence":"1","owner_lease":{"operation_id":"op_123","owner_id":"control","expires_at":"120"}}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.op.op_123.>","start_sequence":"1"}}"#
     );
 
     let OperationApiResponse::Ok { value } = response else {
@@ -166,7 +163,6 @@ fn sdk_exports_operation_api_wire_types() {
         value.start_sequence,
         EventSequence::try_new(1).expect("valid event sequence")
     );
-    assert_eq!(value.owner_lease, operation_lease("op_123", "control", 120));
 
     let machine_add = MachineAddRequest {
         operation_id: ployz_sdk_types::OperationId::try_new("op_machine")
@@ -184,7 +180,6 @@ fn sdk_exports_operation_api_wire_types() {
                     .expect("valid operation id"),
                 watch_subject: "plz.v1.op.op_machine.>".to_owned(),
                 start_sequence: EventSequence::try_new(7).expect("valid event sequence"),
-                owner_lease: operation_lease("op_machine", "control", 120),
             },
             node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
             bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
@@ -200,7 +195,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7","owner_lease":{"operation_id":"op_machine","owner_id":"control","expires_at":"120"}},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123"}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7"},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123"}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -517,14 +512,6 @@ where
         C::Success::name(config),
         C::Error::name(config),
         C::RESPONSE_ALIAS,
-    )
-}
-
-fn operation_lease(operation_id: &str, owner_id: &str, expires_at: u64) -> OperationOwnerLease {
-    OperationOwnerLease::new(
-        ployz_sdk_types::OperationId::try_new(operation_id).expect("valid operation id"),
-        OperationOwnerId::try_new(owner_id).expect("valid owner id"),
-        OperationLeaseExpiresAt::try_new(expires_at).expect("valid lease expiry"),
     )
 }
 

@@ -209,9 +209,7 @@ pub async fn execute_command(
             render_api_call(
                 config,
                 async |api| api.deploy_submit(&command.into_request()).await,
-                |accepted| {
-                    crate::commands::deploy::DetachedDeployOutput::from_accepted(accepted).render()
-                },
+                |accepted| crate::commands::deploy::DeployOutput::from_accepted(accepted).render(),
             )
             .await
         }

@@ -6,8 +6,6 @@ import {
   eventSequence,
   machineJoinToken,
   operationId,
-  operationLeaseExpiresAt,
-  operationOwnerId,
   nodeId,
   PloyzNatsTransport,
   PloyzNatsTransportError,
@@ -33,7 +31,6 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   assert.ok(payload instanceof Uint8Array);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(payload)), {
     operation_id: "op_123",
-    idempotency_key: "idem_123",
     target: {
       service_id: "svc_api",
       target_revision: "rev_2",
@@ -186,7 +183,6 @@ function jsonResponse(value: unknown): PloyzNatsResponseMessage {
 function deployInput() {
   return {
     operationId: "op_123",
-    idempotencyKey: "idem_123",
     serviceId: "svc_api",
     targetRevision: "rev_2",
     image: "ghcr.io/acme/api:rev-2",
@@ -199,10 +195,5 @@ function acceptedOperation(operationIdValue: string): AcceptedOperation {
     operation_id: operationId(operationIdValue),
     watch_subject: `plz.v1.op.${operationIdValue}.>`,
     start_sequence: eventSequence(11),
-    owner_lease: {
-      operation_id: operationId(operationIdValue),
-      owner_id: operationOwnerId("control"),
-      expires_at: operationLeaseExpiresAt(120),
-    },
   };
 }

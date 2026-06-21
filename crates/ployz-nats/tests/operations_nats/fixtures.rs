@@ -10,7 +10,7 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
     BackupOperationSubmission, CertOperationSubmission, DeployOperationSubmission,
-    MachineAddOperationSubmission, OperationLeaseClaim,
+    MachineAddOperationSubmission,
 };
 
 pub(super) use async_nats::jetstream;
@@ -18,8 +18,8 @@ pub(super) use ployz_test_support::fixtures::{deploy_target, machine_join_bundle
 pub(super) use ployz_test_support::ids::{
     cancellation_reason, cert_id, container_id, event_replay_limit, event_sequence,
     failure_message, idempotency_key, join_token_expires_at as expires_at,
-    join_token_redeemed_at as joined_at, lease_time, machine_name, node_id, operation_id, owner_id,
-    raw_join_token, revision_id, service_id,
+    join_token_redeemed_at as joined_at, machine_name, node_id, operation_id, raw_join_token,
+    revision_id, service_id,
 };
 pub(super) use ployz_test_support::nats::TestNats;
 
@@ -40,50 +40,24 @@ pub(super) async fn operation_repository(
     )
 }
 
-pub(super) fn deploy_submission(
-    operation_id: &str,
-    idempotency_key: &str,
-    service_id: &str,
-) -> DeployOperationSubmission {
+pub(super) fn deploy_submission(operation_id: &str, service_id: &str) -> DeployOperationSubmission {
     DeployOperationSubmission {
         operation_id: self::operation_id(operation_id),
         target: deploy_target(service_id),
-        idempotency_key: self::idempotency_key(idempotency_key),
     }
 }
 
-pub(super) fn cert_submission(
-    operation_id: &str,
-    idempotency_key: &str,
-    cert_id: &str,
-) -> CertOperationSubmission {
+pub(super) fn cert_submission(operation_id: &str, cert_id: &str) -> CertOperationSubmission {
     CertOperationSubmission {
         operation_id: self::operation_id(operation_id),
         cert_id: self::cert_id(cert_id),
-        idempotency_key: self::idempotency_key(idempotency_key),
     }
 }
 
-pub(super) fn backup_submission(
-    operation_id: &str,
-    idempotency_key: &str,
-) -> BackupOperationSubmission {
+pub(super) fn backup_submission(operation_id: &str) -> BackupOperationSubmission {
     BackupOperationSubmission {
         operation_id: self::operation_id(operation_id),
         target: backup_target("clusters/dev"),
-        idempotency_key: self::idempotency_key(idempotency_key),
-    }
-}
-
-pub(super) fn backup_submission_with_prefix(
-    operation_id: &str,
-    idempotency_key: &str,
-    key_prefix: &str,
-) -> BackupOperationSubmission {
-    BackupOperationSubmission {
-        operation_id: self::operation_id(operation_id),
-        target: backup_target(key_prefix),
-        idempotency_key: self::idempotency_key(idempotency_key),
     }
 }
 
@@ -160,19 +134,6 @@ pub(super) fn issued_join_token_for_raw_with_expiry(
             .expect("test raw join token fingerprints"),
         self::expires_at(expires_at),
     )
-}
-
-pub(super) fn lease_claim(owner_id: &str, now: u64, expires_at: u64) -> OperationLeaseClaim {
-    OperationLeaseClaim::try_new(
-        self::owner_id(owner_id),
-        lease_time(now),
-        lease_time(expires_at),
-    )
-    .expect("valid lease claim")
-}
-
-pub(super) fn default_lease_claim() -> OperationLeaseClaim {
-    lease_claim("control_a", 100, 160)
 }
 
 pub(super) fn deploy_plan() -> DeployPlan {

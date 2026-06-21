@@ -16,8 +16,9 @@ pub mod typescript;
 pub use ployz_core::backup::{
     BackupArtifact, BackupArtifactKind, BackupArtifactLocation, BackupBundle, BackupItem,
     BackupManifest, BackupManifestVersion, BackupPolicy, BackupRestoreSource, BackupScopeEntry,
-    BackupTarget, ControlPlaneKvSnapshot, KvBucketSnapshot, KvEntrySnapshot, RestoreStep,
-    S3AddressingStyle, S3BackupRestoreSource, S3BackupTarget,
+    BackupTarget, BackupTargetValidationFailure, BackupTargetValidationField,
+    ControlPlaneKvSnapshot, KvBucketSnapshot, KvEntrySnapshot, RestoreStep, S3AddressingStyle,
+    S3BackupRestoreSource, S3BackupTarget,
 };
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
@@ -34,8 +35,7 @@ pub use ployz_core::deploy::{
     ImageReferenceError, ReplicaCount, ReplicaCountError, ReplicaSlot,
 };
 pub use ployz_core::ids::{
-    CertId, ContainerId, NodeId, OperationId, OperationOwnerId, RevisionId, ServiceId, StepId,
-    SubjectTokenError,
+    CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId, SubjectTokenError,
 };
 pub use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
@@ -57,11 +57,9 @@ pub use ployz_core::ops::{
     EventSequenceError, FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationLeaseExpiresAt, OperationLeaseExpiresAtError,
-    OperationOwnerLease, OperationOwnershipStatus, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
-    RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
-    RouteTarget,
+    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
+    OperatorHint, ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RouteTarget,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, DeployCleanupFailure,
@@ -77,7 +75,6 @@ pub use ployz_core::state::{
 #[serde(deny_unknown_fields)]
 pub struct DeploySubmitRequest {
     pub operation_id: OperationId,
-    pub idempotency_key: OperationIdempotencyKey,
     pub target: DeployRequest,
 }
 
@@ -87,7 +84,6 @@ pub type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySu
 #[serde(deny_unknown_fields)]
 pub struct BackupCreateRequest {
     pub operation_id: OperationId,
-    pub idempotency_key: OperationIdempotencyKey,
     pub target: BackupTarget,
 }
 
@@ -506,6 +502,9 @@ pub enum MachineAddError {
         operation_id: OperationId,
         sequence: EventSequence,
     },
+    DuplicateIdempotencyKey {
+        operation_id: OperationId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -516,9 +515,6 @@ pub enum MachineAddUnavailableSource {
     },
     EventLog {
         failure: OperationSubmitEventFailure,
-    },
-    Clock {
-        failure: OperationSubmitClockFailure,
     },
     BootstrapMaterial {
         failure: BootstrapMaterialFailure,
@@ -532,7 +528,6 @@ impl From<OperationSubmitUnavailableSource> for MachineAddUnavailableSource {
                 Self::StatusStore { failure }
             }
             OperationSubmitUnavailableSource::EventLog { failure } => Self::EventLog { failure },
-            OperationSubmitUnavailableSource::Clock { failure } => Self::Clock { failure },
         }
     }
 }
@@ -612,7 +607,6 @@ pub struct AcceptedOperation {
     pub operation_id: OperationId,
     pub watch_subject: String,
     pub start_sequence: EventSequence,
-    pub owner_lease: OperationOwnerLease,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -631,6 +625,11 @@ pub enum DeploySubmitError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BackupCreateError {
+    InvalidTarget {
+        operation_id: OperationId,
+        field: BackupTargetValidationField,
+        failure: BackupTargetValidationFailure,
+    },
     Unavailable {
         operation_id: OperationId,
         source: OperationSubmitUnavailableSource,
@@ -652,9 +651,6 @@ pub enum OperationSubmitUnavailableSource {
     EventLog {
         failure: OperationSubmitEventFailure,
     },
-    Clock {
-        failure: OperationSubmitClockFailure,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -665,11 +661,8 @@ pub enum OperationSubmitStatusFailure {
     DecodeStatus,
     EncodeSubmission,
     DecodeSubmission,
-    EncodeLease,
-    DecodeLease,
     CasConflict,
     GetStatus,
-    Clock,
     Timeout,
 }
 
@@ -713,9 +706,7 @@ pub enum OpsStatusUnavailableSource {
 #[serde(rename_all = "snake_case")]
 pub enum StatusReadFailure {
     DecodeStatus,
-    DecodeLease,
     GetStatus,
-    Clock,
     Timeout,
 }
 

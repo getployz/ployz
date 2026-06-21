@@ -20,8 +20,6 @@ import {
   type OperationEventReplayLimit,
   type OperationId,
   type OperationIdempotencyKey,
-  type OperationLeaseExpiresAt,
-  type OperationOwnerId,
   type OperatorHint,
   type ReplicaCount,
   type RevisionId,
@@ -34,10 +32,6 @@ type U64WireInput = number | string | bigint;
 
 export function operationId(value: string): OperationId {
   return subjectToken(value, "operation id") as OperationId;
-}
-
-export function operationOwnerId(value: string): OperationOwnerId {
-  return subjectToken(value, "operation owner id") as OperationOwnerId;
 }
 
 export function operationIdempotencyKey(value: string): OperationIdempotencyKey {
@@ -119,10 +113,6 @@ export function replicaCount(value: number): ReplicaCount {
 
 export function eventSequence(value: U64WireInput): EventSequence {
   return positiveU64String(value, "event sequence") as EventSequence;
-}
-
-export function operationLeaseExpiresAt(value: U64WireInput): OperationLeaseExpiresAt {
-  return positiveU64String(value, "operation lease expiry") as OperationLeaseExpiresAt;
 }
 
 export function certValidAt(value: U64WireInput): CertValidAt {

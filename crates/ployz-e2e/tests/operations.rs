@@ -11,7 +11,7 @@ use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, ImageReference, ReplicaCount,
     plan_service_deploy,
 };
-use ployz_core::ids::{OperationId, OperationOwnerId};
+use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::node::{
     ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
@@ -30,7 +30,7 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_nats::operations::{
     AsyncNatsOperationEventLog, AsyncNatsOperationRepository, AsyncNatsOperationStatusStore,
-    DeployOperationSubmission, OperationLeaseClaim,
+    DeployOperationSubmission,
 };
 use ployz_sdk_types::{DeploySubmitRequest, OpsStatusRequest};
 use ployzctl::api_client::OperationApiClient;
@@ -48,10 +48,10 @@ mod support;
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::node::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
-use ployz_test_support::ids::{container_id, lease_time, step_id};
+use ployz_test_support::ids::{container_id, step_id};
 use ployz_test_support::ids::{
-    event_replay_limit, event_sequence, idempotency_key, node_id, operation_id, revision_id,
-    route_hostname, route_port, service_id,
+    event_replay_limit, event_sequence, node_id, operation_id, revision_id, route_hostname,
+    route_port, service_id,
 };
 use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
 use support::nats::TestNats;
@@ -77,14 +77,10 @@ async fn e2e_repository_submit_and_transition_over_real_nats()
     let repository = AsyncNatsOperationRepository::new(event_log.clone(), status_store.clone());
 
     let accepted = repository
-        .submit_deploy(
-            DeployOperationSubmission {
-                operation_id: operation_id("op_123"),
-                target: deploy_target("svc_api"),
-                idempotency_key: idempotency_key("idem_1"),
-            },
-            test_lease_claim(),
-        )
+        .submit_deploy(DeployOperationSubmission {
+            operation_id: operation_id("op_123"),
+            target: deploy_target("svc_api"),
+        })
         .await
         .expect("submit deploy over real nats");
     repository
@@ -147,19 +143,11 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_api_123"),
         target: deploy_target("svc_api"),
-        idempotency_key: idempotency_key("idem_api_1"),
     };
 
     let accepted = api.deploy_submit(&request).await?;
 
     assert_eq!(accepted.operation_id, operation_id("op_api_123"));
-    let lease = accepted.owner_lease;
-    assert_eq!(lease.operation_id, operation_id("op_api_123"));
-    assert_eq!(
-        lease.owner_id,
-        OperationOwnerId::try_new("control").expect("valid owner id")
-    );
-    assert!(lease.expires_at.unix_seconds() > 0);
     assert_eq!(accepted.watch_subject, "plz.v1.op.op_api_123.>".to_owned());
     assert_eq!(accepted.start_sequence, event_sequence(1));
     // The control runtime starts executing the accepted deploy immediately,
@@ -232,7 +220,6 @@ async fn e2e_control_and_node_complete_deploy_over_real_nats()
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_e2e_run"),
         target: deploy_target("svc_api"),
-        idempotency_key: idempotency_key("idem_e2e_run"),
     };
 
     let accepted = api.deploy_submit(&request).await?;
@@ -411,7 +398,6 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
             gateway_runtime.listen_addr().port(),
             upstream.port(),
         ),
-        idempotency_key: idempotency_key("idem_e2e_route"),
     };
 
     let accepted = api.deploy_submit(&request).await?;
@@ -504,7 +490,6 @@ async fn e2e_gateway_serves_route_after_node_runtime_shutdown()
             route_port.get(),
             upstream.port(),
         ),
-        idempotency_key: idempotency_key("idem_e2e_node_runtime_down_route"),
     };
 
     api.deploy_submit(&request).await?;
@@ -615,7 +600,6 @@ async fn e2e_gateway_serves_and_applies_route_changes_after_control_shutdown()
             route_port.get(),
             first_upstream_port,
         ),
-        idempotency_key: idempotency_key("idem_e2e_control_down_route"),
     };
 
     api.deploy_submit(&request).await?;
@@ -793,7 +777,6 @@ async fn e2e_two_node_routed_deploy_serves_through_both_gateways()
     let request = DeploySubmitRequest {
         operation_id: operation_id("op_e2e_two_node_route"),
         target: deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
-        idempotency_key: idempotency_key("idem_e2e_two_node_route"),
     };
 
     let accepted = api.deploy_submit(&request).await?;
@@ -1029,15 +1012,6 @@ fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
         ip: ip.parse().expect("valid endpoint ip"),
         port: route_port(port),
     }
-}
-
-fn test_lease_claim() -> OperationLeaseClaim {
-    OperationLeaseClaim::try_new(
-        OperationOwnerId::try_new("control").expect("valid owner id"),
-        lease_time(100),
-        lease_time(160),
-    )
-    .expect("valid lease claim")
 }
 
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {

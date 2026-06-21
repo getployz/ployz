@@ -18,7 +18,7 @@ Bootstrap currently creates these resources:
 | Resource | Kind | Storage | Replicas | Current role |
 | --- | --- | --- | --- | --- |
 | `KV_CORE` | JetStream KV | file | 1 | Current control-plane indexes and explicitly named NATS authority. |
-| `KV_OPS` | JetStream KV | file | 1 | Operation status projection, submit idempotency records, owner leases, and machine-add handoff records. |
+| `KV_OPS` | JetStream KV | file | 1 | Operation status projection, machine-add pending-join handoff, mint claims, and temporary secret delivery records. |
 | `KV_OBS` | JetStream KV | file | 1 | Latest machine and role observations. |
 | `PLZ_OPS` | stream over `plz.v1.op.>` | file | 1 | Operation event timeline and replay source. |
 
@@ -78,11 +78,8 @@ cluster truth.
 | Key pattern | Stored value | Purpose | Classification | Reindexable? |
 | --- | --- | --- | --- | --- |
 | `ops.<operation_id>` | `OperationStatus` | Latest user-visible operation status projected from accepted events and transitions. | Disposable operation memory / status projection. | No after JetStream loss. If `PLZ_OPS` survives, status could be projected again in principle, but current reindex recovery should not infer exact operation state from machine facts. In-flight operations should fail visibly and be retried as new operations. |
-| `operation_leases.<operation_id>` | `OperationOwnerLease` | Advisory owner fencing for bounded operation workers. | Disposable lease. | No. Drop on reindex. A lease only has meaning with the corresponding live operation status and owner process. |
-| `deploy_submissions.<idempotency_key>` | `StoredOperationSubmission { operation_id, start_sequence }` | Idempotent deploy submit replay. | Disposable submit idempotency index. | No after JetStream loss. Duplicate-submit memory resets with JetStream. |
-| `cert_submissions.<idempotency_key>` | `StoredOperationSubmission { operation_id, start_sequence }` | Idempotent cert-operation submit replay. | Disposable submit idempotency index. | No after JetStream loss. |
-| `backup_submissions.<idempotency_key>` | `StoredOperationSubmission { operation_id, start_sequence }` | Idempotent backup submit replay. | Disposable submit idempotency index. | No after JetStream loss. |
-| `machine_add_submissions.<idempotency_key>` | `StoredMachineAddSubmission` with operation id, node id, machine name, roles, join bundle, issued join token, raw join token, and optional start sequence. | Idempotent machine-add submit replay and startup resume of unfinished credential mints. | Disposable operation memory with pending-join material. | No. If the machine has already become current, reindex current machine/auth state separately. If the machine add is still pending, the join cannot be recovered from non-JetStream evidence. |
+| `machine_add_claims.<idempotency_key>` | `StoredMachineAddClaim` with operation id, node id, machine name, roles, join bundle, issued join token, and raw join token. | First-writer claim for machine-add idempotency and join material before the accepted submission has a stream sequence. Same-operation retries adopt this record. | Disposable operation claim with pending-join material. | No. If the claim survives, retry the same operation idempotency key to finish acceptance. If KV is lost, submit a new machine-add operation. |
+| `machine_add_submissions.<idempotency_key>` | `StoredMachineAddSubmission` with operation id, start sequence, node id, machine name, roles, join bundle, issued join token, and raw join token. | Accepted machine-add join material and startup resume of unfinished credential mints. Same-operation retries adopt this record to finish status projection. | Disposable operation memory with pending-join material. | No. If the machine has already become current, reindex current machine/auth state separately. If the machine add is still pending, the join cannot be recovered from non-JetStream evidence. |
 | `machine_add_join_tokens.<fingerprint>` | `StoredMachineAddJoinToken { operation_id, idempotency_key }` | Lookup from presented raw join token to the accepted machine-add submission. | Disposable pending-join index. | No. It only supports a pending join. |
 | `machine_add_mint_claims.<idempotency_key>` | `StoredMachineAddMintClaim { operation_id, nkey_public, nkey_seed }` | Write-once atomic claim for minted machine credentials so resumed or concurrent mint workers converge. | Atomic operation claim / secret-bearing operation memory. | No. The NKey seed cannot be derived from the public key. If lost before delivery, mint through a new machine-add operation. If already delivered, current authority can be rebuilt from `authorized-users.conf` and the machine's local credential. |
 | `machine_add_secret_deliveries.<idempotency_key>` | `StoredMachineAddSecretDelivery { operation_id, secret_delivery }` containing the machine NATS seed. | Temporary handoff record used by join redemption after material is ready. Deleted after join report records completed or failed. | Temporary secret-bearing operation memory. | No. Loss before redeem means the pending join cannot receive credentials from reindex. Loss after successful join report does not matter. |
@@ -133,9 +130,9 @@ only `KV_CORE`, and restore reports observations as rebuildable after node
 reconnect.
 
 That means today's backup/restore path preserves current `KV_CORE` records but
-does not preserve operation status, idempotency records, observation cache, or
-operation event history. That matches the disposable/rebuildable direction for
-many records, but it leaves two audit gaps:
+does not preserve operation memory, observation cache, or operation event
+history. That matches the disposable/rebuildable direction for many records,
+but it leaves two audit gaps:
 
 - `KV_OPS` contains secret-bearing machine-add records; if it is not backed up,
   pending joins and exact operation evidence are intentionally lost after
@@ -158,8 +155,8 @@ An explicit reindex after JetStream loss should:
    only from unambiguous machine-local facts and Docker reality.
 6. Leave ambiguous or missing service, route, cert, and machine facts as
    diagnostic observations until a named repair operation resolves them.
-7. Do not reconstruct `KV_OPS` idempotency indexes, owner leases, machine-add
-   handoff secrets, or `PLZ_OPS` event timelines. Record the reindex operation's
+7. Do not reconstruct `KV_OPS` machine-add handoff secrets, mint claims, status
+   records, or `PLZ_OPS` event timelines. Record the reindex operation's
    own evidence about what was adopted, skipped, or ambiguous.
 
 ## Source Pointers

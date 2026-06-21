@@ -1,4 +1,4 @@
-//! Client-side operation/idempotency IDs for ergonomic commands.
+//! Client-side operation IDs for ergonomic commands.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,48 +8,47 @@ use ployz_core::ids::{NodeId, OperationId, ServiceId, SubjectTokenError};
 use ployz_core::ops::OperationIdempotencyKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClientGeneratedIds {
+pub(crate) struct ClientGeneratedOperationId {
     pub suffix: String,
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientGeneratedMachineAddIds {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClientOperationKind<'id> {
-    Deploy { service_id: &'id ServiceId },
-    MachineAdd { node_id: &'id NodeId },
-}
-
-impl<'id> ClientOperationKind<'id> {
-    const fn action(self) -> &'static str {
-        match self {
-            Self::Deploy { .. } => "deploy",
-            Self::MachineAdd { .. } => "add",
-        }
-    }
-
-    fn subject(self) -> &'id str {
-        match self {
-            Self::Deploy { service_id } => service_id.as_str(),
-            Self::MachineAdd { node_id } => node_id.as_str(),
-        }
-    }
-}
-
 /// Collision-resistant, readable IDs tied to the command intent.
-pub(crate) fn generate_client_operation_ids(
-    kind: ClientOperationKind<'_>,
-) -> Result<ClientGeneratedIds, ClientGeneratedIdsError> {
-    let suffix = generated_id_suffix();
-    let action = kind.action();
-    let subject = kind.subject();
-    Ok(ClientGeneratedIds {
-        operation_id: OperationId::try_new(format!("op_{action}_{subject}_{suffix}"))
-            .map_err(|source| ClientGeneratedIdsError::OperationId { source })?,
+pub(crate) fn generate_client_deploy_id(
+    service_id: &ServiceId,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id("deploy", service_id.as_str())
+}
+
+pub(crate) fn generate_client_machine_add_ids(
+    node_id: &NodeId,
+) -> Result<ClientGeneratedMachineAddIds, ClientGeneratedIdsError> {
+    let generated = generate_client_operation_id("add", node_id.as_str())?;
+    Ok(ClientGeneratedMachineAddIds {
         idempotency_key: OperationIdempotencyKey::try_new(format!(
-            "idem_{action}_{subject}_{suffix}"
+            "idem_add_{}_{}",
+            node_id.as_str(),
+            generated.suffix
         ))
         .map_err(|source| ClientGeneratedIdsError::IdempotencyKey { source })?,
+        operation_id: generated.operation_id,
+    })
+}
+
+fn generate_client_operation_id(
+    action: &'static str,
+    subject: &str,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    let suffix = generated_id_suffix();
+    Ok(ClientGeneratedOperationId {
+        operation_id: OperationId::try_new(format!("op_{action}_{subject}_{suffix}"))
+            .map_err(|source| ClientGeneratedIdsError::OperationId { source })?,
         suffix,
     })
 }

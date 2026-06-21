@@ -31,8 +31,6 @@ export {
   operationEventReplayLimit,
   operationId,
   operationIdempotencyKey,
-  operationLeaseExpiresAt,
-  operationOwnerId,
   operatorHint,
   replicaCount,
   revisionId,
@@ -153,7 +151,6 @@ export type PloyzApiEndpoint = (typeof OPERATION_API_CONTRACTS)[number]["name"];
 
 export interface PloyzDeployInput {
   operationId: string;
-  idempotencyKey: string;
   serviceId: string;
   targetRevision: string;
   image: string;
@@ -184,7 +181,6 @@ export interface PloyzMachineJoinRedeemInput {
 
 export interface PloyzBackupCreateInput {
   operationId: string;
-  idempotencyKey: string;
   target: PloyzBackupTargetInput;
 }
 
@@ -331,7 +327,6 @@ export async function connectPloyzNats(
 export function backupCreateRequest(input: PloyzBackupCreateInput): BackupCreateRequest {
   return {
     operation_id: operationId(input.operationId),
-    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     target: backupTarget(input.target),
   };
 }
@@ -341,19 +336,28 @@ function backupTarget(input: PloyzBackupTargetInput): BackupCreateRequest["targe
     case "s3":
       return {
         kind: "s3",
-        bucket: input.bucket,
-        key_prefix: input.keyPrefix,
-        region: input.region,
-        endpoint_url: input.endpointUrl ?? null,
+        bucket: nonEmptyBackupTargetText("backup S3 bucket", input.bucket),
+        key_prefix: nonEmptyBackupTargetText("backup S3 key prefix", input.keyPrefix),
+        region: nonEmptyBackupTargetText("backup S3 region", input.region),
+        endpoint_url:
+          input.endpointUrl == null
+            ? null
+            : nonEmptyBackupTargetText("backup S3 endpoint URL", input.endpointUrl),
         addressing_style: input.addressingStyle,
       };
   }
 }
 
+function nonEmptyBackupTargetText(field: string, value: string): string {
+  if (value.trim() === "") {
+    throw new RangeError(`${field} must not be empty`);
+  }
+  return value;
+}
+
 export function deploySubmitRequest(input: PloyzDeployInput): DeploySubmitRequest {
   return {
     operation_id: operationId(input.operationId),
-    idempotency_key: operationIdempotencyKey(input.idempotencyKey),
     target: {
       service_id: serviceId(input.serviceId),
       target_revision: revisionId(input.targetRevision),
