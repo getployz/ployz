@@ -354,10 +354,10 @@ download_verified() {
   curl -fsSL "$url" -o "$target"
   case "$sha256_tool" in
     sha256sum)
-      printf '%s  %s\n' "$sha256" "$target" | sha256sum -c -
+      printf '%s  %s\n' "$sha256" "$target" | sha256sum -c - >&2
       ;;
     shasum)
-      printf '%s  %s\n' "$sha256" "$target" | shasum -a 256 -c -
+      printf '%s  %s\n' "$sha256" "$target" | shasum -a 256 -c - >&2
       ;;
   esac
 }
