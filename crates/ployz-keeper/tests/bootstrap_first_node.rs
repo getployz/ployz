@@ -119,6 +119,11 @@ fn first_node_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
         assert!(env.contains("PLOYZ_NATS_CA_FILE=/var/lib/ployz/nats/ca.pem\n"));
         assert!(env.contains("PLOYZ_NATS_NKEY_SEED_FILE=/var/lib/ployz/nats/node.seed\n"));
         assert!(!env.contains("controller.seed"));
+        if matches!(role, DaemonProcessRole::Gateway) {
+            assert!(env.contains("PLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\n"));
+        } else {
+            assert!(!env.contains("PLOYZ_GATEWAY_LISTEN_ADDR"));
+        }
     }
 
     assert_eq!(
