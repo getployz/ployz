@@ -768,7 +768,13 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     );
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-gateway.env")).unwrap(),
-        expected_edge_env
+        format!(
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_2\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            ca = join_material_dir.join(JOIN_TRUSTED_CA_FILE).display(),
+            seed = join_material_dir.join(JOIN_NATS_CREDENTIALS_FILE).display(),
+            bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
+            ctl = root.join("bin/ployz-ebpf-ctl").display(),
+        )
     );
     assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
     assert!(systemd_dir.join("ployzd-gateway.service").exists());

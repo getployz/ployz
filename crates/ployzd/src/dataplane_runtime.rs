@@ -582,6 +582,16 @@ fn wireguard_interface_plans(
             "sh",
             [
                 "-c".to_owned(),
+                "if [ -f /etc/apparmor.d/wg ] && command -v apparmor_parser >/dev/null 2>&1; then install -d -m 0755 /etc/apparmor.d/local; touch /etc/apparmor.d/local/wg; if ! grep -qxF \"  $1 r,\" /etc/apparmor.d/local/wg; then printf '\\n  %s r,\\n' \"$1\" >> /etc/apparmor.d/local/wg; fi; apparmor_parser -r /etc/apparmor.d/wg; fi".to_owned(),
+                "--".to_owned(),
+                private_key_arg.clone(),
+            ],
+        ),
+        HostCommandPlan::provisioning_command(
+            WireGuardEbpfComponent::WireGuard,
+            "sh",
+            [
+                "-c".to_owned(),
                 "ip link show \"$1\" >/dev/null 2>&1 || ip link add dev \"$1\" type wireguard"
                     .to_owned(),
                 "--".to_owned(),
@@ -820,6 +830,16 @@ mod tests {
             [
                 "-c",
                 "test -s \"$1\" || (umask 077 && wg genkey > \"$1\")",
+                "--",
+                "/etc/ployz/wireguard.key"
+            ]
+        )));
+        assert!(plans.contains(&HostCommandPlan::provisioning_command(
+            WireGuardEbpfComponent::WireGuard,
+            "sh",
+            [
+                "-c",
+                "if [ -f /etc/apparmor.d/wg ] && command -v apparmor_parser >/dev/null 2>&1; then install -d -m 0755 /etc/apparmor.d/local; touch /etc/apparmor.d/local/wg; if ! grep -qxF \"  $1 r,\" /etc/apparmor.d/local/wg; then printf '\\n  %s r,\\n' \"$1\" >> /etc/apparmor.d/local/wg; fi; apparmor_parser -r /etc/apparmor.d/wg; fi",
                 "--",
                 "/etc/ployz/wireguard.key"
             ]

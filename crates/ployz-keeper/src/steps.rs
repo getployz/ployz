@@ -32,6 +32,8 @@ use nats_material::{DEFAULT_NATS_PORT, first_node_listener, tls_loopback_nats_ur
 
 const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
 const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
+const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
+const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeeperStepPlan {
@@ -659,6 +661,12 @@ impl PloyzdRoleEnvironmentTarget {
             output.push_str(PLOYZ_NODE_PUBLIC_IP_ENV);
             output.push('=');
             output.push_str(&public_ip.to_string());
+            output.push('\n');
+        }
+        if matches!(role, DaemonProcessRole::Gateway) {
+            output.push_str(PLOYZ_GATEWAY_LISTEN_ADDR_ENV);
+            output.push('=');
+            output.push_str(DEFAULT_GATEWAY_LISTEN_ADDR);
             output.push('\n');
         }
         if let Some(url) = &self.machine_bootstrap_url {
