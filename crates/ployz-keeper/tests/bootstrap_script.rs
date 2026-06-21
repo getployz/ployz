@@ -922,6 +922,7 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
     let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
     let fake_bin = root.join("fake-bin");
     let keeper_args_log = root.join("keeper-args.log");
+    let first_node_spec_log = root.join("first-node-spec.json");
     fs::create_dir_all(&fake_bin).expect("fake bin can be created");
     fs::create_dir_all(nats_server.parent().expect("nats server has a parent"))
         .expect("nats dir exists");
@@ -929,11 +930,14 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
     write_executable(&nats_server, "#!/bin/sh\nexit 0\n");
     fs::write(
         &keeper_source,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PLOYZ_TEST_KEEPER_ARGS_LOG\"\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PLOYZ_TEST_KEEPER_ARGS_LOG\"\ncat \"$3\" > \"$PLOYZ_TEST_FIRST_NODE_SPEC_LOG\"\nexit 0\n",
     )
     .expect("fake keeper source can be written");
     write_executable(&fake_bin.join("curl"), fake_curl_script());
-    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(
+        &fake_bin.join("sha256sum"),
+        "#!/bin/sh\ncase \"${1:-}\" in\n  -c) read -r line; set -- $line; printf '%s: OK\\n' \"$2\"; exit 0 ;;\n  *) printf '%s  %s\\n' \"$PLOYZ_TEST_EXISTING_SHA\" \"$1\" ;;\nesac\n",
+    );
     write_executable(&fake_bin.join("uname"), fake_uname_script());
     write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
 
@@ -966,6 +970,8 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
         )
         .env("PLOYZ_EBPF_CTL_SHA256", KEEPER_DIGEST)
         .env("PLOYZ_TEST_KEEPER_ARGS_LOG", &keeper_args_log)
+        .env("PLOYZ_TEST_FIRST_NODE_SPEC_LOG", &first_node_spec_log)
+        .env("PLOYZ_TEST_EXISTING_SHA", KEEPER_DIGEST)
         .env_remove("PLOYZ_JOIN_TOKEN")
         .env_remove("PLOYZ_NATS_URL")
         .output()
@@ -983,6 +989,9 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
         keeper_args.starts_with("first-node-install --spec "),
         "{keeper_args}"
     );
+    let spec = fs::read_to_string(&first_node_spec_log).expect("first-node spec is recorded");
+    serde_json::from_str::<serde_json::Value>(&spec).expect("first-node spec is valid JSON");
+    assert!(!spec.contains(": OK"));
 }
 
 #[cfg(unix)]
