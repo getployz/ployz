@@ -17,6 +17,8 @@ fn release_workflow_and_packager_reject_non_version_tags() {
         .expect("package script is readable");
     assert!(package_script.contains("release version must include a version after v"));
     assert!(package_script.contains("release version must look like vX.Y.Z or vX.Y.Z-suffix"));
+    assert!(package_script.contains("PLOYZ_RELEASE_CARGO_TARGET_DIR"));
+    assert!(package_script.contains("export CARGO_TARGET_DIR=\"${release_cargo_target_dir}\""));
 }
 
 #[cfg(unix)]

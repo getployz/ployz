@@ -93,7 +93,9 @@ case "${platform_os}" in
         exit 1
         ;;
     esac
-    artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${ROOT_DIR}/target/${darwin_triple}/release}"
+    release_cargo_target_dir="${PLOYZ_RELEASE_CARGO_TARGET_DIR:-${CARGO_TARGET_DIR:-${ROOT_DIR}/target}}"
+    export CARGO_TARGET_DIR="${release_cargo_target_dir}"
+    artifact_dir="${PLOYZ_RELEASE_ARTIFACT_DIR:-${release_cargo_target_dir}/${darwin_triple}/release}"
     required_artifacts=(
       ployzctl
     )
