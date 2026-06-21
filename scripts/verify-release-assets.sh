@@ -30,6 +30,29 @@ case "${release_tag}" in
     exit 1
     ;;
 esac
+if [ -z "${semver}" ]; then
+  echo "release tag must include a version after v: ${release_tag}" >&2
+  exit 1
+fi
+version_core="${semver%%-*}"
+major="${version_core%%.*}"
+minor_patch="${version_core#*.}"
+if [ "${minor_patch}" = "${version_core}" ]; then
+  echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${release_tag}" >&2
+  exit 1
+fi
+minor="${minor_patch%%.*}"
+patch="${minor_patch#*.}"
+if [ "${patch}" = "${minor_patch}" ]; then
+  echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${release_tag}" >&2
+  exit 1
+fi
+case "${major}:${minor}:${patch}" in
+  *[!0-9:]* | :* | *::*)
+    echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${release_tag}" >&2
+    exit 1
+    ;;
+esac
 
 case "${release_tag}" in
   *[!A-Za-z0-9._-]*)
@@ -37,6 +60,7 @@ case "${release_tag}" in
     exit 1
     ;;
 esac
+release_base_url="https://github.com/getployz/ployz/releases/download/${release_tag}"
 
 assets_dir="${PLOYZ_RELEASE_VERIFY_DIR:-}"
 channel_name="alpha"
@@ -160,25 +184,30 @@ verify_manifest_identity() {
 verify_asset_pair() {
   local manifest="$1"
   local key="$2"
+  local expected_asset_name="$3"
   local url
   local expected_sha
-  local asset_name
   local asset_path
   local actual_sha
 
   url="$(require_value "${manifest}" "${key}_URL")"
   expected_sha="$(require_value "${manifest}" "${key}_SHA256")"
-  asset_name="${url##*/}"
-  asset_path="${assets_dir}/${asset_name}"
+  asset_path="${assets_dir}/${expected_asset_name}"
+  expected_url="${release_base_url}/${expected_asset_name}"
+
+  if [ "${url}" != "${expected_url}" ]; then
+    echo "release manifest ${manifest} has ${key}_URL=${url}, expected ${expected_url}" >&2
+    exit 1
+  fi
 
   if [ ! -f "${asset_path}" ]; then
-    echo "release manifest ${manifest} references missing asset ${asset_name}" >&2
+    echo "release manifest ${manifest} references missing asset ${expected_asset_name}" >&2
     exit 1
   fi
 
   actual_sha="$(sha256_of "${asset_path}")"
   if [ "${actual_sha}" != "${expected_sha}" ]; then
-    echo "release asset ${asset_name} has SHA-256 ${actual_sha}, expected ${expected_sha}" >&2
+    echo "release asset ${expected_asset_name} has SHA-256 ${actual_sha}, expected ${expected_sha}" >&2
     exit 1
   fi
 }
@@ -195,21 +224,21 @@ verify_platform() {
 
   verify_manifest_identity "${manifest}" "${platform}"
   for key in "$@"; do
-    verify_asset_pair "${manifest}" "${key}"
+    verify_asset_pair "${manifest}" "${key%%:*}" "${key#*:}-${platform}"
   done
 }
 
-verify_platform linux-amd64 PLOYZCTL PLOYZ_KEEPER PLOYZD PLOYZ_EBPF_CTL PLOYZ_EBPF_TC
-verify_platform linux-arm64 PLOYZCTL PLOYZ_KEEPER PLOYZD PLOYZ_EBPF_CTL PLOYZ_EBPF_TC
-verify_platform darwin-amd64 PLOYZCTL
-verify_platform darwin-arm64 PLOYZCTL
+verify_platform linux-amd64 PLOYZCTL:ployzctl PLOYZ_KEEPER:ployz-keeper PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
+verify_platform linux-arm64 PLOYZCTL:ployzctl PLOYZ_KEEPER:ployz-keeper PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
+verify_platform darwin-amd64 PLOYZCTL:ployzctl
+verify_platform darwin-arm64 PLOYZCTL:ployzctl
 
 channel_content() {
   cat <<EOF
 PLOYZ_CHANNEL=${channel_name}
 PLOYZ_RELEASE_TAG=${release_tag}
 PLOYZ_VERSION=${semver}
-PLOYZ_RELEASE_BASE_URL=https://github.com/getployz/ployz/releases/download/${release_tag}
+PLOYZ_RELEASE_BASE_URL=${release_base_url}
 EOF
 }
 

@@ -94,9 +94,44 @@ jobs:
       - name: Upload assets to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ github.ref_name }}"
+          tag="${RELEASE_TAG}"
+          if [ -z "${tag}" ] || [ "${tag#v}" = "${tag}" ]; then
+            echo "release tag must start with v: ${tag}" >&2
+            exit 1
+          fi
+          semver="${tag#v}"
+          if [ -z "${semver}" ]; then
+            echo "release tag must include a version after v: ${tag}" >&2
+            exit 1
+          fi
+          version_core="${semver%%-*}"
+          major="${version_core%%.*}"
+          minor_patch="${version_core#*.}"
+          if [ "${minor_patch}" = "${version_core}" ]; then
+            echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${tag}" >&2
+            exit 1
+          fi
+          minor="${minor_patch%%.*}"
+          patch="${minor_patch#*.}"
+          if [ "${patch}" = "${minor_patch}" ]; then
+            echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${tag}" >&2
+            exit 1
+          fi
+          case "${major}:${minor}:${patch}" in
+            *[!0-9:]* | :* | *::*)
+              echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${tag}" >&2
+              exit 1
+              ;;
+          esac
+          case "${tag}" in
+            *[!A-Za-z0-9._-]*)
+              echo "release tag contains unsupported characters: ${tag}" >&2
+              exit 1
+              ;;
+          esac
           if ! gh release view "${tag}" >/dev/null 2>&1; then
             gh release create "${tag}" --draft --verify-tag --title "${tag}" --notes "Ployz ${tag}"
           fi

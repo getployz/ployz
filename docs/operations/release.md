@@ -45,16 +45,18 @@ PLOYZ_RELEASE_BASE_URL=https://github.com/getployz/ployz/releases/download/v0.0.
 ```
 
 Then commit the channel-file change through the normal default-branch path.
-The `ployz.sh` Pages workflow stages `scripts/ployz.sh` as both `index.html`
-and `install.sh`, copies `site/channels/`, and deploys the static site.
+The `ployz.sh` workflow stages `scripts/ployz.sh` as both `index.html` and
+`install.sh`, copies `site/channels/` and `site/_headers`, and deploys the
+static site to Cloudflare Pages with Wrangler Direct Upload.
 
 Do not upload channel pointers as GitHub Release assets, and do not use
 `gh release upload --clobber` for channel promotion.
 
 ## Roll Back A Channel Promotion
 
-Revert the `site/channels/alpha.env` change and let the Pages workflow deploy
-the previous pointer. Versioned release assets are not modified during rollback.
+Revert the `site/channels/alpha.env` change and let the Cloudflare Pages
+workflow deploy the previous pointer. Versioned release assets are not modified
+during rollback.
 
 ## Exact Installs
 
@@ -85,10 +87,16 @@ substrate update commands reject channels, version ranges, and `latest`.
 - Enable immutable releases for versioned `v*` releases.
 - Protect release tags with a ruleset that limits creation, update, and
   deletion.
-- Configure GitHub Pages to deploy from Actions.
-- Configure the `ployz.sh` custom domain and HTTPS in GitHub Pages settings or
-  through the GitHub API. The Pages artifact does not configure the custom
-  domain.
+- Create a Cloudflare Pages Direct Upload project named `ployz-sh`; do not use
+  Cloudflare Git integration for this site.
+- Configure the `ployz.sh` custom domain on that Cloudflare Pages project and
+  require HTTPS.
+- Add GitHub Actions secrets:
+  - `CLOUDFLARE_ACCOUNT_ID`
+  - `CLOUDFLARE_API_TOKEN`
+- Give the Cloudflare API token permission to deploy the `ployz-sh` Pages
+  project.
+- Keep GitHub Releases as the only host for versioned binaries and manifests.
 
 After deployment, check:
 

@@ -16,6 +16,10 @@ else
   : > "${out_dir}/.nojekyll"
 fi
 
+if [ -f "${ROOT_DIR}/site/_headers" ]; then
+  install -m 0644 "${ROOT_DIR}/site/_headers" "${out_dir}/_headers"
+fi
+
 find "${ROOT_DIR}/site/channels" -type f -name '*.env' -print | while IFS= read -r channel_file; do
   install -m 0644 "${channel_file}" "${out_dir}/channels/$(basename "${channel_file}")"
 done

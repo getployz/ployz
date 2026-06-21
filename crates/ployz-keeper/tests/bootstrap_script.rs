@@ -13,6 +13,7 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(script.contains("PLOYZ_VERSION"));
     assert!(script.contains("PLOYZ_CHANNEL"));
     assert!(script.contains("PLOYZ_RELEASE_MANIFEST_URL"));
+    assert!(script.contains("PLOYZ_RELEASE_PLATFORM"));
     assert!(script.contains("PLOYZ_NATS_URL"));
     assert!(script.contains("PLOYZD_URL"));
     assert!(script.contains("PLOYZ_EBPF_TC_URL"));
@@ -35,6 +36,9 @@ fn bootstrap_script_file_installs_ployzctl_or_keeper_from_release_manifest() {
     assert!(script.contains("umask 077"));
     assert!(script.contains("uname -s"));
     assert!(script.contains("id -u"));
+    assert!(script.contains("expected_nats_server_archive_sha256"));
+    assert!(script.contains("b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a"));
+    assert!(script.contains("15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58"));
     assert!(!script.contains("PLOYZ_INSTALL_DIR"));
     assert!(!script.contains("PLOYZ_SYSTEMD_DIR"));
     assert!(!script.contains("PLOYZ_KEEPER_STATE_DIR"));
@@ -76,14 +80,24 @@ fn ployz_sh_site_staging_copies_installer_and_channels() {
     );
     assert!(out_dir.join(".nojekyll").exists());
     assert_eq!(
+        fs::read_to_string(out_dir.join("_headers")).expect("headers are staged"),
+        fs::read_to_string(repo_path("site/_headers")).expect("headers are readable")
+    );
+    assert_eq!(
         fs::read_to_string(out_dir.join("channels/alpha.env")).expect("channel is staged"),
         fs::read_to_string(repo_path("site/channels/alpha.env")).expect("channel is readable")
     );
 
     let workflow = fs::read_to_string(repo_path(".github/workflows/ployz-sh.yml"))
         .expect("ployz.sh workflow is readable");
-    assert!(workflow.contains("actions/deploy-pages"));
+    assert!(workflow.contains("cloudflare/wrangler-action"));
+    assert!(workflow.contains("pages deploy dist/ployz-sh-site --project-name=ployz-sh"));
+    assert!(workflow.contains("CLOUDFLARE_API_TOKEN"));
+    assert!(workflow.contains("CLOUDFLARE_ACCOUNT_ID"));
     assert!(workflow.contains("scripts/stage-ployz-sh-site.sh"));
+    assert!(!workflow.contains("actions/deploy-pages"));
+    assert!(!workflow.contains("actions/configure-pages"));
+    assert!(!workflow.contains("upload-pages-artifact"));
     assert!(!workflow.contains("tags:"));
 }
 
@@ -110,7 +124,7 @@ fn bootstrap_script_installs_ployzctl_by_default_from_alpha_channel() {
     fs::write(
         &manifest,
         format!(
-            "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZ_RELEASE_PLATFORM=linux-amd64\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
             ployzctl_source.display(),
             KEEPER_DIGEST
         ),
@@ -177,7 +191,7 @@ fn bootstrap_script_exact_version_bypasses_channel_lookup() {
     fs::write(
         &manifest,
         format!(
-            "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZ_RELEASE_PLATFORM=linux-amd64\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
             ployzctl_source.display(),
             KEEPER_DIGEST
         ),
@@ -242,7 +256,7 @@ fn bootstrap_script_named_channel_selects_channel_file() {
     fs::write(
         &manifest,
         format!(
-            "PLOYZ_VERSION=0.0.3-beta.1\nPLOYZ_RELEASE_TAG=v0.0.3-beta.1\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
+            "PLOYZ_VERSION=0.0.3-beta.1\nPLOYZ_RELEASE_TAG=v0.0.3-beta.1\nPLOYZ_RELEASE_PLATFORM=linux-amd64\nPLOYZCTL_URL=file://{}\nPLOYZCTL_SHA256={}\n",
             ployzctl_source.display(),
             KEEPER_DIGEST
         ),
@@ -284,6 +298,93 @@ fn bootstrap_script_named_channel_selects_channel_file() {
     assert!(curl_log.contains(
         "https://github.com/getployz/ployz/releases/download/v0.0.3-beta.1/ployz-release-linux-amd64.env"
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_rejects_channel_release_base_url_mismatch() {
+    let root = temp_dir("ployz-bootstrap-script-channel-base-mismatch");
+    let channel = root.join("alpha.env");
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(
+        &channel,
+        "PLOYZ_CHANNEL=alpha\nPLOYZ_RELEASE_TAG=v0.0.2-alpha.1\nPLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_BASE_URL=https://example.invalid/releases/v0.0.2-alpha.1\n",
+    )
+    .expect("channel can be written");
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(bootstrap_script_path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("PLOYZ_TEST_ALPHA_CHANNEL", &channel)
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_VERSION")
+        .env_remove("PLOYZ_CHANNEL")
+        .env_remove("PLOYZ_JOIN_TOKEN")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "PLOYZ_RELEASE_BASE_URL=https://example.invalid/releases/v0.0.2-alpha.1, expected https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_rejects_release_manifest_identity_mismatch() {
+    let root = temp_dir("ployz-bootstrap-script-manifest-identity-mismatch");
+    let manifest = root.join("ployz-release-linux-amd64.env");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(
+        &manifest,
+        "PLOYZ_VERSION=0.0.2-alpha.1\nPLOYZ_RELEASE_TAG=v0.0.3-alpha.1\nPLOYZ_RELEASE_PLATFORM=linux-amd64\n",
+    )
+    .expect("manifest can be written");
+    write_executable(&fake_bin.join("curl"), fake_release_curl_script());
+    write_executable(&fake_bin.join("sha256sum"), "#!/bin/sh\ncat >/dev/null\n");
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--version", "v0.0.2-alpha.1"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("PLOYZ_TEST_RELEASE_MANIFEST", &manifest)
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_CHANNEL")
+        .env_remove("PLOYZ_JOIN_TOKEN")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "has PLOYZ_RELEASE_TAG=v0.0.3-alpha.1, expected v0.0.2-alpha.1",
+    );
 }
 
 #[cfg(unix)]
@@ -884,6 +985,182 @@ fn bootstrap_script_first_node_mode_runs_keeper_install_with_spec() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_verifies_nats_archive_before_extracting() {
+    let root = temp_dir("ployz-bootstrap-script-nats-archive");
+    let keeper_source = root.join("ployz-keeper-source");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    let curl_log = root.join("curl.log");
+    let sha_log = root.join("sha.log");
+    let tar_log = root.join("tar.log");
+    let install_log = root.join("install.log");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(
+        &keeper_source,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PLOYZ_TEST_KEEPER_ARGS_LOG\"\nexit 0\n",
+    )
+    .expect("fake keeper source can be written");
+    write_executable(
+        &fake_bin.join("curl"),
+        "#!/bin/sh\nurl=\ndest=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o) dest=\"$2\"; shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\nprintf '%s\\n' \"$url\" >> \"$PLOYZ_TEST_CURL_LOG\"\ncase \"$url\" in\n  file://*) cp \"${url#file://}\" \"$dest\" ;;\n  https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-linux-amd64.tar.gz) printf 'archive\\n' > \"$dest\" ;;\n  *) exit 2 ;;\nesac\n",
+    );
+    write_executable(
+        &fake_bin.join("sha256sum"),
+        "#!/bin/sh\ncase \"${1:-}\" in\n  -c) cat > \"$PLOYZ_TEST_SHA_LOG\"; exit \"${PLOYZ_TEST_SHA_EXIT:-0}\" ;;\n  *) printf '%s  %s\\n' \"$PLOYZ_TEST_EXISTING_SHA\" \"$1\" ;;\nesac\n",
+    );
+    write_executable(
+        &fake_bin.join("tar"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PLOYZ_TEST_TAR_LOG\"\nmkdir -p /tmp/nats-server-v2.14.2-linux-amd64\nprintf '#!/bin/sh\\nexit 0\\n' > /tmp/nats-server-v2.14.2-linux-amd64/nats-server\n",
+    );
+    write_executable(
+        &fake_bin.join("install"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PLOYZ_TEST_INSTALL_LOG\"\nif [ \"$1\" = \"-d\" ]; then\n  shift\n  while [ \"$#\" -gt 0 ]; do\n    case \"$1\" in -m) shift 2 ;; *) mkdir -p \"$1\"; shift ;; esac\n  done\nelse\n  mode=\n  if [ \"$1\" = \"-m\" ]; then mode=\"$2\"; shift 2; fi\n  cp \"$1\" \"$2\"\n  [ -n \"$mode\" ] && chmod \"$mode\" \"$2\"\nfi\n",
+    );
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--first-node"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env(
+            "PLOYZ_KEEPER_URL",
+            format!("file://{}", keeper_source.display()),
+        )
+        .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_VERSION", "0.0.2-alpha.1")
+        .env("PLOYZ_NODE_ID", "node_1")
+        .env("PLOYZ_MACHINE_JOIN_NATS_URL", "tls://203.0.113.10:4222")
+        .env("PLOYZD_URL", "https://example.invalid/ployzd")
+        .env("PLOYZD_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_EBPF_TC_URL", "https://example.invalid/ployz-ebpf-tc")
+        .env("PLOYZ_EBPF_TC_SHA256", KEEPER_DIGEST)
+        .env(
+            "PLOYZ_EBPF_CTL_URL",
+            "https://example.invalid/ployz-ebpf-ctl",
+        )
+        .env("PLOYZ_EBPF_CTL_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_TEST_CURL_LOG", &curl_log)
+        .env("PLOYZ_TEST_SHA_LOG", &sha_log)
+        .env("PLOYZ_TEST_TAR_LOG", &tar_log)
+        .env("PLOYZ_TEST_INSTALL_LOG", &install_log)
+        .env("PLOYZ_TEST_EXISTING_SHA", KEEPER_DIGEST)
+        .env("PLOYZ_TEST_KEEPER_ARGS_LOG", root.join("keeper-args.log"))
+        .env_remove("PLOYZ_JOIN_TOKEN")
+        .env_remove("PLOYZ_NATS_URL")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fs::read_to_string(&curl_log).expect("curl log is recorded").contains(
+        "https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-linux-amd64.tar.gz"
+    ));
+    assert!(
+        fs::read_to_string(&sha_log)
+            .expect("sha log is recorded")
+            .contains("b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a")
+    );
+    assert!(
+        fs::read_to_string(&tar_log)
+            .expect("tar log is recorded")
+            .contains("ployz-nats-server.tar.gz")
+    );
+    assert!(
+        fs::read_to_string(&install_log)
+            .expect("install log is recorded")
+            .contains("nats-server")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_does_not_extract_nats_archive_after_checksum_failure() {
+    let root = temp_dir("ployz-bootstrap-script-nats-archive-failure");
+    let keeper_source = root.join("ployz-keeper-source");
+    let install_dir = root.join("bin");
+    let state_dir = root.join("state");
+    let script_path = test_bootstrap_script_path(&root, &install_dir, &state_dir);
+    let fake_bin = root.join("fake-bin");
+    let tar_log = root.join("tar.log");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    fs::write(&keeper_source, "#!/bin/sh\nexit 0\n").expect("fake keeper source can be written");
+    write_executable(
+        &fake_bin.join("curl"),
+        "#!/bin/sh\nurl=\ndest=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o) dest=\"$2\"; shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\ncase \"$url\" in\n  file://*) cp \"${url#file://}\" \"$dest\" ;;\n  https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-linux-amd64.tar.gz) printf 'archive\\n' > \"$dest\" ;;\n  *) exit 2 ;;\nesac\n",
+    );
+    write_executable(
+        &fake_bin.join("sha256sum"),
+        "#!/bin/sh\ncase \"${1:-}\" in\n  -c) cat >/dev/null; exit 1 ;;\n  *) printf '%s  %s\\n' \"$PLOYZ_TEST_EXISTING_SHA\" \"$1\" ;;\nesac\n",
+    );
+    write_executable(
+        &fake_bin.join("tar"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PLOYZ_TEST_TAR_LOG\"\nexit 0\n",
+    );
+    write_executable(
+        &fake_bin.join("install"),
+        "#!/bin/sh\nif [ \"$1\" = \"-d\" ]; then\n  shift\n  while [ \"$#\" -gt 0 ]; do\n    case \"$1\" in -m) shift 2 ;; *) mkdir -p \"$1\"; shift ;; esac\n  done\nelse\n  exit 9\nfi\n",
+    );
+    write_executable(&fake_bin.join("uname"), fake_uname_script());
+    write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
+
+    let output = Command::new("sh")
+        .arg(script_path)
+        .args(["--first-node"])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                fake_bin.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env(
+            "PLOYZ_KEEPER_URL",
+            format!("file://{}", keeper_source.display()),
+        )
+        .env("PLOYZ_KEEPER_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_VERSION", "0.0.2-alpha.1")
+        .env("PLOYZ_NODE_ID", "node_1")
+        .env("PLOYZ_MACHINE_JOIN_NATS_URL", "tls://203.0.113.10:4222")
+        .env("PLOYZD_URL", "https://example.invalid/ployzd")
+        .env("PLOYZD_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_EBPF_TC_URL", "https://example.invalid/ployz-ebpf-tc")
+        .env("PLOYZ_EBPF_TC_SHA256", KEEPER_DIGEST)
+        .env(
+            "PLOYZ_EBPF_CTL_URL",
+            "https://example.invalid/ployz-ebpf-ctl",
+        )
+        .env("PLOYZ_EBPF_CTL_SHA256", KEEPER_DIGEST)
+        .env("PLOYZ_TEST_EXISTING_SHA", KEEPER_DIGEST)
+        .env("PLOYZ_TEST_TAR_LOG", &tar_log)
+        .env_remove("PLOYZ_JOIN_TOKEN")
+        .env_remove("PLOYZ_NATS_URL")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(!output.status.success());
+    assert!(
+        !tar_log.exists(),
+        "tar must not run after NATS archive checksum failure"
+    );
+    assert!(!install_dir.join("nats-server").exists());
+}
+
 fn unique_temp_path(prefix: &str) -> PathBuf {
     let unique = format!(
         "{}-{}",
@@ -946,25 +1223,38 @@ fn test_bootstrap_script_path(
     state_dir: &std::path::Path,
 ) -> PathBuf {
     let source = fs::read_to_string(bootstrap_script_path()).expect("bootstrap script is readable");
-    let rewritten = source
-        .replace(
-            "install_dir=\"/usr/local/bin\"",
-            &format!("install_dir=\"{}\"", install_dir.display()),
-        )
-        .replace(
-            "state_dir=\"/var/lib/ployz/keeper\"",
-            &format!("state_dir=\"{}\"", state_dir.display()),
-        )
-        .replace(
-            "nats_binary=\"/usr/local/bin/nats-server\"",
-            &format!(
-                "nats_binary=\"{}\"",
-                install_dir.join("nats-server").display()
-            ),
-        );
+    let rewritten = replace_required(
+        source,
+        "install_dir=\"/usr/local/bin\"",
+        &format!("install_dir=\"{}\"", install_dir.display()),
+    );
+    let rewritten = replace_required(
+        rewritten,
+        "state_dir=\"/var/lib/ployz/keeper\"",
+        &format!("state_dir=\"{}\"", state_dir.display()),
+    );
+    let rewritten = replace_required(
+        rewritten,
+        "nats_binary=\"/usr/local/bin/nats-server\"",
+        &format!(
+            "nats_binary=\"{}\"",
+            install_dir.join("nats-server").display()
+        ),
+    );
+    assert!(!rewritten.contains("install_dir=\"/usr/local/bin\""));
+    assert!(!rewritten.contains("state_dir=\"/var/lib/ployz/keeper\""));
+    assert!(!rewritten.contains("nats_binary=\"/usr/local/bin/nats-server\""));
     let path = root.join("ployz.sh");
     fs::write(&path, rewritten).expect("test bootstrap script can be written");
     path
+}
+
+fn replace_required(source: String, needle: &str, replacement: &str) -> String {
+    assert!(
+        source.contains(needle),
+        "bootstrap script missing replacement needle {needle:?}"
+    );
+    source.replace(needle, replacement)
 }
 
 fn run_bootstrap_script(args: &[&str], join_token_env: Option<&str>) -> Output {

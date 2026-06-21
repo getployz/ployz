@@ -174,6 +174,7 @@ channel_file="$(mktemp)"
 tmp_file="$(mktemp)"
 first_node_spec_file="$(mktemp)"
 manifest_loaded=0
+release_manifest_identity_required=0
 
 cleanup() {
   rm -f "$manifest_file" "$channel_file" "$tmp_file" "$first_node_spec_file"
@@ -199,6 +200,10 @@ validate_token() {
       exit 1
       ;;
   esac
+}
+
+github_release_base_url() {
+  printf 'https://github.com/getployz/ployz/releases/download/%s\n' "$1"
 }
 
 normalize_release_version() {
@@ -250,7 +255,13 @@ resolve_channel() {
   validate_token "ployz version" "$channel_version"
   release_tag="$channel_release_tag"
   PLOYZ_VERSION="$channel_version"
-  manifest_url="${channel_release_base_url%/}/ployz-release-${release_platform}.env"
+  expected_release_base_url="$(github_release_base_url "$release_tag")"
+  if [ "${channel_release_base_url%/}" != "$expected_release_base_url" ]; then
+    echo "release channel $channel_url has PLOYZ_RELEASE_BASE_URL=$channel_release_base_url, expected $expected_release_base_url" >&2
+    exit 1
+  fi
+  manifest_url="${expected_release_base_url}/ployz-release-${release_platform}.env"
+  release_manifest_identity_required=1
   echo "resolved ployz channel ${selected_channel} -> ${release_tag}"
 }
 
@@ -261,7 +272,8 @@ if [ -n "${PLOYZ_RELEASE_MANIFEST_URL:-}" ]; then
   fi
 elif [ -n "$version_input" ]; then
   normalize_release_version "$version_input"
-  manifest_url="https://github.com/getployz/ployz/releases/download/${release_tag}/ployz-release-${release_platform}.env"
+  manifest_url="$(github_release_base_url "$release_tag")/ployz-release-${release_platform}.env"
+  release_manifest_identity_required=1
 else
   resolve_channel
 fi
@@ -272,12 +284,49 @@ load_manifest() {
       echo "failed to download release manifest $manifest_url" >&2
       exit 1
     fi
+    verify_release_manifest_identity
     manifest_loaded=1
   fi
 }
 
 manifest_value() {
   env_value "$manifest_file" "$1"
+}
+
+verify_release_manifest_identity() {
+  if [ "$release_manifest_identity_required" -eq 0 ]; then
+    return 0
+  fi
+
+  manifest_tag="$(manifest_value PLOYZ_RELEASE_TAG)"
+  if [ -z "$manifest_tag" ]; then
+    echo "release manifest $manifest_url is missing PLOYZ_RELEASE_TAG" >&2
+    exit 1
+  fi
+  if [ "$manifest_tag" != "$release_tag" ]; then
+    echo "release manifest $manifest_url has PLOYZ_RELEASE_TAG=$manifest_tag, expected $release_tag" >&2
+    exit 1
+  fi
+
+  manifest_version="$(manifest_value PLOYZ_VERSION)"
+  if [ -z "$manifest_version" ]; then
+    echo "release manifest $manifest_url is missing PLOYZ_VERSION" >&2
+    exit 1
+  fi
+  if [ "$manifest_version" != "$PLOYZ_VERSION" ]; then
+    echo "release manifest $manifest_url has PLOYZ_VERSION=$manifest_version, expected $PLOYZ_VERSION" >&2
+    exit 1
+  fi
+
+  manifest_platform="$(manifest_value PLOYZ_RELEASE_PLATFORM)"
+  if [ -z "$manifest_platform" ]; then
+    echo "release manifest $manifest_url is missing PLOYZ_RELEASE_PLATFORM" >&2
+    exit 1
+  fi
+  if [ "$manifest_platform" != "$release_platform" ]; then
+    echo "release manifest $manifest_url has PLOYZ_RELEASE_PLATFORM=$manifest_platform, expected $release_platform" >&2
+    exit 1
+  fi
 }
 
 resolve_release_value() {
@@ -324,6 +373,21 @@ sha256_file() {
   esac
 }
 
+expected_nats_server_archive_sha256() {
+  case "$arch_slug" in
+    amd64)
+      printf 'b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a\n'
+      ;;
+    arm64)
+      printf '15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58\n'
+      ;;
+    *)
+      echo "unsupported architecture for nats-server: $arch_slug" >&2
+      exit 1
+      ;;
+  esac
+}
+
 json_string() {
   value="$1"
   case "$value" in
@@ -365,10 +429,23 @@ ensure_nats_server() {
         exit 1
         ;;
     esac
-    curl -fsSL -o /tmp/ployz-nats-server.tar.gz "https://github.com/nats-io/nats-server/releases/download/v${nats_version}/nats-server-v${nats_version}-linux-${arch_slug}.tar.gz"
-    tar -xzf /tmp/ployz-nats-server.tar.gz -C /tmp
-    install -m 0755 "/tmp/nats-server-v${nats_version}-linux-${arch_slug}/nats-server" "$nats_binary"
-    rm -rf /tmp/ployz-nats-server.tar.gz "/tmp/nats-server-v${nats_version}-linux-${arch_slug}"
+    nats_archive="/tmp/ployz-nats-server.tar.gz"
+    if ! download_verified \
+      "https://github.com/nats-io/nats-server/releases/download/v${nats_version}/nats-server-v${nats_version}-linux-${arch_slug}.tar.gz" \
+      "$(expected_nats_server_archive_sha256)" \
+      "$nats_archive"; then
+      rm -f "$nats_archive"
+      exit 1
+    fi
+    if ! tar -xzf "$nats_archive" -C /tmp; then
+      rm -rf "$nats_archive" "/tmp/nats-server-v${nats_version}-linux-${arch_slug}"
+      exit 1
+    fi
+    if ! install -m 0755 "/tmp/nats-server-v${nats_version}-linux-${arch_slug}/nats-server" "$nats_binary"; then
+      rm -rf "$nats_archive" "/tmp/nats-server-v${nats_version}-linux-${arch_slug}"
+      exit 1
+    fi
+    rm -rf "$nats_archive" "/tmp/nats-server-v${nats_version}-linux-${arch_slug}"
   fi
   sha256_file "$nats_binary"
 }
