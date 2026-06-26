@@ -79,12 +79,14 @@ The fact ledger stays simple because these rules are absolute:
 - Data plane: workloads, gateway, and DNS keep serving last-known-good state
   with freshness visible (ADR-0009). Core loss degrades management, not
   service.
-- Core loss: machines reconnect or rejoin, publish fresh facts from Docker
-  and their fact ledgers — containers, route attachments, served cert
-  material, gateway/DNS last-known-good state, and local role authority; an
-  explicit reindex operation rebuilds the core's indexes and adopts only
-  unambiguous state (ADR-0001). Recovery restores running reality and
-  recorded machine facts, not unrealized cluster intent.
+- Core loss: an operator promotes an existing joined machine into the new
+  Control-Plane Core through a local recovery command (ADR-0019). Machines
+  reconnect or rejoin, publish fresh facts from Docker and their fact ledgers
+  — containers, route attachments, served cert material, gateway/DNS
+  last-known-good state, and local role authority; an explicit reindex
+  operation rebuilds the core's indexes and adopts only unambiguous state
+  (ADR-0001). Recovery restores running reality and recorded machine facts,
+  not unrealized cluster intent.
 - The reindex operation is part of this backbone. Until it exists and is
   exercised end-to-end (destroy the core's JetStream state, stand up a core,
   reindex, verify), JetStream loss is unrecoverable in practice and the

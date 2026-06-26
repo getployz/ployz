@@ -9,7 +9,7 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::roles::plan_joined_node_process_set;
 use ployz_core::security::NatsPrincipal;
 use ployz_keeper::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
-use ployz_keeper::cli::{KeeperCommand, load_command};
+use ployz_keeper::cli::{KeeperBootstrap, KeeperBootstrapMode, KeeperCommand, load_command};
 use ployz_keeper::command::SystemKeeperCommandRunner;
 use ployz_keeper::executor::{KeeperPlanFailure, KeeperPlanTerminal, execute_keeper_plan};
 use ployz_keeper::join::JOIN_MATERIAL_DIR;
@@ -29,8 +29,9 @@ use ployz_nats::connect::{
 };
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
+    CloudFounderBootstrapResult, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemed, MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinToken,
+    MachineJoinTrustedNats, NatsCaCertificatePem,
 };
 
 const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -65,6 +66,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
+        Ok(KeeperCommand::Bootstrap(bootstrap)) => run_bootstrap_command(bootstrap),
         Ok(KeeperCommand::FirstNodeInstall(target)) => {
             let node_id = target.node_id.clone();
             let nats_material = target.nats_material.clone();
@@ -107,18 +109,39 @@ fn main() -> ExitCode {
     }
 }
 
+fn run_bootstrap_command(bootstrap: KeeperBootstrap) -> ExitCode {
+    match bootstrap.mode {
+        KeeperBootstrapMode::Interactive { cloud_host } => {
+            println!("Ployz bootstrap");
+            println!("1. Connect to Ployz Cloud");
+            println!("2. Connect to custom Cloud");
+            println!("3. Continue without Cloud");
+            if let Some(cloud_host) = cloud_host {
+                println!("cloud host: {}", cloud_host.as_str());
+            }
+            ExitCode::SUCCESS
+        }
+        KeeperBootstrapMode::CloudToken { cloud_host, .. } => {
+            println!("Ployz Cloud bootstrap");
+            println!("cloud host: {}", cloud_host.as_str());
+            eprintln!("cloud token redemption is not available in this build");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn print_first_node_bootstrap_result(
     node_id: &NodeId,
     runtime_nats_url: &MachineJoinRuntimeNatsUrl,
     material: &NatsMachineMaterialPaths,
 ) -> Result<(), String> {
-    let ca_pem = read_result_file(&material.ca_file(), "cluster CA")?;
+    let cloud_safe = read_cloud_founder_bootstrap_result(node_id, runtime_nats_url, material)?;
     let operator_seed = read_result_file(&material.operator_seed_file(), "operator seed")?;
     let join_seed = read_result_file(&material.join_seed_file(), "Join seed")?;
     let result = serde_json::json!({
         "node_id": node_id.as_str(),
         "nats_url": runtime_nats_url.as_str(),
-        "ca_pem": ca_pem,
+        "ca_pem": cloud_safe.trusted_nats.ca_pem.as_str(),
         "operator_seed": operator_seed.trim(),
         "join_seed": join_seed.trim(),
     });
@@ -129,6 +152,21 @@ fn print_first_node_bootstrap_result(
     );
     println!("{FIRST_NODE_BOOTSTRAP_RESULT_END}");
     Ok(())
+}
+
+fn read_cloud_founder_bootstrap_result(
+    node_id: &NodeId,
+    runtime_nats_url: &MachineJoinRuntimeNatsUrl,
+    material: &NatsMachineMaterialPaths,
+) -> Result<CloudFounderBootstrapResult, String> {
+    let ca_pem = read_result_file(&material.ca_file(), "cluster CA")?;
+    let ca_pem = NatsCaCertificatePem::try_new(ca_pem)
+        .map_err(|error| format!("first-node bootstrap cluster CA is invalid: {error}"))?;
+    Ok(CloudFounderBootstrapResult {
+        node_id: node_id.clone(),
+        runtime_nats_url: runtime_nats_url.clone(),
+        trusted_nats: MachineJoinTrustedNats { ca_pem },
+    })
 }
 
 fn read_result_file(path: &std::path::Path, label: &str) -> Result<String, String> {
@@ -495,12 +533,13 @@ impl KeeperJoinTokenConsumer for StartupJoinTokenConsumer {
 
 #[cfg(test)]
 mod tests {
-    use super::keeper_join_target_with_public_ip;
+    use super::{keeper_join_target_with_public_ip, read_cloud_founder_bootstrap_result};
     use ployz_core::ids::{NodeId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
         InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
         MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+        NatsMachineMaterialPaths,
     };
     use ployz_core::machine::{JoinTokenRedeemedAt, MachineName};
     use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
@@ -564,6 +603,43 @@ mod tests {
                 .render_for_role(&ployz_core::roles::DaemonProcessRole::Gateway)
                 .contains("PLOYZ_NODE_PUBLIC_IP=203.0.113.20\n")
         );
+    }
+
+    #[test]
+    fn cloud_founder_bootstrap_result_omits_local_operator_and_join_seeds() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-cloud-founder-result-{}", std::process::id()));
+        let nats_dir = root.join("nats");
+        std::fs::create_dir_all(&nats_dir).expect("nats dir can be created");
+        let material = NatsMachineMaterialPaths::new(nats_dir);
+        std::fs::write(
+            material.ca_file(),
+            "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n",
+        )
+        .expect("ca can be written");
+        std::fs::write(
+            material.operator_seed_file(),
+            "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        )
+        .expect("operator seed can be written");
+        std::fs::write(
+            material.join_seed_file(),
+            "SUBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
+        )
+        .expect("join seed can be written");
+
+        let result = read_cloud_founder_bootstrap_result(
+            &NodeId::try_new("core_1").expect("valid node id"),
+            &MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222").expect("valid nats url"),
+            &material,
+        )
+        .expect("cloud result reads");
+        let serialized = serde_json::to_string(&result).expect("cloud result serializes");
+
+        assert!(serialized.contains("core_1"));
+        assert!(serialized.contains("tls://203.0.113.10:4222"));
+        assert!(!serialized.contains("SUAAAAAAAA"));
+        assert!(!serialized.contains("SUBBBBBBBB"));
     }
 
     fn machine_join_bundle() -> MachineJoinBundle {

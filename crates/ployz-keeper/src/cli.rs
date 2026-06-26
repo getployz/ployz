@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use ployz_core::install::{
     FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSpec, NatsServerInstallSpec,
 };
+use ployz_sdk_types::{CloudBootstrapSecretError, CloudBootstrapToken};
 
 use crate::artifacts::{
     ArtifactKind, ArtifactTargetError, DataplaneArtifactTargets, artifact_target,
@@ -23,7 +24,100 @@ use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperCommand {
     Start(KeeperStartup),
+    Bootstrap(KeeperBootstrap),
     FirstNodeInstall(Box<FirstNodeInstallTarget>),
+}
+
+pub const DEFAULT_CLOUD_HOST: &str = "https://cloud.ployz.com";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperBootstrap {
+    pub mode: KeeperBootstrapMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeeperBootstrapMode {
+    Interactive {
+        cloud_host: Option<CloudHost>,
+    },
+    CloudToken {
+        token: CloudBootstrapToken,
+        cloud_host: CloudHost,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudHost(String);
+
+impl CloudHost {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, CloudHostError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(CloudHostError::Empty);
+        }
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(CloudHostError::Invalid { value });
+        }
+        if value.starts_with("http://") {
+            return Err(CloudHostError::Insecure { value });
+        }
+
+        let normalized = if value.starts_with("https://") {
+            value
+        } else {
+            format!("https://{value}")
+        };
+        let authority_and_path =
+            normalized
+                .strip_prefix("https://")
+                .ok_or_else(|| CloudHostError::Invalid {
+                    value: normalized.clone(),
+                })?;
+        let Some((authority, path)) = authority_and_path
+            .split_once('/')
+            .or(Some((authority_and_path, "")))
+        else {
+            return Err(CloudHostError::Invalid { value: normalized });
+        };
+        if authority.is_empty()
+            || authority.contains('?')
+            || authority.contains('#')
+            || !path.is_empty()
+        {
+            return Err(CloudHostError::Invalid { value: normalized });
+        }
+
+        Ok(Self(format!("https://{authority}")))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for CloudHost {
+    type Err = CloudHostError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_new(value)
+    }
+}
+
+impl Default for CloudHost {
+    fn default() -> Self {
+        Self(DEFAULT_CLOUD_HOST.to_owned())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudHostError {
+    Empty,
+    Insecure { value: String },
+    Invalid { value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +140,13 @@ pub fn load_command(
     match parsed.command {
         None => Ok(KeeperCommand::Start(load_startup_from_path(
             parsed.join_token_file,
+        )?)),
+        Some(KeeperSubcommand::Bootstrap {
+            cloud_token,
+            cloud_host,
+        }) => Ok(KeeperCommand::Bootstrap(load_bootstrap(
+            cloud_token,
+            cloud_host,
         )?)),
         Some(KeeperSubcommand::FirstNodeInstall { spec }) => {
             let spec = read_first_node_install_spec(spec)?;
@@ -85,10 +186,30 @@ struct KeeperCli {
 
 #[derive(Debug, Subcommand)]
 enum KeeperSubcommand {
+    Bootstrap {
+        #[arg(long, value_name = "token")]
+        cloud_token: Option<String>,
+        #[arg(long, value_name = "host-or-https-url")]
+        cloud_host: Option<CloudHost>,
+    },
     FirstNodeInstall {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
     },
+}
+
+fn load_bootstrap(
+    cloud_token: Option<String>,
+    cloud_host: Option<CloudHost>,
+) -> Result<KeeperBootstrap, KeeperCliError> {
+    let mode = match cloud_token {
+        Some(token) => KeeperBootstrapMode::CloudToken {
+            token: CloudBootstrapToken::try_new(token).map_err(KeeperCliError::CloudToken)?,
+            cloud_host: cloud_host.unwrap_or_default(),
+        },
+        None => KeeperBootstrapMode::Interactive { cloud_host },
+    };
+    Ok(KeeperBootstrap { mode })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +344,8 @@ pub enum KeeperCliError {
         error: serde_json::Error,
     },
     JoinTokenFile(JoinTokenFileError),
+    CloudToken(CloudBootstrapSecretError),
+    CloudHost(CloudHostError),
     ArtifactTarget(ArtifactTargetError),
     SupervisorUnit(SupervisorUnitFileError),
     NatsIdentity(NatsIdentityError),
@@ -279,6 +402,12 @@ impl fmt::Display for KeeperCliError {
                 )
             }
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
+            Self::CloudToken(CloudBootstrapSecretError::Empty) => {
+                formatter.write_str("cloud bootstrap token is empty")
+            }
+            Self::CloudToken(CloudBootstrapSecretError::Invalid) => formatter
+                .write_str("cloud bootstrap token contains whitespace or control characters"),
+            Self::CloudHost(error) => write!(formatter, "{error}"),
             Self::ArtifactTarget(error) => write!(formatter, "{error}"),
             Self::SupervisorUnit(error) => write!(formatter, "{error}"),
             Self::NatsIdentity(error) => write!(formatter, "{error}"),
@@ -295,6 +424,20 @@ impl fmt::Display for SpecSource {
     }
 }
 
+impl fmt::Display for CloudHostError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("cloud host is empty"),
+            Self::Insecure { value } => {
+                write!(formatter, "cloud host must use https, got {value:?}")
+            }
+            Self::Invalid { value } => write!(formatter, "cloud host is invalid: {value:?}"),
+        }
+    }
+}
+
+impl std::error::Error for CloudHostError {}
+
 impl std::error::Error for KeeperCliError {}
 
 #[cfg(test)]
@@ -305,7 +448,10 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{KeeperCliError, KeeperCommand, KeeperStartup, SpecSource, load_command};
+    use super::{
+        CloudHost, DEFAULT_CLOUD_HOST, KeeperBootstrap, KeeperBootstrapMode, KeeperCliError,
+        KeeperCommand, KeeperStartup, SpecSource, load_command,
+    };
 
     fn load_startup(
         args: impl IntoIterator<Item = OsString>,
@@ -332,6 +478,102 @@ mod tests {
             command,
             KeeperCommand::Start(super::KeeperStartup { join: None })
         );
+    }
+
+    #[test]
+    fn parser_accepts_interactive_bootstrap() {
+        let command = load_command(["bootstrap".into()]).expect("bootstrap command is valid");
+
+        assert_eq!(
+            command,
+            KeeperCommand::Bootstrap(KeeperBootstrap {
+                mode: KeeperBootstrapMode::Interactive { cloud_host: None },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_interactive_bootstrap_with_custom_cloud_host() {
+        let command = load_command([
+            "bootstrap".into(),
+            "--cloud-host".into(),
+            "cloud.example.com".into(),
+        ])
+        .expect("bootstrap command is valid");
+
+        assert_eq!(
+            command,
+            KeeperCommand::Bootstrap(KeeperBootstrap {
+                mode: KeeperBootstrapMode::Interactive {
+                    cloud_host: Some(CloudHost::try_new("https://cloud.example.com").unwrap()),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_accepts_token_bootstrap_with_default_cloud_host() {
+        let command = load_command([
+            "bootstrap".into(),
+            "--cloud-token".into(),
+            "pcbs_abc123".into(),
+        ])
+        .expect("bootstrap command is valid");
+
+        let KeeperCommand::Bootstrap(KeeperBootstrap {
+            mode: KeeperBootstrapMode::CloudToken { token, cloud_host },
+        }) = command
+        else {
+            panic!("expected bootstrap command");
+        };
+        assert_eq!(token.secret(), "pcbs_abc123");
+        assert_eq!(cloud_host.as_str(), DEFAULT_CLOUD_HOST);
+    }
+
+    #[test]
+    fn parser_accepts_token_bootstrap_with_custom_cloud_host() {
+        let command = load_command([
+            "bootstrap".into(),
+            "--cloud-token".into(),
+            "pcbs_abc123".into(),
+            "--cloud-host".into(),
+            "https://cloud.example.com".into(),
+        ])
+        .expect("bootstrap command is valid");
+
+        let KeeperCommand::Bootstrap(KeeperBootstrap {
+            mode: KeeperBootstrapMode::CloudToken { token, cloud_host },
+        }) = command
+        else {
+            panic!("expected bootstrap command");
+        };
+        assert_eq!(token.secret(), "pcbs_abc123");
+        assert_eq!(cloud_host.as_str(), "https://cloud.example.com");
+    }
+
+    #[test]
+    fn parser_rejects_insecure_cloud_host() {
+        assert!(matches!(
+            load_command([
+                "bootstrap".into(),
+                "--cloud-token".into(),
+                "pcbs_abc123".into(),
+                "--cloud-host".into(),
+                "http://cloud.example.com".into(),
+            ]),
+            Err(KeeperCliError::Clap(error))
+                if error.kind() == clap::error::ErrorKind::ValueValidation
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_empty_cloud_token() {
+        assert!(matches!(
+            load_command(["bootstrap".into(), "--cloud-token".into(), "".into(),]),
+            Err(KeeperCliError::CloudToken(
+                ployz_sdk_types::CloudBootstrapSecretError::Empty
+            ))
+        ));
     }
 
     #[test]

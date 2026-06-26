@@ -48,9 +48,17 @@ _Avoid_: Route binding, gateway config, active route
 A NATS-watch-driven, machine-local application of current machine and dataplane state into WireGuard, eBPF, routes, or related network configuration. Dataplane projection may continuously reconcile local network configuration because it is a projection of cluster state, not authority to mutate cluster truth.
 _Avoid_: Hidden workload reconciler, subnet allocator, machine recovery, live RPC coordination
 
+**Dataplane Host Preparation**:
+A bounded machine-local preparation step that makes a machine eligible for dataplane projection by preparing required host capabilities and local machine-owned dataplane material. It can run during bootstrap or an explicit substrate update; it does not create live WireGuard interfaces, routes, peers, or eBPF attachments.
+_Avoid_: Dataplane projection, host prep, substrate update, runtime preparation
+
+**Local Dataplane Material**:
+Machine-owned material required for dataplane projection that remains local to the machine and can be used as reindex evidence. It is not cluster truth, operation evidence, release material, or data that should be copied into JetStream.
+_Avoid_: Cluster state, operation evidence, release artifact, NATS state
+
 **Dataplane-Capable Machine**:
-A machine whose local dataplane projection is healthy enough for normal service workload placement and serving. In v1, normal service placement requires dataplane capability; cleanup and repair may proceed without it when machine RPC is reachable.
-_Avoid_: Local-only service placement, cleanup reachability, generic health
+A machine whose fresh machine-local facts and recent observations show dataplane projection is healthy enough for normal service workload placement and serving. It is derived capability, not a stored cluster truth flag; cleanup and repair may proceed without it when machine RPC is reachable.
+_Avoid_: Local-only service placement, cleanup reachability, generic health, stored capability flag
 
 **Serving Unpublish**:
 Removing a service from a namespace's serveable surfaces before cleanup, including gateway route eligibility and DNS publication. Role-process convergence is observed as warning evidence; Docker cleanup decides whether the service is actually removed.
@@ -112,6 +120,10 @@ _Avoid_: Core deploy model
 An external product workflow owner that submits typed commands to core Ployz and stores richer product history. Cloud is not runtime truth and does not orchestrate machine-local steps.
 _Avoid_: Runtime authority
 
+**Control-Plane Core**:
+The current machine role that hosts the cluster's NATS and JetStream authority surface. The core is disposable and may be replaced by promoting another existing joined machine.
+_Avoid_: Main machine, primary server, Cloud core
+
 **Access Provider**:
 An external authority trusted to identify requesters and decide whether they may access protected routes. Access providers are cluster-scoped gateway infrastructure; Ployz core treats their decisions as access evidence, not runtime truth.
 _Avoid_: Cloud auth, dashboard auth, BetterAuth provider, identity provider
@@ -127,6 +139,14 @@ _Avoid_: Magic link, dashboard token, login token, route session
 **Reindex**:
 A future recovery operation that rebuilds JetStream-backed indexes after JetStream loss or reset by collecting fresh facts from machines and role processes, then adopting only unambiguous state.
 _Avoid_: Automatic recovery
+
+**Control-Plane Epoch**:
+A monotonically increasing cluster-local generation for the current Control-Plane Core endpoint. Machines use it to reject stale endpoint updates after recovery.
+_Avoid_: Recovery version, failover counter
+
+**Core Recovery Promotion**:
+A local operator action on an existing joined machine that makes that machine the Control-Plane Core after core loss. It preserves the cluster identity, increments the Control-Plane Epoch, and is authorized by local root access plus existing machine-held cluster material rather than Cloud.
+_Avoid_: Cloud failover, founder failover, provisioned replacement core
 
 **Local Authority**:
 Durable state outside JetStream, owned by a machine or role process, that can be trusted during future reindex for the specific fact that component owns.
@@ -328,9 +348,21 @@ _Avoid_: Implicit drain, automatic recovery confirmation
 The ability of a machine identity to authenticate to the control plane, publish its own observations, respond to its own machine-scoped RPC subjects, and receive assigned work. Machine control-plane authority should become usable only with an accepted machine identity, and revocation belongs to the NATS/auth authority store rather than removed-machine state. Stale observations may remain as evidence but cannot be refreshed by a removed machine.
 _Avoid_: Machine liveness, observation freshness, substrate presence, tombstone-based auth
 
+**Operator Credential**:
+A client credential minted for a human operator or automation client to call cluster control-plane services. Operator credentials are not machine identities and should be minted per operator client, preferably by the client that will hold the private seed, then authorized by the cluster using the credential's public key. Founder bootstrap should not make a shared server-minted operator seed the normal client setup path.
+_Avoid_: Shared operator seed, machine join, remote operator join
+
+**Operator Context**:
+A client-local record that lets `ployzctl` connect to one cluster using NATS endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
+_Avoid_: Cluster membership, machine join, shared context
+
 **Machine Bootstrap**:
 The first installation and join of Ployz substrate on a machine. It makes a machine capable of running its assigned Ployz role processes and reporting bootstrap progress.
 _Avoid_: Install, provisioning, node bootstrap
+
+**Bootstrapped Machine**:
+A machine that already contains durable Ployz machine-local material showing it has been initialized for a cluster. It is not a fresh bootstrap target; recovery and re-adoption need explicit operation vocabulary.
+_Avoid_: Fresh machine, rerunnable bootstrap target, duplicate machine
 
 **Founder Bootstrap**:
 The first-machine bootstrap that forms a new cluster control plane and then activates that same machine as the first accepted machine. Founder bootstrap exists only before there is an existing control-plane operation surface for the cluster.
@@ -341,8 +373,32 @@ A machine bootstrap that uses an existing cluster's machine-add operation and jo
 _Avoid_: Founder bootstrap, cluster init, provisioning
 
 **Bootstrap Delivery**:
-The out-of-band act of carrying a founder or joiner bootstrap command to a target machine. Bootstrap delivery does not decide machine identity, acceptance, placement, or cluster truth.
+The act of running a founder or joiner bootstrap command on a target machine, either locally on that machine or by carrying it there through SSH, copy/paste, cloud-init, or another envelope. Bootstrap delivery does not decide machine identity, acceptance, placement, or cluster truth.
 _Avoid_: SSH control plane, daemon transport, provisioning authority
+
+**Cloud Bootstrap Invite**:
+A time-limited Cloud permission that lets one or more machines use pre-rendered Bootstrap Delivery material while the invite is valid. The invite carries Cloud-side org, cluster, actor, and bootstrap intent; each machine use is a separate redemption. Cloud Bootstrap Invites are for automation and cloud-init style delivery, not the default interactive human path.
+_Avoid_: One-time bootstrap token, machine join token, org flag
+
+**Cloud Bootstrap Session**:
+A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive Bootstrap Delivery. The target machine polls the session while the user opens a browser link on their workstation to choose Cloud org, cluster, and bootstrap intent. The session is not an org, cluster, machine identity, join token, or operator credential.
+_Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
+
+**Cloud Bootstrap Token**:
+The bearer secret string embedded in noninteractive Bootstrap Delivery material for a Cloud Bootstrap Invite. The token is not the org, cluster, machine identity, join token, or callback credential.
+_Avoid_: Org id, cluster id, join token, callback token
+
+**Cloud Bootstrap Redemption**:
+One machine's use of a Cloud Bootstrap Session or Cloud Bootstrap Invite. A redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material without making the session or invite itself cluster truth.
+_Avoid_: Bootstrap invite, bootstrap session, machine acceptance, operation completion
+
+**Cloud Founder Claim**:
+The Cloud-side assignment of one new-cluster redemption to Founder Bootstrap. Once Cloud returns founder bootstrap material for that claim, the claim is sticky; another redemption does not automatically become founder after failure.
+_Avoid_: Leader election, automatic founder failover, first healthy server
+
+**Cloud Link**:
+An explicit operation that authorizes Cloud as an operator client for an existing local cluster and gives Cloud the endpoint and trust material it needs to connect over direct TLS NATS. Cloud link does not bootstrap a machine and does not make Cloud runtime truth.
+_Avoid_: Machine bootstrap, Cloud migration, tunnel setup
 
 **Substrate Update**:
 An explicit operation that changes already-installed non-keeper Ployz substrate on one machine to one requested Ployz version. It covers Ployz-managed role processes, supervisor units, local role configuration, and substrate artifacts, not workload service containers or keeper.

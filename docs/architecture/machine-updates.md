@@ -72,12 +72,19 @@ resolve requested version
 load assigned substrate state
 compute relevant non-keeper components
 stage and verify all relevant artifacts
+run required Dataplane Host Preparation for the requested version
 run substrate preflight for every relevant component
 if any preflight fails, stop before activation
 activate relevant components in order
 stop on first activation failure
 complete or fail with evidence
 ```
+
+If the requested exact version introduces new or changed machine-local host
+requirements, keeper installs or enforces the missing prerequisites and then
+verifies readiness before activating the affected role or eBPF component. A
+version must not start and discover missing host substrate only through later
+deploy failures.
 
 Already-in-sync components are successful no-ops with evidence.
 

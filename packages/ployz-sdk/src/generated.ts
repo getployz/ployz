@@ -8,6 +8,8 @@ export const MAX_OPERATION_EVENT_REPLAY_LIMIT = 512 as const;
 
 export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
+export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = 1 as const;
+
 export type OperationId = Brand<string, "OperationId">;
 
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
@@ -39,6 +41,52 @@ export type IssuedJoinToken = { fingerprint: JoinTokenFingerprint, expires_at: J
 export type MachineBootstrapUrl = Brand<string, "MachineBootstrapUrl">;
 
 export type MachineJoinToken = Brand<string, "MachineJoinToken">;
+
+export type CloudBootstrapToken = Brand<string, "CloudBootstrapToken">;
+
+export type CloudBootstrapSessionSecret = Brand<string, "CloudBootstrapSessionSecret">;
+
+export type CloudBootstrapCallbackToken = Brand<string, "CloudBootstrapCallbackToken">;
+
+export type CloudBootstrapRedemptionId = Brand<string, "CloudBootstrapRedemptionId">;
+
+export type CloudBootstrapClientInfo = { protocol_version: number, keeper_version: string, };
+
+export type CloudBootstrapMachineFacts = { hostname: string | null, os: string, arch: string, candidate_runtime_nats_url: MachineJoinRuntimeNatsUrl | null, };
+
+export type CloudBootstrapSessionCreateRequest = { client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
+
+export type CloudBootstrapSessionCreated = { browser_url: string, user_code: string, session_secret: CloudBootstrapSessionSecret, poll_after_seconds: number, expires_at_unix_seconds: number, };
+
+export type CloudBootstrapSessionPollRequest = { session_secret: CloudBootstrapSessionSecret, machine: CloudBootstrapMachineFacts, };
+
+export type CloudBootstrapTokenRedeemRequest = { cloud_token: CloudBootstrapToken, client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
+
+export type CloudBootstrapDecision = { "status": "pending", retry_after_seconds: number, } | { "status": "ready", envelope: CloudBootstrapEnvelope, } | { "status": "rejected", rejection: CloudBootstrapRejection, };
+
+export type CloudBootstrapRejection = { "rejection": "unsupported_client", message: FailureMessage, minimum_protocol_version: number, } | { "rejection": "expired" } | { "rejection": "unauthorized" } | { "rejection": "already_consumed_by_policy" } | { "rejection": "invalid_machine_facts", message: FailureMessage, };
+
+export type CloudBootstrapEnvelope = { redemption_id: CloudBootstrapRedemptionId, callback_url: string, callback_token: CloudBootstrapCallbackToken, release: CloudBootstrapReleaseSelection, intent: CloudBootstrapIntent, };
+
+export type CloudBootstrapReleaseSelection = { channel: string | null, version: string, };
+
+export type CloudBootstrapIntent = { "intent": "founder", founder: CloudFounderBootstrap, } | { "intent": "joiner", joiner: CloudJoinerBootstrap, } | { "intent": "wait_for_founder", retry_after_seconds: number, };
+
+export type CloudFounderBootstrap = { install: FirstNodeInstallSpec, cloud_nats_user_public_key: NatsUserPublicKey, };
+
+export type CloudJoinerBootstrap = { runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, join_token: MachineJoinToken, join_secret_delivery: MachineJoinSecretDelivery, };
+
+export type CloudBootstrapCallbackRequest = { redemption_id: CloudBootstrapRedemptionId, outcome: CloudBootstrapOutcome, };
+
+export type CloudBootstrapOutcome = { "outcome": "founder_succeeded", result: CloudFounderBootstrapResult, } | { "outcome": "joiner_succeeded", result: CloudJoinerBootstrapResult, } | { "outcome": "failed", failure: CloudBootstrapFailure, };
+
+export type CloudFounderBootstrapResult = { node_id: NodeId, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, };
+
+export type CloudJoinerBootstrapResult = { operation_id: OperationId, node_id: NodeId, name: MachineName, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+
+export type CloudBootstrapFailure = { "failure": "already_bootstrapped" } | { "failure": "envelope_invalid", message: FailureMessage, } | { "failure": "bootstrap_failed", message: FailureMessage, } | { "failure": "cloud_reachability_failed", message: FailureMessage, };
+
+export type CloudBootstrapCallbackAccepted = { accepted_at_unix_seconds: number, };
 
 export type ImageReference = Brand<string, "ImageReference">;
 
@@ -288,7 +336,15 @@ export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
+export type FirstNodeInstallSpec = { node_id: NodeId, gateway: GatewayRole, dns: DnsRole, node_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstNodeInstallArtifacts, };
+
+export type FirstNodeInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, nats_server: NatsServerInstallSpec, };
+
+export type NatsServerInstallSpec = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, binary: AbsoluteInstallPath, config: AbsoluteInstallPath, };
+
 export type NatsUserSeed = string;
+
+export type NatsUserPublicKey = string;
 
 export type NatsCaCertificatePem = string;
 
