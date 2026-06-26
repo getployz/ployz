@@ -9,8 +9,8 @@ use ployz_core::ids::NodeId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
-    NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserSeed,
-    render_authorized_users,
+    NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
+    NatsUserSeed, render_authorized_users,
 };
 use ployz_core::roles::DaemonProcessRole;
 use ployz_core::security::NatsPrincipal;
@@ -233,8 +233,12 @@ impl NatsAuthorizedUsersTarget {
     /// The install-time user set: Controller, operator User, and Join.
     /// Node users are minted later by `ployzd` control.
     #[must_use]
-    pub fn initial_for_first_node(config_dir: PathBuf, identity: &ClusterNatsIdentity) -> Self {
-        let users = [
+    pub fn initial_for_first_node(
+        config_dir: PathBuf,
+        identity: &ClusterNatsIdentity,
+        additional_user_public_keys: &[NatsUserPublicKey],
+    ) -> Self {
+        let mut users = vec![
             NatsAuthorizedUser {
                 principal: NatsPrincipal::Controller,
                 nkey_public: identity.controller.public.clone(),
@@ -248,6 +252,15 @@ impl NatsAuthorizedUsersTarget {
                 nkey_public: identity.join.public.clone(),
             },
         ];
+        users.extend(
+            additional_user_public_keys
+                .iter()
+                .cloned()
+                .map(|nkey_public| NatsAuthorizedUser {
+                    principal: NatsPrincipal::User,
+                    nkey_public,
+                }),
+        );
         Self {
             config_dir,
             file_name: AUTHORIZED_USERS_FILE_NAME.to_owned(),

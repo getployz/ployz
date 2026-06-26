@@ -7,50 +7,130 @@ Ployz uses two release surfaces:
 - `https://ployz.sh` serves the installer and mutable channel files that point
   at one exact tag.
 
-The mutable channel is only Bootstrap Delivery convenience. Machine bootstrap
-resolves it before downloading artifacts. Keeper update, substrate update, and
+The mutable channel is only Bootstrap Delivery convenience. `ployz.sh` resolves
+it before downloading the keeper artifact. Keeper update, substrate update, and
 Release Source resolution continue to require exact versions.
 
 ## Publish An Exact Release
 
-1. Tag the release with an exact `v*` tag, for example `v0.0.2-alpha.1`.
-2. Push the tag. The `release` workflow packages:
+Use an exact `v*` tag, for example `v0.0.2-alpha.5`.
+
+1. Start from a pushed commit on `main`. Keep unrelated local changes
+   unstaged.
+2. Run the tests that cover the changed release surface. At minimum, run
+   formatter checks plus focused crate tests for the changed code. For example:
+
+```sh
+cargo fmt --check
+cargo test -p ployz-keeper --test bootstrap_first_node --test local
+cargo test -p ployzd --lib dataplane_runtime::tests::default_command_plans_ensure_wireguard_interface_and_key
+```
+
+3. Tag and push the exact release:
+
+```sh
+tag=v0.0.2-alpha.5
+git tag "${tag}"
+git push origin main
+git push origin "${tag}"
+```
+
+4. Watch the `release` workflow:
+
+```sh
+gh run list --repo getployz/ployz --workflow release.yml --limit 5
+gh run watch <run-id> --repo getployz/ployz --exit-status
+```
+
+The `release` workflow packages:
+
    - `ployz-release-linux-amd64.env`
    - `ployz-release-linux-arm64.env`
    - `ployz-release-darwin-amd64.env`
    - `ployz-release-darwin-arm64.env`
    - the binaries referenced by those manifests.
-3. Review the draft GitHub Release and publish it only after all assets are
-   attached.
-4. Verify the release assets before promotion:
+
+5. Review the draft GitHub Release and publish it as a prerelease only after
+   all assets are attached:
 
 ```sh
-scripts/verify-release-assets.sh v0.0.2-alpha.1 --print-channel
+gh release view "${tag}" --repo getployz/ployz \
+  --json isDraft,isPrerelease,tagName,url,assets
+gh release edit "${tag}" --repo getployz/ployz \
+  --draft=false --prerelease=true
+```
+
+6. Verify the release assets before promotion:
+
+```sh
+scripts/verify-release-assets.sh "${tag}" --print-channel
 ```
 
 The verifier downloads assets with `gh release download` unless `--assets-dir`
 points at a local staged asset directory. It checks every platform manifest,
 every referenced asset, and every SHA-256 value.
 
+The verifier uses the GitHub API, so also check that unauthenticated installer
+URLs work before promoting a channel:
+
+```sh
+curl -fsSL \
+  "https://github.com/getployz/ployz/releases/download/${tag}/ployz-release-linux-amd64.env" \
+  | sed -n '1,12p'
+curl -fsSL \
+  "https://github.com/getployz/ployz/releases/download/${tag}/ployz-release-darwin-arm64.env" \
+  | sed -n '1,12p'
+```
+
 ## Promote The Alpha Channel
 
 After the exact release is published and verified, update
-`site/channels/alpha.env`:
+`site/channels/alpha.env` with the verifier:
 
-```text
-PLOYZ_CHANNEL=alpha
-PLOYZ_RELEASE_TAG=v0.0.2-alpha.1
-PLOYZ_VERSION=0.0.2-alpha.1
-PLOYZ_RELEASE_BASE_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1
+```sh
+scripts/verify-release-assets.sh "${tag}" \
+  --write-channel site/channels/alpha.env
+git diff -- site/channels/alpha.env
+git add site/channels/alpha.env
+git commit -m "chore(release): promote alpha to ${tag}"
+git push origin main
 ```
 
-Then commit the channel-file change through the normal default-branch path.
 The `ployz.sh` workflow stages `scripts/ployz.sh` as both `index.html` and
 `install.sh`, copies `site/channels/` and `site/_headers`, and deploys the
 static site to Cloudflare Pages with Wrangler Direct Upload.
 
+Watch the deploy and verify the live channel:
+
+```sh
+gh run list --repo getployz/ployz --workflow ployz-sh.yml --limit 5
+gh run watch <run-id> --repo getployz/ployz --exit-status
+curl -fsSL https://ployz.sh/channels/alpha.env
+```
+
 Do not upload channel pointers as GitHub Release assets, and do not use
 `gh release upload --clobber` for channel promotion.
+
+## Smoke A Promoted Release
+
+Verify the public installer resolves the promoted channel and installs keeper:
+
+```sh
+curl -fsSL https://ployz.sh | PLOYZ_CHANNEL=alpha sh
+ployz-keeper --help
+```
+
+For a server smoke, use a controlled test hostname that already points at the
+gateway machine:
+
+```sh
+ployzctl deploy --image nginx:alpine --route asdf.ployz.dev:80
+ployzctl ops watch <operation-id> --json
+curl -i --max-time 10 http://asdf.ployz.dev/
+```
+
+Success means the deploy reaches `deploy_completed` and public HTTP returns
+`200 OK`.
 
 ## Roll Back A Channel Promotion
 
@@ -58,29 +138,64 @@ Revert the `site/channels/alpha.env` change and let the Cloudflare Pages
 workflow deploy the previous pointer. Versioned release assets are not modified
 during rollback.
 
+## Recover A Broken Release Object
+
+If `gh release download "${tag}"` works but unauthenticated
+`https://github.com/getployz/ployz/releases/download/${tag}/...` URLs return
+`404`, the GitHub Release object is not serving public assets correctly. This
+can happen if the draft was created against an untagged release object.
+
+First confirm the release state and public failure:
+
+```sh
+gh release view "${tag}" --repo getployz/ployz \
+  --json isDraft,isPrerelease,tagName,url,assets
+curl -I -L \
+  "https://github.com/getployz/ployz/releases/download/${tag}/ployz-release-darwin-arm64.env"
+```
+
+Then recreate the release object without deleting the git tag. Only run this
+after the asset download into `tmpdir` succeeds:
+
+```sh
+tmpdir="$(mktemp -d)"
+gh release download "${tag}" --repo getployz/ployz \
+  --dir "${tmpdir}" --pattern '*' --clobber
+gh release delete "${tag}" --repo getployz/ployz --yes
+gh release create "${tag}" "${tmpdir}"/* --repo getployz/ployz \
+  --verify-tag --prerelease --title "${tag}" --notes "Ployz ${tag}"
+```
+
+Re-run the public `curl` checks before channel promotion.
+
 ## Exact Installs
 
 Default channel install:
 
 ```sh
 curl -fsSL https://ployz.sh | sh
+ployz-keeper --help
 ```
 
 Explicit channel install:
 
 ```sh
 curl -fsSL https://ployz.sh | sh -s -- --channel alpha
+ployz-keeper --help
 ```
 
 Exact release install:
 
 ```sh
 curl -fsSL https://ployz.sh | sh -s -- --version v0.0.2-alpha.1
+ployz-keeper --help
 ```
 
-Machine bootstrap may receive a channel at delivery time, but the installer
-resolves it to exact artifact metadata before keeper runs. Keeper and
-substrate update commands reject channels, version ranges, and `latest`.
+Cloud Bootstrap Delivery installs keeper first, then runs
+`sudo ployz-keeper bootstrap`. Noninteractive tokens are passed to keeper with
+`--cloud-token`; they are not passed to `ployz.sh`. Keeper and substrate update
+commands reject channels, version ranges, and `latest`. The public bootstrap
+installer targets Linux machines.
 
 ## Repository Settings
 

@@ -341,6 +341,8 @@ fn is_hostname_syntax(value: &str) -> bool {
 
 /// An NKey user public key (`U`-prefixed base32). Non-secret material.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
 pub struct NatsUserPublicKey(String);
 

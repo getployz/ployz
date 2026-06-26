@@ -1,5 +1,6 @@
 mod support;
 
+use ployz_core::nats_config::NatsUserPublicKey;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_keeper::artifacts::ArtifactKind;
 use ployz_keeper::steps::{
@@ -89,6 +90,50 @@ fn first_node_install_starts_nats_and_core_roles_without_join_token() {
 }
 
 #[test]
+fn first_node_can_authorize_cloud_user_public_key() {
+    let cloud_public_key = user_public_key('C');
+    let target = FirstNodeInstallTarget::new(
+        node_id("node_1"),
+        ployzd_artifact(),
+        dataplane_artifacts(),
+        nats_server_artifact(),
+        InstallRolePolicy::install_all()
+            .without_gateway()
+            .without_dns(),
+        test_identity().clone(),
+    )
+    .with_additional_user_public_key(cloud_public_key.clone());
+    let plan = first_node_install_plan(target);
+
+    let rendered = plan
+        .steps()
+        .iter()
+        .find_map(|step| match step {
+            KeeperStep::WriteNatsAuthorizedUsers(users) => Some(users.render()),
+            KeeperStep::VerifyHost(_)
+            | KeeperStep::PrepareContainerRuntime(_)
+            | KeeperStep::VerifyContainerRuntime(_)
+            | KeeperStep::InstallArtifact(_)
+            | KeeperStep::WriteNatsTlsMaterial(_)
+            | KeeperStep::WriteNatsClientCredentials(_)
+            | KeeperStep::WriteNatsServerConfig(_)
+            | KeeperStep::WriteMachineJoinTemplate(_)
+            | KeeperStep::WritePloyzdRoleEnvironment(_)
+            | KeeperStep::WriteSupervisorUnit(_)
+            | KeeperStep::StartSupervisorUnit(_)
+            | KeeperStep::RestartSupervisorUnit(_)
+            | KeeperStep::StoreJoinMaterial(_) => None,
+        })
+        .expect("first-node plan writes authorized users");
+
+    assert!(rendered.contains(test_identity().controller.public.as_str()));
+    assert!(rendered.contains(test_identity().operator.public.as_str()));
+    assert!(rendered.contains(test_identity().join.public.as_str()));
+    assert!(rendered.contains(cloud_public_key.as_str()));
+    assert_eq!(rendered.matches("# ployz-principal: user").count(), 2);
+}
+
+#[test]
 fn first_node_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
     let target = FirstNodeInstallTarget::new(
         node_id("node_1"),
@@ -133,6 +178,11 @@ fn first_node_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
             .path(),
         std::path::Path::new("/etc/ployz/ployzd-control.env")
     );
+}
+
+fn user_public_key(fill: char) -> NatsUserPublicKey {
+    NatsUserPublicKey::try_new(format!("U{}", fill.to_string().repeat(55)))
+        .expect("valid user public key")
 }
 
 #[test]

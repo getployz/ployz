@@ -12,7 +12,7 @@ use ployz_core::install::{
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinTrustedNats, NatsMachineMaterialPaths,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_node_process_set};
 use ployz_nats::connect::NatsClientUrl;
@@ -352,6 +352,7 @@ pub struct FirstNodeInstallTarget {
     pub roles: InstallRolePolicy,
     pub nats_identity: ClusterNatsIdentity,
     pub nats_material: NatsMachineMaterialPaths,
+    pub additional_user_public_keys: Vec<NatsUserPublicKey>,
     pub node_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
@@ -398,6 +399,7 @@ impl FirstNodeInstallTarget {
             roles,
             nats_identity,
             nats_material,
+            additional_user_public_keys: Vec::new(),
             node_public_ip: None,
             nats_server_unit,
             role_environment,
@@ -425,6 +427,12 @@ impl FirstNodeInstallTarget {
             .role_environment
             .with_nats_credentials(RoleNatsCredentials::cluster(&nats_material));
         self.nats_material = nats_material;
+        self
+    }
+
+    #[must_use]
+    pub fn with_additional_user_public_key(mut self, public_key: NatsUserPublicKey) -> Self {
+        self.additional_user_public_keys.push(public_key);
         self
     }
 
@@ -806,6 +814,7 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
         KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_node(
             nats_server_config.config_dir().to_path_buf(),
             &target.nats_identity,
+            &target.additional_user_public_keys,
         )),
         KeeperStep::WriteNatsClientCredentials(NatsClientCredentialsTarget::new(
             target.nats_material.clone(),
