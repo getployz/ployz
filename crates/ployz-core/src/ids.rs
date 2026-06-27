@@ -42,11 +42,11 @@ impl OperationId {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"NodeId\">"))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"MachineId\">"))]
 #[serde(transparent)]
-pub struct NodeId(SubjectToken);
+pub struct MachineId(SubjectToken);
 
-impl NodeId {
+impl MachineId {
     pub fn try_new(value: impl Into<String>) -> Result<Self, SubjectTokenError> {
         Ok(Self(SubjectToken::try_new(value)?))
     }

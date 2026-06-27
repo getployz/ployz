@@ -1,7 +1,7 @@
 //! Typed-id constructors for test literals: panic loudly when a test
 //! literal does not satisfy the id's invariants.
 
-use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
+use ployz_core::ids::{CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
 use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
 use ployz_core::ops::{
     CancellationReason, EventSequence, FailureMessage, OperationEventReplayLimit,
@@ -9,8 +9,8 @@ use ployz_core::ops::{
 };
 
 #[must_use]
-pub fn node_id(value: &str) -> NodeId {
-    NodeId::try_new(value).expect("valid node id")
+pub fn machine_id(value: &str) -> MachineId {
+    MachineId::try_new(value).expect("valid machine id")
 }
 
 #[must_use]

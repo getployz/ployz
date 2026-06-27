@@ -11,14 +11,14 @@ use ployz_keeper::steps::{
 };
 use ployz_keeper::systemd::SupervisorUnitTarget;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::ids::{failure_message, node_id};
+use ployz_test_support::ids::{failure_message, machine_id};
 use ployz_test_support::keeper::ployzd_artifact;
 use support::bootstrap::*;
 
 #[test]
 fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
     let roles = vec![
-        DaemonProcessRole::Node(node_id("node_7")),
+        DaemonProcessRole::Machine(machine_id("machine_7")),
         DaemonProcessRole::Gateway,
     ];
     let material = keeper_join_material();
@@ -64,8 +64,8 @@ fn keeper_join_installs_ployzd_and_only_assigned_role_units() {
             ..
         })
     ));
-    let rendered_env =
-        edge_role_environment().render_for_role(&DaemonProcessRole::Node(node_id("node_7")));
+    let rendered_env = edge_role_environment()
+        .render_for_role(&DaemonProcessRole::Machine(machine_id("machine_7")));
     assert!(rendered_env.contains("PLOYZ_EBPF_BYTECODE=/usr/local/lib/ployz/ebpf/ployz-ebpf-tc\n"));
     assert!(rendered_env.contains("PLOYZ_EBPF_CTL=/usr/local/bin/ployz-ebpf-ctl\n"));
     assert!(
@@ -117,7 +117,7 @@ fn role_sets_reject_empty_and_duplicate_assignments() {
 fn join_material_cluster_name_rejects_persisted_format_breakers() {
     for value in ["prod\nnext", "prod\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), value, NATS_CA_DIGEST),
+            RedactedJoinMaterial::new(machine_id("machine_7"), value, NATS_CA_DIGEST),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "cluster name",
                 value: value.to_owned(),
@@ -130,7 +130,7 @@ fn join_material_cluster_name_rejects_persisted_format_breakers() {
 fn join_material_rejects_persisted_line_breakers() {
     for value in ["cccc\nnext", "cccc\rnext"] {
         assert_eq!(
-            RedactedJoinMaterial::new(node_id("node_7"), "prod", value),
+            RedactedJoinMaterial::new(machine_id("machine_7"), "prod", value),
             Err(JoinMaterialError::InvalidJoinMaterialValue {
                 label: "trusted NATS CA digest",
                 value: value.to_owned(),

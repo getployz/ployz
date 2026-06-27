@@ -6,7 +6,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -14,7 +14,7 @@ use ployz_core::install::{
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
-use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_node_process_set};
+use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_machine_process_set};
 use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
@@ -28,10 +28,10 @@ pub use nats_material::{
     AUTHORIZED_USERS_FILE_NAME, NatsAuthorizedUsersTarget, NatsClientCredentialsTarget,
     NatsServerConfigTarget, NatsTlsMaterialTarget, RoleNatsCredentials, RoleNatsSeedSource,
 };
-use nats_material::{DEFAULT_NATS_PORT, first_node_listener, tls_loopback_nats_url};
+use nats_material::{DEFAULT_NATS_PORT, first_machine_listener, tls_loopback_nats_url};
 
-const PLOYZ_NODE_ID_ENV: &str = "PLOYZ_NODE_ID";
-const PLOYZ_NODE_PUBLIC_IP_ENV: &str = "PLOYZ_NODE_PUBLIC_IP";
+const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
+const PLOYZ_MACHINE_PUBLIC_IP_ENV: &str = "PLOYZ_MACHINE_PUBLIC_IP";
 const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
@@ -178,12 +178,12 @@ pub struct KeeperJoinMaterial {
 
 impl KeeperJoinMaterial {
     pub fn from_join_payload(
-        node_id: NodeId,
+        machine_id: MachineId,
         join_bundle: &MachineJoinBundle,
         secret_delivery: &MachineJoinSecretDelivery,
     ) -> Result<Self, JoinMaterialError> {
         Self::new(
-            node_id,
+            machine_id,
             join_bundle.material.cluster_name.as_str(),
             secret_delivery.nats_credentials.clone(),
             join_bundle.material.trusted_nats.ca_pem.clone(),
@@ -191,13 +191,13 @@ impl KeeperJoinMaterial {
     }
 
     pub fn new(
-        node_id: NodeId,
+        machine_id: MachineId,
         cluster_name: impl Into<String>,
         nats_credentials: NatsUserSeed,
         trusted_ca_pem: NatsCaCertificatePem,
     ) -> Result<Self, JoinMaterialError> {
         let redacted = RedactedJoinMaterial::new(
-            node_id,
+            machine_id,
             cluster_name,
             ca_pem_sha256(trusted_ca_pem.as_str()),
         )?;
@@ -237,14 +237,14 @@ pub fn ca_pem_sha256(ca_pem: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactedJoinMaterial {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub cluster_name: String,
     pub trusted_nats_ca_sha256: String,
 }
 
 impl RedactedJoinMaterial {
     pub fn new(
-        node_id: NodeId,
+        machine_id: MachineId,
         cluster_name: impl Into<String>,
         trusted_nats_ca_sha256: impl Into<String>,
     ) -> Result<Self, JoinMaterialError> {
@@ -255,7 +255,7 @@ impl RedactedJoinMaterial {
         )?;
 
         Ok(Self {
-            node_id,
+            machine_id,
             cluster_name,
             trusted_nats_ca_sha256,
         })
@@ -344,8 +344,8 @@ impl KeeperJoinTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeInstallTarget {
-    pub node_id: NodeId,
+pub struct FirstMachineInstallTarget {
+    pub machine_id: MachineId,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub nats_server_artifact: ArtifactTarget,
@@ -353,7 +353,7 @@ pub struct FirstNodeInstallTarget {
     pub nats_identity: ClusterNatsIdentity,
     pub nats_material: NatsMachineMaterialPaths,
     pub additional_user_public_keys: Vec<NatsUserPublicKey>,
-    pub node_public_ip: Option<IpAddr>,
+    pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
     machine_join_template_file: Option<AbsoluteInstallPath>,
@@ -361,10 +361,10 @@ pub struct FirstNodeInstallTarget {
     machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
 }
 
-impl FirstNodeInstallTarget {
+impl FirstMachineInstallTarget {
     #[must_use]
     pub fn new(
-        node_id: NodeId,
+        machine_id: MachineId,
         ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
         nats_server_artifact: ArtifactTarget,
@@ -380,7 +380,7 @@ impl FirstNodeInstallTarget {
         .expect("validated nats-server artifact install path is a valid unit path");
         let nats_material = NatsMachineMaterialPaths::in_default_state_dir();
         let role_environment = PloyzdRoleEnvironmentTarget::default_path(
-            node_id.clone(),
+            machine_id.clone(),
             tls_loopback_nats_url(DEFAULT_NATS_PORT),
             RoleNatsCredentials::cluster(&nats_material),
         )
@@ -392,7 +392,7 @@ impl FirstNodeInstallTarget {
         )
         .with_ebpf_ctl_path(dataplane_artifacts.ebpf_ctl.install_path().to_path_buf());
         Self {
-            node_id,
+            machine_id,
             ployzd_artifact,
             dataplane_artifacts,
             nats_server_artifact,
@@ -400,7 +400,7 @@ impl FirstNodeInstallTarget {
             nats_identity,
             nats_material,
             additional_user_public_keys: Vec::new(),
-            node_public_ip: None,
+            machine_public_ip: None,
             nats_server_unit,
             role_environment,
             machine_join_template_file: None,
@@ -488,9 +488,9 @@ impl FirstNodeInstallTarget {
     }
 
     #[must_use]
-    pub fn with_node_public_ip(mut self, public_ip: IpAddr) -> Self {
-        self.node_public_ip = Some(public_ip);
-        self.role_environment = self.role_environment.with_node_public_ip(public_ip);
+    pub fn with_machine_public_ip(mut self, public_ip: IpAddr) -> Self {
+        self.machine_public_ip = Some(public_ip);
+        self.role_environment = self.role_environment.with_machine_public_ip(public_ip);
         self
     }
 }
@@ -540,10 +540,10 @@ impl PloyzdRoleEnvironmentStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzdRoleEnvironmentTarget {
     file: PloyzdRoleEnvironmentFile,
-    node_id: NodeId,
+    machine_id: MachineId,
     nats_url: NatsClientUrl,
     nats_credentials: RoleNatsCredentials,
-    node_public_ip: Option<IpAddr>,
+    machine_public_ip: Option<IpAddr>,
     machine_bootstrap_url: Option<MachineBootstrapUrl>,
     machine_join_template_file: Option<AbsoluteInstallPath>,
     ebpf_bytecode_path: Option<PathBuf>,
@@ -554,16 +554,16 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn new(
         file: PloyzdRoleEnvironmentFile,
-        node_id: NodeId,
+        machine_id: MachineId,
         nats_url: NatsClientUrl,
         nats_credentials: RoleNatsCredentials,
     ) -> Self {
         Self {
             file,
-            node_id,
+            machine_id,
             nats_url,
             nats_credentials,
-            node_public_ip: None,
+            machine_public_ip: None,
             machine_bootstrap_url: None,
             machine_join_template_file: None,
             ebpf_bytecode_path: None,
@@ -573,13 +573,13 @@ impl PloyzdRoleEnvironmentTarget {
 
     #[must_use]
     pub fn default_path(
-        node_id: NodeId,
+        machine_id: MachineId,
         nats_url: NatsClientUrl,
         nats_credentials: RoleNatsCredentials,
     ) -> Self {
         Self::new(
             PloyzdRoleEnvironmentFile::default_path(),
-            node_id,
+            machine_id,
             nats_url,
             nats_credentials,
         )
@@ -623,8 +623,8 @@ impl PloyzdRoleEnvironmentTarget {
     }
 
     #[must_use]
-    pub fn with_node_public_ip(mut self, public_ip: IpAddr) -> Self {
-        self.node_public_ip = Some(public_ip);
+    pub fn with_machine_public_ip(mut self, public_ip: IpAddr) -> Self {
+        self.machine_public_ip = Some(public_ip);
         self
     }
 
@@ -661,12 +661,12 @@ impl PloyzdRoleEnvironmentTarget {
                 .to_string(),
         );
         output.push('\n');
-        output.push_str(PLOYZ_NODE_ID_ENV);
+        output.push_str(PLOYZ_MACHINE_ID_ENV);
         output.push('=');
-        output.push_str(self.node_id.as_str());
+        output.push_str(self.machine_id.as_str());
         output.push('\n');
-        if let Some(public_ip) = self.node_public_ip {
-            output.push_str(PLOYZ_NODE_PUBLIC_IP_ENV);
+        if let Some(public_ip) = self.machine_public_ip {
+            output.push_str(PLOYZ_MACHINE_PUBLIC_IP_ENV);
             output.push('=');
             output.push_str(&public_ip.to_string());
             output.push('\n');
@@ -791,13 +791,13 @@ fn keeper_join_install_steps(target: KeeperJoinTarget) -> Vec<KeeperStep> {
 }
 
 #[must_use]
-pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan {
-    let process_set = plan_first_node_process_set(&target.node_id, target.roles);
-    let nats_server_config = NatsServerConfigTarget::for_first_node(
-        target.node_id.clone(),
+pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> KeeperStepPlan {
+    let process_set = plan_first_machine_process_set(&target.machine_id, target.roles);
+    let nats_server_config = NatsServerConfigTarget::for_first_machine(
+        target.machine_id.clone(),
         &target.nats_server_unit,
         &target.nats_material,
-        first_node_listener(target.node_public_ip),
+        first_machine_listener(target.machine_public_ip),
     );
     let mut steps = vec![
         KeeperStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
@@ -811,7 +811,7 @@ pub fn first_node_install_plan(target: FirstNodeInstallTarget) -> KeeperStepPlan
             target.nats_material.clone(),
             &target.nats_identity,
         )),
-        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_node(
+        KeeperStep::WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget::initial_for_first_machine(
             nats_server_config.config_dir().to_path_buf(),
             &target.nats_identity,
             &target.additional_user_public_keys,

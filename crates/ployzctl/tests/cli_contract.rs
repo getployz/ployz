@@ -3,12 +3,12 @@ use std::fs;
 use std::process::{Command, Output};
 
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfNodeReady,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfMachineReady,
     WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
 };
 use ployz_core::deploy::{DeployRequest, ImageReference, ReplicaCount};
-use ployz_core::ids::{ContainerId, NodeId, RevisionId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, RevisionId, ServiceId};
 use ployz_core::ops::{
     DeployOperationState, DeployRunningStage, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
@@ -16,9 +16,9 @@ use ployz_core::ops::{
 };
 use ployz_core::state::ActiveServiceState;
 use ployz_sdk_types::{LogsTailLines, ServiceSnapshot};
-use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::commands::init::{
-    FirstNodeInitOutput, InstallRolePolicy, plan_first_node_process_set,
+    FirstMachineInitOutput, InstallRolePolicy, plan_first_machine_process_set,
 };
 use ployzctl::commands::machine::MachineName;
 use ployzctl::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
@@ -26,47 +26,48 @@ use ployzctl::commands::service::{ServiceInspectOutput, ServiceListOutput};
 use ployzctl::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse_invocation};
 
 #[test]
-fn init_first_node_reports_supervised_product_roles() {
-    let node_id = NodeId::try_new("node_1").expect("valid node id");
+fn init_first_machine_reports_supervised_product_roles() {
+    let machine_id = MachineId::try_new("machine_1").expect("valid machine id");
     let roles = InstallRolePolicy::install_all().without_gateway();
-    let output = FirstNodeInitOutput::summary(node_id.clone(), roles).render();
+    let output = FirstMachineInitOutput::summary(machine_id.clone(), roles).render();
 
     assert_eq!(
         output,
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node dns\n"
+        "init first machine machine_1\nsupervise nats-server\nsupervise roles control machine dns\n"
     );
     assert_eq!(
-        plan_first_node_process_set(&node_id, roles).roles(),
+        plan_first_machine_process_set(&machine_id, roles).roles(),
         &[
             ployz_core::roles::DaemonProcessRole::Control,
-            ployz_core::roles::DaemonProcessRole::Node(node_id),
+            ployz_core::roles::DaemonProcessRole::Machine(machine_id),
             ployz_core::roles::DaemonProcessRole::Dns,
         ]
     );
 }
 
 #[test]
-fn cli_init_activate_first_node_is_explicit_subcommand() {
-    let command =
-        parse_command(["init", "activate-first-node", "--node", "node_1"].map(str::to_owned))
-            .expect("activation-only init command parses");
+fn cli_init_activate_first_machine_is_explicit_subcommand() {
+    let command = parse_command(
+        ["init", "activate-first-machine", "--machine", "machine_1"].map(str::to_owned),
+    )
+    .expect("activation-only init command parses");
 
-    let PloyzctlCommand::InitFirstNodeActivate(command) = command else {
-        panic!("expected first-node activation command");
+    let PloyzctlCommand::InitFirstMachineActivate(command) = command else {
+        panic!("expected first-machine activation command");
     };
 
-    assert_eq!(command.node_id, node_id("node_1"));
+    assert_eq!(command.machine_id, machine_id("machine_1"));
     assert_eq!(command.roles, InstallRolePolicy::install_all());
 }
 
 #[test]
-fn cli_init_activate_first_node_accepts_role_opt_outs() {
+fn cli_init_activate_first_machine_accepts_role_opt_outs() {
     let command = parse_command(
         [
             "init",
-            "activate-first-node",
-            "--node",
-            "node_1",
+            "activate-first-machine",
+            "--machine",
+            "machine_1",
             "--no-gateway",
             "--no-dns",
         ]
@@ -74,8 +75,8 @@ fn cli_init_activate_first_node_accepts_role_opt_outs() {
     )
     .expect("activation-only init command parses");
 
-    let PloyzctlCommand::InitFirstNodeActivate(command) = command else {
-        panic!("expected first-node activation command");
+    let PloyzctlCommand::InitFirstMachineActivate(command) = command else {
+        panic!("expected first-machine activation command");
     };
 
     assert_eq!(
@@ -87,18 +88,18 @@ fn cli_init_activate_first_node_accepts_role_opt_outs() {
 }
 
 #[test]
-fn cli_init_can_emit_keeper_first_node_install_command() {
+fn cli_init_can_emit_keeper_first_machine_install_command() {
     let command = parse_command(init_with_keeper_install_args()).expect("init command parses");
 
     let PloyzctlCommand::Init(command) = command else {
         panic!("expected init command");
     };
 
-    assert_eq!(command.node_id(), &node_id("node_1"));
+    assert_eq!(command.machine_id(), &machine_id("machine_1"));
     assert_eq!(command.roles(), InstallRolePolicy::install_all());
     let rendered = command.render();
-    assert!(rendered.contains("install ployz-keeper first-node-install --spec -\n"));
-    assert!(rendered.contains(r#""node_id": "node_1""#));
+    assert!(rendered.contains("install ployz-keeper first-machine-install --spec -\n"));
+    assert!(rendered.contains(r#""machine_id": "machine_1""#));
     assert!(rendered.contains(r#""gateway": "install""#));
     assert!(
         rendered
@@ -107,7 +108,7 @@ fn cli_init_can_emit_keeper_first_node_install_command() {
 }
 
 #[test]
-fn cli_init_can_pass_first_node_public_ip_to_keeper_install() {
+fn cli_init_can_pass_first_machine_public_ip_to_keeper_install() {
     let command =
         parse_command(init_with_keeper_install_args_with_public_ip()).expect("init command parses");
 
@@ -118,7 +119,7 @@ fn cli_init_can_pass_first_node_public_ip_to_keeper_install() {
     assert!(
         command
             .render()
-            .contains(r#""node_public_ip": "203.0.113.10""#)
+            .contains(r#""machine_public_ip": "203.0.113.10""#)
     );
 }
 
@@ -129,7 +130,7 @@ fn cli_init_requires_complete_keeper_install_inputs() {
 
 #[test]
 fn cli_init_requires_explicit_keeper_install_mode() {
-    let spec = write_first_node_install_spec(None);
+    let spec = write_first_machine_install_spec(None);
     assert!(
         parse_command(
             [
@@ -145,7 +146,7 @@ fn cli_init_requires_explicit_keeper_install_mode() {
 
 #[test]
 fn cli_init_validates_keeper_install_inputs_before_rendering() {
-    let spec = write_first_node_install_spec_with_source("relative/ployzd", None);
+    let spec = write_first_machine_install_spec_with_source("relative/ployzd", None);
     assert!(matches!(
         parse_command(
             [
@@ -162,8 +163,8 @@ fn cli_init_validates_keeper_install_inputs_before_rendering() {
 }
 
 #[test]
-fn cli_dispatches_init_first_node() {
-    let command = parse_command(["init", "--node", "node_1"].map(str::to_owned))
+fn cli_dispatches_init_first_machine() {
+    let command = parse_command(["init", "--machine", "machine_1"].map(str::to_owned))
         .expect("init command parses");
 
     let PloyzctlCommand::Init(command) = command else {
@@ -171,19 +172,19 @@ fn cli_dispatches_init_first_node() {
     };
     assert_eq!(
         command.render(),
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
+        "init first machine machine_1\nsupervise nats-server\nsupervise roles control machine gateway dns\n"
     );
 }
 
 #[test]
-fn cli_rejects_init_without_node() {
+fn cli_rejects_init_without_machine() {
     assert!(parse_command(["init"].map(str::to_owned)).is_err());
 }
 
 #[test]
-fn cli_rejects_option_like_init_node_values() {
-    assert!(parse_command(["init", "--node", "--no-gateway"].map(str::to_owned)).is_err());
-    assert!(parse_command(["init", "--node", "--help"].map(str::to_owned)).is_err());
+fn cli_rejects_option_like_init_machine_values() {
+    assert!(parse_command(["init", "--machine", "--no-gateway"].map(str::to_owned)).is_err());
+    assert!(parse_command(["init", "--machine", "--help"].map(str::to_owned)).is_err());
 }
 
 #[test]
@@ -334,7 +335,7 @@ fn cli_dispatches_machine_add_request() {
         command.idempotency_key,
         OperationIdempotencyKey::try_new("idem_machine").expect("valid idempotency key")
     );
-    assert_eq!(command.node_id, node_id("node_2"));
+    assert_eq!(command.machine_id, machine_id("machine_2"));
     assert_eq!(
         command.name,
         MachineName::try_new("edge_2").expect("valid machine name")
@@ -359,14 +360,14 @@ fn cli_dispatches_machine_list_request() {
 
 #[test]
 fn cli_dispatches_machine_inspect_request() {
-    let command = parse_command(["machine", "inspect", "node_2"].map(str::to_owned))
+    let command = parse_command(["machine", "inspect", "machine_2"].map(str::to_owned))
         .expect("machine inspect command parses");
 
     let PloyzctlCommand::MachineInspect(command) = command else {
         panic!("expected machine inspect command");
     };
 
-    assert_eq!(command.into_request().node_id, node_id("node_2"));
+    assert_eq!(command.into_request().machine_id, machine_id("machine_2"));
 }
 
 #[test]
@@ -402,7 +403,15 @@ fn cli_dispatches_service_inspect_request() {
 #[test]
 fn cli_dispatches_logs_tail_request() {
     let command = parse_command(
-        ["logs", "ctr_failed", "--node", "node_a", "--tail", "50"].map(str::to_owned),
+        [
+            "logs",
+            "ctr_failed",
+            "--machine",
+            "machine_a",
+            "--tail",
+            "50",
+        ]
+        .map(str::to_owned),
     )
     .expect("logs tail command parses");
 
@@ -414,7 +423,7 @@ fn cli_dispatches_logs_tail_request() {
         command.into_request(),
         ployz_sdk_types::LogsTailRequest {
             container_id: ContainerId::try_new("ctr_failed").expect("valid container id"),
-            node_id: Some(node_id("node_a")),
+            machine_id: Some(machine_id("machine_a")),
             tail_lines: Some(LogsTailLines::try_new(50).expect("valid logs tail lines")),
         }
     );
@@ -426,7 +435,7 @@ fn cli_requires_service_inspect_service_id() {
 }
 
 #[test]
-fn cli_requires_machine_inspect_node_id() {
+fn cli_requires_machine_inspect_machine_id() {
     assert!(parse_command(["machine", "inspect"].map(str::to_owned)).is_err());
 }
 
@@ -477,8 +486,8 @@ fn binary_help_only_advertises_implemented_commands() {
 }
 
 #[test]
-fn binary_dispatches_init_first_node() {
-    let output = run_ployzctl(&["init", "--node", "node_1"]);
+fn binary_dispatches_init_first_machine() {
+    let output = run_ployzctl(&["init", "--machine", "machine_1"]);
 
     assert!(
         output.status.success(),
@@ -488,13 +497,13 @@ fn binary_dispatches_init_first_node() {
     );
     assert_eq!(
         stdout(&output),
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
+        "init first machine machine_1\nsupervise nats-server\nsupervise roles control machine gateway dns\n"
     );
     assert_eq!(stderr(&output), "");
 }
 
 #[test]
-fn binary_init_can_print_keeper_first_node_install_command() {
+fn binary_init_can_print_keeper_first_machine_install_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .args(init_with_keeper_install_arg_refs())
         .output()
@@ -506,14 +515,14 @@ fn binary_init_can_print_keeper_first_node_install_command() {
         stdout(&output),
         stderr(&output)
     );
-    assert!(stdout(&output).contains("install ployz-keeper first-node-install --spec -"));
-    assert!(stdout(&output).contains(r#""node_id": "node_1""#));
+    assert!(stdout(&output).contains("install ployz-keeper first-machine-install --spec -"));
+    assert!(stdout(&output).contains(r#""machine_id": "machine_1""#));
     assert!(stdout(&output).contains(r#""gateway": "install""#));
     assert_eq!(stderr(&output), "");
 }
 
 #[test]
-fn binary_init_can_run_keeper_first_node_install_command() {
+fn binary_init_can_run_keeper_first_machine_install_command() {
     let temp = temp_dir("ployzctl-fake-keeper");
     let keeper = temp.join("ployz-keeper");
     let captured_args = temp.join("keeper-args");
@@ -546,10 +555,10 @@ fn binary_init_can_run_keeper_first_node_install_command() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         fs::read_to_string(captured_args).expect("fake keeper captured args"),
-        "first-node-install\n--spec\n-\n"
+        "first-machine-install\n--spec\n-\n"
     );
     let stdin = fs::read_to_string(captured_stdin).expect("fake keeper captured stdin");
-    assert!(stdin.contains(r#""node_id":"node_1""#));
+    assert!(stdin.contains(r#""machine_id":"machine_1""#));
     assert!(stdin.contains(r#""gateway":"install""#));
 }
 
@@ -584,7 +593,7 @@ fn binary_init_succeeds_when_keeper_output_is_truncated() {
 
 #[test]
 fn cli_init_rejects_emit_and_run_together() {
-    let spec = write_first_node_install_spec(None);
+    let spec = write_first_machine_install_spec(None);
     assert!(
         parse_command(
             [
@@ -602,7 +611,7 @@ fn cli_init_rejects_emit_and_run_together() {
 
 #[test]
 fn cli_init_accepts_keeper_binary_before_run_flag() {
-    let spec = write_first_node_install_spec(None);
+    let spec = write_first_machine_install_spec(None);
     let command = parse_command(
         [
             "init",
@@ -619,20 +628,22 @@ fn cli_init_accepts_keeper_binary_before_run_flag() {
     let PloyzctlCommand::Init(command) = command else {
         panic!("expected init command");
     };
-    assert_eq!(command.node_id(), &node_id("node_1"));
+    assert_eq!(command.machine_id(), &machine_id("machine_1"));
 }
 
 #[test]
 fn cli_init_rejects_old_activation_flag() {
     assert!(
-        parse_command(["init", "--node", "node_1", "--activate-first-node"].map(str::to_owned))
-            .is_err()
+        parse_command(
+            ["init", "--machine", "machine_1", "--activate-first-machine"].map(str::to_owned)
+        )
+        .is_err()
     );
 }
 
 #[test]
 fn cli_init_rejects_keeper_binary_with_emit_mode() {
-    let spec = write_first_node_install_spec(None);
+    let spec = write_first_machine_install_spec(None);
     assert!(
         parse_command(
             [
@@ -763,7 +774,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
-        .args(["init", "--node", "node_1"])
+        .args(["init", "--machine", "machine_1"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -775,7 +786,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
     );
     assert_eq!(
         stdout(&output),
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
+        "init first machine machine_1\nsupervise nats-server\nsupervise roles control machine gateway dns\n"
     );
     assert_eq!(stderr(&output), "");
 }
@@ -786,7 +797,7 @@ fn binary_machine_inspect_requires_nats_url() {
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
-        .args(["machine", "inspect", "node_2"])
+        .args(["machine", "inspect", "machine_2"])
         .output()
         .expect("ployzctl binary runs");
 
@@ -799,16 +810,16 @@ fn binary_machine_inspect_requires_nats_url() {
 }
 
 #[test]
-fn init_first_node_can_include_gateway_role() {
-    let output = FirstNodeInitOutput::summary(
-        NodeId::try_new("node_1").expect("valid node id"),
+fn init_first_machine_can_include_gateway_role() {
+    let output = FirstMachineInitOutput::summary(
+        MachineId::try_new("machine_1").expect("valid machine id"),
         InstallRolePolicy::install_all(),
     )
     .render();
 
     assert_eq!(
         output,
-        "init first node node_1\nsupervise nats-server\nsupervise roles control node gateway dns\n"
+        "init first machine machine_1\nsupervise nats-server\nsupervise roles control machine gateway dns\n"
     );
 }
 
@@ -844,8 +855,8 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
         3,
         ployz_core::ops::OperationEvent::DeployWireGuardEbpfPrepared {
             operation_id: operation_id("op_123"),
-            report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady {
-                node_id: node_id("node_1"),
+            report: WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
+                machine_id: machine_id("machine_1"),
                 ready: WireGuardEbpfReady {
                     wireguard: WireGuardReady {
                         public_key: WireGuardPublicKey::try_new("public-key-1")
@@ -929,13 +940,13 @@ fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
     );
     assert_eq!(
         value
-            .pointer("/event/report/nodes/0/wireguard/public_key")
+            .pointer("/event/report/machines/0/wireguard/public_key")
             .and_then(serde_json::Value::as_str),
         Some("public-key-1")
     );
     assert_eq!(
         value
-            .pointer("/event/report/nodes/0/ebpf_forwarding/evidence/0/kind")
+            .pointer("/event/report/machines/0/ebpf_forwarding/evidence/0/kind")
             .and_then(serde_json::Value::as_str),
         Some("ployz_tc_bytecode")
     );
@@ -974,7 +985,7 @@ fn ops_status_renders_operation_state() {
 fn ops_status_renders_unclaimed_machine_add() {
     let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::MachineAdd {
         id: operation_id("op_machine"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         state: ployz_core::machine::MachineAddOperationState::Completed,
@@ -984,7 +995,7 @@ fn ops_status_renders_unclaimed_machine_add() {
 
     assert_eq!(
         output,
-        "operation op_machine\nkind machine-add\nnode node_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\n"
+        "operation op_machine\nkind machine-add\nmachine machine_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\n"
     );
 }
 
@@ -1064,8 +1075,8 @@ fn machine_add_arg_refs() -> Vec<String> {
     vec![
         "machine".to_owned(),
         "add".to_owned(),
-        "--node".to_owned(),
-        "node_2".to_owned(),
+        "--machine".to_owned(),
+        "machine_2".to_owned(),
         "--name".to_owned(),
         "edge_2".to_owned(),
         "--operation".to_owned(),
@@ -1083,7 +1094,7 @@ fn init_with_keeper_install_args() -> impl Iterator<Item = String> {
 }
 
 fn init_with_keeper_install_arg_refs() -> Vec<String> {
-    let spec = write_first_node_install_spec(None);
+    let spec = write_first_machine_install_spec(None);
     vec![
         "init".to_owned(),
         "--emit-keeper-install".to_owned(),
@@ -1093,7 +1104,7 @@ fn init_with_keeper_install_arg_refs() -> Vec<String> {
 }
 
 fn init_with_keeper_install_args_with_public_ip() -> Vec<String> {
-    let spec = write_first_node_install_spec(Some("203.0.113.10"));
+    let spec = write_first_machine_install_spec(Some("203.0.113.10"));
     vec![
         "init".to_owned(),
         "--emit-keeper-install".to_owned(),
@@ -1103,7 +1114,7 @@ fn init_with_keeper_install_args_with_public_ip() -> Vec<String> {
 }
 
 fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<String> {
-    let spec = write_first_node_install_spec(None);
+    let spec = write_first_machine_install_spec(None);
     vec![
         "init".to_owned(),
         "--run-keeper-install".to_owned(),
@@ -1114,34 +1125,34 @@ fn init_with_keeper_run_arg_refs(keeper_binary: &str) -> Vec<String> {
     ]
 }
 
-fn write_first_node_install_spec(node_public_ip: Option<&str>) -> std::path::PathBuf {
-    write_first_node_install_spec_with_source("/tmp/ployzd", node_public_ip)
+fn write_first_machine_install_spec(machine_public_ip: Option<&str>) -> std::path::PathBuf {
+    write_first_machine_install_spec_with_source("/tmp/ployzd", machine_public_ip)
 }
 
-fn write_first_node_install_spec_with_source(
+fn write_first_machine_install_spec_with_source(
     ployzd_source: &str,
-    node_public_ip: Option<&str>,
+    machine_public_ip: Option<&str>,
 ) -> std::path::PathBuf {
-    let temp = temp_dir("ployzctl-first-node-spec");
-    let path = temp.join("first-node-install.json");
+    let temp = temp_dir("ployzctl-first-machine-spec");
+    let path = temp.join("first-machine-install.json");
     fs::write(
         &path,
-        first_node_install_spec_json(ployzd_source, node_public_ip),
+        first_machine_install_spec_json(ployzd_source, machine_public_ip),
     )
-    .expect("first-node install spec can be written");
+    .expect("first-machine install spec can be written");
     path
 }
 
-fn first_node_install_spec_json(ployzd_source: &str, node_public_ip: Option<&str>) -> String {
-    let node_public_ip = node_public_ip
+fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Option<&str>) -> String {
+    let machine_public_ip = machine_public_ip
         .map(|value| format!(r#""{value}""#))
         .unwrap_or_else(|| "null".to_owned());
     format!(
         r#"{{
-            "node_id": "node_1",
+            "machine_id": "machine_1",
             "gateway": "install",
             "dns": "install",
-            "node_public_ip": {node_public_ip},
+            "machine_public_ip": {machine_public_ip},
             "machine_bootstrap_url": null,
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
             "machine_join_cluster_name": "ployz",

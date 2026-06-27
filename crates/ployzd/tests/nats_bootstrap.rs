@@ -2,12 +2,12 @@ use std::path::PathBuf;
 
 use ployz_core::nats_config::{NatsListener, NatsServerTlsFiles};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 use ployzd::nats_process::{NatsServerConfig, NatsServerRuntime, PreparedNatsServerService};
 
 #[test]
-fn single_node_config_enables_tls_jetstream_on_loopback() {
-    let rendered = single_node_config(PathBuf::from("/var/lib/ployz/nats")).render();
+fn single_machine_config_enables_tls_jetstream_on_loopback() {
+    let rendered = single_machine_config(PathBuf::from("/var/lib/ployz/nats")).render();
 
     assert!(rendered.contains("server_name: core-1"));
     assert!(rendered.contains("host: 127.0.0.1"));
@@ -22,7 +22,7 @@ fn single_node_config_enables_tls_jetstream_on_loopback() {
 
 #[test]
 fn supervised_runtime_uses_prepared_config_endpoint() {
-    let config = single_node_config(PathBuf::from("/var/lib/ployz/nats"));
+    let config = single_machine_config(PathBuf::from("/var/lib/ployz/nats"));
     let service = PreparedNatsServerService::prepare(
         PathBuf::from("/usr/local/bin/nats-server"),
         PathBuf::from("/etc/ployz/nats.conf"),
@@ -39,7 +39,7 @@ fn supervised_server_command_uses_config_file() {
     let service = PreparedNatsServerService::prepare(
         PathBuf::from("/usr/local/bin/nats-server"),
         PathBuf::from("/etc/ployz/nats.conf"),
-        single_node_config(PathBuf::from("/var/lib/ployz/nats")),
+        single_machine_config(PathBuf::from("/var/lib/ployz/nats")),
     )
     .expect("valid supervised service");
     let command = service.command();
@@ -59,7 +59,7 @@ fn prepared_server_keeps_rendered_config_with_endpoint() {
     let service = PreparedNatsServerService::prepare(
         PathBuf::from("/usr/local/bin/nats-server"),
         PathBuf::from("/etc/ployz/nats.conf"),
-        single_node_config(PathBuf::from("/var/lib/ployz/nats")),
+        single_machine_config(PathBuf::from("/var/lib/ployz/nats")),
     )
     .expect("valid supervised service");
 
@@ -72,7 +72,7 @@ fn prepared_server_keeps_rendered_config_with_endpoint() {
 
 #[test]
 fn config_renderer_escapes_quoted_path_values() {
-    let config = single_node_config(PathBuf::from("/var/lib/ployz/nats \"quoted\" \\ path"));
+    let config = single_machine_config(PathBuf::from("/var/lib/ployz/nats \"quoted\" \\ path"));
 
     assert!(
         config
@@ -89,9 +89,9 @@ fn external_runtime_keeps_the_supplied_endpoint() {
     assert_eq!(runtime.client_url(), url);
 }
 
-fn single_node_config(store_dir: PathBuf) -> NatsServerConfig {
-    NatsServerConfig::single_node(
-        node_id("core-1"),
+fn single_machine_config(store_dir: PathBuf) -> NatsServerConfig {
+    NatsServerConfig::single_machine(
+        machine_id("core-1"),
         store_dir,
         NatsListener::Loopback,
         NatsServerTlsFiles {

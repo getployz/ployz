@@ -90,7 +90,7 @@ fn render_step_label(step: &KeeperStepLabel) -> String {
         KeeperStepLabel::ReportJoinResult => "report-join-result".to_owned(),
         KeeperStepLabel::ConsumeJoinTokenFile => "consume-join-token-file".to_owned(),
         KeeperStepLabel::StoreJoinMaterial(material) => {
-            format!("store-join-material {}", material.node_id.as_str())
+            format!("store-join-material {}", material.machine_id.as_str())
         }
     }
 }

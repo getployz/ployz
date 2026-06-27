@@ -1,8 +1,8 @@
 //! NATS service handlers exposed by the daemon.
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::subjects::{
-    NodeServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution, node_service,
+    MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution, machine_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
@@ -12,12 +12,12 @@ use ployz_nats::services::{
 pub const API_SERVICE_NAME: &str = "plz-api";
 pub const API_SERVICE_ID: &str = "plz-api.core";
 pub const API_SERVICE_DESCRIPTION: &str = "Ployz user-facing command service";
-pub const NODE_SERVICE_NAME: &str = "plz-node";
-pub const NODE_SERVICE_DESCRIPTION: &str = "Ployz node-local runtime service";
+pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
+pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 13] = [
     OperationApiEndpoint::DeploySubmit,
-    OperationApiEndpoint::InitFirstNodeActivate,
+    OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
@@ -45,9 +45,9 @@ impl DaemonServiceCatalog {
     }
 
     #[must_use]
-    pub fn for_node(node_id: &NodeId) -> Self {
+    pub fn for_machine(machine_id: &MachineId) -> Self {
         Self {
-            services: vec![node_runtime_service(node_id)],
+            services: vec![machine_runtime_service(machine_id)],
         }
     }
 
@@ -109,63 +109,69 @@ pub const fn api_endpoint_execution(execution: OperationApiEndpointExecution) ->
 }
 
 #[must_use]
-pub fn node_runtime_service(node_id: &NodeId) -> NatsServiceSpec {
-    node_runtime_service_spec(
-        node_id,
+pub fn machine_runtime_service(machine_id: &MachineId) -> NatsServiceSpec {
+    machine_runtime_service_spec(
+        machine_id,
         vec![
-            node_endpoint_spec(node_id, NodeServiceEndpoint::Inspect),
-            node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerEnsureEndpointNetwork),
-            node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerRun),
-            node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerStop),
-            node_endpoint_spec(node_id, NodeServiceEndpoint::ContainerRemove),
-            node_endpoint_spec(node_id, NodeServiceEndpoint::WireGuardEbpfPrepare),
-            node_endpoint_spec(node_id, NodeServiceEndpoint::LogsTail),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
+            machine_endpoint_spec(
+                machine_id,
+                MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
+            ),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
         ],
     )
 }
 
 #[must_use]
-pub fn node_runtime_service_base(node_id: &NodeId) -> NatsServiceSpec {
-    node_runtime_service_spec(node_id, Vec::new())
+pub fn machine_runtime_service_base(machine_id: &MachineId) -> NatsServiceSpec {
+    machine_runtime_service_spec(machine_id, Vec::new())
 }
 
 #[must_use]
-pub fn node_endpoint_spec(
-    node_id: &NodeId,
-    endpoint: NodeServiceEndpoint,
+pub fn machine_endpoint_spec(
+    machine_id: &MachineId,
+    endpoint: MachineServiceEndpoint,
 ) -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new(
-        node_endpoint_name(endpoint),
-        node_service(node_id, endpoint),
-        EndpointExecution::NodeRpc,
+        machine_endpoint_name(endpoint),
+        machine_service(machine_id, endpoint),
+        EndpointExecution::MachineRpc,
     )
 }
 
 #[must_use]
-pub const fn node_endpoint_name(endpoint: NodeServiceEndpoint) -> &'static str {
+pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static str {
     match endpoint {
-        NodeServiceEndpoint::Inspect => "node.inspect",
-        NodeServiceEndpoint::ContainerEnsureEndpointNetwork => {
-            "node.container.ensure_endpoint_network"
+        MachineServiceEndpoint::Inspect => "machine.inspect",
+        MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
+            "machine.container.ensure_endpoint_network"
         }
-        NodeServiceEndpoint::ContainerRun => "node.container.run",
-        NodeServiceEndpoint::ContainerStop => "node.container.stop",
-        NodeServiceEndpoint::ContainerRemove => "node.container.remove",
-        NodeServiceEndpoint::WireGuardEbpfPrepare => "node.wireguard_ebpf.prepare",
-        NodeServiceEndpoint::LogsTail => "node.logs.tail",
+        MachineServiceEndpoint::ContainerRun => "machine.container.run",
+        MachineServiceEndpoint::ContainerStop => "machine.container.stop",
+        MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
+        MachineServiceEndpoint::WireGuardEbpfPrepare => "machine.wireguard_ebpf.prepare",
+        MachineServiceEndpoint::LogsTail => "machine.logs.tail",
     }
 }
 
-fn node_runtime_service_spec(
-    node_id: &NodeId,
+fn machine_runtime_service_spec(
+    machine_id: &MachineId,
     endpoints: Vec<NatsServiceEndpointSpec>,
 ) -> NatsServiceSpec {
     NatsServiceSpec::new(
-        format!("{NODE_SERVICE_NAME}.{}", node_id.as_str()),
-        NODE_SERVICE_NAME,
+        format!("{MACHINE_SERVICE_NAME}.{}", machine_id.as_str()),
+        MACHINE_SERVICE_NAME,
         SERVICE_VERSION,
-        NODE_SERVICE_DESCRIPTION,
-        ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new("node_id", node_id.as_str())]),
+        MACHINE_SERVICE_DESCRIPTION,
+        ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new(
+            "machine_id",
+            machine_id.as_str(),
+        )]),
         endpoints,
     )
 }

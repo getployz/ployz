@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use ployz_core::install::{
-    FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSpec, NatsServerInstallSpec,
+    FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
+    NatsServerInstallSpec,
 };
 use ployz_sdk_types::{CloudBootstrapSecretError, CloudBootstrapToken};
 
@@ -18,14 +19,14 @@ use crate::join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
     NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
 };
-use crate::steps::{FirstNodeInstallTarget, JoinToken};
+use crate::steps::{FirstMachineInstallTarget, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeeperCommand {
     Start(KeeperStartup),
     Bootstrap(KeeperBootstrap),
-    FirstNodeInstall(Box<FirstNodeInstallTarget>),
+    FirstMachineInstall(Box<FirstMachineInstallTarget>),
 }
 
 pub const DEFAULT_CLOUD_HOST: &str = "https://cloud.ployz.com";
@@ -148,10 +149,10 @@ pub fn load_command(
             cloud_token,
             cloud_host,
         )?)),
-        Some(KeeperSubcommand::FirstNodeInstall { spec }) => {
-            let spec = read_first_node_install_spec(spec)?;
-            Ok(KeeperCommand::FirstNodeInstall(Box::new(
-                first_node_install_target(spec)?,
+        Some(KeeperSubcommand::FirstMachineInstall { spec }) => {
+            let spec = read_first_machine_install_spec(spec)?;
+            Ok(KeeperCommand::FirstMachineInstall(Box::new(
+                first_machine_install_target(spec)?,
             )))
         }
     }
@@ -192,7 +193,7 @@ enum KeeperSubcommand {
         #[arg(long, value_name = "host-or-https-url")]
         cloud_host: Option<CloudHost>,
     },
-    FirstNodeInstall {
+    FirstMachineInstall {
         #[arg(long, value_name = "path|-")]
         spec: SpecSource,
     },
@@ -232,9 +233,9 @@ impl std::str::FromStr for SpecSource {
     }
 }
 
-fn read_first_node_install_spec(
+fn read_first_machine_install_spec(
     source: SpecSource,
-) -> Result<FirstNodeInstallSpec, KeeperCliError> {
+) -> Result<FirstMachineInstallSpec, KeeperCliError> {
     let mut bytes = String::new();
     match &source {
         SpecSource::Path(path) => {
@@ -261,19 +262,19 @@ fn machine_hostname() -> Option<String> {
     gethostname::gethostname().into_string().ok()
 }
 
-fn first_node_install_target(
-    install: FirstNodeInstallSpec,
-) -> Result<FirstNodeInstallTarget, KeeperCliError> {
+fn first_machine_install_target(
+    install: FirstMachineInstallSpec,
+) -> Result<FirstMachineInstallTarget, KeeperCliError> {
     let roles = install.role_policy();
-    let FirstNodeInstallSpec {
-        node_id,
+    let FirstMachineInstallSpec {
+        machine_id,
         gateway: _,
         dns: _,
-        node_public_ip,
+        machine_public_ip,
         machine_bootstrap_url,
         machine_join_template_file,
         artifacts:
-            FirstNodeInstallArtifacts {
+            FirstMachineInstallArtifacts {
                 ployzd,
                 ebpf_bytecode,
                 ebpf_ctl,
@@ -305,11 +306,11 @@ fn first_node_install_target(
         nats_server_artifact.install_path().to_path_buf(),
         PathBuf::from(nats_config.as_str()),
     )?;
-    let certificate_sans = ServerCertificateSans::try_new(node_public_ip, machine_hostname())?;
+    let certificate_sans = ServerCertificateSans::try_new(machine_public_ip, machine_hostname())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
 
-    let mut target = FirstNodeInstallTarget::new(
-        node_id,
+    let mut target = FirstMachineInstallTarget::new(
+        machine_id,
         ployzd_artifact,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
         nats_server_artifact,
@@ -326,8 +327,8 @@ fn first_node_install_target(
     target = target
         .with_machine_join_cluster_name(machine_join_cluster_name)
         .with_machine_join_runtime_nats_url(machine_join_runtime_nats_url);
-    if let Some(public_ip) = node_public_ip {
-        target = target.with_node_public_ip(public_ip);
+    if let Some(public_ip) = machine_public_ip {
+        target = target.with_machine_public_ip(public_ip);
     }
     Ok(target)
 }
@@ -392,13 +393,13 @@ impl fmt::Display for KeeperCliError {
             Self::ReadSpec { source, error } => {
                 write!(
                     formatter,
-                    "failed to read first-node install spec from {source}: {error}"
+                    "failed to read first-machine install spec from {source}: {error}"
                 )
             }
             Self::ParseSpec { source, error } => {
                 write!(
                     formatter,
-                    "failed to parse first-node install spec from {source}: {error}"
+                    "failed to parse first-machine install spec from {source}: {error}"
                 )
             }
             Self::JoinTokenFile(error) => write!(formatter, "{error}"),
@@ -596,15 +597,15 @@ mod tests {
     }
 
     #[test]
-    fn parser_loads_first_node_install_spec_command() {
+    fn parser_loads_first_machine_install_spec_command() {
         let path = write_temp_spec();
-        let command = load_command(["first-node-install".into(), "--spec".into(), path.into()])
-            .expect("first-node install command loads");
+        let command = load_command(["first-machine-install".into(), "--spec".into(), path.into()])
+            .expect("first-machine install command loads");
 
-        let KeeperCommand::FirstNodeInstall(target) = command else {
-            panic!("expected first-node install command");
+        let KeeperCommand::FirstMachineInstall(target) = command else {
+            panic!("expected first-machine install command");
         };
-        assert_eq!(target.node_id.as_str(), "node_1");
+        assert_eq!(target.machine_id.as_str(), "machine_1");
         // The spec carries no `dns` field: DNS defaults to install.
         assert_eq!(
             target.roles,
@@ -614,12 +615,12 @@ mod tests {
 
     #[test]
     fn parser_honors_explicit_dns_opt_out_in_spec() {
-        let path = write_temp_spec_with(FIRST_NODE_INSTALL_SPEC_NO_DNS, "no-dns");
-        let command = load_command(["first-node-install".into(), "--spec".into(), path.into()])
-            .expect("first-node install command loads");
+        let path = write_temp_spec_with(FIRST_MACHINE_INSTALL_SPEC_NO_DNS, "no-dns");
+        let command = load_command(["first-machine-install".into(), "--spec".into(), path.into()])
+            .expect("first-machine install command loads");
 
-        let KeeperCommand::FirstNodeInstall(target) = command else {
-            panic!("expected first-node install command");
+        let KeeperCommand::FirstMachineInstall(target) = command else {
+            panic!("expected first-machine install command");
         };
         assert_eq!(
             target.roles,
@@ -628,18 +629,18 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_missing_first_node_install_spec() {
+    fn parser_rejects_missing_first_machine_install_spec() {
         assert!(matches!(
-            load_command(["first-node-install".into()]),
+            load_command(["first-machine-install".into()]),
             Err(KeeperCliError::Clap(error))
                 if error.kind() == clap::error::ErrorKind::MissingRequiredArgument
         ));
     }
 
     #[test]
-    fn startup_parser_rejects_first_node_install_without_subcommand_validation() {
+    fn startup_parser_rejects_first_machine_install_without_subcommand_validation() {
         assert!(matches!(
-            load_startup(["first-node-install".into()]),
+            load_startup(["first-machine-install".into()]),
             Err(KeeperCliError::Clap(error))
                 if error.kind() == clap::error::ErrorKind::UnknownArgument
         ));
@@ -651,23 +652,23 @@ mod tests {
     }
 
     fn write_temp_spec() -> PathBuf {
-        write_temp_spec_with(FIRST_NODE_INSTALL_SPEC, "default")
+        write_temp_spec_with(FIRST_MACHINE_INSTALL_SPEC, "default")
     }
 
     fn write_temp_spec_with(spec: &str, label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "ployz-first-node-install-{label}-{}.json",
+            "ployz-first-machine-install-{label}-{}.json",
             std::process::id()
         ));
         fs::write(&path, spec).expect("write spec");
         path
     }
 
-    const FIRST_NODE_INSTALL_SPEC_NO_DNS: &str = r#"{
-        "node_id": "node_1",
+    const FIRST_MACHINE_INSTALL_SPEC_NO_DNS: &str = r#"{
+        "machine_id": "machine_1",
         "gateway": "install",
         "dns": "skip",
-        "node_public_ip": null,
+        "machine_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
         "machine_join_cluster_name": "ployz",
@@ -701,11 +702,11 @@ mod tests {
         }
     }"#;
 
-    const FIRST_NODE_INSTALL_SPEC: &str = r#"{
-        "node_id": "node_1",
+    const FIRST_MACHINE_INSTALL_SPEC: &str = r#"{
+        "machine_id": "machine_1",
         "gateway": "install",
         "dns": "install",
-        "node_public_ip": null,
+        "machine_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
         "machine_join_cluster_name": "ployz",

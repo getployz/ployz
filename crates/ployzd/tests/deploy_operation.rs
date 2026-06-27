@@ -15,12 +15,12 @@ use ployzd::deploy_worker::{
     ActiveRouteCommitter, ActiveServiceCommitter, DeployCleanupResult, DeployExecutionCommand,
     DeployExecutionError, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent,
-    NodeContainerRuntime, NodeContainerRuntimeError, WireGuardEbpfPreparer,
+    MachineContainerRuntime, MachineContainerRuntimeError, WireGuardEbpfPreparer,
     execute_deploy_operation,
 };
 use ployzd::docker::labels::ManagedContainerIdentity;
-use ployzd::node::protocol::NodeEnsureEndpointNetworkRpcRequest;
-use ployzd::node::runner::managed_container_labels;
+use ployzd::machine_runtime::protocol::MachineEnsureEndpointNetworkRpcRequest;
+use ployzd::machine_runtime::runner::managed_container_labels;
 use std::time::Duration;
 
 fn assert_deploy_event_order(
@@ -64,7 +64,7 @@ async fn execute_deploy<R, D, N, H, C, A>(
 where
     R: DeployOperationRecorder,
     D: WireGuardEbpfPreparer,
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: ActiveRouteCommitter,
     A: ActiveServiceCommitter,
@@ -87,7 +87,7 @@ async fn deploy_worker_runs_containers_then_completes() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -115,16 +115,16 @@ async fn deploy_worker_runs_containers_then_completes() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_b"),
+                machine_id: machine_id("machine_b"),
                 container_id: container_id("ctr_2"),
             },
             RecordedOperation::Transition(DeployTransition::Running {
@@ -142,14 +142,14 @@ async fn deploy_worker_runs_containers_then_completes() {
         runtime.endpoint_networks,
         vec![
             (
-                node_id("node_a"),
-                NodeEnsureEndpointNetworkRpcRequest {
+                machine_id("machine_a"),
+                MachineEnsureEndpointNetworkRpcRequest {
                     operation_id: operation_id("op_123"),
                 },
             ),
             (
-                node_id("node_b"),
-                NodeEnsureEndpointNetworkRpcRequest {
+                machine_id("machine_b"),
+                MachineEnsureEndpointNetworkRpcRequest {
                     operation_id: operation_id("op_123"),
                 },
             ),
@@ -159,14 +159,18 @@ async fn deploy_worker_runs_containers_then_completes() {
         panic!("expected exactly one wireguard/ebpf prepare request");
     };
     assert_eq!(
-        wireguard_ebpf_request.nodes,
-        vec![node_id("node_a"), node_id("node_b")]
+        wireguard_ebpf_request.machines,
+        vec![machine_id("machine_a"), machine_id("machine_b")]
     );
     assert_eq!(
         wireguard_ebpf_request.endpoint_routes,
         vec![
-            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_a")),
-            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_node(&node_id("node_b"))
+            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(&machine_id(
+                "machine_a"
+            )),
+            ployz_core::dataplane::WireGuardEbpfEndpointRoute::default_for_machine(&machine_id(
+                "machine_b"
+            ))
         ]
     );
     assert_eq!(wireguard_ebpf_request.peer_endpoints.len(), 2);
@@ -182,21 +186,21 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(
         health.checked,
         vec![vec![
-            DeployContainerForAssert::new("node_a", "ctr_1"),
-            DeployContainerForAssert::new("node_b", "ctr_2"),
+            DeployContainerForAssert::new("machine_a", "ctr_1"),
+            DeployContainerForAssert::new("machine_b", "ctr_2"),
         ]]
     );
     let [
-        (first_node_id, first_request),
-        (second_node_id, second_request),
+        (first_machine_id, first_request),
+        (second_machine_id, second_request),
     ] = runtime.requests.as_slice()
     else {
         panic!("expected exactly two runtime requests");
     };
-    assert_eq!(*first_node_id, node_id("node_a"));
+    assert_eq!(*first_machine_id, machine_id("machine_a"));
     assert_eq!(first_request.container.operation_id, operation_id("op_123"));
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
-    assert_eq!(*second_node_id, node_id("node_b"));
+    assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
 }
 
@@ -208,14 +212,14 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_with_existing_container(2, "node_b", "ctr_existing");
+    let command = deploy_command_with_existing_container(2, "machine_b", "ctr_existing");
 
     let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -233,15 +237,15 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
         vec![container_id("ctr_existing"), container_id("ctr_new")]
     );
     assert_eq!(runtime.requests.len(), 1);
-    let [(request_node_id, _)] = runtime.requests.as_slice() else {
+    let [(request_machine_id, _)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
     };
-    assert_eq!(*request_node_id, node_id("node_a"));
+    assert_eq!(*request_machine_id, machine_id("machine_a"));
     assert_eq!(
         health.checked,
         vec![vec![
-            DeployContainerForAssert::new("node_b", "ctr_existing"),
-            DeployContainerForAssert::new("node_a", "ctr_new"),
+            DeployContainerForAssert::new("machine_b", "ctr_existing"),
+            DeployContainerForAssert::new("machine_a", "ctr_new"),
         ]]
     );
     assert_eq!(
@@ -252,12 +256,12 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_new"),
             },
             RecordedOperation::Transition(DeployTransition::Running {
@@ -280,14 +284,14 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+    let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -299,17 +303,19 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
     assert_eq!(
         runtime.removals,
         vec![(
-            node_id("node_b"),
-            ployzd::node::protocol::NodeContainerRemoveRpcRequest {
+            machine_id("machine_b"),
+            ployzd::machine_runtime::protocol::MachineContainerRemoveRpcRequest {
                 operation_id: operation_id("op_123"),
                 container_id: container_id("ctr_old"),
                 expected_identity: cleanup_expected_identity(&cleanup_container(
-                    "node_b", "ctr_old", "rev_old",
+                    "machine_b",
+                    "ctr_old",
+                    "rev_old",
                 )),
             },
         )]
     );
-    let cleanup_target = cleanup_container("node_b", "ctr_old", "rev_old");
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "rev_old");
     assert_eq!(
         outcome.cleanup,
         vec![DeployCleanupResult::Removed(cleanup_target.clone())]
@@ -341,14 +347,14 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+    let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -358,7 +364,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
     .expect("deploy succeeds even when old-container cleanup fails");
 
     assert_eq!(active_state.requests.len(), 1);
-    let cleanup_target = cleanup_container("node_b", "ctr_old", "rev_old");
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "rev_old");
     assert_eq!(
         outcome.cleanup,
         vec![DeployCleanupResult::Failed {
@@ -399,14 +405,14 @@ async fn deploy_worker_does_not_record_warning_completion_without_cleanup_failur
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+    let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -438,14 +444,14 @@ async fn deploy_worker_counts_warning_completion_write_failure() {
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_replacing_old_container(1, "node_b", "ctr_old");
+    let command = deploy_command_replacing_old_container(1, "machine_b", "ctr_old");
 
     let outcome = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -467,17 +473,17 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers([]);
-    let mut health = RecordingHealth::unhealthy("node_b", "ctr_existing");
+    let mut health = RecordingHealth::unhealthy("machine_b", "ctr_existing");
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_with_existing_container(1, "node_b", "ctr_existing");
+    let command = deploy_command_with_existing_container(1, "machine_b", "ctr_existing");
 
     let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -492,14 +498,14 @@ async fn deploy_worker_does_not_claim_existing_container_as_retained_artifact() 
             failure: DeployOperationFailure::HealthCheckFailed {
                 health_check:
                     ployz_core::ops::HealthCheckFailure::ProbeFailed {
-                        node_id: failed_node_id,
+                        machine_id: failed_machine_id,
                         container_id: failed_container_id,
                         ..
                     },
                 retained_artifacts,
             },
             ..
-        } if failed_node_id == node_id("node_b")
+        } if failed_machine_id == machine_id("machine_b")
             && failed_container_id == container_id("ctr_existing")
             && retained_artifacts.is_empty()
     ));
@@ -523,7 +529,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -544,7 +550,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
         recorder
             .records
             .contains(&RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             })
     );
@@ -570,7 +576,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -584,7 +590,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
         DeployExecutionError::Failed {
             source,
             ..
-        } if matches!(*source, DeployExecutionError::RunContainer(NodeContainerRuntimeError::Unavailable { .. }))
+        } if matches!(*source, DeployExecutionError::RunContainer(MachineContainerRuntimeError::Unavailable { .. }))
     ));
     assert_eq!(runtime.requests.len(), 2);
     assert!(active_state.requests.is_empty());
@@ -596,22 +602,22 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::RuntimeUnavailable {
-                    node_id: node_id("node_b"),
+                    machine_id: machine_id("machine_b"),
                     message: ployz_core::ops::FailureMessage::try_new(
-                        "node runtime request failed: synthetic runtime failure",
+                        "machine runtime request failed: synthetic runtime failure",
                     )
                     .expect("valid failure message"),
-                    retained_artifacts: vec![retained_container("node_a", "ctr_1")],
+                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
                 }
             }),
         ]
@@ -633,7 +639,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -648,15 +654,15 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             source,
             failure:
                 DeployOperationFailure::RuntimeUnavailable {
-                    node_id: failure_node_id,
+                    machine_id: failure_machine_id,
                     message,
                     retained_artifacts,
                 },
             ..
-        } if matches!(*source, DeployExecutionError::RunContainer(NodeContainerRuntimeError::CreatedContainerStartFailed { .. }))
-            && failure_node_id == node_id("node_a")
+        } if matches!(*source, DeployExecutionError::RunContainer(MachineContainerRuntimeError::CreatedContainerStartFailed { .. }))
+            && failure_machine_id == machine_id("machine_a")
             && message == failure_message("container start failed: exec format error")
-            && retained_artifacts == vec![retained_created_container("node_a", "ctr_created")]
+            && retained_artifacts == vec![retained_created_container("machine_a", "ctr_created")]
     ));
     assert!(active_state.requests.is_empty());
     assert_eq!(
@@ -665,10 +671,10 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             .requests
             .iter()
             .zip([container_id("ctr_created")])
-            .map(|((request_node_id, request), container_id)| {
+            .map(|((request_machine_id, request), container_id)| {
                 (
-                    request_node_id.clone(),
-                    ployzd::node::protocol::NodeContainerStopRpcRequest {
+                    request_machine_id.clone(),
+                    ployzd::machine_runtime::protocol::MachineContainerStopRpcRequest {
                         operation_id: operation_id("op_123"),
                         container_id,
                         expected_identity: managed_container_labels(
@@ -688,7 +694,7 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_stop_failure();
-    let mut health = RecordingHealth::unhealthy("node_a", "ctr_1");
+    let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(1);
@@ -698,7 +704,7 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -717,8 +723,8 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
                 },
             ..
         } if retained_artifacts == vec![
-            retained_container("node_a", "ctr_1"),
-            retained_stop_failed_container("node_a", "ctr_1"),
+            retained_container("machine_a", "ctr_1"),
+            retained_stop_failed_container("machine_a", "ctr_1"),
         ]
     ));
     assert_eq!(runtime.stops.len(), 1);
@@ -732,14 +738,14 @@ async fn deploy_worker_records_planning_before_plan_failure() {
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
-    let command = deploy_command_without_eligible_nodes(1);
+    let command = deploy_command_without_eligible_machines(1);
 
     let error = execute_deploy(
         command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -790,7 +796,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -821,9 +827,9 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::RuntimeUnavailable {
-                    node_id: node_id("node_a"),
+                    machine_id: machine_id("machine_a"),
                     message: failure_message(
-                        "node runtime request failed: synthetic endpoint network failure"
+                        "machine runtime request failed: synthetic endpoint network failure"
                     ),
                     retained_artifacts: Vec::new(),
                 }
@@ -835,7 +841,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
 #[tokio::test]
 async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavailable() {
     let mut recorder = RecordingOperations::default();
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::wireguard_failed("node_b");
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::wireguard_failed("machine_b");
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
     let mut route_state = RecordingRouteState::stored();
@@ -847,7 +853,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -876,7 +882,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
             }),
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::WireGuardEbpfUnavailable {
-                    node_id: node_id("node_b"),
+                    machine_id: machine_id("machine_b"),
                     component: ployz_core::dataplane::WireGuardEbpfComponent::WireGuard,
                     message: failure_message("wireguard interface failed"),
                     retained_artifacts: Vec::new(),
@@ -891,7 +897,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
-    let mut health = RecordingHealth::unhealthy("node_b", "ctr_2");
+    let mut health = RecordingHealth::unhealthy("machine_b", "ctr_2");
     let mut route_state = RecordingRouteState::stored();
     let mut active_state = RecordingActiveState::stored();
     let command = deploy_command(2);
@@ -901,7 +907,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -925,16 +931,16 @@ async fn deploy_worker_waits_for_health_before_completing() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 2 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 2 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_b"),
+                machine_id: machine_id("machine_b"),
                 container_id: container_id("ctr_2"),
             },
             RecordedOperation::Transition(DeployTransition::Running {
@@ -944,7 +950,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
             RecordedOperation::Transition(DeployTransition::Failed {
                 failure: DeployOperationFailure::HealthCheckFailed {
                     health_check: ployz_core::ops::HealthCheckFailure::ProbeFailed {
-                        node_id: node_id("node_b"),
+                        machine_id: machine_id("machine_b"),
                         container_id: container_id("ctr_2"),
                         message: ployz_core::ops::FailureMessage::try_new("probe failed")
                             .expect("valid failure message"),
@@ -952,8 +958,8 @@ async fn deploy_worker_waits_for_health_before_completing() {
                             .expect("valid log hint"),
                     },
                     retained_artifacts: vec![
-                        retained_container("node_a", "ctr_1"),
-                        retained_container("node_b", "ctr_2"),
+                        retained_container("machine_a", "ctr_1"),
+                        retained_container("machine_b", "ctr_2"),
                     ],
                 }
             }),
@@ -977,7 +983,7 @@ async fn routed_deploy_commits_route_before_completion() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -1017,7 +1023,7 @@ async fn routed_deploy_commits_route_before_completion() {
     );
     assert_eq!(
         health.checked,
-        vec![vec![DeployContainerForAssert::routed("node_a", "ctr_1")]]
+        vec![vec![DeployContainerForAssert::routed("machine_a", "ctr_1")]]
     );
     assert_eq!(
         recorder.records.last(),
@@ -1045,7 +1051,7 @@ async fn routed_deploy_fails_before_completion_when_route_is_stale() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -1067,7 +1073,7 @@ async fn routed_deploy_fails_before_completion_when_route_is_stale() {
             ..
         } if matches!(*source, DeployExecutionError::ActiveRouteCommitRejected { .. })
             && route == route_target("api.example.com", 443)
-            && retained_artifacts == vec![retained_container("node_a", "ctr_1")]
+            && retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
     ));
     assert_eq!(route_state.requests.len(), 1);
     assert!(active_state.requests.is_empty());
@@ -1079,7 +1085,7 @@ async fn routed_deploy_fails_before_completion_when_route_is_stale() {
                 reason: ployz_core::ops::RouteCutoverFailureReason::RouteRejected {
                     message: failure_message("route changed before cutover"),
                 },
-                retained_artifacts: vec![retained_container("node_a", "ctr_1")],
+                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
             }
         }))
     );
@@ -1105,7 +1111,7 @@ async fn deploy_worker_times_out_hanging_steps() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -1126,7 +1132,7 @@ async fn deploy_worker_times_out_hanging_steps() {
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::HealthCheckFailed {
                 health_check: ployz_core::ops::HealthCheckFailure::TimedOut { timeout_seconds: 1 },
-                retained_artifacts: vec![retained_container("node_a", "ctr_1")],
+                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
             }
         }))
     );
@@ -1148,7 +1154,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -1169,12 +1175,12 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 1 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
             RecordedOperation::Transition(DeployTransition::Running {
@@ -1205,7 +1211,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -1236,12 +1242,12 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 1 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
             RecordedOperation::Transition(DeployTransition::Running {
@@ -1256,7 +1262,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
                     service_id: service_id("svc_api"),
                     revision_id: revision_id("rev_2"),
                     message: failure_message("active service commit timed out after 1ms"),
-                    retained_artifacts: vec![retained_container("node_a", "ctr_1")],
+                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
                 }
             }),
         ]
@@ -1278,7 +1284,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -1302,12 +1308,12 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::PreparingWireGuardEbpf,
             }),
-            RecordedOperation::WireGuardEbpfPrepared { node_count: 1 },
+            RecordedOperation::WireGuardEbpfPrepared { machine_count: 1 },
             RecordedOperation::Transition(DeployTransition::Running {
                 stage: DeployRunningStage::StartingContainers,
             }),
             RecordedOperation::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
             RecordedOperation::Transition(DeployTransition::Running {
@@ -1328,7 +1334,7 @@ async fn deploy_worker_marks_failed_when_active_commit_is_stale() {
                         current_revision: Some(revision_id("rev_other")),
                         attempted_revision: revision_id("rev_2"),
                     },
-                    retained_artifacts: vec![retained_container("node_a", "ctr_1")],
+                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
                 }
             }),
         ]

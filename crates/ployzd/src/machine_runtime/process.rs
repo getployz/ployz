@@ -1,22 +1,23 @@
-//! Runtime wiring for the node role.
+//! Runtime wiring for the machine role.
 
-use crate::config::NodeProcessConfig;
+use crate::config::MachineProcessConfig;
 use crate::dataplane_runtime::{HostDataplaneConfig, HostWireGuardEbpfPreparer};
 use crate::docker::runner::DockerManagedContainerRunner;
-use crate::node::runner::{
-    ExistingManagedContainerState, NodeContainerRunner, NodeContainerRunnerError, NodeLogReader,
+use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::machine_runtime::runner::{
+    ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
+    MachineLogReader,
 };
-use crate::node::service::{NodeServiceRuntimeError, start_node_runtime_service};
-use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::machine_runtime::service::{MachineServiceRuntimeError, start_machine_runtime_service};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, record_attempt, shutdown_signal,
 };
-use ployz_core::ids::NodeId;
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerObservation, NodeContainerObservationSnapshot,
-    NodeContainerObservationSnapshotError,
+use ployz_core::ids::MachineId;
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
+    MachineContainerObservationSnapshotError, ManagedContainerObservation,
 };
-use ployz_core::state::NodePublicIpObservation;
+use ployz_core::state::MachinePublicIpObservation;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
@@ -27,119 +28,126 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-const NODE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const NODE_OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
-const NODE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
+const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MACHINE_OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
+const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct RunningNodeProcessRuntime {
-    node_service: RunningNatsService,
-    observer: RunningNodeObserverRuntime,
+pub struct RunningMachineProcessRuntime {
+    machine_service: RunningNatsService,
+    observer: RunningMachineObserverRuntime,
 }
 
-impl RunningNodeProcessRuntime {
+impl RunningMachineProcessRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.observer.shutdown().await;
-        self.node_service.shutdown().await
+        self.machine_service.shutdown().await
     }
 
     #[must_use]
-    pub fn observer_health(&self) -> NodeObserverHealth {
+    pub fn observer_health(&self) -> MachineObserverHealth {
         self.observer.health()
     }
 }
 
-pub async fn start_node_process_runtime(
-    config: &NodeProcessConfig,
-) -> Result<RunningNodeProcessRuntime, NodeProcessRuntimeError> {
-    // The machine credential may not exist yet (first node before
-    // activate-first-node): awaiting it is a typed bounded-retry state,
+pub async fn start_machine_process_runtime(
+    config: &MachineProcessConfig,
+) -> Result<RunningMachineProcessRuntime, MachineProcessRuntimeError> {
+    // The machine credential may not exist yet (first machine before
+    // activate-first-machine): awaiting it is a typed bounded-retry state,
     // not a crash loop.
-    let connect =
-        await_role_credentials("node", &config.nats, &SeedFileRetryPolicy::default_policy())
-            .await
-            .map_err(NodeProcessRuntimeError::AwaitCredentials)?;
-    let client = connect_authenticated(&connect, NODE_NATS_CONNECT_TIMEOUT)
+    let connect = await_role_credentials(
+        "machine",
+        &config.nats,
+        &SeedFileRetryPolicy::default_policy(),
+    )
+    .await
+    .map_err(MachineProcessRuntimeError::AwaitCredentials)?;
+    let client = connect_authenticated(&connect, MACHINE_NATS_CONNECT_TIMEOUT)
         .await
-        .map_err(NodeProcessRuntimeError::ConnectNats)?;
+        .map_err(MachineProcessRuntimeError::ConnectNats)?;
     let runner = DockerManagedContainerRunner::lazy_local_defaults(
         config.dataplane.endpoint_subnet.clone(),
         config.dataplane.bridge_ifname.clone(),
     );
     let preparer = HostWireGuardEbpfPreparer::new(HostDataplaneConfig::with_default_key_material(
-        config.node_id.clone(),
+        config.machine_id.clone(),
         config.artifacts.ebpf_bytecode_path.clone(),
         config.artifacts.ebpf_ctl_path.clone(),
         config.dataplane.bridge_ifname.clone(),
         config.dataplane.wg_ifname.clone(),
     ));
 
-    start_node_process_runtime_with_ports(
+    start_machine_process_runtime_with_ports(
         client,
-        config.node_id.clone(),
+        config.machine_id.clone(),
         runner.clone(),
         preparer,
         runner,
         config.public_ip,
-        NODE_OBSERVATION_INTERVAL,
+        MACHINE_OBSERVATION_INTERVAL,
     )
     .await
 }
 
-pub async fn start_node_process_runtime_with_ports<R, P, L>(
+pub async fn start_machine_process_runtime_with_ports<R, P, L>(
     client: NatsClient,
-    node_id: NodeId,
+    machine_id: MachineId,
     runner: R,
     preparer: P,
     log_reader: L,
     public_ip: Option<IpAddr>,
     observation_interval: Duration,
-) -> Result<RunningNodeProcessRuntime, NodeProcessRuntimeError>
+) -> Result<RunningMachineProcessRuntime, MachineProcessRuntimeError>
 where
-    R: Clone + NodeContainerRunner + Send + Sync + 'static,
-    P: Clone + crate::node::service::NodeWireGuardEbpfPreparer + Send + Sync + 'static,
-    L: Clone + NodeLogReader + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone
+        + crate::machine_runtime::service::MachineWireGuardEbpfPreparer
+        + Send
+        + Sync
+        + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
 {
-    let node_service = start_node_runtime_service(
+    let machine_service = start_machine_runtime_service(
         client.clone(),
-        node_id.clone(),
+        machine_id.clone(),
         runner.clone(),
         preparer,
         log_reader,
     )
     .await
-    .map_err(NodeProcessRuntimeError::StartNodeService)?;
+    .map_err(MachineProcessRuntimeError::StartMachineService)?;
     let observer =
-        start_node_observer_runtime(node_id, runner, client, public_ip, observation_interval);
+        start_machine_observer_runtime(machine_id, runner, client, public_ip, observation_interval);
 
-    Ok(RunningNodeProcessRuntime {
-        node_service,
+    Ok(RunningMachineProcessRuntime {
+        machine_service,
         observer,
     })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeObserverHealth {
-    pub last_attempt: Option<NodeObserverAttempt>,
+pub struct MachineObserverHealth {
+    pub last_attempt: Option<MachineObserverAttempt>,
     pub consecutive_failures: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeObserverAttempt {
+pub enum MachineObserverAttempt {
     Succeeded,
     Failed { message: String },
 }
 
-struct RunningNodeObserverRuntime {
-    health: Arc<Mutex<NodeObserverHealth>>,
+struct RunningMachineObserverRuntime {
+    health: Arc<Mutex<MachineObserverHealth>>,
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<()>,
 }
 
-impl RunningNodeObserverRuntime {
-    fn health(&self) -> NodeObserverHealth {
+impl RunningMachineObserverRuntime {
+    fn health(&self) -> MachineObserverHealth {
         self.health
             .lock()
-            .expect("node observer health lock is not poisoned")
+            .expect("machine observer health lock is not poisoned")
             .clone()
     }
 
@@ -149,17 +157,17 @@ impl RunningNodeObserverRuntime {
     }
 }
 
-fn start_node_observer_runtime<R>(
-    node_id: NodeId,
+fn start_machine_observer_runtime<R>(
+    machine_id: MachineId,
     runner: R,
     client: NatsClient,
     public_ip: Option<IpAddr>,
     interval: Duration,
-) -> RunningNodeObserverRuntime
+) -> RunningMachineObserverRuntime
 where
-    R: NodeContainerRunner + Send + Sync + 'static,
+    R: MachineContainerRunner + Send + Sync + 'static,
 {
-    let health = Arc::new(Mutex::new(NodeObserverHealth {
+    let health = Arc::new(Mutex::new(MachineObserverHealth {
         last_attempt: None,
         consecutive_failures: 0,
     }));
@@ -167,10 +175,10 @@ where
     let task_health = Arc::clone(&health);
     let task = tokio::spawn(async move {
         let mut backoff = interval;
-        let mut publisher = NodeObservationPublisher::new(client);
+        let mut publisher = MachineObservationPublisher::new(client);
         loop {
             let attempt = publisher
-                .publish_with_timeout(&node_id, &runner, public_ip, NODE_OBSERVATION_TIMEOUT)
+                .publish_with_timeout(&machine_id, &runner, public_ip, MACHINE_OBSERVATION_TIMEOUT)
                 .await;
             backoff = record_observer_attempt(&task_health, attempt, interval, backoff);
             tokio::select! {
@@ -180,7 +188,7 @@ where
         }
     });
 
-    RunningNodeObserverRuntime {
+    RunningMachineObserverRuntime {
         health,
         shutdown,
         task,
@@ -188,21 +196,21 @@ where
 }
 
 fn record_observer_attempt(
-    health: &Mutex<NodeObserverHealth>,
-    attempt: Result<(), NodeProcessRuntimeError>,
+    health: &Mutex<MachineObserverHealth>,
+    attempt: Result<(), MachineProcessRuntimeError>,
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
     let mut health = health
         .lock()
-        .expect("node observer health lock is not poisoned");
-    let NodeObserverHealth {
+        .expect("machine observer health lock is not poisoned");
+    let MachineObserverHealth {
         last_attempt,
         consecutive_failures,
     } = &mut *health;
     let recorded = match attempt {
-        Ok(()) => RecordedAttempt::Healthy(NodeObserverAttempt::Succeeded),
-        Err(error) => RecordedAttempt::Failed(NodeObserverAttempt::Failed {
+        Ok(()) => RecordedAttempt::Healthy(MachineObserverAttempt::Succeeded),
+        Err(error) => RecordedAttempt::Failed(MachineObserverAttempt::Failed {
             message: error.to_string(),
         }),
     };
@@ -219,12 +227,12 @@ fn record_observer_attempt(
     )
 }
 
-struct NodeObservationPublisher {
+struct MachineObservationPublisher {
     client: NatsClient,
     observations: LazyHandle<AsyncNatsObservationStore>,
 }
 
-impl NodeObservationPublisher {
+impl MachineObservationPublisher {
     fn new(client: NatsClient) -> Self {
         Self {
             client,
@@ -234,27 +242,27 @@ impl NodeObservationPublisher {
 
     async fn publish_with_timeout<R>(
         &mut self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         runner: &R,
         public_ip: Option<IpAddr>,
         timeout: Duration,
-    ) -> Result<(), NodeProcessRuntimeError>
+    ) -> Result<(), MachineProcessRuntimeError>
     where
-        R: NodeContainerRunner,
+        R: MachineContainerRunner,
     {
-        tokio::time::timeout(timeout, self.publish(node_id, runner, public_ip))
+        tokio::time::timeout(timeout, self.publish(machine_id, runner, public_ip))
             .await
-            .map_err(|_| NodeProcessRuntimeError::ObservationTimedOut { timeout })?
+            .map_err(|_| MachineProcessRuntimeError::ObservationTimedOut { timeout })?
     }
 
     async fn publish<R>(
         &mut self,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         runner: &R,
         public_ip: Option<IpAddr>,
-    ) -> Result<(), NodeProcessRuntimeError>
+    ) -> Result<(), MachineProcessRuntimeError>
     where
-        R: NodeContainerRunner,
+        R: MachineContainerRunner,
     {
         let client = &self.client;
         let observations = self
@@ -263,45 +271,45 @@ impl NodeObservationPublisher {
                 let jetstream = async_nats::jetstream::new(client.clone());
                 AsyncNatsObservationStore::from_jetstream(&jetstream)
                     .await
-                    .map_err(NodeProcessRuntimeError::OpenObservations)
+                    .map_err(MachineProcessRuntimeError::OpenObservations)
             })
             .await?;
 
-        publish_node_observation_snapshot(node_id, runner, observations).await?;
+        publish_machine_observation_snapshot(machine_id, runner, observations).await?;
 
         match public_ip {
             Some(public_ip) => {
                 observations
-                    .replace_node_public_ip(&NodePublicIpObservation {
-                        node_id: node_id.clone(),
+                    .replace_machine_public_ip(&MachinePublicIpObservation {
+                        machine_id: machine_id.clone(),
                         public_ip,
                     })
                     .await
             }
-            None => observations.clear_node_public_ip(node_id).await,
+            None => observations.clear_machine_public_ip(machine_id).await,
         }
-        .map_err(NodeProcessRuntimeError::PublishObservation)?;
+        .map_err(MachineProcessRuntimeError::PublishObservation)?;
 
         Ok(())
     }
 }
 
-async fn publish_node_observation_snapshot<R>(
-    node_id: &NodeId,
+async fn publish_machine_observation_snapshot<R>(
+    machine_id: &MachineId,
     runner: &R,
     observations: &AsyncNatsObservationStore,
-) -> Result<(), NodeProcessRuntimeError>
+) -> Result<(), MachineProcessRuntimeError>
 where
-    R: NodeContainerRunner,
+    R: MachineContainerRunner,
 {
     let existing = runner
         .existing_managed_containers()
         .await
-        .map_err(NodeProcessRuntimeError::ListContainers)?;
+        .map_err(MachineProcessRuntimeError::ListContainers)?;
     let containers = existing
         .into_iter()
         .map(|container| ManagedContainerObservation {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             container_id: container.container_id,
             service_id: container.labels.service_id,
             revision_id: container.labels.revision_id,
@@ -310,12 +318,12 @@ where
             kind: container.labels.kind,
             state: observation_state(container.state),
         });
-    let snapshot = NodeContainerObservationSnapshot::try_new(node_id.clone(), containers)
-        .map_err(NodeProcessRuntimeError::BuildSnapshot)?;
+    let snapshot = MachineContainerObservationSnapshot::try_new(machine_id.clone(), containers)
+        .map_err(MachineProcessRuntimeError::BuildSnapshot)?;
     observations
-        .replace_node_containers(&snapshot)
+        .replace_machine_containers(&snapshot)
         .await
-        .map_err(NodeProcessRuntimeError::PublishObservation)
+        .map_err(MachineProcessRuntimeError::PublishObservation)
 }
 
 fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeState {
@@ -328,34 +336,34 @@ fn observation_state(state: ExistingManagedContainerState) -> ContainerRuntimeSt
     }
 }
 
-pub async fn run_node_until_shutdown(
-    config: &NodeProcessConfig,
-) -> Result<(), NodeProcessRuntimeError> {
-    let runtime = start_node_process_runtime(config).await?;
+pub async fn run_machine_until_shutdown(
+    config: &MachineProcessConfig,
+) -> Result<(), MachineProcessRuntimeError> {
+    let runtime = start_machine_process_runtime(config).await?;
     shutdown_signal()
         .await
-        .map_err(NodeProcessRuntimeError::ShutdownSignal)?;
+        .map_err(MachineProcessRuntimeError::ShutdownSignal)?;
     runtime
         .shutdown()
         .await
-        .map_err(NodeProcessRuntimeError::ShutdownNodeService)
+        .map_err(MachineProcessRuntimeError::ShutdownMachineService)
 }
 
 #[derive(Debug)]
-pub enum NodeProcessRuntimeError {
+pub enum MachineProcessRuntimeError {
     AwaitCredentials(AwaitSeedFileError),
     ConnectNats(NatsConnectError),
     OpenObservations(ObservationStoreError),
-    ListContainers(NodeContainerRunnerError),
-    BuildSnapshot(NodeContainerObservationSnapshotError),
+    ListContainers(MachineContainerRunnerError),
+    BuildSnapshot(MachineContainerObservationSnapshotError),
     PublishObservation(ObservationStoreError),
     ObservationTimedOut { timeout: Duration },
-    StartNodeService(NodeServiceRuntimeError),
+    StartMachineService(MachineServiceRuntimeError),
     ShutdownSignal(std::io::Error),
-    ShutdownNodeService(NatsServiceShutdownError),
+    ShutdownMachineService(NatsServiceShutdownError),
 }
 
-impl fmt::Display for NodeProcessRuntimeError {
+impl fmt::Display for MachineProcessRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AwaitCredentials(error) => write!(formatter, "{error}"),
@@ -370,47 +378,47 @@ impl fmt::Display for NodeProcessRuntimeError {
                 )
             }
             Self::BuildSnapshot(error) => {
-                write!(formatter, "failed to build node snapshot: {error}")
+                write!(formatter, "failed to build machine snapshot: {error}")
             }
             Self::PublishObservation(error) => {
-                write!(formatter, "failed to publish node observation: {error}")
+                write!(formatter, "failed to publish machine observation: {error}")
             }
             Self::ObservationTimedOut { timeout } => {
                 write!(
                     formatter,
-                    "node observation publish timed out after {}s",
+                    "machine observation publish timed out after {}s",
                     timeout.as_secs()
                 )
             }
-            Self::StartNodeService(error) => {
-                write!(formatter, "failed to start node service: {error:?}")
+            Self::StartMachineService(error) => {
+                write!(formatter, "failed to start machine service: {error:?}")
             }
             Self::ShutdownSignal(error) => {
                 write!(formatter, "failed to wait for shutdown: {error}")
             }
-            Self::ShutdownNodeService(error) => {
-                write!(formatter, "failed to stop node service: {error:?}")
+            Self::ShutdownMachineService(error) => {
+                write!(formatter, "failed to stop machine service: {error:?}")
             }
         }
     }
 }
 
-impl std::error::Error for NodeProcessRuntimeError {}
+impl std::error::Error for MachineProcessRuntimeError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::docker::labels::ManagedContainerIdentity;
-    use crate::node::runner::{
-        CreateManagedContainer, ExistingManagedContainer, NodeContainerRunner,
-        NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
+    use crate::machine_runtime::runner::{
+        CreateManagedContainer, ExistingManagedContainer, MachineContainerRunner,
+        MachineContainerRunnerError, MachineLogReader, MachineLogReaderError, MachineLogTail,
     };
     use ployz_core::dataplane::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
         WireGuardEbpfReady, WireGuardReady, WireGuardReadyEvidence,
     };
     use ployz_core::ids::{ContainerId, OperationId, RevisionId, ServiceId, StepId};
-    use ployz_core::node::ManagedContainerKind;
+    use ployz_core::machine_runtime::ManagedContainerKind;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -428,13 +436,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_process_runtime_starts_service_before_observations_are_ready() {
+    async fn machine_process_runtime_starts_service_before_observations_are_ready() {
         let nats = TestNats::start_bootstrapped().await;
         let runner = FailingListRunner;
 
-        let runtime = start_node_process_runtime_with_ports(
+        let runtime = start_machine_process_runtime_with_ports(
             nats.client.clone(),
-            node_id("node_a"),
+            machine_id("machine_a"),
             runner.clone(),
             ReadyWireGuardEbpf,
             runner,
@@ -460,27 +468,27 @@ mod tests {
         }
     }
 
-    impl NodeContainerRunner for StaticRunner {
+    impl MachineContainerRunner for StaticRunner {
         async fn existing_managed_containers(
             &self,
-        ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
+        ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
             self.containers
                 .lock()
                 .map(|containers| containers.clone())
-                .map_err(|error| NodeContainerRunnerError::ListExisting {
+                .map_err(|error| MachineContainerRunnerError::ListExisting {
                     message: error.to_string(),
                 })
         }
 
-        async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+        async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
             Ok(())
         }
 
         async fn create_managed_container(
             &self,
             _command: CreateManagedContainer,
-        ) -> Result<ContainerId, NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Create {
+        ) -> Result<ContainerId, MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Create {
                 message: "not used".to_owned(),
             })
         }
@@ -488,8 +496,8 @@ mod tests {
         async fn start_managed_container(
             &self,
             container_id: &ContainerId,
-        ) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Start {
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -499,8 +507,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Remove {
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -510,8 +518,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Stop {
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -521,17 +529,17 @@ mod tests {
     #[derive(Debug, Clone)]
     struct FailingListRunner;
 
-    impl NodeContainerRunner for FailingListRunner {
+    impl MachineContainerRunner for FailingListRunner {
         async fn existing_managed_containers(
             &self,
-        ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::ListExisting {
+        ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::ListExisting {
                 message: "docker unavailable".to_owned(),
             })
         }
 
-        async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::EnsureEndpointNetwork {
+        async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::EnsureEndpointNetwork {
                 message: "docker unavailable".to_owned(),
             })
         }
@@ -539,8 +547,8 @@ mod tests {
         async fn create_managed_container(
             &self,
             _command: CreateManagedContainer,
-        ) -> Result<ContainerId, NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Create {
+        ) -> Result<ContainerId, MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Create {
                 message: "not used".to_owned(),
             })
         }
@@ -548,8 +556,8 @@ mod tests {
         async fn start_managed_container(
             &self,
             container_id: &ContainerId,
-        ) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Start {
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -559,8 +567,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Remove {
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -570,21 +578,21 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), NodeContainerRunnerError> {
-            Err(NodeContainerRunnerError::Stop {
+        ) -> Result<(), MachineContainerRunnerError> {
+            Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
         }
     }
 
-    impl NodeLogReader for FailingListRunner {
+    impl MachineLogReader for FailingListRunner {
         async fn tail_container_logs(
             &self,
             container_id: &ContainerId,
             _tail_lines: Option<u16>,
-        ) -> Result<NodeLogTail, NodeLogReaderError> {
-            Err(NodeLogReaderError::ReadFailed {
+        ) -> Result<MachineLogTail, MachineLogReaderError> {
+            Err(MachineLogReaderError::ReadFailed {
                 container_id: container_id.clone(),
                 message: "docker unavailable".to_owned(),
             })
@@ -592,7 +600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_observation_publish_records_snapshot_when_docker_lists() {
+    async fn machine_observation_publish_records_snapshot_when_docker_lists() {
         let nats = TestNats::start_bootstrapped().await;
         let runner = StaticRunner::new([ExistingManagedContainer {
             container_id: container_id("ctr_123"),
@@ -600,15 +608,20 @@ mod tests {
             state: ExistingManagedContainerState::Running { endpoint: None },
         }]);
 
-        let mut publisher = NodeObservationPublisher::new(nats.client.clone());
+        let mut publisher = MachineObservationPublisher::new(nats.client.clone());
         publisher
-            .publish_with_timeout(&node_id("node_a"), &runner, None, Duration::from_secs(1))
+            .publish_with_timeout(
+                &machine_id("machine_a"),
+                &runner,
+                None,
+                Duration::from_secs(1),
+            )
             .await
             .expect("snapshot publishes");
 
         let snapshot = nats
             .observations
-            .node_snapshot(&node_id("node_a"))
+            .machine_snapshot(&machine_id("machine_a"))
             .await
             .expect("snapshot reads")
             .expect("snapshot exists");
@@ -623,14 +636,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_observation_publish_records_configured_public_ip() {
+    async fn machine_observation_publish_records_configured_public_ip() {
         let nats = TestNats::start_bootstrapped().await;
         let runner = StaticRunner::new([]);
 
-        let mut publisher = NodeObservationPublisher::new(nats.client.clone());
+        let mut publisher = MachineObservationPublisher::new(nats.client.clone());
         publisher
             .publish_with_timeout(
-                &node_id("node_a"),
+                &machine_id("machine_a"),
                 &runner,
                 Some("203.0.113.7".parse::<IpAddr>().expect("valid public ip")),
                 Duration::from_secs(1),
@@ -640,7 +653,7 @@ mod tests {
 
         assert_eq!(
             nats.observations
-                .node_public_ip(&node_id("node_a"))
+                .machine_public_ip(&machine_id("machine_a"))
                 .await
                 .expect("public ip reads")
                 .expect("public ip exists")
@@ -650,15 +663,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_observation_publish_clears_public_ip_when_unset() {
+    async fn machine_observation_publish_clears_public_ip_when_unset() {
         let nats = TestNats::start_bootstrapped().await;
         let runner = StaticRunner::new([]);
-        let mut publisher = NodeObservationPublisher::new(nats.client.clone());
-        let node_id = node_id("node_a");
+        let mut publisher = MachineObservationPublisher::new(nats.client.clone());
+        let machine_id = machine_id("machine_a");
 
         publisher
             .publish_with_timeout(
-                &node_id,
+                &machine_id,
                 &runner,
                 Some("203.0.113.7".parse::<IpAddr>().expect("valid public ip")),
                 Duration::from_secs(1),
@@ -666,13 +679,13 @@ mod tests {
             .await
             .expect("public ip publishes");
         publisher
-            .publish_with_timeout(&node_id, &runner, None, Duration::from_secs(1))
+            .publish_with_timeout(&machine_id, &runner, None, Duration::from_secs(1))
             .await
             .expect("public ip clears");
 
         assert_eq!(
             nats.observations
-                .node_public_ip(&node_id)
+                .machine_public_ip(&machine_id)
                 .await
                 .expect("public ip reads"),
             None
@@ -682,7 +695,7 @@ mod tests {
     #[derive(Clone)]
     struct ReadyWireGuardEbpf;
 
-    impl crate::node::service::NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+    impl crate::machine_runtime::service::MachineWireGuardEbpfPreparer for ReadyWireGuardEbpf {
         async fn read_wireguard_public_key(
             &self,
         ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {
@@ -722,7 +735,7 @@ mod tests {
 
     struct TestNats {
         _nats: ployz_test_support::nats::TestNats,
-        /// Node principal: the node process side under test.
+        /// Machine principal: the machine process side under test.
         client: async_nats::Client,
         observations: AsyncNatsObservationStore,
     }
@@ -730,11 +743,12 @@ mod tests {
     impl TestNats {
         async fn start_bootstrapped() -> Self {
             let nats =
-                ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_a")]).await;
+                ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")])
+                    .await;
             nats.bootstrap_resources().await;
-            let client = nats.node_client(&node_id("node_a")).await;
-            let node_jetstream = async_nats::jetstream::new(client.clone());
-            let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+            let client = nats.machine_client(&machine_id("machine_a")).await;
+            let machine_jetstream = async_nats::jetstream::new(client.clone());
+            let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
                 .await
                 .expect("open observations");
 
@@ -757,8 +771,8 @@ mod tests {
         }
     }
 
-    fn node_id(value: &str) -> NodeId {
-        NodeId::try_new(value).expect("valid node id")
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
     }
 
     fn container_id(value: &str) -> ContainerId {

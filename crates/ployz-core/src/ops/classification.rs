@@ -1,14 +1,14 @@
 use super::backup::BackupEvent;
 use super::{
     BackupTransition, CertId, CertRunningStage, CertTransition, DeployEvidence, DeployTransition,
-    MachineAddOperationState, NodeId, OperationEvent, OperationId,
+    MachineAddOperationState, MachineId, OperationEvent, OperationId,
 };
 use crate::ops::CancellationReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationSubjectRef {
     Cert(CertId),
-    MachineAdd(NodeId),
+    MachineAdd(MachineId),
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -83,13 +83,13 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             },
             OperationEvent::DeployContainerStarted {
                 operation_id,
-                node_id,
+                machine_id,
                 container_id,
                 ..
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::ContainerStarted {
-                    node_id,
+                    machine_id,
                     container_id,
                 }),
             },
@@ -173,49 +173,49 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             },
             OperationEvent::MachineAddSubmitted {
                 operation_id,
-                node_id,
+                machine_id,
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
+                subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::Submitted,
             },
             OperationEvent::MachineAddJoined {
                 operation_id,
-                node_id,
+                machine_id,
                 joined_at,
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
+                subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Joining { joined_at }),
             },
             OperationEvent::MachineAddCredentialProvisioned {
                 operation_id,
-                node_id,
+                machine_id,
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
+                subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::CredentialProvisioned,
             },
             OperationEvent::MachineAddCompleted {
                 operation_id,
-                node_id,
+                machine_id,
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
+                subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Completed),
             },
             OperationEvent::MachineAddFailed {
                 operation_id,
-                node_id,
+                machine_id,
                 failure,
                 ..
             } => Self::MachineAdd {
                 operation_id,
-                subject: OperationSubjectRef::MachineAdd(node_id),
+                subject: OperationSubjectRef::MachineAdd(machine_id),
                 event: MachineAddEvent::Transition(MachineAddOperationState::Failed { failure }),
             },
             OperationEvent::BackupCreateSubmitted { operation_id, .. } => Self::Backup {

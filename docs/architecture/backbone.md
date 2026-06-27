@@ -14,7 +14,7 @@ bounded operation, not quorum repair.
 This is a deliberate position between two industry defaults:
 
 - Consensus-centric orchestrators put a Raft-replicated database at the
-  center of the cluster. The cluster survives node loss, but the operator
+  center of the cluster. The cluster survives machine loss, but the operator
   inherits quorum: sizing it, backing it up, and repairing it before they can
   touch their own application.
 - Gossip/CRDT orchestrators let any partition accept writes and merge later.
@@ -46,7 +46,7 @@ core is a rendezvous and a rebuildable index; the machines are the facts.
    job trigger, optional evidence, or explicitly named durable authority.
    Indexes assembled from machine facts and Docker reality are rebuildable by
    construction. Unclassified records are a review failure.
-5. **Node-local storage outside the fact ledger and substrate state is cache
+5. **Machine-local storage outside the fact ledger and substrate state is cache
    and evidence**, never truth of any kind.
 
 ## Machine Fact Ledger Rules

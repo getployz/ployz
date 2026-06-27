@@ -5,7 +5,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{
     NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
@@ -36,8 +36,8 @@ pub(super) fn tls_loopback_nats_url(port: u16) -> NatsClientUrl {
 /// the install supplies a public address — in the same rendered config that
 /// carries TLS and authorization.
 #[must_use]
-pub(super) fn first_node_listener(node_public_ip: Option<IpAddr>) -> NatsListener {
-    match node_public_ip {
+pub(super) fn first_machine_listener(machine_public_ip: Option<IpAddr>) -> NatsListener {
+    match machine_public_ip {
         None => NatsListener::Loopback,
         Some(ip) => NatsListener::External {
             advertise_host: NatsAdvertisedHost::try_new(advertised_host_for_ip(ip))
@@ -56,8 +56,8 @@ fn advertised_host_for_ip(ip: IpAddr) -> String {
 /// The NATS client credentials a daemon role's environment points at.
 ///
 /// Every rendered role environment carries a CA file and a seed file — an
-/// unauthenticated role environment is unrepresentable. Node and gateway on
-/// the first node point at `node.seed`, which does not exist at install
+/// unauthenticated role environment is unrepresentable. Machine and gateway on
+/// the first machine point at `machine.seed`, which does not exist at install
 /// time; they await it with bounded retries (there is no controller-seed
 /// fallback).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +68,7 @@ pub struct RoleNatsCredentials {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleNatsSeedSource {
-    /// First-node layout: per-principal seed files under the NATS state dir.
+    /// First-machine layout: per-principal seed files under the NATS state dir.
     ClusterMaterial(NatsMachineMaterialPaths),
     /// Joined-machine layout: every role authenticates with the single
     /// redeemed per-machine seed.
@@ -119,8 +119,8 @@ pub struct NatsServerConfigTarget {
 
 impl NatsServerConfigTarget {
     #[must_use]
-    pub fn for_first_node(
-        node_id: NodeId,
+    pub fn for_first_machine(
+        machine_id: MachineId,
         unit: &NatsServerUnitTarget,
         material: &NatsMachineMaterialPaths,
         listener: NatsListener,
@@ -139,8 +139,8 @@ impl NatsServerConfigTarget {
         Self {
             config_dir,
             config_file_name,
-            rendered_config: NatsServerConfig::single_node(
-                node_id,
+            rendered_config: NatsServerConfig::single_machine(
+                machine_id,
                 material.state_dir().to_path_buf(),
                 listener,
                 NatsServerTlsFiles {
@@ -149,7 +149,7 @@ impl NatsServerConfigTarget {
                 },
                 PathBuf::from(AUTHORIZED_USERS_FILE_NAME),
             )
-            .expect("first-node nats config is valid")
+            .expect("first-machine nats config is valid")
             .render(),
         }
     }
@@ -231,9 +231,9 @@ pub struct NatsAuthorizedUsersTarget {
 
 impl NatsAuthorizedUsersTarget {
     /// The install-time user set: Controller, operator User, and Join.
-    /// Node users are minted later by `ployzd` control.
+    /// Machine users are minted later by `ployzd` control.
     #[must_use]
-    pub fn initial_for_first_node(
+    pub fn initial_for_first_machine(
         config_dir: PathBuf,
         identity: &ClusterNatsIdentity,
         additional_user_public_keys: &[NatsUserPublicKey],
@@ -290,8 +290,8 @@ impl NatsAuthorizedUsersTarget {
 }
 
 /// Writes `controller.seed`, `operator.seed`, and `join.seed` (`0600`)
-/// into the NATS state dir. `node.seed` is deliberately absent: `ployzd`
-/// control writes it at activate-first-node.
+/// into the NATS state dir. `machine.seed` is deliberately absent: `ployzd`
+/// control writes it at activate-first-machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatsClientCredentialsTarget {
     material: NatsMachineMaterialPaths,

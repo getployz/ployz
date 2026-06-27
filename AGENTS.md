@@ -49,11 +49,11 @@ NATS.
 
 ## Control Plane And Data Plane
 
-- `ployzd` is control plane: bootstrap, health, services, controllers, node RPC.
+- `ployzd` is control plane: bootstrap, health, services, controllers, machine RPC.
 - `ployzd` is not the data plane.
 - `nats-server`, gateway, DNS, and workloads are independently supervised.
 - Core `ployzd` down must not mean NATS/gateway/DNS down.
-- Edge `ployzd` down stops that node's RPC/observations, not its running
+- Edge `ployzd` down stops that machine's RPC/observations, not its running
   workloads.
 - Gateway and DNS watch NATS directly and keep last-known-good state.
 - If `ployzd` starts data-plane/substrate processes, it is a supervisor and
@@ -68,7 +68,7 @@ Expected crate shape:
 - `ployz-nats`: NATS connection, bootstrap, KV, streams, Object Store,
   services, schedules, permissions.
 - `ployz-transport`: future transport adapters if private connectivity returns.
-- `ployzd`: process wiring, service handlers, controllers, node agent, Docker,
+- `ployzd`: process wiring, service handlers, controllers, machine agent, Docker,
   gateway, DNS, certs.
 - `ployzctl`: CLI client.
 - `ployz-sdk-types`: public schema/type export surface.
@@ -79,7 +79,7 @@ Transport adapters must not import product orchestration convenience types.
 ## Control Plane Rules
 
 - User-facing commands are NATS services.
-- Node-local commands are node-scoped NATS services.
+- Machine-local commands are machine-scoped NATS services.
 - Mutating services return operation ids quickly.
 - Workers consume durable operation/job subjects.
 - Queue groups distribute workers.
@@ -94,7 +94,7 @@ Transport adapters must not import product orchestration convenience types.
 
 - Docker is execution reality.
 - Docker labels are recovery evidence.
-- Local node storage is cache/evidence, not cluster truth.
+- Local machine storage is cache/evidence, not cluster truth.
 - KV stores current state.
 - Streams store event history and job triggers.
 - Object Store stores larger control-plane artifacts.

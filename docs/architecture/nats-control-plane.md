@@ -9,7 +9,7 @@ plane through direct TLS-authenticated NATS in v1.
 CLI / SDK / Cloud
   -> NATS services
   -> operation workers
-  -> node services
+  -> machine services
   -> Docker / gateway / DNS / local machine reality
 ```
 
@@ -29,7 +29,7 @@ the authority boundary for every caller.
 - `ployz-core`: domain models and product policy.
 - `ployz-nats`: NATS resources and API wrappers.
 - `ployz-transport`: future transport adapters if private connectivity returns.
-- `ployzd`: process wiring, service handlers, controllers, node services, and
+- `ployzd`: process wiring, service handlers, controllers, machine services, and
   runtime adapters.
 - `ployzctl`: CLI client.
 - `ployz-sdk-types`: public schema/type export surface.
@@ -40,6 +40,6 @@ the authority boundary for every caller.
 - Streams are operation timelines and durable job triggers.
 - Object Store holds larger control-plane artifacts.
 - Docker is execution reality.
-- Local node storage is cache/evidence.
+- Local machine storage is cache/evidence.
 - Private overlay transport is deferred from v1.
 - NATS permissions are authoritative over every transport.

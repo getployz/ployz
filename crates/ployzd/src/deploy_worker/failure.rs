@@ -1,6 +1,6 @@
 use ployz_core::dataplane::WireGuardEbpfPrepareError;
 use ployz_core::deploy::DeployPlanError;
-use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, StepId, SubjectTokenError};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, StepId, SubjectTokenError};
 use ployz_core::ops::{
     ActiveServiceCommitFailure, DeployOperationFailure, FailureMessage, HealthCheckFailure,
     OperatorHint, RetainedArtifact, RouteCutoverFailureReason,
@@ -136,7 +136,7 @@ pub enum DeployExecutionError {
     RecordTransition(DeployOperationRecordError),
     RecordEvidence(DeployOperationRecordError),
     PrepareWireGuardEbpf(WireGuardEbpfPrepareError),
-    RunContainer(NodeContainerRuntimeError),
+    RunContainer(MachineContainerRuntimeError),
     WaitHealthy(DeployHealthCheckError),
     CommitRoute(ActiveRouteCommitError),
     CommitActiveService(ActiveServiceCommitError),
@@ -160,9 +160,9 @@ pub enum DeployExecutionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
     RecordOperationEvent,
-    EnsureEndpointNetwork { node_id: NodeId },
-    PrepareWireGuardEbpf { nodes: Vec<NodeId> },
-    RunContainer { node_id: NodeId },
+    EnsureEndpointNetwork { machine_id: MachineId },
+    PrepareWireGuardEbpf { machines: Vec<MachineId> },
+    RunContainer { machine_id: MachineId },
     WaitHealthy,
     CommitRoute { route: ployz_core::ops::RouteTarget },
     CommitActiveService,
@@ -195,19 +195,21 @@ impl DeployExecutionStep {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
-            Self::EnsureEndpointNetwork { node_id } => DeployOperationFailure::RuntimeUnavailable {
-                node_id: node_id.clone(),
-                message: timeout_failure_message("endpoint network ensure", timeout),
+            Self::EnsureEndpointNetwork { machine_id } => {
+                DeployOperationFailure::RuntimeUnavailable {
+                    machine_id: machine_id.clone(),
+                    message: timeout_failure_message("endpoint network ensure", timeout),
+                    retained_artifacts,
+                }
+            }
+            Self::RunContainer { machine_id } => DeployOperationFailure::RuntimeUnavailable {
+                machine_id: machine_id.clone(),
+                message: timeout_failure_message("machine runtime", timeout),
                 retained_artifacts,
             },
-            Self::RunContainer { node_id } => DeployOperationFailure::RuntimeUnavailable {
-                node_id: node_id.clone(),
-                message: timeout_failure_message("node runtime", timeout),
-                retained_artifacts,
-            },
-            Self::PrepareWireGuardEbpf { nodes } => {
+            Self::PrepareWireGuardEbpf { machines } => {
                 DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
-                    nodes: nodes.clone(),
+                    machines: machines.clone(),
                     timeout_seconds: timeout_seconds(timeout),
                     retained_artifacts,
                 }
@@ -327,11 +329,11 @@ fn wireguard_ebpf_deploy_failure(
 ) -> DeployOperationFailure {
     match error {
         WireGuardEbpfPrepareError::Unavailable {
-            node_id,
+            machine_id,
             component,
             message,
         } => DeployOperationFailure::WireGuardEbpfUnavailable {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             component: *component,
             message: message.clone(),
             retained_artifacts,
@@ -416,93 +418,95 @@ pub enum DeployFailureRecordError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeContainerRuntimeError {
+pub enum MachineContainerRuntimeError {
     Unavailable {
-        node_id: NodeId,
-        reason: NodeRuntimeUnavailableReason,
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
     },
     OperationStepConflict {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         expected: ManagedContainerLabels,
         actual: ManagedContainerLabels,
     },
     OperationStepAmbiguous {
-        node_id: NodeId,
+        machine_id: MachineId,
         operation_id: OperationId,
         step_id: StepId,
         container_ids: Vec<ContainerId>,
     },
     CreatedContainerStartFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
     ExistingContainerStartFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
     OperationStepContainerNotStartable {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
     RemoveContainerFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
     StopContainerFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
     },
 }
 
-impl NodeContainerRuntimeError {
+impl MachineContainerRuntimeError {
     #[must_use]
     pub fn deploy_failure(
         &self,
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
-            Self::Unavailable { node_id, reason } => DeployOperationFailure::RuntimeUnavailable {
-                node_id: node_id.clone(),
-                message: reason.failure_message(),
-                retained_artifacts,
-            },
-            Self::OperationStepConflict { node_id, .. } => {
+            Self::Unavailable { machine_id, reason } => {
                 DeployOperationFailure::RuntimeUnavailable {
-                    node_id: node_id.clone(),
+                    machine_id: machine_id.clone(),
+                    message: reason.failure_message(),
+                    retained_artifacts,
+                }
+            }
+            Self::OperationStepConflict { machine_id, .. } => {
+                DeployOperationFailure::RuntimeUnavailable {
+                    machine_id: machine_id.clone(),
                     message: failure_message(
-                        "node runtime found a conflicting container for the operation step",
+                        "machine runtime found a conflicting container for the operation step",
                     ),
                     retained_artifacts,
                 }
             }
-            Self::OperationStepAmbiguous { node_id, .. } => {
+            Self::OperationStepAmbiguous { machine_id, .. } => {
                 DeployOperationFailure::RuntimeUnavailable {
-                    node_id: node_id.clone(),
+                    machine_id: machine_id.clone(),
                     message: failure_message(
-                        "node runtime found multiple containers for the operation step",
+                        "machine runtime found multiple containers for the operation step",
                     ),
                     retained_artifacts,
                 }
             }
             Self::CreatedContainerStartFailed {
-                node_id,
+                machine_id,
                 container_id,
                 message,
                 inspect_hint,
             } => {
                 let retained_artifact = RetainedArtifact::CreatedContainer {
-                    node_id: node_id.clone(),
+                    machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     inspect_hint: inspect_hint.clone(),
                 };
@@ -512,24 +516,32 @@ impl NodeContainerRuntimeError {
                 }
 
                 DeployOperationFailure::RuntimeUnavailable {
-                    node_id: node_id.clone(),
+                    machine_id: machine_id.clone(),
                     message: message.clone(),
                     retained_artifacts,
                 }
             }
             Self::ExistingContainerStartFailed {
-                node_id, message, ..
+                machine_id,
+                message,
+                ..
             }
             | Self::OperationStepContainerNotStartable {
-                node_id, message, ..
+                machine_id,
+                message,
+                ..
             }
             | Self::RemoveContainerFailed {
-                node_id, message, ..
+                machine_id,
+                message,
+                ..
             }
             | Self::StopContainerFailed {
-                node_id, message, ..
+                machine_id,
+                message,
+                ..
             } => DeployOperationFailure::RuntimeUnavailable {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 message: message.clone(),
                 retained_artifacts,
             },
@@ -538,7 +550,7 @@ impl NodeContainerRuntimeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeRuntimeUnavailableReason {
+pub enum MachineRuntimeUnavailableReason {
     EncodeRequest { message: String },
     RequestTimedOut,
     NoResponders,
@@ -552,45 +564,47 @@ pub enum NodeRuntimeUnavailableReason {
     ServiceInternal { message: String },
     MalformedServiceError { message: String },
     DecodeResponse { message: String },
-    WrongResponder { actual_node_id: NodeId },
+    WrongResponder { actual_machine_id: MachineId },
 }
 
-impl NodeRuntimeUnavailableReason {
+impl MachineRuntimeUnavailableReason {
     pub(crate) fn failure_message(&self) -> FailureMessage {
         let message = match self {
             Self::EncodeRequest { message } => {
-                format!("node runtime request could not be encoded: {message}")
+                format!("machine runtime request could not be encoded: {message}")
             }
-            Self::RequestTimedOut => "node runtime request timed out".to_owned(),
-            Self::NoResponders => "node runtime has no responders".to_owned(),
-            Self::InvalidSubject => "node runtime subject was invalid".to_owned(),
-            Self::MaxPayloadExceeded => "node runtime request exceeded NATS max payload".to_owned(),
-            Self::RequestFailed { message } => format!("node runtime request failed: {message}"),
+            Self::RequestTimedOut => "machine runtime request timed out".to_owned(),
+            Self::NoResponders => "machine runtime has no responders".to_owned(),
+            Self::InvalidSubject => "machine runtime subject was invalid".to_owned(),
+            Self::MaxPayloadExceeded => {
+                "machine runtime request exceeded NATS max payload".to_owned()
+            }
+            Self::RequestFailed { message } => format!("machine runtime request failed: {message}"),
             Self::ServiceBadRequest { message } => {
-                format!("node runtime rejected the request: {message}")
+                format!("machine runtime rejected the request: {message}")
             }
             Self::ServiceConflict { message } => {
-                format!("node runtime reported a conflict: {message}")
+                format!("machine runtime reported a conflict: {message}")
             }
             Self::ServiceUnavailable { message } => {
-                format!("node runtime service unavailable: {message}")
+                format!("machine runtime service unavailable: {message}")
             }
             Self::ServiceTimedOut { message } => {
-                format!("node runtime service timed out: {message}")
+                format!("machine runtime service timed out: {message}")
             }
             Self::ServiceInternal { message } => {
-                format!("node runtime service failed internally: {message}")
+                format!("machine runtime service failed internally: {message}")
             }
             Self::MalformedServiceError { message } => {
-                format!("node runtime returned malformed service error headers: {message}")
+                format!("machine runtime returned malformed service error headers: {message}")
             }
             Self::DecodeResponse { message } => {
-                format!("node runtime response could not be decoded: {message}")
+                format!("machine runtime response could not be decoded: {message}")
             }
-            Self::WrongResponder { actual_node_id } => {
+            Self::WrongResponder { actual_machine_id } => {
                 format!(
-                    "node runtime replied for a different node: {}",
-                    actual_node_id.as_str()
+                    "machine runtime replied for a different machine: {}",
+                    actual_machine_id.as_str()
                 )
             }
         };
@@ -601,7 +615,7 @@ impl NodeRuntimeUnavailableReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployHealthCheckError {
     Unhealthy {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ployz_core::ids::ContainerId,
         message: FailureMessage,
         log_hint: OperatorHint,
@@ -616,13 +630,13 @@ impl DeployHealthCheckError {
     ) -> DeployOperationFailure {
         match self {
             Self::Unhealthy {
-                node_id,
+                machine_id,
                 container_id,
                 message,
                 log_hint,
             } => DeployOperationFailure::HealthCheckFailed {
                 health_check: HealthCheckFailure::ProbeFailed {
-                    node_id: node_id.clone(),
+                    machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     message: message.clone(),
                     log_hint: log_hint.clone(),

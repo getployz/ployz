@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::ids::{NodeId, OperationId, SubjectToken, SubjectTokenError};
+use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{FailureMessage, OperationIdempotencyKey};
-use crate::roles::{InstallRolePolicy, JoinedNodeProcessSet, plan_joined_node_process_set};
+use crate::roles::{InstallRolePolicy, JoinedMachineProcessSet, plan_joined_machine_process_set};
 use crate::state::ActiveMachineState;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -30,7 +30,7 @@ impl MachineName {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineReservation {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub operation_id: OperationId,
 }
@@ -129,7 +129,7 @@ impl IssuedJoinToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddCommand {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub join_token: IssuedJoinToken,
     pub roles: InstallRolePolicy,
@@ -139,26 +139,26 @@ pub struct MachineAddCommand {
 pub struct MachineAddPlan {
     pub reservation: MachineReservation,
     pub operation: MachineAddOperationState,
-    pub process_set: JoinedNodeProcessSet,
+    pub process_set: JoinedMachineProcessSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeActivationPlan {
+pub struct FirstMachineActivationPlan {
     pub operation_id: OperationId,
     pub idempotency_key: OperationIdempotencyKey,
     pub name: MachineName,
 }
 
-pub fn plan_first_node_activation(
-    node_id: &NodeId,
-) -> Result<FirstNodeActivationPlan, SubjectTokenError> {
-    Ok(FirstNodeActivationPlan {
-        operation_id: OperationId::try_new(format!("op_init_{}", node_id.as_str()))?,
+pub fn plan_first_machine_activation(
+    machine_id: &MachineId,
+) -> Result<FirstMachineActivationPlan, SubjectTokenError> {
+    Ok(FirstMachineActivationPlan {
+        operation_id: OperationId::try_new(format!("op_init_{}", machine_id.as_str()))?,
         idempotency_key: OperationIdempotencyKey::try_new(format!(
             "idem_init_{}",
-            node_id.as_str()
+            machine_id.as_str()
         ))?,
-        name: MachineName::try_new(node_id.as_str())?,
+        name: MachineName::try_new(machine_id.as_str())?,
     })
 }
 
@@ -166,14 +166,14 @@ pub fn plan_first_node_activation(
 pub fn plan_machine_add(command: MachineAddCommand) -> MachineAddPlan {
     MachineAddPlan {
         reservation: MachineReservation {
-            node_id: command.node_id.clone(),
+            machine_id: command.machine_id.clone(),
             name: command.name,
             operation_id: command.operation_id.clone(),
         },
         operation: MachineAddOperationState::Pending {
             join_token: command.join_token,
         },
-        process_set: plan_joined_node_process_set(&command.node_id, command.roles),
+        process_set: plan_joined_machine_process_set(&command.machine_id, command.roles),
     }
 }
 
@@ -350,7 +350,7 @@ pub enum MachineActivationOutcome {
 
 pub fn active_machine_from_completed_add(
     operation_id: OperationId,
-    node_id: NodeId,
+    machine_id: MachineId,
     name: MachineName,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
@@ -361,7 +361,7 @@ pub fn active_machine_from_completed_add(
     };
 
     Ok(ActiveMachineState {
-        node_id,
+        machine_id,
         name,
         activated_by: operation_id,
     })
@@ -388,7 +388,7 @@ pub fn activate_joined_machine(
     MachineActivationOutcome::Completed {
         operation: MachineAddOperationState::Completed,
         active_machine: ActiveMachineState {
-            node_id: reservation.node_id,
+            machine_id: reservation.machine_id,
             name: reservation.name,
             activated_by: reservation.operation_id,
         },
@@ -401,7 +401,7 @@ pub fn activate_joined_machine(
 pub struct MachineReadinessEvidence {
     pub nats_connection: MachineReadinessCheck,
     pub heartbeat: MachineReadinessCheck,
-    pub node_inspect: MachineReadinessCheck,
+    pub machine_inspect: MachineReadinessCheck,
 }
 
 impl MachineReadinessEvidence {
@@ -410,7 +410,7 @@ impl MachineReadinessEvidence {
         Self {
             nats_connection: MachineReadinessCheck::Confirmed,
             heartbeat: MachineReadinessCheck::Confirmed,
-            node_inspect: MachineReadinessCheck::Confirmed,
+            machine_inspect: MachineReadinessCheck::Confirmed,
         }
     }
 
@@ -418,7 +418,7 @@ impl MachineReadinessEvidence {
     pub const fn is_confirmed(&self) -> bool {
         matches!(self.nats_connection, MachineReadinessCheck::Confirmed)
             && matches!(self.heartbeat, MachineReadinessCheck::Confirmed)
-            && matches!(self.node_inspect, MachineReadinessCheck::Confirmed)
+            && matches!(self.machine_inspect, MachineReadinessCheck::Confirmed)
     }
 }
 

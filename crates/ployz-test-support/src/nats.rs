@@ -14,7 +14,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use async_nats::jetstream;
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
     NatsUserSeed, render_authorized_users,
@@ -35,7 +35,7 @@ const READINESS_DELAY: Duration = Duration::from_millis(100);
 const READINESS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const PORTS_FILE_ATTEMPTS: u32 = 100;
 const PORTS_FILE_DELAY: Duration = Duration::from_millis(100);
-const SERVER_NODE_ID: &str = "secured-test-core";
+const SERVER_MACHINE_ID: &str = "secured-test-core";
 
 type FixtureError = Box<dyn Error + Send + Sync>;
 
@@ -51,18 +51,18 @@ pub struct SecuredTestNats {
     user_seed: NatsUserSeed,
     join_seed: NatsUserSeed,
     system_seed: NatsUserSeed,
-    node_seeds: Vec<(NodeId, NatsUserSeed)>,
+    machine_seeds: Vec<(MachineId, NatsUserSeed)>,
 }
 
 impl SecuredTestNats {
     /// Starts a secured server with Controller, User, Join, and System users.
     pub async fn start() -> Result<Self, FixtureError> {
-        Self::start_with_nodes(&[]).await
+        Self::start_with_machines(&[]).await
     }
 
-    /// Starts a secured server with the base principals plus one Node user
-    /// per supplied node id.
-    pub async fn start_with_nodes(node_ids: &[NodeId]) -> Result<Self, FixtureError> {
+    /// Starts a secured server with the base principals plus one Machine user
+    /// per supplied machine id.
+    pub async fn start_with_machines(machine_ids: &[MachineId]) -> Result<Self, FixtureError> {
         let dir = tempfile::TempDir::new()?;
 
         // The cluster CA, server certificate, and base NKey users come from
@@ -76,9 +76,9 @@ impl SecuredTestNats {
         let user = identity.operator;
         let join = identity.join;
         let system = MintedNatsUser::generate()?;
-        let mut node_users = Vec::with_capacity(node_ids.len());
-        for node_id in node_ids {
-            node_users.push((node_id.clone(), MintedNatsUser::generate()?));
+        let mut machine_users = Vec::with_capacity(machine_ids.len());
+        for machine_id in machine_ids {
+            machine_users.push((machine_id.clone(), MintedNatsUser::generate()?));
         }
 
         let mut authorized = vec![
@@ -87,10 +87,10 @@ impl SecuredTestNats {
             authorized_user(NatsPrincipal::Join, &join),
             authorized_user(NatsPrincipal::System, &system),
         ];
-        for (node_id, minted) in &node_users {
+        for (machine_id, minted) in &machine_users {
             authorized.push(authorized_user(
-                NatsPrincipal::Node {
-                    node_id: node_id.clone(),
+                NatsPrincipal::Machine {
+                    machine_id: machine_id.clone(),
                 },
                 minted,
             ));
@@ -98,9 +98,9 @@ impl SecuredTestNats {
         let authorized_users_path = dir.path().join("authorized-users.conf");
         fs::write(&authorized_users_path, render_authorized_users(&authorized))?;
 
-        let server_config = NatsServerConfig::single_node(
-            NodeId::try_new(SERVER_NODE_ID)
-                .expect("fixture server node id is a valid subject token"),
+        let server_config = NatsServerConfig::single_machine(
+            MachineId::try_new(SERVER_MACHINE_ID)
+                .expect("fixture server machine id is a valid subject token"),
             dir.path().join("jetstream"),
             NatsListener::Loopback,
             NatsServerTlsFiles {
@@ -131,9 +131,9 @@ impl SecuredTestNats {
             user_seed: user.seed,
             join_seed: join.seed,
             system_seed: system.seed,
-            node_seeds: node_users
+            machine_seeds: machine_users
                 .into_iter()
-                .map(|(node_id, minted)| (node_id, minted.seed))
+                .map(|(machine_id, minted)| (machine_id, minted.seed))
                 .collect(),
         };
         fixture.wait_until_ready().await?;
@@ -199,17 +199,17 @@ impl SecuredTestNats {
         self.config_with_seed(NatsPrincipal::System, self.system_seed.clone())
     }
 
-    /// The connect config for a node minted via
-    /// [`SecuredTestNats::start_with_nodes`].
+    /// The connect config for a machine minted via
+    /// [`SecuredTestNats::start_with_machines`].
     #[must_use]
-    pub fn node_config(&self, node_id: &NodeId) -> Option<NatsConnectConfig> {
-        self.node_seeds
+    pub fn machine_config(&self, machine_id: &MachineId) -> Option<NatsConnectConfig> {
+        self.machine_seeds
             .iter()
-            .find(|(minted_node_id, _)| minted_node_id == node_id)
-            .map(|(minted_node_id, seed)| {
+            .find(|(minted_machine_id, _)| minted_machine_id == machine_id)
+            .map(|(minted_machine_id, seed)| {
                 self.config_with_seed(
-                    NatsPrincipal::Node {
-                        node_id: minted_node_id.clone(),
+                    NatsPrincipal::Machine {
+                        machine_id: minted_machine_id.clone(),
                     },
                     seed.clone(),
                 )
@@ -273,13 +273,13 @@ pub struct TestNats {
 
 impl TestNats {
     pub async fn start() -> Self {
-        Self::start_with_nodes(&[]).await
+        Self::start_with_machines(&[]).await
     }
 
-    /// Starts a secured server with one minted Node user per supplied id
+    /// Starts a secured server with one minted Machine user per supplied id
     /// and connects the Controller and User clients.
-    pub async fn start_with_nodes(node_ids: &[NodeId]) -> Self {
-        let server = SecuredTestNats::start_with_nodes(node_ids)
+    pub async fn start_with_machines(machine_ids: &[MachineId]) -> Self {
+        let server = SecuredTestNats::start_with_machines(machine_ids)
             .await
             .expect("secured test nats starts");
         let controller =
@@ -316,16 +316,16 @@ impl TestNats {
         OperationApiClient::new(self.user.clone())
     }
 
-    /// A client authenticated as the machine's Node user. Node runtimes,
+    /// A client authenticated as the machine's Machine user. Machine runtimes,
     /// gateway processes, and observation writers connect with this.
-    pub async fn node_client(&self, node_id: &NodeId) -> async_nats::Client {
+    pub async fn machine_client(&self, machine_id: &MachineId) -> async_nats::Client {
         let config = self
             .server
-            .node_config(node_id)
-            .expect("fixture knows the node user");
+            .machine_config(machine_id)
+            .expect("fixture knows the machine user");
         connect_authenticated(&config, TEST_NATS_CONNECT_TIMEOUT)
             .await
-            .expect("node connects")
+            .expect("machine connects")
     }
 }
 

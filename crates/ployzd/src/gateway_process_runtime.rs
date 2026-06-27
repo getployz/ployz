@@ -7,13 +7,13 @@ use crate::gateway_http::{
 };
 use crate::gateway_runtime::{GatewayRuntime, GatewayRuntimeTick, GatewayServingState};
 use crate::gateway_source::load_gateway_projection_update_from_nats;
-use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
 use futures_util::StreamExt;
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
@@ -76,8 +76,8 @@ impl RunningGatewayProcessRuntime {
 pub async fn start_gateway_process_runtime(
     config: &GatewayProcessConfig,
 ) -> Result<RunningGatewayProcessRuntime, GatewayProcessRuntimeError> {
-    // Gateway authenticates as the machine's Node user (no Gateway
-    // principal in v1) and awaits the seed file like the node role does.
+    // Gateway authenticates as the machine's Machine user (no Gateway
+    // principal in v1) and awaits the seed file like the machine role does.
     let connect = await_role_credentials(
         "gateway",
         &config.nats,
@@ -92,7 +92,7 @@ pub async fn start_gateway_process_runtime(
         client,
         GATEWAY_REFRESH_INTERVAL,
         config.listen_addr,
-        config.node_id.clone(),
+        config.machine_id.clone(),
     )
     .await
 }
@@ -101,7 +101,7 @@ pub async fn start_gateway_process_runtime_with_client(
     client: NatsClient,
     refresh_interval: Duration,
     listen_addr: SocketAddr,
-    node_id: NodeId,
+    machine_id: MachineId,
 ) -> Result<RunningGatewayProcessRuntime, GatewayProcessRuntimeError> {
     let listener = TcpListener::bind(listen_addr).await.map_err(|source| {
         GatewayProcessRuntimeError::BindHttp {
@@ -139,7 +139,7 @@ pub async fn start_gateway_process_runtime_with_client(
         loop {
             drain_refresh_wakes(&mut refresh_wake_rx);
             let attempt = source.refresh_with_timeout(&task_runtime).await;
-            let observed = gateway_observation_from_attempt(&node_id, listen_addr, &attempt);
+            let observed = gateway_observation_from_attempt(&machine_id, listen_addr, &attempt);
             backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
             record_gateway_status_publish_result(
                 &task_health,
@@ -365,7 +365,7 @@ async fn open_gateway_change_watchers(
         .map_err(GatewayProcessRuntimeError::WatchRoutes)?;
     let observations = stores
         .observations
-        .watch_node_container_snapshot_changes()
+        .watch_machine_container_snapshot_changes()
         .await
         .map_err(GatewayProcessRuntimeError::WatchObservations)?;
 
@@ -532,33 +532,33 @@ fn gateway_attempt_from_tick(tick: GatewayRuntimeTick) -> GatewayProcessAttempt 
 }
 
 fn gateway_observation_from_attempt(
-    node_id: &NodeId,
+    machine_id: &MachineId,
     listen_addr: SocketAddr,
     attempt: &Result<GatewayRuntimeTick, GatewayProcessRuntimeError>,
 ) -> GatewayStatusObservation {
     match attempt {
         Ok(tick) => match &tick.serving {
             GatewayServingState::Current { route_count } => GatewayStatusObservation {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 listen_addr,
                 serving: GatewayServingStatus::Current,
                 route_count: *route_count,
             },
             GatewayServingState::LastKnownGood { route_count, .. } => GatewayStatusObservation {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 listen_addr,
                 serving: GatewayServingStatus::LastKnownGood,
                 route_count: *route_count,
             },
             GatewayServingState::Unavailable { .. } => GatewayStatusObservation {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 listen_addr,
                 serving: GatewayServingStatus::Unavailable,
                 route_count: 0,
             },
         },
         Err(_) => GatewayStatusObservation {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             listen_addr,
             serving: GatewayServingStatus::Unavailable,
             route_count: 0,

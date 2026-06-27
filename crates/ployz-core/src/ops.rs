@@ -6,7 +6,7 @@ use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
 use crate::dataplane::{WireGuardEbpfComponent, WireGuardEbpfPrepareReport};
 use crate::deploy::{DeployCleanupContainer, DeployPlan};
 use crate::ids::{
-    CertId, ContainerId, NodeId, OperationId, RevisionId, ServiceId, SubjectToken,
+    CertId, ContainerId, MachineId, OperationId, RevisionId, ServiceId, SubjectToken,
     SubjectTokenError,
 };
 use crate::machine::{IssuedJoinToken, MachineAddOperationState, MachineName};
@@ -159,14 +159,14 @@ pub enum DeployOperationFailure {
     },
     #[serde(rename = "wireguard_ebpf_unavailable")]
     WireGuardEbpfUnavailable {
-        node_id: NodeId,
+        machine_id: MachineId,
         component: WireGuardEbpfComponent,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
     #[serde(rename = "wireguard_ebpf_preparation_timed_out")]
     WireGuardEbpfPreparationTimedOut {
-        nodes: Vec<NodeId>,
+        machines: Vec<MachineId>,
         timeout_seconds: u32,
         retained_artifacts: Vec<RetainedArtifact>,
     },
@@ -176,7 +176,7 @@ pub enum DeployOperationFailure {
         retained_artifacts: Vec<RetainedArtifact>,
     },
     RuntimeUnavailable {
-        node_id: NodeId,
+        machine_id: MachineId,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
     },
@@ -260,7 +260,7 @@ pub enum ArtifactUnavailableReason {
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HealthCheckFailure {
     ProbeFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         log_hint: OperatorHint,
@@ -274,7 +274,7 @@ pub enum HealthCheckFailure {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RouteCutoverFailureReason {
-    GatewayUnavailable { node_id: NodeId },
+    GatewayUnavailable { machine_id: MachineId },
     RouteRejected { message: FailureMessage },
     StateStoreFailed { message: FailureMessage },
     TimedOut { timeout_seconds: u32 },
@@ -285,17 +285,17 @@ pub enum RouteCutoverFailureReason {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RetainedArtifact {
     CreatedContainer {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         inspect_hint: OperatorHint,
     },
     StartedContainer {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         log_hint: OperatorHint,
     },
     ContainerStopFailed {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         message: FailureMessage,
         inspect_hint: OperatorHint,
@@ -320,7 +320,7 @@ pub enum OperationStatus {
     },
     MachineAdd {
         id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
         state: MachineAddOperationState,
@@ -375,7 +375,7 @@ impl OperationStatus {
     #[must_use]
     pub fn machine_add_pending(
         id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
@@ -383,7 +383,7 @@ impl OperationStatus {
     ) -> Self {
         Self::MachineAdd {
             id,
-            node_id,
+            machine_id,
             name,
             roles,
             state: MachineAddOperationState::Pending { join_token },
@@ -429,7 +429,7 @@ pub enum DeployEvidence {
         report: WireGuardEbpfPrepareReport,
     },
     ContainerStarted {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
     },
     HealthCheckStarted,
@@ -484,11 +484,11 @@ impl DeployEvidence {
                 report: report.clone(),
             },
             Self::ContainerStarted {
-                node_id,
+                machine_id,
                 container_id,
             } => OperationEvent::DeployContainerStarted {
                 operation_id: operation_id.clone(),
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
             },
             Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {

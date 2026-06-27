@@ -4,12 +4,12 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::machine::JoinTokenRedeemedAt;
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{DeployEvidence, DeployRunningStage, DeployTransition, OperationEvent};
 use ployz_nats::operations::{OperationEventAppend, operation_status_key};
 use ployz_nats::streams::MessageId;
 use ployz_test_support::ids::{
-    cert_id, container_id, node_id, operation_id, revision_id, service_id, step_id,
+    cert_id, container_id, machine_id, operation_id, revision_id, service_id, step_id,
 };
 
 #[test]
@@ -57,23 +57,23 @@ fn deploy_transition_append_uses_stable_small_message_id() {
 fn deploy_container_started_append_uses_stable_message_id() {
     let append = OperationEventAppend::deploy_container_started(
         &operation_id("op_123"),
-        &node_id("node_a"),
+        &machine_id("machine_a"),
         &container_id("ctr_1"),
     );
 
     assert_eq!(
         append.subject(),
-        "plz.v1.op.op_123.deploy.container.started.node_a.ctr_1"
+        "plz.v1.op.op_123.deploy.container.started.machine_a.ctr_1"
     );
     assert_eq!(
         append.message_id().as_str(),
-        "deploy.container.started.op_123.node_a.ctr_1"
+        "deploy.container.started.op_123.machine_a.ctr_1"
     );
     assert_eq!(
         append.payload(),
         &OperationEvent::DeployContainerStarted {
             operation_id: operation_id("op_123"),
-            node_id: node_id("node_a"),
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_1"),
         }
     );
@@ -101,7 +101,7 @@ fn deploy_health_check_started_append_uses_stable_message_id() {
 
 #[test]
 fn deploy_cleanup_finished_append_uses_stable_message_id() {
-    let removed = vec![cleanup_container("node_b", "ctr_old")];
+    let removed = vec![cleanup_container("machine_b", "ctr_old")];
     let append = OperationEventAppend::deploy_evidence(
         &operation_id("op_123"),
         &DeployEvidence::CleanupFinished {
@@ -160,7 +160,7 @@ fn cert_submitted_append_uses_stable_message_id() {
 fn machine_add_joined_append_uses_stable_message_id() {
     let append = OperationEventAppend::machine_add_joined(
         &operation_id("op_machine"),
-        &node_id("node_2"),
+        &machine_id("machine_2"),
         joined_at(50),
     );
 
@@ -173,7 +173,7 @@ fn machine_add_joined_append_uses_stable_message_id() {
         append.payload(),
         &OperationEvent::MachineAddJoined {
             operation_id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             joined_at: joined_at(50),
         }
     );
@@ -183,9 +183,9 @@ fn joined_at(value: u64) -> JoinTokenRedeemedAt {
     JoinTokenRedeemedAt::try_new(value).expect("valid join time")
 }
 
-fn cleanup_container(node: &str, container: &str) -> DeployCleanupContainer {
+fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
     DeployCleanupContainer {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_old"),
@@ -201,7 +201,7 @@ fn deploy_plan() -> DeployPlan {
         service_id: service_id("svc_api"),
         target_revision: ployz_core::ids::RevisionId::try_new("rev_2").expect("valid revision id"),
         steps: vec![DeployPlanStep::RunContainer {
-            node_id: node_id("node_a"),
+            machine_id: machine_id("machine_a"),
             slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
         }],
         cleanup_containers: Vec::new(),

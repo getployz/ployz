@@ -15,7 +15,7 @@ use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
 use ployz_sdk_types::{BackupCreateError, BackupCreateRequest, OpsStatusError, OpsStatusRequest};
-use ployz_test_support::ids::{event_sequence, node_id, operation_id, revision_id, service_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id, revision_id, service_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::backup_adapters::{BackupAdapterError, InMemoryBackupAdapter, backup_object_key};
 use ployzd::backup_restore::{BackupRestoreError, BackupRestoreRuntime, RestoreObservationState};
@@ -277,7 +277,7 @@ async fn backup_restore_recreates_single_core_control_plane_kv_state() {
     assert_eq!(report.buckets.len(), 1);
     assert!(matches!(
         report.observations,
-        RestoreObservationState::RebuildableAfterNodeReconnect { .. }
+        RestoreObservationState::RebuildableAfterMachineReconnect { .. }
     ));
     let target_core = AsyncNatsCoreStateStore::from_jetstream(&target.jetstream)
         .await
@@ -317,7 +317,7 @@ fn config() -> ControlProcessConfig {
         NatsServerRuntime::External(
             NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid nats url"),
         ),
-        node_id("core_1"),
+        machine_id("core_1"),
         ployz_nats::connect::NatsConnectConfig {
             url: NatsClientUrl::try_new("nats://127.0.0.1:4222").expect("valid nats url"),
             auth: ployz_nats::connect::NatsClientAuth::NkeySeed(

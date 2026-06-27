@@ -4,31 +4,34 @@ use ployz_core::deploy::{
     ExistingServiceReplica, ImageReference, ReplicaCount, ReplicaSlot, plan_service_deploy,
     prepare_deploy,
 };
-use ployz_core::ids::NodeId;
-use ployz_core::node::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::ids::MachineId;
+use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{
     ActiveRouteState, ActiveServiceState, ExpectedActiveRoute, ExpectedActiveService,
 };
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, service_id, step_id,
+    container_id, machine_id, operation_id, revision_id, service_id, step_id,
 };
 
 #[test]
-fn new_service_plan_runs_replicas_across_eligible_nodes() {
+fn new_service_plan_runs_replicas_across_eligible_machines() {
     assert_eq!(
-        plan_service_deploy(planning_input(3, [node_id("node_a"), node_id("node_b")]))
-            .expect("plan succeeds"),
+        plan_service_deploy(planning_input(
+            3,
+            [machine_id("machine_a"), machine_id("machine_b")]
+        ))
+        .expect("plan succeeds"),
         DeployPlan {
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_1"),
             steps: vec![
-                run_step("node_a", 1),
-                run_step("node_b", 2),
-                run_step("node_a", 3),
+                run_step("machine_a", 1),
+                run_step("machine_b", 2),
+                run_step("machine_a", 3),
             ],
             cleanup_containers: Vec::new(),
         }
@@ -37,8 +40,8 @@ fn new_service_plan_runs_replicas_across_eligible_nodes() {
 
 #[test]
 fn service_plan_reuses_running_target_revision_containers() {
-    let mut input = planning_input(3, [node_id("node_a"), node_id("node_b")]);
-    input.existing_replicas = vec![existing_replica("node_b", "ctr_existing")];
+    let mut input = planning_input(3, [machine_id("machine_a"), machine_id("machine_b")]);
+    input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     assert_eq!(
         plan_service_deploy(input).expect("plan succeeds"),
@@ -46,9 +49,9 @@ fn service_plan_reuses_running_target_revision_containers() {
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_1"),
             steps: vec![
-                use_existing_step("node_b", "ctr_existing", 1),
-                run_step("node_a", 2),
-                run_step("node_b", 3),
+                use_existing_step("machine_b", "ctr_existing", 1),
+                run_step("machine_a", 2),
+                run_step("machine_b", 3),
             ],
             cleanup_containers: Vec::new(),
         }
@@ -57,10 +60,10 @@ fn service_plan_reuses_running_target_revision_containers() {
 
 #[test]
 fn service_plan_counts_duplicate_observations_once() {
-    let mut input = planning_input(2, [node_id("node_a")]);
+    let mut input = planning_input(2, [machine_id("machine_a")]);
     input.existing_replicas = vec![
-        existing_replica("node_b", "ctr_existing"),
-        existing_replica("node_b", "ctr_existing"),
+        existing_replica("machine_b", "ctr_existing"),
+        existing_replica("machine_b", "ctr_existing"),
     ];
 
     assert_eq!(
@@ -69,8 +72,8 @@ fn service_plan_counts_duplicate_observations_once() {
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_1"),
             steps: vec![
-                use_existing_step("node_b", "ctr_existing", 1),
-                run_step("node_a", 2),
+                use_existing_step("machine_b", "ctr_existing", 1),
+                run_step("machine_a", 2),
             ],
             cleanup_containers: Vec::new(),
         }
@@ -78,16 +81,16 @@ fn service_plan_counts_duplicate_observations_once() {
 }
 
 #[test]
-fn service_plan_does_not_require_eligible_nodes_when_reality_already_satisfies_replicas() {
+fn service_plan_does_not_require_eligible_machines_when_reality_already_satisfies_replicas() {
     let mut input = planning_input(1, []);
-    input.existing_replicas = vec![existing_replica("node_b", "ctr_existing")];
+    input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     assert_eq!(
         plan_service_deploy(input).expect("existing reality satisfies target"),
         DeployPlan {
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_1"),
-            steps: vec![use_existing_step("node_b", "ctr_existing", 1)],
+            steps: vec![use_existing_step("machine_b", "ctr_existing", 1)],
             cleanup_containers: Vec::new(),
         }
     );
@@ -95,15 +98,15 @@ fn service_plan_does_not_require_eligible_nodes_when_reality_already_satisfies_r
 
 #[test]
 fn service_plan_cleans_up_unselected_service_containers_after_success() {
-    let mut input = planning_input(1, [node_id("node_a")]);
+    let mut input = planning_input(1, [machine_id("machine_a")]);
     input.existing_replicas = vec![
-        existing_replica("node_b", "ctr_target_keep"),
-        existing_replica("node_b", "ctr_target_extra"),
+        existing_replica("machine_b", "ctr_target_keep"),
+        existing_replica("machine_b", "ctr_target_extra"),
     ];
     input.cleanup_candidates = vec![
-        cleanup_container("node_b", "ctr_target_keep"),
-        cleanup_container("node_b", "ctr_target_extra"),
-        cleanup_container("node_b", "ctr_old"),
+        cleanup_container("machine_b", "ctr_target_keep"),
+        cleanup_container("machine_b", "ctr_target_extra"),
+        cleanup_container("machine_b", "ctr_old"),
     ];
 
     assert_eq!(
@@ -111,20 +114,20 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
         DeployPlan {
             service_id: service_id("svc_api"),
             target_revision: revision_id("rev_1"),
-            steps: vec![use_existing_step("node_b", "ctr_target_extra", 1)],
+            steps: vec![use_existing_step("machine_b", "ctr_target_extra", 1)],
             cleanup_containers: vec![
-                cleanup_container("node_b", "ctr_old"),
-                cleanup_container("node_b", "ctr_target_keep"),
+                cleanup_container("machine_b", "ctr_old"),
+                cleanup_container("machine_b", "ctr_target_keep"),
             ],
         }
     );
 }
 
 #[test]
-fn deploy_plan_requires_eligible_node() {
+fn deploy_plan_requires_eligible_machine() {
     assert_eq!(
         plan_service_deploy(planning_input(1, [])),
-        Err(DeployPlanError::NoEligibleNodes)
+        Err(DeployPlanError::NoEligibleMachines)
     );
 }
 
@@ -137,12 +140,12 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
             active_revision: revision_id("rev_old"),
         }),
         active_route: None,
-        eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
-        observed_nodes: vec![observed_node(
-            "node_b",
+        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        observed_machines: vec![observed_machine(
+            "machine_b",
             [
                 observed_container(
-                    "node_b",
+                    "machine_b",
                     "ctr_target",
                     "svc_api",
                     "rev_1",
@@ -150,7 +153,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     ContainerRuntimeState::running_unroutable(),
                 ),
                 observed_container(
-                    "node_b",
+                    "machine_b",
                     "ctr_old",
                     "svc_api",
                     "rev_old",
@@ -158,7 +161,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     ContainerRuntimeState::running_unroutable(),
                 ),
                 observed_container(
-                    "node_b",
+                    "machine_b",
                     "ctr_job",
                     "svc_api",
                     "rev_1",
@@ -166,7 +169,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     ContainerRuntimeState::running_unroutable(),
                 ),
                 observed_container(
-                    "node_b",
+                    "machine_b",
                     "ctr_exited",
                     "svc_api",
                     "rev_1",
@@ -184,18 +187,18 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
         ExpectedActiveService::Revision(revision_id("rev_old"))
     );
     assert_eq!(
-        prepared.eligible_nodes,
-        vec![node_id("node_a"), node_id("node_b")]
+        prepared.eligible_machines,
+        vec![machine_id("machine_a"), machine_id("machine_b")]
     );
     assert_eq!(
         prepared.existing_replicas,
-        vec![existing_replica("node_b", "ctr_target")]
+        vec![existing_replica("machine_b", "ctr_target")]
     );
     assert_eq!(
         prepared.cleanup_candidates,
         vec![
-            cleanup_container_with_revision("node_b", "ctr_target", "rev_1"),
-            cleanup_container_with_revision("node_b", "ctr_old", "rev_old"),
+            cleanup_container_with_revision("machine_b", "ctr_target", "rev_1"),
+            cleanup_container_with_revision("machine_b", "ctr_old", "rev_old"),
         ]
     );
 }
@@ -209,12 +212,12 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
         request,
         active_service: None,
         active_route: None,
-        eligible_nodes: vec![node_id("node_a"), node_id("node_b")],
-        observed_nodes: vec![observed_node(
-            "node_b",
+        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        observed_machines: vec![observed_machine(
+            "machine_b",
             [
                 observed_container(
-                    "node_b",
+                    "machine_b",
                     "ctr_wrong_port",
                     "svc_api",
                     "rev_1",
@@ -222,7 +225,7 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
                     ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
                 ),
                 observed_container(
-                    "node_b",
+                    "machine_b",
                     "ctr_target",
                     "svc_api",
                     "rev_1",
@@ -236,7 +239,7 @@ fn routed_deploy_preparation_reuses_only_matching_endpoint_port() {
 
     assert_eq!(
         prepared.existing_replicas,
-        vec![existing_replica("node_b", "ctr_target")]
+        vec![existing_replica("machine_b", "ctr_target")]
     );
 }
 
@@ -250,8 +253,8 @@ fn deploy_preparation_rejects_active_state_for_another_service() {
                 active_revision: revision_id("rev_old"),
             }),
             active_route: None,
-            eligible_nodes: vec![node_id("node_a")],
-            observed_nodes: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            observed_machines: Vec::new(),
         }),
         Err(DeployPreparationError::ActiveServiceMismatch {
             expected_service_id: service_id("svc_api"),
@@ -275,8 +278,8 @@ fn deploy_preparation_rejects_active_route_for_another_target() {
                 service_id: service_id("svc_api"),
                 revision_id: revision_id("rev_old"),
             }),
-            eligible_nodes: vec![node_id("node_a")],
-            observed_nodes: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            observed_machines: Vec::new(),
         }),
         Err(DeployPreparationError::ActiveRouteMismatch {
             expected_route: route_target("api.example.com", 443),
@@ -299,8 +302,8 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_old"),
         }),
-        eligible_nodes: vec![node_id("node_a")],
-        observed_nodes: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        observed_machines: Vec::new(),
     })
     .expect("routed deploy preparation succeeds");
 
@@ -323,11 +326,11 @@ fn deploy_preparation_builds_route_commit_request_for_routed_deploy() {
 
 fn planning_input(
     replicas: u16,
-    eligible_nodes: impl IntoIterator<Item = NodeId>,
+    eligible_machines: impl IntoIterator<Item = MachineId>,
 ) -> DeployPlanningInput {
     DeployPlanningInput {
         request: deploy_request(replicas),
-        eligible_nodes: eligible_nodes.into_iter().collect(),
+        eligible_machines: eligible_machines.into_iter().collect(),
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
     }
@@ -350,17 +353,17 @@ fn deploy_route(hostname: &str, public_port: u16, endpoint_port: u16) -> DeployR
     }
 }
 
-fn use_existing_step(node: &str, container: &str, slot: u16) -> DeployPlanStep {
+fn use_existing_step(machine: &str, container: &str, slot: u16) -> DeployPlanStep {
     DeployPlanStep::UseExistingContainer {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         container_id: container_id(container),
         slot: ReplicaSlot::try_new(slot).expect("valid replica slot"),
     }
 }
 
-fn run_step(node: &str, slot: u16) -> DeployPlanStep {
+fn run_step(machine: &str, slot: u16) -> DeployPlanStep {
     DeployPlanStep::RunContainer {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         slot: ReplicaSlot::try_new(slot).expect("valid replica slot"),
     }
 }
@@ -383,24 +386,24 @@ fn endpoint(ip: &str, port: u16) -> ContainerEndpoint {
     }
 }
 
-fn existing_replica(node: &str, container: &str) -> ExistingServiceReplica {
+fn existing_replica(machine: &str, container: &str) -> ExistingServiceReplica {
     ExistingServiceReplica {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         container_id: container_id(container),
     }
 }
 
-fn cleanup_container(node: &str, container: &str) -> DeployCleanupContainer {
-    cleanup_container_with_revision(node, container, "rev_1")
+fn cleanup_container(machine: &str, container: &str) -> DeployCleanupContainer {
+    cleanup_container_with_revision(machine, container, "rev_1")
 }
 
 fn cleanup_container_with_revision(
-    node: &str,
+    machine: &str,
     container: &str,
     revision: &str,
 ) -> DeployCleanupContainer {
     DeployCleanupContainer {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id("svc_api"),
         revision_id: revision_id(revision),
@@ -411,16 +414,16 @@ fn cleanup_container_with_revision(
     }
 }
 
-fn observed_node(
-    node: &str,
+fn observed_machine(
+    machine: &str,
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
-) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(node_id(node), containers)
+) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id(machine), containers)
         .expect("valid observation snapshot")
 }
 
 fn observed_container(
-    node: &str,
+    machine: &str,
     container: &str,
     service: &str,
     revision: &str,
@@ -428,7 +431,7 @@ fn observed_container(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id(node),
+        machine_id: machine_id(machine),
         container_id: container_id(container),
         service_id: service_id(service),
         revision_id: revision_id(revision),

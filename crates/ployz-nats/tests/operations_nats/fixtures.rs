@@ -18,7 +18,7 @@ pub(super) use ployz_test_support::fixtures::{deploy_target, machine_join_bundle
 pub(super) use ployz_test_support::ids::{
     cancellation_reason, cert_id, container_id, event_replay_limit, event_sequence,
     failure_message, idempotency_key, join_token_expires_at as expires_at,
-    join_token_redeemed_at as joined_at, machine_name, node_id, operation_id, raw_join_token,
+    join_token_redeemed_at as joined_at, machine_id, machine_name, operation_id, raw_join_token,
     revision_id, service_id,
 };
 pub(super) use ployz_test_support::nats::TestNats;
@@ -74,12 +74,12 @@ pub(super) fn backup_target(key_prefix: &str) -> BackupTarget {
 pub(super) fn machine_add_submission(
     operation_id: &str,
     idempotency_key: &str,
-    node_id: &str,
+    machine_id: &str,
     machine_name: &str,
 ) -> MachineAddOperationSubmission {
     MachineAddOperationSubmission {
         operation_id: self::operation_id(operation_id),
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         name: self::machine_name(machine_name),
         roles: InstallRolePolicy::install_all().without_gateway(),
         join_bundle: machine_join_bundle(),
@@ -137,15 +137,15 @@ pub(super) fn issued_join_token_for_raw_with_expiry(
 }
 
 pub(super) fn deploy_plan() -> DeployPlan {
-    deploy_plan_on("node_a")
+    deploy_plan_on("machine_a")
 }
 
-pub(super) fn deploy_plan_on(node: &str) -> DeployPlan {
+pub(super) fn deploy_plan_on(machine: &str) -> DeployPlan {
     DeployPlan {
         service_id: service_id("svc_api"),
         target_revision: revision_id("rev_2"),
         steps: vec![DeployPlanStep::RunContainer {
-            node_id: node_id(node),
+            machine_id: machine_id(machine),
             slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
         }],
         cleanup_containers: Vec::new(),

@@ -32,7 +32,7 @@ fn canonical_backup_scope_excludes_runtime_data() {
             BackupItem::DockerImages,
             BackupItem::ApplicationVolumes,
             BackupItem::ContainerRuntimeState,
-            BackupItem::NodeLocalCache,
+            BackupItem::MachineLocalCache,
         ]
     );
 }
@@ -59,7 +59,7 @@ fn current_backup_bundle_scope_is_honest_about_captured_artifacts() {
             BackupItem::DockerImages,
             BackupItem::ApplicationVolumes,
             BackupItem::ContainerRuntimeState,
-            BackupItem::NodeLocalCache,
+            BackupItem::MachineLocalCache,
         ]
     );
     assert_eq!(
@@ -221,7 +221,7 @@ fn restore_contract_rebuilds_control_plane_then_observations() {
         vec![
             RestoreStep::RecreateControlPlaneAuthority,
             RestoreStep::RestoreJetStreamState,
-            RestoreStep::WaitForNodeReconnects,
+            RestoreStep::WaitForMachineReconnects,
             RestoreStep::RebuildObservationsFromReality,
         ]
     );

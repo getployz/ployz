@@ -71,8 +71,8 @@ Scenarios in `crates/ployz-e2e/tests/dind_cluster.rs`:
 
 - `boots_machine_image` — smoke: one machine reaches systemd + inner-docker
   readiness; teardown leaves nothing labeled behind.
-- `scenario_init_and_activate_first_node` — keeper first-node install +
-  `init activate-first-node` through the real product path; mint event
+- `scenario_init_and_activate_first_machine` — keeper first-machine install +
+  `init activate-first-machine` through the real product path; mint event
   sequence, unit states, authority file, bootstrap KV/streams.
 - `scenario_machine_add_via_join_bundle` — `machine add` + the
   `scripts/ployz.sh` join flow on an edge machine; per-machine credential

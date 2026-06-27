@@ -1,4 +1,4 @@
-//! Runs the keeper first-node install as a local subprocess with bounded
+//! Runs the keeper first-machine install as a local subprocess with bounded
 //! output capture.
 
 use std::fmt;
@@ -9,7 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ployz_core::install::FirstNodeInstallSpec;
+use ployz_core::install::FirstMachineInstallSpec;
 
 const MAX_KEEPER_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -20,18 +20,18 @@ pub(crate) struct KeeperInstallOutput {
     pub(crate) stderr: String,
 }
 
-pub(crate) fn run_keeper_first_node_install(
+pub(crate) fn run_keeper_first_machine_install(
     keeper_binary: &str,
-    keeper_install: &FirstNodeInstallSpec,
+    keeper_install: &FirstMachineInstallSpec,
     timeout: Duration,
 ) -> Result<KeeperInstallOutput, Box<LocalKeeperInstallError>> {
     let args = vec![
-        "first-node-install".to_owned(),
+        "first-machine-install".to_owned(),
         "--spec".to_owned(),
         "-".to_owned(),
     ];
     let command = render_command(keeper_binary, &args);
-    let spec = serde_json::to_vec(keeper_install).expect("first-node install spec serializes");
+    let spec = serde_json::to_vec(keeper_install).expect("first-machine install spec serializes");
     let mut capture = OutputCapture::new().map_err(|message| capture_setup(&command, message))?;
     let stdout_stdio = capture
         .stdout_stdio()

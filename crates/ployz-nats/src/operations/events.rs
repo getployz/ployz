@@ -4,7 +4,7 @@ use async_nats::jetstream::message::StreamMessage;
 use async_nats::jetstream::stream::{LastRawMessageErrorKind, Stream};
 use ployz_core::backup::BackupTarget;
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::{CertId, ContainerId, NodeId, OperationId};
+use ployz_core::ids::{CertId, ContainerId, MachineId, OperationId};
 use ployz_core::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
 use ployz_core::ops::{
     BackupTransition, CertOperationFailure, DeployCompletionOutcome, DeployEvidence,
@@ -85,13 +85,13 @@ impl OperationEventAppend {
     #[must_use]
     pub fn deploy_container_started(
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         container_id: &ContainerId,
     ) -> Self {
         Self::deploy_evidence(
             operation_id,
             &DeployEvidence::ContainerStarted {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
             },
         )
@@ -117,7 +117,7 @@ impl OperationEventAppend {
     #[must_use]
     pub fn machine_add_submitted(
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
@@ -127,7 +127,7 @@ impl OperationEventAppend {
             submitted_message_id(&message_operation_id),
             OperationEvent::MachineAddSubmitted {
                 operation_id,
-                node_id,
+                machine_id,
                 name,
                 roles,
                 join_token,
@@ -138,14 +138,14 @@ impl OperationEventAppend {
     #[must_use]
     pub fn machine_add_joined(
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         joined_at: JoinTokenRedeemedAt,
     ) -> Self {
         Self::from_event(
             MessageId::new(format!("machine.add.joined.{}", operation_id.as_str())),
             OperationEvent::MachineAddJoined {
                 operation_id: operation_id.clone(),
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 joined_at,
             },
         )
@@ -154,7 +154,7 @@ impl OperationEventAppend {
     #[must_use]
     pub fn machine_add_credential_provisioned(
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         step: ployz_core::machine::MachineCredentialProvisioningStep,
     ) -> Self {
         Self::from_event(
@@ -165,19 +165,19 @@ impl OperationEventAppend {
             )),
             OperationEvent::MachineAddCredentialProvisioned {
                 operation_id: operation_id.clone(),
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 step,
             },
         )
     }
 
     #[must_use]
-    pub fn machine_add_completed(operation_id: &OperationId, node_id: &NodeId) -> Self {
+    pub fn machine_add_completed(operation_id: &OperationId, machine_id: &MachineId) -> Self {
         Self::from_event(
             MessageId::new(format!("machine.add.terminal.{}", operation_id.as_str())),
             OperationEvent::MachineAddCompleted {
                 operation_id: operation_id.clone(),
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
             },
         )
     }
@@ -185,14 +185,14 @@ impl OperationEventAppend {
     #[must_use]
     pub fn machine_add_failed(
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         failure: MachineAddFailure,
     ) -> Self {
         Self::from_event(
             MessageId::new(format!("machine.add.terminal.{}", operation_id.as_str())),
             OperationEvent::MachineAddFailed {
                 operation_id: operation_id.clone(),
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 failure,
             },
         )
@@ -530,9 +530,9 @@ fn operation_event_subject(event: &OperationEvent) -> String {
         }
         OperationEvent::DeployContainerStarted {
             operation_id,
-            node_id,
+            machine_id,
             container_id,
-        } => op_deploy_container_started(operation_id, node_id, container_id),
+        } => op_deploy_container_started(operation_id, machine_id, container_id),
         OperationEvent::DeployHealthCheckStarted { operation_id } => {
             op_deploy_health_check_started(operation_id)
         }
@@ -646,12 +646,12 @@ fn evidence_message_id(operation_id: &OperationId, evidence: &DeployEvidence) ->
             format!("deploy.wireguard_ebpf.prepared.{}", operation_id.as_str())
         }
         DeployEvidence::ContainerStarted {
-            node_id,
+            machine_id,
             container_id,
         } => format!(
             "deploy.container.started.{}.{}.{}",
             operation_id.as_str(),
-            node_id.as_str(),
+            machine_id.as_str(),
             container_id.as_str()
         ),
         DeployEvidence::HealthCheckStarted => {

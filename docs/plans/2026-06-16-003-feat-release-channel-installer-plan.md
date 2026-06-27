@@ -155,9 +155,9 @@ The platform manifest remains the per-release artifact contract and continues to
 - **Requirements:** R12, R13, R14, R16
 - **Dependencies:** U1
 - **Files:** `crates/ployzctl/src/remote_bootstrap.rs`, `crates/ployzctl/src/commands/machine.rs`, `crates/ployzctl/src/remote_machine_runtime.rs`, `crates/ployzctl/tests/machine_cli_contract.rs`, `crates/ployzctl/tests/machine_remote_nats.rs`.
-- **Approach:** Replace `DEFAULT_RELEASE_VERSION` with channel-aware input modeling. In the current thick remote-bootstrap path, resolve the selected channel to an exact tag before fetching the platform release manifest and building the first-node install spec. When the bootstrap simplification plan removes CLI-owned release manifest parsing, carry the same contract into the rendered installer command instead of the local Rust parser.
+- **Approach:** Replace `DEFAULT_RELEASE_VERSION` with channel-aware input modeling. In the current thick remote-bootstrap path, resolve the selected channel to an exact tag before fetching the platform release manifest and building the first-machine install spec. When the bootstrap simplification plan removes CLI-owned release manifest parsing, carry the same contract into the rendered installer command instead of the local Rust parser.
 - **Patterns to follow:** Preserve current explicit error style from `RemoteBootstrapError::ManifestMissingKey` and command parsing conflicts in `machine_cli_contract.rs`.
-- **Test scenarios:** `machine init` with no version uses the default channel and resolves it before building artifact specs; `machine init --version v0.0.2-alpha.1` bypasses channel lookup; `machine init --channel alpha --version v0.0.2-alpha.1` fails at parse time; resolved first-node specs contain `PLOYZ_VERSION=0.0.2-alpha.1` artifact versions and versioned GitHub asset URLs; `machine add` install commands continue to receive exact versions from accepted join material.
+- **Test scenarios:** `machine init` with no version uses the default channel and resolves it before building artifact specs; `machine init --version v0.0.2-alpha.1` bypasses channel lookup; `machine init --channel alpha --version v0.0.2-alpha.1` fails at parse time; resolved first-machine specs contain `PLOYZ_VERSION=0.0.2-alpha.1` artifact versions and versioned GitHub asset URLs; `machine add` install commands continue to receive exact versions from accepted join material.
 - **Verification:** CLI contract tests no longer assert the old default release tag, and machine update docs remain accurate: update commands reject channels.
 
 ### U5. Release documentation and operator runbook
@@ -246,7 +246,7 @@ Repository settings should include immutable releases for `v*` releases, tag rul
 
 ## Sources / Research
 
-- `scripts/ployz.sh`: current hard-coded default version, exact release manifest resolution, local install, join mode, first-node mode, and SHA-256 verification.
+- `scripts/ployz.sh`: current hard-coded default version, exact release manifest resolution, local install, join mode, first-machine mode, and SHA-256 verification.
 - `scripts/package-release.sh`: current platform artifact and release manifest packaging.
 - `.github/workflows/release.yml`: current tag-triggered draft release workflow.
 - `crates/ployz-keeper/tests/bootstrap_script.rs`: current installer contract coverage and fake network/checksum harness.

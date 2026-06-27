@@ -40,14 +40,14 @@ curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap --cloud-token pc
 - `ployz.sh` is keeper-only release delivery. It does not install `ployzctl`, parse Cloud protocol data, receive Cloud tokens, branch founder/joiner, or inspect local bootstrap markers.
 - `ployz.sh` always installs or replaces `/usr/local/bin/ployz-keeper` with the resolved verified keeper artifact and may use `sudo install` only for that placement.
 - `ployz-keeper bootstrap` refuses on a Bootstrapped Machine before any Cloud redemption or callback. This refusal is local-only and Cloud does not receive a failed-attempt record.
-- `ployzctl machine init USER@HOST` stays deterministic and noninteractive: it generates a local operator credential, SSHes to the target, runs keeper first-node install, activates the first machine, and writes local Operator Context.
+- `ployzctl machine init USER@HOST` stays deterministic and noninteractive: it generates a local operator credential, SSHes to the target, runs keeper first-machine install, activates the first machine, and writes local Operator Context.
 - `ployzctl machine init USER@HOST --link-cloud` is deferred until multi-operator direct NATS credentials exist; it should authorize both the local `ployzctl` public key and Cloud's public key during founder bootstrap.
 - `ployzctl cloud link` is a later explicit workflow for connecting an existing local cluster to Cloud.
 - Direct TLS NATS remains the v1 control-plane transport. Cloud bootstrap does not introduce Cloud SSH, tunnels, or private overlay transport.
 
 ## Problem Frame
 
-The current machine bootstrap surfaces are technically correct but too exposed for Cloud adoption. Founder Bootstrap and Joiner Bootstrap can already be rendered as shell commands, and `scripts/ployz.sh` can install `ployzctl`, install keeper, and hand off to `--first-node` or `--join-token`. Cloud adoption needs a smaller command surface: the user SSHes to a server themselves, pastes one command, and the server asks Cloud what to do.
+The current machine bootstrap surfaces are technically correct but too exposed for Cloud adoption. Founder Bootstrap and Joiner Bootstrap can already be rendered as shell commands, and `scripts/ployz.sh` can install `ployzctl`, install keeper, and hand off to `--first-machine` or `--join-token`. Cloud adoption needs a smaller command surface: the user SSHes to a server themselves, pastes one command, and the server asks Cloud what to do.
 
 The public shell script should be the smallest possible Bootstrap Delivery shim. It should install only the verified `ployz-keeper` binary into an idiomatic command path, then stop. The Cloud token, Cloud redemption, callback protocol, bootstrap material writing, founder/joiner branching, and terminal reporting belong in `ployz-keeper bootstrap`, where they can be typed and tested in Rust.
 
@@ -72,7 +72,7 @@ Cloud does not know the machine IP before bootstrap. It should learn candidate e
 4. For Ployz Cloud, keeper creates a short-lived Cloud Bootstrap Session and prints a URL/code.
 5. The user opens the URL locally, authenticates, and chooses org plus new-cluster intent.
 6. Keeper polls Cloud, receives a Founder Bootstrap envelope, forms the first machine, and posts a Cloud-safe result.
-7. Cloud uses its private NATS user seed plus the returned NATS URL and CA to call `init_first_node_activate`, then watches operation events.
+7. Cloud uses its private NATS user seed plus the returned NATS URL and CA to call `init_first_machine_activate`, then watches operation events.
 
 ### Additional Machine
 
@@ -97,7 +97,7 @@ curl -fsSL https://ployz.sh | sh && sudo ployz-keeper bootstrap --cloud-token pc
 ployzctl machine init root@server
 ```
 
-`ployzctl machine init` is the noninteractive local/direct path. It generates the operator credential locally, delivers typed first-node install material over SSH, activates the first machine, and writes local Operator Context. `ployzctl machine init root@server --link-cloud` and `ployzctl cloud link` are deferred until Cloud and the local operator can both be authorized as distinct direct NATS operator clients.
+`ployzctl machine init` is the noninteractive local/direct path. It generates the operator credential locally, delivers typed first-machine install material over SSH, activates the first machine, and writes local Operator Context. `ployzctl machine init root@server --link-cloud` and `ployzctl cloud link` are deferred until Cloud and the local operator can both be authorized as distinct direct NATS operator clients.
 
 ---
 
@@ -111,7 +111,7 @@ ployzctl machine init root@server
 - R3. The human command contains no token, org ID, cluster ID, machine IP, join token, NATS URL, CA material, or NATS seed. The noninteractive command contains only the Cloud Bootstrap Token and optional Cloud host; the token is not passed to `ployz.sh`.
 - R4. One Cloud bootstrap mode covers Founder Bootstrap and Joiner Bootstrap whether the run starts from an interactive Cloud Bootstrap Session or a noninteractive Cloud Bootstrap Token; a new-cluster flow serializes founder selection so one redemption receives a sticky Cloud Founder Claim and later redemptions wait until Cloud can return Joiner Bootstrap or a terminal founder failure.
 - R5. `ployz.sh` is keeper-only Bootstrap Delivery: it does not install `ployzctl`, does not accept Cloud tokens, and does not expose founder or joiner bootstrap modes. It may use `sudo install` only to place the verified keeper binary at `/usr/local/bin/ployz-keeper` so the follow-on `sudo ployz-keeper bootstrap ...` command resolves reliably.
-- R6. Existing low-level first-node and joiner machine bootstrap behavior remains available behind keeper commands or internal test seams, not as public `ployz.sh` modes.
+- R6. Existing low-level first-machine and joiner machine bootstrap behavior remains available behind keeper commands or internal test seams, not as public `ployz.sh` modes.
 - R6a. `ployz.sh` always installs or replaces `/usr/local/bin/ployz-keeper` with the resolved verified keeper artifact, even when a keeper already exists; it should report previous and new versions when available and must not prompt for replacement policy.
 
 **Cloud contract and security**
@@ -130,13 +130,13 @@ ployzctl machine init root@server
 
 - R16. Founder Bootstrap authorizes a Cloud-owned NATS user public key as the cluster's initial `User` principal for Cloud-mediated clusters.
 - R17. Existing local founder bootstrap keeps the current minted local operator seed path for CLI-created clusters.
-- R18. Cloud calls `init_first_node_activate` after Founder Bootstrap callback material proves the first machine formed, and later redemptions against the same new-cluster flow become Joiner Bootstrap redemptions once Cloud can submit `machine.add`.
+- R18. Cloud calls `init_first_machine_activate` after Founder Bootstrap callback material proves the first machine formed, and later redemptions against the same new-cluster flow become Joiner Bootstrap redemptions once Cloud can submit `machine.add`.
 - R19. Additional machines still flow through `machine.add`, Machine Join Redemption, and Machine Join Report; Cloud brokers delivery and watches operation events. Duplicate reported hostnames are allowed, but each submitted current Machine Name remains unique.
 - R20. Cloud learns a candidate runtime NATS endpoint from the redemption/callback request, returns it in the founder envelope, and verifies direct TLS NATS reachability from Cloud before the founder redemption is considered usable.
 - R21. `ployz-keeper bootstrap` verifies local bootstrap completion and waits for Cloud's outside-in reachability verdict; it may show candidate endpoint diagnostics, but it does not treat a local socket check or public-IP preflight as public reachability proof.
 - R22. Direct TLS NATS remains the cluster control-plane transport; Cloud bootstrap does not introduce SSH-from-Cloud, tunnels, or background cluster mutation.
 - R22a. `ployz-keeper bootstrap` treats a Bootstrapped Machine as not eligible for Cloud bootstrap. It checks for durable local Ployz machine material before Cloud redemption and exits with explicit recovery guidance instead of forming or joining again. This refusal is local-only: keeper does not create a Cloud redemption, callback, or failed attempt record.
-- R22b. `ployzctl machine init USER@HOST` remains the workstation-driven local/direct bootstrap path. It generates the local operator credential, delivers typed first-node material over SSH, activates the first machine over direct TLS NATS, and writes local Operator Context.
+- R22b. `ployzctl machine init USER@HOST` remains the workstation-driven local/direct bootstrap path. It generates the local operator credential, delivers typed first-machine material over SSH, activates the first machine over direct TLS NATS, and writes local Operator Context.
 - R22c. `ployzctl machine init USER@HOST --link-cloud` and `ployzctl cloud link` are deferred until the cluster can authorize Cloud and the local operator as distinct direct NATS operator clients.
 
 **Documentation and verification**
@@ -169,7 +169,7 @@ ployzctl machine init root@server
 - KTD15. Cloud token in argv is accepted only for noninteractive v1: The automation command passes the Cloud Bootstrap Token as `--cloud-token` to the local keeper binary. This can expose the token through shell history or process arguments, but the token is short-lived, scoped to one invite, never placed in URLs, never passed to `ployz.sh`, redacted from output, and visible/revocable from Cloud. The human default avoids this by using an interactive session.
 - KTD16. Cloud bootstrap is first-use only per machine: Before creating a Cloud Bootstrap Session or redeeming a Cloud Bootstrap Token, keeper checks for existing local Ployz machine material such as NATS machine material, keeper join material, role environment files, or managed Ployz systemd units. If any marker is present, keeper exits with a Bootstrapped Machine error and does not call Cloud. Cloud does not learn that the command was attempted, which avoids leaking facts about an already-managed machine to an unrelated org or pasted token. Repair, re-adoption, or forced takeover are separate future commands, not hidden `bootstrap` reruns.
 - KTD17. `ployz.sh` stays installer-only even on Bootstrapped Machines: The shell shim does not inspect `/var/lib/ployz`, `/etc/ployz`, or systemd markers before replacing keeper. Existing-machine bootstrap refusal belongs in `ployz-keeper bootstrap`, so the shim remains release delivery rather than machine bootstrap policy.
-- KTD18. `ployzctl machine init` is the local/direct CLI path: The workstation CLI remains noninteractive. It generates and retains the local operator private seed, delivers typed first-node install material over SSH, activates the first machine, and writes local Operator Context.
+- KTD18. `ployzctl machine init` is the local/direct CLI path: The workstation CLI remains noninteractive. It generates and retains the local operator private seed, delivers typed first-machine install material over SSH, activates the first machine, and writes local Operator Context.
 - KTD19. Cloud linking existing/local clusters is explicit follow-up work: `ployzctl machine init --link-cloud` and `ployzctl cloud link` require multi-operator direct NATS credentials so Cloud and the local operator can each hold their own private seed.
 
 ---
@@ -190,9 +190,9 @@ flowchart TB
   Envelope -->|founder| FounderEnv[validate founder envelope in Rust]
   Envelope -->|join| JoinEnv[validate join envelope in Rust]
   Envelope -->|wait_for_founder| Wait[bounded wait and poll]
-  FounderEnv --> FirstNode[run first-node install with Cloud-safe result]
+  FounderEnv --> FirstMachine[run first-machine install with Cloud-safe result]
   JoinEnv --> Join[run existing keeper join path]
-  FirstNode --> Callback[POST terminal result to Cloud]
+  FirstMachine --> Callback[POST terminal result to Cloud]
   Join --> Callback
   Callback --> Cloud[Cloud updates redemption and watches NATS operations]
 ```
@@ -208,9 +208,9 @@ flowchart TB
   Envelope -->|founder| FounderEnv["validate founder envelope in Rust"]
   Envelope -->|join| JoinEnv["validate join envelope in Rust"]
   Envelope -->|wait_for_founder| Wait["bounded wait and re-redeem"]
-  FounderEnv --> FirstNode["run first-node install with Cloud-safe result"]
+  FounderEnv --> FirstMachine["run first-machine install with Cloud-safe result"]
   JoinEnv --> Join["run existing keeper join path"]
-  FirstNode --> Callback["POST terminal result to Cloud"]
+  FirstMachine --> Callback["POST terminal result to Cloud"]
   Join --> Callback
 ```
 
@@ -233,11 +233,11 @@ sequenceDiagram
   User->>Cloud: open URL locally, authenticate, choose org and new cluster
   Keeper->>Cloud: poll session over HTTPS
   Cloud-->>Keeper: founder envelope with Cloud user public key
-  Keeper->>Keeper: build first-node install target with Cloud operator public key
+  Keeper->>Keeper: build first-machine install target with Cloud operator public key
   Keeper->>NATS: write TLS material, authorized users, roles
   Keeper->>Cloud: callback with NATS URL, CA, machine id, terminal evidence
   Cloud->>NATS: verify direct TLS reachability with Cloud private seed
-  Cloud->>NATS: call init_first_node_activate and watch operation events
+  Cloud->>NATS: call init_first_machine_activate and watch operation events
   Cloud-->>Keeper: report reachable or formed-but-unreachable
 ```
 
@@ -300,9 +300,9 @@ PLOYZ_CLOUD_BOOTSTRAP_PROTOCOL=1
 PLOYZ_CLOUD_CALLBACK_URL=https://cloud.ployz.com/api/bootstrap/redemptions/bsr_123/report
 PLOYZ_CLOUD_CALLBACK_TOKEN=pcbr_abc123
 PLOYZ_VERSION=0.0.2-alpha.1
-PLOYZ_NODE_ID=core_1
+PLOYZ_MACHINE_ID=core_1
 PLOYZ_MACHINE_JOIN_NATS_URL=tls://203.0.113.10:4222
-PLOYZ_NODE_PUBLIC_IP=203.0.113.10
+PLOYZ_MACHINE_PUBLIC_IP=203.0.113.10
 PLOYZ_CLOUD_NATS_USER_PUBLIC_KEY=UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 ```
 
@@ -355,7 +355,7 @@ PLOYZ_CLOUD_RETRY_AFTER_SECONDS=5
 - **Requirements:** R1, R2, R3, R4, R5, R6, R8, R9, R10, R14, R15, R21, R22a, R24
 - **Dependencies:** U1
 - **Files:** `scripts/ployz.sh`, `crates/ployz-keeper/src/cli.rs`, `crates/ployz-keeper/src/main.rs`, `crates/ployz-keeper/tests/bootstrap_script.rs`, `crates/ployz-keeper/tests/bootstrap.rs`, `README.md`.
-- **Approach:** Remove local `ployzctl`, `--first-node`, and `--join-token` behavior from `scripts/ployz.sh`. Keep channel/exact-version resolution only as needed to download a verified `ployz-keeper` artifact and install it to `/usr/local/bin/ployz-keeper`. Always replace an existing keeper with the resolved verified artifact and print previous/new versions when possible. If the script is not root, it may use `sudo install` for that single root-owned file placement; it must fail clearly if `sudo` is unavailable or denied. Add `ployz-keeper bootstrap` as the interactive command with choices for Ployz Cloud, custom/self-hosted Cloud, and no Cloud. Add `ployz-keeper bootstrap --cloud-token <token> [--cloud-host <host-or-https-url>]` for noninteractive automation. Normalize bare hosts to `https://<host>`, reject non-HTTPS product hosts, and keep a test seam for fake Cloud endpoints. Create interactive sessions or redeem tokens from keeper using a header or body, never a query string. Include cheap machine facts available before bootstrap, such as hostname, OS, and architecture; Cloud treats them as facts, not Machine Name authority. Validate the typed response before any machine mutation.
+- **Approach:** Remove local `ployzctl`, `--first-machine`, and `--join-token` behavior from `scripts/ployz.sh`. Keep channel/exact-version resolution only as needed to download a verified `ployz-keeper` artifact and install it to `/usr/local/bin/ployz-keeper`. Always replace an existing keeper with the resolved verified artifact and print previous/new versions when possible. If the script is not root, it may use `sudo install` for that single root-owned file placement; it must fail clearly if `sudo` is unavailable or denied. Add `ployz-keeper bootstrap` as the interactive command with choices for Ployz Cloud, custom/self-hosted Cloud, and no Cloud. Add `ployz-keeper bootstrap --cloud-token <token> [--cloud-host <host-or-https-url>]` for noninteractive automation. Normalize bare hosts to `https://<host>`, reject non-HTTPS product hosts, and keep a test seam for fake Cloud endpoints. Create interactive sessions or redeem tokens from keeper using a header or body, never a query string. Include cheap machine facts available before bootstrap, such as hostname, OS, and architecture; Cloud treats them as facts, not Machine Name authority. Validate the typed response before any machine mutation.
 - **Patterns to follow:** Reuse release channel parsing, release manifest identity checks, SHA-256 artifact verification, temp-file cleanup, fake curl test harnesses, and current missing-key error style from `scripts/ployz.sh`; use keeper's existing `clap` parser and serde spec loading patterns for the new command.
 - **Test scenarios:** The exact human copied command installs keeper and then parses `ployz-keeper bootstrap`; the noninteractive command installs keeper and then parses `ployz-keeper bootstrap --cloud-token`; the interactive prompt offers Ployz Cloud, custom/self-hosted Cloud, and no Cloud; Ployz Cloud mode prints a browser URL and code and polls without expecting a localhost browser callback; `ployz.sh` uses plain `install` when already root and `sudo install` when non-root; `ployz.sh` replaces an existing keeper with the resolved verified artifact and reports previous/new versions when version output is available, including when local Ployz machine material already exists; `ployz.sh` fails clearly when `sudo` is unavailable or denied; `ployz.sh --cloud-token` is rejected and does not contact Cloud; `--cloud-host cloud.example.com` calls `https://cloud.example.com/...`; `--cloud-host https://staging.example.com` is accepted; `--cloud-host http://example.com` is rejected outside the test seam; fake curl logs prove the Cloud token is not present in the URL; session creation and token redemption send keeper version, protocol version, and hostname/OS/architecture facts when available and still succeed when hostname is absent; unsupported-client responses exit before machine mutation with update instructions; an existing NATS material directory, keeper join-material directory, Ployz role environment file, or managed Ployz systemd unit makes Cloud bootstrap fail before any Cloud request; `wait_for_founder` sleeps for the returned retry interval and re-polls or re-redeems without running machine mutation; missing intent or unsupported intent fails before machine mutation; usage text shows keeper-only shell install, interactive keeper bootstrap, and keeper Cloud token automation.
 - **Verification:** `ployz.sh` installs no `ployzctl` and performs no Cloud request; keeper Cloud mode reaches no machine mutation until the typed Cloud response validates.
@@ -365,10 +365,10 @@ PLOYZ_CLOUD_RETRY_AFTER_SECONDS=5
 - **Goal:** Let Cloud-mediated Founder Bootstrap authorize Cloud's public NATS user key and return only Cloud-safe connection material.
 - **Requirements:** R12, R16, R17, R18, R20, R21, R22, R25
 - **Dependencies:** U1, U2
-- **Files:** `crates/ployz-core/src/install.rs`, `crates/ployz-core/tests/install_contract.rs`, `crates/ployz-keeper/src/cli.rs`, `crates/ployz-keeper/src/main.rs`, `crates/ployz-keeper/src/nats_identity.rs`, `crates/ployz-keeper/src/steps/nats_material.rs`, `crates/ployz-keeper/src/steps.rs`, `crates/ployz-keeper/tests/bootstrap_first_node.rs`, `crates/ployz-keeper/tests/local.rs`, `crates/ployz-keeper/tests/bootstrap_script.rs`, `crates/ployz-core/tests/nats_config.rs`.
-- **Approach:** Add an explicit first-machine operator credential mode to `FirstNodeInstallSpec`, such as minted local operator seed versus authorized public user key. In Cloud mode, `ployz-keeper bootstrap` builds a first-node target containing Cloud's `NatsUserPublicKey` and asks the first-node installer path to emit a Cloud-safe result. Keeper writes `authorized-users.conf` with that public key as `NatsPrincipal::User`, skips local operator seed output for this path, and writes a result body containing machine id, runtime NATS URL, CA, and terminal evidence only. Keeper posts that result and waits for Cloud's outside-in TLS NATS reachability verdict before exiting successfully. The existing non-Cloud first-node path keeps minting and printing local operator material for `ployzctl machine init`.
-- **Patterns to follow:** `NatsAuthorizedUsersTarget::initial_for_first_node` is the single first-node authority file writer; `NatsUserPublicKey` already validates public user keys; `print_first_node_bootstrap_result` is the current local result boundary and should not be reused for Cloud-safe callback bodies.
-- **Test scenarios:** A founder spec with `mint_local` writes controller/operator/join seeds and prints the existing local result; a founder spec with `authorize_public_key` renders the Cloud public key under `NatsPrincipal::User`; Cloud mode does not write or print `operator_seed` or `join_seed` in the Cloud callback result; invalid public NKey values fail spec loading; keeper founder Cloud mode builds a first-node target containing the Cloud public key, candidate NATS URL, node public IP, roles, and exact release artifacts; a Cloud callback response that says NATS is unreachable makes keeper exit non-zero with a redacted endpoint hint.
+- **Files:** `crates/ployz-core/src/install.rs`, `crates/ployz-core/tests/install_contract.rs`, `crates/ployz-keeper/src/cli.rs`, `crates/ployz-keeper/src/main.rs`, `crates/ployz-keeper/src/nats_identity.rs`, `crates/ployz-keeper/src/steps/nats_material.rs`, `crates/ployz-keeper/src/steps.rs`, `crates/ployz-keeper/tests/bootstrap_first_machine.rs`, `crates/ployz-keeper/tests/local.rs`, `crates/ployz-keeper/tests/bootstrap_script.rs`, `crates/ployz-core/tests/nats_config.rs`.
+- **Approach:** Add an explicit first-machine operator credential mode to `FirstMachineInstallSpec`, such as minted local operator seed versus authorized public user key. In Cloud mode, `ployz-keeper bootstrap` builds a first-machine target containing Cloud's `NatsUserPublicKey` and asks the first-machine installer path to emit a Cloud-safe result. Keeper writes `authorized-users.conf` with that public key as `NatsPrincipal::User`, skips local operator seed output for this path, and writes a result body containing machine id, runtime NATS URL, CA, and terminal evidence only. Keeper posts that result and waits for Cloud's outside-in TLS NATS reachability verdict before exiting successfully. The existing non-Cloud first-machine path keeps minting and printing local operator material for `ployzctl machine init`.
+- **Patterns to follow:** `NatsAuthorizedUsersTarget::initial_for_first_machine` is the single first-machine authority file writer; `NatsUserPublicKey` already validates public user keys; `print_first_machine_bootstrap_result` is the current local result boundary and should not be reused for Cloud-safe callback bodies.
+- **Test scenarios:** A founder spec with `mint_local` writes controller/operator/join seeds and prints the existing local result; a founder spec with `authorize_public_key` renders the Cloud public key under `NatsPrincipal::User`; Cloud mode does not write or print `operator_seed` or `join_seed` in the Cloud callback result; invalid public NKey values fail spec loading; keeper founder Cloud mode builds a first-machine target containing the Cloud public key, candidate NATS URL, machine public IP, roles, and exact release artifacts; a Cloud callback response that says NATS is unreachable makes keeper exit non-zero with a redacted endpoint hint.
 - **Verification:** Cloud can connect with its private seed after callback, while no test or output path sends an SU-prefixed local operator seed to Cloud.
 
 ### U4. Joiner Cloud envelope and callback
@@ -399,8 +399,8 @@ PLOYZ_CLOUD_RETRY_AFTER_SECONDS=5
 - **Requirements:** R17, R22, R22b, R22c
 - **Dependencies:** U3
 - **Files:** `crates/ployzctl/src/commands/machine.rs`, `crates/ployzctl/src/bootstrap_command.rs`, `crates/ployzctl/tests/machine_remote_nats.rs`, `docs/architecture/cloud-bootstrap.md`, `README.md`.
-- **Approach:** Keep `ployzctl machine init USER@HOST` noninteractive. It generates the local operator credential on the workstation, authorizes that public key during first-node bootstrap, activates the first machine over direct TLS NATS, and writes local Operator Context. Document `ployzctl machine init USER@HOST --link-cloud` as deferred until founder bootstrap can authorize both the local operator and Cloud public keys. Document `ployzctl cloud link` as the later explicit operation for connecting an existing local cluster to Cloud.
-- **Patterns to follow:** Existing `machine init` already records local context after remote first-node install and activation. Do not route this path through keeper's interactive prompt.
+- **Approach:** Keep `ployzctl machine init USER@HOST` noninteractive. It generates the local operator credential on the workstation, authorizes that public key during first-machine bootstrap, activates the first machine over direct TLS NATS, and writes local Operator Context. Document `ployzctl machine init USER@HOST --link-cloud` as deferred until founder bootstrap can authorize both the local operator and Cloud public keys. Document `ployzctl cloud link` as the later explicit operation for connecting an existing local cluster to Cloud.
+- **Patterns to follow:** Existing `machine init` already records local context after remote first-machine install and activation. Do not route this path through keeper's interactive prompt.
 - **Test scenarios:** `machine init root@server` does not create a Cloud Bootstrap Session; the local operator private seed remains on the workstation; future `--link-cloud` is rejected or hidden until multi-operator credentials are available; docs state that linking Cloud later is a separate workflow.
 - **Verification:** Local/direct init remains usable without Cloud, and no Cloud-owned credential replaces the local operator credential.
 
@@ -432,7 +432,7 @@ PLOYZ_CLOUD_RETRY_AFTER_SECONDS=5
 - AE11. Given `ployz-keeper bootstrap` redeems with an unsupported keeper version or Cloud bootstrap protocol version, when Cloud evaluates the redemption, then Cloud returns an unsupported-client outcome, keeper prints an update instruction, and no machine mutation starts.
 - AE12. Given a machine already has durable Ployz machine material, when the user runs either the interactive Cloud bootstrap command or a token automation command, then keeper reports that the machine is already bootstrapped and no Cloud session, redemption, callback, or failed Cloud attempt is created.
 - AE13. Given a machine already has durable Ployz machine material and an older keeper binary, when the user runs the copied Cloud bootstrap command, then `ployz.sh` may replace keeper before `ployz-keeper bootstrap` refuses without Cloud redemption.
-- AE14. Given a user runs `ployzctl machine init root@server`, then `ployzctl` generates the local operator credential on the workstation, SSHes to the server, runs keeper first-node install without creating a Cloud Bootstrap Session, activates the first machine, and writes local Operator Context.
+- AE14. Given a user runs `ployzctl machine init root@server`, then `ployzctl` generates the local operator credential on the workstation, SSHes to the server, runs keeper first-machine install without creating a Cloud Bootstrap Session, activates the first machine, and writes local Operator Context.
 - AE15. Given a local cluster was created without Cloud, when the user later wants Cloud visibility, then the documented path is a future `ployzctl cloud link` workflow rather than rerunning machine bootstrap.
 
 ---
@@ -545,11 +545,11 @@ The Cloud docs should state:
 - `docs/adr/0020-machine-bootstrap-entrypoints.md`: Durable decision record for interactive keeper bootstrap, token automation, `ployzctl machine init`, and future Cloud link.
 - `docs/plans/2026-06-16-002-refactor-bootstrap-context-simplification-plan.md`: Render-once/deliver-many bootstrap direction and deferred dashboard/cloud-init bootstrap-token envelope.
 - `docs/architecture/nats-control-plane.md` and `docs/adr/0013-v1-uses-direct-tls-nats.md`: Direct TLS NATS is the v1 control-plane transport.
-- `scripts/ployz.sh`: Existing POSIX installer, release channel parsing, first-node mode, and join mode.
+- `scripts/ployz.sh`: Existing POSIX installer, release channel parsing, first-machine mode, and join mode.
 - `crates/ployzctl/src/bootstrap_command.rs`: Existing renderable founder and joiner bootstrap command patterns.
-- `crates/ployz-keeper/src/main.rs`: Current local first-node bootstrap result includes operator and Join seeds.
-- `crates/ployz-keeper/src/steps/nats_material.rs` and `crates/ployz-core/src/nats_config.rs`: First-node authorized-user rendering and NATS user public key validation.
-- `crates/ployz-core/src/permissions.rs` and `crates/ployz-core/src/security.rs`: Current `User`, `Controller`, `Join`, and `Node` NATS permission profiles.
+- `crates/ployz-keeper/src/main.rs`: Current local first-machine bootstrap result includes operator and Join seeds.
+- `crates/ployz-keeper/src/steps/nats_material.rs` and `crates/ployz-core/src/nats_config.rs`: First-machine authorized-user rendering and NATS user public key validation.
+- `crates/ployz-core/src/permissions.rs` and `crates/ployz-core/src/security.rs`: Current `User`, `Controller`, `Join`, and `Machine` NATS permission profiles.
 - `crates/ployzd/src/operation_api/submit.rs` and `crates/ployzd/src/operation_api/machine_join.rs`: Machine-add acceptance, credential minting, join redemption, and join reporting boundaries.
 - [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): session-style tokens require strong unpredictability and careful transport handling.
 - [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html): authenticated credential exchange should use TLS or other strong transport.

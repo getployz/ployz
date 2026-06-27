@@ -6,7 +6,7 @@
 
 use std::net::IpAddr;
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
@@ -97,16 +97,16 @@ pub struct JoinBootstrapCommand {
     pub trusted_ca_b64: String,
     pub join_seed: NatsUserSeed,
     pub join_token: MachineJoinToken,
-    pub node_public_ip: Option<IpAddr>,
+    pub machine_public_ip: Option<IpAddr>,
 }
 
 impl JoinBootstrapCommand {
     #[must_use]
     pub fn render(&self) -> String {
         let mut env = String::new();
-        if let Some(public_ip) = self.node_public_ip {
+        if let Some(public_ip) = self.machine_public_ip {
             env.push_str(&format!(
-                "PLOYZ_NODE_PUBLIC_IP={} ",
+                "PLOYZ_MACHINE_PUBLIC_IP={} ",
                 shell_quote(&public_ip.to_string())
             ));
         }
@@ -138,12 +138,12 @@ pub struct FounderBootstrapCommand {
     pub installer: BootstrapInstaller,
     pub release: BootstrapRelease,
     pub release_manifest_url: Option<String>,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub roles: InstallRolePolicy,
     pub bootstrap_url: MachineBootstrapUrl,
     pub cluster_name: MachineJoinClusterName,
     pub runtime_nats_url: MachineJoinRuntimeNatsUrl,
-    pub node_public_ip: Option<IpAddr>,
+    pub machine_public_ip: Option<IpAddr>,
 }
 
 impl FounderBootstrapCommand {
@@ -154,15 +154,15 @@ impl FounderBootstrapCommand {
         if let Some(url) = &self.release_manifest_url {
             env.push_str(&format!(" PLOYZ_RELEASE_MANIFEST_URL={}", shell_quote(url)));
         }
-        if let Some(public_ip) = self.node_public_ip {
+        if let Some(public_ip) = self.machine_public_ip {
             env.push_str(&format!(
-                " PLOYZ_NODE_PUBLIC_IP={}",
+                " PLOYZ_MACHINE_PUBLIC_IP={}",
                 shell_quote(&public_ip.to_string())
             ));
         }
         env.push_str(&format!(
-            " PLOYZ_NODE_ID={} PLOYZ_GATEWAY={} PLOYZ_DNS={} PLOYZ_MACHINE_BOOTSTRAP_URL={} PLOYZ_MACHINE_JOIN_CLUSTER_NAME={} PLOYZ_MACHINE_JOIN_NATS_URL={}",
-            shell_quote(self.node_id.as_str()),
+            " PLOYZ_MACHINE_ID={} PLOYZ_GATEWAY={} PLOYZ_DNS={} PLOYZ_MACHINE_BOOTSTRAP_URL={} PLOYZ_MACHINE_JOIN_CLUSTER_NAME={} PLOYZ_MACHINE_JOIN_NATS_URL={}",
+            shell_quote(self.machine_id.as_str()),
             shell_quote(gateway_role_value(self.roles.gateway)),
             shell_quote(dns_role_value(self.roles.dns)),
             shell_quote(self.bootstrap_url.as_str()),
@@ -172,11 +172,11 @@ impl FounderBootstrapCommand {
 
         match &self.installer {
             BootstrapInstaller::BootstrapUrl(url) => format!(
-                "curl -fsSL -- {} | {env} sh -s -- --first-node",
+                "curl -fsSL -- {} | {env} sh -s -- --first-machine",
                 shell_quote(url.as_str()),
             ),
             BootstrapInstaller::RemoteScript(path) => {
-                format!("{env} sh {} --first-node", shell_quote(path))
+                format!("{env} sh {} --first-machine", shell_quote(path))
             }
         }
     }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::ids::{OperationId, RevisionId, ServiceId, StepId, SubjectTokenError};
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{RoutePort, RoutePortError};
 use serde::{Deserialize, Serialize};
 

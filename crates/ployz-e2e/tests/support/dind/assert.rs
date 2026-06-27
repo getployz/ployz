@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployRunningStage, OperationEvent, OperationEventReplayCursor,
@@ -19,7 +19,7 @@ use ployz_sdk_types::{MachineInspectRequest, MachineSnapshot, OpsStatusRequest};
 use ployzd::docker::labels::MANAGED_LABEL;
 
 use super::formation::CoreContext;
-use ployz_test_support::ids::{event_replay_limit, event_sequence, node_id};
+use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id};
 
 /// Per-request budget for HTTP probes against a published gateway port.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -158,13 +158,13 @@ pub fn assert_events_in_order(
 /// The committed machine-add event vocabulary: submitted, then the five
 /// mint steps in order, then joined, then completed — with acceptance
 /// strictly before the reload.
-pub fn assert_machine_add_event_sequence(events: &[OperationEvent], expected_node: &NodeId) {
+pub fn assert_machine_add_event_sequence(events: &[OperationEvent], expected_machine: &MachineId) {
     let mut steps: Vec<LabeledEventPredicate<'_>> = vec![(
         "submitted",
         Box::new(move |event| {
             matches!(
                 event,
-                OperationEvent::MachineAddSubmitted { node_id, .. } if node_id == expected_node
+                OperationEvent::MachineAddSubmitted { machine_id, .. } if machine_id == expected_machine
             )
         }),
     )];
@@ -195,8 +195,8 @@ pub fn assert_machine_add_event_sequence(events: &[OperationEvent], expected_nod
             Box::new(move |event| {
                 matches!(
                     event,
-                    OperationEvent::MachineAddCredentialProvisioned { step, node_id, .. }
-                        if *step == expected_step && node_id == expected_node
+                    OperationEvent::MachineAddCredentialProvisioned { step, machine_id, .. }
+                        if *step == expected_step && machine_id == expected_machine
                 )
             }),
         ));
@@ -206,7 +206,7 @@ pub fn assert_machine_add_event_sequence(events: &[OperationEvent], expected_nod
         Box::new(move |event| {
             matches!(
                 event,
-                OperationEvent::MachineAddJoined { node_id, .. } if node_id == expected_node
+                OperationEvent::MachineAddJoined { machine_id, .. } if machine_id == expected_machine
             )
         }),
     ));
@@ -215,11 +215,15 @@ pub fn assert_machine_add_event_sequence(events: &[OperationEvent], expected_nod
         Box::new(move |event| {
             matches!(
                 event,
-                OperationEvent::MachineAddCompleted { node_id, .. } if node_id == expected_node
+                OperationEvent::MachineAddCompleted { machine_id, .. } if machine_id == expected_machine
             )
         }),
     ));
-    assert_events_in_order(&format!("machine add for {expected_node:?}"), events, steps);
+    assert_events_in_order(
+        &format!("machine add for {expected_machine:?}"),
+        events,
+        steps,
+    );
 }
 
 /// Polls the operation status through the host-side API until the deploy is
@@ -248,8 +252,8 @@ pub async fn wait_for_terminal_deploy_status(
 
 /// The committed deploy event vocabulary (the `operations.rs` sequence) for
 /// the two-machine routed deploy: submitted → planning → plan →
-/// WireGuard/eBPF preparation over both nodes → container starts on both
-/// nodes → health → commit → completed, in order.
+/// WireGuard/eBPF preparation over both machines → container starts on both
+/// machines → health → commit → completed, in order.
 pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation: &OperationId) {
     let steps: Vec<LabeledEventPredicate<'_>> = vec![
         (
@@ -283,17 +287,17 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
             }),
         ),
         (
-            "wireguard-ebpf-prepared-on-both-nodes",
+            "wireguard-ebpf-prepared-on-both-machines",
             Box::new(|event| {
                 matches!(
                     event,
                     OperationEvent::DeployWireGuardEbpfPrepared { report, .. }
                         if report
-                            .nodes
+                            .machines
                             .iter()
-                            .map(|node| node.node_id.clone())
+                            .map(|machine| machine.machine_id.clone())
                             .collect::<Vec<_>>()
-                            == vec![node_id("core_1"), node_id("edge_2")]
+                            == vec![machine_id("core_1"), machine_id("edge_2")]
                 )
             }),
         ),
@@ -357,20 +361,20 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
     let [.., starting_index, waiting_index, _, _, _] = resolved.as_slice() else {
         unreachable!("resolved has ten entries");
     };
-    for expected_node in [node_id("core_1"), node_id("edge_2")] {
+    for expected_machine in [machine_id("core_1"), machine_id("edge_2")] {
         let started = events.iter().position(|event| {
             matches!(
                 event,
-                OperationEvent::DeployContainerStarted { node_id, .. }
-                    if *node_id == expected_node
+                OperationEvent::DeployContainerStarted { machine_id, .. }
+                    if *machine_id == expected_machine
             )
         });
         let Some(started) = started else {
-            panic!("no container start on {expected_node:?}: {events:?}");
+            panic!("no container start on {expected_machine:?}: {events:?}");
         };
         assert!(
             started >= *starting_index && started <= *waiting_index,
-            "container start on {expected_node:?} outside the starting window: {events:?}"
+            "container start on {expected_machine:?} outside the starting window: {events:?}"
         );
     }
 }
@@ -449,7 +453,7 @@ pub async fn next_permission_violation(
 /// snapshot; panics with `what` and the last observation on budget overrun.
 pub async fn wait_for_inspect(
     core: &CoreContext,
-    node: &NodeId,
+    machine: &MachineId,
     budget: Duration,
     what: &str,
     predicate: impl Fn(&MachineSnapshot) -> bool,
@@ -460,7 +464,7 @@ pub async fn wait_for_inspect(
         match core
             .api
             .machine_inspect(&MachineInspectRequest {
-                node_id: node.clone(),
+                machine_id: machine.clone(),
             })
             .await
         {
@@ -474,13 +478,13 @@ pub async fn wait_for_inspect(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    panic!("machine {node:?} {what} within {budget:?}: {last}")
+    panic!("machine {machine:?} {what} within {budget:?}: {last}")
 }
 
-/// Waits until the machine snapshot carries node observations (public ip
-/// from the node process and gateway status from the gateway process) —
-/// proof both processes connected with the machine's Node credential.
-pub async fn wait_for_machine_observations(core: &CoreContext, machine: &NodeId) {
+/// Waits until the machine snapshot carries machine observations (public ip
+/// from the machine process and gateway status from the gateway process) —
+/// proof both processes connected with the machine's Machine credential.
+pub async fn wait_for_machine_observations(core: &CoreContext, machine: &MachineId) {
     wait_for_inspect(
         core,
         machine,

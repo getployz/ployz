@@ -1,12 +1,12 @@
 //! Daemon application composition.
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_nats::connect::NatsClientUrl;
 use std::net::SocketAddr;
 
 use crate::config::{
     ControlProcessConfig, DaemonProcessConfig, DnsProcessConfig, GatewayProcessConfig,
-    NodeProcessConfig,
+    MachineProcessConfig,
 };
 use crate::nats_process::NatsServerRuntime;
 use crate::services::DaemonServiceCatalog;
@@ -14,7 +14,7 @@ use crate::services::DaemonServiceCatalog;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleProcessPlan {
     Control(ControlProcessPlan),
-    Node(NodeProcessPlan),
+    Machine(MachineProcessPlan),
     Gateway(GatewayProcessPlan),
     Dns(DnsProcessPlan),
 }
@@ -40,22 +40,22 @@ pub enum ControlWork {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeProcessPlan {
-    pub node_id: NodeId,
+pub struct MachineProcessPlan {
+    pub machine_id: MachineId,
     pub nats_url: NatsClientUrl,
     pub service_catalog: DaemonServiceCatalog,
-    pub work: &'static [NodeWork],
+    pub work: &'static [MachineWork],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeWork {
-    ServeNodeRpc,
+pub enum MachineWork {
+    ServeMachineRpc,
     PublishDockerObservations,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProcessPlan {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub nats_url: NatsClientUrl,
     pub listen_addr: SocketAddr,
     pub work: &'static [GatewayWork],
@@ -70,7 +70,7 @@ pub enum GatewayWork {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsProcessPlan {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub nats_url: NatsClientUrl,
     pub work: &'static [DnsWork],
 }
@@ -78,7 +78,7 @@ pub struct DnsProcessPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DnsWork {
     WatchServices,
-    WatchNodeAddresses,
+    WatchMachineAddresses,
     ServeLastKnownGoodAnswers,
 }
 
@@ -86,7 +86,7 @@ pub enum DnsWork {
 pub fn plan_configured_process(config: &DaemonProcessConfig) -> RoleProcessPlan {
     match config {
         DaemonProcessConfig::Control(config) => plan_control_process(config),
-        DaemonProcessConfig::Node(config) => plan_node_process(config),
+        DaemonProcessConfig::Machine(config) => plan_machine_process(config),
         DaemonProcessConfig::Gateway(config) => plan_gateway_process(config),
         DaemonProcessConfig::Dns(config) => plan_dns_process(config),
     }
@@ -103,18 +103,21 @@ fn plan_control_process(config: &ControlProcessConfig) -> RoleProcessPlan {
     })
 }
 
-fn plan_node_process(config: &NodeProcessConfig) -> RoleProcessPlan {
-    RoleProcessPlan::Node(NodeProcessPlan {
-        node_id: config.node_id.clone(),
+fn plan_machine_process(config: &MachineProcessConfig) -> RoleProcessPlan {
+    RoleProcessPlan::Machine(MachineProcessPlan {
+        machine_id: config.machine_id.clone(),
         nats_url: config.nats.url.clone(),
-        service_catalog: DaemonServiceCatalog::for_node(&config.node_id),
-        work: &[NodeWork::ServeNodeRpc, NodeWork::PublishDockerObservations],
+        service_catalog: DaemonServiceCatalog::for_machine(&config.machine_id),
+        work: &[
+            MachineWork::ServeMachineRpc,
+            MachineWork::PublishDockerObservations,
+        ],
     })
 }
 
 fn plan_gateway_process(config: &GatewayProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Gateway(GatewayProcessPlan {
-        node_id: config.node_id.clone(),
+        machine_id: config.machine_id.clone(),
         nats_url: config.nats.url.clone(),
         listen_addr: config.listen_addr,
         work: &[
@@ -127,11 +130,11 @@ fn plan_gateway_process(config: &GatewayProcessConfig) -> RoleProcessPlan {
 
 fn plan_dns_process(config: &DnsProcessConfig) -> RoleProcessPlan {
     RoleProcessPlan::Dns(DnsProcessPlan {
-        node_id: config.node_id.clone(),
+        machine_id: config.machine_id.clone(),
         nats_url: config.nats.url.clone(),
         work: &[
             DnsWork::WatchServices,
-            DnsWork::WatchNodeAddresses,
+            DnsWork::WatchMachineAddresses,
             DnsWork::ServeLastKnownGoodAnswers,
         ],
     })

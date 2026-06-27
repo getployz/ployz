@@ -11,33 +11,34 @@ use ployz_core::deploy::{
     plan_service_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployEvidence, DeployRunningStage, DeployTransition, FailureMessage,
     OperatorHint, RetainedArtifact, RoutePort,
 };
 
 pub use facts::{
-    DeployExecutionNodeScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
+    DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
 };
 pub use failure::{
     ActiveServiceCommitError, DeployExecutionError, DeployExecutionStep, DeployFailureRecordError,
-    DeployHealthCheckError, DeployOperationRecordError, NodeContainerRuntimeError,
-    NodeRuntimeUnavailableReason,
+    DeployHealthCheckError, DeployOperationRecordError, MachineContainerRuntimeError,
+    MachineRuntimeUnavailableReason,
 };
 use failure::{DeployExecutionFailure, fail_deploy, with_step_timeout};
 pub use ports::{
     ActiveRouteCommitError, ActiveRouteCommitter, ActiveServiceCommitter, DeployHealthChecker,
-    DeployOperationRecorder, NodeContainerRuntime, WireGuardEbpfPreparer,
+    DeployOperationRecorder, MachineContainerRuntime, WireGuardEbpfPreparer,
 };
 pub use preparation::{
     DeployCommandPreparationError, DeployExecutionFacts, prepare_deploy_execution_command,
 };
 
 use crate::docker::labels::ManagedContainerIdentity;
-use crate::node::protocol::{
-    ContainerEndpointRequest, NodeContainerRemoveRpcRequest, NodeContainerRunRpcRequest,
-    NodeContainerRunSpec, NodeContainerStopRpcRequest, NodeEnsureEndpointNetworkRpcRequest,
+use crate::machine_runtime::protocol::{
+    ContainerEndpointRequest, MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerRunSpec, MachineContainerStopRpcRequest,
+    MachineEnsureEndpointNetworkRpcRequest,
 };
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
@@ -51,7 +52,7 @@ pub async fn execute_deploy_operation<R, D, N, H, C, A>(
 where
     R: DeployOperationRecorder,
     D: WireGuardEbpfPreparer,
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: ActiveRouteCommitter,
     A: ActiveServiceCommitter,
@@ -62,7 +63,7 @@ where
         Err(mut failure) => {
             let stop_artifacts = stop_retained_containers(
                 &command,
-                &mut *ports.node_runtime,
+                &mut *ports.machine_runtime,
                 failure.retained_stop_targets(),
             )
             .await;
@@ -122,7 +123,7 @@ async fn execute_deploy<R, D, N, H, C, A>(
 where
     R: DeployOperationRecorder,
     D: WireGuardEbpfPreparer,
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: ActiveRouteCommitter,
     A: ActiveServiceCommitter,
@@ -134,7 +135,7 @@ where
         .map_err(|source| run.fail(source))?;
     let plan = plan_service_deploy(DeployPlanningInput {
         request: command.request.clone(),
-        eligible_nodes: command.eligible_nodes.clone(),
+        eligible_machines: command.eligible_machines.clone(),
         existing_replicas: command.existing_replicas.clone(),
         cleanup_candidates: command.cleanup_candidates.clone(),
     })
@@ -153,7 +154,7 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
-    ensure_endpoint_networks(command, &plan, &mut *ports.node_runtime)
+    ensure_endpoint_networks(command, &plan, &mut *ports.machine_runtime)
         .await
         .map_err(|source| run.fail(source))?;
     let dataplane = prepare_wireguard_ebpf(command, &plan, &mut *ports.wireguard_ebpf)
@@ -177,23 +178,23 @@ where
     for step in &plan.steps {
         match step {
             DeployPlanStep::UseExistingContainer {
-                node_id,
+                machine_id,
                 container_id,
                 slot,
             } => containers.push(DeployContainer {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
                 container_id: container_id.clone(),
                 step_id: deploy_step_id(*slot)
                     .map_err(|source| run.fail(DeployExecutionError::StepId(source)))?,
                 required_endpoint_port: required_endpoint_port(command),
             }),
-            DeployPlanStep::RunContainer { node_id, slot } => {
+            DeployPlanStep::RunContainer { machine_id, slot } => {
                 let run_result = with_step_timeout(
                     command,
                     DeployExecutionStep::RunContainer {
-                        node_id: node_id.clone(),
+                        machine_id: machine_id.clone(),
                     },
-                    run_deploy_step(&mut *ports.node_runtime, command, node_id, *slot),
+                    run_deploy_step(&mut *ports.machine_runtime, command, machine_id, *slot),
                 )
                 .await;
                 let started = match run_result {
@@ -206,7 +207,7 @@ where
                     command,
                     &mut *ports.recorder,
                     DeployEvidence::ContainerStarted {
-                        node_id: started.node_id.clone(),
+                        machine_id: started.machine_id.clone(),
                         container_id: started.container_id.clone(),
                     },
                 )
@@ -274,7 +275,7 @@ where
         )
         .await;
     }
-    let cleanup = cleanup_superseded_containers(command, &mut *ports.node_runtime, &plan).await;
+    let cleanup = cleanup_superseded_containers(command, &mut *ports.machine_runtime, &plan).await;
     let terminal_event = record_terminal_state(command, &mut *ports.recorder, &cleanup).await;
 
     let outcome = DeployExecutionOutcome {
@@ -290,11 +291,11 @@ where
 
 async fn cleanup_superseded_containers<N>(
     command: &DeployExecutionCommand,
-    node_runtime: &mut N,
+    machine_runtime: &mut N,
     plan: &DeployPlan,
 ) -> Vec<DeployCleanupResult>
 where
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
 {
     if plan.cleanup_containers.is_empty() {
         return Vec::new();
@@ -302,9 +303,9 @@ where
 
     let mut cleanup = Vec::new();
     for target in &plan.cleanup_containers {
-        let result = node_runtime.remove_container(
-            &target.node_id,
-            NodeContainerRemoveRpcRequest {
+        let result = machine_runtime.remove_container(
+            &target.machine_id,
+            MachineContainerRemoveRpcRequest {
                 operation_id: command.operation_id.clone(),
                 container_id: target.container_id.clone(),
                 expected_identity: cleanup_expected_identity(target),
@@ -333,17 +334,17 @@ where
 
 async fn stop_retained_containers<N>(
     command: &DeployExecutionCommand,
-    node_runtime: &mut N,
+    machine_runtime: &mut N,
     containers: &[DeployContainer],
 ) -> Vec<RetainedArtifact>
 where
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
 {
     let mut stop_failures = Vec::new();
     for container in containers {
-        let stop = node_runtime.stop_container(
-            &container.node_id,
-            NodeContainerStopRpcRequest {
+        let stop = machine_runtime.stop_container(
+            &container.machine_id,
+            MachineContainerStopRpcRequest {
                 operation_id: command.operation_id.clone(),
                 container_id: container.container_id.clone(),
                 expected_identity: retained_container_identity(command, container),
@@ -377,7 +378,7 @@ fn container_stop_failed_artifact(
     message: FailureMessage,
 ) -> RetainedArtifact {
     RetainedArtifact::ContainerStopFailed {
-        node_id: container.node_id.clone(),
+        machine_id: container.machine_id.clone(),
         container_id: container.container_id.clone(),
         message,
         inspect_hint: inspect_hint(&container.container_id),
@@ -405,8 +406,8 @@ fn retained_created_container(
     source: &DeployExecutionError,
 ) -> Option<DeployContainer> {
     let DeployExecutionError::RunContainer(
-        NodeContainerRuntimeError::CreatedContainerStartFailed {
-            node_id,
+        MachineContainerRuntimeError::CreatedContainerStartFailed {
+            machine_id,
             container_id,
             ..
         },
@@ -416,7 +417,7 @@ fn retained_created_container(
     };
     let step_id = deploy_step_id(slot).ok()?;
     Some(DeployContainer {
-        node_id: node_id.clone(),
+        machine_id: machine_id.clone(),
         container_id: container_id.clone(),
         step_id,
         required_endpoint_port: required_endpoint_port(command),
@@ -469,22 +470,22 @@ fn cleanup_evidence(cleanup: &[DeployCleanupResult]) -> DeployEvidence {
     DeployEvidence::CleanupFinished { removed, failed }
 }
 
-fn cleanup_failure_message(error: NodeContainerRuntimeError) -> FailureMessage {
+fn cleanup_failure_message(error: MachineContainerRuntimeError) -> FailureMessage {
     match error {
-        NodeContainerRuntimeError::Unavailable { reason, .. } => reason.failure_message(),
-        NodeContainerRuntimeError::OperationStepConflict { .. } => {
+        MachineContainerRuntimeError::Unavailable { reason, .. } => reason.failure_message(),
+        MachineContainerRuntimeError::OperationStepConflict { .. } => {
             FailureMessage::try_new("cleanup found a conflicting operation-step container")
                 .expect("generated cleanup failure message is non-empty")
         }
-        NodeContainerRuntimeError::OperationStepAmbiguous { .. } => {
+        MachineContainerRuntimeError::OperationStepAmbiguous { .. } => {
             FailureMessage::try_new("cleanup found multiple operation-step containers")
                 .expect("generated cleanup failure message is non-empty")
         }
-        NodeContainerRuntimeError::CreatedContainerStartFailed { message, .. }
-        | NodeContainerRuntimeError::ExistingContainerStartFailed { message, .. }
-        | NodeContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
-        | NodeContainerRuntimeError::StopContainerFailed { message, .. }
-        | NodeContainerRuntimeError::RemoveContainerFailed { message, .. } => message,
+        MachineContainerRuntimeError::CreatedContainerStartFailed { message, .. }
+        | MachineContainerRuntimeError::ExistingContainerStartFailed { message, .. }
+        | MachineContainerRuntimeError::OperationStepContainerNotStartable { message, .. }
+        | MachineContainerRuntimeError::StopContainerFailed { message, .. }
+        | MachineContainerRuntimeError::RemoveContainerFailed { message, .. } => message,
     }
 }
 
@@ -586,7 +587,7 @@ where
     with_step_timeout(
         command,
         DeployExecutionStep::PrepareWireGuardEbpf {
-            nodes: request.nodes.clone(),
+            machines: request.machines.clone(),
         },
         wireguard_ebpf.prepare_wireguard_ebpf(request),
     )
@@ -596,24 +597,24 @@ where
 async fn ensure_endpoint_networks<N>(
     command: &DeployExecutionCommand,
     plan: &DeployPlan,
-    node_runtime: &mut N,
+    machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
 where
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
 {
     let request = command.wireguard_ebpf_prepare_request(plan);
-    for node_id in request.nodes {
-        let network_request = NodeEnsureEndpointNetworkRpcRequest {
+    for machine_id in request.machines {
+        let network_request = MachineEnsureEndpointNetworkRpcRequest {
             operation_id: command.operation_id.clone(),
         };
         with_step_timeout(
             command,
             DeployExecutionStep::EnsureEndpointNetwork {
-                node_id: node_id.clone(),
+                machine_id: machine_id.clone(),
             },
             async {
-                node_runtime
-                    .ensure_endpoint_network(&node_id, network_request)
+                machine_runtime
+                    .ensure_endpoint_network(&machine_id, network_request)
                     .await
                     .map_err(DeployExecutionError::RunContainer)
             },
@@ -691,13 +692,13 @@ where
 }
 
 async fn run_deploy_step<N>(
-    node_runtime: &mut N,
+    machine_runtime: &mut N,
     command: &DeployExecutionCommand,
-    node_id: &ployz_core::ids::NodeId,
+    machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
 ) -> Result<DeployContainer, DeployExecutionError>
 where
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
 {
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let endpoint = command
@@ -707,10 +708,10 @@ where
         .map(|route| ContainerEndpointRequest {
             port: route.endpoint_port,
         });
-    let request = NodeContainerRunRpcRequest {
+    let request = MachineContainerRunRpcRequest {
         image: command.request.image.clone(),
         endpoint,
-        container: NodeContainerRunSpec {
+        container: MachineContainerRunSpec {
             service_id: command.request.service_id.clone(),
             revision_id: command.request.target_revision.clone(),
             operation_id: command.operation_id.clone(),
@@ -719,11 +720,11 @@ where
         },
     };
 
-    node_runtime
-        .run_container(node_id, request)
+    machine_runtime
+        .run_container(machine_id, request)
         .await
         .map(|outcome| DeployContainer {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             container_id: outcome.container_id().clone(),
             step_id,
             required_endpoint_port: required_endpoint_port(command),

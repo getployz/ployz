@@ -10,7 +10,7 @@ use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
-use ployz_core::subjects::{NodeServiceEndpoint, node_service};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::{AsyncNatsObservationStore, KV_OBS_BUCKET};
 use ployz_nats::operations::{AsyncNatsOperationEventLog, AsyncNatsOperationStatusStore};
@@ -19,10 +19,10 @@ use ployzd::controllers::{DeploySubmitCommand, MachineAddBootstrapConfig, Operat
 use ployzd::deploy_runtime::{
     DeployOperationPorts, DeployOperationRunError, DeployOperationStores, run_deploy_operation,
 };
-use ployzd::deploy_worker::DeployExecutionNodeScope;
-use ployzd::node::client::NatsNodeContainerRuntime;
-use ployzd::node::protocol::{
-    NodeEnsureEndpointNetworkRpcOk, NodeEnsureEndpointNetworkRpcResponse,
+use ployzd::deploy_worker::DeployExecutionMachineScope;
+use ployzd::machine_runtime::client::NatsMachineContainerRuntime;
+use ployzd::machine_runtime::protocol::{
+    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
 };
 use std::time::Duration;
 
@@ -47,7 +47,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 
     let outcome = run_deploy_operation(
         accepted,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             core_state: core_state.clone(),
             observations,
@@ -55,7 +55,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         },
         DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
         Duration::from_secs(5),
@@ -66,10 +66,10 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     assert_eq!(outcome.service_id, service_id("svc_api"));
     assert_eq!(outcome.target_revision, revision_id("rev_2"));
     assert_eq!(runtime.requests.len(), 1);
-    let [(run_node_id, run_request)] = runtime.requests.as_slice() else {
+    let [(run_machine_id, run_request)] = runtime.requests.as_slice() else {
         panic!("expected one container run request");
     };
-    assert_eq!(*run_node_id, node_id("node_a"));
+    assert_eq!(*run_machine_id, machine_id("machine_a"));
     assert_eq!(run_request.container.operation_id, operation_id("op_123"));
     assert_eq!(
         core_state
@@ -113,11 +113,11 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::unhealthy("node_a", "ctr_1");
+    let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
 
     let error = run_deploy_operation(
         accepted,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             core_state: core_state.clone(),
             observations,
@@ -125,7 +125,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         },
         DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
         Duration::from_secs(5),
@@ -156,12 +156,12 @@ async fn health_failure_records_failed_operation_without_committing_active_state
                         },
                 },
             ..
-        }) if retained_artifacts == vec![retained_container("node_a", "ctr_1")]
+        }) if retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
     ));
 }
 
 #[tokio::test]
-async fn missing_node_responder_marks_deploy_failed_without_committing_active_state() {
+async fn missing_machine_responder_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
@@ -175,13 +175,13 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = NatsNodeContainerRuntime::new(nats.client.clone())
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(200));
     let mut health = RecordingHealth::healthy();
 
     let error = run_deploy_operation(
         accepted,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_missing")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_missing")]),
         DeployOperationStores {
             core_state: core_state.clone(),
             observations,
@@ -189,13 +189,13 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
         },
         DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
         Duration::from_secs(5),
     )
     .await
-    .expect_err("missing node responder fails deploy");
+    .expect_err("missing machine responder fails deploy");
 
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
@@ -215,26 +215,29 @@ async fn missing_node_responder_marks_deploy_failed_without_committing_active_st
                 DeployOperationState::Failed {
                     failure:
                         DeployOperationFailure::RuntimeUnavailable {
-                            node_id: failed_node_id,
+                            machine_id: failed_machine_id,
                             message,
                             retained_artifacts,
                         },
                 },
             ..
-        }) if failed_node_id == node_id("node_missing")
-            && message.as_str() == "node runtime has no responders"
+        }) if failed_machine_id == machine_id("machine_missing")
+            && message.as_str() == "machine runtime has no responders"
             && retained_artifacts.is_empty()
     ));
 }
 
 #[tokio::test]
-async fn node_service_timeout_marks_deploy_failed_without_committing_active_state() {
+async fn machine_service_timeout_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
     let _endpoint_network =
-        start_endpoint_network_subscription(nats.node_slow.clone(), node_id("node_slow")).await;
-    let _unresponsive_node =
-        start_unresponsive_container_run_subscription(nats.node_slow.clone(), node_id("node_slow"))
+        start_endpoint_network_subscription(nats.machine_slow.clone(), machine_id("machine_slow"))
             .await;
+    let _unresponsive_machine = start_unresponsive_container_run_subscription(
+        nats.machine_slow.clone(),
+        machine_id("machine_slow"),
+    )
+    .await;
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
@@ -247,13 +250,13 @@ async fn node_service_timeout_marks_deploy_failed_without_committing_active_stat
         .await
         .expect("deploy operation accepted");
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = NatsNodeContainerRuntime::new(nats.client.clone())
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(50));
     let mut health = RecordingHealth::healthy();
 
     let error = run_deploy_operation(
         accepted,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_slow")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_slow")]),
         DeployOperationStores {
             core_state: core_state.clone(),
             observations,
@@ -261,13 +264,13 @@ async fn node_service_timeout_marks_deploy_failed_without_committing_active_stat
         },
         DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
         Duration::from_secs(5),
     )
     .await
-    .expect_err("timed out node service fails deploy");
+    .expect_err("timed out machine service fails deploy");
 
     assert!(matches!(error, DeployOperationRunError::Execute(_)));
     assert!(
@@ -291,14 +294,14 @@ async fn node_service_timeout_marks_deploy_failed_without_committing_active_stat
                     DeployOperationState::Failed {
                         failure:
                             DeployOperationFailure::RuntimeUnavailable {
-                                node_id: ref failed_node_id,
+                                machine_id: ref failed_machine_id,
                                 ref message,
                                 ref retained_artifacts,
                             },
                     },
                 ..
-            }) if failed_node_id == &node_id("node_slow")
-                && message.as_str() == "node runtime request timed out"
+            }) if failed_machine_id == &machine_id("machine_slow")
+                && message.as_str() == "machine runtime request timed out"
                 && retained_artifacts.is_empty()
         ),
         "unexpected operation status: {status:?}"
@@ -330,7 +333,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
 
     let error = run_deploy_operation(
         accepted,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             core_state,
             observations: missing_observations,
@@ -338,7 +341,7 @@ async fn fact_load_failure_marks_accepted_operation_failed() {
         },
         DeployOperationPorts {
             wireguard_ebpf: &mut wireguard_ebpf,
-            node_runtime: &mut runtime,
+            machine_runtime: &mut runtime,
             health_checker: &mut health,
         },
         Duration::from_secs(5),
@@ -379,39 +382,41 @@ struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
-    /// Node principal for the stubbed slow node service.
-    node_slow: async_nats::Client,
+    /// Machine principal for the stubbed slow machine service.
+    machine_slow: async_nats::Client,
     jetstream: jetstream::Context,
 }
 
 async fn test_nats() -> TestNats {
-    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_slow")]).await;
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_slow")])
+            .await;
     nats.bootstrap_resources().await;
     let client = nats.controller.clone();
-    let node_slow = nats.node_client(&node_id("node_slow")).await;
+    let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
     let jetstream = nats.jetstream.clone();
 
     TestNats {
         _nats: nats,
         client,
-        node_slow,
+        machine_slow,
         jetstream,
     }
 }
 
 async fn start_unresponsive_container_run_subscription(
     client: async_nats::Client,
-    node_id: ployz_core::ids::NodeId,
+    machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
-    let subject = node_service(&node_id, NodeServiceEndpoint::ContainerRun);
+    let subject = machine_service(&machine_id, MachineServiceEndpoint::ContainerRun);
     let mut subscriber = client
         .subscribe(subject)
         .await
-        .expect("subscribe unresponsive node service");
+        .expect("subscribe unresponsive machine service");
     client
         .flush()
         .await
-        .expect("flush unresponsive node service subscription");
+        .expect("flush unresponsive machine service subscription");
     tokio::spawn(async move {
         while subscriber.next().await.is_some() {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -421,11 +426,11 @@ async fn start_unresponsive_container_run_subscription(
 
 async fn start_endpoint_network_subscription(
     client: async_nats::Client,
-    node_id: ployz_core::ids::NodeId,
+    machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
-    let subject = node_service(
-        &node_id,
-        NodeServiceEndpoint::ContainerEnsureEndpointNetwork,
+    let subject = machine_service(
+        &machine_id,
+        MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
     );
     let mut subscriber = client
         .subscribe(subject)
@@ -438,9 +443,9 @@ async fn start_endpoint_network_subscription(
     tokio::spawn(async move {
         while let Some(message) = subscriber.next().await {
             if let Some(reply) = message.reply {
-                let response = serde_json::to_vec(&NodeEnsureEndpointNetworkRpcResponse::Ok(
-                    NodeEnsureEndpointNetworkRpcOk {
-                        node_id: node_id.clone(),
+                let response = serde_json::to_vec(&MachineEnsureEndpointNetworkRpcResponse::Ok(
+                    MachineEnsureEndpointNetworkRpcOk {
+                        machine_id: machine_id.clone(),
                     },
                 ))
                 .expect("endpoint network response serializes");

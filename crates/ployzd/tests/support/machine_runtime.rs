@@ -2,48 +2,49 @@ use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfPrepareError,
     WireGuardEbpfReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
-use ployz_core::ids::{ContainerId, NodeId};
-use ployz_core::node::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ManagedContainerObservation,
 };
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use ployzd::docker::labels::{ManagedContainerIdentity, ManagedContainerLabels};
-use ployzd::node::protocol::ContainerEndpointRequest;
-use ployzd::node::runner::{
+use ployzd::machine_runtime::protocol::ContainerEndpointRequest;
+use ployzd::machine_runtime::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    NodeContainerRunner, NodeContainerRunnerError, NodeLogReader, NodeLogReaderError, NodeLogTail,
+    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
+    MachineLogTail,
 };
-use ployzd::node::service::NodeWireGuardEbpfPreparer;
+use ployzd::machine_runtime::service::MachineWireGuardEbpfPreparer;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct ObservingContainerRunner {
-    node_id: NodeId,
+    machine_id: MachineId,
     observations: AsyncNatsObservationStore,
     state: Arc<Mutex<ObservingContainerRunnerState>>,
 }
 
 impl ObservingContainerRunner {
     #[must_use]
-    pub fn new(node_id: NodeId, observations: AsyncNatsObservationStore) -> Self {
+    pub fn new(machine_id: MachineId, observations: AsyncNatsObservationStore) -> Self {
         Self {
-            node_id,
+            machine_id,
             observations,
             state: Arc::new(Mutex::new(ObservingContainerRunnerState::default())),
         }
     }
 }
 
-impl NodeContainerRunner for ObservingContainerRunner {
+impl MachineContainerRunner for ObservingContainerRunner {
     async fn existing_managed_containers(
         &self,
-    ) -> Result<Vec<ExistingManagedContainer>, NodeContainerRunnerError> {
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
         let Some(snapshot) = self
             .observations
-            .node_snapshot(&self.node_id)
+            .machine_snapshot(&self.machine_id)
             .await
-            .map_err(node_observation_list_error)?
+            .map_err(machine_observation_list_error)?
         else {
             return Ok(Vec::new());
         };
@@ -55,18 +56,18 @@ impl NodeContainerRunner for ObservingContainerRunner {
             .collect())
     }
 
-    async fn ensure_endpoint_network(&self) -> Result<(), NodeContainerRunnerError> {
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
         Ok(())
     }
 
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> Result<ContainerId, NodeContainerRunnerError> {
+    ) -> Result<ContainerId, MachineContainerRunnerError> {
         let container_id = self.next_container_id()?;
         self.store_endpoint(&container_id, command.endpoint)?;
         let observation = ManagedContainerObservation {
-            node_id: self.node_id.clone(),
+            machine_id: self.machine_id.clone(),
             container_id: container_id.clone(),
             service_id: command.labels.service_id,
             revision_id: command.labels.revision_id,
@@ -77,18 +78,18 @@ impl NodeContainerRunner for ObservingContainerRunner {
         };
         let snapshot = self
             .observations
-            .node_snapshot(&self.node_id)
+            .machine_snapshot(&self.machine_id)
             .await
-            .map_err(node_observation_create_error)?
-            .unwrap_or_else(|| empty_snapshot(&self.node_id))
+            .map_err(machine_observation_create_error)?
+            .unwrap_or_else(|| empty_snapshot(&self.machine_id))
             .with_container_replaced(observation)
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
         self.observations
-            .replace_node_containers(&snapshot)
+            .replace_machine_containers(&snapshot)
             .await
-            .map_err(node_observation_create_error)?;
+            .map_err(machine_observation_create_error)?;
 
         Ok(container_id)
     }
@@ -96,12 +97,12 @@ impl NodeContainerRunner for ObservingContainerRunner {
     async fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let Some(snapshot) = self
             .observations
-            .node_snapshot(&self.node_id)
+            .machine_snapshot(&self.machine_id)
             .await
-            .map_err(node_observation_create_error)?
+            .map_err(machine_observation_create_error)?
         else {
             return Err(missing_container_start_error(container_id));
         };
@@ -117,14 +118,14 @@ impl NodeContainerRunner for ObservingContainerRunner {
                 ),
                 ..observation
             })
-            .map_err(|error| NodeContainerRunnerError::Start {
+            .map_err(|error| MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
         self.observations
-            .replace_node_containers(&snapshot)
+            .replace_machine_containers(&snapshot)
             .await
-            .map_err(|error| NodeContainerRunnerError::Start {
+            .map_err(|error| MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })
@@ -134,12 +135,12 @@ impl NodeContainerRunner for ObservingContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let Some(snapshot) = self
             .observations
-            .node_snapshot(&self.node_id)
+            .machine_snapshot(&self.machine_id)
             .await
-            .map_err(|error| node_observation_remove_error(container_id, error))?
+            .map_err(|error| machine_observation_remove_error(container_id, error))?
         else {
             return Ok(());
         };
@@ -152,7 +153,7 @@ impl NodeContainerRunner for ObservingContainerRunner {
             return Ok(());
         };
         if observation_identity(existing) != *expected_identity {
-            return Err(NodeContainerRunnerError::Remove {
+            return Err(MachineContainerRunnerError::Remove {
                 container_id: container_id.clone(),
                 message: "container identity did not match cleanup target".to_owned(),
             });
@@ -164,27 +165,28 @@ impl NodeContainerRunner for ObservingContainerRunner {
             .filter(|container| container.container_id != *container_id)
             .cloned()
             .collect::<Vec<_>>();
-        let snapshot = NodeContainerObservationSnapshot::try_new(self.node_id.clone(), containers)
-            .map_err(|error| NodeContainerRunnerError::Remove {
-                container_id: container_id.clone(),
-                message: error.to_string(),
-            })?;
+        let snapshot =
+            MachineContainerObservationSnapshot::try_new(self.machine_id.clone(), containers)
+                .map_err(|error| MachineContainerRunnerError::Remove {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                })?;
         self.observations
-            .replace_node_containers(&snapshot)
+            .replace_machine_containers(&snapshot)
             .await
-            .map_err(|error| node_observation_remove_error(container_id, error))
+            .map_err(|error| machine_observation_remove_error(container_id, error))
     }
 
     async fn stop_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let Some(snapshot) = self
             .observations
-            .node_snapshot(&self.node_id)
+            .machine_snapshot(&self.machine_id)
             .await
-            .map_err(|error| node_observation_stop_error(container_id, error))?
+            .map_err(|error| machine_observation_stop_error(container_id, error))?
         else {
             return Ok(());
         };
@@ -193,7 +195,7 @@ impl NodeContainerRunner for ObservingContainerRunner {
             return Ok(());
         };
         if observation_identity(&existing) != *expected_identity {
-            return Err(NodeContainerRunnerError::Stop {
+            return Err(MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: "container identity did not match stop target".to_owned(),
             });
@@ -204,43 +206,43 @@ impl NodeContainerRunner for ObservingContainerRunner {
                 state: ContainerRuntimeState::Exited,
                 ..existing
             })
-            .map_err(|error| NodeContainerRunnerError::Stop {
+            .map_err(|error| MachineContainerRunnerError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
         self.observations
-            .replace_node_containers(&snapshot)
+            .replace_machine_containers(&snapshot)
             .await
-            .map_err(|error| node_observation_stop_error(container_id, error))
+            .map_err(|error| machine_observation_stop_error(container_id, error))
     }
 }
 
-impl NodeLogReader for ObservingContainerRunner {
+impl MachineLogReader for ObservingContainerRunner {
     async fn tail_container_logs(
         &self,
         container_id: &ContainerId,
         _tail_lines: Option<u16>,
-    ) -> Result<NodeLogTail, NodeLogReaderError> {
+    ) -> Result<MachineLogTail, MachineLogReaderError> {
         let Some(snapshot) = self
             .observations
-            .node_snapshot(&self.node_id)
+            .machine_snapshot(&self.machine_id)
             .await
-            .map_err(|error| NodeLogReaderError::ReadFailed {
+            .map_err(|error| MachineLogReaderError::ReadFailed {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?
         else {
-            return Err(NodeLogReaderError::NotFound {
+            return Err(MachineLogReaderError::NotFound {
                 container_id: container_id.clone(),
             });
         };
         if snapshot.container(container_id).is_none() {
-            return Err(NodeLogReaderError::NotFound {
+            return Err(MachineLogReaderError::NotFound {
                 container_id: container_id.clone(),
             });
         }
 
-        Ok(NodeLogTail {
+        Ok(MachineLogTail {
             text: format!("logs for {}\n", container_id.as_str()),
             truncated: false,
         })
@@ -258,11 +260,11 @@ fn observation_identity(observation: &ManagedContainerObservation) -> ManagedCon
 }
 
 impl ObservingContainerRunner {
-    fn next_container_id(&self) -> Result<ContainerId, NodeContainerRunnerError> {
+    fn next_container_id(&self) -> Result<ContainerId, MachineContainerRunnerError> {
         let mut state = self
             .state
             .lock()
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
         state.next_container_id()
@@ -272,14 +274,14 @@ impl ObservingContainerRunner {
         &self,
         container_id: &ContainerId,
         endpoint: Option<ContainerEndpointRequest>,
-    ) -> Result<(), NodeContainerRunnerError> {
+    ) -> Result<(), MachineContainerRunnerError> {
         let Some(endpoint) = endpoint else {
             return Ok(());
         };
         let mut state = self
             .state
             .lock()
-            .map_err(|error| NodeContainerRunnerError::Create {
+            .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
         state.endpoints.push((
@@ -295,11 +297,11 @@ impl ObservingContainerRunner {
     fn endpoint_for(
         &self,
         container_id: &ContainerId,
-    ) -> Result<Option<ContainerEndpoint>, NodeContainerRunnerError> {
+    ) -> Result<Option<ContainerEndpoint>, MachineContainerRunnerError> {
         let state = self
             .state
             .lock()
-            .map_err(|error| NodeContainerRunnerError::Start {
+            .map_err(|error| MachineContainerRunnerError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -318,10 +320,10 @@ struct ObservingContainerRunnerState {
 }
 
 impl ObservingContainerRunnerState {
-    fn next_container_id(&mut self) -> Result<ContainerId, NodeContainerRunnerError> {
+    fn next_container_id(&mut self) -> Result<ContainerId, MachineContainerRunnerError> {
         self.next_container_number += 1;
         ContainerId::try_new(format!("ctr_{}", self.next_container_number)).map_err(|error| {
-            NodeContainerRunnerError::Create {
+            MachineContainerRunnerError::Create {
                 message: error.to_string(),
             }
         })
@@ -331,7 +333,7 @@ impl ObservingContainerRunnerState {
 #[derive(Debug, Clone)]
 pub struct ReadyWireGuardEbpf;
 
-impl NodeWireGuardEbpfPreparer for ReadyWireGuardEbpf {
+impl MachineWireGuardEbpfPreparer for ReadyWireGuardEbpf {
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
@@ -390,45 +392,45 @@ fn existing_container_state(state: &ContainerRuntimeState) -> ExistingManagedCon
     }
 }
 
-fn empty_snapshot(node_id: &NodeId) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(node_id.clone(), Vec::new())
-        .expect("empty node snapshot is valid")
+fn empty_snapshot(machine_id: &MachineId) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id.clone(), Vec::new())
+        .expect("empty machine snapshot is valid")
 }
 
-fn missing_container_start_error(container_id: &ContainerId) -> NodeContainerRunnerError {
-    NodeContainerRunnerError::Start {
+fn missing_container_start_error(container_id: &ContainerId) -> MachineContainerRunnerError {
+    MachineContainerRunnerError::Start {
         container_id: container_id.clone(),
         message: "container is missing from observations".to_owned(),
     }
 }
 
-fn node_observation_list_error(error: ObservationStoreError) -> NodeContainerRunnerError {
-    NodeContainerRunnerError::ListExisting {
+fn machine_observation_list_error(error: ObservationStoreError) -> MachineContainerRunnerError {
+    MachineContainerRunnerError::ListExisting {
         message: error.to_string(),
     }
 }
 
-fn node_observation_create_error(error: ObservationStoreError) -> NodeContainerRunnerError {
-    NodeContainerRunnerError::Create {
+fn machine_observation_create_error(error: ObservationStoreError) -> MachineContainerRunnerError {
+    MachineContainerRunnerError::Create {
         message: error.to_string(),
     }
 }
 
-fn node_observation_remove_error(
+fn machine_observation_remove_error(
     container_id: &ContainerId,
     error: ObservationStoreError,
-) -> NodeContainerRunnerError {
-    NodeContainerRunnerError::Remove {
+) -> MachineContainerRunnerError {
+    MachineContainerRunnerError::Remove {
         container_id: container_id.clone(),
         message: error.to_string(),
     }
 }
 
-fn node_observation_stop_error(
+fn machine_observation_stop_error(
     container_id: &ContainerId,
     error: ObservationStoreError,
-) -> NodeContainerRunnerError {
-    NodeContainerRunnerError::Stop {
+) -> MachineContainerRunnerError {
+    MachineContainerRunnerError::Stop {
         container_id: container_id.clone(),
         message: error.to_string(),
     }

@@ -12,7 +12,7 @@ use ployz_sdk_types::{
     CloudBootstrapTokenRedeemRequest, CloudFounderBootstrapResult, DeployOperationState,
     DeployRequest, DeployRunningStage, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
-    InitFirstNodeActivateError, InitFirstNodeActivateRequest, InitFirstNodeActivated,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
     InstallContractError, InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddRequest,
     MachineAddResponse, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
@@ -30,7 +30,7 @@ use ployz_sdk_types::{
     ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceSnapshot, SubjectTokenError,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, InitFirstNodeActivateApi, LogsTailApi, MachineAddApi,
+        BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
@@ -175,7 +175,7 @@ fn sdk_exports_operation_api_wire_types() {
             .expect("valid operation id"),
         idempotency_key: OperationIdempotencyKey::try_new("idem_machine")
             .expect("valid idempotency key"),
-        node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
+        machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
     };
@@ -187,7 +187,7 @@ fn sdk_exports_operation_api_wire_types() {
                 watch_subject: "plz.v1.op.op_machine.>".to_owned(),
                 start_sequence: EventSequence::try_new(7).expect("valid event sequence"),
             },
-            node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
+            machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
             bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                 .expect("valid bootstrap url"),
             join_bundle: machine_join_bundle(),
@@ -197,11 +197,11 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","node_id":"node_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"}}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"}}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7"},"node_id":"node_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123"}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.op.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123"}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -211,7 +211,7 @@ fn sdk_exports_operation_api_wire_types() {
         value: MachineJoinRedeemed {
             operation_id: ployz_sdk_types::OperationId::try_new("op_machine")
                 .expect("valid operation id"),
-            node_id: ployz_sdk_types::NodeId::try_new("node_2").expect("valid node id"),
+            machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             join_bundle: machine_join_bundle(),
@@ -232,7 +232,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&redeem_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"operation_id":"op_machine","node_id":"node_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"},"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip","dns":"install"},"join_bundle":{"material":{"cluster_name":"prod","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
@@ -256,7 +256,7 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
         },
     };
     let decision = CloudBootstrapDecision::Ready {
-        envelope: CloudBootstrapEnvelope {
+        envelope: Box::new(CloudBootstrapEnvelope {
             redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
                 .expect("valid redemption id"),
             callback_url: "https://cloud.ployz.com/api/bootstrap/callback".to_owned(),
@@ -267,7 +267,7 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
                 version: "0.1.0".to_owned(),
             },
             intent: CloudBootstrapIntent::Joiner {
-                joiner: ployz_sdk_types::CloudJoinerBootstrap {
+                joiner: Box::new(ployz_sdk_types::CloudJoinerBootstrap {
                     runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
                         .expect("valid nats url"),
                     trusted_nats: MachineJoinTrustedNats {
@@ -279,16 +279,17 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
                     join_token: MachineJoinToken::try_new("join_once_123")
                         .expect("valid join token"),
                     join_secret_delivery: machine_join_secret_delivery(),
-                },
+                }),
             },
-        },
+        }),
     };
     let callback = CloudBootstrapCallbackRequest {
         redemption_id: CloudBootstrapRedemptionId::try_new("pcbr_123")
             .expect("valid redemption id"),
         outcome: CloudBootstrapOutcome::FounderSucceeded {
             result: CloudFounderBootstrapResult {
-                node_id: ployz_sdk_types::NodeId::try_new("core_1").expect("valid node id"),
+                machine_id: ployz_sdk_types::MachineId::try_new("core_1")
+                    .expect("valid machine id"),
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
                     .expect("valid nats url"),
                 trusted_nats: MachineJoinTrustedNats {
@@ -307,7 +308,7 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&callback).expect("callback serializes"),
-        r#"{"redemption_id":"pcbr_123","outcome":{"outcome":"founder_succeeded","result":{"node_id":"core_1","runtime_nats_url":"tls://203.0.113.10:4222","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"}}}}"#
+        r#"{"redemption_id":"pcbr_123","outcome":{"outcome":"founder_succeeded","result":{"machine_id":"core_1","runtime_nats_url":"tls://203.0.113.10:4222","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"}}}}"#
     );
 
     let request_debug = format!("{redeem_request:?}");
@@ -327,7 +328,10 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
     assert_fixture::<BackupCreateRequest>(&fixture, "backup_create_request");
-    assert_fixture::<InitFirstNodeActivateRequest>(&fixture, "init_first_node_activate_request");
+    assert_fixture::<InitFirstMachineActivateRequest>(
+        &fixture,
+        "init_first_machine_activate_request",
+    );
     assert_fixture::<MachineAddRequest>(&fixture, "machine_add_request");
     assert_fixture::<MachineJoinRedeemRequest>(&fixture, "machine_join_redeem_request");
     assert_fixture::<CloudBootstrapSessionCreateRequest>(
@@ -350,9 +354,9 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     assert_fixture::<AcceptedOperation>(&fixture, "accepted_operation");
     assert_fixture::<DeploySubmitResponse>(&fixture, "deploy_submit_response");
     assert_fixture::<BackupCreateResponse>(&fixture, "backup_create_response");
-    assert_fixture::<OperationApiResponse<InitFirstNodeActivated, InitFirstNodeActivateError>>(
+    assert_fixture::<OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>>(
         &fixture,
-        "init_first_node_activate_response",
+        "init_first_machine_activate_response",
     );
     assert_fixture::<MachineAddResponse>(&fixture, "machine_add_response");
     assert_fixture::<MachineJoinRedeemResponse>(&fixture, "machine_join_redeem_response");
@@ -375,10 +379,10 @@ fn package_typescript_contract_is_generated_from_rust_crate() {
 fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<
-        InitFirstNodeActivateApi,
-        InitFirstNodeActivateRequest,
-        InitFirstNodeActivated,
-        InitFirstNodeActivateError,
+        InitFirstMachineActivateApi,
+        InitFirstMachineActivateRequest,
+        InitFirstMachineActivated,
+        InitFirstMachineActivateError,
     >();
     assert_contract::<MachineAddApi, MachineAddRequest, MachineAddAccepted, MachineAddError>();
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
@@ -423,13 +427,13 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "DeploySubmitResponse",
             ),
             (
-                "init.first_node.activate",
-                "plz.v1.svc.api.init.first_node.activate",
+                "init.first_machine.activate",
+                "plz.v1.svc.api.init.first_machine.activate",
                 OperationApiEndpointExecution::MutatesOperation,
-                "InitFirstNodeActivateRequest".to_owned(),
-                "InitFirstNodeActivated".to_owned(),
-                "InitFirstNodeActivateError".to_owned(),
-                "InitFirstNodeActivateResponse",
+                "InitFirstMachineActivateRequest".to_owned(),
+                "InitFirstMachineActivated".to_owned(),
+                "InitFirstMachineActivateError".to_owned(),
+                "InitFirstMachineActivateResponse",
             ),
             (
                 "machine.add",

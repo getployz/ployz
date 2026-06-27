@@ -32,7 +32,7 @@ use super::join::{INSTALLER_WRAPPER_PATH, write_installer_wrapper};
 use super::{CONNECT_TIMEOUT, NATS_MATERIAL_DIR, with_evidence};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::machine_name;
-use ployz_test_support::ids::{idempotency_key, node_id, operation_id};
+use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 
 /// One formed core: provisioned machines, keeper-installed secured NATS +
 /// ployzd units on the core, the cluster material copied to the host, and an
@@ -102,7 +102,7 @@ pub async fn install_core_cluster(docker: &Docker, edge_count: usize) -> CoreCon
 
 /// Provisions the machines and forms the secured core through the product
 /// `ployzctl machine init root@core` command, driven in-process from the
-/// host over a docker-exec-backed stand-in `ssh`. Includes first-node
+/// host over a docker-exec-backed stand-in `ssh`. Includes first-machine
 /// activation, so callers must not activate again.
 pub async fn init_core_cluster(docker: &Docker, edge_count: usize) -> CoreContext {
     let cluster = provision_cluster(docker, edge_count).await;
@@ -176,10 +176,10 @@ async fn form_core(
     write_join_template(docker, &core, &core_nats_url, &placeholder_ca, &shas).await;
 
     let install_spec = serde_json::json!({
-        "node_id": "core_1",
+        "machine_id": "core_1",
         "gateway": "install",
         "dns": "install",
-        "node_public_ip": core_ip.to_string(),
+        "machine_public_ip": core_ip.to_string(),
         "machine_bootstrap_url": "https://local.invalid/ployz.sh",
         "machine_join_template_file": "/etc/ployz/machine-join-template.json",
         "machine_join_cluster_name": "ployz",
@@ -200,12 +200,12 @@ async fn form_core(
     write_file_in_container(
         docker,
         &core.container_id,
-        "/tmp/ployz-first-node-install.json",
+        "/tmp/ployz-first-machine-install.json",
         &serde_json::to_string_pretty(&install_spec).expect("install spec serializes"),
         "0644",
     )
     .await
-    .expect("write first-node install spec");
+    .expect("write first-machine install spec");
 
     let init = exec_in_container(
         docker,
@@ -215,7 +215,7 @@ async fn form_core(
             "init",
             "--run-keeper-install",
             "--install-spec",
-            "/tmp/ployz-first-node-install.json",
+            "/tmp/ployz-first-machine-install.json",
             "--keeper-binary",
             &format!("{ARTIFACTS_MOUNT_PATH}/ployz-keeper"),
         ],
@@ -224,7 +224,7 @@ async fn form_core(
     .expect("exec ployzctl init");
     assert!(
         init.success(),
-        "keeper first-node install failed (exit {}): {}\n{}",
+        "keeper first-machine install failed (exit {}): {}\n{}",
         init.exit_code,
         init.stdout,
         init.stderr
@@ -386,9 +386,9 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
 
 /// Forms the core through the product `ployzctl machine init` command: the
 /// CLI builds the install spec internally, runs the wrapped installer in
-/// first-node mode over the stand-in ssh, writes the join template/CA
+/// first-machine mode over the stand-in ssh, writes the join template/CA
 /// ordering itself, records a local cluster context, and activates the
-/// first node.
+/// first machine.
 async fn product_init_core(
     docker: &Docker,
     cluster: &DindCluster,
@@ -422,7 +422,7 @@ async fn product_init_core(
         .await
         .unwrap_or_else(|error| panic!("product machine init failed: {error}"));
     assert!(
-        output.stdout.contains("first-node core_1 active"),
+        output.stdout.contains("first-machine core_1 active"),
         "machine init output: {}",
         output.stdout
     );
@@ -587,10 +587,10 @@ pub async fn connect_core_client(
     connect_authenticated(&config, CONNECT_TIMEOUT).await
 }
 
-/// Activates the first node through the in-machine product CLI,
+/// Activates the first machine through the in-machine product CLI,
 /// authenticated with the keeper-minted operator credential, and returns the
 /// activation operation id.
-pub async fn activate_first_node(core: &CoreContext) -> OperationId {
+pub async fn activate_first_machine(core: &CoreContext) -> OperationId {
     let activate = core
         .exec_sh(
             core.cluster.core(),
@@ -598,13 +598,13 @@ pub async fn activate_first_node(core: &CoreContext) -> OperationId {
                 "PLOYZ_NATS_CA_FILE={NATS_MATERIAL_DIR}/ca.pem \
                  PLOYZ_NATS_NKEY_SEED_FILE={NATS_MATERIAL_DIR}/operator.seed \
                  {ARTIFACTS_MOUNT_PATH}/ployzctl --nats tls://127.0.0.1:{MACHINE_NATS_PORT} \
-                 init activate-first-node --node core_1 --gateway"
+                 init activate-first-machine --machine core_1 --gateway"
             ),
         )
         .await;
     assert!(
         activate.success(),
-        "activate-first-node failed (exit {}): {}\n{}",
+        "activate-first-machine failed (exit {}): {}\n{}",
         activate.exit_code,
         activate.stdout,
         activate.stderr
@@ -622,7 +622,7 @@ pub async fn submit_machine_add(core: &CoreContext) -> MachineAddAccepted {
         .machine_add(&MachineAddRequest {
             operation_id: operation_id("op_add_edge_2"),
             idempotency_key: idempotency_key("idem_add_edge_2"),
-            node_id: node_id("edge_2"),
+            machine_id: machine_id("edge_2"),
             name: machine_name("edge-2"),
             roles: InstallRolePolicy::install_all(),
         })

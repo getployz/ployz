@@ -41,6 +41,9 @@ The workstation-driven local path remains:
 ployzctl machine init USER@HOST
 ```
 
+TODO: When the `ployzctl` Homebrew tap exists, recommend it here for
+workstation CLI installs.
+
 Ployz does not use GitHub `latest`.
 
 Release publishing and channel promotion are documented in

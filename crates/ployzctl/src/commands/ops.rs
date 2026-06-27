@@ -174,13 +174,13 @@ fn operation_subject(status: &OperationStatus) -> String {
             format!("cert {}", cert_id.as_str())
         }
         OperationStatus::MachineAdd {
-            node_id,
+            machine_id,
             name,
             roles,
             ..
         } => format!(
-            "node {} name {} gateway {} dns {}",
-            node_id.as_str(),
+            "machine {} name {} gateway {} dns {}",
+            machine_id.as_str(),
             name.as_str(),
             gateway_role(roles.gateway),
             dns_role(roles.dns)

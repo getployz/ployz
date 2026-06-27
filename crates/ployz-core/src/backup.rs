@@ -27,7 +27,7 @@ pub enum BackupItem {
     DockerImages,
     ApplicationVolumes,
     ContainerRuntimeState,
-    NodeLocalCache,
+    MachineLocalCache,
 }
 
 impl BackupItem {
@@ -44,7 +44,7 @@ impl BackupItem {
         Self::DockerImages,
         Self::ApplicationVolumes,
         Self::ContainerRuntimeState,
-        Self::NodeLocalCache,
+        Self::MachineLocalCache,
     ];
 
     #[must_use]
@@ -62,7 +62,7 @@ impl BackupItem {
             Self::DockerImages
             | Self::ApplicationVolumes
             | Self::ContainerRuntimeState
-            | Self::NodeLocalCache => BackupPolicy::Excluded,
+            | Self::MachineLocalCache => BackupPolicy::Excluded,
         }
     }
 
@@ -79,7 +79,7 @@ impl BackupItem {
             | Self::DockerImages
             | Self::ApplicationVolumes
             | Self::ContainerRuntimeState
-            | Self::NodeLocalCache => BackupPolicy::Excluded,
+            | Self::MachineLocalCache => BackupPolicy::Excluded,
         }
     }
 
@@ -124,7 +124,7 @@ pub struct BackupScopeEntry {
 pub enum RestoreStep {
     RecreateControlPlaneAuthority,
     RestoreJetStreamState,
-    WaitForNodeReconnects,
+    WaitForMachineReconnects,
     RebuildObservationsFromReality,
 }
 
@@ -132,7 +132,7 @@ impl RestoreStep {
     pub const ALL: [Self; 4] = [
         Self::RecreateControlPlaneAuthority,
         Self::RestoreJetStreamState,
-        Self::WaitForNodeReconnects,
+        Self::WaitForMachineReconnects,
         Self::RebuildObservationsFromReality,
     ];
 }

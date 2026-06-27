@@ -6,7 +6,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use crate::deploy::DeployPlan;
-use crate::ids::{NodeId, OperationId};
+use crate::ids::{MachineId, OperationId};
 use crate::ops::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
@@ -14,7 +14,7 @@ pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireGuardEbpfPrepareRequest {
     pub operation_id: OperationId,
-    pub nodes: Vec<NodeId>,
+    pub machines: Vec<MachineId>,
     pub endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
     pub peer_endpoints: Vec<WireGuardPeerEndpoint>,
     pub peers: Vec<WireGuardPeer>,
@@ -25,21 +25,21 @@ impl WireGuardEbpfPrepareRequest {
     pub fn for_deploy_plan(
         operation_id: OperationId,
         plan: &DeployPlan,
-        dataplane_nodes: &[NodeId],
+        dataplane_machines: &[MachineId],
         peer_endpoints: &[WireGuardPeerEndpoint],
     ) -> Self {
-        let nodes = sorted_unique_nodes(
-            plan.target_nodes()
+        let machines = sorted_unique_machines(
+            plan.target_machines()
                 .into_iter()
-                .chain(dataplane_nodes.iter().cloned()),
+                .chain(dataplane_machines.iter().cloned()),
         );
-        let requested = nodes.iter().collect::<BTreeSet<_>>();
+        let requested = machines.iter().collect::<BTreeSet<_>>();
         let peer_endpoints = peer_endpoints
             .iter()
-            .filter(|peer| requested.contains(&peer.node_id))
+            .filter(|peer| requested.contains(&peer.machine_id))
             .cloned()
             .collect();
-        Self::for_nodes(operation_id, nodes, peer_endpoints, Vec::new())
+        Self::for_machines(operation_id, machines, peer_endpoints, Vec::new())
     }
 
     #[must_use]
@@ -49,27 +49,27 @@ impl WireGuardEbpfPrepareRequest {
     }
 
     #[must_use]
-    fn for_nodes(
+    fn for_machines(
         operation_id: OperationId,
-        nodes: Vec<NodeId>,
+        machines: Vec<MachineId>,
         peer_endpoints: Vec<WireGuardPeerEndpoint>,
         peers: Vec<WireGuardPeer>,
     ) -> Self {
         Self {
             operation_id,
-            endpoint_routes: nodes
+            endpoint_routes: machines
                 .iter()
-                .map(WireGuardEbpfEndpointRoute::default_for_node)
+                .map(WireGuardEbpfEndpointRoute::default_for_machine)
                 .collect(),
-            nodes,
+            machines,
             peer_endpoints,
             peers,
         }
     }
 }
 
-fn sorted_unique_nodes(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
-    nodes
+fn sorted_unique_machines(machines: impl IntoIterator<Item = MachineId>) -> Vec<MachineId> {
+    machines
         .into_iter()
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -80,16 +80,16 @@ fn sorted_unique_nodes(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardEbpfEndpointRoute {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub endpoint_subnet: String,
 }
 
 impl WireGuardEbpfEndpointRoute {
     #[must_use]
-    pub fn default_for_node(node_id: &NodeId) -> Self {
+    pub fn default_for_machine(machine_id: &MachineId) -> Self {
         Self {
-            node_id: node_id.clone(),
-            endpoint_subnet: default_endpoint_subnet(node_id),
+            machine_id: machine_id.clone(),
+            endpoint_subnet: default_endpoint_subnet(machine_id),
         }
     }
 }
@@ -98,17 +98,17 @@ impl WireGuardEbpfEndpointRoute {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardPeerEndpoint {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub endpoint_subnet: String,
     pub public_endpoint: SocketAddr,
 }
 
 impl WireGuardPeerEndpoint {
     #[must_use]
-    pub fn new(node_id: NodeId, public_endpoint: SocketAddr) -> Self {
+    pub fn new(machine_id: MachineId, public_endpoint: SocketAddr) -> Self {
         Self {
-            endpoint_subnet: default_endpoint_subnet(&node_id),
-            node_id,
+            endpoint_subnet: default_endpoint_subnet(&machine_id),
+            machine_id,
             public_endpoint,
         }
     }
@@ -118,7 +118,7 @@ impl WireGuardPeerEndpoint {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardPeer {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub endpoint_subnet: String,
     pub public_endpoint: SocketAddr,
     pub public_key: WireGuardPublicKey,
@@ -128,7 +128,7 @@ impl WireGuardPeer {
     #[must_use]
     pub fn from_endpoint(endpoint: WireGuardPeerEndpoint, public_key: WireGuardPublicKey) -> Self {
         Self {
-            node_id: endpoint.node_id,
+            machine_id: endpoint.machine_id,
             endpoint_subnet: endpoint.endpoint_subnet,
             public_endpoint: endpoint.public_endpoint,
             public_key,
@@ -207,14 +207,14 @@ impl fmt::Display for WireGuardPublicKeyError {
 }
 
 #[must_use]
-pub fn default_endpoint_subnet(node_id: &NodeId) -> String {
-    let octet = trailing_node_number(node_id.as_str())
+pub fn default_endpoint_subnet(machine_id: &MachineId) -> String {
+    let octet = trailing_machine_number(machine_id.as_str())
         .map(|number| ((number.saturating_sub(1)) % 254 + 1) as u8)
-        .unwrap_or_else(|| stable_node_octet(node_id.as_str()));
+        .unwrap_or_else(|| stable_machine_octet(machine_id.as_str()));
     format!("10.42.{octet}.0/24")
 }
 
-fn trailing_node_number(value: &str) -> Option<u16> {
+fn trailing_machine_number(value: &str) -> Option<u16> {
     let digits = value
         .chars()
         .rev()
@@ -226,7 +226,7 @@ fn trailing_node_number(value: &str) -> Option<u16> {
     digits.chars().rev().collect::<String>().parse().ok()
 }
 
-fn stable_node_octet(value: &str) -> u8 {
+fn stable_machine_octet(value: &str) -> u8 {
     let hash = value.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     });
@@ -246,81 +246,84 @@ pub enum WireGuardEbpfComponent {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct WireGuardEbpfPrepareReport {
-    pub nodes: Vec<WireGuardEbpfNodeReady>,
+    pub machines: Vec<WireGuardEbpfMachineReady>,
 }
 
 impl WireGuardEbpfPrepareReport {
     pub fn for_request(
         request: &WireGuardEbpfPrepareRequest,
-        nodes: impl IntoIterator<Item = WireGuardEbpfNodeReady>,
+        machines: impl IntoIterator<Item = WireGuardEbpfMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
-        let nodes = nodes.into_iter().collect::<Vec<_>>();
-        if request.nodes.is_empty() || nodes.is_empty() {
+        let machines = machines.into_iter().collect::<Vec<_>>();
+        if request.machines.is_empty() || machines.is_empty() {
             return Err(WireGuardEbpfPrepareReportError::Empty);
         }
-        let requested = request.nodes.iter().collect::<BTreeSet<_>>();
-        if requested.len() != request.nodes.len() {
-            return Err(WireGuardEbpfPrepareReportError::DuplicateNode);
+        let requested = request.machines.iter().collect::<BTreeSet<_>>();
+        if requested.len() != request.machines.len() {
+            return Err(WireGuardEbpfPrepareReportError::DuplicateMachine);
         }
-        let actual = nodes
+        let actual = machines
             .iter()
-            .map(|node| &node.node_id)
+            .map(|machine| &machine.machine_id)
             .collect::<BTreeSet<_>>();
-        if actual.len() != nodes.len() {
-            return Err(WireGuardEbpfPrepareReportError::DuplicateNode);
+        if actual.len() != machines.len() {
+            return Err(WireGuardEbpfPrepareReportError::DuplicateMachine);
         }
         if requested != actual {
-            return Err(WireGuardEbpfPrepareReportError::NodeSetMismatch);
+            return Err(WireGuardEbpfPrepareReportError::MachineSetMismatch);
         }
 
-        Ok(Self { nodes })
+        Ok(Self { machines })
     }
 
-    pub fn from_nodes(
-        nodes: impl IntoIterator<Item = WireGuardEbpfNodeReady>,
+    pub fn from_machines(
+        machines: impl IntoIterator<Item = WireGuardEbpfMachineReady>,
     ) -> Result<Self, WireGuardEbpfPrepareReportError> {
-        let nodes = nodes.into_iter().collect::<Vec<_>>();
-        if nodes.is_empty() {
+        let machines = machines.into_iter().collect::<Vec<_>>();
+        if machines.is_empty() {
             return Err(WireGuardEbpfPrepareReportError::Empty);
         }
         let mut seen = BTreeSet::new();
-        if nodes.iter().any(|node| !seen.insert(node.node_id.clone())) {
-            return Err(WireGuardEbpfPrepareReportError::DuplicateNode);
+        if machines
+            .iter()
+            .any(|machine| !seen.insert(machine.machine_id.clone()))
+        {
+            return Err(WireGuardEbpfPrepareReportError::DuplicateMachine);
         }
 
-        Ok(Self { nodes })
+        Ok(Self { machines })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(
-    from = "WireGuardEbpfNodeReadyWire",
-    into = "WireGuardEbpfNodeReadyWire"
+    from = "WireGuardEbpfMachineReadyWire",
+    into = "WireGuardEbpfMachineReadyWire"
 )]
-pub struct WireGuardEbpfNodeReady {
-    pub node_id: NodeId,
+pub struct WireGuardEbpfMachineReady {
+    pub machine_id: MachineId,
     #[cfg_attr(feature = "typescript", ts(flatten))]
     pub ready: WireGuardEbpfReady,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireGuardEbpfNodeReadyWire {
-    node_id: NodeId,
+struct WireGuardEbpfMachineReadyWire {
+    machine_id: MachineId,
     wireguard: WireGuardReady,
     ebpf_forwarding: EbpfForwardingReady,
 }
 
-impl From<WireGuardEbpfNodeReadyWire> for WireGuardEbpfNodeReady {
-    fn from(value: WireGuardEbpfNodeReadyWire) -> Self {
-        let WireGuardEbpfNodeReadyWire {
-            node_id,
+impl From<WireGuardEbpfMachineReadyWire> for WireGuardEbpfMachineReady {
+    fn from(value: WireGuardEbpfMachineReadyWire) -> Self {
+        let WireGuardEbpfMachineReadyWire {
+            machine_id,
             wireguard,
             ebpf_forwarding,
         } = value;
         Self {
-            node_id,
+            machine_id,
             ready: WireGuardEbpfReady {
                 wireguard,
                 ebpf_forwarding,
@@ -329,15 +332,15 @@ impl From<WireGuardEbpfNodeReadyWire> for WireGuardEbpfNodeReady {
     }
 }
 
-impl From<WireGuardEbpfNodeReady> for WireGuardEbpfNodeReadyWire {
-    fn from(value: WireGuardEbpfNodeReady) -> Self {
-        let WireGuardEbpfNodeReady { node_id, ready } = value;
+impl From<WireGuardEbpfMachineReady> for WireGuardEbpfMachineReadyWire {
+    fn from(value: WireGuardEbpfMachineReady) -> Self {
+        let WireGuardEbpfMachineReady { machine_id, ready } = value;
         let WireGuardEbpfReady {
             wireguard,
             ebpf_forwarding,
         } = ready;
         Self {
-            node_id,
+            machine_id,
             wireguard,
             ebpf_forwarding,
         }
@@ -387,14 +390,14 @@ pub enum EbpfForwardingReadyEvidence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireGuardEbpfPrepareReportError {
     Empty,
-    DuplicateNode,
-    NodeSetMismatch,
+    DuplicateMachine,
+    MachineSetMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireGuardEbpfPrepareError {
     Unavailable {
-        node_id: NodeId,
+        machine_id: MachineId,
         component: WireGuardEbpfComponent,
         message: FailureMessage,
     },
@@ -408,26 +411,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_endpoint_subnet_uses_trailing_node_number() {
-        assert_eq!(default_endpoint_subnet(&node_id("edge_2")), "10.42.2.0/24");
+    fn default_endpoint_subnet_uses_trailing_machine_number() {
         assert_eq!(
-            default_endpoint_subnet(&node_id("node_255")),
+            default_endpoint_subnet(&machine_id("edge_2")),
+            "10.42.2.0/24"
+        );
+        assert_eq!(
+            default_endpoint_subnet(&machine_id("machine_255")),
             "10.42.1.0/24"
         );
     }
 
     #[test]
-    fn deploy_prepare_request_carries_endpoint_routes_for_target_nodes() {
+    fn deploy_prepare_request_carries_endpoint_routes_for_target_machines() {
         let plan = DeployPlan {
             service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
             target_revision: crate::ids::RevisionId::try_new("rev_1").expect("valid revision id"),
             steps: vec![
                 crate::deploy::DeployPlanStep::RunContainer {
-                    node_id: node_id("edge_2"),
+                    machine_id: machine_id("edge_2"),
                     slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
                 },
                 crate::deploy::DeployPlanStep::RunContainer {
-                    node_id: node_id("core_1"),
+                    machine_id: machine_id("core_1"),
                     slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
                 },
             ],
@@ -441,19 +447,19 @@ mod tests {
             request.endpoint_routes,
             vec![
                 WireGuardEbpfEndpointRoute {
-                    node_id: node_id("core_1"),
+                    machine_id: machine_id("core_1"),
                     endpoint_subnet: "10.42.1.0/24".to_owned(),
                 },
                 WireGuardEbpfEndpointRoute {
-                    node_id: node_id("edge_2"),
+                    machine_id: machine_id("edge_2"),
                     endpoint_subnet: "10.42.2.0/24".to_owned(),
                 }
             ]
         );
     }
 
-    fn node_id(value: &str) -> NodeId {
-        NodeId::try_new(value).expect("valid node id")
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
     }
 
     fn operation_id(value: &str) -> OperationId {

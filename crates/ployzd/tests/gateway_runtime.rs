@@ -1,15 +1,15 @@
-use ployz_core::node::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
     step_id,
 };
 use ployzd::gateway::{
-    GatewayNodeObservation, GatewayObservationFreshness, GatewayProjectedRoute, GatewayProjection,
-    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
+    GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
+    GatewayProjection, GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
     GatewayProjectionUpdate, GatewayRoute, GatewayUpstream,
 };
 use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable, GatewayRuntime};
@@ -17,11 +17,11 @@ use ployzd::gateway_runtime::{GatewayRouteSelectionError, GatewayRouteTable, Gat
 #[test]
 fn gateway_runtime_serves_new_projection_from_available_source() {
     let mut runtime = GatewayRuntime::new();
-    let api = projected_route("api.example.com", "node_1", "ctr_1");
+    let api = projected_route("api.example.com", "machine_1", "ctr_1");
 
     let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
-        "node_1",
+        "machine_1",
         "ctr_1",
     )));
 
@@ -37,10 +37,10 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
 #[test]
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
     let mut runtime = GatewayRuntime::new();
-    let api = projected_route("api.example.com", "node_1", "ctr_1");
+    let api = projected_route("api.example.com", "machine_1", "ctr_1");
     runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
-        "node_1",
+        "machine_1",
         "ctr_1",
     )));
 
@@ -63,10 +63,10 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
 #[test]
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
     let mut runtime = GatewayRuntime::new();
-    let api = projected_route("api.example.com", "node_1", "ctr_1");
+    let api = projected_route("api.example.com", "machine_1", "ctr_1");
     runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
-        "node_1",
+        "machine_1",
         "ctr_1",
     )));
 
@@ -88,10 +88,10 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
 #[test]
 fn gateway_runtime_applies_later_route_changes_after_outage() {
     let mut runtime = GatewayRuntime::new();
-    let api_v2 = projected_route("api.example.com", "node_2", "ctr_2");
+    let api_v2 = projected_route("api.example.com", "machine_2", "ctr_2");
     runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
-        "node_1",
+        "machine_1",
         "ctr_1",
     )));
     runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
@@ -100,7 +100,7 @@ fn gateway_runtime_applies_later_route_changes_after_outage() {
 
     let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
         "api.example.com",
-        "node_2",
+        "machine_2",
         "ctr_2",
     )));
 
@@ -134,14 +134,17 @@ fn gateway_runtime_has_no_served_routes_before_first_valid_source() {
 fn route_table_selects_first_projected_upstream_for_target() {
     let table = route_table([projected_route_with_upstreams(
         "api.example.com",
-        [upstream("node_1", "ctr_1"), upstream("node_2", "ctr_2")],
+        [
+            upstream("machine_1", "ctr_1"),
+            upstream("machine_2", "ctr_2"),
+        ],
     )]);
 
     assert_eq!(
         table
             .select_upstream(&route_target("api.example.com", 443))
             .expect("target has upstream"),
-        upstream("node_1", "ctr_1")
+        upstream("machine_1", "ctr_1")
     );
 }
 
@@ -159,7 +162,7 @@ fn route_table_reports_unavailable_projection() {
 
 #[test]
 fn route_table_reports_missing_route() {
-    let table = route_table([projected_route("api.example.com", "node_1", "ctr_1")]);
+    let table = route_table([projected_route("api.example.com", "machine_1", "ctr_1")]);
 
     assert_eq!(
         table
@@ -191,7 +194,7 @@ fn route_table_reports_route_without_upstreams() {
 
 fn source_input(
     hostname: &str,
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
@@ -201,20 +204,23 @@ fn source_input(
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
         }],
-        observed_nodes: vec![GatewayNodeObservation {
+        observed_machines: vec![GatewayMachineObservation {
             freshness: GatewayObservationFreshness::Fresh,
-            snapshot: NodeContainerObservationSnapshot::try_new(
-                node_id(node_id_value),
-                [managed_container(node_id_value, container_id_value)],
+            snapshot: MachineContainerObservationSnapshot::try_new(
+                machine_id(machine_id_value),
+                [managed_container(machine_id_value, container_id_value)],
             )
-            .expect("matching node snapshot"),
+            .expect("matching machine snapshot"),
         }],
     }
 }
 
-fn managed_container(node_id_value: &str, container_id_value: &str) -> ManagedContainerObservation {
+fn managed_container(
+    machine_id_value: &str,
+    container_id_value: &str,
+) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
@@ -227,13 +233,13 @@ fn managed_container(node_id_value: &str, container_id_value: &str) -> ManagedCo
 
 fn projected_route(
     hostname: &str,
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
 ) -> GatewayProjectedRoute {
     GatewayProjectedRoute {
         target: route_target(hostname, 443),
         upstreams: vec![GatewayUpstream {
-            node_id: node_id(node_id_value),
+            machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
             endpoint: endpoint("10.0.0.1", 8080),
         }],
@@ -258,9 +264,9 @@ fn route_table(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> Gatew
     })
 }
 
-fn upstream(node_id_value: &str, container_id_value: &str) -> GatewayUpstream {
+fn upstream(machine_id_value: &str, container_id_value: &str) -> GatewayUpstream {
     GatewayUpstream {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         endpoint: endpoint("10.0.0.1", 8080),
     }

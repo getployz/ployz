@@ -2,12 +2,12 @@ use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     ActiveRouteCommitRequest, ActiveRouteState, ExpectedActiveRoute, GatewayServingStatus,
-    GatewayStatusObservation, NodePublicIpObservation,
+    GatewayStatusObservation, MachinePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{node_id, revision_id, route_hostname, route_port, service_id};
+use ployz_test_support::ids::{machine_id, revision_id, route_hostname, route_port, service_id};
 use ployzd::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionUpdate, DnsRecordSet, DnsRuntime, DnsServingState,
     project_dns,
@@ -21,7 +21,7 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
 
@@ -33,9 +33,9 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .commit_active_route(&active_route_commit("www.example.com", 443, 8080))
         .await
         .expect("www route stores");
-    let gateway_1 = nats.node_observations("gateway_1").await;
-    let gateway_2 = nats.node_observations("gateway_2").await;
-    let gateway_3 = nats.node_observations("gateway_3").await;
+    let gateway_1 = nats.machine_observations("gateway_1").await;
+    let gateway_2 = nats.machine_observations("gateway_2").await;
+    let gateway_3 = nats.machine_observations("gateway_3").await;
     gateway_1
         .replace_gateway_status(&gateway_status(
             "gateway_1",
@@ -61,20 +61,20 @@ async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_
         .await
         .expect("empty gateway status stores");
     gateway_1
-        .replace_node_public_ip(&node_public_ip("gateway_1", [203, 0, 113, 10]))
+        .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 10]))
         .await
         .expect("gateway one public ip stores");
     gateway_2
-        .replace_node_public_ip(&node_public_ip("gateway_2", [203, 0, 113, 11]))
+        .replace_machine_public_ip(&machine_public_ip("gateway_2", [203, 0, 113, 11]))
         .await
         .expect("gateway two public ip stores");
     gateway_3
-        .replace_node_public_ip(&node_public_ip("gateway_3", [203, 0, 113, 12]))
+        .replace_machine_public_ip(&machine_public_ip("gateway_3", [203, 0, 113, 12]))
         .await
         .expect("empty gateway public ip stores");
-    nats.node_observations("edge_4")
+    nats.machine_observations("edge_4")
         .await
-        .replace_node_public_ip(&node_public_ip("edge_4", [203, 0, 113, 13]))
+        .replace_machine_public_ip(&machine_public_ip("edge_4", [203, 0, 113, 13]))
         .await
         .expect("non-gateway public ip stores");
 
@@ -111,7 +111,7 @@ async fn dns_source_reports_invalid_route_state_as_invalid_source() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let core_bucket = nats
@@ -146,7 +146,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream)
         .await
         .expect("open observation store");
     let mut runtime = DnsRuntime::new();
@@ -156,7 +156,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         .commit_active_route(&active_route_commit("api.example.com", 443, 8080))
         .await
         .expect("route stores");
-    let gateway_1 = nats.node_observations("gateway_1").await;
+    let gateway_1 = nats.machine_observations("gateway_1").await;
     gateway_1
         .replace_gateway_status(&gateway_status(
             "gateway_1",
@@ -166,7 +166,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
         .await
         .expect("gateway status stores");
     gateway_1
-        .replace_node_public_ip(&node_public_ip("gateway_1", [203, 0, 113, 10]))
+        .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 10]))
         .await
         .expect("public ip stores");
 
@@ -182,7 +182,7 @@ async fn dns_runtime_applies_nats_dns_changes_without_control_runtime() {
     );
 
     gateway_1
-        .replace_node_public_ip(&node_public_ip("gateway_1", [203, 0, 113, 20]))
+        .replace_machine_public_ip(&machine_public_ip("gateway_1", [203, 0, 113, 20]))
         .await
         .expect("updated public ip stores");
     let second_tick = runtime
@@ -202,40 +202,43 @@ struct TestNats {
     nats: ployz_test_support::nats::TestNats,
     /// Controller principal: route-state writes and bucket administration.
     jetstream: jetstream::Context,
-    /// The DNS machine's Node principal: the read side (DNS runs as the
-    /// machine's Node user in v1).
-    node_jetstream: jetstream::Context,
+    /// The DNS machine's Machine principal: the read side (DNS runs as the
+    /// machine's Machine user in v1).
+    machine_jetstream: jetstream::Context,
 }
 
 impl TestNats {
-    /// The observation store connected as the given node — each node may
+    /// The observation store connected as the given machine — each machine may
     /// only write its own observation keys.
-    async fn node_observations(&self, node_id_value: &str) -> AsyncNatsObservationStore {
-        let node_client = self.nats.node_client(&node_id(node_id_value)).await;
-        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client))
+    async fn machine_observations(&self, machine_id_value: &str) -> AsyncNatsObservationStore {
+        let machine_client = self
+            .nats
+            .machine_client(&machine_id(machine_id_value))
+            .await;
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
             .await
-            .expect("open node observation store")
+            .expect("open machine observation store")
     }
 }
 
 async fn test_nats() -> TestNats {
-    let dns_node = node_id("dns_node");
-    let nats = ployz_test_support::nats::TestNats::start_with_nodes(&[
-        dns_node.clone(),
-        node_id("gateway_1"),
-        node_id("gateway_2"),
-        node_id("gateway_3"),
-        node_id("edge_4"),
+    let dns_machine = machine_id("dns_machine");
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+        dns_machine.clone(),
+        machine_id("gateway_1"),
+        machine_id("gateway_2"),
+        machine_id("gateway_3"),
+        machine_id("edge_4"),
     ])
     .await;
     nats.bootstrap_resources().await;
-    let node_jetstream = jetstream::new(nats.node_client(&dns_node).await);
+    let machine_jetstream = jetstream::new(nats.machine_client(&dns_machine).await);
     let jetstream = nats.jetstream.clone();
 
     TestNats {
         nats,
         jetstream,
-        node_jetstream,
+        machine_jetstream,
     }
 }
 
@@ -254,21 +257,21 @@ fn active_route_commit(
 }
 
 fn gateway_status(
-    node_id_value: &str,
+    machine_id_value: &str,
     serving: GatewayServingStatus,
     route_count: usize,
 ) -> GatewayStatusObservation {
     GatewayStatusObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
         serving,
         route_count,
     }
 }
 
-fn node_public_ip(node_id_value: &str, address: [u8; 4]) -> NodePublicIpObservation {
-    NodePublicIpObservation {
-        node_id: node_id(node_id_value),
+fn machine_public_ip(machine_id_value: &str, address: [u8; 4]) -> MachinePublicIpObservation {
+    MachinePublicIpObservation {
+        machine_id: machine_id(machine_id_value),
         public_ip: IpAddr::V4(Ipv4Addr::from(address)),
     }
 }

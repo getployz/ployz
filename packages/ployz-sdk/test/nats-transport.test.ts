@@ -6,7 +6,7 @@ import {
   eventSequence,
   machineJoinToken,
   operationId,
-  nodeId,
+  machineId,
   PloyzNatsTransport,
   PloyzNatsTransportError,
 } from "../src/index.ts";
@@ -90,7 +90,7 @@ test("NATS transport covers internal machine join report endpoint", async () => 
       status: "ok",
       value: {
         operation_id: operationId("op_machine"),
-        node_id: nodeId("node_2"),
+        machine_id: machineId("machine_2"),
         last_event_sequence: eventSequence(8),
         outcome: { outcome: "completed" },
       },
@@ -108,7 +108,7 @@ test("NATS transport covers internal machine join report endpoint", async () => 
     status: "ok",
     value: {
       operation_id: "op_machine",
-      node_id: "node_2",
+      machine_id: "machine_2",
       last_event_sequence: "8",
       outcome: { outcome: "completed" },
     },

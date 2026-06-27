@@ -2,7 +2,7 @@
 //! [`ployz_test_support::nats::TestNats`] with the control-process config
 //! the e2e scenarios launch ployzd with.
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::nats_process::NatsServerRuntime;
 
@@ -12,10 +12,10 @@ pub struct TestNats {
 }
 
 impl TestNats {
-    /// Starts a secured server with one minted Node user per supplied id and
+    /// Starts a secured server with one minted Machine user per supplied id and
     /// connects the Controller and User clients.
-    pub async fn start_with_nodes(node_ids: &[NodeId]) -> Self {
-        let connected = ployz_test_support::nats::TestNats::start_with_nodes(node_ids).await;
+    pub async fn start_with_machines(machine_ids: &[MachineId]) -> Self {
+        let connected = ployz_test_support::nats::TestNats::start_with_machines(machine_ids).await;
         let work_dir = tempfile::TempDir::new().expect("test work dir creates");
 
         Self {
@@ -36,24 +36,24 @@ impl TestNats {
         self.connected.user.clone()
     }
 
-    /// A client authenticated as the machine's Node user. Node runtimes,
+    /// A client authenticated as the machine's Machine user. Machine runtimes,
     /// gateway processes, and observation writers connect with this.
-    pub async fn node_client(&self, node_id: &NodeId) -> async_nats::Client {
-        self.connected.node_client(node_id).await
+    pub async fn machine_client(&self, machine_id: &MachineId) -> async_nats::Client {
+        self.connected.machine_client(machine_id).await
     }
 
     /// A control process config pointed at this fixture's server and
     /// authorized-users file.
     #[must_use]
-    pub fn control_config(&self, core_node_id: NodeId) -> ControlProcessConfig {
+    pub fn control_config(&self, core_machine_id: MachineId) -> ControlProcessConfig {
         ControlProcessConfig::new(
             NatsServerRuntime::External(self.connected.server.client_url().clone()),
-            core_node_id,
+            core_machine_id,
             self.connected.server.controller_config(),
         )
         .with_nats_authorization(ControlNatsAuthorizationConfig {
             authorized_users_file: self.connected.server.authorized_users_path().to_path_buf(),
-            node_seed_file: self.work_dir.path().join("node.seed"),
+            machine_seed_file: self.work_dir.path().join("machine.seed"),
         })
     }
 }

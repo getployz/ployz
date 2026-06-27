@@ -1,14 +1,14 @@
 use async_nats::jetstream;
-use ployz_core::node::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{ActiveRouteCommitRequest, ExpectedActiveRoute, GatewayServingStatus};
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
     step_id,
 };
 use ployzd::gateway::GatewayUpstream;
@@ -24,10 +24,10 @@ use tokio::net::{TcpListener, TcpStream};
 async fn gateway_process_starts_before_projection_sources_exist() {
     let nats = TestNats::start_without_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.node_client.clone(),
+        nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
-        node_id("node_7"),
+        machine_id("machine_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -50,7 +50,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream())
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
         .await
         .expect("open observation store");
     routes
@@ -64,9 +64,9 @@ async fn gateway_process_starts_before_projection_sources_exist() {
         .await
         .expect("route stores");
     observations
-        .replace_node_containers(&node_snapshot(
-            "node_7",
-            [managed_observation("node_7", "ctr_7")],
+        .replace_machine_containers(&machine_snapshot(
+            "machine_7",
+            [managed_observation("machine_7", "ctr_7")],
         ))
         .await
         .expect("observation stores");
@@ -85,7 +85,7 @@ async fn gateway_process_starts_before_projection_sources_exist() {
     assert_eq!(
         route.upstreams,
         vec![GatewayUpstream {
-            node_id: node_id("node_7"),
+            machine_id: machine_id("machine_7"),
             container_id: container_id("ctr_7"),
             endpoint: endpoint("10.0.0.7", 8080),
         }]
@@ -105,10 +105,10 @@ async fn gateway_process_serves_http_from_nats_projection() {
     nats.create_gateway_buckets().await;
     let upstream = TestUpstream::start().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.node_client.clone(),
+        nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
-        node_id("node_7"),
+        machine_id("machine_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -116,7 +116,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream())
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
         .await
         .expect("open observation store");
 
@@ -131,10 +131,10 @@ async fn gateway_process_serves_http_from_nats_projection() {
         .await
         .expect("route stores");
     observations
-        .replace_node_containers(&node_snapshot(
-            "node_7",
+        .replace_machine_containers(&machine_snapshot(
+            "machine_7",
             [managed_observation_with_endpoint(
-                "node_7",
+                "machine_7",
                 "ctr_7",
                 "127.0.0.1",
                 upstream.port(),
@@ -179,10 +179,10 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.node_client.clone(),
+        nats.machine_client.clone(),
         Duration::from_secs(60),
         socket_addr("127.0.0.1:0"),
-        node_id("node_7"),
+        machine_id("machine_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -190,7 +190,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
     let routes = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&nats.node_jetstream())
+    let observations = AsyncNatsObservationStore::from_jetstream(&nats.machine_jetstream())
         .await
         .expect("open observation store");
 
@@ -205,9 +205,9 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
         .await
         .expect("route stores");
     observations
-        .replace_node_containers(&node_snapshot(
-            "node_7",
-            [managed_observation("node_7", "ctr_7")],
+        .replace_machine_containers(&machine_snapshot(
+            "machine_7",
+            [managed_observation("machine_7", "ctr_7")],
         ))
         .await
         .expect("observation stores");
@@ -220,7 +220,7 @@ async fn gateway_process_applies_route_changes_from_nats_watch_before_next_poll(
         runtime.health().last_attempt,
         Some(GatewayProcessAttempt::Current { route_count: 1 })
     );
-    wait_until_gateway_status_current(&observations, "node_7").await;
+    wait_until_gateway_status_current(&observations, "machine_7").await;
 
     runtime.shutdown().await;
 }
@@ -230,10 +230,10 @@ async fn gateway_process_records_http_proxy_failures() {
     let nats = TestNats::start_without_buckets().await;
     nats.create_gateway_buckets().await;
     let runtime = start_gateway_process_runtime_with_client(
-        nats.node_client.clone(),
+        nats.machine_client.clone(),
         Duration::from_millis(10),
         socket_addr("127.0.0.1:0"),
-        node_id("node_7"),
+        machine_id("machine_7"),
     )
     .await
     .expect("gateway runtime starts");
@@ -275,12 +275,12 @@ async fn gateway_process_records_http_proxy_failures() {
 
 async fn wait_until_gateway_status_current(
     observations: &AsyncNatsObservationStore,
-    node_id_value: &str,
+    machine_id_value: &str,
 ) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         let status = observations
-            .gateway_status(&node_id(node_id_value))
+            .gateway_status(&machine_id(machine_id_value))
             .await
             .expect("gateway status loads");
         if status.is_some_and(|status| {
@@ -302,7 +302,7 @@ fn gateway_serves_route(
         matches!(
             projection.routes.as_slice(),
             [route] if route.upstreams == vec![GatewayUpstream {
-                node_id: node_id("node_7"),
+                machine_id: machine_id("machine_7"),
                 container_id: container_id("ctr_7"),
                 endpoint: endpoint(endpoint_ip, endpoint_port),
             }]
@@ -314,27 +314,28 @@ struct TestNats {
     connected: ployz_test_support::nats::TestNats,
     /// Controller principal: bucket administration and route-state writes.
     client: async_nats::Client,
-    /// Node principal: the gateway process side (gateway runs as the
-    /// machine's Node user in v1) and observation writes.
-    node_client: async_nats::Client,
+    /// Machine principal: the gateway process side (gateway runs as the
+    /// machine's Machine user in v1) and observation writes.
+    machine_client: async_nats::Client,
 }
 
 impl TestNats {
     async fn start_without_buckets() -> Self {
         let connected =
-            ployz_test_support::nats::TestNats::start_with_nodes(&[node_id("node_7")]).await;
+            ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")])
+                .await;
         let client = connected.controller.clone();
-        let node_client = connected.node_client(&node_id("node_7")).await;
+        let machine_client = connected.machine_client(&machine_id("machine_7")).await;
 
         Self {
             connected,
             client,
-            node_client,
+            machine_client,
         }
     }
 
-    fn node_jetstream(&self) -> jetstream::Context {
-        jetstream::new(self.node_client.clone())
+    fn machine_jetstream(&self) -> jetstream::Context {
+        jetstream::new(self.machine_client.clone())
     }
 
     async fn create_gateway_buckets(&self) {
@@ -353,29 +354,29 @@ async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     assert!(predicate(), "condition did not become true before timeout");
 }
 
-fn node_snapshot(
-    node_id_value: &str,
+fn machine_snapshot(
+    machine_id_value: &str,
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
-) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(node_id(node_id_value), containers)
-        .expect("matching node snapshot")
+) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id(machine_id_value), containers)
+        .expect("matching machine snapshot")
 }
 
 fn managed_observation(
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
 ) -> ManagedContainerObservation {
-    managed_observation_with_endpoint(node_id_value, container_id_value, "10.0.0.7", 8080)
+    managed_observation_with_endpoint(machine_id_value, container_id_value, "10.0.0.7", 8080)
 }
 
 fn managed_observation_with_endpoint(
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
     ip: &str,
     port: u16,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
