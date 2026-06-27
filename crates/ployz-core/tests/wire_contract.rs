@@ -1,6 +1,6 @@
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, WireGuardEbpfComponent,
-    WireGuardEbpfNodeReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
+    WireGuardEbpfMachineReady, WireGuardEbpfPrepareReport, WireGuardEbpfReady, WireGuardPublicKey,
     WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::deploy::DeployRequest;
@@ -13,7 +13,7 @@ use ployz_core::ops::{
 };
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
-    node_id, operation_id, route_hostname, route_port, service_id,
+    machine_id, operation_id, route_hostname, route_port, service_id,
 };
 
 #[test]
@@ -44,8 +44,8 @@ fn wireguard_ebpf_running_stage_has_stable_wire_name() {
 fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
     let event = OperationEvent::DeployWireGuardEbpfPrepared {
         operation_id: operation_id("op_123"),
-        report: WireGuardEbpfPrepareReport::from_nodes([WireGuardEbpfNodeReady {
-            node_id: node_id("node_7"),
+        report: WireGuardEbpfPrepareReport::from_machines([WireGuardEbpfMachineReady {
+            machine_id: machine_id("machine_7"),
             ready: WireGuardEbpfReady {
                 wireguard: WireGuardReady {
                     public_key: wireguard_public_key("test-public-key"),
@@ -69,7 +69,7 @@ fn wireguard_ebpf_prepared_event_has_stable_wire_shape() {
         serde_json::to_string(&event).expect("event serializes"),
         concat!(
             r#"{"event":"deploy_wireguard_ebpf_prepared","operation_id":"op_123","#,
-            r#""report":{"nodes":[{"node_id":"node_7","#,
+            r#""report":{"machines":[{"machine_id":"machine_7","#,
             r#""wireguard":{"public_key":"test-public-key","evidence":[{"kind":"command","program":"wg","args":["--version"]}]},"#,
             r#""ebpf_forwarding":{"evidence":[{"kind":"ployz_tc_bytecode","#,
             r#""path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc","#,
@@ -136,12 +136,12 @@ fn retained_artifact_carries_variant_specific_failure_data() {
         },
         retained_artifacts: vec![
             RetainedArtifact::StartedContainer {
-                node_id: node_id("node_7"),
+                machine_id: machine_id("machine_7"),
                 container_id: container_id("ctr_123"),
                 log_hint: operator_hint("ployz logs ctr_123"),
             },
             RetainedArtifact::ContainerStopFailed {
-                node_id: node_id("node_7"),
+                machine_id: machine_id("machine_7"),
                 container_id: container_id("ctr_123"),
                 message: failure_message("container stop failed"),
                 inspect_hint: operator_hint("ployz container inspect ctr_123"),
@@ -151,14 +151,14 @@ fn retained_artifact_carries_variant_specific_failure_data() {
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifacts":[{"type":"started_container","node_id":"node_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"},{"type":"container_stop_failed","node_id":"node_7","container_id":"ctr_123","message":"container stop failed","inspect_hint":"ployz container inspect ctr_123"}]}"#
+        r#"{"kind":"health_check_failed","health_check":{"reason":"timed_out","timeout_seconds":30},"retained_artifacts":[{"type":"started_container","machine_id":"machine_7","container_id":"ctr_123","log_hint":"ployz logs ctr_123"},{"type":"container_stop_failed","machine_id":"machine_7","container_id":"ctr_123","message":"container stop failed","inspect_hint":"ployz container inspect ctr_123"}]}"#
     );
 }
 
 #[test]
 fn wireguard_ebpf_failures_are_distinct_from_runtime_failures() {
     let failure = DeployOperationFailure::WireGuardEbpfUnavailable {
-        node_id: node_id("node_7"),
+        machine_id: machine_id("machine_7"),
         component: WireGuardEbpfComponent::EbpfForwarding,
         message: failure_message("bpf route install failed"),
         retained_artifacts: Vec::new(),
@@ -166,21 +166,21 @@ fn wireguard_ebpf_failures_are_distinct_from_runtime_failures() {
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"wireguard_ebpf_unavailable","node_id":"node_7","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
+        r#"{"kind":"wireguard_ebpf_unavailable","machine_id":"machine_7","component":"ebpf_forwarding","message":"bpf route install failed","retained_artifacts":[]}"#
     );
 }
 
 #[test]
-fn wireguard_ebpf_timeout_failures_keep_node_scope() {
+fn wireguard_ebpf_timeout_failures_keep_machine_scope() {
     let failure = DeployOperationFailure::WireGuardEbpfPreparationTimedOut {
-        nodes: vec![node_id("node_7"), node_id("node_8")],
+        machines: vec![machine_id("machine_7"), machine_id("machine_8")],
         timeout_seconds: 30,
         retained_artifacts: Vec::new(),
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"wireguard_ebpf_preparation_timed_out","nodes":["node_7","node_8"],"timeout_seconds":30,"retained_artifacts":[]}"#
+        r#"{"kind":"wireguard_ebpf_preparation_timed_out","machines":["machine_7","machine_8"],"timeout_seconds":30,"retained_artifacts":[]}"#
     );
 }
 
@@ -349,7 +349,7 @@ fn failure_payloads_reject_empty_operator_text() {
         "kind": "health_check_failed",
         "health_check": {
             "reason": "probe_failed",
-            "node_id": "node_7",
+            "machine_id": "machine_7",
             "container_id": "ctr_123",
             "message": "health check failed",
             "log_hint": ""
@@ -422,7 +422,7 @@ fn wire_models_reject_unknown_fields() {
         "health_check": { "reason": "timed_out", "timeout_seconds": 30, "message": "stale" },
         "retained_artifacts": [{
             "type": "started_container",
-            "node_id": "node_7",
+            "machine_id": "machine_7",
             "container_id": "ctr_123",
             "log_hint": "ployz logs ctr_123"
         }]

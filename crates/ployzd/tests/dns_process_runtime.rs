@@ -2,11 +2,11 @@ use async_nats::jetstream;
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     ActiveRouteCommitRequest, ExpectedActiveRoute, GatewayServingStatus, GatewayStatusObservation,
-    NodePublicIpObservation,
+    MachinePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::observations::AsyncNatsObservationStore;
-use ployz_test_support::ids::{node_id, revision_id, route_hostname, route_port, service_id};
+use ployz_test_support::ids::{machine_id, revision_id, route_hostname, route_port, service_id};
 use ployzd::dns::DnsAnswer;
 use ployzd::dns_process_runtime::{
     DnsProcessAttempt, RunningDnsProcessRuntime, start_dns_process_runtime_with_client,
@@ -93,18 +93,18 @@ fn dns_serves_answer(runtime: &RunningDnsProcessRuntime, hostname: &str, answer:
 
 struct TestNats {
     connected: ployz_test_support::nats::TestNats,
-    /// The DNS machine's Node principal: the runtime under test.
+    /// The DNS machine's Machine principal: the runtime under test.
     dns_client: async_nats::Client,
 }
 
 impl TestNats {
     async fn start_without_buckets() -> Self {
-        let connected = ployz_test_support::nats::TestNats::start_with_nodes(&[
-            node_id("dns_node"),
-            node_id("gateway_1"),
+        let connected = ployz_test_support::nats::TestNats::start_with_machines(&[
+            machine_id("dns_machine"),
+            machine_id("gateway_1"),
         ])
         .await;
-        let dns_client = connected.node_client(&node_id("dns_node")).await;
+        let dns_client = connected.machine_client(&machine_id("dns_machine")).await;
 
         Self {
             connected,
@@ -134,16 +134,19 @@ impl TestNats {
     }
 
     /// Publishes a serving gateway status plus its public IP as that
-    /// gateway machine's Node principal.
-    async fn publish_serving_gateway(&self, node_id_value: &str, address: [u8; 4]) {
-        let gateway_client = self.connected.node_client(&node_id(node_id_value)).await;
+    /// gateway machine's Machine principal.
+    async fn publish_serving_gateway(&self, machine_id_value: &str, address: [u8; 4]) {
+        let gateway_client = self
+            .connected
+            .machine_client(&machine_id(machine_id_value))
+            .await;
         let observations =
             AsyncNatsObservationStore::from_jetstream(&jetstream::new(gateway_client))
                 .await
                 .expect("open gateway observation store");
         observations
             .replace_gateway_status(&GatewayStatusObservation {
-                node_id: node_id(node_id_value),
+                machine_id: machine_id(machine_id_value),
                 listen_addr: SocketAddr::from(([0, 0, 0, 0], 8080)),
                 serving: GatewayServingStatus::Current,
                 route_count: 1,
@@ -151,8 +154,8 @@ impl TestNats {
             .await
             .expect("gateway status stores");
         observations
-            .replace_node_public_ip(&NodePublicIpObservation {
-                node_id: node_id(node_id_value),
+            .replace_machine_public_ip(&MachinePublicIpObservation {
+                machine_id: machine_id(machine_id_value),
                 public_ip: IpAddr::V4(Ipv4Addr::from(address)),
             })
             .await

@@ -24,8 +24,8 @@ pub enum PloyzctlCommand {
     Deploy(deploy::DeployCommand),
     BackupCreate(backup::BackupCreateCommand),
     BackupRestorePlan(backup::BackupRestorePlanCommand),
-    Init(Box<init::FirstNodeInitCommand>),
-    InitFirstNodeActivate(init::FirstNodeActivateCommand),
+    Init(Box<init::FirstMachineInitCommand>),
+    InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
     MachineInit(machine::MachineInitCommand),
     MachineAdd(machine::MachineAddCommand),
@@ -118,7 +118,7 @@ struct InitRootCli {
 
 #[derive(Debug, Subcommand)]
 enum InitCli {
-    ActivateFirstNode(init::FirstNodeActivateCli),
+    ActivateFirstMachine(init::FirstMachineActivateCli),
     JoinTemplate(init::join_template::MachineJoinTemplateCli),
 }
 
@@ -199,9 +199,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
 
 fn init_command_from_cli(command: InitRootCli) -> Result<PloyzctlCommand, PloyzctlCliError> {
     match command.command {
-        Some(InitCli::ActivateFirstNode(subcommand)) => {
-            init::first_node_activate_command(subcommand)
-                .map(PloyzctlCommand::InitFirstNodeActivate)
+        Some(InitCli::ActivateFirstMachine(subcommand)) => {
+            init::first_machine_activate_command(subcommand)
+                .map(PloyzctlCommand::InitFirstMachineActivate)
         }
         Some(InitCli::JoinTemplate(subcommand)) => {
             init::join_template::machine_join_template_command(subcommand)

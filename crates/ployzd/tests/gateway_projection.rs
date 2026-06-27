@@ -1,15 +1,15 @@
-use ployz_core::node::{
-    ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::machine_runtime::{
+    ContainerEndpoint, ContainerRuntimeState, MachineContainerObservationSnapshot,
+    ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::ops::RouteTarget;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    container_id, machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
     step_id,
 };
 use ployzd::gateway::{
-    GatewayNodeObservation, GatewayObservationFreshness, GatewayProjectedRoute, GatewayProjection,
-    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
+    GatewayMachineObservation, GatewayObservationFreshness, GatewayProjectedRoute,
+    GatewayProjection, GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
     GatewayProjectionUpdate, GatewayRoute, GatewayUnroutableContainer, GatewayUpstream,
     apply_gateway_update, project_gateway,
 };
@@ -21,16 +21,16 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
             gateway_route("WWW.example.com", "svc_web", "rev_1"),
             gateway_route("api.example.com", "svc_api", "rev_2"),
         ],
-        observed_nodes: vec![
-            fresh_node(
-                "node_1",
+        observed_machines: vec![
+            fresh_machine(
+                "machine_1",
                 vec![
-                    service_container("node_1", "api_good", "svc_api", "rev_2", running()),
-                    service_container("node_1", "web_good", "svc_web", "rev_1", running()),
-                    service_container("node_1", "api_exited", "svc_api", "rev_2", exited()),
-                    service_container("node_1", "api_old", "svc_api", "rev_1", running()),
+                    service_container("machine_1", "api_good", "svc_api", "rev_2", running()),
+                    service_container("machine_1", "web_good", "svc_web", "rev_1", running()),
+                    service_container("machine_1", "api_exited", "svc_api", "rev_2", exited()),
+                    service_container("machine_1", "api_old", "svc_api", "rev_1", running()),
                     managed_container(
-                        "node_1",
+                        "machine_1",
                         "api_job",
                         "svc_api",
                         "rev_2",
@@ -39,10 +39,10 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
                     ),
                 ],
             ),
-            stale_node(
-                "node_2",
+            stale_machine(
+                "machine_2",
                 vec![service_container(
-                    "node_2",
+                    "machine_2",
                     "api_stale",
                     "svc_api",
                     "rev_2",
@@ -60,7 +60,7 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
                 GatewayProjectedRoute {
                     target: route_target("api.example.com", 443),
                     upstreams: vec![GatewayUpstream {
-                        node_id: node_id("node_1"),
+                        machine_id: machine_id("machine_1"),
                         container_id: container_id("api_good"),
                         endpoint: endpoint("10.0.0.1", 8080),
                     }],
@@ -69,7 +69,7 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
                 GatewayProjectedRoute {
                     target: route_target("www.example.com", 443),
                     upstreams: vec![GatewayUpstream {
-                        node_id: node_id("node_1"),
+                        machine_id: machine_id("machine_1"),
                         container_id: container_id("web_good"),
                         endpoint: endpoint("10.0.0.1", 8080),
                     }],
@@ -84,10 +84,10 @@ fn gateway_filters_stale_and_non_running_route_upstreams() {
 fn gateway_filters_running_containers_without_endpoint_evidence() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![gateway_route("api.example.com", "svc_api", "rev_2")],
-        observed_nodes: vec![fresh_node(
-            "node_1",
+        observed_machines: vec![fresh_machine(
+            "machine_1",
             vec![service_container(
-                "node_1",
+                "machine_1",
                 "api_unroutable",
                 "svc_api",
                 "rev_2",
@@ -104,7 +104,7 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
                 unroutable_containers: vec![GatewayUnroutableContainer {
-                    node_id: node_id("node_1"),
+                    machine_id: machine_id("machine_1"),
                     container_id: container_id("api_unroutable"),
                 }],
             }],
@@ -116,18 +116,18 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
 fn gateway_filters_running_containers_on_endpoint_port() {
     let projection = project_gateway(GatewayProjectionInput {
         routes: vec![gateway_route("api.example.com", "svc_api", "rev_2")],
-        observed_nodes: vec![fresh_node(
-            "node_1",
+        observed_machines: vec![fresh_machine(
+            "machine_1",
             vec![
                 service_container(
-                    "node_1",
+                    "machine_1",
                     "api_wrong_port",
                     "svc_api",
                     "rev_2",
                     ContainerRuntimeState::running_at(endpoint("10.0.0.1", 3000)),
                 ),
                 service_container(
-                    "node_1",
+                    "machine_1",
                     "api_good",
                     "svc_api",
                     "rev_2",
@@ -144,7 +144,7 @@ fn gateway_filters_running_containers_on_endpoint_port() {
             routes: vec![GatewayProjectedRoute {
                 target: route_target("api.example.com", 443),
                 upstreams: vec![GatewayUpstream {
-                    node_id: node_id("node_1"),
+                    machine_id: machine_id("machine_1"),
                     container_id: container_id("api_good"),
                     endpoint: endpoint("10.0.0.2", 8080),
                 }],
@@ -161,7 +161,7 @@ fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
         routes: vec![GatewayProjectedRoute {
             target: route_target("api.example.com", 443),
             upstreams: vec![GatewayUpstream {
-                node_id: node_id("node_1"),
+                machine_id: machine_id("machine_1"),
                 container_id: container_id("api_good"),
                 endpoint: endpoint("10.0.0.1", 8080),
             }],
@@ -179,7 +179,7 @@ fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
                 routes: vec![GatewayProjectedRoute {
                     target: route_target("api.example.com", 443),
                     upstreams: vec![GatewayUpstream {
-                        node_id: node_id("node_1"),
+                        machine_id: machine_id("machine_1"),
                         container_id: container_id("api_good"),
                         endpoint: endpoint("10.0.0.1", 8080),
                     }],
@@ -219,7 +219,7 @@ fn gateway_rejects_duplicate_route_targets() {
                     revision_id: revision_id("rev_2"),
                 },
             ],
-            observed_nodes: vec![],
+            observed_machines: vec![],
         }),
         Err(GatewayProjectionError::DuplicateRouteTarget { target })
     );
@@ -232,7 +232,7 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
         routes: vec![GatewayProjectedRoute {
             target: target.clone(),
             upstreams: vec![GatewayUpstream {
-                node_id: node_id("node_1"),
+                machine_id: machine_id("machine_1"),
                 container_id: container_id("api_good"),
                 endpoint: endpoint("10.0.0.1", 8080),
             }],
@@ -254,7 +254,7 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
                 revision_id: revision_id("rev_2"),
             },
         ],
-        observed_nodes: vec![],
+        observed_machines: vec![],
     });
 
     assert_eq!(
@@ -264,7 +264,7 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
                 routes: vec![GatewayProjectedRoute {
                     target: target.clone(),
                     upstreams: vec![GatewayUpstream {
-                        node_id: node_id("node_1"),
+                        machine_id: machine_id("machine_1"),
                         container_id: container_id("api_good"),
                         endpoint: endpoint("10.0.0.1", 8080),
                     }],
@@ -282,7 +282,7 @@ fn gateway_retains_last_good_projection_when_source_decode_fails() {
         routes: vec![GatewayProjectedRoute {
             target: route_target("api.example.com", 443),
             upstreams: vec![GatewayUpstream {
-                node_id: node_id("node_1"),
+                machine_id: machine_id("machine_1"),
                 container_id: container_id("api_good"),
                 endpoint: endpoint("10.0.0.1", 8080),
             }],
@@ -303,7 +303,7 @@ fn gateway_retains_last_good_projection_when_source_decode_fails() {
                 routes: vec![GatewayProjectedRoute {
                     target: route_target("api.example.com", 443),
                     upstreams: vec![GatewayUpstream {
-                        node_id: node_id("node_1"),
+                        machine_id: machine_id("machine_1"),
                         container_id: container_id("api_good"),
                         endpoint: endpoint("10.0.0.1", 8080),
                     }],
@@ -321,7 +321,7 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
         routes: vec![GatewayProjectedRoute {
             target: route_target("api.example.com", 443),
             upstreams: vec![GatewayUpstream {
-                node_id: node_id("node_1"),
+                machine_id: machine_id("machine_1"),
                 container_id: container_id("api_good"),
                 endpoint: endpoint("10.0.0.1", 8080),
             }],
@@ -347,7 +347,7 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
                 routes: vec![GatewayProjectedRoute {
                     target: route_target("api.example.com", 443),
                     upstreams: vec![GatewayUpstream {
-                        node_id: node_id("node_1"),
+                        machine_id: machine_id("machine_1"),
                         container_id: container_id("api_good"),
                         endpoint: endpoint("10.0.0.1", 8080),
                     }],
@@ -359,37 +359,40 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
     );
 }
 
-fn fresh_node(
-    node_id_value: &str,
+fn fresh_machine(
+    machine_id_value: &str,
     containers: Vec<ManagedContainerObservation>,
-) -> GatewayNodeObservation {
-    observed_node(
-        node_id_value,
+) -> GatewayMachineObservation {
+    observed_machine(
+        machine_id_value,
         GatewayObservationFreshness::Fresh,
         containers,
     )
 }
 
-fn stale_node(
-    node_id_value: &str,
+fn stale_machine(
+    machine_id_value: &str,
     containers: Vec<ManagedContainerObservation>,
-) -> GatewayNodeObservation {
-    observed_node(
-        node_id_value,
+) -> GatewayMachineObservation {
+    observed_machine(
+        machine_id_value,
         GatewayObservationFreshness::Stale,
         containers,
     )
 }
 
-fn observed_node(
-    node_id_value: &str,
+fn observed_machine(
+    machine_id_value: &str,
     freshness: GatewayObservationFreshness,
     containers: Vec<ManagedContainerObservation>,
-) -> GatewayNodeObservation {
-    GatewayNodeObservation {
+) -> GatewayMachineObservation {
+    GatewayMachineObservation {
         freshness,
-        snapshot: NodeContainerObservationSnapshot::try_new(node_id(node_id_value), containers)
-            .expect("valid node snapshot"),
+        snapshot: MachineContainerObservationSnapshot::try_new(
+            machine_id(machine_id_value),
+            containers,
+        )
+        .expect("valid machine snapshot"),
     }
 }
 
@@ -403,14 +406,14 @@ fn gateway_route(hostname: &str, service_id_value: &str, revision_id_value: &str
 }
 
 fn service_container(
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
     service_id_value: &str,
     revision_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     managed_container(
-        node_id_value,
+        machine_id_value,
         container_id_value,
         service_id_value,
         revision_id_value,
@@ -420,7 +423,7 @@ fn service_container(
 }
 
 fn managed_container(
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
     service_id_value: &str,
     revision_id_value: &str,
@@ -428,7 +431,7 @@ fn managed_container(
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id(service_id_value),
         revision_id: revision_id(revision_id_value),

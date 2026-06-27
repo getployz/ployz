@@ -74,8 +74,8 @@ impl std::error::Error for JoinTokenFileError {}
 #[must_use]
 pub fn render_redacted_join_material(material: &RedactedJoinMaterial) -> Vec<u8> {
     format!(
-        "node_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_ca_sha256={}\n",
-        material.node_id.as_str(),
+        "machine_id={}\ncluster_name={}\nnats_credentials={}\ntrusted_nats_ca_sha256={}\n",
+        material.machine_id.as_str(),
         material.cluster_name,
         "[redacted]",
         material.trusted_nats_ca_sha256,

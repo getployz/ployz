@@ -73,7 +73,7 @@ impl BackupRestorePlanOutput {
             output.push_str(line);
             output.push('\n');
         }
-        output.push_str("node observations repopulate after agents reconnect\n");
+        output.push_str("machine observations repopulate after agents reconnect\n");
         output
     }
 }
@@ -173,7 +173,7 @@ const fn restore_step_name(step: RestoreStep) -> &'static str {
     match step {
         RestoreStep::RecreateControlPlaneAuthority => "recreate_control_plane_authority",
         RestoreStep::RestoreJetStreamState => "restore_jet_stream_state",
-        RestoreStep::WaitForNodeReconnects => "wait_for_node_reconnects",
+        RestoreStep::WaitForMachineReconnects => "wait_for_machine_reconnects",
         RestoreStep::RebuildObservationsFromReality => "rebuild_observations_from_reality",
     }
 }

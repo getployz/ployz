@@ -7,7 +7,7 @@
 use crate::config::DnsProcessConfig;
 use crate::dns::{DnsProjection, DnsRuntime, DnsRuntimeTick, DnsServingState};
 use crate::dns_source::load_dns_projection_update_from_nats;
-use crate::node_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
+use crate::machine_credentials::{AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials};
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
     record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
@@ -66,8 +66,8 @@ impl RunningDnsProcessRuntime {
 pub async fn start_dns_process_runtime(
     config: &DnsProcessConfig,
 ) -> Result<RunningDnsProcessRuntime, DnsProcessRuntimeError> {
-    // DNS authenticates as the machine's Node user (no DNS principal in
-    // v1) and awaits the seed file like the node and gateway roles do.
+    // DNS authenticates as the machine's Machine user (no DNS principal in
+    // v1) and awaits the seed file like the machine and gateway roles do.
     let connect =
         await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
             .await
@@ -288,7 +288,7 @@ async fn open_dns_change_watchers(
         .map_err(DnsProcessRuntimeError::WatchObservations)?;
     let public_ips = stores
         .observations
-        .watch_node_public_ip_changes()
+        .watch_machine_public_ip_changes()
         .await
         .map_err(DnsProcessRuntimeError::WatchObservations)?;
 
@@ -312,7 +312,7 @@ async fn watch_dns_changes(
                 watch_event_change("gateway statuses", status)
             }
             public_ip = watchers.public_ips.next() => {
-                watch_event_change("node public ips", public_ip)
+                watch_event_change("machine public ips", public_ip)
             }
             _ = shutdown.recv() => return DnsWatchLoopEnd::Shutdown,
         };

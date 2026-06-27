@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 
 use ployz_core::nats_config::NatsUserSeed;
 
-/// Writes the first node's `node.seed` (`0600`). The named writer is ployzd
+/// Writes the first machine's `machine.seed` (`0600`). The named writer is ployzd
 /// control, which runs on the same machine; this is a local file write.
-pub fn write_node_seed_file(
+pub fn write_machine_seed_file(
     path: &Path,
     credentials: &NatsUserSeed,
-) -> Result<(), NodeSeedWriteError> {
-    let write_error = |message: String| NodeSeedWriteError::Write {
+) -> Result<(), MachineSeedWriteError> {
+    let write_error = |message: String| MachineSeedWriteError::Write {
         path: path.to_path_buf(),
         message,
     };
@@ -28,20 +28,20 @@ pub fn write_node_seed_file(
 }
 
 #[derive(Debug)]
-pub enum NodeSeedWriteError {
+pub enum MachineSeedWriteError {
     Write { path: PathBuf, message: String },
 }
 
-impl fmt::Display for NodeSeedWriteError {
+impl fmt::Display for MachineSeedWriteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Write { path, message } => write!(
                 formatter,
-                "failed to write node seed file {}: {message}",
+                "failed to write machine seed file {}: {message}",
                 path.display()
             ),
         }
     }
 }
 
-impl std::error::Error for NodeSeedWriteError {}
+impl std::error::Error for MachineSeedWriteError {}

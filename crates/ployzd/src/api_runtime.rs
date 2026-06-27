@@ -1,7 +1,7 @@
 //! NATS Service API runtime wiring for daemon commands.
 
 use crate::operation_api::{
-    OperationApiHandlers, backup_create, deploy_submit, init_first_node_activate, machine_add,
+    OperationApiHandlers, backup_create, deploy_submit, init_first_machine_activate, machine_add,
     machine_join_redeem, machine_join_report, ops_status, ops_watch,
 };
 use crate::services::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
@@ -13,7 +13,7 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        BackupCreateApi, DeploySubmitApi, InitFirstNodeActivateApi, LogsTailApi, MachineAddApi,
+        BackupCreateApi, DeploySubmitApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
@@ -64,14 +64,14 @@ async fn bind_operation_endpoint(
             )
             .await
         }
-        OperationApiEndpoint::InitFirstNodeActivate => bind_operation_contract::<
-            InitFirstNodeActivateApi,
+        OperationApiEndpoint::InitFirstMachineActivate => bind_operation_contract::<
+            InitFirstMachineActivateApi,
             _,
             _,
         >(
             runtime,
             handlers,
-            |handlers, request| async move { init_first_node_activate(&handlers, request).await },
+            |handlers, request| async move { init_first_machine_activate(&handlers, request).await },
         )
         .await,
         OperationApiEndpoint::MachineList => {
@@ -87,7 +87,7 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move {
-                    handlers.machine_query().inspect(&request.node_id).await
+                    handlers.machine_query().inspect(&request.machine_id).await
                 },
             )
             .await

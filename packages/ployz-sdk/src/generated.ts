@@ -20,7 +20,7 @@ export type ServiceId = Brand<string, "ServiceId">;
 
 export type RevisionId = Brand<string, "RevisionId">;
 
-export type NodeId = Brand<string, "NodeId">;
+export type MachineId = Brand<string, "MachineId">;
 
 export type ContainerId = Brand<string, "ContainerId">;
 
@@ -72,7 +72,7 @@ export type CloudBootstrapReleaseSelection = { channel: string | null, version: 
 
 export type CloudBootstrapIntent = { "intent": "founder", founder: CloudFounderBootstrap, } | { "intent": "joiner", joiner: CloudJoinerBootstrap, } | { "intent": "wait_for_founder", retry_after_seconds: number, };
 
-export type CloudFounderBootstrap = { install: FirstNodeInstallSpec, cloud_nats_user_public_key: NatsUserPublicKey, };
+export type CloudFounderBootstrap = { install: FirstMachineInstallSpec, cloud_nats_user_public_key: NatsUserPublicKey, };
 
 export type CloudJoinerBootstrap = { runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, join_token: MachineJoinToken, join_secret_delivery: MachineJoinSecretDelivery, };
 
@@ -80,9 +80,9 @@ export type CloudBootstrapCallbackRequest = { redemption_id: CloudBootstrapRedem
 
 export type CloudBootstrapOutcome = { "outcome": "founder_succeeded", result: CloudFounderBootstrapResult, } | { "outcome": "joiner_succeeded", result: CloudJoinerBootstrapResult, } | { "outcome": "failed", failure: CloudBootstrapFailure, };
 
-export type CloudFounderBootstrapResult = { node_id: NodeId, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, };
+export type CloudFounderBootstrapResult = { machine_id: MachineId, runtime_nats_url: MachineJoinRuntimeNatsUrl, trusted_nats: MachineJoinTrustedNats, };
 
-export type CloudJoinerBootstrapResult = { operation_id: OperationId, node_id: NodeId, name: MachineName, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+export type CloudJoinerBootstrapResult = { operation_id: OperationId, machine_id: MachineId, name: MachineName, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
 export type CloudBootstrapFailure = { "failure": "already_bootstrapped" } | { "failure": "envelope_invalid", message: FailureMessage, } | { "failure": "bootstrap_failed", message: FailureMessage, } | { "failure": "cloud_reachability_failed", message: FailureMessage, };
 
@@ -100,13 +100,13 @@ export type DeployRoute = { target: RouteTarget, endpoint_port: RoutePort, };
 
 export type DeployPlan = { service_id: ServiceId, target_revision: RevisionId, steps: Array<DeployPlanStep>, cleanup_containers?: Array<DeployCleanupContainer>, };
 
-export type DeployCleanupContainer = { node_id: NodeId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
+export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId, revision_id: RevisionId, operation_id: OperationId, step_id: StepId, kind: ManagedContainerKind, endpoint_port?: RoutePort | null, };
 
 export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
 
 export type ManagedContainerKind = "service" | "predeploy" | "job";
 
-export type DeployPlanStep = { "step": "use_existing_container", node_id: NodeId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", node_id: NodeId, slot: ReplicaSlot, };
+export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
 export type OperationEventReplayLimit = SafeInteger<"OperationEventReplayLimit">;
 
@@ -118,11 +118,11 @@ export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "
 
 export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
 
-export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
+export type OperationStatus = { "kind": "deploy", id: OperationId, service_id: ServiceId, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "backup", id: OperationId, state: BackupOperationState, last_event_sequence: EventSequence, };
 
 export type OperationStatusSnapshot = { status: OperationStatus, };
 
-export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", node_id: NodeId, } | { "kind": "backup" };
+export type OperationSubject = { "kind": "deploy", service_id: ServiceId, } | { "kind": "cert", cert_id: CertId, } | { "kind": "machine_add", machine_id: MachineId, } | { "kind": "backup" };
 
 export type MachineAddOperationState = { "state": "pending", join_token: IssuedJoinToken, } | { "state": "joining", joined_at: JoinTokenRedeemedAt, } | { "state": "completed" } | { "state": "failed", failure: MachineAddFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -132,7 +132,7 @@ export type MachineAddFailure = { "kind": "invalid_join_token" } | { "kind": "jo
 
 export type MachineCredentialProvisioningStep = "minted" | "rendered" | "reloaded" | "verified" | "material_ready";
 
-export type MachineReadinessEvidence = { nats_connection: MachineReadinessCheck, heartbeat: MachineReadinessCheck, node_inspect: MachineReadinessCheck, };
+export type MachineReadinessEvidence = { nats_connection: MachineReadinessCheck, heartbeat: MachineReadinessCheck, machine_inspect: MachineReadinessCheck, };
 
 export type MachineReadinessCheck = { "state": "confirmed" } | { "state": "missing", reason: FailureMessage, };
 
@@ -156,7 +156,7 @@ export type BackupOperationState = { "state": "accepted" } | { "state": "running
 
 export type BackupRunningStage = { "stage": "snapshotting_control_plane" } | { "stage": "writing_manifest", artifact: BackupArtifact, };
 
-export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_wireguard_ebpf_prepared", operation_id: OperationId, report: WireGuardEbpfPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, node_id: NodeId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, node_id: NodeId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, node_id: NodeId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, node_id: NodeId, } | { "event": "machine_add_failed", operation_id: OperationId, node_id: NodeId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, target: BackupTarget, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
+export type OperationEvent = { "event": "deploy_submitted", operation_id: OperationId, target: DeployRequest, } | { "event": "deploy_planning_started", operation_id: OperationId, } | { "event": "deploy_plan_created", operation_id: OperationId, plan: DeployPlan, } | { "event": "deploy_running", operation_id: OperationId, stage: DeployRunningStage, } | { "event": "deploy_wireguard_ebpf_prepared", operation_id: OperationId, report: WireGuardEbpfPrepareReport, } | { "event": "deploy_container_started", operation_id: OperationId, machine_id: MachineId, container_id: ContainerId, } | { "event": "deploy_health_check_started", operation_id: OperationId, } | { "event": "deploy_cleanup_finished", operation_id: OperationId, removed: Array<DeployCleanupContainer>, failed: Array<DeployCleanupFailure>, } | { "event": "deploy_completed", operation_id: OperationId, outcome: DeployCompletionOutcome, } | { "event": "deploy_failed", operation_id: OperationId, failure: DeployOperationFailure, } | { "event": "cert_renewal_submitted", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_challenge_published", operation_id: OperationId, cert_id: CertId, challenge: AcmeHttp01Challenge, } | { "event": "cert_validation_started", operation_id: OperationId, cert_id: CertId, } | { "event": "cert_completed", operation_id: OperationId, active_cert: ActiveCertState, } | { "event": "cert_failed", operation_id: OperationId, failure: CertOperationFailure, } | { "event": "machine_add_submitted", operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_token: IssuedJoinToken, } | { "event": "machine_add_joined", operation_id: OperationId, machine_id: MachineId, joined_at: JoinTokenRedeemedAt, } | { "event": "machine_add_credential_provisioned", operation_id: OperationId, machine_id: MachineId, step: MachineCredentialProvisioningStep, } | { "event": "machine_add_completed", operation_id: OperationId, machine_id: MachineId, } | { "event": "machine_add_failed", operation_id: OperationId, machine_id: MachineId, failure: MachineAddFailure, } | { "event": "backup_create_submitted", operation_id: OperationId, target: BackupTarget, } | { "event": "backup_running", operation_id: OperationId, stage: BackupRunningStage, } | { "event": "backup_completed", operation_id: OperationId, manifest: BackupManifest, } | { "event": "backup_failed", operation_id: OperationId, failure: BackupOperationFailure, } | { "event": "cancelled", operation_id: OperationId, reason: CancellationReason, };
 
 export type FailureMessage = Brand<string, "FailureMessage">;
 
@@ -168,15 +168,15 @@ export type RoutePort = SafeInteger<"RoutePort">;
 
 export type RouteTarget = { hostname: RouteHostname, port: RoutePort, };
 
-export type RetainedArtifact = { "type": "created_container", node_id: NodeId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", node_id: NodeId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, };
+export type RetainedArtifact = { "type": "created_container", machine_id: MachineId, container_id: ContainerId, inspect_hint: OperatorHint, } | { "type": "started_container", machine_id: MachineId, container_id: ContainerId, log_hint: OperatorHint, } | { "type": "container_stop_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, inspect_hint: OperatorHint, };
 
-export type HealthCheckFailure = { "reason": "probe_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
+export type HealthCheckFailure = { "reason": "probe_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, log_hint: OperatorHint, } | { "reason": "timed_out", timeout_seconds: number, };
 
 export type WireGuardEbpfComponent = "wireguard" | "ebpf_forwarding";
 
-export type WireGuardEbpfPrepareReport = { nodes: Array<WireGuardEbpfNodeReady>, };
+export type WireGuardEbpfPrepareReport = { machines: Array<WireGuardEbpfMachineReady>, };
 
-export type WireGuardEbpfNodeReady = { node_id: NodeId, wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
+export type WireGuardEbpfMachineReady = { machine_id: MachineId, wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
 
 export type WireGuardEbpfReady = { wireguard: WireGuardReady, ebpf_forwarding: EbpfForwardingReady, };
 
@@ -194,15 +194,15 @@ export type ActiveServiceCommitFailure = { "reason": "active_service_changed", e
 
 export type ArtifactUnavailableReason = { "reason": "bundle_missing" } | { "reason": "bundle_unreadable", message: FailureMessage, };
 
-export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", node_id: NodeId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
+export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machine_id: MachineId, } | { "reason": "route_rejected", message: FailureMessage, } | { "reason": "state_store_failed", message: FailureMessage, } | { "reason": "timed_out", timeout_seconds: number, };
 
-export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "wireguard_ebpf_unavailable", node_id: NodeId, component: WireGuardEbpfComponent, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "wireguard_ebpf_preparation_timed_out", nodes: Array<NodeId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "wireguard_ebpf_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", node_id: NodeId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
+export type DeployOperationFailure = { "kind": "planning_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, } | { "kind": "artifact_unavailable", service_id: ServiceId, revision_id: RevisionId, reason: ArtifactUnavailableReason, } | { "kind": "wireguard_ebpf_unavailable", machine_id: MachineId, component: WireGuardEbpfComponent, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "wireguard_ebpf_preparation_timed_out", machines: Array<MachineId>, timeout_seconds: number, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "wireguard_ebpf_invalid_report", message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "runtime_unavailable", machine_id: MachineId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "health_check_failed", health_check: HealthCheckFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "control_plane_commit_failed", service_id: ServiceId, revision_id: RevisionId, message: FailureMessage, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "active_service_commit_rejected", service_id: ServiceId, revision_id: RevisionId, reason: ActiveServiceCommitFailure, retained_artifacts: Array<RetainedArtifact>, } | { "kind": "route_cutover_failed", route: RouteTarget, reason: RouteCutoverFailureReason, retained_artifacts: Array<RetainedArtifact>, };
 
 export type CertOperationFailure = { "kind": "challenge_publish_failed", cert_id: CertId, message: FailureMessage, } | { "kind": "acme_validation_failed", cert_id: CertId, message: FailureMessage, retained_active_cert: ActiveCertState | null, } | { "kind": "active_cert_commit_failed", cert_id: CertId, bundle_ref: CertBundleRef, validity: CertValidityWindow, message: FailureMessage, retained_active_cert: ActiveCertState | null, };
 
 export type BackupOperationFailure = { "kind": "snapshot_failed", message: FailureMessage, } | { "kind": "manifest_write_failed", message: FailureMessage, };
 
-export type BackupItem = "core_state_kv" | "operation_state_kv" | "observation_state_kv" | "lock_state_kv" | "backup_manifest" | "nats_credentials" | "nats_server_config" | "ployz_domain_config" | "operation_event_streams" | "docker_images" | "application_volumes" | "container_runtime_state" | "node_local_cache";
+export type BackupItem = "core_state_kv" | "operation_state_kv" | "observation_state_kv" | "lock_state_kv" | "backup_manifest" | "nats_credentials" | "nats_server_config" | "ployz_domain_config" | "operation_event_streams" | "docker_images" | "application_volumes" | "container_runtime_state" | "machine_local_cache";
 
 export type BackupPolicy = "included" | "excluded";
 
@@ -240,7 +240,7 @@ export type BackupBundle = { format_version: BackupManifestVersion, control_plan
 
 export type BackupManifest = { format_version: BackupManifestVersion, scope: Array<BackupScopeEntry>, restore_contract: Array<RestoreStep>, artifacts: Array<BackupArtifact>, };
 
-export type RestoreStep = "recreate_control_plane_authority" | "restore_jet_stream_state" | "wait_for_node_reconnects" | "rebuild_observations_from_reality";
+export type RestoreStep = "recreate_control_plane_authority" | "restore_jet_stream_state" | "wait_for_machine_reconnects" | "rebuild_observations_from_reality";
 
 export type OperatorHint = Brand<string, "OperatorHint">;
 
@@ -262,33 +262,33 @@ export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle
 
 export type ExpectedActiveService = "absent" | { "revision": RevisionId };
 
-export type ActiveMachineState = { node_id: NodeId, name: MachineName, activated_by: OperationId, };
+export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, };
 
 export type ActiveServiceState = { service_id: ServiceId, active_revision: RevisionId, };
 
 export type ActiveServiceCommitRequest = { service_id: ServiceId, expected_current: ExpectedActiveService, target_revision: RevisionId, };
 
-export type NodePublicIpObservation = { node_id: NodeId, public_ip: string, };
+export type MachinePublicIpObservation = { machine_id: MachineId, public_ip: string, };
 
 export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
 
-export type GatewayStatusObservation = { node_id: NodeId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
+export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
 
-export type MachineSnapshot = { active: ActiveMachineState, public_ip: NodePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
+export type MachineSnapshot = { active: ActiveMachineState, public_ip: MachinePublicIpObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, };
 
-export type InitFirstNodeActivateRequest = { node_id: NodeId, roles: InstallRolePolicy, };
+export type InitFirstMachineActivateRequest = { machine_id: MachineId, roles: InstallRolePolicy, };
 
-export type InitFirstNodeActivated = { operation_id: OperationId, node_id: NodeId, };
+export type InitFirstMachineActivated = { operation_id: OperationId, machine_id: MachineId, };
 
-export type InitFirstNodeActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "node_seed_write", message: FailureMessage, };
+export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "error": "unavailable", source: MachineQueryUnavailableSource, } | { "error": "machine_add", failure: MachineAddError, } | { "error": "join_redeem", failure: MachineJoinRedeemError, } | { "error": "join_report", failure: MachineJoinReportError, } | { "error": "machine_seed_write", message: FailureMessage, };
 
 export type DeploySubmitRequest = { operation_id: OperationId, target: DeployRequest, };
 
 export type BackupCreateRequest = { operation_id: OperationId, target: BackupTarget, };
 
-export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, };
+export type MachineAddRequest = { operation_id: OperationId, idempotency_key: OperationIdempotencyKey, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, };
 
-export type MachineAddAccepted = { accepted: AcceptedOperation, node_id: NodeId, bootstrap_url: MachineBootstrapUrl, join_bundle: MachineJoinBundle, join_token: MachineJoinToken, };
+export type MachineAddAccepted = { accepted: AcceptedOperation, machine_id: MachineId, bootstrap_url: MachineBootstrapUrl, join_bundle: MachineJoinBundle, join_token: MachineJoinToken, };
 
 export type MachineListRequest = Record<symbol, never>;
 
@@ -296,9 +296,9 @@ export type MachineListResult = { machines: Array<MachineSnapshot>, };
 
 export type MachineListError = { "error": "unavailable", source: MachineQueryUnavailableSource, };
 
-export type MachineInspectRequest = { node_id: NodeId, };
+export type MachineInspectRequest = { machine_id: MachineId, };
 
-export type MachineInspectError = { "error": "no_such_machine", node_id: NodeId, } | { "error": "unavailable", source: MachineQueryUnavailableSource, };
+export type MachineInspectError = { "error": "no_such_machine", machine_id: MachineId, } | { "error": "unavailable", source: MachineQueryUnavailableSource, };
 
 export type MachineQueryUnavailableSource = { "source": "core_state" } | { "source": "observations" };
 
@@ -318,13 +318,13 @@ export type ServiceQueryUnavailableSource = { "source": "core_state" };
 
 export type LogsTailLines = SafeInteger<"LogsTailLines">;
 
-export type LogsTailRequest = { container_id: ContainerId, node_id?: NodeId | null, tail_lines?: LogsTailLines | null, };
+export type LogsTailRequest = { container_id: ContainerId, machine_id?: MachineId | null, tail_lines?: LogsTailLines | null, };
 
-export type LogsTailResult = { node_id: NodeId, container_id: ContainerId, text: string, truncated: boolean, };
+export type LogsTailResult = { machine_id: MachineId, container_id: ContainerId, text: string, truncated: boolean, };
 
-export type LogsTailError = { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, node_ids: Array<NodeId>, } | { "error": "read_failed", node_id: NodeId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", source: LogsTailUnavailableSource, node_id?: NodeId | null, };
+export type LogsTailError = { "error": "no_such_container", container_id: ContainerId, } | { "error": "ambiguous_container", container_id: ContainerId, machine_ids: Array<MachineId>, } | { "error": "read_failed", machine_id: MachineId, container_id: ContainerId, message: FailureMessage, } | { "error": "unavailable", source: LogsTailUnavailableSource, machine_id?: MachineId | null, };
 
-export type LogsTailUnavailableSource = { "source": "observations" } | { "source": "node_rpc" };
+export type LogsTailUnavailableSource = { "source": "observations" } | { "source": "machine_rpc" };
 
 export type MachineJoinClusterName = string;
 
@@ -336,9 +336,9 @@ export type MachineJoinSecretDelivery = { nats_credentials: NatsUserSeed, };
 
 export type MachineJoinTemplate = { join_bundle: MachineJoinBundle, };
 
-export type FirstNodeInstallSpec = { node_id: NodeId, gateway: GatewayRole, dns: DnsRole, node_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstNodeInstallArtifacts, };
+export type FirstMachineInstallSpec = { machine_id: MachineId, gateway: GatewayRole, dns: DnsRole, machine_public_ip: string | null, machine_bootstrap_url: MachineBootstrapUrl | null, machine_join_template_file: AbsoluteInstallPath | null, machine_join_cluster_name: MachineJoinClusterName, machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl, artifacts: FirstMachineInstallArtifacts, };
 
-export type FirstNodeInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, nats_server: NatsServerInstallSpec, };
+export type FirstMachineInstallArtifacts = { ployzd: InstallArtifactSpec, ebpf_bytecode: InstallArtifactSpec, ebpf_ctl: InstallArtifactSpec, nats_server: NatsServerInstallSpec, };
 
 export type NatsServerInstallSpec = { version: InstallArtifactVersion, source: InstallArtifactSource, sha256: InstallSha256Digest, binary: AbsoluteInstallPath, config: AbsoluteInstallPath, };
 
@@ -364,7 +364,7 @@ export type MachineJoinBundle = { material: MachineJoinMaterial, };
 
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 
-export type MachineJoinRedeemed = { operation_id: OperationId, node_id: NodeId, name: MachineName, roles: InstallRolePolicy, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+export type MachineJoinRedeemed = { operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
 export type MachineJoinRedeemResult = "joined" | "already_joined";
 
@@ -378,7 +378,7 @@ export type MachineJoinReportOutcome = { "outcome": "completed" } | { "outcome":
 
 export type MachineJoinReportFailure = { "kind": "bootstrap_failed", message: FailureMessage, };
 
-export type MachineJoinReported = { operation_id: OperationId, node_id: NodeId, last_event_sequence: EventSequence, outcome: MachineJoinReportOutcome, };
+export type MachineJoinReported = { operation_id: OperationId, machine_id: MachineId, last_event_sequence: EventSequence, outcome: MachineJoinReportOutcome, };
 
 export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", source: MachineJoinReportUnavailableSource, };
 
@@ -422,7 +422,7 @@ export type EventReplayFailure = "decode_event" | "read_event" | "timeout" | "in
 
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
-export type InitFirstNodeActivateResponse = OperationApiResponse<InitFirstNodeActivated, InitFirstNodeActivateError>;
+export type InitFirstMachineActivateResponse = OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>;
 
 export type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
 
@@ -450,7 +450,7 @@ export type BackupCreateResponse = OperationApiResponse<AcceptedOperation, Backu
 
 export const OPERATION_API_CONTRACTS = [
   { name: "deploy.submit", subject: "plz.v1.svc.api.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
-  { name: "init.first_node.activate", subject: "plz.v1.svc.api.init.first_node.activate", execution: "mutates_operation", request: "InitFirstNodeActivateRequest", success: "InitFirstNodeActivated", error: "InitFirstNodeActivateError", response: "InitFirstNodeActivateResponse" },
+  { name: "init.first_machine.activate", subject: "plz.v1.svc.api.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
   { name: "machine.add", subject: "plz.v1.svc.api.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
   { name: "machine.list", subject: "plz.v1.svc.api.machine.list", execution: "query", request: "MachineListRequest", success: "MachineListResult", error: "MachineListError", response: "MachineListResponse" },
   { name: "machine.inspect", subject: "plz.v1.svc.api.machine.inspect", execution: "query", request: "MachineInspectRequest", success: "MachineSnapshot", error: "MachineInspectError", response: "MachineInspectResponse" },

@@ -8,7 +8,7 @@ use ployz_core::ops::{
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceState, GatewayServingStatus, GatewayStatusObservation,
-    NodePublicIpObservation,
+    MachinePublicIpObservation,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{
@@ -30,7 +30,7 @@ use ployz_sdk_types::{
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
     },
 };
-use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzctl::api_client::{
     NatsServiceRequestFailure, OperationApiClient, OperationApiClientError,
 };
@@ -122,7 +122,7 @@ async fn operation_api_client_routes_machine_add_success() {
                         watch_subject: "plz.v1.op.op_machine.>".to_owned(),
                         start_sequence: event_sequence(2),
                     },
-                    node_id: node_id("node_2"),
+                    machine_id: machine_id("machine_2"),
                     bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.dev/ployz.sh")
                         .expect("valid bootstrap url"),
                     join_bundle: machine_join_bundle(),
@@ -140,7 +140,7 @@ async fn operation_api_client_routes_machine_add_success() {
         .await
         .expect("machine add responds");
 
-    assert_eq!(accepted.node_id, node_id("node_2"));
+    assert_eq!(accepted.machine_id, machine_id("machine_2"));
     assert_eq!(accepted.accepted.operation_id, operation_id("op_machine"));
 }
 
@@ -159,7 +159,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
             let response: MachineJoinRedeemResponse = OperationApiResponse::Ok {
                 value: MachineJoinRedeemed {
                     operation_id: operation_id("op_machine"),
-                    node_id: node_id("node_2"),
+                    machine_id: machine_id("machine_2"),
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     roles: InstallRolePolicy::install_all().without_gateway(),
                     join_bundle: machine_join_bundle(),
@@ -181,7 +181,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
         .expect("machine join redeem responds");
 
     assert_eq!(redeemed.operation_id, operation_id("op_machine"));
-    assert_eq!(redeemed.node_id, node_id("node_2"));
+    assert_eq!(redeemed.machine_id, machine_id("machine_2"));
     assert_eq!(redeemed.result, MachineJoinRedeemResult::Joined);
 }
 
@@ -199,7 +199,7 @@ async fn operation_api_client_routes_machine_list_success() {
         .bind_endpoint(endpoint, |_request| async move {
             let response: MachineListResponse = OperationApiResponse::Ok {
                 value: MachineListResult {
-                    machines: vec![machine_snapshot("node_2")],
+                    machines: vec![machine_snapshot("machine_2")],
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -213,7 +213,7 @@ async fn operation_api_client_routes_machine_list_success() {
         .await
         .expect("machine list responds");
 
-    assert_eq!(result.machines, vec![machine_snapshot("node_2")]);
+    assert_eq!(result.machines, vec![machine_snapshot("machine_2")]);
 }
 
 #[tokio::test]
@@ -230,10 +230,10 @@ async fn operation_api_client_routes_machine_inspect_success() {
         .bind_endpoint(endpoint, |request| async move {
             let request: MachineInspectRequest =
                 serde_json::from_slice(&request.payload).expect("machine inspect request decodes");
-            assert_eq!(request.node_id, node_id("node_2"));
+            assert_eq!(request.machine_id, machine_id("machine_2"));
 
             let response: MachineInspectResponse = OperationApiResponse::Ok {
-                value: machine_snapshot("node_2"),
+                value: machine_snapshot("machine_2"),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
@@ -243,12 +243,12 @@ async fn operation_api_client_routes_machine_inspect_success() {
 
     let result = api
         .machine_inspect(&MachineInspectRequest {
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
         })
         .await
         .expect("machine inspect responds");
 
-    assert_eq!(result, machine_snapshot("node_2"));
+    assert_eq!(result, machine_snapshot("machine_2"));
 }
 
 #[tokio::test]
@@ -556,7 +556,7 @@ fn machine_add_request() -> MachineAddRequest {
         operation_id: operation_id("op_machine"),
         idempotency_key: OperationIdempotencyKey::try_new("idem_machine")
             .expect("valid idempotency key"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
     }
@@ -629,20 +629,20 @@ fn machine_join_bundle() -> MachineJoinBundle {
     }
 }
 
-fn machine_snapshot(node_id: &str) -> MachineSnapshot {
-    let node_id = self::node_id(node_id);
+fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
+    let machine_id = self::machine_id(machine_id);
     MachineSnapshot {
         active: ActiveMachineState {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             activated_by: operation_id("op_machine"),
         },
-        public_ip: Some(NodePublicIpObservation {
-            node_id: node_id.clone(),
+        public_ip: Some(MachinePublicIpObservation {
+            machine_id: machine_id.clone(),
             public_ip: "203.0.113.10".parse().expect("valid public ip"),
         }),
         gateway: Some(GatewayStatusObservation {
-            node_id,
+            machine_id,
             listen_addr: "127.0.0.1:8080".parse().expect("valid gateway listen addr"),
             serving: GatewayServingStatus::Current,
             route_count: 2,

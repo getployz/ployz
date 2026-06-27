@@ -2,7 +2,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use crate::ids::NodeId;
+use crate::ids::MachineId;
 use crate::nats_config::{NatsCaCertificatePem, NatsUserSeed, is_valid_host_syntax};
 use crate::roles::{DaemonProcessRole, DnsRole, GatewayRole, InstallRolePolicy};
 use serde::{Deserialize, Serialize};
@@ -10,19 +10,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct FirstNodeInstallSpec {
-    pub node_id: NodeId,
+pub struct FirstMachineInstallSpec {
+    pub machine_id: MachineId,
     pub gateway: GatewayRole,
     pub dns: DnsRole,
-    pub node_public_ip: Option<IpAddr>,
+    pub machine_public_ip: Option<IpAddr>,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub machine_join_template_file: Option<AbsoluteInstallPath>,
     pub machine_join_cluster_name: MachineJoinClusterName,
     pub machine_join_runtime_nats_url: MachineJoinRuntimeNatsUrl,
-    pub artifacts: FirstNodeInstallArtifacts,
+    pub artifacts: FirstMachineInstallArtifacts,
 }
 
-impl FirstNodeInstallSpec {
+impl FirstMachineInstallSpec {
     /// The optional-role policy carried by this spec.
     #[must_use]
     pub const fn role_policy(&self) -> InstallRolePolicy {
@@ -36,7 +36,7 @@ impl FirstNodeInstallSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct FirstNodeInstallArtifacts {
+pub struct FirstMachineInstallArtifacts {
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,
@@ -165,8 +165,8 @@ pub struct MachineJoinTrustedNats {
 ///
 /// This is the single owner of the Phase B file-ownership table: keeper
 /// writes the TLS material and the controller/operator/join seeds at
-/// install; `ployzd` control writes `node.seed` at activate-first-node.
-/// `node.seed` deliberately does not exist at install time — node and
+/// install; `ployzd` control writes `machine.seed` at activate-first-machine.
+/// `machine.seed` deliberately does not exist at install time — machine and
 /// gateway roles await it with bounded retries instead of falling back to
 /// controller authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,21 +221,21 @@ impl NatsMachineMaterialPaths {
         self.state_dir.join("join.seed")
     }
 
-    /// Written by `ployzd` control at activate-first-node, never by keeper.
+    /// Written by `ployzd` control at activate-first-machine, never by keeper.
     #[must_use]
-    pub fn node_seed_file(&self) -> PathBuf {
-        self.state_dir.join("node.seed")
+    pub fn machine_seed_file(&self) -> PathBuf {
+        self.state_dir.join("machine.seed")
     }
 
     /// The seed file each daemon role authenticates with. Control holds
-    /// Controller authority; node, gateway, and DNS share the machine's
-    /// Node credential (there is no Gateway principal in v1).
+    /// Controller authority; machine, gateway, and DNS share the machine's
+    /// Machine credential (there is no Gateway principal in v1).
     #[must_use]
     pub fn role_seed_file(&self, role: &DaemonProcessRole) -> PathBuf {
         match role {
             DaemonProcessRole::Control => self.controller_seed_file(),
-            DaemonProcessRole::Node(_) | DaemonProcessRole::Gateway | DaemonProcessRole::Dns => {
-                self.node_seed_file()
+            DaemonProcessRole::Machine(_) | DaemonProcessRole::Gateway | DaemonProcessRole::Dns => {
+                self.machine_seed_file()
             }
         }
     }

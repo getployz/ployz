@@ -106,7 +106,7 @@ pub async fn machine_add(
     let command = MachineAddSubmitCommand {
         operation_id: request.operation_id,
         idempotency_key: request.idempotency_key,
-        node_id: request.node_id,
+        machine_id: request.machine_id,
         name: request.name,
         roles: request.roles,
         join_bundle: material.join_bundle,
@@ -128,13 +128,13 @@ pub async fn machine_add(
     })?;
     handlers.machine_mint.start(MintRequest {
         operation_id: accepted.operation_id.clone(),
-        node_id: accepted.node_id.clone(),
+        machine_id: accepted.machine_id.clone(),
         idempotency_key,
     });
 
     Ok(MachineAddAccepted {
         accepted: owned_operation(accepted.operation_id, accepted.start_sequence),
-        node_id: accepted.node_id,
+        machine_id: accepted.machine_id,
         bootstrap_url: material.bootstrap_url,
         join_bundle: accepted.join_bundle,
         join_token: raw_token,

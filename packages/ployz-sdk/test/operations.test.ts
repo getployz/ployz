@@ -10,7 +10,7 @@ import {
   containerId,
   deploySubmitRequest,
   eventSequence,
-  initFirstNodeActivateRequest,
+  initFirstMachineActivateRequest,
   logsTailRequest,
   logsTailLines,
   machineInspectRequest,
@@ -21,7 +21,7 @@ import {
   machineJoinToken,
   machineName,
   MAX_OPERATION_EVENT_REPLAY_LIMIT,
-  nodeId,
+  machineId,
   OPERATION_API_CONTRACTS,
   operationId,
   operationEventReplayLimit,
@@ -38,9 +38,9 @@ import type {
   BackupCreateRequest,
   DeploySubmitResponse,
   DeploySubmitRequest,
-  InitFirstNodeActivateRequest,
-  InitFirstNodeActivateResponse,
-  InitFirstNodeActivated,
+  InitFirstMachineActivateRequest,
+  InitFirstMachineActivateResponse,
+  InitFirstMachineActivated,
   LogsTailResponse,
   LogsTailRequest,
   LogsTailResult,
@@ -111,7 +111,7 @@ test("machine add returns an operation handle with bootstrap material", async ()
   const status = await handle.status();
 
   assert.equal(handle.operationId, "op_machine");
-  assert.equal(handle.nodeId, "node_2");
+  assert.equal(handle.machineId, "machine_2");
   assert.equal(handle.bootstrapUrl, "https://get.ployz.sh");
   assert.deepEqual(handle.joinBundle, machineJoinBundle());
   assert.equal(handle.runtimeNatsUrl, "nats://127.0.0.1:7422");
@@ -133,18 +133,18 @@ test("backup create returns a normal operation handle", async () => {
   assert.deepEqual(transport.backupCreateRequests, [request]);
 });
 
-test("first-node activation returns a status-capable operation reference", async () => {
+test("first-machine activation returns a status-capable operation reference", async () => {
   const transport = new RecordingTransport(defaultFixture());
   const client = new PloyzClient(transport);
-  const input = { nodeId: "core_1", roles: gatewaySkippedRoles() };
-  const request = initFirstNodeActivateRequest(input);
+  const input = { machineId: "core_1", roles: gatewaySkippedRoles() };
+  const request = initFirstMachineActivateRequest(input);
 
-  const handle = await client.initFirstNodeActivate(input);
+  const handle = await client.initFirstMachineActivate(input);
   const status = await handle.status();
 
   assert.equal(handle.operationId, "op_init_core_1");
-  assert.equal(handle.nodeId, "core_1");
-  assert.deepEqual(transport.initFirstNodeActivateRequests, [request]);
+  assert.equal(handle.machineId, "core_1");
+  assert.deepEqual(transport.initFirstMachineActivateRequests, [request]);
   assert.deepEqual(transport.statusRequests, [{ operation_id: "op_init_core_1" }]);
   assert.deepEqual(status, defaultFixture().operation_status_snapshot);
 });
@@ -155,10 +155,10 @@ test("machine queries return current state snapshots", async () => {
   const client = new PloyzClient(transport);
 
   const machines = await client.machineList();
-  const machine = await client.machineInspect("node_2");
+  const machine = await client.machineInspect("machine_2");
 
   assert.deepEqual(transport.machineListRequests, [machineListRequest()]);
-  assert.deepEqual(transport.machineInspectRequests, [machineInspectRequest("node_2")]);
+  assert.deepEqual(transport.machineInspectRequests, [machineInspectRequest("machine_2")]);
   assert.deepEqual(machines, fixture.machine_snapshots);
   assert.deepEqual(machine, fixture.machine_snapshots[0]);
 });
@@ -182,12 +182,12 @@ test("service queries return current active service snapshots", async () => {
 test("logs tail returns recent container evidence", async () => {
   const transport = new RecordingTransport(defaultFixture());
   const client = new PloyzClient(transport);
-  const input = { containerId: "ctr_failed", nodeId: "node_a", tailLines: 25 };
+  const input = { containerId: "ctr_failed", machineId: "machine_a", tailLines: 25 };
   const result: LogsTailResult = await client.logsTail(input);
 
   assert.deepEqual(transport.logsTailRequests, [logsTailRequest(input)]);
   assert.deepEqual(result, {
-    node_id: nodeId("node_a"),
+    machine_id: machineId("machine_a"),
     container_id: containerId("ctr_failed"),
     text: "hello\n",
     truncated: false,
@@ -297,7 +297,7 @@ test("TypeScript DTOs match the Rust-emitted operation fixture", () => {
   });
 });
 
-test("sdk does not expose node service calls", () => {
+test("sdk does not expose machine service calls", () => {
   const names = new Set(Reflect.ownKeys(PloyzClient.prototype));
 
   assert.equal(names.has("nodeService"), false);
@@ -350,7 +350,7 @@ test("sdk maps raw machine add input to the wire request", () => {
   assert.deepEqual(machineAddRequest(machineAddInput()), {
     operation_id: "op_machine",
     idempotency_key: "idem_machine",
-    node_id: "node_2",
+    machine_id: "machine_2",
     name: "edge_2",
     roles: gatewaySkippedRoles(),
   });
@@ -359,8 +359,8 @@ test("sdk maps raw machine add input to the wire request", () => {
     /machine name/,
   );
   assert.throws(
-    () => machineAddRequest({ ...machineAddInput(), nodeId: "node.2" }),
-    /node id/,
+    () => machineAddRequest({ ...machineAddInput(), machineId: "machine.2" }),
+    /machine id/,
   );
 });
 
@@ -425,8 +425,8 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
     /backup S3 endpoint URL/,
   );
   assert.deepEqual(machineListRequest(), {});
-  assert.deepEqual(machineInspectRequest({ nodeId: "node_2" }), { node_id: "node_2" });
-  assert.deepEqual(machineInspectRequest("node_2"), { node_id: "node_2" });
+  assert.deepEqual(machineInspectRequest({ machineId: "machine_2" }), { machine_id: "machine_2" });
+  assert.deepEqual(machineInspectRequest("machine_2"), { machine_id: "machine_2" });
   assert.deepEqual(serviceListRequest(), {});
   assert.deepEqual(serviceInspectRequest({ serviceId: "svc_api" }), { service_id: "svc_api" });
   assert.deepEqual(serviceInspectRequest("svc_api"), { service_id: "svc_api" });
@@ -436,10 +436,10 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
     tail_lines: logsTailLines(25),
   });
   assert.deepEqual(
-    logsTailRequest({ containerId: "ctr_failed", nodeId: "node_a", tailLines: 25 }),
+    logsTailRequest({ containerId: "ctr_failed", machineId: "machine_a", tailLines: 25 }),
     {
       container_id: "ctr_failed",
-      node_id: "node_a",
+      machine_id: "machine_a",
       tail_lines: logsTailLines(25),
     },
   );
@@ -447,20 +447,20 @@ test("sdk maps raw backup and current-state query inputs to wire requests", () =
     () => backupCreateRequest(backupCreateInput({ operationId: "op.backup" })),
     /operation id/,
   );
-  assert.throws(() => machineInspectRequest("node.2"), /node id/);
+  assert.throws(() => machineInspectRequest("machine.2"), /machine id/);
   assert.throws(() => serviceInspectRequest("svc.api"), /service id/);
   assert.throws(() => logsTailRequest({ containerId: "ctr.failed" }), /container id/);
   assert.throws(() => logsTailRequest({ containerId: "ctr_failed", tailLines: 1001 }), /logs tail/);
 });
 
-test("sdk maps raw first-node activation input to the wire request", () => {
-  assert.deepEqual(initFirstNodeActivateRequest({ nodeId: "core_1", roles: installAllRoles() }), {
-    node_id: "core_1",
+test("sdk maps raw first-machine activation input to the wire request", () => {
+  assert.deepEqual(initFirstMachineActivateRequest({ machineId: "core_1", roles: installAllRoles() }), {
+    machine_id: "core_1",
     roles: installAllRoles(),
   });
   assert.throws(
-    () => initFirstNodeActivateRequest({ nodeId: "core.1", roles: gatewaySkippedRoles() }),
-    /node id/,
+    () => initFirstMachineActivateRequest({ machineId: "core.1", roles: gatewaySkippedRoles() }),
+    /machine id/,
   );
 });
 
@@ -495,13 +495,13 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "DeploySubmitResponse",
     },
     {
-      name: "init.first_node.activate",
-      subject: "plz.v1.svc.api.init.first_node.activate",
+      name: "init.first_machine.activate",
+      subject: "plz.v1.svc.api.init.first_machine.activate",
       execution: "mutates_operation",
-      request: "InitFirstNodeActivateRequest",
-      success: "InitFirstNodeActivated",
-      error: "InitFirstNodeActivateError",
-      response: "InitFirstNodeActivateResponse",
+      request: "InitFirstMachineActivateRequest",
+      success: "InitFirstMachineActivated",
+      error: "InitFirstMachineActivateError",
+      response: "InitFirstMachineActivateResponse",
     },
     {
       name: "machine.add",
@@ -622,7 +622,7 @@ test("sdk helpers enforce public primitive boundaries", () => {
 
 class RecordingTransport implements PloyzOperationTransport {
   readonly deployRequests: DeploySubmitRequest[] = [];
-  readonly initFirstNodeActivateRequests: InitFirstNodeActivateRequest[] = [];
+  readonly initFirstMachineActivateRequests: InitFirstMachineActivateRequest[] = [];
   readonly backupCreateRequests: BackupCreateRequest[] = [];
   readonly machineAddRequests: MachineAddRequest[] = [];
   readonly machineListRequests: MachineListRequest[] = [];
@@ -634,7 +634,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly statusRequests: OpsStatusRequest[] = [];
   readonly watchRequests: OpsWatchRequest[] = [];
   readonly accepted: AcceptedOperation;
-  readonly firstNodeActivated: InitFirstNodeActivated;
+  readonly firstMachineActivated: InitFirstMachineActivated;
   readonly backupAccepted: AcceptedOperation;
   readonly machineAddAccepted: MachineAddAccepted;
   readonly machineSnapshots: MachineSnapshot[];
@@ -644,7 +644,7 @@ class RecordingTransport implements PloyzOperationTransport {
   readonly replay: OperationEventReplayPage;
   readonly replayPages: OperationEventReplayPage[] = [];
   deployResponse?: DeploySubmitResponse;
-  initFirstNodeActivateResponse?: InitFirstNodeActivateResponse;
+  initFirstMachineActivateResponse?: InitFirstMachineActivateResponse;
   backupCreateResponse?: BackupCreateResponse;
   machineAddResponse?: MachineAddResponse;
   machineListResponse?: MachineListResponse;
@@ -658,7 +658,7 @@ class RecordingTransport implements PloyzOperationTransport {
 
   constructor(fixture: OperationFixture) {
     this.accepted = fixture.accepted_operation;
-    this.firstNodeActivated = fixture.init_first_node_activate_response.value;
+    this.firstMachineActivated = fixture.init_first_machine_activate_response.value;
     this.backupAccepted = acceptedOperation("op_backup");
     this.machineAddAccepted = fixture.machine_add_response.value;
     this.machineSnapshots = fixture.machine_snapshots;
@@ -673,13 +673,13 @@ class RecordingTransport implements PloyzOperationTransport {
     return this.deployResponse ?? { status: "ok", value: this.accepted };
   }
 
-  async initFirstNodeActivate(
-    request: InitFirstNodeActivateRequest,
-  ): Promise<InitFirstNodeActivateResponse> {
-    this.initFirstNodeActivateRequests.push(request);
-    return this.initFirstNodeActivateResponse ?? {
+  async initFirstMachineActivate(
+    request: InitFirstMachineActivateRequest,
+  ): Promise<InitFirstMachineActivateResponse> {
+    this.initFirstMachineActivateRequests.push(request);
+    return this.initFirstMachineActivateResponse ?? {
       status: "ok",
-      value: this.firstNodeActivated,
+      value: this.firstMachineActivated,
     };
   }
 
@@ -743,7 +743,7 @@ class RecordingTransport implements PloyzOperationTransport {
     return this.logsTailResponse ?? {
       status: "ok",
       value: {
-        node_id: nodeId("node_a"),
+        machine_id: machineId("machine_a"),
         container_id: request.container_id,
         text: "hello\n",
         truncated: false,
@@ -768,7 +768,7 @@ class RecordingTransport implements PloyzOperationTransport {
 
 interface OperationFixture {
   accepted_operation: AcceptedOperation;
-  init_first_node_activate_response: { status: "ok"; value: InitFirstNodeActivated };
+  init_first_machine_activate_response: { status: "ok"; value: InitFirstMachineActivated };
   machine_add_response: { status: "ok"; value: MachineAddAccepted };
   machine_snapshots: MachineSnapshot[];
   machine_join_redeem_response: { status: "ok"; value: MachineJoinRedeemed };
@@ -780,11 +780,11 @@ interface OperationFixture {
 function defaultFixture(): OperationFixture {
   return {
     accepted_operation: acceptedOperation("op_123"),
-    init_first_node_activate_response: {
+    init_first_machine_activate_response: {
       status: "ok",
       value: {
         operation_id: operationId("op_init_core_1"),
-        node_id: nodeId("core_1"),
+        machine_id: machineId("core_1"),
       },
     },
     machine_add_response: {
@@ -794,7 +794,7 @@ function defaultFixture(): OperationFixture {
           ...acceptedOperation("op_machine"),
           start_sequence: eventSequence(7),
         },
-        node_id: nodeId("node_2"),
+        machine_id: machineId("machine_2"),
         bootstrap_url: machineBootstrapUrl("https://get.ployz.sh"),
         join_bundle: machineJoinBundle(),
         join_token: machineJoinToken("join_once_123"),
@@ -803,7 +803,7 @@ function defaultFixture(): OperationFixture {
     machine_snapshots: [
       {
         active: {
-          node_id: nodeId("node_2"),
+          machine_id: machineId("machine_2"),
           name: machineName("edge_2"),
           activated_by: operationId("op_machine"),
         },
@@ -816,7 +816,7 @@ function defaultFixture(): OperationFixture {
       status: "ok",
       value: {
         operation_id: operationId("op_machine"),
-        node_id: nodeId("node_2"),
+        machine_id: machineId("machine_2"),
         name: machineName("edge_2"),
         roles: gatewaySkippedRoles(),
         join_bundle: machineJoinBundle(),
@@ -864,7 +864,7 @@ function machineAddInput() {
   return {
     operationId: "op_machine",
     idempotencyKey: "idem_machine",
-    nodeId: "node_2",
+    machineId: "machine_2",
     name: "edge_2",
     roles: gatewaySkippedRoles(),
   };

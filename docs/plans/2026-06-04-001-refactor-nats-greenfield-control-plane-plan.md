@@ -42,20 +42,20 @@ The target shape is:
 - **Message schedules** for cron/delayed work where the pinned NATS version
   supports it, with a tiny scheduler-worker fallback if needed.
 - **Subjects and permissions** as the routing/security model.
-- **iroh tunnels** as the default private transport for node-to-core NATS
+- **iroh tunnels** as the default private transport for machine-to-core NATS
   client connections.
 - **One shared `ployzd` runtime artifact** with separately supervised
-  `control`, `node`, `gateway`, `dns`, and `tunnel` role processes.
-- **A tiny independently versioned `ployz-keeper`** for node-local bootstrap,
+  `control`, `machine`, `gateway`, `dns`, and `tunnel` role processes.
+- **A tiny independently versioned `ployz-keeper`** for machine-local bootstrap,
   artifact install, and supervisor unit management. Upgrade rollouts are later,
-  after the two-node product proof is boring.
+  after the two-machine product proof is boring.
 
 This is not "NATS as the database". Docker remains execution reality. KV is the
 small current-state projection. Streams are durable timelines and job triggers.
 Ployz code should mostly read as product policy: validate request, create
-operation, plan from current facts, call node services, commit only on success,
+operation, plan from current facts, call machine services, commit only on success,
 emit events. Most operations are started by one operator command and can be
-owned by the node that accepted that command. The MVP should model that reality
+owned by the machine that accepted that command. The MVP should model that reality
 instead of designing first for multi-controller automatic failover.
 
 The control plane and data plane stay separate. `ployzd control` assures the
@@ -71,7 +71,7 @@ the same `ployzd` binary artifact.
 
 The current architecture has accumulated too much substrate code before the
 product primitive shape has become small and obvious. Polis, Corrosion, iroh
-contact snapshots, peer runtime versions, equal-node coordination, and
+contact snapshots, peer runtime versions, equal-machine coordination, and
 rpc-stdio are all individually defensible, but together they are becoming a
 custom, incomplete version of what NATS already provides.
 
@@ -153,7 +153,7 @@ commands over iroh.
   `completed`, `completed_with_warnings`, `partially_completed`,
   `partially_completed_with_warnings`, `failed`, or `cancelled`.
 - R3. Failed deploys preserve useful evidence after container start, including
-  node id, container id, retained artifact type, and log access instructions.
+  machine id, container id, retained artifact type, and log access instructions.
 - R4. Successful deploy phases update serving target entries only after
   replacement health succeeds and route or certificate preconditions are
   satisfied. Role-process convergence is warning evidence, not a success gate.
@@ -167,8 +167,8 @@ commands over iroh.
 - R7. User-facing commands are NATS services under stable versioned subjects
   such as `plz.v1.svc.api.deploy.submit` and
   `plz.v1.svc.api.ops.status`.
-- R8. Node-local commands are node-scoped services such as
-  `plz.v1.svc.node.<node_id>.container.run`; users cannot call them directly.
+- R8. Machine-local commands are machine-scoped services such as
+  `plz.v1.svc.machine.<machine_id>.container.run`; users cannot call them directly.
 - R9. KV buckets hold current state only: core truth, observations, operation
   status, and short-lived locks.
 - R10. Streams hold operation history, job trigger subjects, audit history,
@@ -181,12 +181,12 @@ commands over iroh.
 - R13. Object Store holds control-plane blobs, not Docker layers or app data.
 - R14. Message schedules replace cron/delayed task loops where supported by the
   pinned NATS server; the fallback uses the same target subjects.
-- R15. Subject permissions enforce node/controller/user roles.
+- R15. Subject permissions enforce machine/controller/user roles.
 - R15a. All subjects use the `plz.v1.<plane>.` grammar. Human names,
   hostnames, and route strings do not appear raw in subjects or KV keys; use
   token-safe ids or encoded index keys.
-- R15b. Node-owned observations put `<node_id>` immediately after
-  `plz.v1.obs.node.` so node credentials can publish only their own
+- R15b. Machine-owned observations put `<machine_id>` immediately after
+  `plz.v1.obs.machine.` so machine credentials can publish only their own
   observation subjects.
 
 ### iroh Transport Underlay
@@ -198,16 +198,16 @@ commands over iroh.
   transport adapter, not a forked NATS protocol implementation.
 - R18. NATS credentials, account permissions, and subject permissions remain the
   authority boundary even when the transport is iroh-encrypted.
-- R19. Bootstrap material includes node id, NATS credentials, trusted NATS
+- R19. Bootstrap material includes machine id, NATS credentials, trusted NATS
   server identity/config, and the core iroh endpoint address/ticket.
 - R20. If iroh direct path fails, relay fallback is acceptable for control-plane
   traffic. The system reports whether the current NATS tunnel is direct,
   relayed, reconnecting, or down.
 - R21. Public TCP/WebSocket NATS exposure is an optional advanced mode, not the
-  default node transport.
+  default machine transport.
 - R21a. Separate control plane from data plane. `ployzd control` assures the
   system, responds to product services, runs direct owned operation execution,
-  and performs mutations. `ployzd node` owns node RPC and observations. Neither
+  and performs mutations. `ployzd machine` owns machine RPC and observations. Neither
   role is in the steady-state serving path for already-running workloads,
   gateway routing, DNS answers, or NATS client connectivity.
 - R21b. Data-plane components are independently supervised NATS clients.
@@ -216,7 +216,7 @@ commands over iroh.
   unavailable.
 - R21c. Core `ployzd control` failure must not imply `nats-server`,
   `ployzd gateway`, `ployzd dns`, or `ployzd tunnel` failure. Edge
-  `ployzd node` failure makes that node's product RPC, node services, deploy
+  `ployzd machine` failure makes that machine's product RPC, machine services, deploy
   participation, and observations unavailable, but existing workloads and
   data-plane serving continue. These roles may share one `ployzd` binary while
   remaining separate supervised processes and failure domains.
@@ -231,9 +231,9 @@ commands over iroh.
   material, and starts the keeper. It does not install or configure the full
   cluster itself.
 - R32. `ployz-keeper` is a separate, small binary with an independent version
-  from `ployzd`. For v1 it owns only node-local bootstrap/install: host
+  from `ployzd`. For v1 it owns only machine-local bootstrap/install: host
   prerequisites, verified artifacts, supervisor units, and join material.
-- R33. `ployzd` is one main runtime artifact. Control, node-agent, gateway,
+- R33. `ployzd` is one main runtime artifact. Control, machine-agent, gateway,
   DNS, and NATS tunnel roles run as separate supervised processes/modes of
   that same binary unless a later hard boundary requires another split.
 - R34. Join tokens are short-lived, one-time, and scoped to bootstrap. They
@@ -278,7 +278,7 @@ commands over iroh.
   add Hetzner-specific Rust, provider abstractions, readiness models, retry
   workflows, product probes, diagnostics systems, or a second orchestration
   path.
-- R42. H0 passes when fresh hosts install Ployz, join the second node, connect
+- R42. H0 passes when fresh hosts install Ployz, join the second machine, connect
   NATS over iroh, deploy one smoke service, record successful operations, and
   serve one request through the real route/data-plane path. Product readiness
   must come from product commands and operation output.
@@ -306,7 +306,7 @@ commands over iroh.
 - R28. Existing tests are kept only when they validate product semantics that
   still matter.
 - R29. The new code path starts from a minimal greenfield Rust skeleton.
-- R30. The first complete proof is single-node NATS + one deploy operation
+- R30. The first complete proof is single-machine NATS + one deploy operation
   against a fake Docker executor, then a real Docker executor.
 
 ---
@@ -324,8 +324,8 @@ commands over iroh.
 
 - KTD3. **Control role is not the data plane.** `ployzd control` is the
   control-plane assurance/service process: bootstrap, health checks, repair,
-  service responders, and direct owned operation execution. `ployzd node` owns
-  node RPC and observations. `ployzd gateway`, `ployzd dns`, `ployzd tunnel`,
+  service responders, and direct owned operation execution. `ployzd machine` owns
+  machine RPC and observations. `ployzd gateway`, `ployzd dns`, `ployzd tunnel`,
   `nats-server`, and workloads are independently supervised data-plane or
   substrate processes. Only core nodes run `nats-server`.
 
@@ -342,7 +342,7 @@ commands over iroh.
   `ployzd tunnel --side core` role, which forwards bytes to the local core
   `nats-server` client listener. This keeps NATS native while avoiding public
   NATS exposure and surviving address changes. Tunnel availability is
-  health/connectivity state; losing the tunnel pauses that node's NATS access
+  health/connectivity state; losing the tunnel pauses that machine's NATS access
   without rewriting cluster truth.
 
 - KTD5a. **If a process owns a runtime dependency, model it as supervision.**
@@ -354,14 +354,14 @@ commands over iroh.
   recovery tests. This is not the default steady-state assumption.
 
 - KTD5b. **One `ployzd` artifact, many supervised role processes.** Gateway,
-  DNS, tunnel forwarding, node agent, and control services share one `ployzd`
+  DNS, tunnel forwarding, machine agent, and control services share one `ployzd`
   binary version, but run as separate process roles such as `ployzd control`,
-  `ployzd node`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel`. A shared
+  `ployzd machine`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel`. A shared
   artifact keeps runtime compatibility and rollout logic simple; separate
   process supervision keeps failure domains explicit.
 
 - KTD5c. **Keeper is separate because it owns local install.** `ployz-keeper`
-  is the tiny node-local substrate manager that installs the main `ployzd`
+  is the tiny machine-local substrate manager that installs the main `ployzd`
   artifact, writes supervisor units, verifies artifacts, and reports bootstrap
   progress. It is versioned independently so it can later survive and manage
   `ployzd` upgrades, but rollout logic is deferred until the product proof is
@@ -391,7 +391,7 @@ commands over iroh.
   resources such as one service deploy, one ACME hostname, or one volume
   mutation.
 
-- KTD11. **Docker is execution reality.** Labels and local SQLite make node
+- KTD11. **Docker is execution reality.** Labels and local SQLite make machine
   reality inspectable and mostly rebuildable. KV is the cluster's current
   control-plane view, not a substitute for Docker inspection.
 
@@ -487,7 +487,7 @@ flowchart TB
   Streams["PLZ_OPS / PLZ_JOBS / PLZ_AUDIT / PLZ_OBS_TRANSITIONS / PLZ_SCHEDULES"]
   Objects["Object Store buckets"]
   DirectOps["direct owned operation execution"]
-  Agents["ployzd node"]
+  Agents["ployzd machine"]
   Docker["Docker"]
   Gateway["ployzd gateway"]
   DNS["ployzd dns"]
@@ -516,7 +516,7 @@ flowchart TB
 ```
 
 Every machine can run the shared `ployzd` artifact in one or more roles:
-`control`, `node`, `gateway`, `dns`, and `tunnel`. Only core nodes run
+`control`, `machine`, `gateway`, `dns`, and `tunnel`. Only core nodes run
 `nats-server`. Gateway, DNS, and tunnel roles are independent NATS
 clients/processes supervised outside `ployzd control`, but they use the same
 `ployzd` binary version. `ployz-keeper` is the separately versioned local
@@ -531,7 +531,7 @@ owner leases, and resource locks, not implicit process identity.
 control plane:
   ployzd control service responders
   direct owned operation execution
-  ployzd node RPC services
+  ployzd machine RPC services
   bootstrap, health checks, repair, config rendering
 
 substrate:
@@ -548,7 +548,7 @@ data plane:
 ```
 
 `ployzd control` failure stops new mutations that need core service responders
-or direct owned execution. `ployzd node` failure stops that node's RPC and
+or direct owned execution. `ployzd machine` failure stops that machine's RPC and
 observations. Neither failure automatically stops `ployzd gateway`,
 `ployzd dns`, `ployzd tunnel`, NATS clients, or existing workloads. If NATS
 state changes while `ployzd control` is down, gateway and DNS role processes
@@ -562,7 +562,7 @@ sequenceDiagram
   participant Caller as CLI / SDK / Cloud
   participant Owner as accepting ployzd control
   participant NATS as NATS KV + streams
-  participant Node as ployzd node services
+  participant Machine as ployzd machine services
 
   Caller->>Owner: mutating service request
   Owner->>NATS: create operation status + accepted event
@@ -570,8 +570,8 @@ sequenceDiagram
   Owner-->>Caller: operation id + watch subject
   loop while operation is active
     Owner->>NATS: renew owner lease
-    Owner->>Node: bounded node command
-    Node-->>Owner: typed outcome
+    Owner->>Machine: bounded machine command
+    Machine-->>Owner: typed outcome
     Owner->>NATS: append progress event + update status
   end
   Owner->>NATS: write terminal status
@@ -588,20 +588,20 @@ from Docker/KV observations.
 ### Scale Modes
 
 ```text
-1 node:
+1 machine:
   ployz-keeper
-  ployzd control/node/tunnel roles as needed
+  ployzd control/machine/tunnel roles as needed
   nats-server --jetstream
   ployzd gateway / ployzd dns if configured
   docker
 
 2 nodes:
-  node 1 = core
-  node 2 = edge
+  machine 1 = core
+  machine 2 = edge
 
 3-200 nodes:
-  one explicit core node runs NATS + JetStream
-  edges = keeper plus assigned ployzd node/gateway/dns/tunnel roles
+  one explicit core machine runs NATS + JetStream
+  edges = keeper plus assigned ployzd machine/gateway/dns/tunnel roles
 ```
 
 Multi-core control-plane replication is out of v1. The recovery primitive is a
@@ -617,7 +617,7 @@ Docker labels
   emergency discovery: service id, revision, operation id, step id
 
 local SQLite
-  node-local cache: created containers, sanitized specs, local evidence
+  machine-local cache: created containers, sanitized specs, local evidence
 
 NATS JetStream
   cluster authority: current state, operation status, events, audit, locks
@@ -636,8 +636,8 @@ are stale.
 ```text
 KV_CORE
   domain.config
-  machines.<node_id>
-  machines.<node_id>.roles
+  machines.<machine_id>
+  machines.<machine_id>.roles
   machines.by_name.<encoded_name>
   services.<service_id>
   services.by_name.<encoded_name>
@@ -651,15 +651,15 @@ KV_OPS
   ops.<op_id>
 
 KV_OBS
-  nodes.<node_id>.heartbeat
-  nodes.<node_id>.resources
-  nodes.<node_id>.public_ip
-  nodes.<node_id>.components.keeper
-  nodes.<node_id>.components.ployzd
-  nodes.<node_id>.roles.<role>.status
-  containers.<node_id>.<container_id>
-  gateways.<node_id>.status
-  dns.<node_id>.status
+  nodes.<machine_id>.heartbeat
+  nodes.<machine_id>.resources
+  nodes.<machine_id>.public_ip
+  nodes.<machine_id>.components.keeper
+  nodes.<machine_id>.components.ployzd
+  nodes.<machine_id>.roles.<role>.status
+  containers.<machine_id>.<container_id>
+  gateways.<machine_id>.status
+  dns.<machine_id>.status
 
 KV_LOCKS
   deploy.<service_id>
@@ -681,7 +681,7 @@ epoch
 expires_at
 ```
 
-Destructive or exclusive node calls carry the lock epoch where relevant. Stale
+Destructive or exclusive machine calls carry the lock epoch where relevant. Stale
 epochs are rejected.
 
 ### Streams
@@ -697,7 +697,7 @@ PLZ_AUDIT
   plz.v1.audit.>
 
 PLZ_OBS_TRANSITIONS
-  plz.v1.obs.node.<node_id>.>
+  plz.v1.obs.machine.<machine_id>.>
 
 PLZ_SCHEDULES
   plz.v1.sched.>
@@ -712,14 +712,14 @@ from operation timelines.
 `PLZ_OBS_TRANSITIONS` stores important transitions only. Latest health goes to
 `KV_OBS`; health ticks do not flood replicated durable history.
 
-Observation subjects put node ownership first:
+Observation subjects put machine ownership first:
 
 ```text
-plz.v1.obs.node.node_7.heartbeat.updated
-plz.v1.obs.node.node_7.public_ip.changed
-plz.v1.obs.node.node_7.container.ctr_abc.running
-plz.v1.obs.node.node_7.container.ctr_abc.health_failed
-plz.v1.obs.node.node_7.gateway.routes_applied
+plz.v1.obs.machine.machine_7.heartbeat.updated
+plz.v1.obs.machine.machine_7.public_ip.changed
+plz.v1.obs.machine.machine_7.container.ctr_abc.running
+plz.v1.obs.machine.machine_7.container.ctr_abc.health_failed
+plz.v1.obs.machine.machine_7.gateway.routes_applied
 ```
 
 Schedules are timer definitions; their targets are jobs:
@@ -728,8 +728,8 @@ Schedules are timer definitions; their targets are jobs:
 plz.v1.sched.cert.renew.<cert_id>
   -> plz.v1.job.cert.renew.<cert_id>
 
-plz.v1.sched.node.ip_probe.<node_id>
-  -> plz.v1.job.node.ip_probe.<node_id>
+plz.v1.sched.machine.ip_probe.<machine_id>
+  -> plz.v1.job.machine.ip_probe.<machine_id>
 
 plz.v1.sched.gc.images.global
   -> plz.v1.job.gc.images.global
@@ -764,21 +764,21 @@ start_sequence
 owner_lease_expires_at
 ```
 
-### Node Services
+### Machine Services
 
 ```text
-plz.v1.svc.node.<node_id>.inspect
-plz.v1.svc.node.<node_id>.container.run
-plz.v1.svc.node.<node_id>.container.stop
-plz.v1.svc.node.<node_id>.container.remove
-plz.v1.svc.node.<node_id>.container.start
-plz.v1.svc.node.<node_id>.predeploy.run
-plz.v1.svc.node.<node_id>.logs.tail
-plz.v1.svc.node.<node_id>.volume.create
-plz.v1.svc.node.<node_id>.volume.remove
+plz.v1.svc.machine.<machine_id>.inspect
+plz.v1.svc.machine.<machine_id>.container.run
+plz.v1.svc.machine.<machine_id>.container.stop
+plz.v1.svc.machine.<machine_id>.container.remove
+plz.v1.svc.machine.<machine_id>.container.start
+plz.v1.svc.machine.<machine_id>.predeploy.run
+plz.v1.svc.machine.<machine_id>.logs.tail
+plz.v1.svc.machine.<machine_id>.volume.create
+plz.v1.svc.machine.<machine_id>.volume.remove
 ```
 
-Node services are coarse, local, and idempotent. They do not decide placement,
+Machine services are coarse, local, and idempotent. They do not decide placement,
 deploy policy, route policy, or cleanup policy.
 
 Controller/internal services use a third service plane:
@@ -805,7 +805,7 @@ crates/
       state/
       ops/
       deploy/
-      node/
+      machine/
       security/
   ployz-nats/
     src/
@@ -831,7 +831,7 @@ crates/
       app.rs
       services/
       controllers/
-      node_agent/
+      machine_agent/
       docker/
       gateway/
       dns/
@@ -861,11 +861,11 @@ Rules:
 - `ployz-transport` owns iroh endpoint identity, NATS byte tunnels, and join
   bundle encoding.
 - `ployzd` is one main runtime artifact. It wires process roles, credentials,
-  service handlers, direct owned operation execution, node agent, Docker,
+  service handlers, direct owned operation execution, machine agent, Docker,
   gateway, DNS, NATS tunnel, and assurance/repair checks.
 - `ployzd control` runs core services, direct owned operation execution, and
   bootstrap assurance.
-- `ployzd node` runs node-local services, observation, and Docker integration.
+- `ployzd machine` runs machine-local services, observation, and Docker integration.
 - `ployzd gateway` is a data-plane NATS client process that watches
   route/container/cert state and serves last-known-good routes independently of
   `ployzd control`.
@@ -881,7 +881,7 @@ Rules:
   bindings.
 
 One binary version does not mean one process or one failure domain. Gateway,
-DNS, tunnel, node, and control roles share the `ployzd` artifact but are
+DNS, tunnel, machine, and control roles share the `ployzd` artifact but are
 supervised as separate role units with separate health and restart behavior.
 
 ---
@@ -909,24 +909,24 @@ ployz init
   begin KV_OBS heartbeat
 ```
 
-On the first node, `async-nats` can connect directly to local `nats-server`.
+On the first machine, `async-nats` can connect directly to local `nats-server`.
 The iroh tunnel is still started immediately so added machines have one stable
 join target that survives public IP changes.
 
 ### `ployz machine add`
 
 ```text
-ployz machine add user@host --name node-2
+ployz machine add user@host --name machine-2
   call plz.v1.svc.api.machine.add
   receive op_id
   accepting ployzd owns the machine operation under a lease
-  owner creates node-scoped NATS user/creds
+  owner creates machine-scoped NATS user/creds
   owner creates short-lived one-time join token
   owner creates join bundle:
     domain id
-    node id
+    machine id
     trusted NATS server identity/config
-    node NATS creds
+    machine NATS creds
     core iroh endpoint address/ticket
     relay map / relay policy
     assigned ployzd roles
@@ -935,20 +935,20 @@ ployz machine add user@host --name node-2
   ployz.sh installs only ployz-keeper
   keeper redeems join token and receives/redacts join bundle
   keeper installs staged verified ployzd artifact
-  keeper writes tunnel, node, gateway, and DNS role configs as assigned
+  keeper writes tunnel, machine, gateway, and DNS role configs as assigned
   keeper starts supervised ployzd tunnel role
-  keeper starts supervised ployzd node role
+  keeper starts supervised ployzd machine role
   target async-nats clients connect to localhost tunnel
-  target ployzd node registers plz.v1.svc.node.<node_id>.*
-  target writes KV_OBS key `nodes.<node_id>.heartbeat`
-  owner requests plz.v1.svc.node.<node_id>.inspect
+  target ployzd machine registers plz.v1.svc.machine.<machine_id>.*
+  target writes KV_OBS key `nodes.<machine_id>.heartbeat`
+  owner requests plz.v1.svc.machine.<machine_id>.inspect
   owner marks machine active in KV_CORE
   operation completes
 ```
 
 The bootstrap problem remains one install/contact event. NATS-native helps
-after that event: the new node proves itself by connecting to NATS, responding
-to a node service, and publishing observations. iroh keeps that NATS path
+after that event: the new machine proves itself by connecting to NATS, responding
+to a machine service, and publishing observations. iroh keeps that NATS path
 private and stable across NATs and address changes.
 
 ### `ployz.sh`
@@ -1022,7 +1022,7 @@ current artifact.
 - iroh product peer runtime, product peer RPC, and status/contact snapshot code.
 - `rpc-stdio` as the primary control-plane protocol.
 - Old daemon substrate boot that starts Corrosion/iroh.
-- Old equal-node peer command routing.
+- Old equal-machine peer command routing.
 - WireGuard control-plane experiments from v1 scope.
 - Any test-only operation registry or mode that leaks into production status.
 
@@ -1032,7 +1032,7 @@ current artifact.
 - Operation primitive philosophy from old plans.
 - Failure-audience language and retained deploy artifact semantics.
 - Old eBPF/WireGuard dataplane history as the starting point for production-ish
-  node/container private networking.
+  machine/container private networking.
 - Existing deploy tests only if they encode product behavior that still applies.
 - Rust discipline in `AGENTS.md`: typed states, enums over option bags, explicit
   timeouts, structured failures.
@@ -1083,7 +1083,7 @@ Audit as of 2026-06-10:
 - **U1a. iroh NATS Tunnel Transport** — **done**.
   Evidence: `crates/ployz-transport/src/nats_tunnel.rs`,
   `crates/ployzd/src/iroh_tunnel.rs`, `crates/ployzd/tests/iroh_nats_tunnel.rs`,
-  and the live H0 runs that reached edge join/runtime node RPC over the tunnel.
+  and the live H0 runs that reached edge join/runtime machine RPC over the tunnel.
   Gap: relay-mode reporting and tunnel-loss stress tests remain later stress
   work, not a blocker for this unit.
 
@@ -1125,17 +1125,17 @@ Audit as of 2026-06-10:
 
 - **U5. Permission Profiles And Credentials** — **done**.
   Evidence: `crates/ployz-nats/src/permissions.rs` and
-  `crates/ployz-nats/tests/permissions.rs` cover API, node, and observation
+  `crates/ployz-nats/tests/permissions.rs` cover API, machine, and observation
   permission shapes. Gap: credentials issuance is sufficient for current
   bootstrap, but full operator/account lifecycle hardening can stay behind H0.
 
-- **U6. Node Agent, Docker Observer, And Local Cache** — **partially done**.
-  Evidence: `crates/ployzd/src/node_agent/observer.rs`,
-  `node_service_runtime.rs`, `node_rpc.rs`, `docker/runner.rs`,
+- **U6. Machine Agent, Docker Observer, And Local Cache** — **partially done**.
+  Evidence: `crates/ployzd/src/machine_agent/observer.rs`,
+  `machine_service_runtime.rs`, `machine_rpc.rs`, `docker/runner.rs`,
   `docker/labels.rs`, and tests in `crates/ployzd/tests/docker_observer.rs`,
-  `node_agent.rs`, `node_service_runtime.rs`, and `node_rpc.rs`. Gaps: local
+  `machine_agent.rs`, `machine_service_runtime.rs`, and `machine_rpc.rs`. Gaps: local
   SQLite/cache is not a visible completed layer; Docker/eBPF dataplane reality
-  still needs the U7b local proof; node-runtime failure diagnostics need to
+  still needs the U7b local proof; machine-runtime failure diagnostics need to
   avoid ambiguous request timeouts.
 
 - **U7. First Deploy Operation** — **partially done**.
@@ -1143,12 +1143,12 @@ Audit as of 2026-06-10:
   `deploy_runtime.rs`, `deploy_worker/*`, real-NATS deploy tests in
   `deploy_runtime_nats.rs`, and e2e fake/runtime tests in
   `crates/ployz-e2e/tests/operations.rs`. Gaps: the deploy path emits
-  WireGuard/eBPF evidence models, but the real node-local dataplane path is not
+  WireGuard/eBPF evidence models, but the real machine-local dataplane path is not
   proven; live H0 currently fails during `preparing_wireguard_ebpf`.
 
 - **U7a. Keeper And `ployz.sh` Bootstrap Foundation** — **partially done**.
   Evidence: `crates/ployz-keeper/*`, `scripts/ployz.sh`,
-  first-node install and join-token paths in `ployzctl`/`ployzd`, and tests in
+  first-machine install and join-token paths in `ployzctl`/`ployzd`, and tests in
   `crates/ployz-keeper/tests/*`, `crates/ployzctl/tests/cli_contract.rs`, and
   `crates/ployz-e2e/tests/h0_script.rs`. Gaps: fresh-host bootstrap/join has
   been exercised in H0, but the full proof is still blocked by dataplane prep;
@@ -1183,9 +1183,9 @@ Audit as of 2026-06-10:
   Evidence: production dataplane code exists in
   `crates/ployzd/src/dataplane_runtime.rs`,
   `dataplane_runtime/host_routes.rs`, `docker/network.rs`,
-  `docker/runner.rs`, `node_service_runtime.rs`, and `node_rpc.rs`; privileged
+  `docker/runner.rs`, `machine_service_runtime.rs`, and `machine_rpc.rs`; privileged
   local checks now cover direct Docker/WireGuard/eBPF preparation and
-  node-scoped NATS service plumbing. Gap: the local proof still must become a
+  machine-scoped NATS service plumbing. Gap: the local proof still must become a
   product-install proof that boots two disposable local machines through
   `ployz.sh` and `ployz-keeper`, uses `ployzctl init` on the first machine,
   `ployzctl machine add` plus the printed bootstrap command on the second
@@ -1195,13 +1195,13 @@ Audit as of 2026-06-10:
   joins complete outside the keeper/product path.
 
 - **H0. Disposable Product Smoke Proof** — **in progress**.
-  Evidence: `scripts/hetzner-two-node-acceptance.sh`,
+  Evidence: `scripts/hetzner-two-machine-acceptance.sh`,
   `scripts/prepare-h0-artifacts.sh`,
-  `docs/operations/two-node-acceptance.md`, and
+  `docs/operations/two-machine-acceptance.md`, and
   `crates/ployz-e2e/tests/h0_script.rs`; live H0 has proven host creation,
-  artifact staging, first-node install, machine add, edge join, runtime tunnel,
-  and edge node RPC. Gaps: smoke deploy currently fails during
-  `preparing_wireguard_ebpf` with an edge node runtime timeout; H0 should wait
+  artifact staging, first-machine install, machine add, edge join, runtime tunnel,
+  and edge machine RPC. Gaps: smoke deploy currently fails during
+  `preparing_wireguard_ebpf` with an edge machine runtime timeout; H0 should wait
   for U7b rather than remain the dataplane debug loop. The Hetzner script has
   the same product-path constraint as U7b: Hetzner only supplies fresh Linux
   machines and SSH; Ployz must install itself with the normal `ployz.sh`,
@@ -1224,7 +1224,7 @@ Audit as of 2026-06-10:
 
 The main finish-line gaps are now explicit: finish U7b locally, then rerun H0
 as acceptance; after that, stress test process loss, tunnel loss, and ambiguous
-node runtime failures.
+machine runtime failures.
 
 ### Execution And Review Loop
 
@@ -1344,7 +1344,7 @@ Pipeline finish:
   - `crates/ployz-nats/src/schedules.rs`
   - `crates/ployzd/src/nats_process.rs`
   - `crates/ployzd/tests/nats_bootstrap.rs`
-- **Approach:** Pin a minimum NATS server version. Render a local single-node
+- **Approach:** Pin a minimum NATS server version. Render a local single-machine
   config first and expose the command/supervisor material needed to run it, but
   keep `nats-server` process lifetime as an external supervisor concern by
   default. `ployzd control` connects, checks health/capabilities, and creates
@@ -1379,17 +1379,17 @@ Pipeline finish:
   protocol for NATS byte forwarding and proxies each stream to local
   `nats-server`. The supervised edge tunnel process is a `ployzd tunnel` role
   that starts a local loopback TCP listener and forwards accepted sockets over
-  iroh. `async-nats` clients, including `ployzd node`, `ployzd gateway`, and
+  iroh. `async-nats` clients, including `ployzd machine`, `ployzd gateway`, and
   `ployzd dns`, connect to the loopback address with normal NATS credentials.
   Tunnel state is observable but not cluster truth. Tunnel loss marks that
-  node's connectivity unavailable; it does not mutate current workload state.
+  machine's connectivity unavailable; it does not mutate current workload state.
 - **Test scenarios:**
   - Edge `async-nats` connects through loopback tunnel and can call
     `plz.v1.svc.api.ops.status`.
   - Invalid NATS credentials fail even when the iroh tunnel connects.
   - Tunnel reconnects after the iroh connection drops.
   - Tunnel status reports direct, relayed, reconnecting, and down states.
-  - Edge `ployzd node` loss leaves `ployzd tunnel` connectivity available for
+  - Edge `ployzd machine` loss leaves `ployzd tunnel` connectivity available for
     other local NATS clients.
   - Join bundle redaction never prints full NATS credentials or private keys.
 - **Verification:** `cargo test -p ployz-transport && cargo test -p ployzd --test iroh_nats_tunnel`
@@ -1422,7 +1422,7 @@ Pipeline finish:
 
 ### U3. NATS Service API Command Surface
 
-- **Goal:** Register user-facing and node-facing service endpoints through
+- **Goal:** Register user-facing and machine-facing service endpoints through
   NATS Service API.
 - **Requirements:** R7, R8, R15, R25
 - **Dependencies:** U1, U1a, U2
@@ -1431,14 +1431,14 @@ Pipeline finish:
   - `crates/ployzd/src/services.rs`
   - `crates/ployzd/tests/services.rs`
 - **Approach:** Register services with names, versions, endpoints, and
-  metadata. Implement `ops.status`, `ops.watch`, and `node.inspect` first.
+  metadata. Implement `ops.status`, `ops.watch`, and `machine.inspect` first.
   Mutating service handlers call the operation acceptor, create an owner lease,
   and start direct owned execution before returning the operation id. They do
   not block the service response on long-running work.
 - **Test scenarios:**
   - `$SRV.PING` can discover registered Ployz services.
   - `ops.status` returns no such operation for unknown ids.
-  - Calling a node service with no responder returns a typed node-unavailable
+  - Calling a machine service with no responder returns a typed machine-unavailable
     error.
   - Mutating service handler returns an operation id before the operation
     finishes.
@@ -1526,7 +1526,7 @@ Pipeline finish:
   - Owner lease renews while the bounded operation future is active and stops
     when the future returns.
   - Expired owner lease reports expired/recoverable ownership without invoking
-    node side effects.
+    machine side effects.
   - Duplicate submit with the same idempotency key returns the original
     operation rather than starting a second execution.
   - Existing durable consumer substrate/deploy tests are removed, rewritten as
@@ -1543,50 +1543,50 @@ Pipeline finish:
   - `crates/ployz-nats/src/permissions.rs`
   - `crates/ployzd/src/config.rs`
   - `crates/ployzd/tests/permissions.rs`
-- **Approach:** Render node, controller, user, and system-account permission
+- **Approach:** Render machine, controller, user, and system-account permission
   profiles. Start with one account unless hosted multi-tenant requires account
   separation. Use subject allow/deny and `allow_responses` for responders.
 - **Test scenarios:**
-  - Node credential can subscribe/respond only to
-    `plz.v1.svc.node.<self>.>`.
-  - Node credential can publish only `plz.v1.obs.node.<self>.>` observation
+  - Machine credential can subscribe/respond only to
+    `plz.v1.svc.machine.<self>.>`.
+  - Machine credential can publish only `plz.v1.obs.machine.<self>.>` observation
     subjects.
-  - Node credential cannot write `KV_CORE` or call
-    `plz.v1.svc.node.<other>.>`.
+  - Machine credential cannot write `KV_CORE` or call
+    `plz.v1.svc.machine.<other>.>`.
   - Controller credential can create owned operations, write allowed operation
     status/events/leases, consume `plz.v1.job.>`, and call
-    `plz.v1.svc.node.*.>`.
-  - User credential can call `plz.v1.svc.api.>` and cannot call node or
+    `plz.v1.svc.machine.*.>`.
+  - User credential can call `plz.v1.svc.api.>` and cannot call machine or
     controller services.
   - System credential can query NATS system events.
 - **Verification:** `cargo test -p ployzd permissions`
 
-### U6. Node Agent, Docker Observer, And Local Cache
+### U6. Machine Agent, Docker Observer, And Local Cache
 
-- **Goal:** Make every edge node expose local node services and publish current
+- **Goal:** Make every edge machine expose local machine services and publish current
   observations.
 - **Requirements:** R3, R8, R9, R13, R30
 - **Dependencies:** U1, U1a, U2, U3, U5
 - **Files:**
-  - `crates/ployzd/src/node_agent/mod.rs`
-  - `crates/ployzd/src/node_agent/observer.rs`
+  - `crates/ployzd/src/machine_agent/mod.rs`
+  - `crates/ployzd/src/machine_agent/observer.rs`
   - `crates/ployzd/src/docker/client.rs`
   - `crates/ployzd/src/docker/labels.rs`
   - `crates/ployzd/src/docker/local_db.rs`
-  - `crates/ployzd/tests/node_agent.rs`
+  - `crates/ployzd/tests/machine_agent.rs`
   - `crates/ployzd/tests/docker_observer.rs`
 - **Approach:** Start with a fake Docker executor for operation tests, then add
-  the real local Docker socket path. Observer writes latest container/node
+  the real local Docker socket path. Observer writes latest container/machine
   facts to `KV_OBS` and emits only important transitions.
 - **Test scenarios:**
   - Docker event creates or updates KV_OBS key
-    `containers.<node>.<container>`.
+    `containers.<machine>.<container>`.
   - Periodic full sync corrects missed Docker events.
   - Managed containers include required Ployz labels.
   - Local SQLite can rebuild a cache entry from Docker labels plus KV service
     revision.
-  - Node services are idempotent for repeated `operation_id + step_id`.
-- **Verification:** `cargo test -p ployzd node_agent docker_observer`
+  - Machine services are idempotent for repeated `operation_id + step_id`.
+- **Verification:** `cargo test -p ployzd machine_agent docker_observer`
 
 ### U7. First Deploy Operation
 
@@ -1602,8 +1602,8 @@ Pipeline finish:
   - `crates/ployzd/tests/deploy_operation.rs`
   - `crates/ployzd/tests/deploy_failure_retention.rs`
 - **Approach:** Implement one sequential deploy path first. Plan from
-  Docker/node observations plus current serving target and route records. Call
-  node services for container run/start/stop/remove. Wait for health. Update
+  Docker/machine observations plus current serving target and route records. Call
+  machine services for container run/start/stop/remove. Wait for health. Update
   serving target entries for each successful phase and write deploy outcome
   status directly.
 - **Test scenarios:**
@@ -1622,7 +1622,7 @@ Pipeline finish:
 
 ### U7a. Keeper And `ployz.sh` Bootstrap Foundation
 
-- **Goal:** Make node bootstrap first-class without requiring substrate rollout
+- **Goal:** Make machine bootstrap first-class without requiring substrate rollout
   machinery before the Hetzner proof.
 - **Requirements:** R31, R32, R33, R34, R35, R36, R37, R38
 - **Dependencies:** U1, U1a, U2, U3, U5, U11
@@ -1639,7 +1639,7 @@ Pipeline finish:
   downloads and verifies the main `ployzd` artifact, writes systemd units for
   assigned `ployzd` roles, starts those roles, and reports bootstrap progress
   to the active operation. Substrate updates and keeper self-update are later
-  product decisions after the two-node proof is repeatable.
+  product decisions after the two-machine proof is repeatable.
 - **Test scenarios:**
   - `ployz.sh` installs `ployz-keeper` only and does not write NATS
     credentials or `ployzd` role configs.
@@ -1647,8 +1647,8 @@ Pipeline finish:
     refuses token reuse.
   - Keeper installs a staged, checksum/signature-verified `ployzd` artifact.
   - Keeper writes separate supervisor units for `ployzd control`,
-    `ployzd node`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel` only
-    when the node is assigned those roles.
+    `ployzd machine`, `ployzd gateway`, `ployzd dns`, and `ployzd tunnel` only
+    when the machine is assigned those roles.
   - Keeper reports each bootstrap step to operation events and latest operation
     status.
   - A failed keeper step fails the bootstrap operation with typed failure
@@ -1660,7 +1660,7 @@ Pipeline finish:
 ### U8. Minimal Gateway Projection Skeleton
 
 - **Goal:** Build the smallest independently supervised gateway projection
-  needed before cross-node Pingora ingress.
+  needed before cross-machine Pingora ingress.
 - **Requirements:** R4, R9, R10, R14, R21b, R33, R38
 - **Dependencies:** U6, U7, U7a
 - **Files:**
@@ -1670,7 +1670,7 @@ Pipeline finish:
   `certs.>`, plus KV_OBS keys `containers.>` through its own NATS client; it
   serves and applies route changes independently of `ployzd control`. Keep
   route projection intentionally narrow; DNS and cert automation are later
-  projection slices and should not block the two-node product acceptance.
+  projection slices and should not block the two-machine product acceptance.
 - **Test scenarios:**
   - Gateway filters unhealthy/stale containers locally.
   - Gateway keeps last good route config when NATS connection drops.
@@ -1708,7 +1708,7 @@ Pipeline finish:
   - CLI `ops watch <op_id>` replays persisted events.
   - CLI `machine add` prints a one-time `ployz.sh` bootstrap command without
     exposing NATS credentials.
-  - SDK does not call node services directly.
+  - SDK does not call machine services directly.
 - **Verification:** `cargo test -p ployzctl && pnpm --dir packages/ployz-sdk test`
 
 ### U9a. Operation API Contract Registry
@@ -1751,12 +1751,12 @@ Pipeline finish:
   - `crates/ployz-core/tests/backup_scope.rs`
   - `crates/ployz-nats/src/bootstrap.rs`
   - `crates/ployz-nats/tests/bootstrap.rs`
-- **Approach:** Keep v1 topology explicit and boring: one core node owns the
+- **Approach:** Keep v1 topology explicit and boring: one core machine owns the
   NATS + JetStream authority for the cluster. Bootstrap renders single-replica
   KV, stream, and Object Store resources only. Backup scope is product policy
   in `ployz-core`: one exhaustive enum policy includes JetStream state, NATS
   credentials/config, Ployz domain config, and backup manifests while excluding
-  Docker images, app volumes, container runtime state, and node-local caches.
+  Docker images, app volumes, container runtime state, and machine-local caches.
   Restore is defined as recreating the control-plane authority on one core, then
   letting nodes reconnect and observations repopulate from reality.
 - **Test scenarios:**
@@ -1782,7 +1782,7 @@ Pipeline finish:
   JetStream state, NATS credentials/config, Ployz domain config, and a manifest
   describing versions and included artifacts. `backup restore` is an explicit
   operator command for a stopped or fresh single-core control plane; it restores
-  control-plane state and then reports that node observations are expected to
+  control-plane state and then reports that machine observations are expected to
   repopulate after agents reconnect.
 - **Test scenarios:**
   - Backup excludes Docker images and app volumes.
@@ -1797,7 +1797,7 @@ Pipeline finish:
   fresh cloud hosts as an outside-world smoke test. Local machines should be as
   close as practical to fresh Linux installs: `ployz.sh` installs keeper,
   keeper installs artifacts and role units, `ployzctl init` initializes the
-  first node, `ployzctl machine add` joins the second node, then a real deploy
+  first machine, `ployzctl machine add` joins the second machine, then a real deploy
   proves WireGuard/eBPF dataplane preparation and gateway reachability.
 - **Requirements:** R8, R11, R22-R26, R30, R42-R43
 - **Dependencies:** U6, U7, U7a, U11
@@ -1805,10 +1805,10 @@ Pipeline finish:
   - `crates/ployzd/src/dataplane_runtime.rs`
   - `crates/ployzd/src/dataplane_runtime/host_routes.rs`
   - `crates/ployzd/src/docker/runner.rs`
-  - `crates/ployzd/src/node_service_runtime.rs`
-  - `crates/ployzd/src/node_rpc.rs`
+  - `crates/ployzd/src/machine_service_runtime.rs`
+  - `crates/ployzd/src/machine_rpc.rs`
   - `crates/ployzd/tests/wireguard_dataplane.rs`
-  - `crates/ployzd/tests/node_service_runtime.rs`
+  - `crates/ployzd/tests/machine_service_runtime.rs`
   - `scripts/local-dataplane-proof.sh`
 - **Approach:** Build a local disposable-machine harness around privileged
   Docker containers or another local VM/container substrate that can run
@@ -1817,8 +1817,8 @@ Pipeline finish:
   must run the same product commands that H0 runs:
 
   ```text
-  ployzctl init --run-keeper-install --node core_1 --gateway ...
-  ployzctl machine add --node edge_2 --name edge-2 --gateway ...
+  ployzctl init --run-keeper-install --machine core_1 --gateway ...
+  ployzctl machine add --machine edge_2 --name edge-2 --gateway ...
   curl -fsSL https://local-artifacts/ployz.sh | PLOYZ_NATS_URL=... sh -s -- --join-token ...
   ployzctl deploy --detach ...
   ployzctl ops watch ...
@@ -1830,14 +1830,14 @@ Pipeline finish:
   U7b complete until the local install/product path succeeds. Local-only
   overrides should be limited to disposable-machine creation, artifact URLs and
   checksums, locally routable NATS/bootstrap URLs, and test image sources.
-  Avoid manual `ployzd control/node/gateway` startup, direct active-machine
-  writes, synthetic join reports, or custom deploy-node injection in the proof.
+  Avoid manual `ployzd control/machine/gateway` startup, direct active-machine
+  writes, synthetic join reports, or custom deploy-machine injection in the proof.
 - **Test scenarios:**
   - The local proof creates two disposable machine instances with Docker,
     WireGuard, eBPF, and service supervision available.
   - `scripts/ployz.sh` downloads and verifies `ployz-keeper` from the local
     artifact host on both machines.
-  - `ployzctl init --run-keeper-install` uses keeper to install the first node,
+  - `ployzctl init --run-keeper-install` uses keeper to install the first machine,
     NATS, and assigned `ployzd` role units.
   - `ployzctl machine add` prints a real bootstrap command for the second
     machine; running that command redeems the join token through keeper and
@@ -1851,8 +1851,8 @@ Pipeline finish:
   - eBPF bytecode validation, attach, and route programming record command
     evidence using the real `ployz-ebpf-ctl`.
   - Missing privileges, missing bridge, bad bytecode, and failed `tc` attach
-    produce typed domain failures, not node RPC timeouts.
-  - The node-scoped NATS service path returns the same success/failure shape as
+    produce typed domain failures, not machine RPC timeouts.
+  - The machine-scoped NATS service path returns the same success/failure shape as
     the direct local dataplane harness.
   - A local smoke deploy through the installed cluster emits
     `deploy_wireguard_ebpf_prepared`, reaches both gateways, and records
@@ -1868,7 +1868,7 @@ Pipeline finish:
 - **Requirements:** R39-R43
 - **Dependencies:** U1-U9a, U11, U7b
 - **Files:**
-  - `scripts/hetzner-two-node-acceptance.sh`
+  - `scripts/hetzner-two-machine-acceptance.sh`
 - **Approach:** Add one shell script using `hcloud` and plain SSH. It rents two
   fresh Linux boxes, stages or hosts the selected artifacts, runs the same
   normal Ployz install/product commands proven by U7b, curls the smoke service,
@@ -1882,7 +1882,7 @@ Pipeline finish:
   This is the complete H0 flow:
 
   ```text
-  ployzctl init --run-keeper-install --node core-1 ...
+  ployzctl init --run-keeper-install --machine core-1 ...
   ployzctl machine add --name edge-2 ...
   ssh edge-2 '<printed ployz.sh bootstrap command>'
   ployzctl deploy ...
@@ -1900,7 +1900,7 @@ Pipeline finish:
   - Missing `hcloud` token or SSH key fails before creating hosts.
   - Host creation or SSH readiness failure prints the cleanup command.
   - Product failure prints the failing command, command output path, cleanup
-    command, and whatever operation id/node ids Ployz already emitted.
+    command, and whatever operation id/machine ids Ployz already emitted.
   - The script does not implement retries beyond SSH availability, readiness
     probes, routing checks, install fallback logic, provider diagnostics, or
     provider-specific recovery beyond basic cleanup.
@@ -1911,7 +1911,7 @@ Pipeline finish:
   - No hcloud wrapper library.
   - No provider-aware operation states.
   - No Hetzner-specific product readiness model.
-- **Verification:** `scripts/hetzner-two-node-acceptance.sh` completes
+- **Verification:** `scripts/hetzner-two-machine-acceptance.sh` completes
   end-to-end against two fresh disposable machines. This is a smoke assertion:
   install, machine add, deploy, NATS-over-iroh, and the required
   eBPF/WireGuard data path either work through normal product operations or H0
@@ -1926,30 +1926,30 @@ Pipeline finish:
 | --- | --- | --- |
 | NATS unavailable during new deploy | Existing containers continue; new mutation fails closed | `crates/ployzd/tests/failure_core_down.rs` |
 | Core `ployzd control` down | NATS clients stay connected; `ployzd gateway`/`ployzd dns` keep serving; product RPC needing control has no responder | `crates/ployzd/tests/control_plane_down.rs` |
-| Edge `ployzd node` down | Existing containers continue; `ployzd gateway`/`ployzd dns`/`ployzd tunnel` keep serving; node services unavailable | `crates/ployzd/tests/node_unavailable.rs` |
-| iroh tunnel down on edge | Existing containers and last-good gateway/DNS continue; node NATS connectivity reports down | `crates/ployzd/tests/iroh_nats_tunnel.rs` |
+| Edge `ployzd machine` down | Existing containers continue; `ployzd gateway`/`ployzd dns`/`ployzd tunnel` keep serving; machine services unavailable | `crates/ployzd/tests/machine_unavailable.rs` |
+| iroh tunnel down on edge | Existing containers and last-good gateway/DNS continue; machine NATS connectivity reports down | `crates/ployzd/tests/iroh_nats_tunnel.rs` |
 | iroh path switches direct to relay | NATS reconnects or continues; tunnel status reports relayed | `crates/ployzd/tests/iroh_nats_tunnel.rs` |
-| Valid iroh tunnel with bad NATS creds | NATS connection fails authorization; node cannot mutate cluster | `crates/ployzd/tests/permissions.rs` |
+| Valid iroh tunnel with bad NATS creds | NATS connection fails authorization; machine cannot mutate cluster | `crates/ployzd/tests/permissions.rs` |
 | Gateway loses NATS | Last good config stays active; degraded status is visible | `crates/ployzd/tests/gateway_projection.rs` |
 | DNS loses NATS | Last good answers stay active; degraded status is visible | `crates/ployzd/tests/dns_projection.rs` |
 | Route KV changes while `ployzd control` is down | `ployzd gateway` applies the NATS change because it watches NATS directly | `crates/ployzd/tests/gateway_projection.rs` |
 | DNS KV changes while `ployzd control` is down | `ployzd dns` applies the NATS change because it watches NATS directly | `crates/ployzd/tests/dns_projection.rs` |
 | Operation owner dies before completion | Owner lease expires; ownership is visible as expired/recoverable | `crates/ployzd/tests/operation_spine.rs` |
 | Owner dies after container create | Failed/in-progress evidence remains; later deploy plans from reality | `crates/ployzd/tests/deploy_operation.rs` |
-| No responder for node command | Operation marks node unavailable or ambiguous with audience | `crates/ployzd/tests/node_unavailable.rs` |
-| Node service timeout | Operation owner inspects observations; ambiguous state fails visibly | `crates/ployzd/tests/node_timeout.rs` |
-| KV lock epoch stale | Node rejects destructive/exclusive command | `crates/ployzd/tests/locks.rs` |
+| No responder for machine command | Operation marks machine unavailable or ambiguous with audience | `crates/ployzd/tests/machine_unavailable.rs` |
+| Machine service timeout | Operation owner inspects observations; ambiguous state fails visibly | `crates/ployzd/tests/machine_timeout.rs` |
+| KV lock epoch stale | Machine rejects destructive/exclusive command | `crates/ployzd/tests/locks.rs` |
 | KV CAS conflict | Operation owner retries boundedly or fails with conflict | `crates/ployzd/tests/kv_conflict.rs` |
 | Duplicate deploy submit | Same idempotency key returns same op id | `crates/ployzd/tests/operation_spine.rs` |
 | Health failure after start | Failed container retained, active state unchanged | `crates/ployzd/tests/deploy_failure_retention.rs` |
 | Public IP changes | `KV_OBS` updates and DNS/cert jobs are triggered | `crates/ployzd/tests/public_ip_change.rs` |
 | Object Store bundle missing | Operation fails before runtime mutation | `crates/ployzd/tests/bundle_missing.rs` |
 | Schedule unsupported by server | Fallback scheduler publishes same job subject | `crates/ployzd/tests/scheduler_fallback.rs` |
-| Disposable host setup fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-node-acceptance.sh` |
-| Second-node machine add fails | Machine operation fails with node/bootstrap evidence; machine is not active | `crates/ployz-core/tests/machine_lifecycle.rs` |
+| Disposable host setup fails | Servers are destroyed or cleanup command is printed with labels/tags | `scripts/hetzner-two-machine-acceptance.sh` |
+| Second-machine machine add fails | Machine operation fails with machine/bootstrap evidence; machine is not active | `crates/ployz-core/tests/machine_lifecycle.rs` |
 | WireGuard setup fails | Deploy/join fails with network-prep evidence; no healthy dataplane is claimed | `crates/ployzd/tests/wireguard_dataplane.rs` |
-| Cross-node container traffic fails | Service remains visibly degraded; gateway does not claim healthy remote upstream | `crates/ployzd/tests/two_node_acceptance.rs` |
-| Pingora receives traffic on either node | Request reaches a healthy local or remote service container over the private network | `crates/ployzd/tests/pingora_two_node_ingress.rs` |
+| Cross-machine container traffic fails | Service remains visibly degraded; gateway does not claim healthy remote upstream | `crates/ployzd/tests/two_machine_acceptance.rs` |
+| Pingora receives traffic on either machine | Request reaches a healthy local or remote service container over the private network | `crates/ployzd/tests/pingora_two_machine_ingress.rs` |
 
 ---
 
@@ -1989,7 +1989,7 @@ Do not build these in v1:
 - Automatic cleanup of failed artifacts.
 - Docker layer storage in Object Store.
 - Custom RPC/job/progress abstractions over NATS primitives.
-- Substrate rollout batches before the two-node product acceptance is
+- Substrate rollout batches before the two-machine product acceptance is
   repeatable.
 - DNS and cert automation before the minimal gateway/Pingora path is proven.
 
@@ -1997,7 +1997,7 @@ Do not build these in v1:
 
 ## Acceptance Examples
 
-- AE1. A single-node user runs `ployz deploy`, receives an operation id, tails
+- AE1. A single-machine user runs `ployz deploy`, receives an operation id, tails
   operation transcript output, and sees terminal success without any hidden
   reconciler loop.
 - AE2. A failed deploy after container start leaves the failed container stopped
@@ -2005,8 +2005,8 @@ Do not build these in v1:
   how to view logs/inspect/cleanup.
 - AE3. Killing the operation owner leaves visible expired/recoverable ownership
   after lease expiry; the system does not run hidden automatic takeover in v1.
-- AE4. A node credential cannot publish deploy requests, write `KV_CORE`, or
-  call another node's service subject.
+- AE4. A machine credential cannot publish deploy requests, write `KV_CORE`, or
+  call another machine's service subject.
 - AE5. `ployzd gateway` continues serving when `ployzd control` is down. If
   NATS remains available, it keeps applying NATS route changes because it
   watches NATS directly; if NATS is down, it keeps serving last-known-good
@@ -2014,12 +2014,12 @@ Do not build these in v1:
   shape later, after the minimal gateway/Pingora path is proven.
 - AE6. Cloud/TypeScript never orchestrates low-level container calls. It submits
   primitive operations and watches operation events.
-- AE7. A new node is bootstrapped by a short-lived `ployz.sh` command that
+- AE7. A new machine is bootstrapped by a short-lived `ployz.sh` command that
   installs only `ployz-keeper`; keeper installs the shared `ployzd` artifact,
   writes role units, and reports durable bootstrap progress.
 - AE8. Deferred: a future substrate update is an explicit operation after the
-  two-node product proof is repeatable. It is not part of v1 acceptance.
-- AE9. A developer runs the two-node Hetzner acceptance flow, joins a second
+  two-machine product proof is repeatable. It is not part of v1 acceptance.
+- AE9. A developer runs the two-machine Hetzner acceptance flow, joins a second
   machine with one command, deploys one smoke service, proves one real
   eBPF/WireGuard-backed route/data-plane request, and reaches the service
   through Pingora.
@@ -2038,7 +2038,7 @@ Do not build these in v1:
 8. **done** — U4a real NATS operation adapters.
 9. **done** — U11 owned operation hard simplification.
 10. **done** — U5 permission profiles.
-11. **partially done** — U6 node agent and Docker observation.
+11. **partially done** — U6 machine agent and Docker observation.
 12. **partially done** — U7 first deploy.
 13. **partially done** — U7a keeper and `ployz.sh` bootstrap foundation.
 14. **done** — U8 minimal gateway projection skeleton.
@@ -2060,7 +2060,7 @@ privileged Docker or network-namespace execution of the same
 WireGuard/eBPF/route-programming path that deploy records as dataplane
 evidence. H0 then proves the same product path on two fresh disposable
 machines. Hetzner creates and deletes hosts; Ployz installs the cluster, joins
-the second node, records operation evidence, uses the already-proven
+the second machine, records operation evidence, uses the already-proven
 eBPF/WireGuard data plane through the normal product path once, and serves the
 smoke service through ingress. Artifact download may be shortcut; the product
 path and eBPF/WireGuard data plane should not be. If the harness starts making

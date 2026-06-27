@@ -2,12 +2,15 @@
 
 use crate::controllers::OperationControllers;
 use crate::deploy_worker::{
-    DeployCommandPreparationError, DeployContainer, DeployExecutionError, DeployExecutionNodeScope,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, NodeContainerRuntime, WireGuardEbpfPreparer, execute_deploy_operation,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployCommandPreparationError, DeployContainer, DeployExecutionError,
+    DeployExecutionMachineScope, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
+    DeployHealthCheckError, DeployHealthChecker, MachineContainerRuntime, WireGuardEbpfPreparer,
+    execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
-use crate::node::client::{NatsNodeContainerRuntime, NatsNodeWireGuardEbpfPreparer};
+use crate::machine_runtime::client::{
+    NatsMachineContainerRuntime, NatsMachineWireGuardEbpfPreparer,
+};
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
@@ -26,14 +29,14 @@ const DEPLOY_HEALTH_INITIAL_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 pub async fn run_deploy_operation<D, N, H>(
     accepted: AcceptedDeploySubmission,
-    node_scope: DeployExecutionNodeScope,
+    machine_scope: DeployExecutionMachineScope,
     stores: DeployOperationStores,
     ports: DeployOperationPorts<'_, D, N, H>,
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
     D: WireGuardEbpfPreparer,
-    N: NodeContainerRuntime,
+    N: MachineContainerRuntime,
     H: DeployHealthChecker,
 {
     let DeployOperationStores {
@@ -43,14 +46,14 @@ where
     } = stores;
     let DeployOperationPorts {
         wireguard_ebpf,
-        node_runtime,
+        machine_runtime,
         health_checker,
     } = ports;
     let request = accepted.target.clone();
 
     let facts = match load_deploy_execution_facts_from_nats(
         &request,
-        node_scope,
+        machine_scope,
         &core_state,
         &observations,
         step_timeout,
@@ -98,7 +101,7 @@ where
         DeployExecutionPorts {
             recorder: &mut recorder,
             wireguard_ebpf,
-            node_runtime,
+            machine_runtime,
             health_checker,
             route_state: &mut route_state,
             active_state: &mut active_state,
@@ -150,7 +153,7 @@ pub struct DeployOperationStores {
 
 pub struct DeployOperationPorts<'a, D, N, H> {
     pub wireguard_ebpf: &'a mut D,
-    pub node_runtime: &'a mut N,
+    pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
 }
 
@@ -175,7 +178,7 @@ pub struct DeployOperationRuntime {
     core_state: AsyncNatsCoreStateStore,
     observations: AsyncNatsObservationStore,
     controllers: OperationControllers,
-    node_scope: DeployExecutionNodeScope,
+    machine_scope: DeployExecutionMachineScope,
     step_timeout: Duration,
     task_registry: TaskRegistry,
 }
@@ -187,7 +190,7 @@ impl DeployOperationRuntime {
         core_state: AsyncNatsCoreStateStore,
         observations: AsyncNatsObservationStore,
         controllers: OperationControllers,
-        node_scope: DeployExecutionNodeScope,
+        machine_scope: DeployExecutionMachineScope,
         step_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
@@ -196,7 +199,7 @@ impl DeployOperationRuntime {
             core_state,
             observations,
             controllers,
-            node_scope,
+            machine_scope,
             step_timeout,
             task_registry,
         }
@@ -221,16 +224,16 @@ impl DeployOperationRuntime {
             return Err(DeployOperationRunError::AlreadyStarted);
         }
 
-        let mut wireguard_ebpf = NatsNodeWireGuardEbpfPreparer::new(self.client.clone())
+        let mut wireguard_ebpf = NatsMachineWireGuardEbpfPreparer::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
-        let mut node_runtime = NatsNodeContainerRuntime::new(self.client.clone())
+        let mut machine_runtime = NatsMachineContainerRuntime::new(self.client.clone())
             .with_request_timeout(self.step_timeout);
         let mut health_checker =
             ObservationHealthChecker::new(self.observations.clone(), DEPLOY_HEALTH_POLL_INTERVAL);
 
         run_deploy_operation(
             accepted,
-            self.node_scope,
+            self.machine_scope,
             DeployOperationStores {
                 core_state: self.core_state,
                 observations: self.observations,
@@ -238,7 +241,7 @@ impl DeployOperationRuntime {
             },
             DeployOperationPorts {
                 wireguard_ebpf: &mut wireguard_ebpf,
-                node_runtime: &mut node_runtime,
+                machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,
             },
             self.step_timeout,
@@ -294,7 +297,7 @@ impl DeployHealthChecker for ObservationHealthChecker {
             for container in containers {
                 match self
                     .observations
-                    .container(&container.node_id, &container.container_id)
+                    .container(&container.machine_id, &container.container_id)
                     .await
                 {
                     Ok(Some(observation)) => {
@@ -358,15 +361,15 @@ impl HealthObservationMemory {
     }
 }
 
-type HealthContainerKey = (ployz_core::ids::NodeId, ployz_core::ids::ContainerId);
+type HealthContainerKey = (ployz_core::ids::MachineId, ployz_core::ids::ContainerId);
 
 fn health_container_key(container: &DeployContainer) -> HealthContainerKey {
-    (container.node_id.clone(), container.container_id.clone())
+    (container.machine_id.clone(), container.container_id.clone())
 }
 
 fn observed_container_health(
     container: &DeployContainer,
-    observation: &ployz_core::node::ManagedContainerObservation,
+    observation: &ployz_core::machine_runtime::ManagedContainerObservation,
 ) -> ObservedContainerHealth {
     if !observation.state.is_running() {
         return ObservedContainerHealth::Failed("container exited");
@@ -402,7 +405,7 @@ fn unhealthy_container(
     let log_hint = OperatorHint::try_new(format!("ployz logs {}", container.container_id.as_str()))
         .expect("generated log hint is non-empty");
     DeployHealthCheckError::Unhealthy {
-        node_id: container.node_id.clone(),
+        machine_id: container.machine_id.clone(),
         container_id: container.container_id.clone(),
         message,
         log_hint,
@@ -416,8 +419,8 @@ fn health_read_error(error: ObservationStoreError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
-    use ployz_core::node::{
+    use ployz_core::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+    use ployz_core::machine_runtime::{
         ContainerEndpoint, ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
     };
     use ployz_core::ops::RoutePort;
@@ -426,9 +429,9 @@ mod tests {
     fn routed_health_waits_for_endpoint_evidence() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("node_a", "ctr_1", Some(route_port(8080))),
+                &deploy_container("machine_a", "ctr_1", Some(route_port(8080))),
                 &observation(
-                    "node_a",
+                    "machine_a",
                     "ctr_1",
                     ContainerRuntimeState::running_unroutable()
                 ),
@@ -441,9 +444,9 @@ mod tests {
     fn unrouted_health_accepts_running_without_endpoint() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("node_a", "ctr_1", None),
+                &deploy_container("machine_a", "ctr_1", None),
                 &observation(
-                    "node_a",
+                    "machine_a",
                     "ctr_1",
                     ContainerRuntimeState::running_unroutable()
                 ),
@@ -456,9 +459,9 @@ mod tests {
     fn routed_health_accepts_running_endpoint() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("node_a", "ctr_1", Some(route_port(8080))),
+                &deploy_container("machine_a", "ctr_1", Some(route_port(8080))),
                 &observation(
-                    "node_a",
+                    "machine_a",
                     "ctr_1",
                     ContainerRuntimeState::running_at(endpoint("10.0.0.2", 8080)),
                 ),
@@ -471,9 +474,9 @@ mod tests {
     fn routed_health_waits_for_matching_endpoint_port() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("node_a", "ctr_1", Some(route_port(8080))),
+                &deploy_container("machine_a", "ctr_1", Some(route_port(8080))),
                 &observation(
-                    "node_a",
+                    "machine_a",
                     "ctr_1",
                     ContainerRuntimeState::running_at(endpoint("10.0.0.2", 3000)),
                 ),
@@ -486,8 +489,8 @@ mod tests {
     fn health_fails_exited_container() {
         assert_eq!(
             observed_container_health(
-                &deploy_container("node_a", "ctr_1", None),
-                &observation("node_a", "ctr_1", ContainerRuntimeState::Exited),
+                &deploy_container("machine_a", "ctr_1", None),
+                &observation("machine_a", "ctr_1", ContainerRuntimeState::Exited),
             ),
             ObservedContainerHealth::Failed("container exited")
         );
@@ -495,7 +498,7 @@ mod tests {
 
     #[test]
     fn health_graces_initial_exited_observation_until_running_is_seen() {
-        let container = deploy_container("node_a", "ctr_1", Some(route_port(8080)));
+        let container = deploy_container("machine_a", "ctr_1", Some(route_port(8080)));
         let mut memory = HealthObservationMemory::default();
 
         assert!(memory.should_wait_for_fresh_start_observation(&container));
@@ -506,12 +509,12 @@ mod tests {
     }
 
     fn deploy_container(
-        node_id_value: &str,
+        machine_id_value: &str,
         container_id_value: &str,
         required_endpoint_port: Option<RoutePort>,
     ) -> DeployContainer {
         DeployContainer {
-            node_id: node_id(node_id_value),
+            machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
             step_id: step_id("run_1"),
             required_endpoint_port,
@@ -519,12 +522,12 @@ mod tests {
     }
 
     fn observation(
-        node_id_value: &str,
+        machine_id_value: &str,
         container_id_value: &str,
         state: ContainerRuntimeState,
     ) -> ManagedContainerObservation {
         ManagedContainerObservation {
-            node_id: node_id(node_id_value),
+            machine_id: machine_id(machine_id_value),
             container_id: container_id(container_id_value),
             service_id: service_id("svc_api"),
             revision_id: revision_id("rev_1"),
@@ -546,8 +549,8 @@ mod tests {
         RoutePort::try_new(port).expect("valid endpoint port")
     }
 
-    fn node_id(value: &str) -> NodeId {
-        NodeId::try_new(value).expect("valid node id")
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
     }
 
     fn container_id(value: &str) -> ContainerId {

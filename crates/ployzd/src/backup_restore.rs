@@ -75,7 +75,7 @@ impl BackupRestoreRuntime {
         }
         Ok(ControlPlaneRestoreReport {
             buckets,
-            observations: RestoreObservationState::RebuildableAfterNodeReconnect {
+            observations: RestoreObservationState::RebuildableAfterMachineReconnect {
                 restored_entries: 0,
             },
         })
@@ -210,7 +210,7 @@ pub struct KvBucketRestoreReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestoreObservationState {
-    RebuildableAfterNodeReconnect { restored_entries: usize },
+    RebuildableAfterMachineReconnect { restored_entries: usize },
 }
 
 #[derive(Debug)]

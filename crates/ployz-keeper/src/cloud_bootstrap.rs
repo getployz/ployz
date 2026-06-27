@@ -57,7 +57,7 @@ pub fn cloud_joiner_success_callback(
         outcome: CloudBootstrapOutcome::JoinerSucceeded {
             result: CloudJoinerBootstrapResult {
                 operation_id: redeemed.operation_id.clone(),
-                node_id: redeemed.node_id.clone(),
+                machine_id: redeemed.machine_id.clone(),
                 name: redeemed.name.clone(),
                 last_event_sequence: redeemed.last_event_sequence,
                 result: redeemed.result,
@@ -103,7 +103,7 @@ mod tests {
     use super::{
         cloud_joiner_connect_config, cloud_joiner_success_callback, write_cloud_joiner_trusted_ca,
     };
-    use ployz_core::ids::{NodeId, OperationId};
+    use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
         AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
         InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
@@ -179,7 +179,7 @@ mod tests {
     fn machine_join_redeemed() -> MachineJoinRedeemed {
         MachineJoinRedeemed {
             operation_id: OperationId::try_new("op_machine").expect("valid operation id"),
-            node_id: NodeId::try_new("node_2").expect("valid node id"),
+            machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             join_bundle: machine_join_bundle(),

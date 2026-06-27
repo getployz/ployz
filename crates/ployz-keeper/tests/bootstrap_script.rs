@@ -29,8 +29,8 @@ fn bootstrap_script_file_is_keeper_only_release_delivery() {
     assert!(!script.contains("PLOYZ_EBPF_TC_URL"));
     assert!(!script.contains("PLOYZ_MACHINE_JOIN_NATS_URL"));
     assert!(!script.contains("--join-token"));
-    assert!(!script.contains("--first-node"));
-    assert!(!script.contains("first-node-install"));
+    assert!(!script.contains("--first-machine"));
+    assert!(!script.contains("first-machine-install"));
     assert!(!script.contains("--join-token-file"));
     assert!(!script.contains("expected_nats_server_archive_sha256"));
     assert!(!script.contains("umask 077"));
@@ -297,7 +297,7 @@ fn bootstrap_script_uses_sudo_install_when_not_root() {
 #[cfg(unix)]
 #[test]
 fn bootstrap_script_rejects_old_public_machine_modes() {
-    for flag in ["--join-token", "--first-node", "--cloud-token"] {
+    for flag in ["--join-token", "--first-machine", "--cloud-token"] {
         let output = run_bootstrap_script(&[flag]);
 
         assert!(!output.status.success());
@@ -378,6 +378,34 @@ fn bootstrap_script_rejects_unsupported_operating_system() {
     assert_stderr_contains(
         &output,
         "unsupported operating system: FreeBSD (ployz bootstrap delivery requires Linux)",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_script_rejects_macos() {
+    let root = temp_dir("ployz-bootstrap-script-macos");
+    let fake_bin = root.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake bin can be created");
+    write_fake_tools(&fake_bin);
+    write_executable(
+        &fake_bin.join("uname"),
+        &fake_uname_script_for("Darwin", "arm64"),
+    );
+
+    let output = Command::new("sh")
+        .arg(bootstrap_script_path())
+        .env("PATH", test_path(&fake_bin))
+        .env_remove("PLOYZ_RELEASE_MANIFEST_URL")
+        .env_remove("PLOYZ_VERSION")
+        .env_remove("PLOYZ_CHANNEL")
+        .output()
+        .expect("bootstrap script can run");
+
+    assert!(!output.status.success());
+    assert_stderr_contains(
+        &output,
+        "unsupported operating system: Darwin (ployz bootstrap delivery requires Linux)",
     );
 }
 

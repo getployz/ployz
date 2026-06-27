@@ -2,12 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::NodeId;
+use crate::ids::MachineId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DaemonProcessRole {
     Control,
-    Node(NodeId),
+    Machine(MachineId),
     Gateway,
     Dns,
 }
@@ -17,7 +17,7 @@ impl DaemonProcessRole {
     pub const fn process_name(&self) -> &'static str {
         match self {
             Self::Control => "control",
-            Self::Node(_) => "node",
+            Self::Machine(_) => "machine",
             Self::Gateway => "gateway",
             Self::Dns => "dns",
         }
@@ -32,10 +32,10 @@ impl DaemonProcessRole {
     pub fn argv(&self) -> Vec<String> {
         match self {
             Self::Control => vec!["control".to_owned()],
-            Self::Node(node_id) => vec![
-                "node".to_owned(),
+            Self::Machine(machine_id) => vec![
+                "machine".to_owned(),
                 "--id".to_owned(),
-                node_id.as_str().to_owned(),
+                machine_id.as_str().to_owned(),
             ],
             Self::Gateway => vec!["gateway".to_owned()],
             Self::Dns => vec!["dns".to_owned()],
@@ -97,12 +97,12 @@ impl InstallRolePolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstNodeProcessSet {
-    pub nats_server: FirstNodeNatsServer,
+pub struct FirstMachineProcessSet {
+    pub nats_server: FirstMachineNatsServer,
     roles: Vec<DaemonProcessRole>,
 }
 
-impl FirstNodeProcessSet {
+impl FirstMachineProcessSet {
     #[must_use]
     pub fn roles(&self) -> &[DaemonProcessRole] {
         &self.roles
@@ -110,11 +110,11 @@ impl FirstNodeProcessSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JoinedNodeProcessSet {
+pub struct JoinedMachineProcessSet {
     roles: Vec<DaemonProcessRole>,
 }
 
-impl JoinedNodeProcessSet {
+impl JoinedMachineProcessSet {
     #[must_use]
     pub fn roles(&self) -> &[DaemonProcessRole] {
         &self.roles
@@ -122,11 +122,11 @@ impl JoinedNodeProcessSet {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FirstNodeNatsServer {
+pub enum FirstMachineNatsServer {
     Supervised,
 }
 
-impl FirstNodeNatsServer {
+impl FirstMachineNatsServer {
     #[must_use]
     pub const fn process_name(self) -> &'static str {
         match self {
@@ -136,29 +136,29 @@ impl FirstNodeNatsServer {
 }
 
 #[must_use]
-pub fn plan_first_node_process_set(
-    node_id: &NodeId,
+pub fn plan_first_machine_process_set(
+    machine_id: &MachineId,
     roles: InstallRolePolicy,
-) -> FirstNodeProcessSet {
+) -> FirstMachineProcessSet {
     let mut planned = vec![
         DaemonProcessRole::Control,
-        DaemonProcessRole::Node(node_id.clone()),
+        DaemonProcessRole::Machine(machine_id.clone()),
     ];
     planned.extend(optional_roles(roles));
-    FirstNodeProcessSet {
-        nats_server: FirstNodeNatsServer::Supervised,
+    FirstMachineProcessSet {
+        nats_server: FirstMachineNatsServer::Supervised,
         roles: planned,
     }
 }
 
 #[must_use]
-pub fn plan_joined_node_process_set(
-    node_id: &NodeId,
+pub fn plan_joined_machine_process_set(
+    machine_id: &MachineId,
     roles: InstallRolePolicy,
-) -> JoinedNodeProcessSet {
-    let mut planned = vec![DaemonProcessRole::Node(node_id.clone())];
+) -> JoinedMachineProcessSet {
+    let mut planned = vec![DaemonProcessRole::Machine(machine_id.clone())];
     planned.extend(optional_roles(roles));
-    JoinedNodeProcessSet { roles: planned }
+    JoinedMachineProcessSet { roles: planned }
 }
 
 fn optional_roles(roles: InstallRolePolicy) -> Vec<DaemonProcessRole> {
@@ -178,21 +178,23 @@ fn optional_roles(roles: InstallRolePolicy) -> Vec<DaemonProcessRole> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonProcessRole, FirstNodeNatsServer, InstallRolePolicy, plan_first_node_process_set,
-        plan_joined_node_process_set,
+        DaemonProcessRole, FirstMachineNatsServer, InstallRolePolicy,
+        plan_first_machine_process_set, plan_joined_machine_process_set,
     };
-    use crate::ids::NodeId;
+    use crate::ids::MachineId;
 
     #[test]
-    fn first_node_default_roles_include_gateway_and_dns() {
-        let process_set =
-            plan_first_node_process_set(&node_id("node_1"), InstallRolePolicy::install_all());
-        assert_eq!(process_set.nats_server, FirstNodeNatsServer::Supervised);
+    fn first_machine_default_roles_include_gateway_and_dns() {
+        let process_set = plan_first_machine_process_set(
+            &machine_id("machine_1"),
+            InstallRolePolicy::install_all(),
+        );
+        assert_eq!(process_set.nats_server, FirstMachineNatsServer::Supervised);
         assert_eq!(
             process_set.roles(),
             &[
                 DaemonProcessRole::Control,
-                DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Machine(machine_id("machine_1")),
                 DaemonProcessRole::Gateway,
                 DaemonProcessRole::Dns,
             ]
@@ -200,12 +202,15 @@ mod tests {
     }
 
     #[test]
-    fn joined_node_default_roles_include_gateway_and_dns() {
+    fn joined_machine_default_roles_include_gateway_and_dns() {
         assert_eq!(
-            plan_joined_node_process_set(&node_id("node_2"), InstallRolePolicy::install_all())
-                .roles(),
+            plan_joined_machine_process_set(
+                &machine_id("machine_2"),
+                InstallRolePolicy::install_all()
+            )
+            .roles(),
             &[
-                DaemonProcessRole::Node(node_id("node_2")),
+                DaemonProcessRole::Machine(machine_id("machine_2")),
                 DaemonProcessRole::Gateway,
                 DaemonProcessRole::Dns,
             ]
@@ -215,25 +220,25 @@ mod tests {
     #[test]
     fn no_gateway_opt_out_skips_only_the_gateway_role() {
         assert_eq!(
-            plan_first_node_process_set(
-                &node_id("node_1"),
+            plan_first_machine_process_set(
+                &machine_id("machine_1"),
                 InstallRolePolicy::install_all().without_gateway()
             )
             .roles(),
             &[
                 DaemonProcessRole::Control,
-                DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Machine(machine_id("machine_1")),
                 DaemonProcessRole::Dns,
             ]
         );
         assert_eq!(
-            plan_joined_node_process_set(
-                &node_id("node_2"),
+            plan_joined_machine_process_set(
+                &machine_id("machine_2"),
                 InstallRolePolicy::install_all().without_gateway()
             )
             .roles(),
             &[
-                DaemonProcessRole::Node(node_id("node_2")),
+                DaemonProcessRole::Machine(machine_id("machine_2")),
                 DaemonProcessRole::Dns,
             ]
         );
@@ -242,25 +247,25 @@ mod tests {
     #[test]
     fn no_dns_opt_out_skips_only_the_dns_role() {
         assert_eq!(
-            plan_first_node_process_set(
-                &node_id("node_1"),
+            plan_first_machine_process_set(
+                &machine_id("machine_1"),
                 InstallRolePolicy::install_all().without_dns()
             )
             .roles(),
             &[
                 DaemonProcessRole::Control,
-                DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Machine(machine_id("machine_1")),
                 DaemonProcessRole::Gateway,
             ]
         );
         assert_eq!(
-            plan_joined_node_process_set(
-                &node_id("node_2"),
+            plan_joined_machine_process_set(
+                &machine_id("machine_2"),
                 InstallRolePolicy::install_all().without_dns()
             )
             .roles(),
             &[
-                DaemonProcessRole::Node(node_id("node_2")),
+                DaemonProcessRole::Machine(machine_id("machine_2")),
                 DaemonProcessRole::Gateway,
             ]
         );
@@ -269,8 +274,8 @@ mod tests {
     #[test]
     fn both_opt_outs_leave_the_required_roles() {
         assert_eq!(
-            plan_first_node_process_set(
-                &node_id("node_1"),
+            plan_first_machine_process_set(
+                &machine_id("machine_1"),
                 InstallRolePolicy::install_all()
                     .without_gateway()
                     .without_dns()
@@ -278,22 +283,22 @@ mod tests {
             .roles(),
             &[
                 DaemonProcessRole::Control,
-                DaemonProcessRole::Node(node_id("node_1")),
+                DaemonProcessRole::Machine(machine_id("machine_1")),
             ]
         );
         assert_eq!(
-            plan_joined_node_process_set(
-                &node_id("node_2"),
+            plan_joined_machine_process_set(
+                &machine_id("machine_2"),
                 InstallRolePolicy::install_all()
                     .without_gateway()
                     .without_dns()
             )
             .roles(),
-            &[DaemonProcessRole::Node(node_id("node_2"))]
+            &[DaemonProcessRole::Machine(machine_id("machine_2"))]
         );
     }
 
-    fn node_id(value: &str) -> NodeId {
-        NodeId::try_new(value).expect("valid node id")
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
     }
 }

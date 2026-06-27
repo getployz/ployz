@@ -1,16 +1,17 @@
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    AbsoluteInstallPath, FirstNodeInstallArtifacts, FirstNodeInstallSpec, InstallArtifactSource,
-    InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest, MachineBootstrapUrl,
-    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTrustedNats, NatsServerInstallSpec,
+    AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
+    InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest,
+    MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
+    NatsServerInstallSpec,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::roles::{DnsRole, GatewayRole, InstallRolePolicy};
 
 #[test]
-fn first_node_install_spec_wire_shape_is_grouped_json() {
-    let mut install = first_node_install_spec(GatewayRole::Install, DnsRole::Install);
+fn first_machine_install_spec_wire_shape_is_grouped_json() {
+    let mut install = first_machine_install_spec(GatewayRole::Install, DnsRole::Install);
     install.machine_bootstrap_url = Some(
         MachineBootstrapUrl::try_new("https://example.test/ployz.sh").expect("valid bootstrap url"),
     );
@@ -18,17 +19,17 @@ fn first_node_install_spec_wire_shape_is_grouped_json() {
         AbsoluteInstallPath::try_new("/etc/ployz/machine-join-template.json")
             .expect("valid template file path"),
     );
-    install.node_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
+    install.machine_public_ip = Some("203.0.113.10".parse().expect("valid IP"));
 
     let value = serde_json::to_value(install).expect("spec serializes");
 
     assert_eq!(
         value,
         serde_json::json!({
-            "node_id": "node_1",
+            "machine_id": "machine_1",
             "gateway": "install",
             "dns": "install",
-            "node_public_ip": "203.0.113.10",
+            "machine_public_ip": "203.0.113.10",
             "machine_bootstrap_url": "https://example.test/ployz.sh",
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
             "machine_join_cluster_name": "ployz",
@@ -65,12 +66,12 @@ fn first_node_install_spec_wire_shape_is_grouped_json() {
 }
 
 #[test]
-fn first_node_install_spec_parses_from_grouped_json() {
-    let spec = serde_json::from_value::<FirstNodeInstallSpec>(serde_json::json!({
-        "node_id": "node_1",
+fn first_machine_install_spec_parses_from_grouped_json() {
+    let spec = serde_json::from_value::<FirstMachineInstallSpec>(serde_json::json!({
+        "machine_id": "machine_1",
         "gateway": "skip",
         "dns": "install",
-        "node_public_ip": null,
+        "machine_public_ip": null,
         "machine_bootstrap_url": null,
         "machine_join_template_file": null,
         "machine_join_cluster_name": "ployz",
@@ -107,7 +108,7 @@ fn first_node_install_spec_parses_from_grouped_json() {
 
     assert_eq!(
         spec,
-        first_node_install_spec(GatewayRole::Skip, DnsRole::Install)
+        first_machine_install_spec(GatewayRole::Skip, DnsRole::Install)
     );
     assert_eq!(
         spec.role_policy(),
@@ -116,12 +117,14 @@ fn first_node_install_spec_parses_from_grouped_json() {
 }
 
 #[test]
-fn first_node_install_spec_parses_explicit_dns_opt_out() {
-    let with_dns_skip =
-        serde_json::to_value(first_node_install_spec(GatewayRole::Install, DnsRole::Skip))
-            .expect("spec serializes");
+fn first_machine_install_spec_parses_explicit_dns_opt_out() {
+    let with_dns_skip = serde_json::to_value(first_machine_install_spec(
+        GatewayRole::Install,
+        DnsRole::Skip,
+    ))
+    .expect("spec serializes");
     let spec =
-        serde_json::from_value::<FirstNodeInstallSpec>(with_dns_skip).expect("spec parses back");
+        serde_json::from_value::<FirstMachineInstallSpec>(with_dns_skip).expect("spec parses back");
 
     assert_eq!(
         spec.role_policy(),
@@ -244,12 +247,12 @@ fn machine_join_bundle_debug_redacts_secrets() {
     assert!(!rendered.contains("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
 }
 
-fn first_node_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstNodeInstallSpec {
-    FirstNodeInstallSpec {
-        node_id: NodeId::try_new("node_1").expect("valid node id"),
+fn first_machine_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstMachineInstallSpec {
+    FirstMachineInstallSpec {
+        machine_id: MachineId::try_new("machine_1").expect("valid machine id"),
         gateway,
         dns,
-        node_public_ip: None,
+        machine_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,
         machine_join_cluster_name: MachineJoinClusterName::try_new("ployz")
@@ -258,7 +261,7 @@ fn first_node_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstNodeInsta
             "tls://203.0.113.10:4222",
         )
         .expect("valid runtime nats url"),
-        artifacts: FirstNodeInstallArtifacts {
+        artifacts: FirstMachineInstallArtifacts {
             ployzd: install_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
             ebpf_bytecode: install_artifact(
                 "/tmp/ployz-ebpf-tc",

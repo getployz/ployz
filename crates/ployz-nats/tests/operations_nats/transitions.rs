@@ -1,7 +1,7 @@
 use super::fixtures::*;
 use ployz_core::deploy::DeployCleanupContainer;
 use ployz_core::ids::StepId;
-use ployz_core::node::ManagedContainerKind;
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
     DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationState,
     DeployRunningStage, DeployTransition, OperationStatus, StatusProjectionError,
@@ -99,7 +99,7 @@ async fn operation_repository_records_deploy_completion_warning_outcome_against_
         .await
         .expect("active commit records");
     let cleanup_target = DeployCleanupContainer {
-        node_id: node_id("node_a"),
+        machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_old"),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_old"),

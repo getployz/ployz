@@ -6,7 +6,7 @@ use crate::backup::{BackupManifest, BackupTarget};
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::WireGuardEbpfPrepareReport;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest};
-use crate::ids::{CertId, ContainerId, NodeId, OperationId, ServiceId};
+use crate::ids::{CertId, ContainerId, MachineId, OperationId, ServiceId};
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
     MachineName,
@@ -26,7 +26,7 @@ use super::{
 pub enum OperationSubject {
     Deploy { service_id: ServiceId },
     Cert { cert_id: CertId },
-    MachineAdd { node_id: NodeId },
+    MachineAdd { machine_id: MachineId },
     Backup,
 }
 
@@ -56,7 +56,7 @@ pub enum OperationEvent {
     },
     DeployContainerStarted {
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
     },
     DeployHealthCheckStarted {
@@ -98,28 +98,28 @@ pub enum OperationEvent {
     },
     MachineAddSubmitted {
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
         join_token: IssuedJoinToken,
     },
     MachineAddJoined {
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         joined_at: JoinTokenRedeemedAt,
     },
     MachineAddCredentialProvisioned {
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         step: MachineCredentialProvisioningStep,
     },
     MachineAddCompleted {
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
     },
     MachineAddFailed {
         operation_id: OperationId,
-        node_id: NodeId,
+        machine_id: MachineId,
         failure: MachineAddFailure,
     },
     BackupCreateSubmitted {

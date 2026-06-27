@@ -22,7 +22,7 @@ Use an exact `v*` tag, for example `v0.0.2-alpha.5`.
 
 ```sh
 cargo fmt --check
-cargo test -p ployz-keeper --test bootstrap_first_node --test local
+cargo test -p ployz-keeper --test bootstrap_first_machine --test local
 cargo test -p ployzd --lib dataplane_runtime::tests::default_command_plans_ensure_wireguard_interface_and_key
 ```
 

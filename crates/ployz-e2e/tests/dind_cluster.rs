@@ -6,11 +6,11 @@
 //! support. `PLOYZ_DIND_KEEP=1` keeps the cluster running for debugging;
 //! `scripts/dind-clean.sh` sweeps leftovers.
 //!
-//! Scenario 1 drives the proof-level formation flow (keeper first-node
+//! Scenario 1 drives the proof-level formation flow (keeper first-machine
 //! install through `ployzctl init --run-keeper-install`, join template
 //! written with a placeholder CA first and re-rendered with the
 //! keeper-minted cluster CA afterwards, then `ployzctl init
-//! activate-first-node`) because its subject is the seam between install
+//! activate-first-machine`) because its subject is the seam between install
 //! and activation. The other scenarios form the core through the product
 //! quick-start command `ployzctl machine init root@core` (driven over a
 //! docker-exec-backed stand-in ssh), and scenarios 3–5 join the edge
@@ -23,7 +23,7 @@
 mod support;
 
 use ployz_core::deploy::{DeployRequest, DeployRoute, ImageReference, ReplicaCount};
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::machine::{MachineAddOperationState, MachineCredentialProvisioningStep};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus, RouteTarget,
@@ -31,7 +31,7 @@ use ployz_core::ops::{
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::state::KV_CORE_BUCKET;
-use ployz_core::subjects::{NodeServiceEndpoint, node_service};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_e2e::bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
 };
@@ -46,7 +46,7 @@ use ployz_sdk_types::{
     MachineSnapshot,
 };
 use ployz_test_support::ids::{
-    node_id, operation_id, revision_id, route_hostname, route_port, service_id,
+    machine_id, operation_id, revision_id, route_hostname, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployzd::docker::labels::{
@@ -62,7 +62,7 @@ use support::dind::assert::{
     wait_for_terminal_deploy_status,
 };
 use support::dind::formation::{
-    CoreContext, activate_first_node, add_and_join_edge, connect_core_client, finish,
+    CoreContext, activate_first_machine, add_and_join_edge, connect_core_client, finish,
     host_client_config, init_core_cluster, install_core_cluster, submit_machine_add,
 };
 use support::dind::join::{parse_install_line, run_edge_join};
@@ -174,12 +174,12 @@ async fn boots_machine_image() {
     );
 }
 
-/// Scenario 1 — init + activate-first-node forms a TLS-authenticated core
-/// through product commands only, mints the first node's credential as
-/// operation work, and hands the awaiting node/gateway processes their seed
+/// Scenario 1 — init + activate-first-machine forms a TLS-authenticated core
+/// through product commands only, mints the first machine's credential as
+/// operation work, and hands the awaiting machine/gateway processes their seed
 /// without a unit restart.
 #[tokio::test]
-async fn scenario_init_and_activate_first_node() {
+async fn scenario_init_and_activate_first_machine() {
     if !dind::e2e_enabled() {
         return;
     }
@@ -188,30 +188,30 @@ async fn scenario_init_and_activate_first_node() {
     with_evidence(&core.cluster, async {
         let cluster = &core.cluster;
 
-        // Before activate: node and gateway units run in the visible
-        // awaiting-credentials state (node.seed does not exist yet) — B3.
-        let node_unit = "ployzd-node-core_1";
+        // Before activate: machine and gateway units run in the visible
+        // awaiting-credentials state (machine.seed does not exist yet) — B3.
+        let machine_unit = "ployzd-machine-core_1";
         let gateway_unit = "ployzd-gateway";
-        for unit in [node_unit, gateway_unit] {
+        for unit in [machine_unit, gateway_unit] {
             assert_unit_active(&core, cluster.core(), unit).await;
         }
-        let node_seed_before = core
+        let machine_seed_before = core
             .exec_on(
                 cluster.core(),
-                &["test", "-f", "/var/lib/ployz/nats/node.seed"],
+                &["test", "-f", "/var/lib/ployz/nats/machine.seed"],
             )
             .await;
         assert!(
-            !node_seed_before.success(),
-            "node.seed must not exist before activate"
+            !machine_seed_before.success(),
+            "machine.seed must not exist before activate"
         );
-        assert_journal_contains(&core, &[node_unit, gateway_unit], "awaiting-credentials").await;
-        let node_pid_before = unit_main_pid(&core, cluster.core(), node_unit).await;
+        assert_journal_contains(&core, &[machine_unit, gateway_unit], "awaiting-credentials").await;
+        let machine_pid_before = unit_main_pid(&core, cluster.core(), machine_unit).await;
         let gateway_pid_before = unit_main_pid(&core, cluster.core(), gateway_unit).await;
 
         // Activate through the product CLI inside the machine, authenticated
         // with the keeper-minted operator credential.
-        let activation_id = activate_first_node(&core).await;
+        let activation_id = activate_first_machine(&core).await;
 
         // The activation operation is a completed machine-add with the full
         // mint event sequence recorded as operation events.
@@ -225,48 +225,48 @@ async fn scenario_init_and_activate_first_node() {
             "activation not completed"
         );
         let events = terminal_operation_events(&core, &activation_id).await;
-        assert_machine_add_event_sequence(&events, &node_id("core_1"));
+        assert_machine_add_event_sequence(&events, &machine_id("core_1"));
 
         // Data plane truth: all four units active.
-        for unit in ["nats-server", "ployzd-control", node_unit, gateway_unit] {
+        for unit in ["nats-server", "ployzd-control", machine_unit, gateway_unit] {
             assert_unit_active(&core, cluster.core(), unit).await;
         }
 
-        // node.seed exists now, written by ployzd control (B3 sequencing).
-        let node_seed = read_file_from_container(
+        // machine.seed exists now, written by ployzd control (B3 sequencing).
+        let machine_seed = read_file_from_container(
             &docker,
             &cluster.core().container_id,
-            "/var/lib/ployz/nats/node.seed",
+            "/var/lib/ployz/nats/machine.seed",
         )
         .await
-        .expect("node.seed exists after activate");
+        .expect("machine.seed exists after activate");
         assert!(
-            node_seed.trim().starts_with("SU"),
-            "node.seed is an NKey user seed"
+            machine_seed.trim().starts_with("SU"),
+            "machine.seed is an NKey user seed"
         );
 
-        // The awaiting node/gateway picked the seed up in-process: they now
+        // The awaiting machine/gateway picked the seed up in-process: they now
         // publish observations (the machine snapshot fills in) while their unit
         // MainPIDs never changed — no restart was required or issued.
-        wait_for_machine_observations(&core, &node_id("core_1")).await;
-        let node_pid_after = unit_main_pid(&core, cluster.core(), node_unit).await;
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        let machine_pid_after = unit_main_pid(&core, cluster.core(), machine_unit).await;
         let gateway_pid_after = unit_main_pid(&core, cluster.core(), gateway_unit).await;
         assert_eq!(
-            node_pid_before, node_pid_after,
-            "node unit must not restart across activate"
+            machine_pid_before, machine_pid_after,
+            "machine unit must not restart across activate"
         );
         assert_eq!(
             gateway_pid_before, gateway_pid_after,
             "gateway unit must not restart across activate"
         );
 
-        // The core node's minted public key landed in the authority file next
+        // The core machine's minted public key landed in the authority file next
         // to the install-time principals.
         let authorized =
             read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await
                 .expect("authorized-users.conf is readable");
-        for principal in ["controller", "user", "join", "node_core_1"] {
+        for principal in ["controller", "user", "join", "machine_core_1"] {
             assert!(
                 authorized.contains(&format!("# ployz-principal: {principal}")),
                 "authorized-users.conf must contain {principal}: {authorized}"
@@ -347,11 +347,11 @@ async fn scenario_machine_add_via_join_bundle() {
             "machine add not completed"
         );
         let events = terminal_operation_events(&core, &add_operation).await;
-        assert_machine_add_event_sequence(&events, &node_id("edge_2"));
+        assert_machine_add_event_sequence(&events, &machine_id("edge_2"));
 
-        // nats_connection readiness evidence: the edge's node process connects
+        // nats_connection readiness evidence: the edge's machine process connects
         // with its minted credential and publishes observations.
-        wait_for_machine_observations(&core, &node_id("edge_2")).await;
+        wait_for_machine_observations(&core, &machine_id("edge_2")).await;
 
         // The edge holds its own minted seed — not the controller's.
         let edge_creds =
@@ -373,7 +373,13 @@ async fn scenario_machine_add_via_join_bundle() {
             read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await
                 .expect("authorized-users.conf is readable");
-        for principal in ["controller", "user", "join", "node_core_1", "node_edge_2"] {
+        for principal in [
+            "controller",
+            "user",
+            "join",
+            "machine_core_1",
+            "machine_edge_2",
+        ] {
             assert!(
                 authorized.contains(&format!("# ployz-principal: {principal}")),
                 "authorized-users.conf must keep {principal}: {authorized}"
@@ -381,14 +387,14 @@ async fn scenario_machine_add_via_join_bundle() {
         }
 
         // No separate gateway credential exists: the edge gateway role env
-        // points its seed file at the machine's Node creds.
+        // points its seed file at the machine's Machine creds.
         let gateway_env =
             read_file_from_container(&docker, &edge.container_id, "/etc/ployz/ployzd-gateway.env")
                 .await
                 .expect("edge gateway env file exists");
         assert!(
             gateway_env.contains(&format!("PLOYZ_NATS_NKEY_SEED_FILE={EDGE_NATS_CREDS_FILE}")),
-            "edge gateway must authenticate with the Node creds: {gateway_env}"
+            "edge gateway must authenticate with the Machine creds: {gateway_env}"
         );
 
         // The join token is single-use: re-redeeming it is refused and the
@@ -426,11 +432,11 @@ async fn scenario_machine_add_via_join_bundle() {
 ///   on both machines, and HTTP through both published gateway ports all
 ///   agree.
 /// - **Scenario 4 — daemon-restart invisibility:** restarting
-///   `ployzd-control` (core) and the edge node unit neither interrupts
+///   `ployzd-control` (core) and the edge machine unit neither interrupts
 ///   gateway HTTP nor replaces workload containers, and the operations API
 ///   answers afterwards with unmutated machine state.
 /// - **Scenario 5 — auth rejection:** unauthorized seeds, plaintext
-///   clients, and over-reaching Node/Join principals are refused by the
+///   clients, and over-reaching Machine/Join principals are refused by the
 ///   real cluster — which keeps serving afterwards.
 #[tokio::test]
 async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
@@ -447,8 +453,8 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
             panic!("scenario requires exactly one edge machine");
         };
         add_and_join_edge(&core, edge).await;
-        wait_for_machine_observations(&core, &node_id("core_1")).await;
-        wait_for_machine_observations(&core, &node_id("edge_2")).await;
+        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(&core, &machine_id("edge_2")).await;
 
         scenario_cross_machine_deploy(&core, edge).await;
         scenario_daemon_restart_invisibility(&core, edge).await;
@@ -568,15 +574,15 @@ async fn assert_gateway_serves(machine: &DindMachine) {
 // Scenario 4 — daemon-restart invisibility
 // ---------------------------------------------------------------------------
 
-/// Restarts the control daemon on the core and the node daemon on the edge
+/// Restarts the control daemon on the core and the machine daemon on the edge
 /// while the deploy is serving: gateway HTTP must keep answering throughout,
 /// workload containers must be adopted (same IDs), and the operations API
 /// must answer afterwards with unmutated machine state.
 async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMachine) {
     let core_machine = core.cluster.core();
 
-    let core_snapshot_before = wait_for_settled_snapshot(core, &node_id("core_1")).await;
-    let edge_snapshot_before = wait_for_settled_snapshot(core, &node_id("edge_2")).await;
+    let core_snapshot_before = wait_for_settled_snapshot(core, &machine_id("core_1")).await;
+    let edge_snapshot_before = wait_for_settled_snapshot(core, &machine_id("edge_2")).await;
     let core_containers_before = workload_container_ids(core, core_machine).await;
     let edge_containers_before = workload_container_ids(core, edge).await;
 
@@ -591,13 +597,13 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
             &["systemctl", "restart", "ployzd-control"],
         )
         .await;
-        let node = exec_in_container(
+        let machine = exec_in_container(
             &docker,
             &edge_container,
-            &["systemctl", "restart", "ployzd-node-edge_2"],
+            &["systemctl", "restart", "ployzd-machine-edge_2"],
         )
         .await;
-        (control, node)
+        (control, machine)
     });
 
     // Gateway HTTP keeps answering during the whole restart window.
@@ -615,7 +621,7 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
     }
     let restarted = restart.await.expect("restart task does not panic");
     match restarted {
-        (Ok(control), Ok(node)) if control.success() && node.success() => {}
+        (Ok(control), Ok(machine)) if control.success() && machine.success() => {}
         other => panic!("daemon restarts failed: {other:?}"),
     }
     assert!(
@@ -623,7 +629,7 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
         "gateways must be polled during the restart window, not only after it"
     );
     assert_unit_active(core, core_machine, "ployzd-control").await;
-    assert_unit_active(core, edge, "ployzd-node-edge_2").await;
+    assert_unit_active(core, edge, "ployzd-machine-edge_2").await;
 
     // Adopt-not-recreate: the inner Docker container IDs are unchanged.
     let core_containers_after = workload_container_ids(core, core_machine).await;
@@ -634,15 +640,15 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
     );
     assert_eq!(
         edge_containers_before, edge_containers_after,
-        "edge workload containers must survive the node restart"
+        "edge workload containers must survive the machine restart"
     );
 
     // The operations API answers after reconnect with unmutated machine
     // state (gateway status is the restarted processes' own live
     // observation, so the comparison covers identity, public ip, and the
     // observed container set).
-    wait_for_matching_snapshot(core, &node_id("core_1"), &core_snapshot_before).await;
-    wait_for_matching_snapshot(core, &node_id("edge_2"), &edge_snapshot_before).await;
+    wait_for_matching_snapshot(core, &machine_id("core_1"), &core_snapshot_before).await;
+    wait_for_matching_snapshot(core, &machine_id("edge_2"), &edge_snapshot_before).await;
 }
 
 /// Sorted running managed-container IDs inside one machine.
@@ -659,7 +665,7 @@ async fn workload_container_ids(core: &CoreContext, machine: &DindMachine) -> Ve
 /// Polls until the machine snapshot reflects the completed deploy (one
 /// observed workload container plus the standing observations), so the
 /// post-restart comparison starts from settled truth.
-async fn wait_for_settled_snapshot(core: &CoreContext, machine: &NodeId) -> MachineSnapshot {
+async fn wait_for_settled_snapshot(core: &CoreContext, machine: &MachineId) -> MachineSnapshot {
     wait_for_inspect(
         core,
         machine,
@@ -678,7 +684,7 @@ async fn wait_for_settled_snapshot(core: &CoreContext, machine: &NodeId) -> Mach
 /// same active state, same public ip, same observed container count.
 async fn wait_for_matching_snapshot(
     core: &CoreContext,
-    machine: &NodeId,
+    machine: &MachineId,
     before: &MachineSnapshot,
 ) {
     wait_for_inspect(
@@ -729,24 +735,24 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
         "a plaintext client reached the TLS-only port"
     );
 
-    // (c) The edge node's minted seed is fenced to its own scope: publishing
-    // into the core node's service scope and writing core KV subjects both
+    // (c) The edge machine's minted seed is fenced to its own scope: publishing
+    // into the core machine's service scope and writing core KV subjects both
     // draw server-side permission violations.
     let edge_seed =
         read_file_from_container(&core.docker, &edge.container_id, EDGE_NATS_CREDS_FILE)
             .await
             .expect("edge nats.creds is readable");
-    let edge_node_config = host_client_config(
+    let edge_machine_config = host_client_config(
         cluster,
         &core.material,
-        NatsPrincipal::Node {
-            node_id: node_id("edge_2"),
+        NatsPrincipal::Machine {
+            machine_id: machine_id("edge_2"),
         },
         edge_seed.trim(),
     );
-    let (edge_client, mut edge_events) = connect_with_event_capture(&edge_node_config).await;
+    let (edge_client, mut edge_events) = connect_with_event_capture(&edge_machine_config).await;
     for subject in [
-        node_service(&node_id("core_1"), NodeServiceEndpoint::Inspect),
+        machine_service(&machine_id("core_1"), MachineServiceEndpoint::Inspect),
         format!("$KV.{KV_CORE_BUCKET}.machines.active.core_1"),
     ] {
         edge_client
@@ -763,7 +769,7 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
     }
 
     // (d) The cluster's Join seed cannot sniff inboxes: the shared legacy
-    // inbox scope and the core node's own prefix are both refused.
+    // inbox scope and the core machine's own prefix are both refused.
     let join_config = host_client_config(
         cluster,
         &core.material,
@@ -771,10 +777,10 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
         &core.material.join_seed,
     );
     let (join_client, mut join_events) = connect_with_event_capture(&join_config).await;
-    let core_node_inbox = inbox_subscribe_scope(&NatsPrincipal::Node {
-        node_id: node_id("core_1"),
+    let core_machine_inbox = inbox_subscribe_scope(&NatsPrincipal::Machine {
+        machine_id: machine_id("core_1"),
     });
-    for scope in ["_INBOX.>", core_node_inbox.as_str()] {
+    for scope in ["_INBOX.>", core_machine_inbox.as_str()] {
         join_client
             .subscribe(scope.to_owned())
             .await

@@ -5,23 +5,23 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{OperationId, StepId};
 use ployz_core::machine::MachineName;
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot,
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::{
     ActiveMachineState, ActiveServiceCommitRequest, ActiveServiceState, ActiveServiceStateKey,
-    ExpectedActiveService, NodePublicIpObservation,
+    ExpectedActiveService, MachinePublicIpObservation,
 };
 use ployz_nats::core_state::AsyncNatsCoreStateStore;
 use ployz_nats::kv::KV_CORE_BUCKET;
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, route_port, service_id,
+    container_id, machine_id, operation_id, revision_id, route_port, service_id,
 };
 use ployzd::deploy_worker::{
-    DeployExecutionNodeScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
+    DeployExecutionMachineScope, DeployFactLoadError, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -41,10 +41,10 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         .await
         .expect("active service stores");
     observations
-        .replace_node_containers(&node_snapshot(
-            "node_a",
+        .replace_machine_containers(&machine_snapshot(
+            "machine_a",
             [managed_observation(
-                "node_a",
+                "machine_a",
                 "ctr_target",
                 "svc_api",
                 "rev_2",
@@ -52,21 +52,21 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
             )],
         ))
         .await
-        .expect("node_a observations store");
-    let node_b_observations = nats.node_observations("node_b").await;
-    node_b_observations
-        .replace_node_containers(&node_snapshot(
-            "node_b",
+        .expect("machine_a observations store");
+    let machine_b_observations = nats.machine_observations("machine_b").await;
+    machine_b_observations
+        .replace_machine_containers(&machine_snapshot(
+            "machine_b",
             [
                 managed_observation(
-                    "node_b",
+                    "machine_b",
                     "ctr_old",
                     "svc_api",
                     "rev_1",
                     ContainerRuntimeState::running_unroutable(),
                 ),
                 managed_observation(
-                    "node_b",
+                    "machine_b",
                     "ctr_stopped",
                     "svc_api",
                     "rev_2",
@@ -75,23 +75,23 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
             ],
         ))
         .await
-        .expect("node_b observations store");
+        .expect("machine_b observations store");
     observations
-        .replace_node_public_ip(&node_public_ip("node_a", 1))
+        .replace_machine_public_ip(&machine_public_ip("machine_a", 1))
         .await
-        .expect("node_a public ip stores");
-    node_b_observations
-        .replace_node_public_ip(&node_public_ip("node_b", 2))
+        .expect("machine_a public ip stores");
+    machine_b_observations
+        .replace_machine_public_ip(&machine_public_ip("machine_b", 2))
         .await
-        .expect("node_b public ip stores");
+        .expect("machine_b public ip stores");
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![
-            node_id("node_a"),
-            node_id("node_b"),
-            node_id("node_missing"),
+        DeployExecutionMachineScope::same_machines(vec![
+            machine_id("machine_a"),
+            machine_id("machine_b"),
+            machine_id("machine_missing"),
         ]),
         &core_state,
         &observations,
@@ -106,31 +106,31 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     assert_eq!(
         command.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
-            node_id: node_id("node_a"),
+            machine_id: machine_id("machine_a"),
             container_id: container_id("ctr_target")
         }]
     );
     assert_eq!(
         command.cleanup_candidates(),
         [
-            cleanup_container("node_a", "ctr_target", "rev_2"),
-            cleanup_container("node_b", "ctr_old", "rev_1"),
+            cleanup_container("machine_a", "ctr_target", "rev_2"),
+            cleanup_container("machine_b", "ctr_old", "rev_1"),
         ]
     );
     assert_eq!(
-        command.eligible_nodes(),
+        command.eligible_machines(),
         [
-            node_id("node_a"),
-            node_id("node_b"),
-            node_id("node_missing")
+            machine_id("machine_a"),
+            machine_id("machine_b"),
+            machine_id("machine_missing")
         ]
     );
     assert_eq!(command.step_timeout(), Duration::from_secs(7));
     assert_eq!(
         command.wireguard_peer_endpoints(),
         [
-            wireguard_peer_endpoint("node_a", 1),
-            wireguard_peer_endpoint("node_b", 2)
+            wireguard_peer_endpoint("machine_a", 1),
+            wireguard_peer_endpoint("machine_b", 2)
         ]
     );
 }
@@ -143,9 +143,9 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    let edge_observations = nats.node_observations("edge_2").await;
+    let edge_observations = nats.machine_observations("edge_2").await;
     edge_observations
-        .replace_node_containers(&node_snapshot(
+        .replace_machine_containers(&machine_snapshot(
             "edge_2",
             [managed_observation(
                 "edge_2",
@@ -158,25 +158,25 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         .await
         .expect("edge observations store");
     edge_observations
-        .replace_node_public_ip(&node_public_ip("edge_2", 7))
+        .replace_machine_public_ip(&machine_public_ip("edge_2", 7))
         .await
         .expect("edge public ip stores");
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
     )
     .await;
 
-    assert_eq!(command.eligible_nodes(), [node_id("edge_2")]);
+    assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
     assert_eq!(
         command.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
-            node_id: node_id("edge_2"),
+            machine_id: machine_id("edge_2"),
             container_id: container_id("ctr_target")
         }]
     );
@@ -194,29 +194,29 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    nats.node_observations("core_1")
+    nats.machine_observations("core_1")
         .await
-        .replace_node_public_ip(&node_public_ip("core_1", 1))
+        .replace_machine_public_ip(&machine_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
-    nats.node_observations("edge_2")
+    nats.machine_observations("edge_2")
         .await
-        .replace_node_public_ip(&node_public_ip("edge_2", 2))
+        .replace_machine_public_ip(&machine_public_ip("edge_2", 2))
         .await
         .expect("edge public ip stores");
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
     )
     .await;
 
-    assert_eq!(command.eligible_nodes(), [node_id("edge_2")]);
-    assert_eq!(command.dataplane_nodes(), [node_id("edge_2")]);
+    assert_eq!(command.eligible_machines(), [machine_id("edge_2")]);
+    assert_eq!(command.dataplane_machines(), [machine_id("edge_2")]);
     assert_eq!(
         command.wireguard_peer_endpoints(),
         [wireguard_peer_endpoint("edge_2", 2)]
@@ -227,24 +227,24 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
     let nats = test_nats().await;
     let (core_state, observations) = nats.stores();
-    nats.node_observations("core_1")
+    nats.machine_observations("core_1")
         .await
-        .replace_node_public_ip(&node_public_ip("core_1", 1))
+        .replace_machine_public_ip(&machine_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
 
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
     )
     .await;
 
-    assert_eq!(command.eligible_nodes(), [node_id("core_1")]);
-    assert_eq!(command.dataplane_nodes(), [node_id("core_1")]);
+    assert_eq!(command.eligible_machines(), [machine_id("core_1")]);
+    assert_eq!(command.dataplane_machines(), [machine_id("core_1")]);
     assert_eq!(
         command.wireguard_peer_endpoints(),
         [wireguard_peer_endpoint("core_1", 1)]
@@ -259,15 +259,15 @@ async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
-    nats.node_observations("core_1")
+    nats.machine_observations("core_1")
         .await
-        .replace_node_public_ip(&node_public_ip("core_1", 1))
+        .replace_machine_public_ip(&machine_public_ip("core_1", 1))
         .await
         .expect("core public ip stores");
 
     let error = load_deploy_execution_facts_from_nats(
         &routed_deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![node_id("core_1")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("core_1")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
@@ -277,8 +277,8 @@ async fn routed_nats_preparation_fails_when_dataplane_public_ip_is_missing() {
 
     assert!(matches!(
         error,
-        DeployFactLoadError::MissingNodePublicIpObservation { node_id }
-            if node_id == self::node_id("edge_2")
+        DeployFactLoadError::MissingMachinePublicIpObservation { machine_id }
+            if machine_id == self::machine_id("edge_2")
     ));
 }
 
@@ -290,7 +290,7 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
@@ -326,7 +326,7 @@ async fn nats_preparation_preserves_typed_active_state_read_failure() {
     let request = deploy_request();
     let error = load_deploy_execution_facts_from_nats(
         &request,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
@@ -361,7 +361,7 @@ async fn nats_preparation_preserves_decode_failure_message() {
 
     let error = load_deploy_execution_facts_from_nats(
         &request,
-        DeployExecutionNodeScope::same_nodes(vec![node_id("node_a")]),
+        DeployExecutionMachineScope::same_machines(vec![machine_id("machine_a")]),
         &core_state,
         &observations,
         Duration::from_secs(7),
@@ -381,14 +381,14 @@ async fn nats_preparation_preserves_decode_failure_message() {
 async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
-    node_scope: DeployExecutionNodeScope,
+    machine_scope: DeployExecutionMachineScope,
     core_state: &AsyncNatsCoreStateStore,
     observations: &AsyncNatsObservationStore,
     step_timeout: Duration,
 ) -> ployzd::deploy_worker::DeployExecutionCommand {
     let facts = load_deploy_execution_facts_from_nats(
         &request,
-        node_scope,
+        machine_scope,
         core_state,
         observations,
         step_timeout,
@@ -411,32 +411,35 @@ impl TestNats {
         (self.core_state.clone(), self.observations.clone())
     }
 
-    /// The observation store connected as the given node — each node may
+    /// The observation store connected as the given machine — each machine may
     /// only write its own observation keys.
-    async fn node_observations(&self, node_id_value: &str) -> AsyncNatsObservationStore {
-        let node_client = self.connected.node_client(&node_id(node_id_value)).await;
-        AsyncNatsObservationStore::from_jetstream(&jetstream::new(node_client))
+    async fn machine_observations(&self, machine_id_value: &str) -> AsyncNatsObservationStore {
+        let machine_client = self
+            .connected
+            .machine_client(&machine_id(machine_id_value))
+            .await;
+        AsyncNatsObservationStore::from_jetstream(&jetstream::new(machine_client))
             .await
-            .expect("open node observation store")
+            .expect("open machine observation store")
     }
 }
 
 async fn test_nats() -> TestNats {
-    let node_ids = [
-        node_id("node_a"),
-        node_id("node_b"),
-        node_id("edge_2"),
-        node_id("core_1"),
+    let machine_ids = [
+        machine_id("machine_a"),
+        machine_id("machine_b"),
+        machine_id("edge_2"),
+        machine_id("core_1"),
     ];
-    let connected = ployz_test_support::nats::TestNats::start_with_nodes(&node_ids).await;
+    let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     connected.bootstrap_resources().await;
     let jetstream = connected.jetstream.clone();
-    let node_client = connected.node_client(&node_id("node_a")).await;
-    let node_jetstream = jetstream::new(node_client);
+    let machine_client = connected.machine_client(&machine_id("machine_a")).await;
+    let machine_jetstream = jetstream::new(machine_client);
     let core_state = AsyncNatsCoreStateStore::from_jetstream(&jetstream)
         .await
         .expect("open core state store");
-    let observations = AsyncNatsObservationStore::from_jetstream(&node_jetstream)
+    let observations = AsyncNatsObservationStore::from_jetstream(&machine_jetstream)
         .await
         .expect("open observation store");
 
@@ -472,23 +475,23 @@ fn routed_deploy_request() -> DeployRequest {
     }
 }
 
-fn node_snapshot(
-    node_id: &str,
+fn machine_snapshot(
+    machine_id: &str,
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
-) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(self::node_id(node_id), containers)
-        .expect("valid node observation snapshot")
+) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(self::machine_id(machine_id), containers)
+        .expect("valid machine observation snapshot")
 }
 
 fn managed_observation(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     service_id: &str,
     revision_id: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: self::service_id(service_id),
         revision_id: self::revision_id(revision_id),
@@ -499,24 +502,24 @@ fn managed_observation(
     }
 }
 
-fn active_machine(node_id: &str) -> ActiveMachineState {
+fn active_machine(machine_id: &str) -> ActiveMachineState {
     ActiveMachineState {
-        node_id: self::node_id(node_id),
-        name: MachineName::try_new(node_id).expect("valid machine name"),
+        machine_id: self::machine_id(machine_id),
+        name: MachineName::try_new(machine_id).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
     }
 }
 
-fn node_public_ip(node_id: &str, last_octet: u8) -> NodePublicIpObservation {
-    NodePublicIpObservation {
-        node_id: self::node_id(node_id),
+fn machine_public_ip(machine_id: &str, last_octet: u8) -> MachinePublicIpObservation {
+    MachinePublicIpObservation {
+        machine_id: self::machine_id(machine_id),
         public_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
     }
 }
 
-fn wireguard_peer_endpoint(node_id: &str, last_octet: u8) -> WireGuardPeerEndpoint {
+fn wireguard_peer_endpoint(machine_id: &str, last_octet: u8) -> WireGuardPeerEndpoint {
     WireGuardPeerEndpoint::new(
-        self::node_id(node_id),
+        self::machine_id(machine_id),
         SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),
             DEFAULT_WIREGUARD_LISTEN_PORT,
@@ -525,12 +528,12 @@ fn wireguard_peer_endpoint(node_id: &str, last_octet: u8) -> WireGuardPeerEndpoi
 }
 
 fn cleanup_container(
-    node_id: &str,
+    machine_id: &str,
     container_id: &str,
     revision_id: &str,
 ) -> DeployCleanupContainer {
     DeployCleanupContainer {
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
         service_id: service_id("svc_api"),
         revision_id: self::revision_id(revision_id),

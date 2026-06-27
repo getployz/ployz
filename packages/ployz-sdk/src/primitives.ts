@@ -16,7 +16,7 @@ import {
   type MachineBootstrapUrl,
   type MachineJoinToken,
   type MachineName,
-  type NodeId,
+  type MachineId,
   type OperationEventReplayLimit,
   type OperationId,
   type OperationIdempotencyKey,
@@ -46,8 +46,8 @@ export function revisionId(value: string): RevisionId {
   return subjectToken(value, "revision id") as RevisionId;
 }
 
-export function nodeId(value: string): NodeId {
-  return subjectToken(value, "node id") as NodeId;
+export function machineId(value: string): MachineId {
+  return subjectToken(value, "machine id") as MachineId;
 }
 
 export function machineName(value: string): MachineName {

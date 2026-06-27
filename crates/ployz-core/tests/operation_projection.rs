@@ -11,7 +11,7 @@ use ployz_core::ops::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{
-    container_id, event_sequence, machine_name, node_id, operation_id, service_id,
+    container_id, event_sequence, machine_id, machine_name, operation_id, service_id,
 };
 
 #[test]
@@ -505,7 +505,7 @@ fn fresh_container_started_event_after_later_stage_records_without_changing_stat
 fn machine_add_submitted_event_is_satisfied_by_accepted_status() {
     let accepted = OperationStatus::machine_add_pending(
         operation_id("op_machine"),
-        node_id("node_2"),
+        machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
@@ -515,7 +515,7 @@ fn machine_add_submitted_event_is_satisfied_by_accepted_status() {
     assert_eq!(
         project_operation_event(
             &accepted,
-            machine_add_submitted_event("node_2"),
+            machine_add_submitted_event("machine_2"),
             event_sequence(8)
         ),
         Ok(OperationProjection::AlreadySatisfied)
@@ -523,10 +523,10 @@ fn machine_add_submitted_event_is_satisfied_by_accepted_status() {
 }
 
 #[test]
-fn machine_add_rejects_submitted_event_for_another_node() {
+fn machine_add_rejects_submitted_event_for_another_machine() {
     let accepted = OperationStatus::machine_add_pending(
         operation_id("op_machine"),
-        node_id("node_2"),
+        machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
@@ -536,13 +536,13 @@ fn machine_add_rejects_submitted_event_for_another_node() {
     assert_eq!(
         project_operation_event(
             &accepted,
-            machine_add_submitted_event("node_3"),
+            machine_add_submitted_event("machine_3"),
             event_sequence(8)
         ),
         Err(StatusProjectionError::OperationSubjectMismatch {
             operation_id: operation_id("op_machine"),
-            expected: ployz_core::ops::OperationSubjectRef::MachineAdd(node_id("node_2")),
-            actual: ployz_core::ops::OperationSubjectRef::MachineAdd(node_id("node_3")),
+            expected: ployz_core::ops::OperationSubjectRef::MachineAdd(machine_id("machine_2")),
+            actual: ployz_core::ops::OperationSubjectRef::MachineAdd(machine_id("machine_3")),
         })
     );
 }
@@ -551,7 +551,7 @@ fn machine_add_rejects_submitted_event_for_another_node() {
 fn machine_add_cancel_records_terminal_status() {
     let accepted = OperationStatus::machine_add_pending(
         operation_id("op_machine"),
-        node_id("node_2"),
+        machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
@@ -572,7 +572,7 @@ fn machine_add_cancel_records_terminal_status() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Cancelled { reason },
@@ -592,7 +592,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
         &pending,
         OperationEvent::MachineAddJoined {
             operation_id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             joined_at,
         },
         event_sequence(8),
@@ -609,7 +609,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
         joined_status.as_ref(),
         &OperationStatus::MachineAdd {
             id: operation_id("op_machine"),
-            node_id: node_id("node_2"),
+            machine_id: machine_id("machine_2"),
             name: machine_name("edge_2"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             state: MachineAddOperationState::Joining { joined_at },
@@ -622,14 +622,14 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
             &joined_status,
             OperationEvent::MachineAddCompleted {
                 operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
             },
             event_sequence(9),
         ),
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Completed,
@@ -645,7 +645,7 @@ fn machine_add_join_token_failure_after_join_is_rejected() {
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
     let joined = OperationStatus::MachineAdd {
         id: operation_id("op_machine"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: machine_name("edge_2"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         state: MachineAddOperationState::Joining { joined_at },
@@ -657,7 +657,7 @@ fn machine_add_join_token_failure_after_join_is_rejected() {
             &joined,
             OperationEvent::MachineAddFailed {
                 operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 failure: MachineAddFailure::JoinTokenExpired {
                     expired_at: JoinTokenExpiresAt::try_new(600).expect("valid expiry"),
                 },
@@ -686,7 +686,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
     let joined = OperationStatus::MachineAdd {
         id: operation_id("op_machine"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: machine_name("edge_2"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         state: MachineAddOperationState::Joining { joined_at },
@@ -701,7 +701,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
             &joined,
             OperationEvent::MachineAddFailed {
                 operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 failure: failure.clone(),
             },
             event_sequence(9),
@@ -709,7 +709,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Failed { failure },
@@ -725,7 +725,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
         ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
     let joined = OperationStatus::MachineAdd {
         id: operation_id("op_machine"),
-        node_id: node_id("node_2"),
+        machine_id: machine_id("machine_2"),
         name: machine_name("edge_2"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         state: MachineAddOperationState::Joining { joined_at },
@@ -740,7 +740,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
             &joined,
             OperationEvent::MachineAddFailed {
                 operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 failure: failure.clone(),
             },
             event_sequence(9),
@@ -748,7 +748,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::MachineAdd {
                 id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
                 state: MachineAddOperationState::Failed { failure },
@@ -767,7 +767,7 @@ fn machine_add_completed_before_join_is_rejected() {
             &pending,
             OperationEvent::MachineAddCompleted {
                 operation_id: operation_id("op_machine"),
-                node_id: node_id("node_2"),
+                machine_id: machine_id("machine_2"),
             },
             event_sequence(8),
         ),
@@ -856,7 +856,7 @@ fn missing_heartbeat_readiness() -> MachineReadinessEvidence {
         heartbeat: MachineReadinessCheck::Missing {
             reason: FailureMessage::try_new("heartbeat missing").expect("valid failure message"),
         },
-        node_inspect: MachineReadinessCheck::Confirmed,
+        machine_inspect: MachineReadinessCheck::Confirmed,
     }
 }
 
@@ -889,7 +889,7 @@ fn issued_join_token() -> IssuedJoinToken {
 fn machine_add_pending_status() -> OperationStatus {
     OperationStatus::machine_add_pending(
         operation_id("op_machine"),
-        node_id("node_2"),
+        machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
         issued_join_token(),
@@ -900,7 +900,7 @@ fn machine_add_pending_status() -> OperationStatus {
 fn container_started_event() -> OperationEvent {
     OperationEvent::DeployContainerStarted {
         operation_id: operation_id("op_123"),
-        node_id: node_id("node_a"),
+        machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_1"),
     }
 }
@@ -919,7 +919,7 @@ fn plan_created_event() -> OperationEvent {
             target_revision: ployz_core::ids::RevisionId::try_new("rev_2")
                 .expect("valid revision id"),
             steps: vec![DeployPlanStep::RunContainer {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
             }],
             cleanup_containers: Vec::new(),
@@ -927,10 +927,10 @@ fn plan_created_event() -> OperationEvent {
     }
 }
 
-fn machine_add_submitted_event(node_id: &str) -> OperationEvent {
+fn machine_add_submitted_event(machine_id: &str) -> OperationEvent {
     OperationEvent::MachineAddSubmitted {
         operation_id: operation_id("op_machine"),
-        node_id: self::node_id(node_id),
+        machine_id: self::machine_id(machine_id),
         name: machine_name("edge_2"),
         roles: InstallRolePolicy::install_all().without_gateway(),
         join_token: issued_join_token(),

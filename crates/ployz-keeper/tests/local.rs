@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
@@ -26,22 +26,22 @@ use ployz_keeper::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_keeper::steps::{
-    ContainerRuntime, FirstNodeInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
+    ContainerRuntime, FirstMachineInstallTarget, JoinToken, KeeperJoinMaterial, KeeperJoinTarget,
     KeeperStep, KeeperStepFailure, KeeperStepFailureReason, KeeperStepLabel, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_node_install_plan,
+    PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_machine_install_plan,
 };
 use ployz_keeper::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::ids::{failure_message, node_id, operation_id};
+use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use ployz_test_support::keeper::{artifact_version as version, sha256_digest as digest};
 use std::sync::OnceLock;
 
 #[test]
-fn local_effects_install_first_node_process_units() {
-    let root = temp_dir("ployz-keeper-local-first-node");
+fn local_effects_install_first_machine_process_units() {
+    let root = temp_dir("ployz-keeper-local-first-machine");
     let source = root.join("ployzd-source");
     let install_path = root.join("bin/ployzd");
     let nats_source = root.join("nats-server-source");
@@ -52,9 +52,9 @@ fn local_effects_install_first_node_process_units() {
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
 
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
-    let plan = first_node_install_plan(
-        FirstNodeInstallTarget::new(
-            node_id("node_1"),
+    let plan = first_machine_install_plan(
+        FirstMachineInstallTarget::new(
+            machine_id("machine_1"),
             ployzd_artifact,
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -111,7 +111,7 @@ fn local_effects_install_first_node_process_units() {
         );
         assert_secret_file_mode(root.join(seed_file));
     }
-    assert!(!root.join("nats/node.seed").exists());
+    assert!(!root.join("nats/machine.seed").exists());
     assert!(
         fs::read_to_string(systemd_dir.join("nats-server.service"))
             .unwrap()
@@ -125,7 +125,7 @@ fn local_effects_install_first_node_process_units() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_1\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
@@ -133,22 +133,26 @@ fn local_effects_install_first_node_process_units() {
         )
     );
     assert_eq!(
-        fs::read_to_string(root.join("etc/ployzd-node.env")).unwrap(),
+        fs::read_to_string(root.join("etc/ployzd-machine.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_1\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
-            seed = root.join("nats/node.seed").display(),
+            seed = root.join("nats/machine.seed").display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             ctl = root.join("bin/ployz-ebpf-ctl").display()
         )
     );
-    assert!(systemd_dir.join("ployzd-node-node_1.service").exists());
+    assert!(
+        systemd_dir
+            .join("ployzd-machine-machine_1.service")
+            .exists()
+    );
     assert!(!systemd_dir.join("ployzd-gateway.service").exists());
 }
 
 #[test]
-fn first_node_install_writes_machine_bootstrap_url_when_configured() {
-    let root = temp_dir("ployz-keeper-first-node-bootstrap-url");
+fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
+    let root = temp_dir("ployz-keeper-first-machine-bootstrap-url");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir exists");
     let ployzd_source = root.join("ployzd-source");
@@ -156,8 +160,8 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     fs::write(&ployzd_source, "ployz\n").expect("artifact source can be written");
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
     let runner = RecordingRunner::root_linux();
-    let target = FirstNodeInstallTarget::new(
-        node_id("node_1"),
+    let target = FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
         dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -174,7 +178,7 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
                 .expect("valid bootstrap url"),
         ),
     );
-    let plan = first_node_install_plan(target);
+    let plan = first_machine_install_plan(target);
     let mut effects = KeeperLocalEffects::new(local_config(&root, &systemd_dir), runner);
 
     let execution = execute_keeper_plan(&plan, &mut effects, &mut RecordingRecorder::default());
@@ -183,7 +187,7 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_MACHINE_BOOTSTRAP_URL=https://example.test/ployz.sh\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
@@ -193,8 +197,8 @@ fn first_node_install_writes_machine_bootstrap_url_when_configured() {
 }
 
 #[test]
-fn first_node_install_writes_machine_join_template_file_when_configured() {
-    let root = temp_dir("ployz-keeper-first-node-join-template");
+fn first_machine_install_writes_machine_join_template_file_when_configured() {
+    let root = temp_dir("ployz-keeper-first-machine-join-template");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir exists");
     let ployzd_source = root.join("ployzd-source");
@@ -203,8 +207,8 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
     let runner = RecordingRunner::root_linux();
     let template_path = root.join("etc/machine-join-template.json");
-    let target = FirstNodeInstallTarget::new(
-        node_id("node_1"),
+    let target = FirstMachineInstallTarget::new(
+        machine_id("machine_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
         dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
@@ -220,7 +224,7 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
         ployz_core::install::AbsoluteInstallPath::try_new(template_path.display().to_string())
             .expect("valid template path"),
     );
-    let plan = first_node_install_plan(target);
+    let plan = first_machine_install_plan(target);
     let mut effects = KeeperLocalEffects::new(local_config(&root, &systemd_dir), runner);
 
     let execution = execute_keeper_plan(&plan, &mut effects, &mut RecordingRecorder::default());
@@ -229,7 +233,7 @@ fn first_node_install_writes_machine_join_template_file_when_configured() {
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-control.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={template}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=tls://127.0.0.1:4222\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_1\nPLOYZ_MACHINE_JOIN_TEMPLATE_FILE={template}\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = root.join("nats/ca.pem").display(),
             seed = root.join("nats/controller.seed").display(),
             template = template_path.display(),
@@ -252,7 +256,7 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
     let root = temp_dir("ployz-keeper-local-not-root");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = first_node_plan_with_ployzd(
+    let plan = first_machine_plan_with_ployzd(
         &root,
         ployzd_artifact(&root.join("source"), &root.join("bin/ployzd")),
     );
@@ -286,7 +290,7 @@ fn local_effects_skip_docker_install_when_runtime_is_ready() {
     let source = root.join("source");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let plan =
-        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner::root_linux(),
@@ -313,7 +317,7 @@ fn local_effects_start_docker_service_when_daemon_is_stopped() {
     let source = root.join("source");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let plan =
-        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -343,7 +347,7 @@ fn local_effects_install_docker_when_runtime_is_missing() {
     let source = root.join("source");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let plan =
-        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -387,7 +391,7 @@ fn local_effects_report_docker_install_failure_as_prepare_failure() {
     let source = root.join("source");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let plan =
-        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -420,7 +424,7 @@ fn local_effects_report_docker_info_failure_after_install_as_verify_failure() {
     let source = root.join("source");
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let plan =
-        first_node_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -452,7 +456,7 @@ fn local_effects_download_remote_artifact_sources() {
     let systemd_dir = root.join("systemd");
     let install_path = root.join("bin/ployzd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = first_node_plan_with_ployzd(
+    let plan = first_machine_plan_with_ployzd(
         &root,
         remote_ployzd_artifact("https://example.invalid/ployzd", &install_path),
     );
@@ -486,8 +490,10 @@ fn local_effects_remove_partial_remote_download_after_failure() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     let url = "https://example.invalid/ployzd";
-    let plan =
-        first_node_plan_with_ployzd(&root, remote_ployzd_artifact(url, &root.join("bin/ployzd")));
+    let plan = first_machine_plan_with_ployzd(
+        &root,
+        remote_ployzd_artifact(url, &root.join("bin/ployzd")),
+    );
     let mut effects = KeeperLocalEffects::new(
         local_config(&root, &systemd_dir),
         RecordingRunner {
@@ -517,7 +523,7 @@ fn local_effects_report_remote_artifact_digest_mismatch_as_verification_failure(
     let root = temp_dir("ployz-keeper-local-remote-digest-fail");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
-    let plan = first_node_plan_with_ployzd(
+    let plan = first_machine_plan_with_ployzd(
         &root,
         remote_ployzd_artifact("https://example.invalid/ployzd", &root.join("bin/ployzd")),
     );
@@ -572,9 +578,9 @@ fn local_effects_write_nats_config_before_nats_unit() {
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
 
     let ployzd_artifact = ployzd_artifact(&source, &install_path);
-    let plan = first_node_install_plan(
-        FirstNodeInstallTarget::new(
-            node_id("node_1"),
+    let plan = first_machine_install_plan(
+        FirstMachineInstallTarget::new(
+            machine_id("machine_1"),
             ployzd_artifact,
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -641,9 +647,9 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
 
-    let plan = first_node_install_plan(
-        FirstNodeInstallTarget::new(
-            node_id("node_1"),
+    let plan = first_machine_install_plan(
+        FirstMachineInstallTarget::new(
+            machine_id("machine_1"),
             ployzd_artifact(&source, &install_path),
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
@@ -679,7 +685,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     fs::write(&source, "ployz\n").expect("artifact source can be written");
     let target = KeeperJoinTarget::new(
         KeeperJoinMaterial::new(
-            node_id("node_2"),
+            machine_id("machine_2"),
             "prod",
             NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                 .expect("valid nats credentials"),
@@ -689,7 +695,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
         dataplane_artifacts(&root),
         NonEmptyRoleSet::try_new(vec![
-            DaemonProcessRole::Node(node_id("node_2")),
+            DaemonProcessRole::Machine(machine_id("machine_2")),
             DaemonProcessRole::Gateway,
         ])
         .expect("non-empty role set"),
@@ -725,7 +731,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         )
         .expect("join material is stored"),
         format!(
-            "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
+            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
             ployz_keeper::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -756,27 +762,31 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
     // Joined-machine roles share the single redeemed per-machine seed.
     let join_material_dir = root.join("state").join(JOIN_MATERIAL_DIR);
     let expected_edge_env = format!(
-        "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_2\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+        "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_2\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
         ca = join_material_dir.join(JOIN_TRUSTED_CA_FILE).display(),
         seed = join_material_dir.join(JOIN_NATS_CREDENTIALS_FILE).display(),
         bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
         ctl = root.join("bin/ployz-ebpf-ctl").display(),
     );
     assert_eq!(
-        fs::read_to_string(root.join("etc/ployzd-node.env")).unwrap(),
+        fs::read_to_string(root.join("etc/ployzd-machine.env")).unwrap(),
         expected_edge_env
     );
     assert_eq!(
         fs::read_to_string(root.join("etc/ployzd-gateway.env")).unwrap(),
         format!(
-            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_NODE_ID=node_2\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
+            "PLOYZ_NATS_URL=nats://127.0.0.1:7422\nPLOYZ_NATS_CA_FILE={ca}\nPLOYZ_NATS_NKEY_SEED_FILE={seed}\nPLOYZ_MACHINE_ID=machine_2\nPLOYZ_GATEWAY_LISTEN_ADDR=0.0.0.0:80\nPLOYZ_EBPF_BYTECODE={bytecode}\nPLOYZ_EBPF_CTL={ctl}\n",
             ca = join_material_dir.join(JOIN_TRUSTED_CA_FILE).display(),
             seed = join_material_dir.join(JOIN_NATS_CREDENTIALS_FILE).display(),
             bytecode = root.join("lib/ployz/ebpf/ployz-ebpf-tc").display(),
             ctl = root.join("bin/ployz-ebpf-ctl").display(),
         )
     );
-    assert!(systemd_dir.join("ployzd-node-node_2.service").exists());
+    assert!(
+        systemd_dir
+            .join("ployzd-machine-machine_2.service")
+            .exists()
+    );
     assert!(systemd_dir.join("ployzd-gateway.service").exists());
     assert_eq!(reporter.reports, vec![JoinReport::Completed]);
     assert_eq!(token_consumer.consumed, 1);
@@ -784,10 +794,13 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         effects.runner().systemctl_calls,
         vec![
             vec!["daemon-reload".to_owned()],
-            vec!["enable".to_owned(), "ployzd-node-node_2.service".to_owned(),],
+            vec![
+                "enable".to_owned(),
+                "ployzd-machine-machine_2.service".to_owned(),
+            ],
             vec![
                 "restart".to_owned(),
-                "ployzd-node-node_2.service".to_owned(),
+                "ployzd-machine-machine_2.service".to_owned(),
             ],
             vec!["daemon-reload".to_owned()],
             vec!["enable".to_owned(), "ployzd-gateway.service".to_owned()],
@@ -802,7 +815,7 @@ fn local_effects_store_redacted_join_material() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     let material = KeeperJoinMaterial::new(
-        node_id("node_2"),
+        machine_id("machine_2"),
         "prod",
         NatsUserSeed::try_new("SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
             .expect("valid nats credentials"),
@@ -829,7 +842,7 @@ fn local_effects_store_redacted_join_material() {
         )
         .expect("join material is stored"),
         format!(
-            "node_id=node_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
+            "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\n",
             ployz_keeper::steps::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
@@ -878,7 +891,7 @@ impl KeeperJoinRedeemer for StaticJoinRedeemer {
 
         Ok(RedeemedKeeperJoin::new(
             operation_id("op_machine"),
-            node_id("node_2"),
+            machine_id("machine_2"),
             self.target.clone(),
         ))
     }
@@ -1081,7 +1094,7 @@ fn test_identity() -> &'static ClusterNatsIdentity {
 
 fn expected_loopback_nats_config(root: &Path) -> String {
     format!(
-        "server_name: node_1\nhost: 127.0.0.1\nport: 4222\ntls {{\n  cert_file: \"{cert}\"\n  key_file: \"{key}\"\n}}\njetstream {{\n  store_dir: \"{store}\"\n}}\ninclude \"authorized-users.conf\"\n",
+        "server_name: machine_1\nhost: 127.0.0.1\nport: 4222\ntls {{\n  cert_file: \"{cert}\"\n  key_file: \"{key}\"\n}}\njetstream {{\n  store_dir: \"{store}\"\n}}\ninclude \"authorized-users.conf\"\n",
         cert = root.join("nats/server.crt").display(),
         key = root.join("nats/server.key").display(),
         store = root.join("nats").display(),
@@ -1089,14 +1102,14 @@ fn expected_loopback_nats_config(root: &Path) -> String {
 }
 
 fn role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
-    role_env_for_node(root, node_id("node_1"))
+    role_env_for_machine(root, machine_id("machine_1"))
 }
 
-fn role_env_for_node(root: &Path, node_id: NodeId) -> PloyzdRoleEnvironmentTarget {
+fn role_env_for_machine(root: &Path, machine_id: MachineId) -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(root.join("etc/ployzd.env"))
             .expect("valid ployzd role environment target"),
-        node_id,
+        machine_id,
         NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("valid NATS URL"),
         RoleNatsCredentials::cluster(&nats_material(root)),
     )
@@ -1106,21 +1119,21 @@ fn edge_runtime_role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
     PloyzdRoleEnvironmentTarget::new(
         PloyzdRoleEnvironmentFile::new(root.join("etc/ployzd.env"))
             .expect("valid ployzd role environment target"),
-        node_id("node_2"),
+        machine_id("machine_2"),
         NatsClientUrl::loopback(7422),
         RoleNatsCredentials::joined(&root.join("state").join(JOIN_MATERIAL_DIR)),
     )
 }
 
-fn first_node_plan_with_ployzd(
+fn first_machine_plan_with_ployzd(
     root: &Path,
     ployzd: ArtifactTarget,
 ) -> ployz_keeper::steps::KeeperStepPlan {
     let nats_source = root.join("nats-server-source");
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
-    first_node_install_plan(
-        FirstNodeInstallTarget::new(
-            node_id("node_1"),
+    first_machine_install_plan(
+        FirstMachineInstallTarget::new(
+            machine_id("machine_1"),
             ployzd,
             dataplane_artifacts(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),

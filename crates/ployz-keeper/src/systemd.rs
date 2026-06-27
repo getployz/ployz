@@ -342,7 +342,9 @@ fn validate_supervisor_path(
 pub fn role_unit_name(role: &DaemonProcessRole) -> String {
     match role {
         DaemonProcessRole::Control => "ployzd-control.service".to_owned(),
-        DaemonProcessRole::Node(node_id) => format!("ployzd-node-{}.service", node_id.as_str()),
+        DaemonProcessRole::Machine(machine_id) => {
+            format!("ployzd-machine-{}.service", machine_id.as_str())
+        }
         DaemonProcessRole::Gateway => "ployzd-gateway.service".to_owned(),
         DaemonProcessRole::Dns => "ployzd-dns.service".to_owned(),
     }

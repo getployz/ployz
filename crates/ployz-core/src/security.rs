@@ -4,12 +4,12 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::NodeId;
+use crate::ids::MachineId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "principal", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NatsPrincipal {
-    Node { node_id: NodeId },
+    Machine { machine_id: MachineId },
     Controller,
     User,
     Join,
@@ -23,7 +23,7 @@ impl NatsPrincipal {
     #[must_use]
     pub fn authority_key(&self) -> String {
         match self {
-            Self::Node { node_id } => format!("node_{}", node_id.as_str()),
+            Self::Machine { machine_id } => format!("machine_{}", machine_id.as_str()),
             Self::Controller => "controller".to_owned(),
             Self::User => "user".to_owned(),
             Self::Join => "join".to_owned(),
@@ -32,11 +32,12 @@ impl NatsPrincipal {
     }
 
     pub fn try_from_authority_key(key: &str) -> Result<Self, NatsPrincipalKeyError> {
-        if let Some(node_id) = key.strip_prefix("node_") {
-            let node_id = NodeId::try_new(node_id).map_err(|_| NatsPrincipalKeyError::Invalid {
-                key: key.to_owned(),
-            })?;
-            return Ok(Self::Node { node_id });
+        if let Some(machine_id) = key.strip_prefix("machine_") {
+            let machine_id =
+                MachineId::try_new(machine_id).map_err(|_| NatsPrincipalKeyError::Invalid {
+                    key: key.to_owned(),
+                })?;
+            return Ok(Self::Machine { machine_id });
         }
         match key {
             "controller" => Ok(Self::Controller),

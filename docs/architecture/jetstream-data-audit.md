@@ -32,7 +32,7 @@ Older plan documents mention `KV_LOCKS`, `PLZ_JOBS`, `PLZ_AUDIT`,
 and Object Store buckets. Those are not current stored resources in the active
 manifest.
 
-Direct node observation subjects such as `plz.v1.obs.node.<node_id>.*` are not
+Direct machine observation subjects such as `plz.v1.obs.machine.<machine_id>.*` are not
 captured by a stream today. The persisted latest observations live in
 `KV_OBS`.
 
@@ -46,7 +46,7 @@ set is different: it is durable authority with an on-disk recovery file.
 | --- | --- | --- | --- | --- |
 | `services.<service_id>` | `ActiveServiceState { service_id, active_revision }` | Deploy worker after successful active-service commit. | Rebuildable current-state index. | Yes, with ambiguity checks. Rebuild from managed Docker containers and machine facts that prove the current serving revision. Do not adopt if multiple revisions or missing evidence make the serving target ambiguous. The original operation id and timeline are not recovered here. |
 | `routes.<hex_hostname>.<port>` | `ActiveRouteState { target, endpoint_port, service_id, revision_id }` | Deploy worker during route cutover; gateway and DNS watch this prefix. | Rebuildable route index. | Yes, with ambiguity checks. Rebuild from machine-local route facts and gateway/DNS last-known-good facts. Conflicting route claims must stay ambiguous until a repair operation resolves them. |
-| `machines.<node_id>` | `ActiveMachineState { node_id, name, activated_by }` | Machine join report / first-node activation after machine-add completion. | Current machine index. | Partially. Current machine identity can be adopted from reconnecting machines, keeper/local authority, and NATS authorization recovery evidence. The exact historical `activated_by` operation id is operation history; it is only exact if operation history or backup survives. |
+| `machines.<machine_id>` | `ActiveMachineState { machine_id, name, activated_by }` | Machine join report / first-machine activation after machine-add completion. | Current machine index. | Partially. Current machine identity can be adopted from reconnecting machines, keeper/local authority, and NATS authorization recovery evidence. The exact historical `activated_by` operation id is operation history; it is only exact if operation history or backup survives. |
 | `nats_authorized_user.<authority_key>` | `NatsAuthorizedUser { principal, nkey_public }` | Machine credential minting; control start also adopts entries from `authorized-users.conf`. | Explicitly named durable authority. | Yes from local authority, not from inference. Rebuild by reading `authorized-users.conf` and adopting missing principals into KV before rendering. If both KV and that file are lost, the authority set is not reindexable. |
 
 Current code does not store active certificates under `KV_CORE`; active certs
@@ -59,9 +59,9 @@ freshness-sensitive read-side inputs.
 
 | Key pattern | Stored value | Writer | Classification | Reindexable? |
 | --- | --- | --- | --- | --- |
-| `containers.<node_id>` | `NodeContainerObservationSnapshot` | Node process scans local Docker and replaces the node snapshot. | Live observation. | Yes. A node reconnect or observation tick rebuilds this from Docker labels and runtime state. Until then, passive projections should treat the node as missing or stale. |
-| `nodes.<node_id>.public_ip` | `NodePublicIpObservation` | Node process replaces or deletes the public IP observation. | Live observation. | Yes. Rebuilt by node observation. Loss only removes cached public-IP evidence until the node republishes. |
-| `gateways.<node_id>.status` | `GatewayStatusObservation` | Gateway process refresh loop after applying route state. | Live role observation. | Yes. Rebuilt by the gateway process. Missing or stale gateway observations are warning/diagnostic evidence, not durable membership. |
+| `containers.<machine_id>` | `MachineContainerObservationSnapshot` | Machine process scans local Docker and replaces the machine snapshot. | Live observation. | Yes. A machine reconnect or observation tick rebuilds this from Docker labels and runtime state. Until then, passive projections should treat the machine as missing or stale. |
+| `machines.<machine_id>.public_ip` | `MachinePublicIpObservation` | Machine process replaces or deletes the public IP observation. | Live observation. | Yes. Rebuilt by machine observation. Loss only removes cached public-IP evidence until the machine republishes. |
+| `gateways.<machine_id>.status` | `GatewayStatusObservation` | Gateway process refresh loop after applying route state. | Live role observation. | Yes. Rebuilt by the gateway process. Missing or stale gateway observations are warning/diagnostic evidence, not durable membership. |
 
 KV watch history on these keys is an invalidation mechanism. It is not a
 durable event log that reindex should preserve.
@@ -78,8 +78,8 @@ cluster truth.
 | Key pattern | Stored value | Purpose | Classification | Reindexable? |
 | --- | --- | --- | --- | --- |
 | `ops.<operation_id>` | `OperationStatus` | Latest user-visible operation status projected from accepted events and transitions. | Disposable operation memory / status projection. | No after JetStream loss. If `PLZ_OPS` survives, status could be projected again in principle, but current reindex recovery should not infer exact operation state from machine facts. In-flight operations should fail visibly and be retried as new operations. |
-| `machine_add_claims.<idempotency_key>` | `StoredMachineAddClaim` with operation id, node id, machine name, roles, join bundle, issued join token, and raw join token. | First-writer claim for machine-add idempotency and join material before the accepted submission has a stream sequence. Same-operation retries adopt this record. | Disposable operation claim with pending-join material. | No. If the claim survives, retry the same operation idempotency key to finish acceptance. If KV is lost, submit a new machine-add operation. |
-| `machine_add_submissions.<idempotency_key>` | `StoredMachineAddSubmission` with operation id, start sequence, node id, machine name, roles, join bundle, issued join token, and raw join token. | Accepted machine-add join material and startup resume of unfinished credential mints. Same-operation retries adopt this record to finish status projection. | Disposable operation memory with pending-join material. | No. If the machine has already become current, reindex current machine/auth state separately. If the machine add is still pending, the join cannot be recovered from non-JetStream evidence. |
+| `machine_add_claims.<idempotency_key>` | `StoredMachineAddClaim` with operation id, machine id, machine name, roles, join bundle, issued join token, and raw join token. | First-writer claim for machine-add idempotency and join material before the accepted submission has a stream sequence. Same-operation retries adopt this record. | Disposable operation claim with pending-join material. | No. If the claim survives, retry the same operation idempotency key to finish acceptance. If KV is lost, submit a new machine-add operation. |
+| `machine_add_submissions.<idempotency_key>` | `StoredMachineAddSubmission` with operation id, start sequence, machine id, machine name, roles, join bundle, issued join token, and raw join token. | Accepted machine-add join material and startup resume of unfinished credential mints. Same-operation retries adopt this record to finish status projection. | Disposable operation memory with pending-join material. | No. If the machine has already become current, reindex current machine/auth state separately. If the machine add is still pending, the join cannot be recovered from non-JetStream evidence. |
 | `machine_add_join_tokens.<fingerprint>` | `StoredMachineAddJoinToken { operation_id, idempotency_key }` | Lookup from presented raw join token to the accepted machine-add submission. | Disposable pending-join index. | No. It only supports a pending join. |
 | `machine_add_mint_claims.<idempotency_key>` | `StoredMachineAddMintClaim { operation_id, nkey_public, nkey_seed }` | Write-once atomic claim for minted machine credentials so resumed or concurrent mint workers converge. | Atomic operation claim / secret-bearing operation memory. | No. The NKey seed cannot be derived from the public key. If lost before delivery, mint through a new machine-add operation. If already delivered, current authority can be rebuilt from `authorized-users.conf` and the machine's local credential. |
 | `machine_add_secret_deliveries.<idempotency_key>` | `StoredMachineAddSecretDelivery { operation_id, secret_delivery }` containing the machine NATS seed. | Temporary handoff record used by join redemption after material is ready. Deleted after join report records completed or failed. | Temporary secret-bearing operation memory. | No. Loss before redeem means the pending join cannot receive credentials from reindex. Loss after successful join report does not matter. |
@@ -126,7 +126,7 @@ The canonical product backup scope names `KV_CORE`, `KV_OPS`, `KV_OBS`, lock
 state, backup manifests, NATS credentials/config, Ployz domain config, and
 operation event streams as included control-plane concerns. The current backup
 bundle is narrower: runtime code snapshots only `KV_CORE`, restore validates
-only `KV_CORE`, and restore reports observations as rebuildable after node
+only `KV_CORE`, and restore reports observations as rebuildable after machine
 reconnect.
 
 That means today's backup/restore path preserves current `KV_CORE` records but
@@ -150,7 +150,7 @@ An explicit reindex after JetStream loss should:
    `KV_CORE.nats_authorized_user.*` before rendering authorization.
 3. Wait for machines and role processes to reconnect and publish fresh
    observations.
-4. Rebuild `KV_OBS` naturally from node and gateway observation loops.
+4. Rebuild `KV_OBS` naturally from machine and gateway observation loops.
 5. Rebuild `KV_CORE.machines.*`, `KV_CORE.services.*`, and `KV_CORE.routes.*`
    only from unambiguous machine-local facts and Docker reality.
 6. Leave ambiguous or missing service, route, cert, and machine facts as

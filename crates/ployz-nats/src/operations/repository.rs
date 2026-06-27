@@ -14,7 +14,7 @@ pub use submission::{
     SubmitOperationError,
 };
 
-use ployz_core::ids::{CertId, NodeId, OperationId};
+use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::ops::{
     BackupTransition, CertOperationFailure, DeployEvidence, DeployTransition, EventSequence,
     OperationEvent, OperationEventReplayCursor, OperationEventReplayPage,
@@ -149,12 +149,12 @@ impl AsyncNatsOperationRepository {
     pub async fn record_machine_add_joined(
         &self,
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         joined_at: JoinTokenRedeemedAt,
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event_with_validator(
             operation_id,
-            OperationEventAppend::machine_add_joined(operation_id, node_id, joined_at),
+            OperationEventAppend::machine_add_joined(operation_id, machine_id, joined_at),
             PreCheck::None,
             validate_stored_machine_add_joined_event,
         )
@@ -165,12 +165,16 @@ impl AsyncNatsOperationRepository {
     pub async fn record_machine_add_credential_provisioned(
         &self,
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         step: ployz_core::machine::MachineCredentialProvisioningStep,
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_add_credential_provisioned(operation_id, node_id, step),
+            OperationEventAppend::machine_add_credential_provisioned(
+                operation_id,
+                machine_id,
+                step,
+            ),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -179,12 +183,12 @@ impl AsyncNatsOperationRepository {
     pub async fn record_machine_add_failed(
         &self,
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
         failure: MachineAddFailure,
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_add_failed(operation_id, node_id, failure),
+            OperationEventAppend::machine_add_failed(operation_id, machine_id, failure),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -193,11 +197,11 @@ impl AsyncNatsOperationRepository {
     pub async fn record_machine_add_completed(
         &self,
         operation_id: &OperationId,
-        node_id: &NodeId,
+        machine_id: &MachineId,
     ) -> Result<OperationStatusWrite, RecordMachineAddEventError> {
         self.record_operation_event(
             operation_id,
-            OperationEventAppend::machine_add_completed(operation_id, node_id),
+            OperationEventAppend::machine_add_completed(operation_id, machine_id),
         )
         .await
         .map(RecordOperationEventOutcome::into_status_write)
@@ -543,17 +547,17 @@ fn validate_stored_machine_add_joined_event(
         (
             OperationEvent::MachineAddJoined {
                 operation_id: attempted_operation_id,
-                node_id: attempted_node_id,
+                machine_id: attempted_machine_id,
                 ..
             },
             OperationEvent::MachineAddJoined {
                 operation_id: stored_operation_id,
-                node_id: stored_node_id,
+                machine_id: stored_machine_id,
                 ..
             },
         ) if attempted_operation_id == operation_id
             && stored_operation_id == operation_id
-            && attempted_node_id == stored_node_id
+            && attempted_machine_id == stored_machine_id
     ) {
         return Ok(());
     }
@@ -600,11 +604,11 @@ fn deploy_evidence_from_event(event: &OperationEvent) -> Option<DeployEvidence> 
             })
         }
         OperationEvent::DeployContainerStarted {
-            node_id,
+            machine_id,
             container_id,
             ..
         } => Some(DeployEvidence::ContainerStarted {
-            node_id: node_id.clone(),
+            machine_id: machine_id.clone(),
             container_id: container_id.clone(),
         }),
         OperationEvent::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),

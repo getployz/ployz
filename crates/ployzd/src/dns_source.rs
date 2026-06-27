@@ -4,7 +4,7 @@ use crate::dns::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use ployz_core::ops::RouteHostname;
-use ployz_core::state::{ActiveRouteState, GatewayServingStatus, NodePublicIpObservation};
+use ployz_core::state::{ActiveRouteState, GatewayServingStatus, MachinePublicIpObservation};
 use ployz_nats::core_state::{ActiveRouteStoreError, AsyncNatsCoreStateStore};
 use ployz_nats::observations::{AsyncNatsObservationStore, ObservationStoreError};
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,14 +41,14 @@ pub async fn load_dns_projection_input_from_nats(
     };
     let public_ips = async {
         observations
-            .node_public_ips()
+            .machine_public_ips()
             .await
             .map_err(DnsSourceError::from)
     };
     let (routes, gateway_statuses, public_ips) =
         tokio::try_join!(routes, gateway_statuses, public_ips)?;
 
-    let gateway_node_ids = gateway_statuses
+    let gateway_machine_ids = gateway_statuses
         .into_iter()
         .filter(|status| {
             matches!(
@@ -56,11 +56,11 @@ pub async fn load_dns_projection_input_from_nats(
                 GatewayServingStatus::Current | GatewayServingStatus::LastKnownGood
             ) && status.route_count > 0
         })
-        .map(|status| status.node_id)
+        .map(|status| status.machine_id)
         .collect::<BTreeSet<_>>();
     let gateway_answers = public_ips
         .into_iter()
-        .filter(|observation| gateway_node_ids.contains(&observation.node_id))
+        .filter(|observation| gateway_machine_ids.contains(&observation.machine_id))
         .collect::<Vec<_>>();
 
     Ok(dns_projection_input_from_state(routes, gateway_answers))
@@ -140,7 +140,7 @@ impl From<ObservationStoreError> for DnsSourceError {
 
 fn dns_projection_input_from_state(
     routes: Vec<ActiveRouteState>,
-    gateway_answers: Vec<NodePublicIpObservation>,
+    gateway_answers: Vec<MachinePublicIpObservation>,
 ) -> DnsProjectionInput {
     let answers = gateway_answers
         .into_iter()

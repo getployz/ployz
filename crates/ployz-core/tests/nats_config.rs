@@ -6,12 +6,12 @@ use ployz_core::nats_config::{
     render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
 
 #[test]
-fn single_node_nats_config_renders_loopback_tls_jetstream_and_include() {
+fn single_machine_nats_config_renders_loopback_tls_jetstream_and_include() {
     let config = loopback_config(PathBuf::from("/var/lib/ployz/nats"));
 
     assert_eq!(config.client_host(), "127.0.0.1");
@@ -29,8 +29,8 @@ fn single_node_nats_config_renders_loopback_tls_jetstream_and_include() {
 
 #[test]
 fn external_listener_binds_all_interfaces_and_advertises_the_public_host() {
-    let config = NatsServerConfig::single_node(
-        node_id("core_1"),
+    let config = NatsServerConfig::single_machine(
+        machine_id("core_1"),
         PathBuf::from("/var/lib/ployz/nats"),
         NatsListener::External {
             advertise_host: NatsAdvertisedHost::try_new("203.0.113.10")
@@ -60,7 +60,7 @@ fn advertised_host_accepts_hostname_ipv4_and_bracketed_ipv6_only() {
 }
 
 #[test]
-fn single_node_nats_config_escapes_store_dir() {
+fn single_machine_nats_config_escapes_store_dir() {
     let config = loopback_config(PathBuf::from("/var/lib/ployz/nats \"quoted\" \\ path"));
 
     assert!(
@@ -71,10 +71,10 @@ fn single_node_nats_config_escapes_store_dir() {
 }
 
 #[test]
-fn single_node_nats_config_requires_absolute_store_dir() {
+fn single_machine_nats_config_requires_absolute_store_dir() {
     assert_eq!(
-        NatsServerConfig::single_node(
-            node_id("core_1"),
+        NatsServerConfig::single_machine(
+            machine_id("core_1"),
             PathBuf::from("relative/nats"),
             NatsListener::Loopback,
             tls_files(),
@@ -88,10 +88,10 @@ fn single_node_nats_config_requires_absolute_store_dir() {
 }
 
 #[test]
-fn single_node_nats_config_requires_absolute_tls_paths() {
+fn single_machine_nats_config_requires_absolute_tls_paths() {
     assert_eq!(
-        NatsServerConfig::single_node(
-            node_id("core_1"),
+        NatsServerConfig::single_machine(
+            machine_id("core_1"),
             PathBuf::from("/var/lib/ployz/nats"),
             NatsListener::Loopback,
             NatsServerTlsFiles {
@@ -132,16 +132,16 @@ fn authorized_users_render_one_block_per_principal_with_own_inbox() {
 }
 
 #[test]
-fn authorized_node_user_denies_core_kv_writes() {
+fn authorized_machine_user_denies_core_kv_writes() {
     let rendered = render_authorized_users(&[NatsAuthorizedUser {
-        principal: NatsPrincipal::Node {
-            node_id: node_id("node_7"),
+        principal: NatsPrincipal::Machine {
+            machine_id: machine_id("machine_7"),
         },
         nkey_public: user_public_key('C'),
     }]);
 
     assert!(rendered.contains("deny: [\"$KV.KV_CORE.>\"]"));
-    assert!(rendered.contains("\"_INBOX_node_node_7.>\""));
+    assert!(rendered.contains("\"_INBOX_machine_machine_7.>\""));
     assert!(rendered.contains("\"$JS.API.DIRECT.GET.KV_KV_CORE.>\""));
 }
 
@@ -178,14 +178,14 @@ fn server_certificate_pem_requires_a_certificate_block() {
 }
 
 fn loopback_config(store_dir: PathBuf) -> NatsServerConfig {
-    NatsServerConfig::single_node(
-        node_id("core_1"),
+    NatsServerConfig::single_machine(
+        machine_id("core_1"),
         store_dir,
         NatsListener::Loopback,
         tls_files(),
         PathBuf::from("authorized-users.conf"),
     )
-    .expect("single-node nats config is valid")
+    .expect("single-machine nats config is valid")
 }
 
 fn tls_files() -> NatsServerTlsFiles {

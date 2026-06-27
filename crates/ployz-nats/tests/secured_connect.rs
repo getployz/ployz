@@ -6,11 +6,11 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use ployz_core::ids::NodeId;
+use ployz_core::ids::MachineId;
 use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::{NodePublicIpObservation, NodePublicIpObservationKey};
-use ployz_core::subjects::{NodeServiceEndpoint, node_service, node_service_scope};
+use ployz_core::state::{MachinePublicIpObservation, MachinePublicIpObservationKey};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_service, machine_service_scope};
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
     connect_with_timeout,
@@ -70,18 +70,21 @@ async fn plaintext_connect_to_tls_port_fails() {
 }
 
 #[tokio::test]
-async fn node_publish_outside_allow_list_gets_permission_violation() {
-    let node_id = NodeId::try_new("node-a").expect("valid node id");
-    let fixture = SecuredTestNats::start_with_nodes(std::slice::from_ref(&node_id))
+async fn machine_publish_outside_allow_list_gets_permission_violation() {
+    let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
+    let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
         .await
         .expect("secured fixture");
-    let Some(config) = fixture.node_config(&node_id) else {
-        panic!("fixture mints a user for every requested node");
+    let Some(config) = fixture.machine_config(&machine_id) else {
+        panic!("fixture mints a user for every requested machine");
     };
 
     let (client, mut events) = connect_with_event_capture(&config).await;
     client
-        .publish("plz.v1.obs.node.other-node.started", "evidence".into())
+        .publish(
+            "plz.v1.obs.machine.other-machine.started",
+            "evidence".into(),
+        )
         .await
         .expect("publish is accepted client-side");
     client.flush().await.expect("flush");
@@ -94,10 +97,10 @@ async fn node_publish_outside_allow_list_gets_permission_violation() {
 }
 
 #[tokio::test]
-async fn node_observation_writes_are_fenced_to_its_own_keys() {
-    let node_id = NodeId::try_new("node-a").expect("valid node id");
-    let other_node_id = NodeId::try_new("node-b").expect("valid node id");
-    let fixture = SecuredTestNats::start_with_nodes(std::slice::from_ref(&node_id))
+async fn machine_observation_writes_are_fenced_to_its_own_keys() {
+    let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
+    let other_machine_id = MachineId::try_new("machine-b").expect("valid machine id");
+    let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
         .await
         .expect("secured fixture");
     let controller = connect_authenticated(&fixture.controller_config(), CONNECT_TIMEOUT)
@@ -110,34 +113,35 @@ async fn node_observation_writes_are_fenced_to_its_own_keys() {
         })
         .await
         .expect("controller creates the observation bucket");
-    let Some(config) = fixture.node_config(&node_id) else {
-        panic!("fixture mints a user for every requested node");
+    let Some(config) = fixture.machine_config(&machine_id) else {
+        panic!("fixture mints a user for every requested machine");
     };
-    let (node_client, mut events) = connect_with_event_capture(&config).await;
-    let observations =
-        AsyncNatsObservationStore::from_jetstream(&async_nats::jetstream::new(node_client.clone()))
-            .await
-            .expect("node opens the observation store");
+    let (machine_client, mut events) = connect_with_event_capture(&config).await;
+    let observations = AsyncNatsObservationStore::from_jetstream(&async_nats::jetstream::new(
+        machine_client.clone(),
+    ))
+    .await
+    .expect("machine opens the observation store");
 
-    // Writing this node's own observation key succeeds.
+    // Writing this machine's own observation key succeeds.
     observations
-        .replace_node_public_ip(&NodePublicIpObservation {
-            node_id: node_id.clone(),
+        .replace_machine_public_ip(&MachinePublicIpObservation {
+            machine_id: machine_id.clone(),
             public_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1)),
         })
         .await
-        .expect("a node writes its own observation key");
+        .expect("a machine writes its own observation key");
 
-    // Writing another node's observation key is denied server-side.
-    let other_key = NodePublicIpObservationKey::from_node_id(&other_node_id);
-    node_client
+    // Writing another machine's observation key is denied server-side.
+    let other_key = MachinePublicIpObservationKey::from_machine_id(&other_machine_id);
+    machine_client
         .publish(
             format!("$KV.{KV_OBS_BUCKET}.{}", other_key.as_str()),
             "evidence".into(),
         )
         .await
         .expect("publish is accepted client-side");
-    node_client.flush().await.expect("flush");
+    machine_client.flush().await.expect("flush");
 
     let violation = next_permission_violation(&mut events).await;
     assert!(
@@ -148,8 +152,8 @@ async fn node_observation_writes_are_fenced_to_its_own_keys() {
 
 #[tokio::test]
 async fn join_cannot_sniff_other_principals_inboxes() {
-    let node_id = NodeId::try_new("node-x").expect("valid node id");
-    let fixture = SecuredTestNats::start_with_nodes(std::slice::from_ref(&node_id))
+    let machine_id = MachineId::try_new("machine-x").expect("valid machine id");
+    let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
         .await
         .expect("secured fixture");
 
@@ -157,11 +161,11 @@ async fn join_cannot_sniff_other_principals_inboxes() {
     // principals' prefixes. The server must reject every one of them.
     let join_config = fixture.join_config();
     let (join_client, mut join_events) = connect_with_event_capture(&join_config).await;
-    let node_principal = NatsPrincipal::Node {
-        node_id: node_id.clone(),
+    let machine_principal = NatsPrincipal::Machine {
+        machine_id: machine_id.clone(),
     };
     let controller_scope = inbox_subscribe_scope(&NatsPrincipal::Controller);
-    let node_scope = inbox_subscribe_scope(&node_principal);
+    let machine_scope = inbox_subscribe_scope(&machine_principal);
     let mut sniff_shared = join_client
         .subscribe("_INBOX.>")
         .await
@@ -170,13 +174,17 @@ async fn join_cannot_sniff_other_principals_inboxes() {
         .subscribe(controller_scope.clone())
         .await
         .expect("subscribe call is accepted client-side");
-    let mut sniff_node = join_client
-        .subscribe(node_scope.clone())
+    let mut sniff_machine = join_client
+        .subscribe(machine_scope.clone())
         .await
         .expect("subscribe call is accepted client-side");
     join_client.flush().await.expect("flush");
 
-    for _ in ["_INBOX.>", controller_scope.as_str(), node_scope.as_str()] {
+    for _ in [
+        "_INBOX.>",
+        controller_scope.as_str(),
+        machine_scope.as_str(),
+    ] {
         let violation = next_permission_violation(&mut join_events).await;
         assert!(
             violation.contains("Subscription"),
@@ -184,20 +192,20 @@ async fn join_cannot_sniff_other_principals_inboxes() {
         );
     }
 
-    // Node responder for the controller's request.
-    let Some(node_config) = fixture.node_config(&node_id) else {
-        panic!("fixture mints a user for every requested node");
+    // Machine responder for the controller's request.
+    let Some(machine_config) = fixture.machine_config(&machine_id) else {
+        panic!("fixture mints a user for every requested machine");
     };
-    let node_client = connect_authenticated(&node_config, CONNECT_TIMEOUT)
+    let machine_client = connect_authenticated(&machine_config, CONNECT_TIMEOUT)
         .await
-        .expect("node connects");
-    let request_subject = node_service(&node_id, NodeServiceEndpoint::Inspect);
-    let mut requests = node_client
-        .subscribe(node_service_scope(&node_id))
+        .expect("machine connects");
+    let request_subject = machine_service(&machine_id, MachineServiceEndpoint::Inspect);
+    let mut requests = machine_client
+        .subscribe(machine_service_scope(&machine_id))
         .await
-        .expect("node subscribes its service scope");
-    node_client.flush().await.expect("flush");
-    let responder = node_client.clone();
+        .expect("machine subscribes its service scope");
+    machine_client.flush().await.expect("flush");
+    let responder = machine_client.clone();
     tokio::spawn(async move {
         while let Some(message) = requests.next().await {
             let Some(reply) = message.reply else {
@@ -218,7 +226,7 @@ async fn join_cannot_sniff_other_principals_inboxes() {
     )
     .await
     .expect("request does not hang")
-    .expect("controller receives the node's reply");
+    .expect("controller receives the machine's reply");
     assert_eq!(response.payload.as_ref(), b"pong");
     assert!(
         response
@@ -233,7 +241,7 @@ async fn join_cannot_sniff_other_principals_inboxes() {
     for (scope, sniffer) in [
         ("_INBOX.>", &mut sniff_shared),
         (controller_scope.as_str(), &mut sniff_controller),
-        (node_scope.as_str(), &mut sniff_node),
+        (machine_scope.as_str(), &mut sniff_machine),
     ] {
         let delivery = tokio::time::timeout(NO_DELIVERY_WINDOW, sniffer.next()).await;
         assert!(

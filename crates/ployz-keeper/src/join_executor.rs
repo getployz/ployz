@@ -1,6 +1,6 @@
 //! Direct keeper join execution.
 
-use ployz_core::ids::{NodeId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::FailureMessage;
 use ployz_sdk_types::MachineJoinReportFailure;
 
@@ -36,16 +36,16 @@ pub trait KeeperJoinTokenConsumer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedeemedKeeperJoin {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub target: KeeperJoinTarget,
 }
 
 impl RedeemedKeeperJoin {
     #[must_use]
-    pub fn new(operation_id: OperationId, node_id: NodeId, target: KeeperJoinTarget) -> Self {
+    pub fn new(operation_id: OperationId, machine_id: MachineId, target: KeeperJoinTarget) -> Self {
         Self {
             operation_id,
-            node_id,
+            machine_id,
             target,
         }
     }

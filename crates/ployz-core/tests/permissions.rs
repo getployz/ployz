@@ -1,28 +1,28 @@
 use ployz_core::permissions::{
     NatsPermissionProfile, ResponsePermission, active_machine_state_kv_write_scope,
     active_route_state_kv_write_scope, active_service_state_kv_write_scope, inbox_prefix,
-    inbox_subscribe_scope, kv_read_js_api_subjects, nats_authorized_user_kv_write_scope,
-    node_observation_kv_write_subjects, operation_status_kv_write_scope,
+    inbox_subscribe_scope, kv_read_js_api_subjects, machine_observation_kv_write_subjects,
+    nats_authorized_user_kv_write_scope, operation_status_kv_write_scope,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, NODE_SERVICE_SCOPE,
-    OPS_STREAM_SUBJECT, node_observation_scope, node_service_scope,
+    API_MACHINE_JOIN_REDEEM, API_MACHINE_JOIN_REPORT, API_SERVICE_SCOPE, MACHINE_SERVICE_SCOPE,
+    OPS_STREAM_SUBJECT, machine_observation_scope, machine_service_scope,
 };
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 
 #[test]
-fn node_credential_renders_own_scopes_and_route_state_reads() {
-    let node_id = node_id("node_7");
-    let profile = NatsPermissionProfile::render(NatsPrincipal::Node {
-        node_id: node_id.clone(),
+fn machine_credential_renders_own_scopes_and_route_state_reads() {
+    let machine_id = machine_id("machine_7");
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
+        machine_id: machine_id.clone(),
     });
 
-    let mut expected_publish = vec![node_observation_scope(&node_id)];
+    let mut expected_publish = vec![machine_observation_scope(&machine_id)];
     expected_publish.extend([
-        "$KV.KV_OBS.containers.node_7".to_owned(),
-        "$KV.KV_OBS.nodes.node_7.public_ip".to_owned(),
-        "$KV.KV_OBS.gateways.node_7.status".to_owned(),
+        "$KV.KV_OBS.containers.machine_7".to_owned(),
+        "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
+        "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
     ]);
     expected_publish.extend(kv_read_js_api_subjects("KV_OBS"));
     expected_publish.extend(kv_read_js_api_subjects("KV_CORE"));
@@ -34,8 +34,8 @@ fn node_credential_renders_own_scopes_and_route_state_reads() {
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
-            node_service_scope(&node_id),
-            "_INBOX_node_node_7.>".to_owned()
+            machine_service_scope(&machine_id),
+            "_INBOX_machine_machine_7.>".to_owned()
         ]
     );
     assert_eq!(profile.subscribe.denied_subjects(), &[] as &[String]);
@@ -43,37 +43,37 @@ fn node_credential_renders_own_scopes_and_route_state_reads() {
 }
 
 #[test]
-fn node_observation_kv_writes_are_scoped_to_the_nodes_own_keys() {
-    let node_id = node_id("node_7");
+fn machine_observation_kv_writes_are_scoped_to_the_machines_own_keys() {
+    let machine_id = machine_id("machine_7");
 
     assert_eq!(
-        node_observation_kv_write_subjects(&node_id),
+        machine_observation_kv_write_subjects(&machine_id),
         [
-            "$KV.KV_OBS.containers.node_7".to_owned(),
-            "$KV.KV_OBS.nodes.node_7.public_ip".to_owned(),
-            "$KV.KV_OBS.gateways.node_7.status".to_owned(),
+            "$KV.KV_OBS.containers.machine_7".to_owned(),
+            "$KV.KV_OBS.machines.machine_7.public_ip".to_owned(),
+            "$KV.KV_OBS.gateways.machine_7.status".to_owned(),
         ]
     );
-    let profile = NatsPermissionProfile::render(NatsPrincipal::Node {
-        node_id: node_id.clone(),
+    let profile = NatsPermissionProfile::render(NatsPrincipal::Machine {
+        machine_id: machine_id.clone(),
     });
     assert!(
         !profile
             .publish
             .allowed_subjects()
             .contains(&"$KV.KV_OBS.>".to_owned()),
-        "a node credential must not hold the bucket-wide observation write scope"
+        "a machine credential must not hold the bucket-wide observation write scope"
     );
 }
 
 #[test]
-fn controller_credential_renders_owner_node_service_and_jetstream_scopes() {
+fn controller_credential_renders_owner_machine_service_and_jetstream_scopes() {
     let profile = NatsPermissionProfile::render(NatsPrincipal::Controller);
 
     assert_eq!(
         profile.publish.allowed_subjects(),
         &[
-            NODE_SERVICE_SCOPE.to_owned(),
+            MACHINE_SERVICE_SCOPE.to_owned(),
             OPS_STREAM_SUBJECT.to_owned(),
             "$JS.API.>".to_owned(),
             "$JS.ACK.>".to_owned(),
@@ -92,7 +92,7 @@ fn controller_credential_renders_owner_node_service_and_jetstream_scopes() {
 }
 
 #[test]
-fn user_credential_renders_api_service_scope_without_node_scope() {
+fn user_credential_renders_api_service_scope_without_machine_scope() {
     let profile = NatsPermissionProfile::render(NatsPrincipal::User);
 
     assert_eq!(
@@ -107,7 +107,7 @@ fn user_credential_renders_api_service_scope_without_node_scope() {
         !profile
             .publish
             .allowed_subjects()
-            .contains(&NODE_SERVICE_SCOPE.to_owned())
+            .contains(&MACHINE_SERVICE_SCOPE.to_owned())
     );
 }
 
@@ -152,8 +152,8 @@ fn system_credential_renders_system_subjects_only() {
 #[test]
 fn no_profile_subscribes_the_shared_inbox_scope() {
     let principals = [
-        NatsPrincipal::Node {
-            node_id: node_id("node_7"),
+        NatsPrincipal::Machine {
+            machine_id: machine_id("machine_7"),
         },
         NatsPrincipal::Controller,
         NatsPrincipal::User,
@@ -187,9 +187,9 @@ fn inbox_prefixes_are_distinct_per_principal() {
     assert_eq!(inbox_prefix(&NatsPrincipal::Join), "_INBOX_join");
     assert_eq!(inbox_prefix(&NatsPrincipal::System), "_INBOX_sys");
     assert_eq!(
-        inbox_prefix(&NatsPrincipal::Node {
-            node_id: node_id("node_7")
+        inbox_prefix(&NatsPrincipal::Machine {
+            machine_id: machine_id("machine_7")
         }),
-        "_INBOX_node_node_7"
+        "_INBOX_machine_machine_7"
     );
 }

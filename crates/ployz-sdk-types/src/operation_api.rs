@@ -2,8 +2,8 @@
 
 use crate::{
     AcceptedOperation, BackupCreateError, BackupCreateRequest, DeploySubmitError,
-    DeploySubmitRequest, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
-    InitFirstNodeActivated, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
+    DeploySubmitRequest, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    InitFirstMachineActivated, LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted,
     MachineAddError, MachineAddRequest, MachineInspectError, MachineInspectRequest,
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineListError, MachineListRequest,
@@ -29,7 +29,7 @@ macro_rules! operation_api_contracts {
     ($macro:ident) => {
         $macro!(
             $crate::operation_api::DeploySubmitApi,
-            $crate::operation_api::InitFirstNodeActivateApi,
+            $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
@@ -70,15 +70,15 @@ impl OperationApiContract for BackupCreateApi {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InitFirstNodeActivateApi;
+pub struct InitFirstMachineActivateApi;
 
-impl OperationApiContract for InitFirstNodeActivateApi {
-    type Request = InitFirstNodeActivateRequest;
-    type Success = InitFirstNodeActivated;
-    type Error = InitFirstNodeActivateError;
+impl OperationApiContract for InitFirstMachineActivateApi {
+    type Request = InitFirstMachineActivateRequest;
+    type Success = InitFirstMachineActivated;
+    type Error = InitFirstMachineActivateError;
 
-    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::InitFirstNodeActivate;
-    const RESPONSE_ALIAS: &'static str = "InitFirstNodeActivateResponse";
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::InitFirstMachineActivate;
+    const RESPONSE_ALIAS: &'static str = "InitFirstMachineActivateResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

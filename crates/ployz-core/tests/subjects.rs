@@ -1,15 +1,15 @@
-use ployz_core::ids::{CertId, NodeId, OperationId, SubjectTokenError};
+use ployz_core::ids::{CertId, MachineId, OperationId, SubjectTokenError};
 use ployz_core::ops::DeployRunningStage;
 use ployz_core::subjects::{
-    NodeObservationEvent, NodeServiceEndpoint, cert_renewal_job, cert_renewal_schedule,
-    node_observation, node_service, op_cert_challenge_published, op_cert_completed, op_cert_failed,
-    op_cert_submitted, op_cert_validation_started, op_deploy_completed,
+    MachineObservationEvent, MachineServiceEndpoint, cert_renewal_job, cert_renewal_schedule,
+    machine_observation, machine_service, op_cert_challenge_published, op_cert_completed,
+    op_cert_failed, op_cert_submitted, op_cert_validation_started, op_deploy_completed,
     op_deploy_container_started, op_deploy_health_check_started, op_deploy_plan_created,
     op_deploy_planning_started, op_deploy_running, op_deploy_submitted,
     op_deploy_wireguard_ebpf_prepared, op_machine_add_completed, op_machine_add_failed,
     op_machine_add_joined, op_machine_add_submitted, op_watch,
 };
-use ployz_test_support::ids::{container_id, node_id};
+use ployz_test_support::ids::{container_id, machine_id};
 
 #[test]
 fn operation_subjects_use_validated_operation_ids() {
@@ -37,8 +37,8 @@ fn operation_subjects_use_validated_operation_ids() {
         "plz.v1.op.op_123.deploy.wireguard_ebpf.prepared"
     );
     assert_eq!(
-        op_deploy_container_started(&op_id, &node_id("node_7"), &container_id("ctr_1")),
-        "plz.v1.op.op_123.deploy.container.started.node_7.ctr_1"
+        op_deploy_container_started(&op_id, &machine_id("machine_7"), &container_id("ctr_1")),
+        "plz.v1.op.op_123.deploy.container.started.machine_7.ctr_1"
     );
     assert_eq!(
         op_deploy_health_check_started(&op_id),
@@ -73,28 +73,28 @@ fn machine_add_operation_subjects_use_validated_operation_ids() {
 }
 
 #[test]
-fn node_subjects_use_known_endpoint_and_event_tokens() {
-    let node_id = NodeId::try_new("node_7").expect("valid node id");
+fn machine_subjects_use_known_endpoint_and_event_tokens() {
+    let machine_id = MachineId::try_new("machine_7").expect("valid machine id");
 
     assert_eq!(
-        node_service(&node_id, NodeServiceEndpoint::ContainerRun),
-        "plz.v1.svc.node.node_7.container.run"
+        machine_service(&machine_id, MachineServiceEndpoint::ContainerRun),
+        "plz.v1.svc.machine.machine_7.container.run"
     );
     assert_eq!(
-        node_service(&node_id, NodeServiceEndpoint::ContainerStop),
-        "plz.v1.svc.node.node_7.container.stop"
+        machine_service(&machine_id, MachineServiceEndpoint::ContainerStop),
+        "plz.v1.svc.machine.machine_7.container.stop"
     );
     assert_eq!(
-        node_service(&node_id, NodeServiceEndpoint::ContainerRemove),
-        "plz.v1.svc.node.node_7.container.remove"
+        machine_service(&machine_id, MachineServiceEndpoint::ContainerRemove),
+        "plz.v1.svc.machine.machine_7.container.remove"
     );
     assert_eq!(
-        node_service(&node_id, NodeServiceEndpoint::WireGuardEbpfPrepare),
-        "plz.v1.svc.node.node_7.wireguard_ebpf.prepare"
+        machine_service(&machine_id, MachineServiceEndpoint::WireGuardEbpfPrepare),
+        "plz.v1.svc.machine.machine_7.wireguard_ebpf.prepare"
     );
     assert_eq!(
-        node_observation(&node_id, NodeObservationEvent::ContainerRunning),
-        "plz.v1.obs.node.node_7.container.running"
+        machine_observation(&machine_id, MachineObservationEvent::ContainerRunning),
+        "plz.v1.obs.machine.machine_7.container.running"
     );
 }
 

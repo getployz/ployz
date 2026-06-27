@@ -6,7 +6,7 @@ use ployz_keeper::systemd::{
     NatsServerUnit, NatsServerUnitTarget, PloyzdRoleEnvironmentFile, PloyzdRoleUnit,
     SupervisorUnitFileError, role_unit_name,
 };
-use ployz_test_support::ids::node_id;
+use ployz_test_support::ids::machine_id;
 use ployz_test_support::keeper::{
     artifact_source as source, artifact_version as version, ployzd_artifact,
     sha256_digest as digest,
@@ -75,16 +75,16 @@ fn role_environment_file_requires_plain_systemd_token_path() {
 
 #[test]
 fn role_units_render_the_supervised_ployzd_commands() {
-    let node = DaemonProcessRole::Node(node_id("node_7"));
+    let machine = DaemonProcessRole::Machine(machine_id("machine_7"));
 
-    assert_eq!(role_unit_name(&node), "ployzd-node-node_7.service");
+    assert_eq!(role_unit_name(&machine), "ployzd-machine-machine_7.service");
 
-    let node_unit =
-        PloyzdRoleUnit::new(node, &ployzd_artifact(), &role_env()).expect("node unit is valid");
-    assert_eq!(node_unit.unit_name(), "ployzd-node-node_7.service");
+    let machine_unit = PloyzdRoleUnit::new(machine, &ployzd_artifact(), &role_env())
+        .expect("machine unit is valid");
+    assert_eq!(machine_unit.unit_name(), "ployzd-machine-machine_7.service");
     assert_eq!(
-        node_unit.render(),
-        "[Unit]\nDescription=Ployz node\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd node --id node_7\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        machine_unit.render(),
+        "[Unit]\nDescription=Ployz machine\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd machine --id machine_7\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 

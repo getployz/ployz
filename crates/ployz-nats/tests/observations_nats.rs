@@ -1,12 +1,14 @@
 use async_nats::jetstream;
-use ployz_core::node::{
-    ContainerRuntimeState, ManagedContainerKind, ManagedContainerObservation,
-    NodeContainerObservationSnapshot, NodeContainerObservationSnapshotError,
+use ployz_core::machine_runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot,
+    MachineContainerObservationSnapshotError, ManagedContainerKind, ManagedContainerObservation,
 };
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation, NodePublicIpObservation};
+use ployz_core::state::{
+    GatewayServingStatus, GatewayStatusObservation, MachinePublicIpObservation,
+};
 use ployz_nats::observations::AsyncNatsObservationStore;
 use ployz_test_support::ids::{
-    container_id, node_id, operation_id, revision_id, service_id, step_id,
+    container_id, machine_id, operation_id, revision_id, service_id, step_id,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -20,17 +22,17 @@ async fn container_observation_store_writes_latest_container_to_kv_obs() {
     let exited = managed_observation("ctr_123", ContainerRuntimeState::Exited);
 
     store
-        .replace_node_containers(&node_snapshot([running]))
+        .replace_machine_containers(&machine_snapshot([running]))
         .await
         .expect("first snapshot stores");
     store
-        .replace_node_containers(&node_snapshot([exited.clone()]))
+        .replace_machine_containers(&machine_snapshot([exited.clone()]))
         .await
         .expect("second snapshot stores");
 
     assert_eq!(
         store
-            .container(&node_id("node_7"), &container_id("ctr_123"))
+            .container(&machine_id("machine_7"), &container_id("ctr_123"))
             .await
             .expect("container observation loads"),
         Some(exited)
@@ -38,7 +40,7 @@ async fn container_observation_store_writes_latest_container_to_kv_obs() {
 }
 
 #[tokio::test]
-async fn container_observation_snapshot_removes_stale_node_containers() {
+async fn container_observation_snapshot_removes_stale_machine_containers() {
     let nats = test_nats().await;
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
@@ -47,24 +49,24 @@ async fn container_observation_snapshot_removes_stale_node_containers() {
     let retained = managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
 
     store
-        .replace_node_containers(&node_snapshot([stale, retained.clone()]))
+        .replace_machine_containers(&machine_snapshot([stale, retained.clone()]))
         .await
-        .expect("initial node snapshot stores");
+        .expect("initial machine snapshot stores");
     store
-        .replace_node_containers(&node_snapshot([retained.clone()]))
+        .replace_machine_containers(&machine_snapshot([retained.clone()]))
         .await
-        .expect("node snapshot stores");
+        .expect("machine snapshot stores");
 
     assert_eq!(
         store
-            .container(&node_id("node_7"), &container_id("ctr_123"))
+            .container(&machine_id("machine_7"), &container_id("ctr_123"))
             .await
             .expect("stale lookup succeeds"),
         None
     );
     assert_eq!(
         store
-            .container(&node_id("node_7"), &container_id("ctr_456"))
+            .container(&machine_id("machine_7"), &container_id("ctr_456"))
             .await
             .expect("retained lookup succeeds"),
         Some(retained)
@@ -72,139 +74,139 @@ async fn container_observation_snapshot_removes_stale_node_containers() {
 }
 
 #[tokio::test]
-async fn node_observation_snapshots_list_sorted_current_snapshots() {
+async fn machine_observation_snapshots_list_sorted_current_snapshots() {
     let nats = test_nats().await;
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observation store");
-    let node_7 = node_snapshot_for(
-        "node_7",
+    let machine_7 = machine_snapshot_for(
+        "machine_7",
         [managed_observation_for(
-            "node_7",
+            "machine_7",
             "ctr_7",
             ContainerRuntimeState::running_unroutable(),
         )],
     );
-    let node_8 = node_snapshot_for(
-        "node_8",
+    let machine_8 = machine_snapshot_for(
+        "machine_8",
         [managed_observation_for(
-            "node_8",
+            "machine_8",
             "ctr_8_old",
             ContainerRuntimeState::Exited,
         )],
     );
-    let node_8_current = node_snapshot_for(
-        "node_8",
+    let machine_8_current = machine_snapshot_for(
+        "machine_8",
         [managed_observation_for(
-            "node_8",
+            "machine_8",
             "ctr_8",
             ContainerRuntimeState::running_unroutable(),
         )],
     );
 
-    let node_8_store = nats.node_8().await;
-    node_8_store
-        .replace_node_containers(&node_8)
+    let machine_8_store = nats.machine_8().await;
+    machine_8_store
+        .replace_machine_containers(&machine_8)
         .await
-        .expect("old node 8 snapshot stores");
+        .expect("old machine 8 snapshot stores");
     store
-        .replace_node_containers(&node_7)
+        .replace_machine_containers(&machine_7)
         .await
-        .expect("node 7 snapshot stores");
-    node_8_store
-        .replace_node_containers(&node_8_current)
+        .expect("machine 7 snapshot stores");
+    machine_8_store
+        .replace_machine_containers(&machine_8_current)
         .await
-        .expect("node 8 snapshot replaces old");
+        .expect("machine 8 snapshot replaces old");
 
     assert_eq!(
-        store.node_snapshots().await.expect("snapshots list"),
-        vec![node_7, node_8_current]
+        store.machine_snapshots().await.expect("snapshots list"),
+        vec![machine_7, machine_8_current]
     );
 }
 
 #[tokio::test]
-async fn node_public_ip_observations_are_latest_per_node() {
+async fn machine_public_ip_observations_are_latest_per_machine() {
     let nats = test_nats().await;
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observation store");
-    let old = node_public_ip("node_7", [203, 0, 113, 7]);
-    let current = node_public_ip("node_7", [203, 0, 113, 8]);
-    let other = node_public_ip("node_8", [203, 0, 113, 9]);
+    let old = machine_public_ip("machine_7", [203, 0, 113, 7]);
+    let current = machine_public_ip("machine_7", [203, 0, 113, 8]);
+    let other = machine_public_ip("machine_8", [203, 0, 113, 9]);
 
     store
-        .replace_node_public_ip(&old)
+        .replace_machine_public_ip(&old)
         .await
         .expect("old ip stores");
-    nats.node_8()
+    nats.machine_8()
         .await
-        .replace_node_public_ip(&other)
+        .replace_machine_public_ip(&other)
         .await
         .expect("other ip stores");
     store
-        .replace_node_public_ip(&current)
+        .replace_machine_public_ip(&current)
         .await
         .expect("current ip stores");
 
     assert_eq!(
         store
-            .node_public_ip(&node_id("node_7"))
+            .machine_public_ip(&machine_id("machine_7"))
             .await
             .expect("public ip loads"),
         Some(current.clone())
     );
     assert_eq!(
-        store.node_public_ips().await.expect("public ips list"),
+        store.machine_public_ips().await.expect("public ips list"),
         vec![current, other]
     );
 }
 
 #[tokio::test]
-async fn node_public_ip_observation_clear_removes_stale_value() {
+async fn machine_public_ip_observation_clear_removes_stale_value() {
     let nats = test_nats().await;
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observation store");
-    let node_id = node_id("node_7");
-    let stale = node_public_ip("node_7", [203, 0, 113, 7]);
+    let machine_id = machine_id("machine_7");
+    let stale = machine_public_ip("machine_7", [203, 0, 113, 7]);
 
     store
-        .replace_node_public_ip(&stale)
+        .replace_machine_public_ip(&stale)
         .await
         .expect("public ip stores");
     store
-        .clear_node_public_ip(&node_id)
+        .clear_machine_public_ip(&machine_id)
         .await
         .expect("public ip clears");
 
     assert_eq!(
         store
-            .node_public_ip(&node_id)
+            .machine_public_ip(&machine_id)
             .await
             .expect("public ip lookup succeeds"),
         None
     );
     assert_eq!(
-        store.node_public_ips().await.expect("public ips list"),
-        Vec::<NodePublicIpObservation>::new()
+        store.machine_public_ips().await.expect("public ips list"),
+        Vec::<MachinePublicIpObservation>::new()
     );
 }
 
 #[tokio::test]
-async fn gateway_status_observations_are_latest_per_node() {
+async fn gateway_status_observations_are_latest_per_machine() {
     let nats = test_nats().await;
     let store = AsyncNatsObservationStore::from_jetstream(&nats.jetstream)
         .await
         .expect("open observation store");
-    let old = gateway_status("node_7", GatewayServingStatus::Unavailable, 0);
-    let current = gateway_status("node_7", GatewayServingStatus::Current, 2);
-    let other = gateway_status("node_8", GatewayServingStatus::LastKnownGood, 1);
+    let old = gateway_status("machine_7", GatewayServingStatus::Unavailable, 0);
+    let current = gateway_status("machine_7", GatewayServingStatus::Current, 2);
+    let other = gateway_status("machine_8", GatewayServingStatus::LastKnownGood, 1);
 
     store
         .replace_gateway_status(&old)
         .await
         .expect("old gateway status stores");
-    nats.node_8()
+    nats.machine_8()
         .await
         .replace_gateway_status(&other)
         .await
@@ -216,7 +218,7 @@ async fn gateway_status_observations_are_latest_per_node() {
 
     assert_eq!(
         store
-            .gateway_status(&node_id("node_7"))
+            .gateway_status(&machine_id("machine_7"))
             .await
             .expect("gateway status loads"),
         Some(current.clone())
@@ -231,16 +233,16 @@ async fn gateway_status_observations_are_latest_per_node() {
 }
 
 #[tokio::test]
-async fn container_observation_snapshot_rejects_wrong_node_before_store_write() {
-    let mut wrong_node =
+async fn container_observation_snapshot_rejects_wrong_machine_before_store_write() {
+    let mut wrong_machine =
         managed_observation("ctr_456", ContainerRuntimeState::running_unroutable());
-    wrong_node.node_id = node_id("node_8");
+    wrong_machine.machine_id = machine_id("machine_8");
 
     assert_eq!(
-        NodeContainerObservationSnapshot::try_new(node_id("node_7"), [wrong_node]),
-        Err(NodeContainerObservationSnapshotError::NodeMismatch {
-            expected: node_id("node_7"),
-            actual: node_id("node_8"),
+        MachineContainerObservationSnapshot::try_new(machine_id("machine_7"), [wrong_machine]),
+        Err(MachineContainerObservationSnapshotError::MachineMismatch {
+            expected: machine_id("machine_7"),
+            actual: machine_id("machine_8"),
             container_id: container_id("ctr_456")
         })
     );
@@ -255,7 +257,7 @@ async fn missing_container_observation_returns_none() {
 
     assert_eq!(
         store
-            .container(&node_id("node_7"), &container_id("ctr_missing"))
+            .container(&machine_id("machine_7"), &container_id("ctr_missing"))
             .await
             .expect("missing container lookup succeeds"),
         None
@@ -264,39 +266,39 @@ async fn missing_container_observation_returns_none() {
 
 struct TestNats {
     _server: ployz_test_support::nats::TestNats,
-    /// `node_7`'s Node principal: each node may only write its own
-    /// observation keys, so cross-node fixtures need [`TestNats::node_8`].
+    /// `machine_7`'s Machine principal: each machine may only write its own
+    /// observation keys, so cross-machine fixtures need [`TestNats::machine_8`].
     jetstream: jetstream::Context,
-    node_8_jetstream: jetstream::Context,
+    machine_8_jetstream: jetstream::Context,
 }
 
 impl TestNats {
-    /// The observation store connected as `node_8` — the only principal
-    /// allowed to write `node_8`'s observation keys.
-    async fn node_8(&self) -> AsyncNatsObservationStore {
-        AsyncNatsObservationStore::from_jetstream(&self.node_8_jetstream)
+    /// The observation store connected as `machine_8` — the only principal
+    /// allowed to write `machine_8`'s observation keys.
+    async fn machine_8(&self) -> AsyncNatsObservationStore {
+        AsyncNatsObservationStore::from_jetstream(&self.machine_8_jetstream)
             .await
-            .expect("open node_8 observation store")
+            .expect("open machine_8 observation store")
     }
 }
 
 /// A secured server where the buckets are bootstrapped by the Controller
-/// and the observation stores connect as Nodes — the principal that writes
+/// and the observation stores connect as Machines — the principal that writes
 /// observations in production.
 async fn test_nats() -> TestNats {
-    let server = ployz_test_support::nats::TestNats::start_with_nodes(&[
-        node_id("node_7"),
-        node_id("node_8"),
+    let server = ployz_test_support::nats::TestNats::start_with_machines(&[
+        machine_id("machine_7"),
+        machine_id("machine_8"),
     ])
     .await;
     server.bootstrap_resources().await;
-    let jetstream = jetstream::new(server.node_client(&node_id("node_7")).await);
-    let node_8_jetstream = jetstream::new(server.node_client(&node_id("node_8")).await);
+    let jetstream = jetstream::new(server.machine_client(&machine_id("machine_7")).await);
+    let machine_8_jetstream = jetstream::new(server.machine_client(&machine_id("machine_8")).await);
 
     TestNats {
         _server: server,
         jetstream,
-        node_8_jetstream,
+        machine_8_jetstream,
     }
 }
 
@@ -304,16 +306,16 @@ fn managed_observation(
     container_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
-    managed_observation_for("node_7", container_id_value, state)
+    managed_observation_for("machine_7", container_id_value, state)
 }
 
 fn managed_observation_for(
-    node_id_value: &str,
+    machine_id_value: &str,
     container_id_value: &str,
     state: ContainerRuntimeState,
 ) -> ManagedContainerObservation {
     ManagedContainerObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         container_id: container_id(container_id_value),
         service_id: service_id("svc_api"),
         revision_id: revision_id("rev_1"),
@@ -324,34 +326,34 @@ fn managed_observation_for(
     }
 }
 
-fn node_snapshot(
+fn machine_snapshot(
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
-) -> NodeContainerObservationSnapshot {
-    node_snapshot_for("node_7", containers)
+) -> MachineContainerObservationSnapshot {
+    machine_snapshot_for("machine_7", containers)
 }
 
-fn node_snapshot_for(
-    node_id_value: &str,
+fn machine_snapshot_for(
+    machine_id_value: &str,
     containers: impl IntoIterator<Item = ManagedContainerObservation>,
-) -> NodeContainerObservationSnapshot {
-    NodeContainerObservationSnapshot::try_new(node_id(node_id_value), containers)
-        .expect("matching node snapshot")
+) -> MachineContainerObservationSnapshot {
+    MachineContainerObservationSnapshot::try_new(machine_id(machine_id_value), containers)
+        .expect("matching machine snapshot")
 }
 
-fn node_public_ip(node_id_value: &str, octets: [u8; 4]) -> NodePublicIpObservation {
-    NodePublicIpObservation {
-        node_id: node_id(node_id_value),
+fn machine_public_ip(machine_id_value: &str, octets: [u8; 4]) -> MachinePublicIpObservation {
+    MachinePublicIpObservation {
+        machine_id: machine_id(machine_id_value),
         public_ip: IpAddr::V4(Ipv4Addr::from(octets)),
     }
 }
 
 fn gateway_status(
-    node_id_value: &str,
+    machine_id_value: &str,
     serving: GatewayServingStatus,
     route_count: usize,
 ) -> GatewayStatusObservation {
     GatewayStatusObservation {
-        node_id: node_id(node_id_value),
+        machine_id: machine_id(machine_id_value),
         listen_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 8080)),
         serving,
         route_count,

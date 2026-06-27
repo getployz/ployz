@@ -24,16 +24,16 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    AcceptedOperation, InitFirstNodeActivateError, InitFirstNodeActivateRequest,
-    InitFirstNodeActivateResponse, InitFirstNodeActivated, MachineAddAccepted, MachineAddRequest,
-    MachineAddResponse, MachineJoinToken, MachineName, OperationApiResponse, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse,
+    AcceptedOperation, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    InitFirstMachineActivateResponse, InitFirstMachineActivated, MachineAddAccepted,
+    MachineAddRequest, MachineAddResponse, MachineJoinToken, MachineName, OperationApiResponse,
+    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{
-        InitFirstNodeActivateApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+        InitFirstMachineActivateApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use ployz_test_support::fs::make_executable;
-use ployz_test_support::ids::{event_sequence, node_id, operation_id};
+use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployz_test_support::nats::TestNats;
 use ployzctl::bootstrap_command::{
     BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL,
@@ -48,8 +48,8 @@ use ployzctl::ssh::SshTarget;
 const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_SEED: &str = "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----";
-const FIRST_NODE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-node-bootstrap-result begin";
-const FIRST_NODE_BOOTSTRAP_RESULT_END: &str = "ployz-first-node-bootstrap-result end";
+const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
+const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
 
 /// One stand-in `ssh` that answers the machine-init phase commands and logs
 /// every remote command it received.
@@ -61,7 +61,7 @@ struct FakeSshMachine {
 
 impl FakeSshMachine {
     /// `hostname` is the reported remote hostname; `installer_exit` shapes
-    /// the `--first-node` / `--join-token` phase outcome.
+    /// the `--first-machine` / `--join-token` phase outcome.
     fn new(hostname: &str, installer_body: &str) -> Self {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let log = dir.path().join("commands.log");
@@ -80,7 +80,7 @@ case "$cmd" in
   'mkdir -p '*)
     :
     ;;
-  *'--first-node'* | *'--join-token'*)
+  *'--first-machine'* | *'--join-token'*)
     {installer_body}
     ;;
   'curl -fsSL -- '*)
@@ -132,9 +132,9 @@ esac
     }
 }
 
-fn first_node_installer_success_body(node_id: &str) -> String {
+fn first_machine_installer_success_body(machine_id: &str) -> String {
     let result = serde_json::json!({
-        "node_id": node_id,
+        "machine_id": machine_id,
         "nats_url": "tls://203.0.113.10:4222",
         "ca_pem": TEST_CA,
         "operator_seed": TEST_SEED,
@@ -142,9 +142,9 @@ fn first_node_installer_success_body(node_id: &str) -> String {
     });
     format!(
         "printf '%s\\n' 'keeper install ok' '{}' '{}' '{}'",
-        FIRST_NODE_BOOTSTRAP_RESULT_BEGIN,
+        FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN,
         serde_json::to_string(&result).expect("test bootstrap result serializes"),
-        FIRST_NODE_BOOTSTRAP_RESULT_END,
+        FIRST_MACHINE_BOOTSTRAP_RESULT_END,
     )
 }
 
@@ -284,26 +284,26 @@ fn machine_join_bundle() -> MachineJoinBundle {
 
 /// Successful init: spec built from the remote hostname with gateway and DNS
 /// installed, installer driven over SSH, operator material collected, local
-/// context written, and the first node activated through the existing API.
+/// context written, and the first machine activated through the existing API.
 #[tokio::test(flavor = "multi_thread")]
 async fn machine_init_installs_activates_and_writes_local_context() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstNodeActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstNodeActivateApi::ENDPOINT);
+    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
+    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     runtime
         .bind_endpoint(&activate_endpoint, |request| async move {
-            let request: InitFirstNodeActivateRequest =
+            let request: InitFirstMachineActivateRequest =
                 serde_json::from_slice(&request.payload).expect("activate request decodes");
-            assert_eq!(request.node_id, node_id("sg-core-1"));
+            assert_eq!(request.machine_id, machine_id("sg-core-1"));
             assert_eq!(request.roles.gateway, GatewayRole::Install);
-            let response: InitFirstNodeActivateResponse = OperationApiResponse::Ok {
-                value: InitFirstNodeActivated {
-                    operation_id: operation_id("op_first_node"),
-                    node_id: node_id("sg-core-1"),
+            let response: InitFirstMachineActivateResponse = OperationApiResponse::Ok {
+                value: InitFirstMachineActivated {
+                    operation_id: operation_id("op_first_machine"),
+                    machine_id: machine_id("sg-core-1"),
                 },
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
@@ -312,8 +312,8 @@ async fn machine_init_installs_activates_and_writes_local_context() {
         .expect("endpoint binds");
     client.flush().await.expect("service flushes");
 
-    let first_node_success = first_node_installer_success_body("sg-core-1");
-    let ssh = FakeSshMachine::new("sg-core-1", &first_node_success);
+    let first_machine_success = first_machine_installer_success_body("sg-core-1");
+    let ssh = FakeSshMachine::new("sg-core-1", &first_machine_success);
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
     let config = test_config(&server, &ssh, &context, seed_dir.path());
@@ -324,8 +324,8 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     .await
     .expect("machine init succeeds");
 
-    assert!(output.stdout.contains("operation op_first_node"));
-    assert!(output.stdout.contains("first-node sg-core-1 active"));
+    assert!(output.stdout.contains("operation op_first_machine"));
+    assert!(output.stdout.contains("first-machine sg-core-1 active"));
     assert!(output.stdout.contains("context "));
 
     // The local cluster context records the remote cluster and the
@@ -349,7 +349,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     let [machine] = loaded.machines.as_slice() else {
         panic!("expected one recorded machine");
     };
-    assert_eq!(machine.node_id, node_id("sg-core-1"));
+    assert_eq!(machine.machine_id, machine_id("sg-core-1"));
     assert_eq!(
         machine.ssh.as_ref().map(|target| target.destination()),
         Some("root@203.0.113.10".to_owned())
@@ -357,23 +357,23 @@ async fn machine_init_installs_activates_and_writes_local_context() {
 
     // Founder bootstrap is one rendered command delivered over SSH. The
     // script/keeper side owns release resolution, local artifacts, and the
-    // first-node spec.
+    // first-machine spec.
     let commands = ssh.commands();
     let install = commands
         .iter()
-        .find(|command| command.contains("--first-node"))
+        .find(|command| command.contains("--first-machine"))
         .expect("founder installer ran remotely");
     for expected in [
         "curl -fsSL -- 'https://ployz.sh'",
-        "PLOYZ_NODE_ID='sg-core-1'",
+        "PLOYZ_MACHINE_ID='sg-core-1'",
         "PLOYZ_CHANNEL='alpha'",
         "PLOYZ_GATEWAY='install'",
         "PLOYZ_DNS='install'",
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
-        "PLOYZ_NODE_PUBLIC_IP='203.0.113.10'",
-        "--first-node",
+        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.10'",
+        "--first-machine",
     ] {
         assert!(
             install.contains(expected),
@@ -383,7 +383,7 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     assert!(
         commands
             .iter()
-            .all(|command| !command.contains("first-node-install.json"))
+            .all(|command| !command.contains("first-machine-install.json"))
     );
     assert!(
         commands
@@ -428,15 +428,15 @@ async fn machine_init_installer_failure_names_phase_and_output() {
 async fn machine_init_activation_failure_does_not_record_machine_ssh() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstNodeActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstNodeActivateApi::ENDPOINT);
+    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
+    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     runtime
         .bind_endpoint(&activate_endpoint, |_request| async move {
-            let response: InitFirstNodeActivateResponse = OperationApiResponse::DomainError {
-                error: InitFirstNodeActivateError::InvalidPlan,
+            let response: InitFirstMachineActivateResponse = OperationApiResponse::DomainError {
+                error: InitFirstMachineActivateError::InvalidPlan,
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
@@ -444,8 +444,8 @@ async fn machine_init_activation_failure_does_not_record_machine_ssh() {
         .expect("endpoint binds");
     client.flush().await.expect("service flushes");
 
-    let first_node_success = first_node_installer_success_body("sg-core-1");
-    let ssh = FakeSshMachine::new("sg-core-1", &first_node_success);
+    let first_machine_success = first_machine_installer_success_body("sg-core-1");
+    let ssh = FakeSshMachine::new("sg-core-1", &first_machine_success);
     let context = ContextDir::new();
     let seed_dir = tempfile::TempDir::new().expect("seed dir");
     let config = test_config(&server, &ssh, &context, seed_dir.path());
@@ -528,7 +528,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
                 // Identity derives from the remote hostname (R9); the gateway
                 // defaults to install (R8); ids are client-generated (KTD9).
-                assert_eq!(request.node_id, node_id("sg-edge-1"));
+                assert_eq!(request.machine_id, machine_id("sg-edge-1"));
                 assert_eq!(
                     request.name,
                     MachineName::try_new("sg-edge-1").expect("valid machine name")
@@ -550,7 +550,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
                         accepted: accepted_operation(&request.operation_id),
-                        node_id: request.node_id,
+                        machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
                         join_bundle: machine_join_bundle(),
@@ -584,7 +584,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
                 let response: OpsStatusResponse = OperationApiResponse::Ok {
                     value: OperationStatusSnapshot::new(OperationStatus::MachineAdd {
                         id: request.operation_id,
-                        node_id: node_id("sg-edge-1"),
+                        machine_id: machine_id("sg-edge-1"),
                         name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
                         roles: InstallRolePolicy::install_all(),
                         state: MachineAddOperationState::Completed,
@@ -630,7 +630,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     .expect("remote machine add succeeds");
 
     assert!(output.stdout.contains("operation op_add_sg-edge-1_"));
-    assert!(output.stdout.contains("node sg-edge-1"));
+    assert!(output.stdout.contains("machine sg-edge-1"));
     assert!(output.stdout.contains("machine-add completed"));
     let loaded = load_cluster_context(&context.context_path)
         .expect("context loads")
@@ -638,7 +638,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     let [machine] = loaded.machines.as_slice() else {
         panic!("expected one recorded machine");
     };
-    assert_eq!(machine.node_id, node_id("sg-edge-1"));
+    assert_eq!(machine.machine_id, machine_id("sg-edge-1"));
     assert_eq!(
         machine.ssh.as_ref().map(|target| target.destination()),
         Some("root@203.0.113.11".to_owned())
@@ -653,7 +653,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("join installer ran remotely");
     for expected in [
         "curl -fsSL -- 'https://get.ployz.sh'",
-        "PLOYZ_NODE_PUBLIC_IP='203.0.113.11'",
+        "PLOYZ_MACHINE_PUBLIC_IP='203.0.113.11'",
         "PLOYZ_NATS_URL='tls://203.0.113.10:4222'",
         "PLOYZ_JOIN_NKEY_SEED=",
         "--join-token 'join_once_123'",
@@ -685,7 +685,7 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
                         accepted: accepted_operation(&request.operation_id),
-                        node_id: request.node_id,
+                        machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
                         join_bundle: machine_join_bundle(),
@@ -776,7 +776,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                 let response: MachineAddResponse = OperationApiResponse::Ok {
                     value: MachineAddAccepted {
                         accepted: accepted_operation(&request.operation_id),
-                        node_id: request.node_id,
+                        machine_id: request.machine_id,
                         bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
                             .expect("valid bootstrap url"),
                         join_bundle: machine_join_bundle(),
@@ -810,7 +810,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                 let response: OpsStatusResponse = OperationApiResponse::Ok {
                     value: OperationStatusSnapshot::new(OperationStatus::MachineAdd {
                         id: request.operation_id,
-                        node_id: node_id("sg-edge-1"),
+                        machine_id: machine_id("sg-edge-1"),
                         name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
                         roles: InstallRolePolicy::install_all(),
                         state: MachineAddOperationState::Failed {

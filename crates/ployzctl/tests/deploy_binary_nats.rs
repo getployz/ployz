@@ -61,6 +61,8 @@ async fn binary_deploy_calls_nats_service() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzctl"))
         .arg("--nats")
         .arg(server.server.client_url().as_str())
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
         .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
         .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
         .args(deploy_args())

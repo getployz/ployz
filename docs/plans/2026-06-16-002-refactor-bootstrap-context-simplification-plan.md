@@ -16,7 +16,7 @@ This supersedes the SSH-first parts of `docs/plans/2026-06-12-002-feat-alpha-qui
 
 ## Problem Frame
 
-`crates/ployzctl/src/remote_bootstrap.rs` and `crates/ployzctl/src/remote_machine_runtime.rs` currently make the CLI the installer brain for `machine init`. The CLI resolves remote release manifests, installs or verifies `nats-server`, builds first-node specs, writes join templates twice, restarts control, reads CA and seed files back over SSH, writes local context, and then activates the first machine.
+`crates/ployzctl/src/remote_bootstrap.rs` and `crates/ployzctl/src/remote_machine_runtime.rs` currently make the CLI the installer brain for `machine init`. The CLI resolves remote release manifests, installs or verifies `nats-server`, builds first-machine specs, writes join templates twice, restarts control, reads CA and seed files back over SSH, writes local context, and then activates the first machine.
 
 That is too much ownership for the client. The desired shape is closer to the useful part of Uncloud's context model: connection methods belong to local context, while product commands talk to the cluster. For Ployz, that means NATS remains the control-plane connection, and SSH becomes a delivery handle for bootstrapping a command onto a machine.
 
@@ -40,7 +40,7 @@ That is too much ownership for the client. The desired shape is closer to the us
 
 **Ownership cleanup**
 
-- R9. `ployzctl` must stop owning release manifest parsing, first-node spec assembly from release artifacts, remote `nats-server` setup, join-template rewrites, control restarts, and remote seed collection as SSH phases.
+- R9. `ployzctl` must stop owning release manifest parsing, first-machine spec assembly from release artifacts, remote `nats-server` setup, join-template rewrites, control restarts, and remote seed collection as SSH phases.
 - R10. Machine-local installation details must belong to `scripts/ployz.sh`, `ployz-keeper`, or a future bootstrap endpoint, with `ployzctl` passing typed inputs instead of hand-preparing remote files.
 - R11. Bootstrap failures must still preserve useful evidence: the rendered command path, optional SSH phase output, operation ID when one exists, and keeper/bootstrap terminal output.
 - R12. Bootstrap result handling must not echo operator seeds or Join seeds in normal user-facing output.
@@ -132,7 +132,7 @@ sequenceDiagram
   CLI->>CLI: render founder bootstrap command
   CLI->>SSH: run rendered command when a target was supplied
   SSH->>Script: execute founder bootstrap
-  Script->>Keeper: first-node bootstrap
+  Script->>Keeper: first-machine bootstrap
   Keeper->>Core: form cluster and produce operator material
   Keeper-->>CLI: bootstrap result material
   CLI->>Ctx: atomically record cluster context and SSH handle
@@ -183,7 +183,7 @@ sequenceDiagram
 - **Goal:** Make founder and joiner bootstrap commands first-class renderable values.
 - **Requirements:** R5, R6, R10, R14
 - **Files:** `crates/ployzctl/src/commands/machine.rs`, new `crates/ployzctl/src/bootstrap_command.rs`, `crates/ployzctl/src/shell.rs`, `crates/ployzctl/tests/machine_cli_contract.rs`, `crates/ployz-keeper/tests/bootstrap_script.rs`.
-- **Approach:** Move command-string construction out of ad hoc remote flows into typed renderer structs. Keep shell quoting centralized. Joiner rendering should reuse `MachineAddOutput` material. Founder rendering should express the smallest input set the machine-local bootstrap needs, even if the first implementation still delegates to the current keeper first-node mode behind the script.
+- **Approach:** Move command-string construction out of ad hoc remote flows into typed renderer structs. Keep shell quoting centralized. Joiner rendering should reuse `MachineAddOutput` material. Founder rendering should express the smallest input set the machine-local bootstrap needs, even if the first implementation still delegates to the current keeper first-machine mode behind the script.
 - **Test scenarios:** Printed and SSH-run join commands are byte-for-byte the same; bootstrap URLs, tokens, seeds, CA material, and paths are safely quoted; founder command can be emitted without SSH; future token-envelope fields have an obvious renderer entry point without affecting current join behavior.
 
 ### U3. Convert `machine add USER@HOST` to context-backed delivery
@@ -207,7 +207,7 @@ sequenceDiagram
 - **Goal:** Remove the CLI-owned installer substeps that conflict with the new boundary.
 - **Requirements:** R8, R9, R10, R13
 - **Files:** `crates/ployzctl/src/remote_bootstrap.rs`, `crates/ployzctl/src/remote_machine_runtime.rs`, `crates/ployzctl/src/lib.rs`, `crates/ployzctl/tests/machine_cli_contract.rs`, `crates/ployzctl/tests/machine_remote_nats.rs`.
-- **Approach:** After U2-U4 land, delete release-manifest parsing, default manifest URL construction for remote SSH phases, first-node spec construction, join-template construction, remote file write/read helpers, `ensure_nats_server_command`, and control restart helpers from `ployzctl`. Move still-current constants and renderers to the bootstrap command module.
+- **Approach:** After U2-U4 land, delete release-manifest parsing, default manifest URL construction for remote SSH phases, first-machine spec construction, join-template construction, remote file write/read helpers, `ensure_nats_server_command`, and control restart helpers from `ployzctl`. Move still-current constants and renderers to the bootstrap command module.
 - **Test scenarios:** `rg "ensure_nats_server_command|write_remote_file_command|read_remote_file_command|CollectOperatorMaterial|RestartControl" crates/ployzctl/src` returns no product path references; remaining tests assert rendered bootstrap commands and result parsing rather than remote file surgery.
 
 ### U6. Keep current explicit operation commands
@@ -215,7 +215,7 @@ sequenceDiagram
 - **Goal:** Keep explicit NATS operation commands available while replacing the product-facing bootstrap path.
 - **Requirements:** R13
 - **Files:** `crates/ployzctl/src/commands/init.rs`, `crates/ployzctl/tests/cli_contract.rs`, `crates/ployzctl/tests/init_binary_nats.rs`, `crates/ployz-e2e/tests/dind_cluster.rs`.
-- **Approach:** Keep `ployzctl init --emit-keeper-install`, `ployzctl init --run-keeper-install`, `init activate-first-node`, and explicit `machine add --node ...` as explicit expert/NATS-facing commands. Do not preserve deleted remote SSH bootstrap compatibility.
+- **Approach:** Keep `ployzctl init --emit-keeper-install`, `ployzctl init --run-keeper-install`, `init activate-first-machine`, and explicit `machine add --machine ...` as explicit expert/NATS-facing commands. Do not preserve deleted remote SSH bootstrap compatibility.
 - **Test scenarios:** Existing binary NATS tests continue to pass; low-level commands still parse; missing context messages point users at the new product path; e2e can move one scenario at a time.
 
 ### U7. Documentation and e2e proof
@@ -232,7 +232,7 @@ sequenceDiagram
 
 - AE1. Given an existing context with only `nats_url`, `nats_ca_file`, `operator_seed_file`, and `join_seed_file`, when `ployzctl machine list` runs without env or `--nats`, then it connects through that context.
 - AE2. Given a cluster context and a fresh machine target, when `ployzctl machine add root@203.0.113.11` runs, then the CLI submits `machine.add` over NATS, renders the join command, delivers that exact command over SSH, and watches the operation.
-- AE3. Given the same accepted join material, when the user runs explicit `ployzctl machine add --node ...`, then the CLI prints the same join command without opening SSH.
+- AE3. Given the same accepted join material, when the user runs explicit `ployzctl machine add --machine ...`, then the CLI prints the same join command without opening SSH.
 - AE4. Given a founder target, when `ployzctl machine init root@203.0.113.10` succeeds, then the CLI records context from parsed bootstrap output, records the SSH handle as optional machine metadata, activates the first machine through NATS, and does not print seeds.
 - AE5. Given a founder SSH delivery failure, when the installer exits non-zero, then no context is written and the error includes the failed delivery phase plus bootstrap output.
 
@@ -263,7 +263,7 @@ The largest behavioral change is founder bootstrap. Joiner bootstrap is already 
 - `crates/ployzctl/src/commands/machine.rs`: Current `machine init`, `machine add`, identity derivation, and join install command rendering.
 - `crates/ployzctl/src/remote_machine_runtime.rs`: Current thick SSH runtime for founder bootstrap and nearly-correct joiner flow.
 - `crates/ployzctl/src/remote_bootstrap.rs`: Current release/spec/template/remote-command helper surface targeted for deletion or shrinkage.
-- `scripts/ployz.sh`: Current local install, join mode, and first-node mode handoff to keeper.
-- `crates/ployz-keeper/src/cli.rs` and `crates/ployz-keeper/src/main.rs`: Current keeper first-node and join execution boundaries.
+- `scripts/ployz.sh`: Current local install, join mode, and first-machine mode handoff to keeper.
+- `crates/ployz-keeper/src/cli.rs` and `crates/ployz-keeper/src/main.rs`: Current keeper first-machine and join execution boundaries.
 - `crates/ployzd/src/operation_api/submit.rs`: Current `machine.add` operation acceptance and bootstrap material boundary.
 - Local Uncloud prior art: context-owned connection methods and command routing through the selected context.

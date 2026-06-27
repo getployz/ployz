@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU16;
 
-use crate::ids::{ContainerId, NodeId, OperationId, RevisionId, ServiceId, StepId};
-use crate::node::{ManagedContainerKind, NodeContainerObservationSnapshot};
+use crate::ids::{ContainerId, MachineId, OperationId, RevisionId, ServiceId, StepId};
+use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerKind};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{
     ActiveRouteCommitRequest, ActiveRouteState, ActiveServiceState, ExpectedActiveRoute,
@@ -35,14 +35,14 @@ pub struct DeployRoute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPlanningInput {
     pub request: DeployRequest,
-    pub eligible_nodes: Vec<NodeId>,
+    pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingServiceReplica {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
 }
 
@@ -50,7 +50,7 @@ pub struct ExistingServiceReplica {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DeployCleanupContainer {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
     pub revision_id: RevisionId,
@@ -66,8 +66,8 @@ pub struct DeployPreparationInput {
     pub request: DeployRequest,
     pub active_service: Option<ActiveServiceState>,
     pub active_route: Option<ActiveRouteState>,
-    pub eligible_nodes: Vec<NodeId>,
-    pub observed_nodes: Vec<NodeContainerObservationSnapshot>,
+    pub eligible_machines: Vec<MachineId>,
+    pub observed_machines: Vec<MachineContainerObservationSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +75,7 @@ pub struct PreparedDeploy {
     pub request: DeployRequest,
     pub expected_active: ExpectedActiveService,
     pub route_commit: Option<ActiveRouteCommitRequest>,
-    pub eligible_nodes: Vec<NodeId>,
+    pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
 }
@@ -93,18 +93,18 @@ pub struct DeployPlan {
 
 impl DeployPlan {
     #[must_use]
-    pub fn target_nodes(&self) -> Vec<NodeId> {
-        let mut nodes = self
+    pub fn target_machines(&self) -> Vec<MachineId> {
+        let mut machines = self
             .steps
             .iter()
             .map(|step| match step {
-                DeployPlanStep::UseExistingContainer { node_id, .. }
-                | DeployPlanStep::RunContainer { node_id, .. } => node_id.clone(),
+                DeployPlanStep::UseExistingContainer { machine_id, .. }
+                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
             })
             .collect::<Vec<_>>();
-        nodes.sort();
-        nodes.dedup();
-        nodes
+        machines.sort();
+        machines.dedup();
+        machines
     }
 }
 
@@ -113,12 +113,12 @@ impl DeployPlan {
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployPlanStep {
     UseExistingContainer {
-        node_id: NodeId,
+        machine_id: MachineId,
         container_id: ContainerId,
         slot: ReplicaSlot,
     },
     RunContainer {
-        node_id: NodeId,
+        machine_id: MachineId,
         slot: ReplicaSlot,
     },
 }
@@ -173,7 +173,7 @@ impl fmt::Display for ReplicaSlotError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanError {
-    NoEligibleNodes,
+    NoEligibleMachines,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,14 +217,14 @@ pub fn prepare_deploy(
 ) -> Result<PreparedDeploy, DeployPreparationError> {
     let expected_active = expected_active_service(&input.request, input.active_service)?;
     let route_commit = active_route_commit_request(&input.request, input.active_route)?;
-    let existing_replicas = existing_replicas(&input.request, &input.observed_nodes);
-    let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_nodes);
+    let existing_replicas = existing_replicas(&input.request, &input.observed_machines);
+    let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_machines);
 
     Ok(PreparedDeploy {
         request: input.request,
         expected_active,
         route_commit,
-        eligible_nodes: input.eligible_nodes,
+        eligible_machines: input.eligible_machines,
         existing_replicas,
         cleanup_candidates,
     })
@@ -252,17 +252,17 @@ fn expected_active_service(
 
 fn existing_replicas(
     request: &DeployRequest,
-    observed_nodes: &[NodeContainerObservationSnapshot],
+    observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<ExistingServiceReplica> {
-    observed_nodes
+    observed_machines
         .iter()
-        .flat_map(NodeContainerObservationSnapshot::containers)
+        .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
             container.is_running_service_revision(&request.service_id, &request.target_revision)
                 && reusable_for_route(container, request.route.as_ref())
         })
         .map(|container| ExistingServiceReplica {
-            node_id: container.node_id.clone(),
+            machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
         })
         .collect()
@@ -270,16 +270,16 @@ fn existing_replicas(
 
 fn cleanup_candidates(
     request: &DeployRequest,
-    observed_nodes: &[NodeContainerObservationSnapshot],
+    observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<DeployCleanupContainer> {
-    observed_nodes
+    observed_machines
         .iter()
-        .flat_map(NodeContainerObservationSnapshot::containers)
+        .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
             container.is_running_service() && container.service_id == request.service_id
         })
         .map(|container| DeployCleanupContainer {
-            node_id: container.node_id.clone(),
+            machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             service_id: container.service_id.clone(),
             revision_id: container.revision_id.clone(),
@@ -294,7 +294,7 @@ fn cleanup_candidates(
 }
 
 fn reusable_for_route(
-    container: &crate::node::ManagedContainerObservation,
+    container: &crate::machine_runtime::ManagedContainerObservation,
     route: Option<&DeployRoute>,
 ) -> bool {
     let Some(route) = route else {
@@ -346,40 +346,40 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
     let target_replicas = usize::from(input.request.replicas.get());
     let mut existing_replicas = input.existing_replicas;
     existing_replicas.sort_by(|left, right| {
-        left.node_id
-            .cmp(&right.node_id)
+        left.machine_id
+            .cmp(&right.machine_id)
             .then_with(|| left.container_id.cmp(&right.container_id))
     });
     existing_replicas.dedup_by(|left, right| {
-        left.node_id == right.node_id && left.container_id == right.container_id
+        left.machine_id == right.machine_id && left.container_id == right.container_id
     });
     let mut steps = existing_replicas
         .into_iter()
         .take(target_replicas)
         .enumerate()
         .map(|(index, replica)| DeployPlanStep::UseExistingContainer {
-            node_id: replica.node_id,
+            machine_id: replica.machine_id,
             container_id: replica.container_id,
             slot: ReplicaSlot((index + 1) as u16),
         })
         .collect::<Vec<_>>();
     let missing_replicas = target_replicas.saturating_sub(steps.len());
-    if missing_replicas > 0 && input.eligible_nodes.is_empty() {
-        return Err(DeployPlanError::NoEligibleNodes);
+    if missing_replicas > 0 && input.eligible_machines.is_empty() {
+        return Err(DeployPlanError::NoEligibleMachines);
     }
 
     let existing_replicas = steps.len();
     steps.extend(
         input
-            .eligible_nodes
+            .eligible_machines
             .iter()
             .cycle()
             .take(missing_replicas)
             .enumerate()
-            .map(|(index, node_id)| {
+            .map(|(index, machine_id)| {
                 let slot = ReplicaSlot((existing_replicas + index + 1) as u16);
                 DeployPlanStep::RunContainer {
-                    node_id: node_id.clone(),
+                    machine_id: machine_id.clone(),
                     slot,
                 }
             }),
@@ -394,12 +394,12 @@ pub fn plan_service_deploy(input: DeployPlanningInput) -> Result<DeployPlan, Dep
     let mut cleanup_containers = input.cleanup_candidates;
     cleanup_containers.retain(|candidate| !selected_containers.contains(&&candidate.container_id));
     cleanup_containers.sort_by(|left, right| {
-        left.node_id
-            .cmp(&right.node_id)
+        left.machine_id
+            .cmp(&right.machine_id)
             .then_with(|| left.container_id.cmp(&right.container_id))
     });
     cleanup_containers.dedup_by(|left, right| {
-        left.node_id == right.node_id && left.container_id == right.container_id
+        left.machine_id == right.machine_id && left.container_id == right.container_id
     });
 
     Ok(DeployPlan {

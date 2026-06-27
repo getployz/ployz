@@ -39,7 +39,7 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -67,7 +67,7 @@ async fn operation_repository_retries_container_started_after_stage_advances() {
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -127,7 +127,7 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
     let stored = event_log
         .append(OperationEventAppend::deploy_container_started(
             &operation_id("op_123"),
-            &node_id("node_a"),
+            &machine_id("machine_a"),
             &container_id("ctr_1"),
         ))
         .await
@@ -137,7 +137,7 @@ async fn operation_repository_keeps_status_cursor_when_retrying_durable_evidence
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )
@@ -215,7 +215,7 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
     let stored = event_log
         .append(OperationEventAppend::deploy_container_started(
             &operation_id("op_123"),
-            &node_id("node_a"),
+            &machine_id("machine_a"),
             &container_id("ctr_1"),
         ))
         .await
@@ -225,7 +225,7 @@ async fn operation_repository_accepts_durable_container_evidence_after_stage_adv
         .record_deploy_evidence(
             &operation_id("op_123"),
             DeployEvidence::ContainerStarted {
-                node_id: node_id("node_a"),
+                machine_id: machine_id("machine_a"),
                 container_id: container_id("ctr_1"),
             },
         )

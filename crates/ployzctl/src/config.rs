@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ssh::{SshTarget, SshTargetParseError};
-use ployz_core::ids::{NodeId, SubjectTokenError};
+use ployz_core::ids::{MachineId, SubjectTokenError};
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use serde::{Deserialize, Serialize};
 
@@ -44,15 +44,15 @@ pub struct ClusterContext {
 
 impl ClusterContext {
     #[must_use]
-    pub fn with_machine_ssh(mut self, node_id: NodeId, target: SshTarget) -> Self {
+    pub fn with_machine_ssh(mut self, machine_id: MachineId, target: SshTarget) -> Self {
         match self
             .machines
             .iter_mut()
-            .find(|machine| machine.node_id == node_id)
+            .find(|machine| machine.machine_id == machine_id)
         {
             Some(machine) => machine.ssh = Some(target),
             None => self.machines.push(ClusterContextMachine {
-                node_id,
+                machine_id,
                 ssh: Some(target),
             }),
         }
@@ -62,7 +62,7 @@ impl ClusterContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterContextMachine {
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub ssh: Option<SshTarget>,
 }
 
@@ -89,7 +89,7 @@ struct ClusterContextFile {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClusterContextMachineFile {
-    node_id: String,
+    machine_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ssh: Option<String>,
 }
@@ -215,13 +215,13 @@ pub fn publish_cluster_context(
 
 pub fn save_cluster_context_machine_ssh(
     path: &Path,
-    node_id: NodeId,
+    machine_id: MachineId,
     target: SshTarget,
 ) -> Result<Option<ClusterContext>, ClusterContextError> {
     let Some(context) = load_cluster_context(path)? else {
         return Ok(None);
     };
-    let context = context.with_machine_ssh(node_id, target);
+    let context = context.with_machine_ssh(machine_id, target);
     save_cluster_context(path, &context)?;
     Ok(Some(context))
 }
@@ -465,7 +465,7 @@ pub enum ClusterContextError {
     },
     InvalidMachineId {
         path: PathBuf,
-        node_id: String,
+        machine_id: String,
         error: SubjectTokenError,
     },
     InvalidMachineSshTarget {
@@ -504,11 +504,11 @@ impl fmt::Display for ClusterContextError {
             ),
             Self::InvalidMachineId {
                 path,
-                node_id,
+                machine_id,
                 error,
             } => write!(
                 formatter,
-                "cluster context file {} has an invalid machine id {node_id:?}: {error}",
+                "cluster context file {} has an invalid machine id {machine_id:?}: {error}",
                 path.display()
             ),
             Self::InvalidMachineSshTarget {
@@ -535,11 +535,11 @@ fn load_context_machine(
     path: &Path,
     machine: ClusterContextMachineFile,
 ) -> Result<ClusterContextMachine, ClusterContextError> {
-    let ClusterContextMachineFile { node_id, ssh } = machine;
-    let node_id = NodeId::try_new(node_id.clone()).map_err(|error| {
+    let ClusterContextMachineFile { machine_id, ssh } = machine;
+    let machine_id = MachineId::try_new(machine_id.clone()).map_err(|error| {
         ClusterContextError::InvalidMachineId {
             path: path.to_owned(),
-            node_id,
+            machine_id,
             error,
         }
     })?;
@@ -554,12 +554,12 @@ fn load_context_machine(
             })
         })
         .transpose()?;
-    Ok(ClusterContextMachine { node_id, ssh })
+    Ok(ClusterContextMachine { machine_id, ssh })
 }
 
 fn save_context_machine(machine: &ClusterContextMachine) -> ClusterContextMachineFile {
     ClusterContextMachineFile {
-        node_id: machine.node_id.as_str().to_owned(),
+        machine_id: machine.machine_id.as_str().to_owned(),
         ssh: machine.ssh.as_ref().map(SshTarget::destination),
     }
 }
@@ -596,7 +596,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join(CLUSTER_CONTEXT_FILE_NAME);
         let saved = context("tls://203.0.113.10:4222").with_machine_ssh(
-            NodeId::try_new("sg-core-1").expect("valid machine id"),
+            MachineId::try_new("sg-core-1").expect("valid machine id"),
             SshTarget::parse("root@203.0.113.10").expect("valid ssh target"),
         );
 
@@ -610,11 +610,11 @@ mod tests {
     fn context_machine_ssh_update_replaces_the_existing_handle() {
         let context = context("tls://203.0.113.10:4222")
             .with_machine_ssh(
-                NodeId::try_new("sg-core-1").expect("valid machine id"),
+                MachineId::try_new("sg-core-1").expect("valid machine id"),
                 SshTarget::parse("root@203.0.113.10").expect("valid ssh target"),
             )
             .with_machine_ssh(
-                NodeId::try_new("sg-core-1").expect("valid machine id"),
+                MachineId::try_new("sg-core-1").expect("valid machine id"),
                 SshTarget::parse("admin@203.0.113.10").expect("valid ssh target"),
             );
 
@@ -635,7 +635,7 @@ mod tests {
 
         let updated = save_cluster_context_machine_ssh(
             &path,
-            NodeId::try_new("sg-core-1").expect("valid machine id"),
+            MachineId::try_new("sg-core-1").expect("valid machine id"),
             SshTarget::parse("root@203.0.113.10").expect("valid ssh target"),
         )
         .expect("machine ssh saves")
@@ -661,7 +661,7 @@ mod tests {
 
         let updated = save_cluster_context_machine_ssh(
             &path,
-            NodeId::try_new("sg-core-1").expect("valid machine id"),
+            MachineId::try_new("sg-core-1").expect("valid machine id"),
             SshTarget::parse("root@203.0.113.10").expect("valid ssh target"),
         )
         .expect("missing context is not an error");
@@ -865,7 +865,7 @@ mod tests {
         let path = dir.path().join(CLUSTER_CONTEXT_FILE_NAME);
         fs::write(
             &path,
-            r#"{"nats_url":"tls://203.0.113.10:4222","nats_ca_file":"/ca.pem","operator_seed_file":"/op.seed","machines":[{"node_id":"sg-core-1","ssh":"-oProxyCommand=bad"}]}"#,
+            r#"{"nats_url":"tls://203.0.113.10:4222","nats_ca_file":"/ca.pem","operator_seed_file":"/op.seed","machines":[{"machine_id":"sg-core-1","ssh":"-oProxyCommand=bad"}]}"#,
         )
         .expect("context file writes");
 

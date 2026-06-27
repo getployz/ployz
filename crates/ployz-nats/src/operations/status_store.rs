@@ -25,7 +25,7 @@ pub struct StoredMachineAddSubmission {
     pub operation_id: ployz_core::ids::OperationId,
     pub idempotency_key: OperationIdempotencyKey,
     pub start_sequence: EventSequence,
-    pub node_id: ployz_core::ids::NodeId,
+    pub machine_id: ployz_core::ids::MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
@@ -36,7 +36,7 @@ pub struct StoredMachineAddSubmission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMachineAddClaim {
     pub operation_id: ployz_core::ids::OperationId,
-    pub node_id: ployz_core::ids::NodeId,
+    pub machine_id: ployz_core::ids::MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,

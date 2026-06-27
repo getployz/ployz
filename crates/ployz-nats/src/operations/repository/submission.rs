@@ -1,5 +1,5 @@
 use ployz_core::backup::BackupTarget;
-use ployz_core::ids::{CertId, NodeId, OperationId};
+use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::install::MachineJoinBundle;
 use ployz_core::machine::{IssuedJoinToken, MachineName, RawJoinToken};
 use ployz_core::ops::{
@@ -285,7 +285,7 @@ impl AsyncNatsOperationRepository {
         let idempotency_key = submission.idempotency_key;
         let claim = StoredMachineAddClaim {
             operation_id: submission.operation_id,
-            node_id: submission.node_id,
+            machine_id: submission.machine_id,
             name: submission.name,
             roles: submission.roles,
             join_bundle: submission.join_bundle,
@@ -302,7 +302,7 @@ impl AsyncNatsOperationRepository {
         }
 
         let operation_id = claim.operation_id;
-        let node_id = claim.node_id;
+        let machine_id = claim.machine_id;
         let name = claim.name;
         let roles = claim.roles;
         let join_bundle = claim.join_bundle;
@@ -324,7 +324,7 @@ impl AsyncNatsOperationRepository {
             .event_log
             .append(OperationEventAppend::machine_add_submitted(
                 operation_id.clone(),
-                node_id.clone(),
+                machine_id.clone(),
                 name.clone(),
                 roles,
                 join_token.clone(),
@@ -340,7 +340,7 @@ impl AsyncNatsOperationRepository {
             if !machine_add_submitted_event_matches(
                 stored_event,
                 &operation_id,
-                &node_id,
+                &machine_id,
                 &name,
                 roles,
                 &join_token,
@@ -352,7 +352,7 @@ impl AsyncNatsOperationRepository {
             operation_id: operation_id.clone(),
             idempotency_key: idempotency_key.clone(),
             start_sequence: stored.sequence,
-            node_id,
+            machine_id,
             name,
             roles,
             join_bundle,
@@ -369,7 +369,7 @@ impl AsyncNatsOperationRepository {
         }
         let status = OperationStatus::machine_add_pending(
             operation_id.clone(),
-            submitted.node_id.clone(),
+            submitted.machine_id.clone(),
             submitted.name.clone(),
             submitted.roles,
             submitted.join_token.clone(),
@@ -396,7 +396,7 @@ impl AsyncNatsOperationRepository {
         Ok(AcceptedMachineAddSubmission {
             operation_id: submitted.operation_id,
             start_sequence: stored.sequence,
-            node_id: submitted.node_id,
+            machine_id: submitted.machine_id,
             name: submitted.name,
             roles: submitted.roles,
             join_bundle: submitted.join_bundle,
@@ -409,14 +409,14 @@ impl AsyncNatsOperationRepository {
 fn machine_add_submitted_event_matches(
     event: OperationEvent,
     expected_operation_id: &OperationId,
-    expected_node_id: &NodeId,
+    expected_machine_id: &MachineId,
     expected_name: &MachineName,
     expected_roles: InstallRolePolicy,
     expected_join_token: &IssuedJoinToken,
 ) -> bool {
     let OperationEvent::MachineAddSubmitted {
         operation_id,
-        node_id,
+        machine_id,
         name,
         roles,
         join_token,
@@ -425,7 +425,7 @@ fn machine_add_submitted_event_matches(
         return false;
     };
     operation_id == *expected_operation_id
-        && node_id == *expected_node_id
+        && machine_id == *expected_machine_id
         && name == *expected_name
         && roles == expected_roles
         && join_token == *expected_join_token
@@ -436,7 +436,16 @@ fn submit_machine_add_store_status(error: OperationStatusStoreError) -> SubmitMa
         OperationStatusStoreError::RecordExists { .. } => {
             SubmitMachineAddError::DuplicateIdempotencyKey
         }
-        error => SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(error)),
+        error @ (OperationStatusStoreError::OpenBucket { .. }
+        | OperationStatusStoreError::EncodeStatus(_)
+        | OperationStatusStoreError::DecodeStatus(_)
+        | OperationStatusStoreError::EncodeSubmission(_)
+        | OperationStatusStoreError::DecodeSubmission(_)
+        | OperationStatusStoreError::CasConflict { .. }
+        | OperationStatusStoreError::GetStatus { .. }
+        | OperationStatusStoreError::Timeout { .. }) => {
+            SubmitMachineAddError::Operation(SubmitOperationError::StoreStatus(error))
+        }
     }
 }
 
@@ -497,7 +506,7 @@ pub struct CertOperationSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineAddOperationSubmission {
     pub operation_id: OperationId,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,
@@ -531,7 +540,7 @@ pub struct AcceptedCertSubmission {
 pub struct AcceptedMachineAddSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
-    pub node_id: NodeId,
+    pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub join_bundle: MachineJoinBundle,

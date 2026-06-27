@@ -1,18 +1,18 @@
 //! NATS subject construction helpers.
 
-use crate::ids::{CertId, ContainerId, NodeId, OperationId};
+use crate::ids::{CertId, ContainerId, MachineId, OperationId};
 use crate::ops::DeployRunningStage;
 
 pub const OPS_STREAM_SUBJECT: &str = "plz.v1.op.>";
 
 pub const API_SERVICE_SCOPE: &str = "plz.v1.svc.api.>";
-pub const NODE_SERVICE_SCOPE: &str = "plz.v1.svc.node.>";
+pub const MACHINE_SERVICE_SCOPE: &str = "plz.v1.svc.machine.>";
 
 pub const API_DEPLOY_SUBMIT: &str = "plz.v1.svc.api.deploy.submit";
 pub const API_DEPLOY_PLAN: &str = "plz.v1.svc.api.deploy.plan";
 pub const API_OPS_STATUS: &str = "plz.v1.svc.api.ops.status";
 pub const API_OPS_WATCH: &str = "plz.v1.svc.api.ops.watch";
-pub const API_INIT_FIRST_NODE_ACTIVATE: &str = "plz.v1.svc.api.init.first_node.activate";
+pub const API_INIT_FIRST_MACHINE_ACTIVATE: &str = "plz.v1.svc.api.init.first_machine.activate";
 pub const API_MACHINE_ADD: &str = "plz.v1.svc.api.machine.add";
 pub const API_MACHINE_LIST: &str = "plz.v1.svc.api.machine.list";
 pub const API_MACHINE_INSPECT: &str = "plz.v1.svc.api.machine.inspect";
@@ -26,7 +26,7 @@ pub const API_BACKUP_CREATE: &str = "plz.v1.svc.api.backup.create";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeploySubmit,
-    InitFirstNodeActivate,
+    InitFirstMachineActivate,
     MachineAdd,
     MachineList,
     MachineInspect,
@@ -42,7 +42,7 @@ pub enum OperationApiEndpoint {
 
 pub const OPERATION_API_ENDPOINTS: [OperationApiEndpoint; 13] = [
     OperationApiEndpoint::DeploySubmit,
-    OperationApiEndpoint::InitFirstNodeActivate,
+    OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
@@ -68,7 +68,7 @@ impl OperationApiEndpoint {
     pub const fn name(self) -> &'static str {
         match self {
             Self::DeploySubmit => "deploy.submit",
-            Self::InitFirstNodeActivate => "init.first_node.activate",
+            Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
             Self::MachineList => "machine.list",
             Self::MachineInspect => "machine.inspect",
@@ -87,7 +87,7 @@ impl OperationApiEndpoint {
     pub const fn subject(self) -> &'static str {
         match self {
             Self::DeploySubmit => API_DEPLOY_SUBMIT,
-            Self::InitFirstNodeActivate => API_INIT_FIRST_NODE_ACTIVATE,
+            Self::InitFirstMachineActivate => API_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => API_MACHINE_ADD,
             Self::MachineList => API_MACHINE_LIST,
             Self::MachineInspect => API_MACHINE_INSPECT,
@@ -108,7 +108,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit | Self::MachineAdd | Self::BackupCreate => {
                 OperationApiEndpointExecution::AcceptsOperation
             }
-            Self::InitFirstNodeActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
+            Self::InitFirstMachineActivate | Self::MachineJoinRedeem | Self::MachineJoinReport => {
                 OperationApiEndpointExecution::MutatesOperation
             }
             Self::MachineList
@@ -165,13 +165,13 @@ pub fn op_deploy_wireguard_ebpf_prepared(operation_id: &OperationId) -> String {
 #[must_use]
 pub fn op_deploy_container_started(
     operation_id: &OperationId,
-    node_id: &NodeId,
+    machine_id: &MachineId,
     container_id: &ContainerId,
 ) -> String {
     format!(
         "plz.v1.op.{}.deploy.container.started.{}.{}",
         operation_id.as_str(),
-        node_id.as_str(),
+        machine_id.as_str(),
         container_id.as_str()
     )
 }
@@ -308,17 +308,17 @@ pub fn cert_renewal_job(cert_id: &CertId) -> String {
 }
 
 #[must_use]
-pub fn node_service(node_id: &NodeId, endpoint: NodeServiceEndpoint) -> String {
+pub fn machine_service(machine_id: &MachineId, endpoint: MachineServiceEndpoint) -> String {
     format!(
-        "plz.v1.svc.node.{}.{}",
-        node_id.as_str(),
+        "plz.v1.svc.machine.{}.{}",
+        machine_id.as_str(),
         endpoint.as_subject()
     )
 }
 
 #[must_use]
-pub fn node_service_scope(node_id: &NodeId) -> String {
-    format!("plz.v1.svc.node.{}.>", node_id.as_str())
+pub fn machine_service_scope(machine_id: &MachineId) -> String {
+    format!("plz.v1.svc.machine.{}.>", machine_id.as_str())
 }
 
 impl DeployRunningStage {
@@ -346,21 +346,21 @@ impl crate::ops::BackupRunningStage {
 }
 
 #[must_use]
-pub fn node_observation(node_id: &NodeId, event: NodeObservationEvent) -> String {
+pub fn machine_observation(machine_id: &MachineId, event: MachineObservationEvent) -> String {
     format!(
-        "plz.v1.obs.node.{}.{}",
-        node_id.as_str(),
+        "plz.v1.obs.machine.{}.{}",
+        machine_id.as_str(),
         event.as_subject()
     )
 }
 
 #[must_use]
-pub fn node_observation_scope(node_id: &NodeId) -> String {
-    format!("plz.v1.obs.node.{}.>", node_id.as_str())
+pub fn machine_observation_scope(machine_id: &MachineId) -> String {
+    format!("plz.v1.obs.machine.{}.>", machine_id.as_str())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeServiceEndpoint {
+pub enum MachineServiceEndpoint {
     Inspect,
     ContainerEnsureEndpointNetwork,
     ContainerRun,
@@ -370,7 +370,7 @@ pub enum NodeServiceEndpoint {
     LogsTail,
 }
 
-impl NodeServiceEndpoint {
+impl MachineServiceEndpoint {
     #[must_use]
     pub const fn as_subject(self) -> &'static str {
         match self {
@@ -386,14 +386,14 @@ impl NodeServiceEndpoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeObservationEvent {
+pub enum MachineObservationEvent {
     Heartbeat,
     PublicIpChanged,
     ContainerRunning,
     ContainerExited,
 }
 
-impl NodeObservationEvent {
+impl MachineObservationEvent {
     #[must_use]
     pub const fn as_subject(self) -> &'static str {
         match self {
